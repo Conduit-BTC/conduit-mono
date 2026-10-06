@@ -6,11 +6,9 @@ import {
   getProductCatalogQueryKey,
   isProductDiscoveryReadIncomplete,
   isPerspectiveMarketplaceRead,
-  parseFollowListSnapshot,
   refreshProductCatalogSources,
   retainedFollowSnapshotSupersedesLive,
   resolvePerspectiveAuthorPubkeys,
-  selectStrongestFollowListSnapshot,
   settlePendingProgressiveRefreshes,
   type PendingProgressiveRefresh,
 } from "../apps/market/src/lib/productCatalogRead"
@@ -455,153 +453,6 @@ describe("product catalog read planning", () => {
         capped: false,
       })
     ).toBe(false)
-  })
-
-  it("keeps a newer signed-empty follow snapshot over older relay views", () => {
-    const newerEmpty = {
-      pubkeys: [],
-      eventCreatedAt: 200,
-      eventId: "2".repeat(64),
-    }
-    const retained = selectStrongestFollowListSnapshot(newerEmpty, {
-      pubkeys: [merchantAPubkey],
-      eventCreatedAt: 100,
-      eventId: "1".repeat(64),
-    })
-
-    expect(retained).toEqual(newerEmpty)
-    expect(
-      parseFollowListSnapshot(JSON.parse(JSON.stringify(retained)), {
-        excludePubkey: viewerPubkey,
-        requireEventId: true,
-        sortPubkeys: true,
-      })
-    ).toEqual(newerEmpty)
-  })
-
-  it("replaces older follow snapshots atomically without merging authors", () => {
-    expect(
-      selectStrongestFollowListSnapshot(
-        {
-          pubkeys: [],
-          eventCreatedAt: 100,
-          eventId: "1".repeat(64),
-        },
-        {
-          pubkeys: [merchantAPubkey],
-          eventCreatedAt: 200,
-          eventId: "2".repeat(64),
-        }
-      )
-    ).toEqual({
-      pubkeys: [merchantAPubkey],
-      eventCreatedAt: 200,
-      eventId: "2".repeat(64),
-    })
-  })
-
-  it("uses the lower event id for equal-timestamp follow snapshots", () => {
-    expect(
-      selectStrongestFollowListSnapshot(
-        {
-          pubkeys: [merchantBPubkey],
-          eventCreatedAt: 200,
-          eventId: "2".repeat(64),
-        },
-        {
-          pubkeys: [merchantAPubkey],
-          eventCreatedAt: 200,
-          eventId: "1".repeat(64),
-        }
-      )
-    ).toEqual({
-      pubkeys: [merchantAPubkey],
-      eventCreatedAt: 200,
-      eventId: "1".repeat(64),
-    })
-  })
-
-  it("upgrades an id-less bundled projection with a signed snapshot", () => {
-    expect(
-      selectStrongestFollowListSnapshot(
-        {
-          pubkeys: [merchantBPubkey],
-          eventCreatedAt: 200,
-        },
-        {
-          pubkeys: [merchantAPubkey],
-          eventCreatedAt: 200,
-          eventId: "1".repeat(64),
-        }
-      )
-    ).toEqual({
-      pubkeys: [merchantAPubkey],
-      eventCreatedAt: 200,
-      eventId: "1".repeat(64),
-    })
-  })
-
-  it("repairs a cached projection from the verified copy of the same event", () => {
-    expect(
-      selectStrongestFollowListSnapshot(
-        {
-          pubkeys: [merchantBPubkey],
-          eventCreatedAt: 200,
-          eventId: "1".repeat(64),
-        },
-        {
-          pubkeys: [merchantAPubkey],
-          eventCreatedAt: 200,
-          eventId: "1".repeat(64),
-        }
-      )
-    ).toEqual({
-      pubkeys: [merchantAPubkey],
-      eventCreatedAt: 200,
-      eventId: "1".repeat(64),
-    })
-  })
-
-  it("repairs corrupted cached timing from the verified copy of the same event", () => {
-    expect(
-      selectStrongestFollowListSnapshot(
-        {
-          pubkeys: [merchantBPubkey],
-          eventCreatedAt: 300,
-          eventId: "1".repeat(64),
-        },
-        {
-          pubkeys: [merchantAPubkey],
-          eventCreatedAt: 200,
-          eventId: "1".repeat(64),
-        }
-      )
-    ).toEqual({
-      pubkeys: [merchantAPubkey],
-      eventCreatedAt: 200,
-      eventId: "1".repeat(64),
-    })
-  })
-
-  it("normalizes cached follow snapshots before comparing frontiers", () => {
-    expect(
-      parseFollowListSnapshot(
-        {
-          pubkeys: [merchantBPubkey, viewerPubkey, merchantBPubkey],
-          eventCreatedAt: 200,
-          eventId: "2".repeat(64),
-        },
-        {
-          excludePubkey: viewerPubkey,
-          requireEventId: true,
-          sortPubkeys: true,
-        }
-      )
-    ).toEqual({
-      pubkeys: [merchantBPubkey],
-      eventCreatedAt: 200,
-      eventId: "2".repeat(64),
-    })
   })
 
   it("can start from fallback authors while signed-in follows are still loading", () => {

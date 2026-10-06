@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { projectCommerceInbox } from "../packages/core/src/protocol/commerce"
+import { deriveProtectedReadPresentationState } from "@conduit/core"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
+import { resolveInboxDeclaration } from "../packages/core/src/protocol/private-message-routing"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { v2 } from "nostr-tools/nip44"
@@ -680,3 +686,275 @@ describe("durable account-owned commerce inbox", () => {
     ).toBeUndefined()
   })
 })
+
+function completeRead(
+  events: ProtectedInboxReadResult["events"] = []
+): ProtectedInboxReadResult {
+  return {
+    events,
+    coverage: "complete",
+    auth: {
+      state: "not_challenged",
+      challengedCount: 0,
+      succeededCount: 0,
+      failedCount: 0,
+    },
+    relayResult: {
+      status: "success",
+      observations: [],
+      relays: [],
+      attemptedCount: 1,
+      completedCount: 1,
+      failedCount: 0,
+      authoritativeEmpty: !events.length,
+    },
+  }
+}
+
+it.each([
+  "permission_declined",
+  "provider_unavailable",
+  "decrypt_failed",
+] as const)(
+  "keeps %s wrappers degraded through complete EOSE and clears them after retry",
+  async (reason) => {
+    const { owner, pubkey, signer, wrapper } = setup()
+    const decrypt = signer.decryptNip44!
+    signer.decryptNip44 = async () => {
+      throw new NostrSignerError(reason)
+    }
+    const wrap = wrapper()
+    const declaration = {
+      pubkey,
+      state: "declared" as const,
+      relayUrls: ["wss://recovery.synthetic.example"],
+      stale: false,
+      fetchedAt: Date.now(),
+    }
+    const snapshot = await owner.syncRecent({
+      declaration,
+      includeLegacy: false,
+      read: async () => completeRead([wrap]),
+    })
+    expect(snapshot.diagnostics.coverage).toBe("complete")
+    for (const result of Object.values(
+      projectCommerceInbox(snapshot, pubkey)
+    )) {
+      expect(result.data).toHaveLength(0)
+      expect(result.meta.degraded).toBe(true)
+      expect(result.meta.decryptFailures).toEqual([
+        { wrapId: wrap.id, reason: "nip44_failed" },
+      ])
+      expect(
+        deriveProtectedReadPresentationState({
+          visibleCount: 0,
+          meta: result.meta,
+        })
+      ).not.toBe("complete")
+    }
+    expect(
+      JSON.stringify(exportCommerceInboxDiagnostics(snapshot))
+    ).not.toContain(wrap.id)
+    signer.decryptNip44 = decrypt
+    const recovered = await owner.retryDecode()
+    expect(recovered.directMessages).toHaveLength(1)
+    expect(projectCommerceInbox(recovered, pubkey).direct.meta.degraded).toBe(
+      false
+    )
+  }
+)
+
+it("retires successful coverage after a refresh throws while retaining opened messages", async () => {
+  const { owner, pubkey, wrapper } = setup()
+  const declaration = {
+    pubkey,
+    state: "declared" as const,
+    relayUrls: ["wss://recovery.synthetic.example"],
+    stale: false,
+    fetchedAt: Date.now(),
+  }
+  await owner.syncRecent({
+    declaration,
+    includeLegacy: false,
+    read: async () => completeRead([wrapper()]),
+  })
+  await expect(
+    owner.syncRecent({
+      declaration,
+      read: async () => {
+        throw new Error("transport failed")
+      },
+    })
+  ).rejects.toThrow("transport failed")
+  const result = projectCommerceInbox(owner.getSnapshot(), pubkey).direct
+  expect(result.data).toHaveLength(1)
+  expect(result.meta.inbox?.coverage).toBe("unavailable")
+  expect(result.meta.degraded).toBe(true)
+})
+
+it("retries exact owner-local self bytes while rejecting the same remote-local declaration", async () => {
+  const { store, pubkey, secret } = setup()
+  const peerSecret = generateSecretKey()
+  const peer = getPublicKey(peerSecret)
+  const relay = "ws://owner-relay.synthetic.example"
+  const rumor = {
+    kind: 14,
+    pubkey,
+    created_at: 100,
+    tags: [["p", peer]],
+    content: "synthetic local delivery",
+  }
+  const legs = [peer, pubkey].map((recipientPubkey) => ({
+    recipientPubkey,
+    event: wrapEvent(rumor, secret, recipientPubkey),
+    relayUrls: [relay],
+    ownerSelectedRelayUrls: recipientPubkey === pubkey ? [relay] : [],
+    compatibility: false,
+    acknowledged: [],
+    failed: [],
+  }))
+  const id = await stagePrivateDelivery(store, {
+    senderPubkey: pubkey,
+    rumorId: "owner-local",
+    createdAt: Date.now(),
+    legs,
+  })
+  await store.database.commerceInboxDeliveries.update(store.key(id), {
+    claim: undefined,
+  })
+  const evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
+  const declarations = new Map(
+    [
+      [peer, peerSecret],
+      [pubkey, secret],
+    ].map(([principal, key]) => [
+      principal,
+      finalizeEvent(
+        { kind: 10050, created_at: 100, tags: [["relay", relay]], content: "" },
+        key as Uint8Array
+      ),
+    ])
+  )
+  const writes: unknown[] = []
+  await retryPrivateDeliveries(
+    pubkey,
+    async (event, options) => {
+      expect(options.shouldContinue?.()).toBe(true)
+      writes.push({
+        event,
+        targets: options.exclusiveRelayUrls,
+        owned: options.ownerSelectedRelayUrls,
+      })
+      return { successfulRelayUrls: [relay] } as never
+    },
+    id,
+    store,
+    async (recipient, options) => {
+      const resolution = await resolveInboxDeclaration(recipient, {
+        ...options,
+        relayUrls: ["wss://discovery.relay.dev"],
+        evidenceRepository,
+        fetchEventsWithDiagnostics: async () => ({
+          events: [declarations.get(recipient)!],
+          attemptedRelayUrls: ["wss://discovery.relay.dev"],
+          successfulRelayUrls: ["wss://discovery.relay.dev"],
+          failedRelayUrls: [],
+          cappedRelayUrls: [],
+        }),
+      })
+      return resolution
+    }
+  )
+  expect(writes).toEqual([
+    {
+      event: JSON.parse(JSON.stringify(legs[1]!.event)),
+      targets: [relay],
+      owned: [relay],
+    },
+  ])
+})
+
+it.each([false, true])(
+  "reads the current claimed delivery after a concurrent acknowledgement (complete=%s)",
+  async (complete) => {
+    const { store, pubkey, secret } = setup()
+    const peer = getPublicKey(generateSecretKey())
+    const targets = [
+      "wss://one.synthetic.example",
+      "wss://two.synthetic.example",
+    ]
+    const event = wrapEvent(
+      {
+        kind: 14,
+        pubkey,
+        created_at: 100,
+        tags: [["p", peer]],
+        content: "synthetic race",
+      },
+      secret,
+      peer
+    )
+    const id = await stagePrivateDelivery(store, {
+      senderPubkey: pubkey,
+      rumorId: "race",
+      createdAt: Date.now(),
+      legs: [
+        {
+          recipientPubkey: peer,
+          event,
+          relayUrls: targets,
+          ownerSelectedRelayUrls: [],
+          compatibility: false,
+          acknowledged: [],
+          failed: [],
+        },
+      ],
+    })
+    await store.database.commerceInboxDeliveries.update(store.key(id), {
+      claim: undefined,
+    })
+    const table = store.database.commerceInboxDeliveries
+    const where = table.where.bind(table)
+    const intercept = spyOn(table, "where").mockImplementation(
+      (index: string) => {
+        const clause = where(index)
+        const equals = clause.equals.bind(clause)
+        clause.equals = (key) => {
+          const collection = equals(key)
+          const toArray = collection.toArray.bind(collection)
+          collection.toArray = (async () => {
+            const rows = await toArray()
+            await recordPrivateDelivery(store, id, event.id, {
+              successfulRelayUrls: complete ? targets : [targets[0]!],
+            } as never)
+            return rows
+          }) as typeof collection.toArray
+          return collection
+        }
+        return clause
+      }
+    )
+    const writes: string[][] = []
+    try {
+      await retryPrivateDeliveries(
+        pubkey,
+        async (_event, options) => {
+          writes.push([...options.exclusiveRelayUrls!])
+          return { successfulRelayUrls: options.exclusiveRelayUrls } as never
+        },
+        id,
+        store,
+        async () => ({
+          pubkey: peer,
+          state: "declared",
+          relayUrls: targets,
+          stale: false,
+          fetchedAt: Date.now(),
+        })
+      )
+    } finally {
+      intercept.mockRestore()
+    }
+    expect(writes).toEqual(complete ? [] : [[targets[1]!]])
+  }
+)

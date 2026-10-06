@@ -43,12 +43,12 @@ and authenticated decryption. Optional size and original-file hash are checked
 when supplied. Attachments are not fetched merely by opening a conversation.
 
 Shared codecs read Conduit named JSON histories and current Open Markets
-numeric-tag kind-16 messages and kind-17 receipts. Common operations write the
-numeric contract with readable content; the bounded `conduit` version-1 extension
-retains richer fields only when its identity agrees with the surrounding message.
-Large signed commerce snapshots and non-satoshi pricing retain the existing
-named representation when the optional extension cannot state bounded common
-fields exactly. Unknown versions remain inspectable evidence. Kind 1327 is not a default writer.
+numeric-tag kind-16 messages and kind-17 receipts. Normal order operations retain
+the deployed named kind-16 JSON grammar. A numeric writer requires an accepted
+migration contract and explicit recipient capability evidence before activation.
+The bounded `conduit` version-1 extension is read only when its identity agrees
+with the surrounding message. Unknown versions remain inspectable evidence.
+Kind 1327 is not a default writer.
 NIP-44 v3 selection requires a public contract and explicit capabilities; v2
 remains the implemented default.
 

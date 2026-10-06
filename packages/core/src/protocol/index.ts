@@ -2,7 +2,7 @@ export * from "./kinds"
 export * from "./products"
 export * from "./product-reference"
 export * from "./product-family"
-export * from "./listing-safety"
+export * from "./listing-availability"
 export * from "./profiles"
 export * from "./profile-cache"
 export * from "./direct-message-unread"
@@ -98,20 +98,25 @@ export * from "./media-server-preferences"
 export * from "./product-image-upload"
 export {
   getNdk,
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
-  fetchEventsFanoutProgressive,
-  verifySignedPublicNostrEvents,
   disconnectNdk,
   refreshNdkRelaySettings,
   refreshNdkRelaySettingsWhenIdle,
-  __resetNdkTestState,
-  __setNdkVerifyTimeoutMsForTests,
-  type FetchEventsFanoutResult,
-  type FetchEventsRelayStatus,
-  type VerifySignedPublicNostrEventsOptions,
-  type VerifySignedPublicNostrEventsResult,
 } from "./ndk"
+export {
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
+  fetchPublicEventsProgressive,
+  verifySignedEvents,
+  __resetPublicReaderTestState,
+  __setPublicReaderVerifyTimeoutMsForTests,
+  type PublicRelayReadResult,
+  type PublicRelayReadSourceStatus,
+} from "./relay-reader"
+
+export type {
+  VerifySignedPublicNostrEventsOptions,
+  VerifySignedPublicNostrEventsResult,
+} from "./relay-reader"
 export * from "./event-market-calendar-retry"
 export * from "./commerce-inbox"
 export * from "./commerce-message-codec"

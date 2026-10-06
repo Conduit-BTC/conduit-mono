@@ -236,12 +236,16 @@ export async function retryPrivateDeliveries(
       async () => {
         store.assertCurrent()
         const current = await store.database.commerceInboxDeliveries.get(row.id)
-        if (!current || (current.claim && current.claim.expiresAt > Date.now()))
-          return false
+        if (
+          !current ||
+          current.state === "accepted" ||
+          (current.claim && current.claim.expiresAt > Date.now())
+        )
+          return null
         await store.database.commerceInboxDeliveries.update(row.id, {
           claim: { owner: claimant, expiresAt: Date.now() + 60_000 },
         })
-        return true
+        return current
       }
     )
     if (!claimed) continue
@@ -262,7 +266,7 @@ export async function retryPrivateDeliveries(
         })
     }, 10_000)
     try {
-      const job = await store.open<PrivateDeliveryJob>(row.value, id)
+      const job = await store.open<PrivateDeliveryJob>(claimed.value, id)
       for (const leg of job.legs) {
         const targets = leg.relayUrls.filter(
           (relay) => !leg.acknowledged.includes(relay)
@@ -271,6 +275,7 @@ export async function retryPrivateDeliveries(
         const declaration = await resolveDeclaration(leg.recipientPubkey, {
           requestingAccountPubkey: principal,
           authenticatedPubkey: principal,
+          allowLocalRelayUrlsForPubkey: principal,
           shouldContinue: () => {
             store.assertCurrent()
             return true

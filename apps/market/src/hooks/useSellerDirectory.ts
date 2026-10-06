@@ -21,9 +21,13 @@ import {
   limitAccountMatches,
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
-import { mergeProductSearchResults } from "../lib/marketBrowseModel"
+import {
+  getMerchantIdentityView,
+  mergeProductSearchResults,
+} from "../lib/marketBrowseModel"
 import {
   getProductSourceRelayHintsByPubkey,
+  getPagedMerchantPubkeys,
   mergeRelayHintsByPubkey,
 } from "../lib/clientHydration"
 import {
@@ -38,7 +42,6 @@ import {
   isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
 } from "../lib/sellerDirectory"
-import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
 
@@ -52,6 +55,9 @@ export function useSellerDirectory(input: {
   fallbackNetworkAllowed?: boolean
   query: string
   accountSearchSettleMs?: number
+  /** Header suggestions use scoped account search, not every seller profile. */
+  hydrateSellerProfiles?: boolean
+  visibleSellerCount?: number
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const queryClient = useQueryClient()
@@ -64,17 +70,13 @@ export function useSellerDirectory(input: {
   const effectiveSource: ProductCatalogSourceMode = connected
     ? input.catalogSource
     : "conduit"
-  const guestMarket = useGuestMarketDiscovery({
-    enabled: enabled && !connected,
-  })
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
     catalogSource: effectiveSource,
     enabled,
     networkEnabled: input.networkEnabled,
-    perspectivePubkey: connected ? pubkey : guestMarket.perspectivePubkey,
+    perspectivePubkey: connected ? pubkey : null,
     authenticatedPubkey: connected ? pubkey : null,
-    seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
   })
   // Text only filters these products locally; typing must not repeat discovery.
@@ -203,21 +205,24 @@ export function useSellerDirectory(input: {
     authenticatedPubkey: connected ? pubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     allMerchantPubkeys: sellerPubkeys,
-    visibleMerchantPubkeys: sellerPubkeys,
+    visibleMerchantPubkeys:
+      input.hydrateSellerProfiles === false
+        ? []
+        : getPagedMerchantPubkeys(
+            sellerPubkeys,
+            input.visibleSellerCount ?? 12
+          ),
+    deferBackgroundHydration: input.hydrateSellerProfiles === false,
+    backgroundHydrationPubkeys: [],
     relayHintsByPubkey: profileRelayHintsByPubkey,
   })
   const query = input.query.trim()
-  const filteredSellers = useMemo(
-    () => filterSellersByName(sellers, identities.getIdentity, query),
-    [identities.getIdentity, query, sellers]
-  )
   const eligibleAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const eligibilityState = getSellerEligibilityState({
     authorPubkeys: eligibleAuthorPubkeys,
     source: effectiveSource,
     followLookupStatus: productsQuery.followLookupStatus,
-    discoveryStale:
-      productsQuery.discoveryStale || (!connected && guestMarket.stale),
+    discoveryStale: productsQuery.discoveryStale,
   })
   const accountSearch = useProfileSearch(query, {
     enabled: enabled && eligibleAuthorPubkeys !== undefined,
@@ -226,6 +231,32 @@ export function useSellerDirectory(input: {
     accountPubkey: connected ? pubkey : null,
     authorPubkeys: eligibleAuthorPubkeys,
   })
+  const accountSellerProfiles = useMemo(() => {
+    const known = new Set(sellerPubkeys)
+    return Object.fromEntries(
+      (accountSearch.data?.matches ?? [])
+        .filter((match) => known.has(match.pubkey))
+        .map((match) => [match.pubkey, match.profile])
+    )
+  }, [accountSearch.data, sellerPubkeys])
+  const getBaseIdentity = identities.getIdentity
+  const getIdentity = useCallback(
+    (sellerPubkey: string) => {
+      const profile = accountSellerProfiles[sellerPubkey]
+      return profile
+        ? getMerchantIdentityView(
+            sellerPubkey,
+            profile,
+            profileRelayHintsByPubkey[sellerPubkey]
+          )
+        : getBaseIdentity(sellerPubkey)
+    },
+    [accountSellerProfiles, getBaseIdentity, profileRelayHintsByPubkey]
+  )
+  const filteredSellers = useMemo(
+    () => filterSellersByName(sellers, getIdentity, query),
+    [getIdentity, query, sellers]
+  )
   const networkAccounts = useMemo(
     () =>
       limitAccountMatches(
@@ -258,23 +289,19 @@ export function useSellerDirectory(input: {
   })
   const refreshCatalog = productsQuery.refetch
   const refreshFallback = fallbackQuery.refetch
-  const refreshGuestDiscovery = guestMarket.refetch
   const refreshAccountSearch = accountSearch.refetch
   const retry = useCallback(() => {
     const remoteSearchEligible = isRemoteMarketSearchEligible(query)
-    if (!connected) void refreshGuestDiscovery()
     if (input.fallbackNetworkEnabled && fallbackReady) void refreshFallback()
     else refreshCatalog()
     if (remoteSearchEligible) refreshAccountSearch()
   }, [
-    connected,
     fallbackReady,
     input.fallbackNetworkEnabled,
     query,
     refreshAccountSearch,
     refreshCatalog,
     refreshFallback,
-    refreshGuestDiscovery,
   ])
 
   return {
@@ -288,7 +315,7 @@ export function useSellerDirectory(input: {
     retry,
     sellers,
     filteredSellers,
-    getIdentity: identities.getIdentity,
+    getIdentity,
     query,
     accountSearch,
     networkAccounts,

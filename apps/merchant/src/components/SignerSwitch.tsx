@@ -25,6 +25,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
   return (
     <SharedSignerSwitch
       {...props}
+      logoSrc="/images/logo/merchant-logo-full.svg"
       status={status}
       pubkeyLabel={pubkey ? formatNpub(pubkey) : null}
       pubkeyDetailLabel={pubkey ? formatNpub(pubkey, 12) : null}

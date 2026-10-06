@@ -29,7 +29,7 @@ import {
   sharedInboxDiscoveryRelayUrls,
   type ResolveOwnerRelayListOptions,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const SECRET = generateSecretKey()

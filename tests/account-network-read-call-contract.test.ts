@@ -37,7 +37,7 @@ import {
   __resetInboxRelayCache,
   inspectOwnPrivateMessageRelayReadiness,
 } from "../packages/core/src/protocol/messaging"
-import type { FetchEventsFanoutOptions } from "../packages/core/src/protocol/ndk"
+import type { PublicRelayReadOptions } from "../packages/core/src/protocol/relay-reader"
 import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -77,7 +77,7 @@ const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
 
 function expectAccountPolicy(
   options: Pick<
-    FetchEventsFanoutOptions,
+    PublicRelayReadOptions,
     "accountPubkey" | "accountNetworkLocalStateRepository"
   >
 ): void {
@@ -105,7 +105,7 @@ function relayList(pubkey: string) {
 }
 
 function finalIoRecorder(openedRelayUrls: string[]) {
-  return async (_filter: unknown, options: FetchEventsFanoutOptions = {}) => {
+  return async (_filter: unknown, options: PublicRelayReadOptions = {}) => {
     const candidates = options.relayUrls ?? []
     const admitted = options.accountPubkey
       ? await filterEligibleAccountRelayUrls({
@@ -131,11 +131,11 @@ function finalIoRecorder(openedRelayUrls: string[]) {
 
 describe("account network read call contract", () => {
   it("carries account policy through relay-list discovery and publish planning", async () => {
-    const calls: FetchEventsFanoutOptions[] = []
+    const calls: PublicRelayReadOptions[] = []
     const shouldContinue = () => true
     __setRelayListTestOverrides({
       loadCached: async () => undefined,
-      fetchEventsFanoutDetailed: async (_filter, options = {}) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) => {
         calls.push(options)
         return {
           events: [],
@@ -176,7 +176,7 @@ describe("account network read call contract", () => {
 
   it("carries account policy through owner preference and social reads", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
-    const finalReadCalls: FetchEventsFanoutOptions[] = []
+    const finalReadCalls: PublicRelayReadOptions[] = []
     const captureRelayLists = async (
       _pubkeys: readonly string[],
       options: RelayListLookupOptions = {}
@@ -186,7 +186,7 @@ describe("account network read call contract", () => {
     }
     const captureFinalRead = async (
       _filter: unknown,
-      options: FetchEventsFanoutOptions = {}
+      options: PublicRelayReadOptions = {}
     ) => {
       finalReadCalls.push(options)
       return {
@@ -267,13 +267,13 @@ describe("account network read call contract", () => {
 
   it("admits no removed relay I/O from generic product reads with an explicit account", async () => {
     const openedRelayUrls: string[] = []
-    const accountCalls: FetchEventsFanoutOptions[] = []
+    const accountCalls: PublicRelayReadOptions[] = []
     let guestDirectPlan: string[] | undefined
     let accountDirectPlan: string[] | undefined
     let variationReadObserved = false
     let deletionReadObserved = false
     let collectingProductDetail = false
-    const productDetailCalls: FetchEventsFanoutOptions[] = []
+    const productDetailCalls: PublicRelayReadOptions[] = []
     const merchantPubkey = "b".repeat(64)
     const productDTag = "removed-relay-product"
     const productAddress = `30402:${merchantPubkey}:${productDTag}`
@@ -302,7 +302,7 @@ describe("account network read call contract", () => {
       putCachedProducts: async () => undefined,
       getCachedProductTombstones: async () => [],
       putCachedProductTombstones: async () => undefined,
-      fetchEventsFanoutWithDiagnostics: async (filter, options = {}) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options = {}) => {
         const candidates = options.relayUrls ?? []
         const directProductRead = filter["#d"]?.includes(productDTag) === true
         if (options.accountPubkey) {
@@ -388,7 +388,7 @@ describe("account network read call contract", () => {
       getCachedProducts: async () => [],
       getCachedProfiles: async () => [undefined],
       putCachedProfiles: async () => undefined,
-      fetchEventsFanout: async (_filter, options = {}) => {
+      fetchPublicEvents: async (_filter, options = {}) => {
         const candidates = options.relayUrls ?? []
         if (options.accountPubkey) {
           accountPlan = [...candidates]
@@ -430,7 +430,7 @@ describe("account network read call contract", () => {
     let active = true
     const shouldContinue = () => active
     const controller = new AbortController()
-    const currentReadCalls: FetchEventsFanoutOptions[] = []
+    const currentReadCalls: PublicRelayReadOptions[] = []
     __setEventMarketTestOverrides({
       getRelayListsDetailed: async (pubkeys, options = {}) => {
         expectAccountPolicy(options)
@@ -503,7 +503,7 @@ describe("account network read call contract", () => {
         expectAccountPolicy(options)
         return new Map([[thirdParty, relayList(thirdParty)]])
       },
-      fetchEventsFanoutDetailed: fetchEvents,
+      fetchSignedEventsFanoutDetailed: fetchEvents,
     })
     await getEventMarketReceiptMerchandise({
       receipt: futureMarketReadyReceiptSchema.parse({
@@ -555,7 +555,7 @@ describe("account network read call contract", () => {
   })
 
   it("carries account policy through owner inbox discovery", async () => {
-    const calls: FetchEventsFanoutOptions[] = []
+    const calls: PublicRelayReadOptions[] = []
     await inspectOwnPrivateMessageRelayReadiness(ACCOUNT, {
       relayUrls: [RELAY_URL],
       evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
@@ -576,7 +576,7 @@ describe("account network read call contract", () => {
   })
 
   it("carries live account authority through progressive commerce fanout", async () => {
-    const calls: FetchEventsFanoutOptions[] = []
+    const calls: PublicRelayReadOptions[] = []
     const shouldContinue = () => true
     __setCommerceTestOverrides({
       accountNetworkLocalStateRepository: repository,
@@ -584,7 +584,7 @@ describe("account network read call contract", () => {
       putCachedProducts: async () => undefined,
       getCachedProductTombstones: async () => [],
       putCachedProductTombstones: async () => undefined,
-      fetchEventsFanoutProgressive: async (_filter, options = {}) => {
+      fetchPublicEventsProgressive: async (_filter, options = {}) => {
         calls.push(options)
         return []
       },

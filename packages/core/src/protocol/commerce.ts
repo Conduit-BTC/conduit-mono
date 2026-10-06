@@ -1,10 +1,10 @@
+import type { Filter } from "nostr-tools"
 import {
   getCommerceInbox as getDefaultCommerceInbox,
   type CommerceInbox,
   type CommerceInboxSnapshot,
 } from "./commerce-inbox"
 import { liveQuery } from "dexie"
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import {
@@ -35,13 +35,13 @@ import {
 } from "./follows"
 import {
   attachEventSourceRelayUrl,
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
-  fetchEventsFanoutProgressive,
-  fetchEventsFanoutWithDiagnostics,
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
+  fetchPublicEventsProgressive,
+  fetchPublicEventsWithDiagnostics,
   getEventSourceRelayUrls,
   mergeEventSourceRelayUrls,
-} from "./ndk"
+} from "./relay-reader"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
@@ -66,13 +66,12 @@ import {
   type ParsedDirectMessage,
 } from "./messaging"
 import {
-  evaluateListingSafety,
-  isMerchantHiddenOnlyListingSafetyAllowed,
+  evaluateListingAvailability,
+  isMerchantHiddenOnlyListingAvailable,
   isListingMarketVisible,
-  reconcileContextualListingSafety,
-  type ListingSafetyContext,
-  type ListingSafetyEvaluation,
-} from "./listing-safety"
+  type ListingAvailabilityContext,
+  type ListingAvailabilityEvaluation,
+} from "./listing-availability"
 import {
   prepareProductCatalog,
   type PreparedProductFamily,
@@ -112,8 +111,13 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import {
+  sameSignedPublicEvent,
+  snapshotSignedPublicEvent,
+} from "./verified-public-event"
+import {
   isProductDeletedByNip09,
   parseProductAddressCoordinate,
+  prepareProductDeletionResolver,
   productDeletionAddressKey,
   productDeletionEventKey as scopedProductDeletionEventKey,
   validateProductDeletionEvent,
@@ -274,7 +278,7 @@ export interface FollowListResult extends CommerceResult<string[]> {
 
 export interface CommerceProductRecord {
   product: Product
-  safety?: ListingSafetyEvaluation
+  availability?: ListingAvailabilityEvaluation
   family?: PreparedProductFamily<CommerceProductRecord>
   /** In-memory evidence behind exact family eligibility, never extra results. */
   exactReadContext?: RetainedProductFamilyContext
@@ -357,12 +361,12 @@ export interface ProductsByIdsOptions {
    * The last callback is the final family/deletion-reconciled return value.
    */
   onProgress?: (result: ProductsByIdsResult) => void
-  /** Merchant management only: bypass every Market listing-safety filter. */
+  /** Merchant management only: bypass every Market availability filter. */
   includeMarketHidden?: boolean
   /**
    * Buyer-scoped exception for exact event-pickup coordinates. Only listings
-   * hidden solely by the merchant visibility signal are admitted; blocked,
-   * unsupported, pending, and external decisions remain filtered.
+   * hidden solely by the merchant visibility signal are admitted; missing
+   * images and unsupported product structures remain filtered.
    */
   includeMerchantHiddenProductIds?: readonly string[]
   /**
@@ -500,10 +504,10 @@ type CommerceTestOverrides = {
   getCommerceInbox?: (principalPubkey: string) => CommerceInbox
   allowMissingProtectedReadAuthorization?: boolean
   getRelayLists?: typeof getRelayLists
-  fetchEventsFanout?: typeof fetchEventsFanout
-  fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
-  fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
+  fetchPublicEvents?: typeof fetchPublicEvents
+  fetchPublicEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
+  fetchPublicEventsProgressive?: typeof fetchPublicEventsProgressive
   readLatestFollowLists?: typeof readLatestFollowLists
   getAccountSigner?: () => NostrKeySigner | undefined
   readProtectedInbox?: (
@@ -646,10 +650,10 @@ function commerceReadRelayUrls(): string[] {
 
 function hasCommerceFetchTestOverride(): boolean {
   return !!(
-    testOverrides.fetchEventsFanout ||
-    testOverrides.fetchEventsFanoutWithDiagnostics ||
-    testOverrides.fetchEventsFanoutDetailed ||
-    testOverrides.fetchEventsFanoutProgressive
+    testOverrides.fetchPublicEvents ||
+    testOverrides.fetchPublicEventsWithDiagnostics ||
+    testOverrides.fetchSignedEventsFanoutDetailed ||
+    testOverrides.fetchPublicEventsProgressive
   )
 }
 
@@ -985,26 +989,26 @@ async function planCommerceReadRelayPlan(input: {
 }
 
 async function runFetchEventsFanout(
-  filter: NDKFilter,
-  options?: Parameters<typeof fetchEventsFanout>[1]
-): Promise<NDKEvent[]> {
-  if (testOverrides.fetchEventsFanout) {
-    return (await testOverrides.fetchEventsFanout(
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEvents>[1]
+): Promise<SignedPublicNostrEvent[]> {
+  if (testOverrides.fetchPublicEvents) {
+    return (await testOverrides.fetchPublicEvents(
       filter,
       options
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
   }
-  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
+  if (testOverrides.fetchPublicEventsWithDiagnostics) {
     return (
-      await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+      await testOverrides.fetchPublicEventsWithDiagnostics(filter, options)
     ).events
   }
   // A progressive-only test override owns the complete relay boundary. Its
   // fixture can pair an events-only override when deletion events are needed;
   // otherwise deletion discovery is deterministically empty instead of
   // escaping to the network during a unit test.
-  if (testOverrides.fetchEventsFanoutProgressive) return []
-  return (await fetchEventsFanout(filter, options)) as NDKEvent[]
+  if (testOverrides.fetchPublicEventsProgressive) return []
+  return (await fetchPublicEvents(filter, options)) as SignedPublicNostrEvent[]
 }
 
 /**
@@ -1013,17 +1017,17 @@ async function runFetchEventsFanout(
  * as complete coverage.
  */
 async function runFetchEventsFanoutWithDiagnostics(
-  filter: NDKFilter,
-  options?: Parameters<typeof fetchEventsFanoutWithDiagnostics>[1]
-): Promise<Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>> {
-  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
-    return await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEventsWithDiagnostics>[1]
+): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
+  if (testOverrides.fetchPublicEventsWithDiagnostics) {
+    return await testOverrides.fetchPublicEventsWithDiagnostics(filter, options)
   }
-  if (testOverrides.fetchEventsFanout) {
-    const events = (await testOverrides.fetchEventsFanout(
+  if (testOverrides.fetchPublicEvents) {
+    const events = (await testOverrides.fetchPublicEvents(
       filter,
       options
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
     const relayUrls = [...(options?.relayUrls ?? [])]
     const limit = filter.limit
     return {
@@ -1035,7 +1039,7 @@ async function runFetchEventsFanoutWithDiagnostics(
         typeof limit === "number" && events.length >= limit ? relayUrls : [],
     }
   }
-  return await fetchEventsFanoutWithDiagnostics(filter, options)
+  return await fetchPublicEventsWithDiagnostics(filter, options)
 }
 
 /**
@@ -1044,8 +1048,8 @@ async function runFetchEventsFanoutWithDiagnostics(
  * limit, so callers must not certify that bounded read as complete or fresh.
  */
 function isBoundedFanoutSaturated(
-  filter: NDKFilter,
-  events: readonly NDKEvent[],
+  filter: Filter,
+  events: readonly SignedPublicNostrEvent[],
   relayEventCounts: readonly number[] = []
 ): boolean {
   const limit = filter.limit
@@ -1058,16 +1062,16 @@ function isBoundedFanoutSaturated(
 }
 
 async function runFetchEventsFanoutDetailed(
-  filter: NDKFilter,
-  options?: Parameters<typeof fetchEventsFanoutDetailed>[1]
+  filter: Filter,
+  options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
 ): Promise<{
-  events: NDKEvent[]
+  events: SignedPublicNostrEvent[]
   degraded: boolean
   capped: boolean
   coverage: "complete" | "partial" | "unavailable"
 }> {
-  if (testOverrides.fetchEventsFanoutDetailed) {
-    const result = await testOverrides.fetchEventsFanoutDetailed(
+  if (testOverrides.fetchSignedEventsFanoutDetailed) {
+    const result = await testOverrides.fetchSignedEventsFanoutDetailed(
       filter,
       options
     )
@@ -1093,8 +1097,8 @@ async function runFetchEventsFanoutDetailed(
     }
   }
 
-  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
-    const result = await testOverrides.fetchEventsFanoutWithDiagnostics(
+  if (testOverrides.fetchPublicEventsWithDiagnostics) {
+    const result = await testOverrides.fetchPublicEventsWithDiagnostics(
       filter,
       options
     )
@@ -1115,11 +1119,11 @@ async function runFetchEventsFanoutDetailed(
 
   // Most gateway tests replace the older event-only seam. Preserve that
   // deterministic contract while production reads use per-relay completion.
-  if (testOverrides.fetchEventsFanout) {
-    const events = (await testOverrides.fetchEventsFanout(
+  if (testOverrides.fetchPublicEvents) {
+    const events = (await testOverrides.fetchPublicEvents(
       filter,
       options
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
     return {
       events,
       coverage: "complete",
@@ -1128,7 +1132,7 @@ async function runFetchEventsFanoutDetailed(
     }
   }
 
-  const result = await fetchEventsFanoutDetailed(filter, options)
+  const result = await fetchSignedEventsFanoutDetailed(filter, options)
   return {
     events: result.events,
     coverage:
@@ -1259,7 +1263,9 @@ function getTagValue(
   return null
 }
 
-function toEventCreatedAtSeconds(event: Pick<NDKEvent, "created_at">): number {
+function toEventCreatedAtSeconds(
+  event: Pick<SignedPublicNostrEvent, "created_at">
+): number {
   return event.created_at ?? 0
 }
 
@@ -1392,7 +1398,10 @@ async function preloadExactProductRelayLists(
   return { relayLists, unavailableAuthors }
 }
 
-function putMergedEvent(merged: Map<string, NDKEvent>, event: NDKEvent): void {
+function putMergedEvent(
+  merged: Map<string, SignedPublicNostrEvent>,
+  event: SignedPublicNostrEvent
+): void {
   const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
   const key = event.id || fallbackId
   const existing = merged.get(key)
@@ -1404,7 +1413,7 @@ function putMergedEvent(merged: Map<string, NDKEvent>, event: NDKEvent): void {
 }
 
 async function streamProductRecordChunks(input: {
-  baseFilter: NDKFilter
+  baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
   maxRelayAttempts?: number
@@ -1417,10 +1426,14 @@ async function streamProductRecordChunks(input: {
   signal?: AbortSignal
   shouldContinue?: () => boolean
   readPolicy?: CommerceReadPolicy
-  merged: Map<string, NDKEvent>
+  merged: Map<string, SignedPublicNostrEvent>
+  recordsByEventId: Map<string, CommerceProductRecord>
   deletionTimestamps?: DeletionTimestamps
   retainRevisions?: boolean
-  onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+  onRecords: (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ) => void | Promise<void>
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<void> {
   input.signal?.throwIfAborted()
@@ -1435,7 +1448,99 @@ async function streamProductRecordChunks(input: {
     input.authorChunks.length
   )
   const fetchProgressive =
-    testOverrides.fetchEventsFanoutProgressive ?? fetchEventsFanoutProgressive
+    testOverrides.fetchPublicEventsProgressive ?? fetchPublicEventsProgressive
+  const yieldCatalogTask = async (): Promise<void> => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    input.signal?.throwIfAborted()
+    if (input.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+  }
+  const pendingEvents = new Map<string, SignedPublicNostrEvent>()
+  let pendingProgress: Promise<void> | undefined
+  let pendingRefresh = false
+  let pendingRelayUrl = ""
+  const scheduleProgress = async (
+    events: SignedPublicNostrEvent[],
+    relayUrl: string
+  ): Promise<void> => {
+    // Admit only this relay's delta. The fanout's mergedEvents is cumulative,
+    // and parsing it on every callback makes a broad catalog quadratic.
+    let taskStartedAt = performance.now()
+    for (const event of events) {
+      if (performance.now() - taskStartedAt >= 8) {
+        await yieldCatalogTask()
+        taskStartedAt = performance.now()
+      }
+      putMergedEvent(input.merged, event)
+      const key =
+        event.id || `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+      pendingEvents.set(key, input.merged.get(key)!)
+    }
+    pendingRelayUrl = relayUrl
+    pendingRefresh = true
+    if (!pendingProgress) {
+      // Coalesce concurrent relay/chunk callbacks before parsing, cache I/O,
+      // deletion reads, and family projection. The awaited flush preserves
+      // early durability and callback errors/cancellation.
+      pendingProgress = new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+          void (async () => {
+            try {
+              while (pendingRefresh) {
+                input.signal?.throwIfAborted()
+                if (input.shouldContinue?.() === false)
+                  throw new NostrSignerError("authority_changed")
+                pendingRefresh = false
+                const changedEvents = Array.from(pendingEvents.values())
+                pendingEvents.clear()
+                const currentRelayUrl = pendingRelayUrl
+                const changedRecords: CommerceProductRecord[] = []
+                let parseTaskStartedAt = performance.now()
+                for (const event of changedEvents) {
+                  if (performance.now() - parseTaskStartedAt >= 8) {
+                    await yieldCatalogTask()
+                    parseTaskStartedAt = performance.now()
+                  }
+                  const record = dedupeProductEvents(
+                    [event],
+                    input.deletionTimestamps,
+                    input.retainRevisions
+                  )[0]
+                  if (!record) continue
+                  const recordKey = input.retainRevisions
+                    ? record.eventId ||
+                      `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+                    : record.addressId
+                  const previous = input.recordsByEventId.get(recordKey)
+                  const next = previous
+                    ? mergeProductRecordSources(previous, record)
+                    : record
+                  if (
+                    previous &&
+                    next.eventId === previous.eventId &&
+                    (next.sourceRelayUrls?.length ?? 0) ===
+                      (previous.sourceRelayUrls?.length ?? 0)
+                  ) {
+                    continue
+                  }
+                  input.recordsByEventId.set(recordKey, next)
+                  changedRecords.push(next)
+                }
+                // Empty progress still refreshes newly observed tombstones.
+                await input.onRecords(changedRecords, currentRelayUrl)
+              }
+            } finally {
+              // Release ownership in the same turn as the last queue check.
+              // A batch arriving in the promise-completion microtask must
+              // start its own drain, not attach to this finished one.
+              pendingProgress = undefined
+            }
+          })().then(resolve, reject)
+        }, 32)
+      })
+    }
+    return pendingProgress
+  }
 
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
@@ -1444,7 +1549,7 @@ async function streamProductRecordChunks(input: {
         const authors = input.authorChunks[nextChunkIndex]
         nextChunkIndex += 1
 
-        const chunkFilter: NDKFilter = {
+        const chunkFilter: Filter = {
           ...input.baseFilter,
           ...(authors ? { authors } : {}),
         }
@@ -1466,7 +1571,7 @@ async function streamProductRecordChunks(input: {
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
-          ({ events, mergedEvents, relayUrl, status }) => {
+          async ({ events, relayUrl, status }) => {
             input.signal?.throwIfAborted()
             if (status) {
               input.onTransportStatus?.(
@@ -1474,21 +1579,16 @@ async function streamProductRecordChunks(input: {
                 isBoundedFanoutSaturated(chunkFilter, events)
               )
             }
-            for (const event of mergedEvents) {
-              putMergedEvent(input.merged, event)
-            }
-            input.onRecords(
-              dedupeProductEvents(
-                Array.from(input.merged.values()),
-                input.deletionTimestamps,
-                input.retainRevisions
-              ),
-              relayUrl
-            )
+            await scheduleProgress(events, relayUrl)
           }
         )
         input.signal?.throwIfAborted()
+        let mergeTaskStartedAt = performance.now()
         for (const event of events) {
+          if (performance.now() - mergeTaskStartedAt >= 8) {
+            await yieldCatalogTask()
+            mergeTaskStartedAt = performance.now()
+          }
           putMergedEvent(input.merged, event)
         }
         input.onTransportStatus?.(
@@ -1498,43 +1598,37 @@ async function streamProductRecordChunks(input: {
       }
     })
   )
+  // A transport override may return without awaiting its callback. The final
+  // deletion frontier must still follow every scheduled progressive batch.
+  await pendingProgress
 }
 
-function productMatchesQuery(
-  record: CommerceProductRecord,
+function createProductQueryMatcher(
   query: MarketplaceProductsQuery
-): boolean {
-  const { product } = record
+): (record: CommerceProductRecord) => boolean {
   const textQuery = normalizeText(query.textQuery)
-  if (
-    query.authorPubkeys &&
-    query.authorPubkeys.length > 0 &&
-    !new Set(query.authorPubkeys).has(product.pubkey)
-  ) {
-    return false
-  }
-  if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
-    return false
-  if (
-    query.authorPubkeys &&
-    query.authorPubkeys.length > 0 &&
-    !query.authorPubkeys.includes(product.pubkey)
-  ) {
-    return false
-  }
-  if (textQuery) {
-    const haystack = `${product.title}\n${product.summary ?? ""}`.toLowerCase()
-    if (!haystack.includes(textQuery)) return false
-  }
-
-  if (query.tags && query.tags.length > 0) {
-    const tagSet = new Set(canonicalizeProductTags(query.tags))
-    if (!canonicalizeProductTags(product.tags).some((tag) => tagSet.has(tag))) {
+  const authors = query.authorPubkeys?.length
+    ? new Set(query.authorPubkeys)
+    : null
+  const tags = query.tags?.length
+    ? new Set(canonicalizeProductTags(query.tags))
+    : null
+  return ({ product }) => {
+    if (authors && !authors.has(product.pubkey)) return false
+    if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
       return false
+    if (textQuery) {
+      const haystack =
+        `${product.title}\n${product.summary ?? ""}`.toLowerCase()
+      if (!haystack.includes(textQuery)) return false
     }
+    if (
+      tags &&
+      !canonicalizeProductTags(product.tags).some((tag) => tags.has(tag))
+    )
+      return false
+    return true
   }
-
-  return true
 }
 
 function sortProducts(
@@ -1591,14 +1685,15 @@ export function hasMarketProductImage(
   return product.images.some((image) => isValidProductImageUrl(image.url))
 }
 
-function withListingSafety(
-  record: Omit<CommerceProductRecord, "safety"> & {
-    safety?: ListingSafetyEvaluation
+function withListingAvailability(
+  record: Omit<CommerceProductRecord, "availability"> & {
+    availability?: ListingAvailabilityEvaluation
   }
 ): CommerceProductRecord {
   return {
     ...record,
-    safety: record.safety ?? evaluateListingSafety(record.product),
+    availability:
+      record.availability ?? evaluateListingAvailability(record.product),
   }
 }
 
@@ -1607,7 +1702,7 @@ function isMarketRenderableRecord(record: CommerceProductRecord): boolean {
     return false
   }
   return isListingMarketVisible(
-    record.safety ?? evaluateListingSafety(record.product)
+    record.availability ?? evaluateListingAvailability(record.product)
   )
 }
 
@@ -1631,7 +1726,7 @@ function prepareVariationGroups(
     const { parent } = item.family
     const eligibleVariationRecords = item.family.children.filter((variation) =>
       isListingMarketVisible(
-        evaluateListingSafety(variation.product, undefined, {
+        evaluateListingAvailability(variation.product, {
           variationGroupRole: "variation",
           hasGroupImage: true,
         })
@@ -1645,7 +1740,7 @@ function prepareVariationGroups(
     const variations = eligibleVariationRecords
       .filter((variation) =>
         isListingMarketVisible(
-          evaluateListingSafety(variation.product, undefined, {
+          evaluateListingAvailability(variation.product, {
             variationGroupRole: "variation",
             hasGroupImage,
           })
@@ -1661,7 +1756,7 @@ function prepareVariationGroups(
         {
           ...parent,
           family: item.family,
-          safety: evaluateListingSafety(parent.product, undefined, {
+          availability: evaluateListingAvailability(parent.product, {
             variationGroupRole: "parent",
             hasGroupImage,
           }),
@@ -1679,7 +1774,7 @@ function prepareVariationGroups(
       {
         ...parent,
         family: prepared.family,
-        safety: evaluateListingSafety(parent.product, undefined, {
+        availability: evaluateListingAvailability(parent.product, {
           variationGroupRole: "parent",
           hasGroupImage,
         }),
@@ -1842,7 +1937,7 @@ function selectExactProductRecordsForRead(
     return [
       {
         ...target,
-        safety: evaluateListingSafety(variation.product, undefined, {
+        availability: evaluateListingAvailability(variation.product, {
           variationGroupRole: "variation",
           hasGroupImage: true,
         }),
@@ -1853,10 +1948,10 @@ function selectExactProductRecordsForRead(
 
 function isMerchantHiddenExactRecordAllowed(
   record: CommerceProductRecord,
-  context?: ListingSafetyContext
+  context?: ListingAvailabilityContext
 ): boolean {
-  return isMerchantHiddenOnlyListingSafetyAllowed(
-    reconcileContextualListingSafety(record.product, record.safety, context)
+  return isMerchantHiddenOnlyListingAvailable(
+    evaluateListingAvailability(record.product, context)
   )
 }
 
@@ -1888,7 +1983,7 @@ function prepareMerchantHiddenExactRecords(
 
     const parent = item.family.parent
     const parentAllowed = allowedAddresses.has(parent.addressId)
-    const structuralContext: ListingSafetyContext = {
+    const structuralContext: ListingAvailabilityContext = {
       variationGroupRole: "parent",
       hasGroupImage: true,
     }
@@ -1896,7 +1991,7 @@ function prepareMerchantHiddenExactRecords(
       continue
     }
 
-    const ownImageChildContext: ListingSafetyContext = {
+    const ownImageChildContext: ListingAvailabilityContext = {
       variationGroupRole: "variation",
       hasGroupImage: true,
     }
@@ -1910,7 +2005,7 @@ function prepareMerchantHiddenExactRecords(
       structurallyAllowedChildren.some((child) =>
         hasMarketProductImage(child.product)
       )
-    const childContext: ListingSafetyContext = {
+    const childContext: ListingAvailabilityContext = {
       variationGroupRole: "variation",
       hasGroupImage,
     }
@@ -1920,22 +2015,18 @@ function prepareMerchantHiddenExactRecords(
       )
       .map((child) => ({
         ...child,
-        safety: reconcileContextualListingSafety(
-          child.product,
-          child.safety,
-          childContext
-        ),
+        availability: evaluateListingAvailability(child.product, childContext),
       }))
 
     // An accepted child can be rendered atomically without accepting its
-    // parent. The parent still proves family structure and safety, but an
+    // parent. The parent still proves family structure and availability, but an
     // unaccepted parent or sibling cannot donate an image or enter the result.
     for (const child of children) {
       prepared.set(child.addressId, child)
     }
 
     if (!parentAllowed) continue
-    const parentContext: ListingSafetyContext = {
+    const parentContext: ListingAvailabilityContext = {
       variationGroupRole: "parent",
       hasGroupImage,
     }
@@ -1946,9 +2037,8 @@ function prepareMerchantHiddenExactRecords(
         {
           ...parent,
           family: undefined,
-          safety: reconcileContextualListingSafety(
+          availability: evaluateListingAvailability(
             parent.product,
-            parent.safety,
             parentContext
           ),
         },
@@ -2103,7 +2193,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     ...(row.sourceRelayUrls ?? []),
     ...(volatileProductSourceRelayUrls.get(product.id) ?? []),
   ])
-  return withListingSafety({
+  return withListingAvailability({
     product,
     eventId: row.eventId ?? product.id,
     addressId: product.id,
@@ -2247,11 +2337,9 @@ function selectCachedProductUpdates(
   rows: CachedProduct[],
   existingRows: CachedProduct[]
 ): CachedProduct[] {
-  const ids = Array.from(new Set(rows.map((row) => row.id)))
+  const ids = new Set(rows.map((row) => row.id))
   const selected = new Map(
-    existingRows
-      .filter((row) => ids.includes(row.id))
-      .map((row) => [row.id, row])
+    existingRows.filter((row) => ids.has(row.id)).map((row) => [row.id, row])
   )
   const changed = new Map<string, CachedProduct>()
 
@@ -2404,7 +2492,7 @@ function productTombstoneIdForEvent(pubkey: string, eventId: string): string {
 }
 
 function tombstonesFromDeletionEvent(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   options: { observedLocally: boolean }
 ): CachedProductTombstone[] {
   if (!event.pubkey) throw new Error("Deletion event pubkey is required")
@@ -2414,9 +2502,7 @@ function tombstonesFromDeletionEvent(
   const rows = new Map<string, CachedProductTombstone>()
   const cachedAt = now()
   const sourceRelayUrls = getEventSourceRelayUrls(event)
-  const validated = validateProductDeletionEvent(
-    event.rawEvent() as SignedPublicNostrEvent
-  )
+  const validated = validateProductDeletionEvent(event)
   if (!validated) {
     throw new Error("Expected a valid signed product deletion event")
   }
@@ -2887,16 +2973,14 @@ export function reconcileProductRecordsWithDeletions(
   records: CommerceProductRecord[],
   evidence: readonly ProductDeletionEvidence[]
 ): CommerceProductRecord[] {
+  const resolveDeletion = prepareProductDeletionResolver(evidence)
   const deleted = (record: CommerceProductRecord) =>
-    isProductDeletedByNip09(
-      {
-        authorPubkey: record.product.pubkey,
-        eventId: record.eventId,
-        addressId: record.dTag ? record.addressId : null,
-        createdAt: record.eventCreatedAt,
-      },
-      evidence
-    )
+    resolveDeletion({
+      authorPubkey: record.product.pubkey,
+      eventId: record.eventId,
+      addressId: record.dTag ? record.addressId : null,
+      createdAt: record.eventCreatedAt,
+    }).deleted
   // Multiple exact targets may share a family. Re-evaluate it once per snapshot.
   const resolvedContexts = new Map<
     RetainedProductFamilyContext,
@@ -2949,28 +3033,28 @@ export function reconcileProductRecordsWithDeletions(
     const parent = {
       ...record.family.parent,
       family: undefined,
-      safety: reconcileContextualListingSafety(
-        record.family.parent.product,
-        record.family.parent.safety,
-        { variationGroupRole: "parent", hasGroupImage }
-      ),
+      availability: evaluateListingAvailability(record.family.parent.product, {
+        variationGroupRole: "parent",
+        hasGroupImage,
+      }),
     }
     const prepared = prepareProductCatalog(
       [
         parent,
         ...children.map((child) => ({
           ...child,
-          safety: reconcileContextualListingSafety(
-            child.product,
-            child.safety,
-            { variationGroupRole: "variation", hasGroupImage }
-          ),
+          availability: evaluateListingAvailability(child.product, {
+            variationGroupRole: "variation",
+            hasGroupImage,
+          }),
         })),
       ],
       record.family.readEvidence
     ).items.find((item) => item.kind === "family")
     if (prepared?.kind !== "family") return []
-    return [{ ...record, safety: parent.safety, family: prepared.family }]
+    return [
+      { ...record, availability: parent.availability, family: prepared.family },
+    ]
   })
   return reconciled.length === records.length &&
     reconciled.every((record, index) => record === records[index])
@@ -3158,21 +3242,23 @@ function filterDeletedProductRecords(
 }
 
 export async function cacheSignedProductListingEvent(
-  signedEvent: SignedPublicNostrEvent | NDKEvent,
+  input: SignedPublicNostrEvent | { rawEvent(): unknown },
   options: {
     sourceRelayUrls?: readonly string[]
     persistence?: "required" | "best_effort"
   } = {}
 ): Promise<CommerceProductRecord> {
-  const event =
-    signedEvent instanceof NDKEvent
-      ? signedEvent
-      : new NDKEvent(undefined, signedEvent)
+  // Local publishing compatibility; relay reads already provide plain events.
+  const event = (
+    "rawEvent" in input ? input.rawEvent() : input
+  ) as SignedPublicNostrEvent
+  for (const relayUrl of getEventSourceRelayUrls(input))
+    attachEventSourceRelayUrl(event, relayUrl)
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
     !event.id ||
     !event.sig ||
-    !isValidSignedPublicNostrEvent(event.rawEvent() as SignedPublicNostrEvent)
+    !isValidSignedPublicNostrEvent(event)
   ) {
     throw new Error("Expected a valid signed product listing event")
   }
@@ -3206,12 +3292,14 @@ export async function cacheSignedProductListingEvent(
 }
 
 export async function cacheSignedProductDeletionEvent(
-  signedEvent: SignedPublicNostrEvent | NDKEvent
+  input: SignedPublicNostrEvent | { rawEvent(): unknown }
 ): Promise<CachedProductTombstone[]> {
-  const event =
-    signedEvent instanceof NDKEvent
-      ? signedEvent
-      : new NDKEvent(undefined, signedEvent)
+  // Local publishing compatibility; relay reads already provide plain events.
+  const event = (
+    "rawEvent" in input ? input.rawEvent() : input
+  ) as SignedPublicNostrEvent
+  for (const relayUrl of getEventSourceRelayUrls(input))
+    attachEventSourceRelayUrl(event, relayUrl)
   const tombstones = tombstonesFromDeletionEvent(event, {
     observedLocally: true,
   })
@@ -3409,25 +3497,28 @@ function hasProfileContent(
   ].some((value) => typeof value === "string" && value.trim().length > 0)
 }
 
-function compareReplaceableProfileEvents(a: NDKEvent, b: NDKEvent): number {
+function compareReplaceableProfileEvents(
+  a: SignedPublicNostrEvent,
+  b: SignedPublicNostrEvent
+): number {
   const createdAt = (b.created_at ?? 0) - (a.created_at ?? 0)
   if (createdAt !== 0) return createdAt
   return (a.id || "\uffff").localeCompare(b.id || "\uffff")
 }
 
 function pickLatestProfileEvent(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   pubkey: string
-): NDKEvent | undefined {
+): SignedPublicNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)[0]
 }
 
 function pickLatestProfileEventWithContent(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   pubkey: string
-): NDKEvent | undefined {
+): SignedPublicNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)
@@ -3437,7 +3528,7 @@ function pickLatestProfileEventWithContent(
 function mergeProfileEvents(
   pubkeys: readonly string[],
   currentProfiles: Record<string, Profile>,
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   currentRows: ReadonlyMap<string, CachedProfile> = new Map()
 ): {
   profiles: Record<string, Profile>
@@ -3664,7 +3755,9 @@ type ProductDeletionCandidate = {
   sourceRelayUrls?: readonly string[]
 }
 
-function deletionCandidateFromEvent(event: NDKEvent): ProductDeletionCandidate {
+function deletionCandidateFromEvent(
+  event: SignedPublicNostrEvent
+): ProductDeletionCandidate {
   const dTag = getTagValue(event.tags ?? [], "d")
   return {
     pubkey: event.pubkey,
@@ -3729,7 +3822,7 @@ async function fetchProductDeletionTimestamps(
         })),
         options.authenticatedPubkey
       )
-      const filters: NDKFilter[] = [
+      const filters: Filter[] = [
         ...chunkStrings(productEventIds, 200).map((eventIdChunk) => ({
           kinds: [EVENT_KINDS.DELETION],
           authors: authorChunk,
@@ -3783,8 +3876,8 @@ async function fetchProductDeletionTimestamps(
         relayBatchSize
       )
       const fetchDeletionFilter = async (
-        filter: NDKFilter
-      ): Promise<NDKEvent[]> =>
+        filter: Filter
+      ): Promise<SignedPublicNostrEvent[]> =>
         (
           await mapWithConcurrency(
             deletionRelayBatches,
@@ -3825,7 +3918,7 @@ async function fetchProductDeletionTimestamps(
       })
     }
   )
-  const deletionEventsById = new Map<string, NDKEvent>()
+  const deletionEventsById = new Map<string, SignedPublicNostrEvent>()
   for (const deletionEvent of deletionEventBatches.flat()) {
     putMergedEvent(deletionEventsById, deletionEvent)
   }
@@ -3890,7 +3983,7 @@ async function fetchDeletionTimestampsForProductRecords(
 }
 
 function isDeletedByNip09(
-  event: Pick<NDKEvent, "id" | "pubkey" | "created_at">,
+  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "created_at">,
   addressId: string | null,
   deletionTimestamps: DeletionTimestamps
 ): boolean {
@@ -3918,27 +4011,31 @@ function isDeletedByNip09(
   )
 }
 
-const MAX_PRODUCT_PARSE_CACHE = 5000
+const MAX_PRODUCT_PARSE_CACHE = 20_000
 const productParseCache = new Map<
   string,
   {
+    event: SignedPublicNostrEvent
     parsed: ReturnType<typeof parseProductEvent>
-    safety: ReturnType<typeof evaluateListingSafety>
+    availability: ReturnType<typeof evaluateListingAvailability>
   }
 >()
 
-// Parsing + listing-safety evaluation is deterministic per event id, but
-// dedupeProductEvents re-runs over the full accumulated set on every streaming
-// callback. Cache by id so each unique event is parsed/evaluated once instead
-// of O(callbacks x events).
-function parseAndEvaluateProductEvent(event: NDKEvent) {
+// Reuse parsed projections only while all signed fields match the original
+// snapshot. An id alone cannot admit mutated or unverified signed bytes.
+function parseAndPrepareProductEvent(event: SignedPublicNostrEvent) {
   const cached = event.id ? productParseCache.get(event.id) : undefined
-  if (cached) return cached
+  if (cached && sameSignedPublicEvent(cached.event, event)) return cached
   const parsed = parseProductEvent(event)
-  const entry = { parsed, safety: evaluateListingSafety(parsed) }
+  const entry = {
+    event: snapshotSignedPublicEvent(event),
+    parsed,
+    availability: evaluateListingAvailability(parsed),
+  }
   if (event.id) {
     if (productParseCache.size >= MAX_PRODUCT_PARSE_CACHE) {
-      productParseCache.clear()
+      const oldest = productParseCache.keys().next().value
+      if (oldest !== undefined) productParseCache.delete(oldest)
     }
     productParseCache.set(event.id, entry)
   }
@@ -3946,7 +4043,7 @@ function parseAndEvaluateProductEvent(event: NDKEvent) {
 }
 
 function dedupeProductEvents(
-  events: NDKEvent[],
+  events: SignedPublicNostrEvent[],
   deletionTimestamps?: DeletionTimestamps,
   retainRevisions = false
 ): CommerceProductRecord[] {
@@ -3954,7 +4051,7 @@ function dedupeProductEvents(
 
   for (const event of events) {
     try {
-      const { parsed, safety } = parseAndEvaluateProductEvent(event)
+      const { parsed, availability } = parseAndPrepareProductEvent(event)
 
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
@@ -3971,7 +4068,7 @@ function dedupeProductEvents(
           ...parsed,
           ...(event.id ? { sourceEventId: event.id } : {}),
         },
-        safety,
+        availability,
         eventId: event.id,
         addressId,
         dTag,
@@ -4097,7 +4194,7 @@ async function fetchPublicProductRecords(query: {
   /** Ranked discovery paints from signed hits and known local evidence first. */
   localDeletionEvidenceOnly?: boolean
 }): Promise<CommerceProductRecord[]> {
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.PRODUCT],
   }
 
@@ -4199,16 +4296,19 @@ async function fetchPublicProductRecordsProgressive(
     readPolicy?: CommerceReadPolicy
     onTransportStatus?: (degraded: boolean, capped: boolean) => void
   },
-  onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+  onRecords: (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ) => void | Promise<void>
 ): Promise<CommerceProductRecord[]> {
-  if (testOverrides.fetchEventsFanout) {
+  if (testOverrides.fetchPublicEvents) {
     const records = await fetchPublicProductRecords(query)
     query.signal?.throwIfAborted()
-    onRecords(records, "test")
+    await onRecords(records, "test")
     return records
   }
 
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.PRODUCT],
   }
 
@@ -4234,7 +4334,8 @@ async function fetchPublicProductRecordsProgressive(
     shouldContinue: query.shouldContinue,
     signal: query.signal,
   })
-  const merged = new Map<string, NDKEvent>()
+  const merged = new Map<string, SignedPublicNostrEvent>()
+  const recordsByEventId = new Map<string, CommerceProductRecord>()
   const initialDeletionTimestamps = await getLocalProductDeletionTimestamps(
     undefined,
     query.authors
@@ -4270,6 +4371,7 @@ async function fetchPublicProductRecordsProgressive(
     signal: query.signal,
     readPolicy: query.readPolicy,
     merged,
+    recordsByEventId,
     deletionTimestamps: initialDeletionTimestamps,
     retainRevisions: query.retainRevisions,
     onRecords,
@@ -4306,6 +4408,7 @@ async function fetchPublicProductRecordsProgressive(
       signal: query.signal,
       readPolicy: query.readPolicy,
       merged,
+      recordsByEventId,
       deletionTimestamps: initialDeletionTimestamps,
       retainRevisions: query.retainRevisions,
       onRecords,
@@ -4447,6 +4550,10 @@ function projectRankedProductSearch(
     )
   )
   const ranks = new Map<string, number>()
+  const matchesQuery = createProductQueryMatcher({
+    ...query,
+    textQuery: undefined,
+  })
   hits.forEach((hit, index) => {
     const current = byAddress.get(hit.addressId)
     if (!current || !eligible.has(current.addressId)) return
@@ -4455,11 +4562,7 @@ function projectRankedProductSearch(
   })
   return applyProductLimit(
     filterProductRecordsForRead(records)
-      .filter(
-        (record) =>
-          ranks.has(record.addressId) &&
-          productMatchesQuery(record, { ...query, textQuery: undefined })
-      )
+      .filter((record) => ranks.has(record.addressId) && matchesQuery(record))
       .sort(
         (left, right) =>
           ranks.get(left.addressId)! - ranks.get(right.addressId)!
@@ -4710,8 +4813,8 @@ export async function getMarketplaceProducts(
     })
     const filtered = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(currentRecords).filter((record) =>
-          productMatchesQuery(record, query)
+        filterProductRecordsForRead(currentRecords).filter(
+          createProductQueryMatcher(query)
         ),
         query.sort
       ),
@@ -4741,7 +4844,7 @@ export async function getMarketplaceProducts(
             { includeStale: true, includeMarketHidden: true },
             query.authorPubkeys
           )
-        ).filter((record) => productMatchesQuery(record, query)),
+        ).filter(createProductQueryMatcher(query)),
         query.sort
       ),
       query.limit
@@ -4798,6 +4901,7 @@ export async function getMarketplaceProductsProgressive(
     query.merchantPubkey,
     query.authorPubkeys
   )
+  const matchesQuery = createProductQueryMatcher(query)
   const toResult = (
     records: CommerceProductRecord[],
     options: { degraded?: boolean; capped?: boolean } = {},
@@ -4810,9 +4914,7 @@ export async function getMarketplaceProductsProgressive(
     })
     const data = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(filteredRecords).filter((record) =>
-          productMatchesQuery(record, query)
-        ),
+        filterProductRecordsForRead(filteredRecords).filter(matchesQuery),
         query.sort
       ),
       limit
@@ -4829,6 +4931,70 @@ export async function getMarketplaceProductsProgressive(
       }
     )
     return { data: withProductFamilyReadEvidence(data, meta), meta }
+  }
+
+  // Persist validated public revisions as they arrive. Leaving the page must
+  // not discard every batch just because another relay or deletion read waits.
+  // Writes remain serialized and use the existing monotonic cache/tombstones.
+  const persistedSignatures = new Map<string, string>()
+  let progressiveCacheWrite = Promise.resolve()
+  let progressiveCacheFailed = false
+  const persistProgress = (records: CommerceProductRecord[]) => {
+    progressiveCacheWrite = progressiveCacheWrite.then(async () => {
+      query.signal?.throwIfAborted()
+      if (query.shouldContinue?.() === false)
+        throw new NostrSignerError("authority_changed")
+      const changed = records.filter((record) => {
+        const signature = JSON.stringify([
+          record.eventId,
+          record.sourceRelayUrls ?? [],
+        ])
+        return persistedSignatures.get(record.eventId) !== signature
+      })
+      try {
+        await cacheProductRecords(changed)
+        for (const record of changed) {
+          persistedSignatures.set(
+            record.eventId,
+            JSON.stringify([record.eventId, record.sourceRelayUrls ?? []])
+          )
+        }
+      } catch (error) {
+        rethrowProductReadAuthorityChange(error, query.shouldContinue)
+        // Final persistence retries the full frontier. Interim write failure
+        // marks coverage degraded rather than stopping deletion reconciliation.
+        progressiveCacheFailed = true
+      }
+    })
+    return progressiveCacheWrite
+  }
+
+  const liveRecords = new Map<string, CommerceProductRecord>()
+  const publishProgress = async (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ): Promise<void> => {
+    for (const record of records) {
+      liveRecords.set(record.eventId, record)
+    }
+    await persistProgress(records)
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentDeletions = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    // Until every planned relay settles, this snapshot remains incomplete.
+    onProgress(
+      toResult(
+        Array.from(liveRecords.values()),
+        { degraded: true, capped: readCapped },
+        currentDeletions
+      ),
+      relayUrl
+    )
   }
 
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
@@ -4850,15 +5016,7 @@ export async function getMarketplaceProductsProgressive(
         readCapped ||= capped
       },
     },
-    (records, relayUrl) => {
-      query.signal?.throwIfAborted()
-      // Until every planned relay settles, the progressive snapshot is
-      // intentionally incomplete even if the first relay succeeded.
-      onProgress(
-        toResult(records, { degraded: true, capped: readCapped }),
-        relayUrl
-      )
-    }
+    publishProgress
   )
 
   query.signal?.throwIfAborted()
@@ -4874,30 +5032,35 @@ export async function getMarketplaceProductsProgressive(
   // Final resolution must follow writes that can yield to a new deletion. A
   // failed cache write still needs to retract the previous progressive paint;
   // preserve its rejection after delivering the resolved snapshot.
-  let result: CommerceResult<CommerceProductRecord[]>
+  let cacheFailure: { reason: unknown } | undefined
   try {
     await cacheProductRecords(records)
-  } finally {
-    query.signal?.throwIfAborted()
-    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey,
-      query.authorPubkeys
-    )
-    result = toResult(
-      fetchedRecords,
-      {
-        degraded:
-          transportDegraded ||
-          readCapped ||
-          fetchedRecords.length >= rawEventLimit,
-        capped: readCapped || fetchedRecords.length >= rawEventLimit,
-      },
-      finalDeletionTimestamps
-    )
-    query.signal?.throwIfAborted()
-    rethrowProductReadAuthorityChange(undefined, query.shouldContinue)
-    onProgress(result, "deletion-frontier")
+    progressiveCacheFailed = false
+  } catch (reason) {
+    cacheFailure = { reason }
   }
+  query.signal?.throwIfAborted()
+  const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
+  )
+  const result = toResult(
+    fetchedRecords,
+    {
+      degraded:
+        transportDegraded ||
+        progressiveCacheFailed ||
+        readCapped ||
+        fetchedRecords.length >= rawEventLimit,
+      capped: readCapped || fetchedRecords.length >= rawEventLimit,
+    },
+    finalDeletionTimestamps
+  )
+  query.signal?.throwIfAborted()
+  if (query.shouldContinue?.() === false)
+    throw new NostrSignerError("authority_changed")
+  onProgress(result, "deletion-frontier")
+  if (cacheFailure) throw cacheFailure.reason
   return result
 }
 
@@ -4931,7 +5094,7 @@ export async function getCachedMarketplaceProducts(
           { ...options, includeMarketHidden: true },
           query.authorPubkeys
         )
-      ).filter((record) => productMatchesQuery(record, query)),
+      ).filter(createProductQueryMatcher(query)),
       query.sort
     ),
     query.limit
@@ -5004,8 +5167,8 @@ export async function getMerchantStorefront(
       filterProductRecordsForRead(currentRecords, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
-      }).filter((record) =>
-        productMatchesQuery(record, {
+      }).filter(
+        createProductQueryMatcher({
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
           tags: query.tag ? [query.tag] : undefined,
@@ -5052,8 +5215,8 @@ export async function getMerchantStorefront(
       filterProductRecordsForRead(currentCache, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
-      }).filter((record) =>
-        productMatchesQuery(record, {
+      }).filter(
+        createProductQueryMatcher({
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
           tags: query.tag ? [query.tag] : undefined,
@@ -5100,8 +5263,8 @@ export async function getCachedMerchantStorefront(
           includeMarketHidden: query.includeMarketHidden,
           groupVariations: query.includeMarketHidden ? false : true,
         }
-      ).filter((record) =>
-        productMatchesQuery(record, {
+      ).filter(
+        createProductQueryMatcher({
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
           tags: query.tag ? [query.tag] : undefined,
@@ -6039,7 +6202,7 @@ export function hasExactLiveProductAvailabilityEvidence(
 }
 
 function productAvailabilityCoverageFromFanout(
-  result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
+  result: Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>,
   expectedRelayUrls: readonly string[] = []
 ): ProductAvailabilityCoverage {
   if (result.successfulRelayUrls.length === 0) return "unavailable"
@@ -6521,10 +6684,10 @@ async function readPreparedProductTargets(
   }
   const directReadEntries = Array.from(compatibleDirectReadBatches.values())
   let directReadCapped = false
-  const progressiveEvents: NDKEvent[] = []
+  const progressiveEvents: SignedPublicNostrEvent[] = []
   let progressiveKnownRecords: CommerceProductRecord[] = []
   let progressPublication = Promise.resolve()
-  const emitDirectProgress = (events: NDKEvent[]) => {
+  const emitDirectProgress = (events: SignedPublicNostrEvent[]) => {
     if (!options.onProgress) return Promise.resolve()
     // Order one author's snapshots without making other authors await its
     // persistence. Shared signed evidence is merged synchronously after I/O.
@@ -7175,7 +7338,7 @@ export async function getCachedProductDetail(
 
 /** Read one cached catalog batch for exact coordinates without relay I/O.
  * Retained records carry stale evidence; callers must not authorize purchases
- * from this projection. The same deletion and family safety rules as cached
+ * from this projection. The same deletion and family availability checks as cached
  * product detail apply, with a single author-scoped storage read.
  */
 export async function getCachedProductsByIds(
@@ -7357,7 +7520,7 @@ export async function getProfiles(
       authenticatedAuthorRelayUrls:
         sourceRelayHints.authenticatedAuthorRelayUrls,
     })
-    const profileFilter: NDKFilter = {
+    const profileFilter: Filter = {
       kinds: [EVENT_KINDS.PROFILE],
       authors: missing,
       limit: Math.max(10, missing.length * 3),
@@ -7384,7 +7547,7 @@ export async function getProfiles(
       // second time at the transport boundary.
       skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
     }
-    const emitProgress = (events: readonly NDKEvent[]) => {
+    const emitProgress = (events: readonly SignedPublicNostrEvent[]) => {
       if (!query.onProgress) return
 
       const progress = mergeProfileEvents(
@@ -7430,7 +7593,7 @@ export async function getProfiles(
     let evidenceDegraded =
       query.requireCompleteEvidence && relayPlan.parkedRelayUrls.length > 0
     let evidenceCapped = false
-    let events: NDKEvent[]
+    let events: SignedPublicNostrEvent[]
     if (query.requireCompleteEvidence) {
       const evidence = await runFetchEventsFanoutDetailed(
         profileFilter,
@@ -7442,15 +7605,15 @@ export async function getProfiles(
       emitProgress(events)
     } else {
       events =
-        query.onProgress && !testOverrides.fetchEventsFanout
-          ? await fetchEventsFanoutProgressive(
+        query.onProgress && !testOverrides.fetchPublicEvents
+          ? await fetchPublicEventsProgressive(
               profileFilter,
               fanoutOptions,
               ({ mergedEvents }) => emitProgress(mergedEvents)
             )
           : await runFetchEventsFanout(profileFilter, fanoutOptions)
 
-      if (query.onProgress && testOverrides.fetchEventsFanout) {
+      if (query.onProgress && testOverrides.fetchPublicEvents) {
         emitProgress(events)
       }
     }
@@ -7684,8 +7847,8 @@ async function fetchParsedOrderMessages(
       snapshot.diagnostics.coverage === "unavailable"
         ? "local_cache"
         : "commerce",
-    stale: snapshot.diagnostics.coverage !== "complete",
-    decryptFailures: [],
+    stale: inboxSnapshotIncomplete(snapshot),
+    decryptFailures: snapshot.decryptFailures,
     inbox: ownerInboxStatus(snapshot),
   }
 }
@@ -7890,9 +8053,9 @@ async function fetchParsedDirectMessages(
       snapshot.diagnostics.coverage === "unavailable"
         ? "local_cache"
         : "commerce",
-    stale: snapshot.diagnostics.coverage !== "complete",
-    decryptFailures: [],
-    legacyDecryptFailures: [],
+    stale: inboxSnapshotIncomplete(snapshot),
+    decryptFailures: snapshot.decryptFailures,
+    legacyDecryptFailures: snapshot.legacyDecryptFailures,
     inbox: ownerInboxStatus(snapshot),
   }
 }
@@ -8792,6 +8955,18 @@ export async function markDirectMessageConversationRead(input: {
   return count
 }
 
+function inboxSnapshotIncomplete(snapshot: CommerceInboxSnapshot): boolean {
+  return (
+    snapshot.diagnostics.coverage !== "complete" ||
+    snapshot.diagnostics.storageUnavailable ||
+    snapshot.decryptFailures.length > 0 ||
+    snapshot.legacyDecryptFailures.length > 0 ||
+    (snapshot.diagnostics.states.queued ?? 0) > 0 ||
+    (snapshot.diagnostics.states.waiting_for_signer ?? 0) > 0 ||
+    (snapshot.diagnostics.states.opening ?? 0) > 0
+  )
+}
+
 /** Pure views of the same committed owner snapshot; no network/cache pipeline. */
 export function projectCommerceInbox(
   snapshot: CommerceInboxSnapshot,
@@ -8802,7 +8977,9 @@ export function projectCommerceInbox(
     "commerce",
     CONVERSATION_CAPABILITIES,
     {
-      stale: snapshot.diagnostics.coverage !== "complete",
+      stale: inboxSnapshotIncomplete(snapshot),
+      decryptFailures: snapshot.decryptFailures,
+      legacyDecryptFailures: snapshot.legacyDecryptFailures,
       inbox: ownerInboxStatus(snapshot),
     }
   )

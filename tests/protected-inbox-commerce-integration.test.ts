@@ -1,3 +1,7 @@
+import {
+  __resetFutureMarketHandoffTestState,
+  readFutureMarketReadyReceipts,
+} from "@conduit/core/protocol/future-market-handoff"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools"
@@ -8,6 +12,10 @@ import {
 import { v2 } from "nostr-tools/nip44"
 import { wrapEvent } from "nostr-tools/nip59"
 import {
+  buildFutureMarketPrivateRumor,
+  futureMarketReadyReceiptSchema,
+  getEventMarketPrivateMessageList,
+  fetchSignedEventsFanoutDetailed,
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   closeAllProtectedRelayConnections,
@@ -100,6 +108,7 @@ const wraps = new Map<string, SignedNostrEvent>(
     wrapEvent(orderRumor(), BUYER_KEY, recipient),
   ])
 )
+let paginatedWraps: SignedNostrEvent[] | null = null
 let legacyWrap: SignedNostrEvent | undefined
 let emitOrderWraps = true
 let signCalls = 0
@@ -144,7 +153,25 @@ class CommerceProtectedRelaySocket {
       return
     }
     if (frame[0] !== "REQ") return
-    const filter = frame[2] as { "#p"?: string[]; kinds?: number[] }
+    const filter = frame[2] as {
+      "#p"?: string[]
+      kinds?: number[]
+      since?: number
+      until?: number
+      limit?: number
+    }
+    if (paginatedWraps && filter.kinds?.includes(1059)) {
+      for (const event of paginatedWraps
+        .filter(
+          (event) =>
+            (filter.since === undefined || event.created_at >= filter.since) &&
+            (filter.until === undefined || event.created_at <= filter.until)
+        )
+        .slice(0, filter.limit))
+        this.relay(["EVENT", frame[1], event])
+      this.relay(["EOSE", frame[1]])
+      return
+    }
     const recipient = filter["#p"]?.[0]
     const event =
       filter.kinds?.includes(1059) && emitOrderWraps
@@ -246,6 +273,8 @@ function installAccount(
 const originalWebSocket = globalThis.WebSocket
 
 beforeEach(() => {
+  paginatedWraps = null
+  __resetFutureMarketHandoffTestState()
   rejectAuthentication = false
   challengeAuthentication = true
   legacyWrap = undefined
@@ -481,4 +510,141 @@ describe("Market and Merchant protected inbox integration", () => {
     expect(await database.commerceInboxRecords.count()).toBe(0)
     expect(decryptCalls).toBe(1)
   })
+})
+
+function eventMarketReadyRumor() {
+  return buildFutureMarketPrivateRumor(
+    futureMarketReadyReceiptSchema.parse({
+      version: 2,
+      type: "future_market_ready",
+      releaseAuthorized: true,
+      claimRef: "a".repeat(64),
+      merchantPubkey: MERCHANT,
+      organizerPubkey: BUYER,
+      market: {
+        coordinate: `30409:${BUYER}:market`,
+        eventId: "b".repeat(64),
+        createdAt: 100_000,
+      },
+      calendar: {
+        coordinate: `31923:${BUYER}:market-day`,
+        eventId: "c".repeat(64),
+        createdAt: 100_000,
+      },
+      grant: { eventId: "d".repeat(64), createdAt: 99_000 },
+      items: [
+        {
+          product: {
+            coordinate: `30402:${MERCHANT}:coffee`,
+            eventId: "e".repeat(64),
+            createdAt: 101_000,
+          },
+          quantity: 1,
+        },
+      ],
+      issuedAt: 1_700_000_100,
+    })
+  )
+}
+
+it("reads paginated strict recovery through production AUTH transport and retains exact signed provenance", async () => {
+  installAccount(BUYER_KEY)
+  const rumor = eventMarketReadyRumor()
+  paginatedWraps = Array.from({ length: 51 }, (_, index) =>
+    wrapEvent(
+      index === 0
+        ? rumor
+        : {
+            kind: 14,
+            pubkey: MERCHANT,
+            created_at: 100 + index,
+            tags: [["p", BUYER]],
+            content: "synthetic history",
+          },
+      MERCHANT_KEY,
+      BUYER
+    )
+  ).sort((a, b) => b.created_at - a.created_at)
+  const first = await getEventMarketPrivateMessageList(BUYER)
+  const second = await getEventMarketPrivateMessageList(BUYER)
+  expect(first.inbox?.coverage).toBe("partial")
+  expect(second.inbox?.coverage).toBe("partial")
+  expect(second.messages.map((m) => m.id)).toContain(rumor.id)
+  expect(JSON.parse(JSON.stringify(paginatedWraps))).toContainEqual(
+    second.authenticatedWraps![rumor.id!]
+  )
+  const frames = sockets.flatMap((socket) => socket.sent)
+  expect(frames.some((frame) => frame[0] === "AUTH")).toBe(true)
+  const filters = frames
+    .filter((frame) => frame[0] === "REQ")
+    .map(
+      (frame) => frame[2] as { since?: number; until?: number; kinds: number[] }
+    )
+  expect(
+    filters.some(
+      (filter) => filter.since !== undefined && filter.since === filter.until
+    )
+  ).toBe(true)
+  await expect(
+    fetchSignedEventsFanoutDetailed(
+      { kinds: [1059] },
+      { relayUrls: [RELAY_URL] }
+    )
+  ).rejects.toThrow("protected inbox")
+}, 30_000)
+
+it("canonicalizes protected wire extras before handoff storage and encrypted reload recovery", async () => {
+  installAccount(BUYER_KEY)
+  const rumor = eventMarketReadyRumor()
+  const signed = wrapEvent(rumor, MERCHANT_KEY, BUYER)
+  paginatedWraps = [
+    {
+      ...signed,
+      padding: "x".repeat(1024 * 1024 + 1),
+      __conduitSourceRelayUrls: ["wss://forged.example"],
+      rawEvent: "hostile",
+    } as SignedNostrEvent,
+  ]
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    removeItem: (key: string) => {
+      values.delete(key)
+    },
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage")
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage,
+  })
+  try {
+    const read = await getEventMarketPrivateMessageList(BUYER)
+    expect(read.authenticatedWraps![rumor.id!]).toEqual(
+      JSON.parse(JSON.stringify(signed))
+    )
+    const first = await readFutureMarketReadyReceipts({
+      organizerPubkey: BUYER,
+    })
+    expect(first.claims).toHaveLength(1)
+    const stored = JSON.parse(
+      storage.getItem(`conduit:future-market-handoff-observed:v2:${BUYER}`) ??
+        "{}"
+    )
+    expect(stored[rumor.id!]).toEqual(JSON.parse(JSON.stringify(signed)))
+    __resetFutureMarketHandoffTestState()
+    __setCommerceTestOverrides({ resolveInboxRelayUrls: async () => [] })
+    const recovered = await readFutureMarketReadyReceipts({
+      organizerPubkey: BUYER,
+    })
+    expect(recovered.claims).toHaveLength(1)
+    expect(recovered.claims[0]!.receipt.id).toBe(rumor.id)
+  } finally {
+    __resetFutureMarketHandoffTestState()
+    if (descriptor)
+      Object.defineProperty(globalThis, "localStorage", descriptor)
+    else Reflect.deleteProperty(globalThis, "localStorage")
+  }
 })

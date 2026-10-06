@@ -149,7 +149,7 @@ describe("local product deletion observation", () => {
       // override. Only the database operations and observer delivery are controlled.
       __setCommerceTestOverrides({
         putCachedProductTombstones: undefined,
-        fetchEventsFanout: async () => {
+        fetchPublicEvents: async () => {
           throw new Error("Unexpected relay read")
         },
       })
@@ -216,7 +216,7 @@ describe("local product deletion observation", () => {
 
   it("announces committed signed evidence before the write returns without relay I/O", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("Unexpected relay read")
       },
     })
@@ -332,7 +332,7 @@ describe("local product deletion observation", () => {
     let observedBeforeWrite = false
     __setCommerceTestOverrides({
       now: () => 1_700_000_000_000,
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(30402)
           ? [product]
           : filter.kinds?.includes(5)
@@ -421,6 +421,39 @@ describe("local product deletion observation", () => {
 })
 
 describe("local product deletion reconciliation", () => {
+  it("visits each tombstone once for a large catalog snapshot", () => {
+    const pubkey = "a".repeat(64)
+    let evidenceVisits = 0
+    const evidence = Array.from({ length: 800 }, (_, index) => {
+      const item = {
+        target: "address" as const,
+        deletionEventId: index.toString(16).padStart(64, "0"),
+        authorPubkey: pubkey,
+        deletedAt: 100,
+        addressId: `30402:${pubkey}:deleted-${index}`,
+      }
+      Object.defineProperty(item, "target", {
+        get: () => {
+          evidenceVisits++
+          return "address"
+        },
+      })
+      return item
+    })
+    const records = Array.from({ length: 4860 }, (_, index) => ({
+      product: { pubkey },
+      eventId: index.toString(16).padStart(64, "0"),
+      addressId: `30402:${pubkey}:product-${index}`,
+      dTag: `product-${index}`,
+      eventCreatedAt: 100,
+    })) as CommerceProductRecord[]
+
+    expect(reconcileProductRecordsWithDeletions(records, evidence)).toBe(
+      records
+    )
+    expect(evidenceVisits).toBe(800)
+  })
+
   it("removes an exact revision without removing another revision or author", async () => {
     const candidate = await record("coffee")
     await cacheSignedProductDeletionEvent(

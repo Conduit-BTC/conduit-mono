@@ -1,4 +1,3 @@
-import { encodeCommonCommerceWire } from "../packages/core/src/protocol/commerce-wire"
 import { describe, expect, test } from "bun:test"
 import {
   commerceMessageSearchText,
@@ -30,18 +29,6 @@ function rumor(input: {
 }
 
 describe("current Open Markets private commerce grammar", () => {
-  test("preserves large existing commerce snapshots without an oversized extension", () => {
-    const original = rumor({
-      kind: 16,
-      tags: [
-        ["type", "order"],
-        ["currency", "SATS"],
-      ],
-      content: JSON.stringify({ note: "signed terms".repeat(4000) }),
-    })
-    expect(encodeCommonCommerceWire(original)).toBe(original)
-    expect(original.tags.some((tag) => tag[0] === "conduit")).toBe(false)
-  })
   const cases: OpenMarketsCommerceInput[] = [
     {
       type: "order",

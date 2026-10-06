@@ -43,6 +43,20 @@ import {
 let activeSignerLease: ReturnType<typeof setSigner> | null = null
 
 describe("buyer order rumor preparation", () => {
+  it("preserves the deployed named order grammar and JSON terms before delivery", () => {
+    const rumor = orderRumor()
+    const content = rumor.content
+    const tags = structuredClone(rumor.tags)
+    prepareBuyerRumor(rumor, "b".repeat(64))
+    expect(rumor.tags).toEqual(tags)
+    expect(rumor.tags.find((tag) => tag[0] === "type")?.[1]).toBe("order")
+    expect(rumor.content).toBe(content)
+    expect(JSON.parse(rumor.content).items).toHaveLength(1)
+    expect(rumor.id).toBe(
+      getEventHash({ ...rumor, kind: 16, created_at: rumor.created_at! })
+    )
+  })
+
   it("recreates the same payment-proof rumor id for receipt retries", () => {
     const params = {
       merchantPubkey: "merchant-pubkey",

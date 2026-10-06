@@ -33,6 +33,56 @@ export interface FutureMerchantTimelineOccurrence {
   series: boolean
 }
 
+/** Role filters operate on the current signed roster, including the host's own events. */
+export function matchesMerchantEventRelationship(
+  read: EventMarketRosterReadResult,
+  merchantPubkey: string,
+  relationship: MerchantEventRelationshipFilter
+): boolean {
+  if (read.resolution.state !== "current") return false
+  const market = read.resolution.market
+  return (
+    relationship === "all" ||
+    (relationship === "organizing"
+      ? market.organizerPubkey === merchantPubkey
+      : market.merchants.some((row) => row.pubkey === merchantPubkey))
+  )
+}
+
+/** A known signed event with unreadable dates is different from an empty discovery. */
+export function merchantEventDatesUnavailable(
+  read: EventMarketRosterReadResult
+): boolean {
+  if (read.resolution.state !== "current") return false
+  if (read.resolution.market.calendarCoordinate.startsWith("31924:"))
+    return (
+      read.schedule?.kind !== "series" ||
+      read.schedule.unresolvedCoordinates.length > 0 ||
+      read.scheduleCoverage !== "complete"
+    )
+  return !read.calendar && read.schedule?.kind !== "single"
+}
+
+/** Only matching usable dates can mask an unavailable discovery for a section. */
+export function getMerchantEventTimelineReadState(
+  marketReads: EventMarketRosterReadResult[],
+  merchantPubkey: string,
+  relationship: MerchantEventRelationshipFilter,
+  discoveryUnavailable: boolean
+): { datesUnavailable: boolean; unavailable: boolean } {
+  const relevantReads = marketReads.filter((read) =>
+    matchesMerchantEventRelationship(read, merchantPubkey, relationship)
+  )
+  return {
+    datesUnavailable: relevantReads.some(merchantEventDatesUnavailable),
+    unavailable:
+      discoveryUnavailable &&
+      !relevantReads.some(
+        (read) => projectFutureMerchantTimelineOccurrences(read).length > 0
+      ),
+  }
+}
+
 /** Project only signed, resolved concrete dates from the current schedule. */
 export function projectFutureMerchantTimelineOccurrences(
   read: EventMarketRosterReadResult

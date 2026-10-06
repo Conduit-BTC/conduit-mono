@@ -38,8 +38,9 @@ export function mountMerchantTrustHarness(
   }
   if (options.strictProfileEvidenceUnavailable) {
     __setCommerceTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, requestOptions) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, requestOptions) => ({
         events: [],
+        eventSourceRelayUrls: {},
         relays: (
           requestOptions?.relayUrls ?? ["wss://profile-evidence.test"]
         ).map((relayUrl) => ({

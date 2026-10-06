@@ -5,7 +5,7 @@ import type { ReactNode } from "react"
 import {
   config,
   EVENT_KINDS,
-  fetchEventsFanoutDetailed,
+  fetchSignedEventsFanoutDetailed,
   formatNpub,
   formatPubkey,
   formatRelativeTime,
@@ -74,7 +74,7 @@ type AuthorityResult = {
 async function verifyZapoutCandidates(
   candidates: Array<{
     event: Awaited<
-      ReturnType<typeof fetchEventsFanoutDetailed>
+      ReturnType<typeof fetchSignedEventsFanoutDetailed>
     >["events"][number]
     receipt: OmfZapoutReceipt
   }>
@@ -109,7 +109,7 @@ async function verifyZapoutCandidates(
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          receipts: batch.map(({ event }) => event.rawEvent()),
+          receipts: batch.map(({ event }) => event),
         }),
         signal: AbortSignal.timeout(
           Math.min(ZAPOUT_FEED_AUTHORITY_TIMEOUT_MS, remainingMs)
@@ -209,7 +209,7 @@ async function getZapoutFeedRelayConfiguration(): Promise<{
 }
 
 async function fetchOmfZapoutsFromRelay(relayUrl: string): Promise<{
-  events: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>["events"]
+  events: Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>>["events"]
   coverage: ZapoutRelayCoverage
 }> {
   const fetchPage = (filter: {
@@ -219,7 +219,7 @@ async function fetchOmfZapoutsFromRelay(relayUrl: string): Promise<{
     since?: number
     until?: number
   }) =>
-    fetchEventsFanoutDetailed(filter, {
+    fetchSignedEventsFanoutDetailed(filter, {
       relayUrls: [relayUrl],
       connectTimeoutMs: 1_500,
       fetchTimeoutMs: 2_500,
@@ -244,7 +244,7 @@ async function fetchOmfZapoutsFromRelay(relayUrl: string): Promise<{
   let usableReads = 0
   let incompleteReads = 0
   const recordRead = (
-    result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>> | null
+    result: Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>> | null
   ) => {
     if (!result) return
     const status = result.relays[0]?.status

@@ -23,6 +23,8 @@ import {
   unwrapPrivateMessageEnvelope,
   getOrderCompanionNotificationIdentity,
   type ParsedDirectMessage,
+  type DecryptFailure,
+  type LegacyDmDecryptFailure,
   type PrivateMessageRumor,
   createLegacyDmDecrypt,
   decryptLegacyDirectMessage,
@@ -98,6 +100,8 @@ export interface CommerceInboxDiagnostic {
 export interface CommerceInboxSnapshot {
   /** Account-local labels; excluded from exported diagnostics. */
   sourceRelays: Array<{ sourceIndex: number; relayUrl: string }>
+  decryptFailures: DecryptFailure[]
+  legacyDecryptFailures: LegacyDmDecryptFailure[]
   directMessages: ParsedDirectMessage[]
   orderMessages: ParsedOrderMessage[]
   externalRecords: DecodedCommerceMessage[]
@@ -108,6 +112,8 @@ export interface CommerceInboxSnapshot {
 }
 const emptySnapshot = (): CommerceInboxSnapshot => ({
   sourceRelays: [],
+  decryptFailures: [],
+  legacyDecryptFailures: [],
   directMessages: [],
   orderMessages: [],
   externalRecords: [],
@@ -298,12 +304,37 @@ export class CommerceInbox {
         )
       )
     })
+    const decryptFailures: DecryptFailure[] = []
+    const legacyDecryptFailures: LegacyDmDecryptFailure[] = []
     const states: CommerceInboxDiagnostic["states"] = {}
     const transportStates: CommerceInboxDiagnostic["transportStates"] = {
       nip17: {},
       nip04: {},
     }
     for (const row of wrappers) {
+      if (
+        [
+          "permission_declined",
+          "provider_unavailable",
+          "retryable_failure",
+          "invalid_envelope",
+          "malformed",
+        ].includes(row.state)
+      ) {
+        const malformed =
+          row.state === "invalid_envelope" || row.state === "malformed"
+        if (row.event.kind === 4)
+          legacyDecryptFailures.push({
+            eventId: row.event.id,
+            reason: malformed ? "malformed" : "decrypt_failed",
+            retryable: !malformed,
+          })
+        else
+          decryptFailures.push({
+            wrapId: row.event.id,
+            reason: malformed ? "malformed" : "nip44_failed",
+          })
+      }
       states[row.state] = (states[row.state] ?? 0) + 1
       const transport = row.event.kind === 4 ? "nip04" : "nip17"
       transportStates[transport][row.state] =
@@ -323,6 +354,8 @@ export class CommerceInbox {
     this.snapshot = {
       ...this.snapshot,
       sourceRelays: this.sourceRelays(),
+      decryptFailures,
+      legacyDecryptFailures,
       directMessages: visibleDirect.sort((a, b) => a.createdAt - b.createdAt),
       orderMessages: orderMessages.sort((a, b) => a.createdAt - b.createdAt),
       externalRecords,
@@ -726,9 +759,22 @@ export class CommerceInbox {
       }
       this.emit()
       return await this.waitForDecode()
-    })().finally(() => {
-      this.syncing = undefined
-    })
+    })()
+      .catch((error: unknown) => {
+        this.assertCurrent()
+        this.snapshot = {
+          ...this.snapshot,
+          diagnostics: {
+            ...this.snapshot.diagnostics,
+            coverage: "unavailable",
+          },
+        }
+        this.emit()
+        throw error
+      })
+      .finally(() => {
+        this.syncing = undefined
+      })
     return await this.syncing
   }
   async loadOlder(

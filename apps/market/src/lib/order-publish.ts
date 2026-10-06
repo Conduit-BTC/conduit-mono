@@ -1,7 +1,6 @@
 import { getEventHash } from "nostr-tools"
 import {
   EVENT_KINDS,
-  encodeCommonCommerceWire,
   type PrivateMessageEvent,
   appendConduitClientTag,
   beginOrderRelayDeliveryAttempt,
@@ -298,8 +297,7 @@ export function prepareBuyerRumor(
   rumor: PrivateMessageEvent,
   buyerPubkey: string
 ): void {
-  // Validate a supplied identity before adapting an authored message to the wire.
-  // Conversion happens only here, before delivery bytes and retry identity freeze.
+  // Preserve the deployed named grammar and freeze its exact retry identity.
   if (rumor.pubkey && rumor.pubkey !== buyerPubkey)
     throw new Error("Buyer order rumor author does not match the account.")
   rumor.pubkey = buyerPubkey
@@ -310,7 +308,6 @@ export function prepareBuyerRumor(
     ) {
       throw new Error("Buyer order rumor id does not match its content.")
     }
-    Object.assign(rumor, encodeCommonCommerceWire(rumor))
     rumor.id = getEventHash({ ...rumor, created_at: rumor.created_at! })
   } catch (error) {
     if (error instanceof Error && error.message.includes("does not match"))

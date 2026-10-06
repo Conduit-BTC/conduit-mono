@@ -1,3 +1,5 @@
+import type { QueryClient, QueryKey } from "@tanstack/react-query"
+
 /**
  * Choose the product frontier rendered by Market.
  *
@@ -24,20 +26,6 @@ export function selectProgressiveProductFrontier<T>(input: {
 }
 
 /**
- * Apply one cumulative progressive snapshot as the complete current frontier.
- *
- * The previous value is accepted explicitly so callers cannot accidentally
- * turn this transition back into an append/merge operation. An empty snapshot
- * is meaningful: it retracts products removed by newly observed tombstones.
- */
-export function replaceProgressiveProductFrontier<T>(
-  _currentProducts: readonly T[],
-  snapshotProducts: T[]
-): T[] {
-  return snapshotProducts
-}
-
-/**
  * Treat settled query data as authoritative while the same query refetches.
  * Placeholder data belongs to a previous query key, so it cannot establish
  * the frontier for the new key until that read settles.
@@ -49,36 +37,58 @@ export function hasAuthoritativeQuerySnapshot(input: {
   return input.hasData && !input.isPlaceholderData
 }
 
-export async function runProgressiveReadPass<T>(input: {
-  readFast: () => Promise<T>
-  readCompletion?: () => Promise<T>
-  commitResult: (result: T, isFetching: boolean) => void
-  shouldContinue?: () => boolean
-}): Promise<void> {
-  const fastResult = await input.readFast()
-  if (input.shouldContinue && !input.shouldContinue()) return
-  input.commitResult(fastResult, input.readCompletion !== undefined)
-  if (
-    !input.readCompletion ||
-    (input.shouldContinue && !input.shouldContinue())
-  ) {
-    return
+/** One query owns a catalog stream, so matching consumers share its in-flight read. */
+export function createProgressiveCatalogQuery<T>(input: {
+  queryClient: QueryClient
+  queryKey: QueryKey
+  read: (onProgress: (snapshot: T) => void, signal: AbortSignal) => Promise<T>
+  isCurrent: () => boolean
+}): (context: { signal: AbortSignal }) => Promise<T> {
+  return async ({ signal }) => {
+    let pending: T | undefined
+    let flushHandle: number | null = null
+    let active = true
+    const isCurrent = () => active && !signal.aborted && input.isCurrent()
+    const flush = () => {
+      flushHandle = null
+      if (!isCurrent() || pending === undefined) return
+      input.queryClient.setQueryData(input.queryKey, pending)
+      pending = undefined
+    }
+    const schedule = () => {
+      if (flushHandle !== null) return
+      flushHandle =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame(flush)
+          : (setTimeout(flush, 16) as unknown as number)
+    }
+    const clearScheduled = () => {
+      if (flushHandle === null) return
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(flushHandle)
+      } else {
+        clearTimeout(flushHandle)
+      }
+      flushHandle = null
+    }
+
+    try {
+      const result = await input.read((snapshot) => {
+        if (!isCurrent()) return
+        pending = snapshot
+        schedule()
+      }, signal)
+      signal.throwIfAborted()
+      if (!input.isCurrent())
+        throw new DOMException("Catalog scope changed", "AbortError")
+      return result
+    } catch (error) {
+      // Keep the latest authoritative cumulative result if later relays fail.
+      if (isCurrent() && pending !== undefined) flush()
+      throw error
+    } finally {
+      active = false
+      clearScheduled()
+    }
   }
-
-  const completionResult = await input.readCompletion()
-  if (input.shouldContinue && !input.shouldContinue()) return
-  input.commitResult(completionResult, false)
-}
-
-/**
- * A refresh nonce may restart the same catalog read without weakening its
- * last settled frontier. A genuinely different catalog scope must establish
- * its own frontier instead.
- */
-export function canCarryAuthoritativeProgressiveSnapshot(input: {
-  previousCatalogKey: string
-  nextCatalogKey: string
-  hasSnapshot: boolean
-}): boolean {
-  return input.hasSnapshot && input.previousCatalogKey === input.nextCatalogKey
 }

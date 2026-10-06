@@ -1,4 +1,3 @@
-import { encodeCommonCommerceWire } from "./commerce-wire"
 import { getEventHash } from "nostr-tools"
 import { type PrivateMessageEvent } from "./messaging"
 import { cacheParsedOrderMessage } from "./commerce"
@@ -82,7 +81,6 @@ function prepareMerchantRumor(
   rumor: PrivateMessageEvent,
   merchantPubkey: string
 ): void {
-  Object.assign(rumor, encodeCommonCommerceWire(rumor))
   rumor.pubkey = merchantPubkey
   if (!rumor.id)
     rumor.id = getEventHash({

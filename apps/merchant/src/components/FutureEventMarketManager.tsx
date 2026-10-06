@@ -60,12 +60,14 @@ import {
   getSavedDateRecoveryAction,
 } from "../lib/event-market-date-recovery"
 import { buildFutureEventQrSignSheets } from "../lib/event-signage"
-import { EventMessagesSetup } from "./EventMessagesSetup"
+import { EventBreadcrumbs } from "./EventBreadcrumbs"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
 import { FutureOrganizerClaimQueue } from "./FutureOrganizerClaimQueue"
 import {
   epochSecondsToLocalDateTime,
   getOrganizerEventStartMinimum,
+  getOrganizerInclusiveEndDate,
+  getOrganizerExclusiveEndDate,
   localDateTimeToEpochSeconds,
 } from "../lib/event-market-form"
 import { EventBannerField, EventTimezoneField } from "./EventAuthoringFields"
@@ -87,7 +89,11 @@ function formatOrganizerOccurrenceDate(
   if (calendar.kind === 31922)
     return timestamp === calendar.start
       ? (calendar.startDate ?? new Date(timestamp).toISOString().slice(0, 10))
-      : (calendar.endDate ?? new Date(timestamp).toISOString().slice(0, 10))
+      : getOrganizerInclusiveEndDate(
+          calendar.startDate ??
+            new Date(calendar.start).toISOString().slice(0, 10),
+          calendar.endDate
+        )
   return new Intl.DateTimeFormat(undefined, {
     year: "numeric",
     month: "short",
@@ -207,7 +213,7 @@ function MarketLifecycleEditor({
   )
   const [end, setEnd] = useState(
     calendar.kind === 31922
-      ? (calendar.endDate ?? "")
+      ? getOrganizerInclusiveEndDate(calendar.startDate ?? "", calendar.endDate)
       : epochSecondsToLocalDateTime(calendar.end / 1_000, timezone)
   )
   const [pending, setPending] = useState(false)
@@ -254,7 +260,7 @@ function MarketLifecycleEditor({
               image,
               locations: [location.trim()],
               start,
-              end,
+              end: getOrganizerExclusiveEndDate(start, end),
             }
           : {
               kind: 31923 as const,
@@ -445,7 +451,7 @@ function SeriesDateManager({
   )
   const [end, setEnd] = useState(
     seed?.kind === 31922
-      ? (seed.endDate ?? "")
+      ? getOrganizerInclusiveEndDate(seed.startDate ?? "", seed.endDate)
       : seed
         ? epochSecondsToLocalDateTime(seed.end / 1_000, timezone)
         : ""
@@ -499,7 +505,10 @@ function SeriesDateManager({
     )
     setEnd(
       occurrence.kind === 31922
-        ? (occurrence.endDate ?? "")
+        ? getOrganizerInclusiveEndDate(
+            occurrence.startDate ?? "",
+            occurrence.endDate
+          )
         : epochSecondsToLocalDateTime(occurrence.end / 1_000, nextTimezone)
     )
     setError("")
@@ -525,7 +534,12 @@ function SeriesDateManager({
       geohash: input.source.geohash,
     }
     return input.kind === 31922
-      ? { ...common, kind: 31922, start: input.start, end: input.end }
+      ? {
+          ...common,
+          kind: 31922,
+          start: input.start,
+          end: getOrganizerExclusiveEndDate(input.start, input.end),
+        }
       : {
           ...common,
           kind: 31923,
@@ -1786,6 +1800,9 @@ export function FutureEventMarketManager({
 
   return (
     <div className="space-y-6">
+      <EventBreadcrumbs
+        title={series?.series.title ?? calendar?.title ?? "Event"}
+      />
       {query.isPending ? (
         <p role="status">Checking signed Event Market records…</p>
       ) : null}
@@ -1827,6 +1844,14 @@ export function FutureEventMarketManager({
       {enrollment.error ? (
         <p role="alert" className="text-sm text-[var(--destructive)]">
           {enrollment.error}
+          {enrollment.networkRepair ? (
+            <>
+              {" "}
+              <a className="underline" href="/network">
+                Open Network settings
+              </a>
+            </>
+          ) : null}
         </p>
       ) : null}
       {enrollment.pending ? (
@@ -1845,18 +1870,10 @@ export function FutureEventMarketManager({
       ) : null}
       {enrollment.query.isError ? (
         <p role="alert">
-          Participation messages could not be checked. Set up private messages
-          in{" "}
-          <a className="underline" href="/network">
-            Network settings
-          </a>
-          , then retry.
+          Participation messages could not be checked. Refresh to check again.
         </p>
       ) : null}
-      <EventMessagesSetup
-        role={isOrganizer ? "host" : "merchant"}
-        onReturn={() => void enrollment.query.refetch()}
-      />
+
       {enrollment.query.data?.stale ? (
         <p role="status" className="text-sm text-[var(--text-muted)]">
           Saved participation is shown; private inbox coverage is incomplete.

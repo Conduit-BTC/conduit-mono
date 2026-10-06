@@ -37,10 +37,10 @@ import {
   type DecodedCommerceMessage,
 } from "./commerce-message-codec"
 import {
-  fetchEventsFanout,
-  fetchEventsFanoutWithDiagnostics,
-  type FetchEventsFanoutOptions,
-} from "./ndk"
+  fetchPublicEvents,
+  fetchPublicEventsWithDiagnostics,
+  type PublicRelayReadOptions,
+} from "./relay-reader"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import {
   filterEligibleAccountRelayUrls,
@@ -909,7 +909,7 @@ export interface PublishPrivateMessageInput {
     "get"
   >
   /** Live caller authority for recipient and sender declaration reads. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signer: NostrKeySigner
   rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
@@ -2267,7 +2267,7 @@ async function resolveDeclarationForSend(
     AccountNetworkLocalStateRepository,
     "get"
   >,
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
   if (knownRelayUrls) {
@@ -2429,8 +2429,8 @@ export function detectNip44Capabilities(
 }
 
 export interface FetchInboxRelayOptions {
-  fetchEvents?: typeof fetchEventsFanout
-  fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
+  fetchEvents?: typeof fetchPublicEvents
+  fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   relayUrls?: string[]
   evidenceRepository?: InboxDeclarationEvidenceRepository
   /** Account whose durable whole-relay exclusions govern declaration lookup. */
@@ -2444,7 +2444,7 @@ export interface FetchInboxRelayOptions {
   /** Cancels queued or in-flight declaration lookup I/O. */
   signal?: AbortSignal
   /** Live account session authority for declaration reads. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
 }
 
 export type OwnPrivateMessageRelayReadiness =
@@ -2586,8 +2586,8 @@ export function __resetInboxRelayCache(): void {
  * complete coverage - matching the pre-CND-208 behavior of that seam.
  */
 function adaptFetchEventsToDiagnostics(
-  fetchEvents: typeof fetchEventsFanout
-): typeof fetchEventsFanoutWithDiagnostics {
+  fetchEvents: typeof fetchPublicEvents
+): typeof fetchPublicEventsWithDiagnostics {
   return async (filter, options) => {
     const events = await fetchEvents(filter, options)
     const relayUrls = [...(options?.relayUrls ?? [])]

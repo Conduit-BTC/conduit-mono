@@ -1,4 +1,4 @@
-import type { NDKFilter, NDKKind } from "@nostr-dev-kit/ndk"
+import type { Filter as PublicRelayFilter } from "nostr-tools"
 import { db, type CachedEventMarketRosterEvidence } from "../db"
 import {
   getEventMarketReadPlan,
@@ -10,7 +10,10 @@ import {
   type EventMarketAuthorizationResolution,
 } from "./event-market-authorization"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanoutDetailed, type FetchEventsFanoutOptions } from "./ndk"
+import {
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadOptions,
+} from "./relay-reader"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -34,8 +37,8 @@ type Fanout = {
 export interface EventMarketAuthorizationReadDependencies {
   plan: typeof getEventMarketReadPlan
   fetch: (
-    filter: NDKFilter,
-    options: FetchEventsFanoutOptions
+    filter: PublicRelayFilter,
+    options: PublicRelayReadOptions
   ) => Promise<Fanout>
   load: (coordinate: string) => Promise<SignedPublicNostrEvent[]>
   retain: (
@@ -45,14 +48,12 @@ export interface EventMarketAuthorizationReadDependencies {
 }
 
 async function fetchSigned(
-  filter: NDKFilter,
-  options: FetchEventsFanoutOptions
+  filter: PublicRelayFilter,
+  options: PublicRelayReadOptions
 ): Promise<Fanout> {
-  const result = await fetchEventsFanoutDetailed(filter, options)
+  const result = await fetchSignedEventsFanoutDetailed(filter, options)
   return {
-    events: result.events.map(
-      (event) => event.rawEvent() as SignedPublicNostrEvent
-    ),
+    events: result.events,
     relays: result.relays,
   }
 }
@@ -105,7 +106,7 @@ function options(
     shouldContinue?: () => boolean
     signal?: AbortSignal
   }
-): FetchEventsFanoutOptions {
+): PublicRelayReadOptions {
   return {
     relayUrls: plan.candidateRelayUrls,
     maxRelayAttempts: plan.maxRelayAttempts,
@@ -207,7 +208,7 @@ export async function readEventMarketAuthorization(
       observedEvidence: cached,
     }
   }
-  const fetch = async (filter: NDKFilter): Promise<Fanout> => {
+  const fetch = async (filter: PublicRelayFilter): Promise<Fanout> => {
     try {
       return await dependencies.fetch(filter, options(plan, input))
     } catch (error) {
@@ -218,7 +219,7 @@ export async function readEventMarketAuthorization(
   }
   const [transitions, scopedDeletions] = await Promise.all([
     fetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
+      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH],
       authors: [market.authorPubkey],
       "#a": [coordinate],
       "#p": [input.merchantPubkey],
@@ -268,7 +269,7 @@ export async function readEventMarketAuthorization(
     )
     idsToRead.forEach((id) => attempted.add(id))
     const read = await fetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
+      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH],
       authors: [market.authorPubkey],
       ids: idsToRead,
       limit: 32,

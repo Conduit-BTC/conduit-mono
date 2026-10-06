@@ -6,6 +6,7 @@ import {
   isProductDeletedByNip09,
   normalizeProductCoordinate,
   parseProductAddressCoordinate,
+  prepareProductDeletionResolver,
   productDeletionEvidenceFromSignedEvent,
   resolveProductDeletion,
   validateProductDeletionEvent,
@@ -102,6 +103,61 @@ describe("product deletion coordinates", () => {
 })
 
 describe("NIP-09 product deletion resolution", () => {
+  it("prepares one snapshot while preserving identity, precedence, cutoff, and casing", () => {
+    const olderExact = exactEvidence({
+      deletionEventId: DELETION_EVENT_A.toUpperCase(),
+      eventId: PRODUCT_EVENT_A.toUpperCase(),
+      authorPubkey: MERCHANT_A.toUpperCase(),
+    })
+    const tiedExact = exactEvidence({ deletionEventId: DELETION_EVENT_A })
+    const address = addressEvidence({ deletedAt: 300 })
+    const foreignAddress = addressEvidence({
+      addressId: `30402:${MERCHANT_B}:coffee`,
+    })
+    const malformedAddress = addressEvidence({ addressId: "coffee" })
+    const resolve = prepareProductDeletionResolver([
+      address,
+      tiedExact,
+      foreignAddress,
+      malformedAddress,
+      olderExact,
+    ])
+
+    const exact = resolve(product())
+    expect(exact.deleted).toBe(true)
+    if (exact.deleted) {
+      expect(exact.matchedBy).toBe("event")
+      expect(exact.evidence).toBe(olderExact)
+    }
+    const byAddress = resolve(product({ eventId: PRODUCT_EVENT_B }))
+    expect(byAddress.deleted).toBe(true)
+    if (byAddress.deleted) expect(byAddress.evidence).toBe(address)
+    expect(
+      resolve(product({ eventId: PRODUCT_EVENT_B, createdAt: 301 })).deleted
+    ).toBe(false)
+    expect(
+      resolve(
+        product({
+          authorPubkey: MERCHANT_B,
+          eventId: PRODUCT_EVENT_B,
+          addressId: `30402:${MERCHANT_B}:coffee`,
+        })
+      ).deleted
+    ).toBe(false)
+    const invalidTarget = {
+      ...addressEvidence({ addressId: `30402:${MERCHANT_A}:invalid` }),
+      target: "unsupported",
+    } as unknown as ProductDeletionEvidence
+    expect(
+      prepareProductDeletionResolver([invalidTarget])(
+        product({
+          eventId: PRODUCT_EVENT_B,
+          addressId: `30402:${MERCHANT_A}:invalid`,
+        })
+      ).deleted
+    ).toBe(false)
+  })
+
   it("honors an author-scoped exact e target without a timestamp gate", () => {
     const resolution = resolveProductDeletion(product(), [exactEvidence()])
 

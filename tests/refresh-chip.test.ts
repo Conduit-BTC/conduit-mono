@@ -235,10 +235,10 @@ describe("RefreshChip", () => {
     expect(
       progressiveSource.match(/refetch: \(\) => Promise<void>/g)
     ).toHaveLength(2)
-    expect(progressiveSource).toContain("waitForNextProgressiveRead()")
     expect(progressiveSource).toContain(
-      "settleProgressiveRefreshes(discoveryKey)"
+      "refetchProgressive({ cancelRefetch: false })"
     )
+    expect(progressiveSource).toContain("await refreshProductCatalogSources({")
     expect(progressiveSource).toContain(
       "await Promise.all([refetchCachedDetail(), refetchNetworkDetail()])"
     )
@@ -387,6 +387,7 @@ describe("RefreshChip", () => {
     expect(progressiveSource).toContain("isRefreshPaused")
     expect(progressiveSource).toContain("firstDegreeQuery.isPaused")
     expect(progressiveSource).toContain("firstNetworkQuery.isPaused")
+    expect(progressiveSource).toContain("progressiveQuery.isPaused")
     expect(progressiveSource).toContain("networkQuery.isPaused")
     expect(progressiveSource).toContain("firstDegreeQuery.isPending")
     expect(progressiveSource).toContain("cachedQuery.isPending")

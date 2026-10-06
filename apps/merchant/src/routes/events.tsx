@@ -12,17 +12,17 @@ export const Route = createFileRoute("/events")({
 })
 
 function EventsLayout() {
-  const { event } = Route.useSearch()
+  const { event, relation } = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   useEffect(() => {
     if (!event) return
     void navigate({
       to: "/events/$collectionRef",
       params: { collectionRef: event },
-      search: {},
+      search: { relation },
       replace: true,
     })
-  }, [event, navigate])
+  }, [event, relation, navigate])
   if (event)
     return (
       <div
@@ -42,7 +42,7 @@ export function EventsDirectoryPage() {
   const navigate = useNavigate({ from: Route.fullPath })
   const merchantPubkey = accountPubkey ?? ""
   const createEvent = () => {
-    void navigate({ to: "/events/new", search: {} })
+    void navigate({ to: "/events/new", search: { relation: search.relation } })
   }
   return (
     <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
@@ -81,7 +81,10 @@ export function EventsDirectoryPage() {
           void navigate({
             to: "/events/$collectionRef",
             params: { collectionRef: reference },
-            search: occurrence ? { occurrence } : {},
+            search: {
+              relation: search.relation,
+              ...(occurrence ? { occurrence } : {}),
+            },
           })
         }
         onCreate={createEvent}
