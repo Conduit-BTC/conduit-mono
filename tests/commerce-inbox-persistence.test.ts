@@ -21,6 +21,7 @@ import {
 import {
   CommerceInbox,
   exportCommerceInboxDiagnostics,
+  readRetainedCommerceInbox,
 } from "../packages/core/src/protocol/commerce-inbox"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import {
@@ -90,6 +91,73 @@ afterEach(async () => {
 })
 
 describe("durable account-owned commerce inbox", () => {
+  it("opens retained encrypted views after signer loss without restoring write authority", async () => {
+    const { owner, database, store, pubkey, wrapper } = setup()
+    await owner.ingest(wrapper())
+    const message = (await owner.waitForDecode()).directMessages[0]!
+    __resetProtectedReadSigner()
+    let current = true
+    const cached = await readRetainedCommerceInbox(
+      pubkey,
+      () => current,
+      database
+    )
+    expect(cached.directMessages).toEqual([message])
+    expect(cached.diagnostics.coverage).toBe("unavailable")
+    expect(projectCommerceInbox(cached, pubkey).direct.meta.stale).toBe(true)
+    expect(getProtectedReadAuthorization(pubkey)).toBeNull()
+    await expect(
+      store.putProjection({ kind: "direct", message })
+    ).rejects.toThrow()
+    expect(
+      (await readRetainedCommerceInbox("f".repeat(64), () => true, database))
+        .directMessages
+    ).toEqual([])
+    current = false
+    await expect(
+      readRetainedCommerceInbox(pubkey, () => current, database)
+    ).rejects.toThrow("Inbox account session ended")
+  })
+
+  it("fences retained reads across account loss during device decryption", async () => {
+    const { owner, database, pubkey, wrapper } = setup()
+    await owner.ingest(wrapper())
+    await owner.waitForDecode()
+    __resetProtectedReadSigner()
+    let current = true
+    const decrypt = crypto.subtle.decrypt.bind(crypto.subtle)
+    const probe = spyOn(crypto.subtle, "decrypt").mockImplementation(
+      async (...args: Parameters<typeof decrypt>) => {
+        const bytes = await decrypt(...args)
+        current = false
+        return bytes
+      }
+    )
+    try {
+      await expect(
+        readRetainedCommerceInbox(pubkey, () => current, database)
+      ).rejects.toThrow("Inbox account session ended")
+    } finally {
+      probe.mockRestore()
+    }
+  })
+
+  it("keeps deletion and expiration suppression when reading retained views", async () => {
+    const { owner, database, pubkey, wrapper } = setup()
+    for (let index = 0; index < 3; index++) await owner.ingest(wrapper(index))
+    await owner.waitForDecode()
+    const rows = await database.commerceInboxRecords.toArray()
+    await database.commerceInboxRecords.update(rows[0]!.id, { deleted: true })
+    await database.commerceInboxRecords.update(rows[1]!.id, {
+      expiresAt: Date.now() - 1,
+    })
+    __resetProtectedReadSigner()
+    const cached = await readRetainedCommerceInbox(pubkey, () => true, database)
+    expect(cached.directMessages.map((message) => message.id)).toEqual([
+      rows[2]!.logicalId,
+    ])
+  })
+
   it("preserves a long authenticated conversation through encrypted reload", async () => {
     const { owner, database, pubkey, signer } = setup()
     const sender = generateSecretKey()
@@ -781,6 +849,7 @@ it("retires successful coverage after a refresh throws while retaining opened me
   await expect(
     owner.syncRecent({
       declaration,
+      includeLegacy: false,
       read: async () => {
         throw new Error("transport failed")
       },
@@ -958,3 +1027,72 @@ it.each([false, true])(
     expect(writes).toEqual(complete ? [] : [[targets[1]!]])
   }
 )
+
+it("keeps legacy recent and history reads on their own bounded relay plan", async () => {
+  const { owner, pubkey, signer } = setup()
+  signer.decryptLegacy = async () => "retained legacy conversation"
+  const legacyEvent = finalizeEvent(
+    {
+      kind: 4,
+      created_at: Math.floor(Date.now() / 1000) - 10,
+      tags: [["p", pubkey]],
+      content: "synthetic ciphertext",
+    },
+    generateSecretKey()
+  )
+  const secureUrl = "wss://secure.relay.dev"
+  const legacyUrl = "wss://legacy.relay.dev"
+  const calls: Array<{ transport: string; url: string; personal: boolean }> = []
+  const options = {
+    declaration: {
+      pubkey,
+      state: "declared" as const,
+      relayUrls: [secureUrl],
+      stale: false,
+      fetchedAt: Date.now(),
+    },
+    legacyRelayPlan: {
+      relayUrls: [legacyUrl],
+      ownerSelectedRelayUrls: [legacyUrl],
+      appRelayUrls: [],
+      personalRelayUrls: [legacyUrl],
+    },
+    read: async (
+      input: import("../packages/core/src/protocol/protected-inbox-read").ReadProtectedInboxOptions
+    ) => {
+      calls.push({
+        transport: input.transport!,
+        url: input.relayUrls[0]!,
+        personal: input.personalRelayUrls?.includes(legacyUrl) ?? false,
+      })
+      return completeRead(
+        input.transport === "nip04_incoming" &&
+          input.relayUrls.includes(legacyUrl)
+          ? [legacyEvent]
+          : []
+      )
+    },
+  }
+  const snapshot = await owner.syncRecent(options)
+  expect(snapshot.directMessages.map((message) => message.transport)).toEqual([
+    "nip04",
+  ])
+  const recentCalls = [...calls]
+  expect(
+    calls
+      .filter((call) => call.transport === "nip17")
+      .some((call) => call.url === secureUrl)
+  ).toBe(true)
+  expect(
+    calls
+      .filter((call) => call.transport === "nip17")
+      .every((call) => call.url !== legacyUrl)
+  ).toBe(true)
+  expect(calls.filter((call) => call.transport !== "nip17")).toEqual([
+    { transport: "nip04_incoming", url: legacyUrl, personal: true },
+    { transport: "nip04_outgoing", url: legacyUrl, personal: true },
+  ])
+  calls.length = 0
+  await owner.loadOlder(options)
+  expect(calls).toEqual(recentCalls)
+})

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   commerceMessageSearchText,
+  commerceReplyCounterparty,
   decodeCommerceMessageRumor,
   encodeOpenMarketsCommerceMessage,
   type CommerceRumor,
@@ -11,6 +12,7 @@ import {
   decryptPrivateFileBytes,
   downloadAndDecryptPrivateFile,
   encryptPrivateFileBytes,
+  MAX_PRIVATE_FILE_BYTES,
 } from "../packages/core/src/protocol/private-file-message"
 
 function rumor(input: {
@@ -345,4 +347,71 @@ test("kind-15 reads optional size and original hash without weakening ciphertext
       async () => new Response(new Uint8Array(8 * 1024 * 1024 + 17))
     )
   ).rejects.toThrow("supported size")
+})
+
+describe("two-party reply and attachment boundaries", () => {
+  const principal = "a".repeat(64)
+  const peer = "b".repeat(64)
+  const extra = "c".repeat(64)
+  const provenance = (authorPubkey: string, recipients: string[]) => ({
+    authorPubkey,
+    rumorId: "synthetic",
+    rumorKind: 16,
+    tags: recipients.map((recipient) => ["p", recipient]),
+  })
+  test("inbound replies stay with the author while sent records resolve one recipient", () => {
+    expect(
+      commerceReplyCounterparty(principal, provenance(peer, [principal, extra]))
+    ).toBe(peer)
+    expect(
+      commerceReplyCounterparty(principal, provenance(principal, [peer]))
+    ).toBe(peer)
+    expect(() =>
+      commerceReplyCounterparty(principal, provenance(principal, [peer, extra]))
+    ).toThrow()
+    expect(() =>
+      commerceReplyCounterparty(principal, provenance(peer, [extra]))
+    ).toThrow()
+  })
+  test("ordinary text sends reject a participant fanout", async () => {
+    const { createParticipantMessageRumor } =
+      await import("../packages/core/src/protocol/messaging")
+    expect(() =>
+      createParticipantMessageRumor({
+        senderPubkey: principal,
+        recipientPubkeys: [peer, extra],
+        content: "synthetic",
+        appId: "market",
+      })
+    ).toThrow()
+  })
+  test("oversized files fail before allocating their bytes", async () => {
+    const { sendPrivateAttachment } =
+      await import("../packages/core/src/protocol/private-file-upload")
+    let reads = 0
+    const file = new File(["synthetic"], "oversized.txt")
+    Object.defineProperty(file, "size", { value: MAX_PRIVATE_FILE_BYTES + 1 })
+    file.arrayBuffer = async () => {
+      reads++
+      throw new Error("must not read")
+    }
+    await expect(
+      sendPrivateAttachment(principal, [peer], file)
+    ).rejects.toThrow("supported size")
+    expect(reads).toBe(0)
+  })
+  test("unapproved attachment fanout fails before reading or uploading", async () => {
+    const { sendPrivateAttachment } =
+      await import("../packages/core/src/protocol/private-file-upload")
+    let reads = 0
+    const file = new File(["x"], "bounded.txt")
+    file.arrayBuffer = async () => {
+      reads++
+      throw new Error("must not read")
+    }
+    await expect(
+      sendPrivateAttachment(principal, [peer, extra], file)
+    ).rejects.toThrow("explicit counterparty")
+    expect(reads).toBe(0)
+  })
 })

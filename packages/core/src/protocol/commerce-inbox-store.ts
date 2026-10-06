@@ -138,6 +138,55 @@ export const INBOX_DECODE_RULES_VERSION = 1
 const LEASE_MS = 60_000
 const KEY_ID = "commerce-inbox-aes-gcm-v1"
 
+/** Read existing device projections without granting signer or write authority. */
+export async function readRetainedInboxProjections(
+  principal: string,
+  isCurrent: () => boolean,
+  database: ConduitDB = db
+): Promise<Array<{ row: InboxProjectionRow; projection: InboxProjection }>> {
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new Error("Inbox account session ended")
+  }
+  assertCurrent()
+  const rows = await database.commerceInboxRecords
+    .where("accountPubkey")
+    .equals(principal)
+    .filter(
+      (row) =>
+        !row.deleted &&
+        (!row.expiresAt || row.expiresAt > Date.now()) &&
+        ["direct", "order", "record"].includes(row.kind)
+    )
+    .toArray()
+  assertCurrent()
+  if (rows.length === 0) return []
+  const key = await database.commerceInboxKeys.get(KEY_ID)
+  assertCurrent()
+  if (!key) throw new Error("Inbox device key is unavailable")
+  const result: Array<{
+    row: InboxProjectionRow
+    projection: InboxProjection
+  }> = []
+  for (const row of rows) {
+    const bytes = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: new Uint8Array(row.value.nonce),
+        additionalData: encoder.encode(`${principal}:${row.logicalId}`),
+      },
+      key.key,
+      row.value.bytes
+    )
+    assertCurrent()
+    result.push({
+      row,
+      projection: freezeProjection(JSON.parse(decoder.decode(bytes))),
+    })
+  }
+  assertCurrent()
+  return result
+}
+
 /** Device encryption never derives from an account key or grants signer authority. */
 export class CommerceInboxStore {
   private readonly openedViews = new Map<

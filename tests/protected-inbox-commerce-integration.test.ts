@@ -332,7 +332,16 @@ describe("Market and Merchant protected inbox integration", () => {
     const merchantResult = await getMerchantConversationList({
       principalPubkey: MERCHANT,
     })
-    const merchantSockets = [...sockets]
+    const merchantSockets = sockets.filter((socket) =>
+      socket.sent.some(
+        (frame) =>
+          frame[0] === "REQ" &&
+          (frame[2] as { kinds?: number[] }).kinds?.some(
+            (kind) => kind === 1059 || kind === 4
+          )
+      )
+    )
+    expect(merchantSockets.length).toBeGreaterThan(0)
     const buyer = installAccount(BUYER_KEY)
     const buyerResult = await getBuyerConversationList({
       principalPubkey: BUYER,
@@ -370,7 +379,16 @@ describe("Market and Merchant protected inbox integration", () => {
     const merchantResult = await getMerchantConversationList({
       principalPubkey: MERCHANT,
     })
-    const merchantSockets = [...sockets]
+    const merchantSockets = sockets.filter((socket) =>
+      socket.sent.some(
+        (frame) =>
+          frame[0] === "REQ" &&
+          (frame[2] as { kinds?: number[] }).kinds?.some(
+            (kind) => kind === 1059 || kind === 4
+          )
+      )
+    )
+    expect(merchantSockets.length).toBeGreaterThan(0)
     installAccount(BUYER_KEY)
     const buyerResult = await getBuyerConversationList({
       principalPubkey: BUYER,

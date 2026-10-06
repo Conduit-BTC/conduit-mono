@@ -417,9 +417,7 @@ function MessagesWorkspace() {
     const createdAt = Date.now()
     const rumor = createParticipantMessageRumor({
       senderPubkey: accountPubkey,
-      recipientPubkeys: selected.participants?.filter(
-        (p) => p !== accountPubkey
-      ) ?? [selected.counterpartyPubkey],
+      recipientPubkeys: [selected.counterpartyPubkey],
       content,
       appId: "merchant",
       createdAt: Math.floor(createdAt / 1000),
@@ -457,9 +455,7 @@ function MessagesWorkspace() {
       preparedDmRumors.current.get(message.eventId ?? "") ??
       createParticipantMessageRumor({
         senderPubkey: accountPubkey,
-        recipientPubkeys: selected.participants?.filter(
-          (p) => p !== accountPubkey
-        ) ?? [selected.counterpartyPubkey],
+        recipientPubkeys: [selected.counterpartyPubkey],
         content: message.content,
         appId: "merchant",
         createdAt: Math.floor(message.createdAt / 1000),
@@ -854,9 +850,7 @@ function MessagesWorkspace() {
                           accountPubkey && selected && inbox.attach
                             ? (file) =>
                                 inbox.attach!(
-                                  selected.participants?.filter(
-                                    (p) => p !== accountPubkey
-                                  ) ?? [selected.counterpartyPubkey],
+                                  [selected.counterpartyPubkey],
                                   file
                                 )
                             : undefined

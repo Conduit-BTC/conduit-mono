@@ -10,11 +10,14 @@ import { liveQuery } from "dexie"
 import {
   decodeCommerceMessageRumor,
   commerceMessageSearchText,
+  commerceReplyCounterparty,
   type DecodedCommerceMessage,
 } from "./commerce-message-codec"
 import {
   CommerceInboxStore,
   INBOX_DECODE_RULES_VERSION,
+  readRetainedInboxProjections,
+  type InboxProjectionRow,
   type InboxDecodeState,
   type InboxProjection,
   type InboxRangeRow,
@@ -61,6 +64,57 @@ import {
   type InboxDeclarationResolution,
 } from "./private-message-routing"
 import { getAccountSigner, SessionSigner } from "./session-signer"
+
+interface InboxReadRelayPlan {
+  relayUrls: string[]
+  ownerSelectedRelayUrls: readonly string[]
+  appRelayUrls: readonly string[]
+  personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
+}
+
+async function transportReadPlans(
+  principal: string,
+  declaration: InboxDeclarationResolution,
+  assertCurrent: () => void,
+  includeLegacy = true,
+  legacyRelayPlan?: InboxReadRelayPlan
+) {
+  const secure = planInboxReadRelays({
+    declaration,
+    authenticatedPubkey: principal,
+  })
+  const plans: Array<
+    InboxReadRelayPlan & {
+      transport: NonNullable<ReadProtectedInboxOptions["transport"]>
+    }
+  > = [
+    {
+      ...secure,
+      transport: "nip17",
+      appRelayUrls: secure.relayUrls.filter(
+        (url) => secure.relaySources[url] === "compatibility"
+      ),
+    },
+  ]
+  if (includeLegacy) {
+    // Resolve lazily: the commerce gateway also consumes this inbox owner.
+    const legacy =
+      legacyRelayPlan ??
+      (await (
+        await import("./commerce")
+      ).planLegacyDirectMessageRead(principal, () => {
+        assertCurrent()
+        return true
+      }))
+    assertCurrent()
+    plans.push(
+      { ...legacy, transport: "nip04_incoming" },
+      { ...legacy, transport: "nip04_outgoing" }
+    )
+  }
+  return plans
+}
 
 export interface CommerceInboxReadEvidence {
   sourceIndex: number
@@ -135,6 +189,55 @@ const emptySnapshot = (): CommerceInboxSnapshot => ({
     storageUnavailable: false,
   },
 })
+function projectRetainedInboxRecords(
+  projections: Array<{ row: InboxProjectionRow; projection: InboxProjection }>
+) {
+  const directMessages: ParsedDirectMessage[] = []
+  const orderMessages: ParsedOrderMessage[] = []
+  const externalRecords: DecodedCommerceMessage[] = []
+  const unreadIds = new Set<string>()
+  for (const { row, projection } of projections) {
+    if (projection.kind === "direct") directMessages.push(projection.message)
+    else if (projection.kind === "order") orderMessages.push(projection.message)
+    else if (
+      projection.kind === "record" &&
+      projection.record.category !== "machine" &&
+      projection.record.category !== "unrelated"
+    )
+      externalRecords.push(projection.record)
+    if (row.read === 0) unreadIds.add(row.logicalId)
+  }
+  // Advisory companion is suppressed only by its exact authenticated order.
+  const orders = new Set(
+    orderMessages
+      .filter((m) => m.type === "order")
+      .map((m) => `${m.id}:${m.orderId}:${m.senderPubkey}:${m.recipientPubkey}`)
+  )
+  const visibleDirect = directMessages.filter((m) => {
+    const c = m.orderCompanionIdentity
+    return (
+      !c ||
+      !orders.has(
+        `${c.orderRumorId}:${c.orderId}:${c.senderPubkey}:${c.recipientPubkey}`
+      )
+    )
+  })
+  return {
+    directMessages: visibleDirect.sort((a, b) => a.createdAt - b.createdAt),
+    orderMessages: orderMessages.sort((a, b) => a.createdAt - b.createdAt),
+    externalRecords,
+    unreadIds,
+  }
+}
+
+/** Retained account identity permits local reading only; coverage stays unavailable. */
+export async function readRetainedCommerceInbox(
+  ...args: Parameters<typeof readRetainedInboxProjections>
+): Promise<CommerceInboxSnapshot> {
+  const projections = await readRetainedInboxProjections(...args)
+  return { ...emptySnapshot(), ...projectRetainedInboxRecords(projections) }
+}
+
 const owners = new Map<string, CommerceInbox>()
 
 /** One account/session owner. Domain projections share ingestion, not authority. */
@@ -271,39 +374,6 @@ export class CommerceInbox {
         .toArray(),
     ])
     this.assertCurrent()
-    const directMessages: ParsedDirectMessage[] = []
-    const orderMessages: ParsedOrderMessage[] = []
-    const externalRecords: DecodedCommerceMessage[] = []
-    const unreadIds = new Set<string>()
-    for (const { row, projection } of projections) {
-      if (projection.kind === "direct") directMessages.push(projection.message)
-      else if (projection.kind === "order")
-        orderMessages.push(projection.message)
-      else if (
-        projection.kind === "record" &&
-        projection.record.category !== "machine" &&
-        projection.record.category !== "unrelated"
-      )
-        externalRecords.push(projection.record)
-      if (row.read === 0) unreadIds.add(row.logicalId)
-    }
-    // Advisory companion is suppressed only by its exact authenticated order.
-    const orders = new Set(
-      orderMessages
-        .filter((m) => m.type === "order")
-        .map(
-          (m) => `${m.id}:${m.orderId}:${m.senderPubkey}:${m.recipientPubkey}`
-        )
-    )
-    const visibleDirect = directMessages.filter((m) => {
-      const c = m.orderCompanionIdentity
-      return (
-        !c ||
-        !orders.has(
-          `${c.orderRumorId}:${c.orderId}:${c.senderPubkey}:${c.recipientPubkey}`
-        )
-      )
-    })
     const decryptFailures: DecryptFailure[] = []
     const legacyDecryptFailures: LegacyDmDecryptFailure[] = []
     const states: CommerceInboxDiagnostic["states"] = {}
@@ -356,10 +426,7 @@ export class CommerceInbox {
       sourceRelays: this.sourceRelays(),
       decryptFailures,
       legacyDecryptFailures,
-      directMessages: visibleDirect.sort((a, b) => a.createdAt - b.createdAt),
-      orderMessages: orderMessages.sort((a, b) => a.createdAt - b.createdAt),
-      externalRecords,
-      unreadIds,
+      ...projectRetainedInboxRecords(projections),
       diagnostics: {
         ...this.snapshot.diagnostics,
         states,
@@ -631,6 +698,7 @@ export class CommerceInbox {
   async syncRecent(
     options: {
       includeLegacy?: boolean
+      legacyRelayPlan?: InboxReadRelayPlan
       declaration?: InboxDeclarationResolution
       read?: (
         options: ReadProtectedInboxOptions
@@ -651,16 +719,18 @@ export class CommerceInbox {
             return true
           },
         }))
-      const plan = planInboxReadRelays({
+      const plans = await transportReadPlans(
+        this.store.principal,
         declaration,
-        authenticatedPubkey: this.store.principal,
-      })
+        () => this.assertCurrent(),
+        options.includeLegacy,
+        options.legacyRelayPlan
+      )
       const results: ProtectedInboxReadResult[] = []
       const sources: CommerceInboxReadEvidence[] = []
-      for (const relayUrl of plan.relayUrls)
-        for (const transport of options.includeLegacy === false
-          ? (["nip17"] as const)
-          : (["nip17", "nip04_incoming", "nip04_outgoing"] as const)) {
+      for (const plan of plans)
+        for (const relayUrl of plan.relayUrls) {
+          const { transport } = plan
           const pending: Promise<void>[] = []
           const result = await (options.read ?? readProtectedInbox)({
             principalPubkey: this.store.principal,
@@ -670,8 +740,13 @@ export class CommerceInbox {
             ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls.filter(
               (url) => url === relayUrl
             ),
-            appRelayUrls:
-              plan.relaySources[relayUrl] === "compatibility" ? [relayUrl] : [],
+            appRelayUrls: plan.appRelayUrls.filter((url) => url === relayUrl),
+            personalRelayUrls: plan.personalRelayUrls?.filter(
+              (url) => url === relayUrl
+            ),
+            independentRelayUrls: plan.independentRelayUrls?.filter(
+              (url) => url === relayUrl
+            ),
             limit: 50,
             onEvent: (event) => {
               pending.push(this.ingest(event, [relayUrl]))
@@ -780,6 +855,7 @@ export class CommerceInbox {
   async loadOlder(
     options: {
       includeLegacy?: boolean
+      legacyRelayPlan?: InboxReadRelayPlan
       declaration?: InboxDeclarationResolution
       relayUrls?: string[]
       read?: (
@@ -796,14 +872,18 @@ export class CommerceInbox {
         authenticatedPubkey: this.store.principal,
         allowLocalRelayUrlsForPubkey: this.store.principal,
       }))
-    const plan = planInboxReadRelays({
+    const plans = await transportReadPlans(
+      this.store.principal,
       declaration,
-      authenticatedPubkey: this.store.principal,
-    })
-    for (const relayUrl of options.relayUrls ?? plan.relayUrls)
-      for (const transport of options.includeLegacy === false
-        ? (["nip17"] as const)
-        : (["nip17", "nip04_incoming", "nip04_outgoing"] as const)) {
+      () => this.assertCurrent(),
+      options.includeLegacy,
+      options.legacyRelayPlan
+    )
+    for (const plan of plans)
+      for (const relayUrl of plan.relayUrls.filter(
+        (url) => !options.relayUrls || options.relayUrls.includes(url)
+      )) {
+        const { transport } = plan
         this.assertCurrent()
         const id = this.store.key(`${relayUrl}:${transport}`)
         const stored = await this.store.database.commerceInboxRanges.get(id)
@@ -813,6 +893,13 @@ export class CommerceInbox {
           relayUrl,
           authorizedRelayUrls: plan.relayUrls,
           declaredRelayUrls: plan.ownerSelectedRelayUrls,
+          appRelayUrls: plan.appRelayUrls.filter((url) => url === relayUrl),
+          personalRelayUrls: plan.personalRelayUrls?.filter(
+            (url) => url === relayUrl
+          ),
+          independentRelayUrls: plan.independentRelayUrls?.filter(
+            (url) => url === relayUrl
+          ),
           authorization: this.authorization,
           read: options.read,
           cursor:
@@ -912,7 +999,9 @@ export class CommerceInbox {
       throw new Error("Only authenticated commerce records can be replied to")
     await sendAccountInboxRumor({
       principal: this.store.principal,
-      recipients: [record.provenance.authorPubkey],
+      recipients: [
+        commerceReplyCounterparty(this.store.principal, record.provenance),
+      ],
       content,
       tags: [
         ["e", record.provenance.rumorId, "", "reply"],

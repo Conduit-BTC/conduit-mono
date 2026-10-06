@@ -826,9 +826,7 @@ function MessagesWorkspace() {
     const createdAt = Date.now()
     const rumor = createParticipantMessageRumor({
       senderPubkey: accountPubkey,
-      recipientPubkeys: selectedDm?.participants?.filter(
-        (p) => p !== accountPubkey
-      ) ?? [selectedDmPubkey],
+      recipientPubkeys: [selectedDmPubkey],
       content,
       appId: "market",
       createdAt: Math.floor(createdAt / 1000),
@@ -859,9 +857,7 @@ function MessagesWorkspace() {
       preparedDmRumors.current.get(message.eventId ?? "") ??
       createParticipantMessageRumor({
         senderPubkey: accountPubkey,
-        recipientPubkeys: selectedDm?.participants?.filter(
-          (p) => p !== accountPubkey
-        ) ?? [selectedDmPubkey],
+        recipientPubkeys: [selectedDmPubkey],
         content: message.content,
         appId: "market",
         createdAt: Math.floor(message.createdAt / 1000),
@@ -1275,12 +1271,7 @@ function MessagesWorkspace() {
                                 selectedDmPubkey &&
                                 inbox.attach
                                   ? (file) =>
-                                      inbox.attach!(
-                                        selectedDm?.participants?.filter(
-                                          (p) => p !== accountPubkey
-                                        ) ?? [selectedDmPubkey],
-                                        file
-                                      )
+                                      inbox.attach!([selectedDmPubkey], file)
                                   : undefined
                               }
                               onSend={sendDirectMessage}

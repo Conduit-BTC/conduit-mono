@@ -1050,7 +1050,6 @@ describe("publishPrivateMessage", () => {
     expect(foregroundSettled).toBe(false)
     expect(events).toEqual([
       `wrap:${delivery.recipientPubkey}`,
-      `wrap:${delivery.senderPubkey}`,
       "prepared",
       "started",
       "publish",
@@ -1064,7 +1063,7 @@ describe("publishPrivateMessage", () => {
       expect.objectContaining({ relayUrl: firstRelay, status: "acked" }),
       expect.objectContaining({ relayUrl: slowRelay, status: "pending" }),
     ])
-    expect(events).toContain(`wrap:${delivery.senderPubkey}`)
+    expect(events).not.toContain(`wrap:${delivery.senderPubkey}`)
 
     const firstPostWork = result.startPostAcceptanceWork!()
     const duplicatePostWork = result.startPostAcceptanceWork!()
@@ -1084,6 +1083,50 @@ describe("publishPrivateMessage", () => {
     expect((await settlementPersisted).timedOutRelayUrls).toEqual([slowRelay])
     expect(events).toContain("settled:persisted")
   })
+
+  for (const failure of ["refused", "timed out", "slow"]) {
+    it(`commits recipient acceptance before ${failure} self-copy work`, async () => {
+      const relay = "wss://merchant.inbox.conduit.market"
+      const delivery = signedOrderDeliveryFixture([relay])
+      const snapshot = progressiveSnapshot({ successful: [relay] })
+      let durable = false
+      let selfCalls = 0
+      let release!: () => void
+      const wait = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const result = await publishPrivateMessage({
+        ...delivery,
+        rumorKind: EVENT_KINDS.ORDER,
+        recipientDeliveryBoundary: "accepted",
+        senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+        onRecipientPrepared: async () => {},
+        onRecipientPublishStarting: async () => {},
+        onRecipientPublishAccepted: async () => {
+          durable = true
+        },
+        onRecipientPublishSettled: async () => {},
+        giftWrapFn: (async (_rumor: unknown, recipient: { pubkey: string }) => {
+          if (recipient.pubkey === delivery.recipientPubkey)
+            return wrap("recipient-wrap")
+          selfCalls++
+          if (failure === "slow") await wait
+          throw new Error(`self-copy ${failure}`)
+        }) as never,
+        publishProgressiveFn: (async () => ({
+          accepted: Promise.resolve(snapshot),
+          settled: Promise.resolve(snapshot),
+        })) as never,
+      })
+      expect(durable).toBe(true)
+      expect(selfCalls).toBe(0)
+      expect(result.recipientDelivery.successfulRelayUrls).toEqual([relay])
+      const postWork = result.startPostAcceptanceWork!()
+      release()
+      expect((await postWork).selfCopyError).toBe(`self-copy ${failure}`)
+      expect(selfCalls).toBe(1)
+    })
+  }
 
   it("waits for terminal persistence before rejecting a zero-ACK initial order", async () => {
     const relayUrl = "wss://merchant.inbox.conduit.market"
@@ -1179,7 +1222,7 @@ describe("publishPrivateMessage", () => {
     sessionCurrent = false
     const postWork = await result.startPostAcceptanceWork!()
     expect(postWork.selfCopyError).toContain("session changed")
-    expect(selfWraps).toBe(1)
+    expect(selfWraps).toBe(0)
     expect(selfPublishes).toBe(0)
   })
 

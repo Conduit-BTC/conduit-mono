@@ -24,7 +24,7 @@ import {
   type PrivateDeliveryJob,
 } from "./private-message-delivery"
 
-/** Participant-set and attachment sends share exact plans, wraps and delivery. */
+/** Two-party replies and attachments share exact plans, wraps and delivery. */
 export async function sendAccountInboxRumor(input: {
   principal: string
   recipients: string[]
@@ -44,8 +44,7 @@ export async function sendAccountInboxRumor(input: {
     .filter((p) => p !== input.principal)
     .sort()
   if (
-    !recipients.length ||
-    recipients.length > 16 ||
+    recipients.length !== 1 ||
     recipients.some((p) => !/^[0-9a-f]{64}$/.test(p))
   )
     throw new Error("Invalid conversation participants")

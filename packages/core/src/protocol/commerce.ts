@@ -685,6 +685,21 @@ type CommerceReadRelayPlan = {
   relayLists: ReadonlyMap<string, RelayList>
 }
 
+/** Existing bounded legacy-DM policy, independent of kind-10050 inbox declarations. */
+export async function planLegacyDirectMessageRead(
+  principalPubkey: string,
+  shouldContinue: () => boolean
+): Promise<CommerceReadRelayPlan> {
+  return await planCommerceReadRelayPlan({
+    intent: "legacy_dm",
+    authors: [principalPubkey],
+    recipients: [principalPubkey],
+    authenticatedPubkey: principalPubkey,
+    maxRelays: 24,
+    shouldContinue,
+  })
+}
+
 async function planCommerceReadRelayPlan(input: {
   intent: RelayReadIntent
   authors?: readonly string[]

@@ -84,9 +84,20 @@ test("buyer and seller open tagged messages, reply, recover external records and
         JSON.stringify({ ...external, id: getEventHash(external) })
       ),
     })
+    const sentExternalSeal = signRuntimeTestEvent(buyer, {
+      kind: 13,
+      created_at: createdAt,
+      tags: [],
+      content: encryptRuntimeTestPayload(
+        buyer,
+        buyer.pubkey,
+        JSON.stringify({ ...external, id: getEventHash(external) })
+      ),
+    })
     await publishTestRelayEvents([
       createWrap(seal, seller.pubkey),
       createWrap(externalSeal, seller.pubkey),
+      createWrap(sentExternalSeal, buyer.pubkey),
     ])
     const buyerPage = await contexts[0]!.newPage()
     const sellerPage = await contexts[1]!.newPage()
@@ -196,13 +207,29 @@ test("buyer and seller open tagged messages, reply, recover external records and
       .poll(async () => (await counts(buyerPage)).direct, { timeout: 30_000 })
       .toBe(3)
     expect((await counts(sellerPage)).orders).toBe(0)
+    await buyerPage
+      .getByText("External commerce records (1)", { exact: true })
+      .click()
+    await buyerPage.getByRole("button", { name: "Inspect and reply" }).click()
+    const sentRecovery = buyerPage.getByRole("region", {
+      name: "Inbox history and recovery",
+    })
+    await sentRecovery
+      .getByRole("textbox", { name: "Message" })
+      .fill("synthetic buyer response to sent record")
+    await sentRecovery
+      .getByRole("button", { name: "Send message", exact: true })
+      .click()
+    await expect
+      .poll(async () => (await counts(sellerPage)).direct, { timeout: 30_000 })
+      .toBe(5)
     await sellerPage.reload()
     await expect(
       sellerPage.getByLabel("Open merchant account menu")
     ).toBeVisible({ timeout: 15_000 })
     await expect
       .poll(async () => (await counts(sellerPage)).direct, { timeout: 30_000 })
-      .toBe(4)
+      .toBe(5)
     const safe = await sellerPage.evaluate(async (path) => {
       const { db } = await import(
         `${path.replace("/protocol", "")}/db/index.ts`
@@ -257,5 +284,147 @@ test("buyer and seller open tagged messages, reply, recover external records and
       disposeRuntimeSignerIdentity(buyer)
       disposeRuntimeSignerIdentity(seller)
     }
+  }
+})
+
+test("extra authenticated recipients cannot expand buyer or merchant replies @commerce", async ({
+  browser,
+}, testInfo) => {
+  const buyer = createRuntimeSignerIdentity()
+  const seller = createRuntimeSignerIdentity()
+  const extra = createRuntimeSignerIdentity()
+  const relayUrl = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
+  const contexts = []
+  try {
+    const createdAt = Math.floor(Date.now() / 1000)
+    await publishTestRelayEvents(
+      [buyer, seller, extra].flatMap((identity) => [
+        signRuntimeTestEvent(identity, {
+          kind: 10050,
+          created_at: createdAt,
+          tags: [["relay", relayUrl]],
+          content: "",
+        }),
+        signRuntimeTestEvent(identity, {
+          kind: 10002,
+          created_at: createdAt,
+          tags: [["r", relayUrl]],
+          content: "",
+        }),
+      ])
+    )
+    for (const app of ["market", "merchant"] as const) {
+      const recipient = app === "market" ? buyer : seller
+      const sender = app === "market" ? seller : buyer
+      const rumor = {
+        kind: 14,
+        pubkey: sender.pubkey,
+        created_at: createdAt,
+        tags: [
+          ["p", recipient.pubkey],
+          ["p", extra.pubkey],
+        ],
+        content: "synthetic extra recipient input",
+      }
+      const seal = signRuntimeTestEvent(sender, {
+        kind: 13,
+        created_at: createdAt,
+        tags: [],
+        content: encryptRuntimeTestPayload(
+          sender,
+          recipient.pubkey,
+          JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+        ),
+      })
+      await publishTestRelayEvents([createWrap(seal, recipient.pubkey)])
+      const context = await browser.newContext({
+        viewport: testInfo.project.use.viewport,
+        isMobile: testInfo.project.use.isMobile,
+        hasTouch: testInfo.project.use.hasTouch,
+        userAgent: testInfo.project.use.userAgent,
+      })
+      contexts.push(context)
+      const page = await context.newPage()
+      await installRealTestSigner(page, recipient, relayUrl)
+      const port =
+        app === "market"
+          ? (process.env.PLAYWRIGHT_MARKET_PORT ?? "7000")
+          : (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
+      await page.goto(
+        `http://127.0.0.1:${port}/messages${app === "market" ? "?tab=dms" : ""}`
+      )
+      const thread = page
+        .getByRole("button")
+        .filter({ hasText: "synthetic extra recipient input" })
+        .first()
+      await expect(thread).toBeVisible({ timeout: 30_000 })
+      await thread.click()
+      await page
+        .getByRole("textbox", { name: "Message" })
+        .fill("synthetic two-party reply")
+      await page
+        .getByRole("button", { name: "Send message", exact: true })
+        .click()
+      await expect
+        .poll(
+          async () =>
+            await page.evaluate(
+              async ({ root, disallowed, peer }) => {
+                const { readAuthSession } = await import(
+                  `${root}/remote-signer.ts`
+                )
+                const { getCommerceInbox } = await import(
+                  `${root}/commerce-inbox.ts`
+                )
+                const owner = getCommerceInbox(readAuthSession().userPubkey)
+                const rows = await owner.store.database.commerceInboxDeliveries
+                  .where("accountPubkey")
+                  .equals(owner.store.principal)
+                  .toArray()
+                const jobs = await Promise.all(
+                  rows.map((row: { value: unknown; id: string }) =>
+                    owner.store.open(
+                      row.value,
+                      row.id.slice(owner.store.principal.length + 1)
+                    )
+                  )
+                )
+                const legs = jobs.flatMap(
+                  (job: {
+                    legs: Array<{
+                      recipientPubkey: string
+                      acknowledged: string[]
+                    }>
+                  }) => job.legs
+                )
+                return {
+                  acceptedByPeer: legs.some(
+                    (leg: {
+                      recipientPubkey: string
+                      acknowledged: string[]
+                    }) =>
+                      leg.recipientPubkey === peer &&
+                      leg.acknowledged.length > 0
+                  ),
+                  unapprovedRecipients: legs.filter(
+                    (leg: { recipientPubkey: string }) =>
+                      leg.recipientPubkey === disallowed
+                  ).length,
+                }
+              },
+              {
+                root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+                disallowed: extra.pubkey,
+                peer: sender.pubkey,
+              }
+            ),
+          { timeout: 30_000 }
+        )
+        .toEqual({ acceptedByPeer: true, unapprovedRecipients: 0 })
+    }
+  } finally {
+    await Promise.all(contexts.map((context) => context.close()))
+    for (const identity of [buyer, seller, extra])
+      disposeRuntimeSignerIdentity(identity)
   }
 })

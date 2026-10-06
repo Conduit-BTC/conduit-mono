@@ -70,7 +70,7 @@ export function CommerceInboxRecovery({
       className="space-y-3 rounded-xl border border-[var(--border)] p-4 xl:shrink-0"
     >
       <details className="text-sm text-[var(--text-secondary)]">
-        <summary className="cursor-pointer py-2">
+        <summary className="min-h-11 cursor-pointer py-2">
           Read and recovery evidence
         </summary>
         <p>

@@ -10,12 +10,21 @@ Persist the signed encrypted wrapper before scheduling signer work. A device-loc
 nonextractable AES-GCM key protects normalized records and exact delivery jobs in
 IndexedDB. This key grants no Nostr signing authority. Every access requires the
 current account session; disconnect and account changes fence pending commits.
+The retained account may read existing device-encrypted projections while its
+signer is unavailable. Those views remain stale with unavailable relay coverage;
+they grant no signing, publishing, protected-read, or cache-write authority.
+This keeps existing order delivery retries reachable under their separate exact
+delivery authorization. Account changes also fence pending local decryptions.
 
 Legacy plaintext message/order caches migrate into encrypted projections in
 resumable transactions. Read markers and existing order delivery recovery remain
 available. Storage failure is visible and cannot imply a durable queued send.
 Wrappers retain decode state and rules version so parser upgrades can recover
 unsupported or previously rejected messages without requesting them again.
+
+NIP-17 uses the declared inbox plan; legacy NIP-04 incoming and outgoing reads
+use the established bounded legacy plan, including eligible general/personal and
+fallback relays. These plans remain separate for recent reads and older pages.
 
 Recent reads and demand-driven older pages use the protected reader and isolated
 NIP-42 executor. Per-relay overlapping inclusive ranges deduplicate wrapper IDs.
@@ -37,7 +46,11 @@ evidence that a relay removed a message. No automatic relay backup is performed.
 
 Writes use canonical empty-tag NIP-59 seals and public NIP-44 v2. Envelope,
 recipient, seal/rumor author and supplied rumor-hash checks remain mandatory.
-Conversation identity uses the participant set. Kind-15 AES-GCM downloads require
+Authenticated participant metadata is retained for reading. Sending remains
+two-party: replies and attachments target the selected counterparty only, and
+extra incoming recipient tags cannot authorize fanout. Self-authored external
+commerce records require one unambiguous authenticated recipient for replies.
+Kind-15 AES-GCM downloads require
 an explicit user action, a bounded stream, encrypted-file SHA-256 verification
 and authenticated decryption. Optional size and original-file hash are checked
 when supplied. Attachments are not fetched merely by opening a conversation.
@@ -57,12 +70,15 @@ and replied to. An association or declared amount does not authorize payment,
 inventory, fulfillment or order adoption. Recovery credentials reach the dedicated
 consumer before generic rendering and are excluded from general search.
 
+Private attachments reject files larger than 8 MiB before allocating file bytes.
+
 Signed bytes and the authorized relay plan are staged before delivery I/O. Retry
 replays those bytes against saved targets and stronger current refusal evidence.
 Concurrent acknowledgements merge atomically. A relay ACK describes delivery;
 it does not prove the recipient read the message or paid an order. Initial-order
 first-ACK completion, guest merchant-only scope and existing routing-lane rollout
-controls remain owned by their established coordinators.
+controls remain owned by their established coordinators. Initial-order self-copy
+routing, signing and staging run only after the recipient ACK is durably committed.
 
 ## Bounded client-seal metadata compatibility
 

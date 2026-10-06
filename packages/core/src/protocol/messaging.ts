@@ -1538,7 +1538,7 @@ export async function publishPrivateMessage(
   }
   const senderRoute: ReturnType<
     typeof selectPrivateMessageDeliveryRoute
-  > | null = await resolveSenderRoute()
+  > | null = progressiveRecipientDelivery ? null : await resolveSenderRoute()
 
   const externalSignerInteraction =
     (input.signerInteraction ?? "background_external") === "external"
@@ -1590,7 +1590,7 @@ export async function publishPrivateMessage(
   let selfDelivery: PublishWithPlannerResult | null = null
   let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
   let wrappedToSelf: SignedPublicNostrEvent | null = null
-  if (selfCopy) {
+  if (selfCopy && !progressiveRecipientDelivery) {
     try {
       wrappedToSelf = await giftWrapFn(
         input.rumor,
@@ -1611,7 +1611,7 @@ export async function publishPrivateMessage(
     ? new CommerceInboxStore(deliveryAuthorization)
     : null
   const stagedId =
-    deliveryStore && (!progressiveRecipientDelivery || wrappedToSelf)
+    deliveryStore && !progressiveRecipientDelivery
       ? await stagePrivateDelivery(deliveryStore, {
           rumorId: input.rumor.id,
           senderPubkey,
@@ -1772,8 +1772,8 @@ export async function publishPrivateMessage(
         let selfCopyError: string | null = null
         let selfDelivery: PublishWithPlannerResult | null = null
         let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
-        const preparedSelfWrap = wrappedToSelf
-        let savedSelfWrap: SignedPublicNostrEvent | null = preparedSelfWrap
+        let savedSelfWrap: SignedPublicNostrEvent | null = null
+        let stagedSelfId: string | null = null
         if (!selfCopy) {
           return {
             wrappedToSelf: savedSelfWrap,
@@ -1788,7 +1788,7 @@ export async function publishPrivateMessage(
               "Sender self-copy stopped because the signer session changed."
             )
           }
-          const currentSenderRoute = senderRoute
+          const currentSenderRoute = await resolveSenderRoute()
           if (!currentSenderRoute || currentSenderRoute.route === "blocked") {
             throw new Error(
               "Sender has no usable NIP-17 inbox relay declaration."
@@ -1799,9 +1799,34 @@ export async function publishPrivateMessage(
               "Sender self-copy stopped because the signer session changed."
             )
           }
-          if (!preparedSelfWrap)
-            throw new Error("Sender self-copy was not prepared")
-          savedSelfWrap = preparedSelfWrap
+          savedSelfWrap = await giftWrapFn(
+            input.rumor,
+            { pubkey: input.senderPubkey },
+            giftWrapSigner,
+            wrapParams
+          )
+          if (deliveryStore) {
+            stagedSelfId = await stagePrivateDelivery(deliveryStore, {
+              rumorId: input.rumor.id,
+              senderPubkey,
+              createdAt: Date.now(),
+              legs: [
+                {
+                  recipientPubkey: senderPubkey,
+                  event: savedSelfWrap,
+                  relayUrls: [...currentSenderRoute.relayUrls],
+                  ownerSelectedRelayUrls: [
+                    ...currentSenderRoute.ownerSelectedRelayUrls,
+                  ],
+                  compatibility: false,
+                  relaySources: { ...currentSenderRoute.relaySources },
+                  truncated: currentSenderRoute.truncated,
+                  acknowledged: [],
+                  failed: [],
+                },
+              ],
+            })
+          }
           if (input.shouldContinue?.() === false) {
             throw new Error(
               "Sender self-copy stopped because the signer session changed."
@@ -1839,10 +1864,10 @@ export async function publishPrivateMessage(
             if (!partial) throw error
             selfDelivery = partial
           }
-          if (deliveryStore && stagedId && savedSelfWrap)
+          if (deliveryStore && stagedSelfId && savedSelfWrap)
             await recordPrivateDelivery(
               deliveryStore,
-              stagedId,
+              stagedSelfId,
               savedSelfWrap.id,
               selfDelivery
             )
@@ -2697,8 +2722,7 @@ export function createParticipantMessageRumor(
   const participants = [...new Set(input.recipientPubkeys)]
     .filter((p) => p !== input.senderPubkey)
     .sort()
-  if (!participants.length || participants.length > 16)
-    throw new Error("Invalid participant set")
+  if (participants.length !== 1) throw new Error("Invalid participant set")
   return createPrivateMessageRumor({
     pubkey: input.senderPubkey,
     kind: 14,

@@ -647,3 +647,25 @@ export function encodeOpenMarketsCommerceMessage(
     content: input.notes ?? "",
   }
 }
+
+/** Authenticated incoming records reply to their author; sent records need one recipient. */
+export function commerceReplyCounterparty(
+  principal: string,
+  provenance: CommerceProvenance
+): string {
+  const recipients = [
+    ...new Set(
+      provenance.tags.filter((tag) => tag[0] === "p").map((tag) => tag[1] ?? "")
+    ),
+  ]
+  const author = provenance.authorPubkey
+  const counterparty =
+    author === principal
+      ? recipients.filter((recipient) => recipient !== principal)
+      : recipients.includes(principal)
+        ? [author]
+        : []
+  if (counterparty.length !== 1 || !/^[0-9a-f]{64}$/.test(counterparty[0]!))
+    throw new Error("Commerce reply requires one authenticated counterparty")
+  return counterparty[0]!
+}

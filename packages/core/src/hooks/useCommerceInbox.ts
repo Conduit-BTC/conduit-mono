@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { liveQuery } from "dexie"
+import { useAuth } from "../context/AuthContext"
 import {
   getCommerceInbox,
+  readRetainedCommerceInbox,
   type CommerceInboxSnapshot,
   type CommerceInbox,
 } from "../protocol/commerce-inbox"
@@ -53,6 +56,7 @@ export function useCommerceInbox(
   enabled = true,
   sync = true
 ) {
+  const { accountPubkey, authGeneration, isAccountIdentityCurrent } = useAuth()
   let owner: CommerceInbox | null = null
   let authorityError: unknown = null
   try {
@@ -60,6 +64,51 @@ export function useCommerceInbox(
   } catch (error) {
     authorityError = error
   }
+  const cacheScope = useMemo(
+    () =>
+      !owner && principal && accountPubkey === principal
+        ? { principal, authGeneration }
+        : null,
+    [owner, principal, accountPubkey, authGeneration]
+  )
+  const [cached, setCached] = useState<{
+    scope: NonNullable<typeof cacheScope>
+    snapshot: CommerceInboxSnapshot | null
+    error: unknown
+    updatedAt: number
+  } | null>(null)
+  useEffect(() => {
+    if (!cacheScope) return
+    let active = true
+    const isCurrent = () =>
+      active && isAccountIdentityCurrent(cacheScope.principal)
+    const subscription = liveQuery(() =>
+      readRetainedCommerceInbox(cacheScope.principal, isCurrent)
+    ).subscribe({
+      next: (snapshot) => {
+        if (isCurrent())
+          setCached({
+            scope: cacheScope,
+            snapshot,
+            error: null,
+            updatedAt: Date.now(),
+          })
+      },
+      error: (error: unknown) => {
+        if (isCurrent())
+          setCached({
+            scope: cacheScope,
+            snapshot: null,
+            error,
+            updatedAt: Date.now(),
+          })
+      },
+    })
+    return () => {
+      active = false
+      subscription.unsubscribe()
+    }
+  }, [cacheScope, isAccountIdentityCurrent])
   const [view, setView] = useState<{
     owner: CommerceInbox
     snapshot: CommerceInboxSnapshot
@@ -94,7 +143,16 @@ export function useCommerceInbox(
   const refetch = useCallback(() => run("syncRecent"), [run])
   const loadOlder = useCallback(() => run("loadOlder"), [run])
   const retry = useCallback(() => run("retryDecode"), [run])
-  const snapshot = owner && view && view.owner === owner ? view.snapshot : null
+  const retained =
+    cacheScope &&
+    cached?.scope === cacheScope &&
+    isAccountIdentityCurrent(cacheScope.principal)
+      ? cached
+      : null
+  const snapshot =
+    owner && view && view.owner === owner
+      ? view.snapshot
+      : (retained?.snapshot ?? null)
   const projected = useMemo(
     () =>
       snapshot && principal ? projectCommerceInbox(snapshot, principal) : null,
@@ -104,20 +162,22 @@ export function useCommerceInbox(
     refetch,
     error:
       authorityError ??
-      (owner && failure?.owner === owner ? failure.error : null),
+      (owner && failure?.owner === owner
+        ? failure.error
+        : (retained?.error ?? null)),
     isRefetching: !!snapshot?.pending,
     isFetching: !!snapshot?.pending,
     isPaused: false,
     isLoading: enabled && !snapshot,
     isPending: enabled && !snapshot,
-    dataUpdatedAt: view?.updatedAt ?? 0,
+    dataUpdatedAt: owner ? (view?.updatedAt ?? 0) : (retained?.updatedAt ?? 0),
   }
   return {
     snapshot,
-    loadOlder,
-    retry,
+    loadOlder: owner ? loadOlder : undefined,
+    retry: owner ? retry : undefined,
     attach: owner?.attach.bind(owner),
-    retrySends: () => owner?.retrySends() ?? Promise.resolve(),
+    retrySends: owner ? () => owner.retrySends() : undefined,
     reply: owner?.reply.bind(owner),
     associate: owner?.associate.bind(owner),
     buyer: { ...common, data: projected?.buyer },

@@ -55,6 +55,9 @@ export interface VisitProtectedInboxHistoryPageOptions {
   authorizedRelayUrls?: readonly string[]
   /** Owner-selected inbox subset; also the dedicated-consumer history API. */
   declaredRelayUrls?: readonly string[]
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
+  independentRelayUrls?: readonly string[]
   authorization: ProtectedReadAuthorization
   cursor?: ProtectedInboxHistoryCursor
   /** This callback owns idempotent ingestion, decryption, and backpressure. */
@@ -194,7 +197,9 @@ export async function visitProtectedInboxHistoryPage(
       transport: options.transport,
       relayUrls: [relayUrl],
       ownerSelectedRelayUrls: declaredRelayUrls,
-      appRelayUrls: [],
+      appRelayUrls: options.appRelayUrls ?? [],
+      personalRelayUrls: options.personalRelayUrls,
+      independentRelayUrls: options.independentRelayUrls,
       limit,
       authorization: options.authorization,
       accountNetworkLocalStateRepository:
