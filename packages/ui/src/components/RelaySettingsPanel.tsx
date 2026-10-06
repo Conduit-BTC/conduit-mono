@@ -797,10 +797,8 @@ function PublishedRelayPreferences({
 
 function PendingUpdateSummary({
   controller,
-  relayDraftDirty,
 }: {
   controller: AccountNetworkSettingsController
-  relayDraftDirty: boolean
 }) {
   const deliveries = controller.view.pendingExactDeliveries
   if (deliveries.length === 0) return null
@@ -819,8 +817,9 @@ function PendingUpdateSummary({
             Signed update status
           </h3>
           <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Conduit retains each exact signed event while it checks shared
-            relays. A publish response alone is not proof of shared readback.
+            Your signed update is saved on this device. Some relay confirmations
+            are still pending. You can keep editing or retry the saved update
+            without signing again.
           </p>
         </div>
         {retryAvailable ? (
@@ -829,14 +828,7 @@ function PendingUpdateSummary({
             variant="outline"
             size="sm"
             className="min-h-11"
-            disabled={
-              relayDraftDirty || operationIsBusy(controller.operation.phase)
-            }
-            title={
-              relayDraftDirty
-                ? "Publish or discard your relay edits before retrying signed preferences."
-                : undefined
-            }
+            disabled={operationIsBusy(controller.operation.phase)}
             onClick={() =>
               void controller.retryPendingUpdate().catch(() => undefined)
             }
@@ -871,15 +863,24 @@ function PendingUpdateSummary({
                     : "Exact readback pending"}
               </StatusPill>
             </div>
-            <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-              {delivery.exactReadbackCount} exact readback ·{" "}
-              {delivery.unresolvedCount} unresolved ·{" "}
-              {delivery.eligibleTargetCount} eligible target
-              {delivery.eligibleTargetCount === 1 ? "" : "s"}
-              {delivery.excludedTargetCount > 0
-                ? ` · ${delivery.excludedTargetCount} excluded`
-                : ""}
-            </p>
+            <details className="group/confirmation mt-1 text-xs text-[var(--text-secondary)]">
+              <summary className="flex min-h-11 cursor-pointer items-center gap-2">
+                Confirmation details
+                <ChevronDown
+                  className="size-4 group-open/confirmation:rotate-180"
+                  aria-hidden="true"
+                />
+              </summary>
+              <p className="text-pretty leading-5">
+                {delivery.exactReadbackCount} exact readback ·{" "}
+                {delivery.unresolvedCount} unresolved ·{" "}
+                {delivery.eligibleTargetCount} eligible target
+                {delivery.eligibleTargetCount === 1 ? "" : "s"}
+                {delivery.excludedTargetCount > 0
+                  ? ` · ${delivery.excludedTargetCount} excluded`
+                  : ""}
+              </p>
+            </details>
           </li>
         ))}
       </ul>
@@ -1325,12 +1326,9 @@ function useRelaySettingsReview(
     : validation.errors
   const validationError = validationErrors[0] ?? null
   const validationWarnings = validation.warnings
-  const pendingRetry = controller.view.pendingExactDeliveries.some(
-    (delivery) => delivery.retryAvailable
-  )
   const busy = operationIsBusy(controller.operation.phase) || reordering
   const metadataReady = !busy
-  const mutationReady = metadataReady && !pendingRetry && signerReady
+  const mutationReady = metadataReady && signerReady
   const inboxCount = presentationRows.filter(
     (row) => row.privateInboxEnabled
   ).length
@@ -2519,10 +2517,7 @@ function RelayPreferencesSection({
       ) : null}
       <PreferenceSectionBody className="pt-0 sm:pt-0">
         <PublishedRelayPreferences controller={controller} />
-        <PendingUpdateSummary
-          controller={controller}
-          relayDraftDirty={review.hasUnpublishedChanges}
-        />
+        <PendingUpdateSummary controller={controller} />
         <InboxDistributionSection
           controller={controller}
           busy={review.busy}
