@@ -302,6 +302,12 @@ The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. The existing 20-minute limit and strict execution evidence still apply.
 
+A retry-dependent pass still fails the smoke gate. The privacy-safe reporter
+retains allowlisted footer geometry and product-submit readiness categories for
+the corresponding fixtures, including the failed first attempt. It drops raw
+annotations, form values, identities, message content, and error text. Extend
+these diagnostics only with bounded fields and matching privacy regression tests.
+
 ## Code Conventions
 
 ### General

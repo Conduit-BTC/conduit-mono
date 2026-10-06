@@ -5,6 +5,7 @@ import {
   getPublicKey,
   verifyEvent,
 } from "nostr-tools/pure"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 import {
   buildEventMarketCalendarDraft,
@@ -71,16 +72,50 @@ async function expectMobileTouchTarget(
 async function expectVisibleDisjointControls(
   page: Page,
   first: Locator,
-  second: Locator
+  second: Locator,
+  phase: "initial" | "returned"
 ): Promise<void> {
   await expect
     .poll(async () => {
       const [firstBox, secondBox, viewport] = await Promise.all([
         first.boundingBox(),
         second.boundingBox(),
-        page.evaluate(() => ({ width: innerWidth, height: innerHeight })),
+        page.evaluate(() => ({
+          width: innerWidth,
+          height: innerHeight,
+          scrollY,
+          measuredFooterHeight:
+            Number.parseFloat(
+              getComputedStyle(document.documentElement).getPropertyValue(
+                "--market-fixed-footer-height"
+              )
+            ) || 0,
+          footerHidden:
+            document.querySelector("footer")?.getAttribute("aria-hidden") ===
+            "true",
+        })),
       ])
-      if (!firstBox || !secondBox) return "missing"
+      const record = (layout: string) => {
+        recordSmokeDiagnostic(test.info(), "footer-layout", {
+          phase,
+          layout,
+          triggerX: firstBox?.x,
+          triggerY: firstBox?.y,
+          triggerWidth: firstBox?.width,
+          triggerHeight: firstBox?.height,
+          footerX: secondBox?.x,
+          footerY: secondBox?.y,
+          footerWidth: secondBox?.width,
+          footerHeight: secondBox?.height,
+          viewportWidth: viewport.width,
+          viewportHeight: viewport.height,
+          scrollY: viewport.scrollY,
+          measuredFooterHeight: viewport.measuredFooterHeight,
+          footerHidden: viewport.footerHidden,
+        })
+        return layout
+      }
+      if (!firstBox || !secondBox) return record("missing")
 
       const fullyVisible = [firstBox, secondBox].every(
         ({ x, y, width, height }) =>
@@ -89,7 +124,7 @@ async function expectVisibleDisjointControls(
           x + width <= viewport.width &&
           y + height <= viewport.height
       )
-      if (!fullyVisible) return "clipped"
+      if (!fullyVisible) return record("clipped")
 
       const intersects = !(
         firstBox.x + firstBox.width <= secondBox.x ||
@@ -97,7 +132,7 @@ async function expectVisibleDisjointControls(
         firstBox.y + firstBox.height <= secondBox.y ||
         secondBox.y + secondBox.height <= firstBox.y
       )
-      return intersects ? "intersecting" : "disjoint"
+      return record(intersects ? "intersecting" : "disjoint")
     })
     .toBe("disjoint")
 }
@@ -871,7 +906,12 @@ test.describe("CND-162 mobile browser baseline", () => {
       exact: true,
     })
 
-    await expectVisibleDisjointControls(page, messagesTrigger, reportBug)
+    await expectVisibleDisjointControls(
+      page,
+      messagesTrigger,
+      reportBug,
+      "initial"
+    )
     await messagesTrigger.tap()
     const messagesDialog = page.getByRole("dialog", {
       name: "Messages",
@@ -916,7 +956,12 @@ test.describe("CND-162 mobile browser baseline", () => {
 
     expect(transitionOverlapCount).toBe(0)
     await expect(footer).not.toHaveAttribute("aria-hidden", "true")
-    await expectVisibleDisjointControls(page, messagesTrigger, reportBug)
+    await expectVisibleDisjointControls(
+      page,
+      messagesTrigger,
+      reportBug,
+      "returned"
+    )
     await assertMobileViewport(page)
   })
 
