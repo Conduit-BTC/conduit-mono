@@ -42,7 +42,8 @@ export function useMerchantIdentities({
     [allMerchantPubkeys, visibleMerchantPubkeys]
   )
   const requestedBackgroundPubkeys = useMemo(() => {
-    if (deferBackgroundHydration || !backgroundHydrationPubkeys)
+    if (deferBackgroundHydration) return []
+    if (!backgroundHydrationPubkeys)
       return merchantHydrationTargets.backgroundMerchantPubkeys
     const requested = new Set(backgroundHydrationPubkeys)
     return merchantHydrationTargets.backgroundMerchantPubkeys.filter((pubkey) =>
@@ -126,7 +127,13 @@ export function useMerchantIdentities({
   const identitiesByPubkey = useMemo(
     () =>
       Object.fromEntries(
-        allMerchantPubkeys.map((pubkey) => [
+        [
+          ...new Set([
+            ...merchantHydrationTargets.visibleMerchantPubkeys,
+            ...requestedBackgroundPubkeys,
+            ...Object.keys(merchantProfiles),
+          ]),
+        ].map((pubkey) => [
           pubkey,
           getMerchantIdentityFromMap(
             pubkey,
@@ -137,7 +144,8 @@ export function useMerchantIdentities({
         ])
       ),
     [
-      allMerchantPubkeys,
+      merchantHydrationTargets.visibleMerchantPubkeys,
+      requestedBackgroundPubkeys,
       lookupSettledByPubkey,
       merchantProfiles,
       relayHintsByPubkey,

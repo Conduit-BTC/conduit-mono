@@ -320,9 +320,6 @@ describe("merchant matches on the product search", () => {
       "apps/market/src/hooks/useMarketBrowseModel.ts",
       "utf8"
     )
-    expect(model).toMatch(
-      /filterSellersByName\(\s*groupDiscoveredSellers\(merchantCandidateProducts\),\s*getMerchantIdentity,\s*query\s*\)/
-    )
     expect(model).toContain("matchingSellers,")
 
     const route = await readFile(

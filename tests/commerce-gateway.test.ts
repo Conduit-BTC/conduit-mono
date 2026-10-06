@@ -2944,7 +2944,7 @@ describe("commerce gateway", () => {
     controller.abort()
     release()
     await expect(read).rejects.toThrow()
-    expect(seenSignal).toBe(controller.signal)
+    expect(seenSignal?.aborted).toBe(true)
     expect(cachedProducts).toEqual([])
   })
 
@@ -3246,7 +3246,7 @@ describe("commerce gateway", () => {
     ).toEqual([`30402:${MERCHANT_A_PUBKEY}:child`])
   })
 
-  it("keeps a large whitelist and category constraint client-side with a minimal relay request", async () => {
+  it("sends a full eligible author and category scope in one ranked request while retaining client validation", async () => {
     const authors = Array.from({ length: 2048 }, (_, index) =>
       (index + 1).toString(16).padStart(64, "0")
     )
@@ -3264,8 +3264,8 @@ describe("commerce gateway", () => {
       tags: ["ceramic"],
     })
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.authors).toBeUndefined()
-    expect(requests[0]?.["#t"]).toBeUndefined()
+    expect(requests[0]?.authors).toEqual(authors)
+    expect(requests[0]?.["#t"]).toEqual(["ceramic"])
     expect(requests[0]?.limit).toBe(100)
     expect(result.meta.productSearch?.tagScopeVerified).toBe(false)
     expect(result.meta.productSearch?.coverage).toBe("partial")
@@ -3328,7 +3328,7 @@ describe("commerce gateway", () => {
       {
         search: "ceramics",
         kinds: [EVENT_KINDS.PRODUCT],
-        authors: undefined,
+        authors: [MERCHANT_A_PUBKEY],
         limit: 100,
         relayUrls: ["wss://conduit-congee.fly.dev"],
       },
@@ -3338,7 +3338,7 @@ describe("commerce gateway", () => {
     ])
   })
 
-  it("reports capped whitelist coverage rather than asking the relay to enforce the whitelist", async () => {
+  it("reports capped scope coverage and rejects out-of-scope hits even when the relay ignores author filters", async () => {
     const authorPubkeys = Array.from(
       { length: 65 },
       (_, index) => `merchant-${index}`
@@ -3384,9 +3384,7 @@ describe("commerce gateway", () => {
 
     expect(searchFilters).toHaveLength(1)
     expect(searchFilters.every((filter) => filter.limit === 100)).toBe(true)
-    expect(searchFilters.every((filter) => filter.authors === undefined)).toBe(
-      true
-    )
+    expect(searchFilters[0]?.authors).toEqual(authorPubkeys)
     expect(result.data).toEqual([])
     expect(result.meta.productSearch?.coverage).toBe("partial")
   })

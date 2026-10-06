@@ -7,8 +7,15 @@ import {
   getPublicKey,
   type Event,
 } from "nostr-tools/pure"
+import { readFileSync } from "node:fs"
 import { installTestSigner } from "./helpers/auth"
 
+const marketAuthors = JSON.parse(
+  readFileSync(
+    new URL("../apps/market/src/data/market-merchants.json", import.meta.url),
+    "utf8"
+  )
+) as string[]
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const ownerKey = generateSecretKey()
 const owner = getPublicKey(ownerKey)
@@ -360,7 +367,7 @@ test("a warm partial cache does not suppress cart header category discovery @mar
     "textiles"
   )
   relay.state.catalogProducts = [cached]
-  await page.goto(`${marketUrl}/products`)
+  await page.goto(`${marketUrl}/products?source=following`)
   await expect(
     page.getByRole("heading", { name: "Cached cloth", exact: true })
   ).toBeVisible()
@@ -815,13 +822,13 @@ test("ranked search renders semantic matches, cancels old queries, retains exact
 }) => {
   await installTestSigner(page, owner, { secretKey: ownerKey })
   const relay = await controlledSearch(page)
-  await page.goto(
-    `${marketUrl}/products?source=following&q=pottery&sort=price_desc`
-  )
-  await expect(page.getByText("Best match", { exact: true })).toBeVisible()
+  await page.goto(`${marketUrl}/products?source=following&q=pottery`)
+  await expect(
+    page.getByRole("button", { name: "Sort: Relevance" })
+  ).toBeVisible()
   const titles = page.locator("main h3")
   await expect(titles).toHaveText(["Handmade mug", "Clay bowl"])
-  await expect(page.getByRole("button", { name: /Sort:/ })).toHaveCount(0)
+  await expect(page.getByRole("button", { name: /Sort:/ })).toBeVisible()
   const searches = () =>
     relay.requests.filter(
       (filter) => filter.search && filter.kinds?.includes(30402)
@@ -829,6 +836,7 @@ test("ranked search renders semantic matches, cancels old queries, retains exact
   expect(searches().at(-1)).toEqual({
     kinds: [30402],
     search: "pottery",
+    authors: expect.arrayContaining(merchants),
     limit: 100,
   })
   expect(
@@ -876,9 +884,11 @@ test("ranked search renders semantic matches, cancels old queries, retains exact
     page.getByText("No matching products found in this Market view.")
   ).toHaveCount(0)
   await input.fill("")
-  await expect(page.getByRole("button", { name: /Sort:/ })).toBeVisible()
+  await expect(page.getByRole("button", { name: /Sort:/ })).toHaveCount(0)
   await expect(page.getByText("Cotton tote", { exact: true })).toBeVisible()
-  await expect(page.getByText("Best match", { exact: true })).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Sort: Relevance" })
+  ).toHaveCount(0)
   const beforeBrowseRefresh = relay.requests.length
   await page.getByRole("button", { name: "Refresh", exact: true }).click()
   await expect
@@ -902,7 +912,7 @@ for (const perspective of [
   "conduit",
   "combined",
 ] as const) {
-  test(`product search filters the ${perspective} whitelist after a plain NIP-50 request @market`, async ({
+  test(`product search queries the ${perspective} whitelist and validates NIP-50 hits @market`, async ({
     page,
   }) => {
     if (perspective !== "guest")
@@ -919,13 +929,39 @@ for (const perspective of [
           ).length
       )
       .toBeGreaterThan(0)
+    const expectedAuthors =
+      perspective === "following"
+        ? merchants
+        : perspective === "combined"
+          ? [...marketAuthors, ...merchants, owner]
+          : marketAuthors
+    await expect
+      .poll(() =>
+        relay.requests
+          .filter(
+            (filter) =>
+              filter.search === "pottery" && filter.kinds?.includes(30402)
+          )
+          .at(-1)
+          ?.authors?.slice()
+          .sort()
+      )
+      .toEqual([...new Set(expectedAuthors)].sort())
     const request = relay.requests
       .filter(
         (filter) => filter.search === "pottery" && filter.kinds?.includes(30402)
       )
       .at(-1)!
-    expect(request).toEqual({ kinds: [30402], search: "pottery", limit: 100 })
-    await expect(page.getByText("Best match", { exact: true })).toBeVisible()
+    expect(request).toEqual({
+      kinds: [30402],
+      search: "pottery",
+      limit: 100,
+      authors: expect.any(Array),
+    })
+    expect(new Set(request.authors)).toEqual(new Set(expectedAuthors))
+    await expect(
+      page.getByRole("button", { name: "Sort: Relevance" })
+    ).toBeVisible()
     await expect(page.locator("main h3")).toHaveText(
       perspective === "following" || perspective === "combined"
         ? ["Handmade mug", "Clay bowl"]
@@ -945,7 +981,9 @@ test("ranked cards render before lazy revision reads complete @market", async ({
     "Handmade mug",
     "Clay bowl",
   ])
-  await expect(page.getByText("Best match", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Sort: Relevance" })
+  ).toBeVisible()
   await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
   relay.releaseRevisions()
   await expect(page.locator("main h3")).toHaveText([
@@ -972,7 +1010,9 @@ test("cached text matches stay labeled during an unavailable live search @market
   ).toBeVisible()
   relay.state.unavailable = false
   await page.getByRole("button", { name: "Refresh" }).click()
-  await expect(page.getByText("Best match", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Sort: Relevance" })
+  ).toBeVisible()
   await expect(page.locator("main h3")).toHaveText([
     "Handmade mug",
     "Clay bowl",

@@ -591,7 +591,9 @@ test("guest whitelist controls content discovery across cached reloads @market",
   await page.routeWebSocket(/.*/, async (webSocket) => {
     await webSocket.close({ code: 1011, reason: "offline catalog fixture" })
   })
-  await page.goto(`${marketUrl}/products?source=conduit`)
+  await page.goto(
+    `${marketUrl}/products?source=conduit&merchant=${nip19.npubEncode(SELLER_PUBKEY)}`
+  )
 
   const listedProduct = page.getByText("Counterfeit goods display fixture", {
     exact: true,

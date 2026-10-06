@@ -12,6 +12,11 @@ import {
   getResultPresentation,
   RefreshChip,
   MultiSelectCombobox,
+  Input,
+  Checkbox,
+  Tabs,
+  TabsList,
+  TabsTrigger,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { DeferredMerchantAvatar } from "../../components/DeferredMerchantAvatar"
@@ -31,7 +36,6 @@ import { normalizeFacetValues } from "../../lib/facets"
 import {
   MERCHANT_PAGE_SIZE,
   MERCHANT_SEARCH_PREVIEW_SIZE,
-  PRODUCT_PAGE_SIZE as PAGE_SIZE,
 } from "../../lib/clientHydration"
 import {
   type MarketBrowseSearch,
@@ -47,7 +51,8 @@ const SORT_OPTIONS: Array<{
   label: string
 }> = [
   // Keep the existing URL value while naming the discovery policy honestly.
-  { value: "newest", label: "Fresh & diverse" },
+  { value: "newest", label: "Recently updated" },
+  { value: "relevance", label: "Relevance" },
   { value: "price_asc", label: "Price: Low to High" },
   { value: "price_desc", label: "Price: High to Low" },
 ]
@@ -61,6 +66,8 @@ export const Route = createFileRoute("/products/")({
       (merchant) => normalizePubkey(merchant) ?? merchant
     )
     const tags = normalizeFacetValues(raw.tag).map((tag) => tag.toLowerCase())
+    const query = typeof raw.q === "string" ? raw.q : undefined
+    const scoped = !!query?.trim() || tags.length > 0 || merchants.length > 0
 
     const authRequired =
       raw.authRequired === true ||
@@ -69,13 +76,24 @@ export const Route = createFileRoute("/products/")({
       raw.authRequired === "1"
 
     return {
+      view:
+        !scoped && (raw.view === "recent" || raw.view === "all")
+          ? raw.view
+          : undefined,
+      older:
+        !scoped && (raw.older === true || raw.older === "true")
+          ? true
+          : undefined,
       merchant: merchants.length > 0 ? merchants : undefined,
-      q: typeof raw.q === "string" ? raw.q : undefined,
-      sort: (["newest", "price_asc", "price_desc"] as const).includes(
-        raw.sort as MarketBrowseSortOption
-      )
-        ? (raw.sort as MarketBrowseSortOption)
-        : undefined,
+      q: query,
+      sort:
+        scoped &&
+        (raw.sort !== "relevance" || !!query?.trim()) &&
+        (["newest", "relevance", "price_asc", "price_desc"] as const).includes(
+          raw.sort as MarketBrowseSortOption
+        )
+          ? (raw.sort as MarketBrowseSortOption)
+          : undefined,
       source: MARKET_SOURCE_OPTIONS.includes(
         raw.source as ProductCatalogSourceMode
       )
@@ -109,8 +127,9 @@ function FilterRemoveButton({
 function ProductsPage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const [visibleCount, setVisibleCount] = useState(24)
   const [connectOpen, setConnectOpen] = useState(false)
+  const [categoryQuery, setCategoryQuery] = useState("")
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
   const [merchantMenuOpen, setMerchantMenuOpen] = useState(false)
   const [merchantQuery, setMerchantQuery] = useState("")
@@ -126,6 +145,13 @@ function ProductsPage() {
       navigate({
         search: (prev: ProductSearch) => {
           const next = { ...prev, ...updates }
+          // Explicit catalog scopes must leave the home feed and its recency policy.
+          if (next.q?.trim() || next.tag?.length || next.merchant?.length) {
+            delete next.view
+            delete next.older
+          }
+          if (!next.q?.trim() && !next.tag?.length && !next.merchant?.length)
+            delete next.sort
           for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
             const value = next[key]
             if (
@@ -246,7 +272,7 @@ function ProductsPage() {
   }
 
   useEffect(() => {
-    setVisibleCount(PAGE_SIZE)
+    setVisibleCount(24)
   }, [searchKey])
 
   useEffect(() => {
@@ -264,7 +290,7 @@ function ProductsPage() {
         // laid out by the time the user scrolls to it. Each reveal pushes the
         // sentinel back out of view, so it re-fires only on further scroll.
         if (entries[0]?.isIntersecting && hasMoreRef.current) {
-          setVisibleCount((current) => current + PAGE_SIZE)
+          setVisibleCount((current) => current + 24)
         }
       },
       { rootMargin: "600px 0px" }
@@ -301,7 +327,7 @@ function ProductsPage() {
   )
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 [overflow-anchor:none]">
       {search.authRequired && (
         <section className="rounded-2xl border border-secondary-500/30 bg-secondary-500/10 p-4 sm:p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -370,6 +396,104 @@ function ProductsPage() {
         }
       />
 
+      <section aria-labelledby="category-browse-heading" className="space-y-3">
+        <h1
+          id="category-browse-heading"
+          className="text-xl font-semibold text-balance"
+        >
+          Shop by category
+        </h1>
+        <div className="flex flex-wrap gap-2">
+          {categoryFacetOptions.slice(0, 8).map((option) => (
+            <Button
+              key={option.value}
+              variant={option.selected ? "primary" : "outline"}
+              size="sm"
+              aria-pressed={option.selected}
+              onClick={() => toggleTag(option.value)}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+        <form
+          className="flex max-w-md gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const tag = categoryQuery.trim().toLowerCase()
+            if (tag) {
+              updateSearch({ tag: [tag] })
+              setCategoryQuery("")
+            }
+          }}
+        >
+          <Input
+            aria-label="Browse any category"
+            placeholder="Enter a category"
+            value={categoryQuery}
+            onChange={(event) => setCategoryQuery(event.target.value)}
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={!categoryQuery.trim()}
+          >
+            Browse
+          </Button>
+        </form>
+        <p className="text-xs text-pretty text-[var(--text-muted)]">
+          Choose a suggested category or enter another above. Merchant counts
+          show products already seen.
+        </p>
+      </section>
+
+      {!browseModel.scoped && (
+        <div className="space-y-3">
+          <Tabs
+            value={search.view ?? "discover"}
+            onValueChange={(value) =>
+              updateSearch({
+                view:
+                  value === "discover"
+                    ? undefined
+                    : (value as "recent" | "all"),
+                older: undefined,
+                sort: undefined,
+              })
+            }
+          >
+            <TabsList className="flex h-auto flex-wrap justify-start">
+              <TabsTrigger value="discover">Discover</TabsTrigger>
+              <TabsTrigger value="recent">Recently updated</TabsTrigger>
+              <TabsTrigger value="all">Explore all products</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <p
+            role="status"
+            className="text-sm text-pretty text-[var(--text-secondary)]"
+          >
+            {browseModel.browseMode === "discover"
+              ? "A selection across merchants. More products load as you browse."
+              : browseModel.browseMode === "recent"
+                ? search.older
+                  ? "Listing publications and revisions, including older listings."
+                  : "Listing publications and revisions from the last 30 days."
+                : "Browse across the eligible catalog, including older listings."}
+          </p>
+          {browseModel.browseMode === "recent" && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={!!search.older}
+                onCheckedChange={(checked) =>
+                  updateSearch({ older: checked === true ? true : undefined })
+                }
+              />
+              Include older listings
+            </label>
+          )}
+        </div>
+      )}
+
       <div className="flex w-full min-w-0 flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
         {shouldShowCategories ? (
           <div className="flex min-w-0 items-center gap-2">
@@ -407,7 +531,7 @@ function ProductsPage() {
                     All categories
                   </span>
                   <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                    [{categoryFacetTotal}]
+                    {categoryFacetTotal ? "Known" : ""}
                   </span>
                 </DropdownMenuCheckboxItem>
                 {categoryFacetOptions.map((option) => (
@@ -422,7 +546,7 @@ function ProductsPage() {
                       {option.label}
                     </span>
                     <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                      [{option.count}]
+                      {option.count ? `${option.count} cached` : ""}
                     </span>
                   </DropdownMenuCheckboxItem>
                 ))}
@@ -458,7 +582,9 @@ function ProductsPage() {
             options={merchantFacetOptions.map((option) => ({
               value: option.value,
               label: option.label,
-              detail: `${option.count} ${option.count === 1 ? "product" : "products"}`,
+              detail: option.count
+                ? `${option.count} cached ${option.count === 1 ? "product" : "products"}`
+                : "Browse catalog",
               icon: (
                 <DeferredMerchantAvatar
                   picture={getMerchantIdentity(option.value).picture}
@@ -570,7 +696,8 @@ function ProductsPage() {
                   <SellerCard
                     pubkey={seller.pubkey}
                     identity={getMerchantIdentity(seller.pubkey)}
-                    listingCount={seller.listingCount}
+                    listingCount={seller.listingCount || undefined}
+                    countIsCached
                   />
                 </li>
               ))}
@@ -589,14 +716,8 @@ function ProductsPage() {
             refreshingLabel="Updating listings..."
           />
         </div>
-        {browseModel.isSearching ? (
-          <span className="text-sm text-[var(--text-secondary)]">
-            {browseModel.isShowingCachedSearch ||
-            !browseModel.isRemoteSearchEligible
-              ? "Cached matches"
-              : "Best match"}
-          </span>
-        ) : (
+        {browseModel.isShowingCachedSearch && <span>Cached matches</span>}
+        {browseModel.scoped ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="gap-1 px-1 text-sm">
@@ -604,7 +725,10 @@ function ProductsPage() {
                 <span>
                   {
                     SORT_OPTIONS.find(
-                      (option) => option.value === (search.sort ?? "newest")
+                      (option) =>
+                        option.value ===
+                        (search.sort ??
+                          (browseModel.isSearching ? "relevance" : "newest"))
                     )?.label
                   }
                 </span>
@@ -615,14 +739,24 @@ function ProductsPage() {
               align="end"
               className="w-64 max-w-[calc(100vw-2rem)]"
             >
-              {SORT_OPTIONS.map((option) => (
+              {SORT_OPTIONS.filter(
+                (option) =>
+                  option.value !== "relevance" || browseModel.isSearching
+              ).map((option) => (
                 <DropdownMenuCheckboxItem
                   key={option.value}
-                  checked={(search.sort ?? "newest") === option.value}
+                  checked={
+                    (search.sort ??
+                      (browseModel.isSearching ? "relevance" : "newest")) ===
+                    option.value
+                  }
                   onSelect={() =>
                     updateSearch({
                       sort:
-                        option.value === "newest" ? undefined : option.value,
+                        option.value ===
+                        (browseModel.isSearching ? "relevance" : "newest")
+                          ? undefined
+                          : option.value,
                     })
                   }
                   className="min-h-10 border-b border-[var(--border)] last:border-b-0"
@@ -632,7 +766,7 @@ function ProductsPage() {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-        )}
+        ) : null}
       </div>
 
       {browseModel.isSearching && !browseModel.isRemoteSearchEligible && (
@@ -650,10 +784,25 @@ function ProductsPage() {
           </p>
         )}
 
+      {!browseModel.isSearching &&
+        productsQuery.isRefreshStale &&
+        !productsQuery.isInitialLoading && (
+          <p role="status" className="text-sm text-[var(--text-secondary)]">
+            Browsing coverage is partial. More listings may be available across
+            merchants and relays.
+          </p>
+        )}
+      {browseModel.boundaryBlocked && (
+        <p role="status" className="text-sm text-[var(--text-secondary)]">
+          Many listings share the same update time. Narrow the category or
+          merchant to continue browsing.
+        </p>
+      )}
+
       {/* Loading */}
       {productsQuery.isInitialLoading && (
         <ul className={PRODUCT_GRID_CLASS_NAME}>
-          {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
+          {Array.from({ length: 24 }).map((_, idx) => (
             <li key={idx}>
               <ProductGridCardSkeleton />
             </li>
@@ -778,7 +927,7 @@ function ProductsPage() {
           <div className="flex justify-center pt-2">
             <Button
               variant="outline"
-              onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+              onClick={() => setVisibleCount((c) => c + 24)}
             >
               Show more
             </Button>
