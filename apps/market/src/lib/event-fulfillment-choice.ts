@@ -97,6 +97,7 @@ export async function prepareEventFulfillmentChoice(
   const productRead = await readEventMarketProduct({
     marketRead,
     productCoordinate: item.productId,
+    selectedOccurrenceCoordinate: context.calendarCoordinate,
     authenticatedPubkey,
     shouldContinue,
   })

@@ -20,6 +20,7 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
 import { parseEventMarketCalendarEvent } from "../protocol/event-market"
 import { parseEventMarketSeriesEvent } from "../protocol/event-market-schedule"
+import { parseEventMarketAssignmentEvent } from "../protocol/event-market-assignment"
 import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
 
 /** Conduit product extension; not an Open Markets physical-property tag. */
@@ -395,6 +396,9 @@ export const orderEventMarketPickupFulfillmentSchema = z
     /** Exact 31924 revision that includes the selected occurrence, when present. */
     schedule: signedPickupEvidenceCoordinateSchema.optional(),
     product: signedPickupEvidenceCoordinateSchema,
+    parentProduct: signedPickupEvidenceCoordinateSchema.optional(),
+    /** New orders bind each line to its exact merchant-signed occurrence assignment. */
+    occurrenceAssignment: signedPickupEvidenceCoordinateSchema.optional(),
     mode: z.enum(["merchant_present", "organizer_handoff"]),
     assignment: z.string().min(1).max(120),
   })
@@ -491,7 +495,47 @@ export const orderEventMarketPickupFulfillmentSchema = z
         message: "Signed calendar must contain the saved pickup time.",
       })
     }
+    const occurrenceAssignment = fulfillment.occurrenceAssignment
+      ? parseEventMarketAssignmentEvent(
+          fulfillment.occurrenceAssignment.signedEvent
+        )
+      : null
     if (
+      fulfillment.parentProduct &&
+      !signedEvidenceMatchesCoordinate(fulfillment.parentProduct)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["parentProduct"],
+        message: "Signed variation parent evidence must match its coordinate.",
+      })
+    }
+    if (
+      fulfillment.occurrenceAssignment &&
+      (!signedEvidenceMatchesCoordinate(fulfillment.occurrenceAssignment) ||
+        !occurrenceAssignment ||
+        occurrenceAssignment.coordinate !==
+          fulfillment.occurrenceAssignment.coordinate ||
+        occurrenceAssignment.marketCoordinate !==
+          fulfillment.market.coordinate ||
+        occurrenceAssignment.occurrenceCoordinate !==
+          fulfillment.calendar.coordinate ||
+        occurrenceAssignment.productCoordinate !==
+          fulfillment.product.coordinate ||
+        occurrenceAssignment.state !== "active" ||
+        !occurrenceAssignment.fulfillmentMethods.includes("pickup") ||
+        (occurrenceAssignment.inventory.mode === "tracked" &&
+          occurrenceAssignment.inventory.quantity < 1))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["occurrenceAssignment"],
+        message:
+          "Signed assignment must authorize this product and selected pickup occurrence.",
+      })
+    }
+    if (
+      !fulfillment.occurrenceAssignment &&
       !fulfillment.product.signedEvent.tags.some(
         (tag) => tag[0] === "a" && tag[1] === fulfillment.market.coordinate
       )
@@ -728,6 +772,21 @@ export const orderItemSchema = z
       })
     }
     if (item.fulfillment.type === "event_market_pickup") {
+      const signedAssignment = item.fulfillment.occurrenceAssignment
+        ? parseEventMarketAssignmentEvent(
+            item.fulfillment.occurrenceAssignment.signedEvent
+          )
+        : null
+      if (
+        signedAssignment?.inventory.mode === "tracked" &&
+        item.quantity > signedAssignment.inventory.quantity
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["quantity"],
+          message: "Pickup quantity exceeds the signed occurrence allocation.",
+        })
+      }
       if (item.fulfillment.product.coordinate !== item.productId) {
         context.addIssue({
           code: "custom",

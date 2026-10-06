@@ -8,8 +8,14 @@ import {
   useRef,
   useState,
 } from "react"
+import { db } from "@conduit/core/db"
 import {
   getProfilePaymentAddress,
+  prepareMerchantInventoryProductEdits,
+  commitMerchantInventoryProductEdits,
+  acceptMerchantOccurrenceOrder,
+  getMerchantInventoryAcceptedOrder,
+  resumeMerchantOccurrencePublication,
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
@@ -1025,6 +1031,14 @@ function OrdersWorkspace() {
   )
   const selectedOrder =
     selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload : null
+  const acceptedInventoryQuery = useQuery({
+    queryKey: ["merchant-accepted-inventory", pubkey, selected?.orderId],
+    queryFn: () =>
+      getMerchantInventoryAcceptedOrder(db, pubkey!, selected!.orderId),
+    enabled: !!pubkey && !!selected,
+    retry: false,
+  })
+  const [inventoryNotice, setInventoryNotice] = useState("")
   const selectedFuturePickup = selectedOrder?.items.find(
     (item) => item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
@@ -1304,6 +1318,7 @@ function OrdersWorkspace() {
   const merchantOrderState: MerchantOrderState = selected
     ? {
         ...getMerchantConversationState(selected),
+        ...(acceptedInventoryQuery.data ? { accepted: true } : {}),
         buyerReplyable:
           communicationState === "nostr_replyable"
             ? true
@@ -1368,6 +1383,8 @@ function OrdersWorkspace() {
     futureAckQuery.data?.revoked,
   ])
   const stockAdjustments =
+    !!acceptedInventoryQuery.data ||
+    acceptedInventoryQuery.isPending ||
     !selected ||
     !orderSummary ||
     !pubkey ||
@@ -1760,6 +1777,11 @@ function OrdersWorkspace() {
           "This stock update is already applied or awaiting delivery."
         )
       }
+      if (await getMerchantInventoryAcceptedOrder(db, pubkey, payload.orderId))
+        throw new Error("This order already consumed inventory at acceptance.")
+      const inventoryRevisions = await prepareMerchantInventoryProductEdits([
+        { coordinate: record.addressId, eventId: record.eventId },
+      ])
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
@@ -1777,6 +1799,7 @@ function OrdersWorkspace() {
           if (!isCurrentOrderAccount(pubkey)) {
             throw new Error("Signed stock update belongs to another account.")
           }
+          await commitMerchantInventoryProductEdits([event], inventoryRevisions)
           const rawEvent = event
           signedEvent = rawEvent
           pendingStockDeliveryStoreRef.current.set(pubkey, {
@@ -2212,6 +2235,13 @@ function OrdersWorkspace() {
         if (authority.accountPubkey !== input.merchantPubkey) {
           throw new Error("Payment confirmation belongs to another account")
         }
+        if (
+          input.order &&
+          selected &&
+          !getMerchantConversationState(selected).accepted
+        ) {
+          await commitSelectedInventory(input.order)
+        }
         const result = await confirmMerchantPayment({
           ...input,
           authenticatedPubkey,
@@ -2231,6 +2261,57 @@ function OrdersWorkspace() {
         : null
       if (estimate) void reportCommerceGmvEstimate(estimate)
       if (selected?.orderId === input.orderId) flash("Payment confirmed.")
+      await invalidateOrderQueries()
+    },
+  })
+
+  async function commitSelectedInventory(order = selectedOrder) {
+    if (!pubkey || !order) throw new Error("No order selected.")
+    const authority = captureFreshOrderAuthority()
+    const result = await acceptMerchantOccurrenceOrder({
+      merchantPubkey: pubkey,
+      authenticatedPubkey,
+      shouldContinue: () => isCurrentOrderAction(authority),
+      order,
+      products: (orderProductsQuery.data?.data ?? []).map(
+        (record) => record.product
+      ),
+    })
+    queryClient.setQueryData(
+      ["merchant-accepted-inventory", pubkey, order.id],
+      result.order
+    )
+    setInventoryNotice(
+      "Accepted and inventory saved on this device. Signing and delivery may still be pending."
+    )
+    return result
+  }
+  const retryInventoryMutation = useMutation({
+    mutationFn: async () => {
+      if (!pubkey || !selectedOrder) throw new Error("No order selected.")
+      const authority = captureFreshOrderAuthority()
+      const result = await resumeMerchantOccurrencePublication({
+        merchantPubkey: pubkey,
+        authenticatedPubkey,
+        shouldContinue: () => isCurrentOrderAction(authority),
+      })
+      await publishMerchantOrderMessage({
+        merchantPubkey: pubkey,
+        buyerPubkey: selectedOrder.buyerPubkey,
+        orderId: selectedOrder.id,
+        type: "status_update",
+        tags: [["status", "accepted"]],
+        payload: { status: "accepted" },
+        delivery: operationalDelivery,
+        signerInteraction: "external",
+        authenticatedPubkey,
+        shouldContinue: () => isCurrentOrderAction(authority),
+      })
+      setInventoryNotice(
+        result.pending
+          ? "Accepted. Some inventory publication is still pending."
+          : "Accepted inventory updates published."
+      )
       await invalidateOrderQueries()
     },
   })
@@ -2315,18 +2396,44 @@ function OrdersWorkspace() {
               )
           }
         }
-        await publishMerchantOrderMessage({
-          merchantPubkey: pubkey,
-          buyerPubkey: actionConversation.buyerPubkey,
-          orderId: actionConversation.orderId,
-          type: "status_update",
-          tags: [["status", nextStatus]],
-          payload: { status: nextStatus },
-          delivery: operationalDelivery,
-          signerInteraction: "external",
-          authenticatedPubkey,
-          shouldContinue: () => isCurrentOrderAction(authority),
-        })
+        if (nextStatus === "accepted") {
+          const orderMessage = actionConversation.messages?.find(
+            (message) => message.type === "order"
+          )
+          if (orderMessage?.type !== "order")
+            throw new Error("The original order is unavailable.")
+          await commitSelectedInventory(orderMessage.payload)
+          try {
+            await resumeMerchantOccurrencePublication({
+              merchantPubkey: pubkey,
+              authenticatedPubkey,
+              shouldContinue: () => isCurrentOrderAction(authority),
+            })
+          } catch {
+            setInventoryNotice(
+              "Accepted locally. Inventory publication needs retry."
+            )
+          }
+        }
+        try {
+          await publishMerchantOrderMessage({
+            merchantPubkey: pubkey,
+            buyerPubkey: actionConversation.buyerPubkey,
+            orderId: actionConversation.orderId,
+            type: "status_update",
+            tags: [["status", nextStatus]],
+            payload: { status: nextStatus },
+            delivery: operationalDelivery,
+            signerInteraction: "external",
+            authenticatedPubkey,
+            shouldContinue: () => isCurrentOrderAction(authority),
+          })
+        } catch (error) {
+          if (nextStatus !== "accepted") throw error
+          setInventoryNotice(
+            "Accepted locally. The buyer notification and inventory publication can be retried."
+          )
+        }
         if (!isCurrentOrderAction(authority)) {
           throw new Error("Merchant signer session changed")
         }
@@ -2778,6 +2885,27 @@ function OrdersWorkspace() {
           <section className="min-w-0">
             {selected && orderSummary ? (
               <div className="space-y-4">
+                {acceptedInventoryQuery.data ? (
+                  <section className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                    <p role="status" className="text-pretty text-sm">
+                      {inventoryNotice ||
+                        "Accepted inventory is saved on this device. Retries never consume it again."}
+                    </p>
+                    <Button
+                      variant="outline"
+                      disabled={retryInventoryMutation.isPending}
+                      onClick={() => retryInventoryMutation.mutate()}
+                    >
+                      Retry acceptance publication
+                    </Button>
+                    {retryInventoryMutation.error ? (
+                      <p role="alert" className="text-sm text-error">
+                        Acceptance remains saved. Publication could not finish;
+                        retry when your signer and relays are available.
+                      </p>
+                    ) : null}
+                  </section>
+                ) : null}
                 <div className="xl:hidden">
                   <OrderItemsCard
                     items={orderSummary.items}

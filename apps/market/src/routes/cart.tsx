@@ -570,7 +570,14 @@ function CartLineItem({
   const incrementDisabled =
     isCartProductAvailabilityBlocking(availability) ||
     (typeof availability?.stock === "number" &&
-      item.quantity >= availability.stock)
+      item.quantity >= availability.stock) ||
+    (item.fulfillment?.type === "event_market_pickup" &&
+      item.fulfillment.occurrenceAssignment?.signedEvent.tags.some(
+        (tag) =>
+          tag[0] === "inventory" &&
+          tag[1] === "tracked" &&
+          item.quantity >= Number(tag[2])
+      ) === true)
   const futurePickup =
     item.fulfillment?.type === "event_market_pickup"
       ? item.fulfillment

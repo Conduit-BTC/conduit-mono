@@ -801,8 +801,23 @@ export function addCartRepositoryItem(
     if (index >= 0) {
       const line = record.lines[index]!
       const nextItem = selectCartItemSnapshot(line.item, sanitized)
+      const pickupInventory =
+        nextItem.fulfillment?.type === "event_market_pickup"
+          ? nextItem.fulfillment.occurrenceAssignment
+          : undefined
+      const pickupQuantity = pickupInventory?.signedEvent.tags.find(
+        (tag) => tag[0] === "inventory"
+      )
+      const pickupLimit =
+        pickupQuantity?.[1] === "tracked"
+          ? Number(pickupQuantity[2])
+          : undefined
       if (
         nextItem.stock === 0 ||
+        (pickupLimit !== undefined &&
+          line.batches.reduce((sum, batch) => sum + batch.quantity, 0) +
+            requested >
+            pickupLimit) ||
         (typeof nextItem.stock === "number" &&
           productQuantity(record, input) + requested > nextItem.stock)
       ) {
@@ -815,6 +830,13 @@ export function addCartRepositoryItem(
 
     if (
       sanitized.stock === 0 ||
+      (sanitized.fulfillment?.type === "event_market_pickup" &&
+        sanitized.fulfillment.occurrenceAssignment?.signedEvent.tags.some(
+          (tag) =>
+            tag[0] === "inventory" &&
+            tag[1] === "tracked" &&
+            requested > Number(tag[2])
+        )) ||
       (typeof sanitized.stock === "number" &&
         productQuantity(record, input) + requested > sanitized.stock)
     ) {
@@ -997,8 +1019,17 @@ export function incrementCartRepositoryItem(
             ? line.item.stock
             : Math.min(line.item.stock, currentStockEvidence.stock)
     if (
-      typeof stock === "number" &&
-      productQuantity(record, identity) + requested > stock
+      (line.item.fulfillment?.type === "event_market_pickup" &&
+        line.item.fulfillment.occurrenceAssignment?.signedEvent.tags.some(
+          (tag) =>
+            tag[0] === "inventory" &&
+            tag[1] === "tracked" &&
+            line.batches.reduce((sum, batch) => sum + batch.quantity, 0) +
+              requested >
+              Number(tag[2])
+        )) ||
+      (typeof stock === "number" &&
+        productQuantity(record, identity) + requested > stock)
     ) {
       return false
     }
@@ -1040,6 +1071,13 @@ export function refreshAndIncrementCartRepositoryItem(
     const nextItem = selectCartItemSnapshot(line.item, sanitized)
     if (
       nextItem.stock === 0 ||
+      (nextItem.fulfillment?.type === "event_market_pickup" &&
+        nextItem.fulfillment.occurrenceAssignment?.signedEvent.tags.some(
+          (tag) =>
+            tag[0] === "inventory" &&
+            tag[1] === "tracked" &&
+            current + requested > Number(tag[2])
+        )) ||
       (typeof nextItem.stock === "number" &&
         productQuantity(record, input) + requested > nextItem.stock)
     ) {

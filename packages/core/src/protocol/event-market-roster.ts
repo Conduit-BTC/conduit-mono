@@ -1,6 +1,11 @@
 import type { ProductSchema } from "../schemas"
 import type { EventMarketAuthorizationResolution } from "./event-market-authorization"
 import {
+  isEventMarketAssignmentProductSuitable,
+  parseEventMarketAssignmentEvent,
+  type ParsedEventMarketAssignment,
+} from "./event-market-assignment"
+import {
   isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
   parseEventMarketCalendarEvent,
@@ -335,12 +340,14 @@ export type EventMarketProductResolution =
         | "malformed"
         | "deleted"
         | "unauthorized"
+        | "unassigned"
     }
   | {
       state: "eligible"
       product: ProductSchema
       revision: SignedPublicNostrEvent
       merchant: EventMarketMerchantRow
+      assignment: ParsedEventMarketAssignment
     }
 
 /** Author and #a relay filters produce candidates only; current signed terms decide eligibility. */
@@ -350,6 +357,8 @@ export function resolveEventMarketProduct(input: {
   revisions: readonly SignedPublicNostrEvent[]
   deletions?: readonly SignedPublicNostrEvent[]
   authorization?: EventMarketAuthorizationResolution
+  assignment?: ParsedEventMarketAssignment | null
+  parentProduct?: ProductSchema
 }): EventMarketProductResolution {
   const coordinate = parseAddressableCoordinate(input.productCoordinate, [
     EVENT_KINDS.PRODUCT,
@@ -396,24 +405,33 @@ export function resolveEventMarketProduct(input: {
   ) {
     return { state: "deleted" }
   }
+  const assignment = input.assignment
   if (
-    revision.tags.filter((tag) => tag[0] === "d").length !== 1 ||
-    revision.tags.filter(
-      (tag) => tag[0] === "a" && tag[1] === input.market.coordinate
-    ).length !== 1 ||
-    !revision.tags.some(
-      (tag) => tag[0] === "a" && tag[1] === input.market.coordinate
-    )
-  ) {
-    return { state: "untagged" }
-  }
+    !assignment ||
+    assignment.state !== "active" ||
+    assignment.marketCoordinate !== input.market.coordinate ||
+    assignment.productCoordinate !== coordinate.coordinate ||
+    !assignment.fulfillmentMethods.includes("pickup") ||
+    (assignment.inventory.mode === "tracked" &&
+      assignment.inventory.quantity < 1) ||
+    !parseEventMarketAssignmentEvent(assignment.signedEvent)
+  )
+    return { state: "unassigned" }
   try {
     const product = parseProductEvent(revision)
     if (product.visibility !== "public") return { state: "hidden" }
-    if (product.priceEvidenceMalformed || product.format !== "physical") {
+    if (
+      product.priceEvidenceMalformed ||
+      product.format !== "physical" ||
+      !isEventMarketAssignmentProductSuitable({
+        assignment,
+        product,
+        parentProduct: input.parentProduct,
+      })
+    ) {
       return { state: "malformed" }
     }
-    return { state: "eligible", product, revision, merchant }
+    return { state: "eligible", product, revision, merchant, assignment }
   } catch {
     return { state: "malformed" }
   }
@@ -422,7 +440,7 @@ export function resolveEventMarketProduct(input: {
 export function getEventMarketCandidateFilters(
   market: ParsedEventMarketRoster
 ): Array<{
-  kinds: [typeof EVENT_KINDS.PRODUCT]
+  kinds: [30410]
   authors: string[]
   "#a": [string]
 }> {
@@ -431,7 +449,7 @@ export function getEventMarketCandidateFilters(
   const result = []
   for (let index = 0; index < authors.length; index += 32) {
     result.push({
-      kinds: [EVENT_KINDS.PRODUCT] as [typeof EVENT_KINDS.PRODUCT],
+      kinds: [30410] as [30410],
       authors: authors.slice(index, index + 32),
       "#a": [market.coordinate] as [string],
     })

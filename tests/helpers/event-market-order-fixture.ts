@@ -6,6 +6,7 @@ import {
 import {
   buildEventMarketAuthorizationDraft,
   buildEventMarketRosterDraft,
+  buildEventMarketAssignmentDraft,
   orderSchema,
   type OrderEventMarketPickupFulfillmentSchema,
   type SignedPublicNostrEvent,
@@ -24,6 +25,7 @@ export function createEventMarketOrderFixture(
     productDTag?: string
     productCreatedAt?: number
     price?: number
+    newAssignment?: boolean
   } = {}
 ) {
   const organizer = getPublicKey(organizerSecret)
@@ -36,6 +38,7 @@ export function createEventMarketOrderFixture(
   const mode = options.mode ?? "organizer_handoff"
   const assignment = options.assignment ?? "Organizer table"
   const price = options.price ?? 100
+  const start = options.newAssignment ? 1_900_000_000 : 1_790_000_000
   const marketCoordinate = `30409:${organizer}:${dTag}`
   const calendarCoordinate = `31923:${organizer}:${calendarDTag}`
   const productCoordinate = `30402:${merchant}:${productDTag}`
@@ -58,10 +61,10 @@ export function createEventMarketOrderFixture(
       tags: [
         ["d", calendarDTag],
         ["title", "Market day"],
-        ["start", "1790000000"],
-        ["end", "1790003600"],
+        ["start", String(start)],
+        ["end", String(start + 3_600)],
         ["location", "100 Public Square"],
-        ["D", "20717"],
+        ["D", String(Math.floor(start / 86_400))],
       ],
       content: "",
       created_at: 100,
@@ -89,13 +92,32 @@ export function createEventMarketOrderFixture(
         ["title", "Coffee"],
         ["price", String(price), "SATS"],
         ["type", "simple", "physical"],
-        ["a", marketCoordinate],
+        ...(options.newAssignment
+          ? [["stock", "6"]]
+          : [["a", marketCoordinate]]),
       ],
       content: "Coffee",
       created_at: productCreatedAt,
     },
     merchantSecret
   )
+  const assignmentEvent = options.newAssignment
+    ? finalizeEvent(
+        {
+          ...buildEventMarketAssignmentDraft({
+            marketCoordinate,
+            occurrenceCoordinate: calendarCoordinate,
+            productCoordinate,
+            merchantPubkey: merchant,
+            state: "active",
+            inventory: { mode: "tracked", quantity: 6 },
+            fulfillmentMethods: ["pickup"],
+          }),
+          created_at: 101,
+        },
+        merchantSecret
+      )
+    : undefined
   const fulfillment: OrderEventMarketPickupFulfillmentSchema = {
     type: "event_market_pickup",
     organizerPubkey: organizer,
@@ -111,8 +133,8 @@ export function createEventMarketOrderFixture(
       coordinate: calendarCoordinate,
       eventId: calendar.id,
       createdAt: 100_000,
-      start: 1_790_000_000_000,
-      end: 1_790_003_600_000,
+      start: start * 1_000,
+      end: (start + 3_600) * 1_000,
       signedEvent: calendar,
     },
     grant: {
@@ -130,6 +152,16 @@ export function createEventMarketOrderFixture(
       createdAt: productCreatedAt * 1_000,
       signedEvent: product,
     },
+    ...(assignmentEvent
+      ? {
+          occurrenceAssignment: {
+            coordinate: `30410:${merchant}:${assignmentEvent.tags.find((tag) => tag[0] === "d")?.[1]}`,
+            eventId: assignmentEvent.id,
+            createdAt: 101_000,
+            signedEvent: assignmentEvent,
+          },
+        }
+      : {}),
     mode,
     assignment,
   }
@@ -162,7 +194,13 @@ export function createEventMarketOrderFixture(
   return {
     order,
     fulfillment,
-    events: [market, calendar, grant, product] as SignedPublicNostrEvent[],
+    events: [
+      market,
+      calendar,
+      grant,
+      product,
+      ...(assignmentEvent ? [assignmentEvent] : []),
+    ] as SignedPublicNostrEvent[],
     organizer,
     merchant,
     buyer,

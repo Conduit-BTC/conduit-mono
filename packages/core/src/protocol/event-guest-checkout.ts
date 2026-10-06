@@ -28,12 +28,15 @@ export function isContactFreeEventHandoff(
       return (
         fulfillment?.type === "event_market_pickup" &&
         fulfillment.mode === "merchant_present" &&
-        now >= fulfillment.calendar.start &&
         now < fulfillment.calendar.end &&
         isValidSignedPublicNostrEvent(fulfillment.product.signedEvent) &&
         fulfillment.product.signedEvent.pubkey === fulfillment.merchantPubkey &&
         fulfillment.product.signedEvent.id === fulfillment.product.eventId &&
-        hasSignedEventGuestOptIn(fulfillment.product.signedEvent.tags)
+        (fulfillment.occurrenceAssignment
+          ? fulfillment.occurrenceAssignment.signedEvent.id ===
+            fulfillment.occurrenceAssignment.eventId
+          : now >= fulfillment.calendar.start &&
+            hasSignedEventGuestOptIn(fulfillment.product.signedEvent.tags))
       )
     })
   )

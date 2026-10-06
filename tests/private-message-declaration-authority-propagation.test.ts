@@ -57,7 +57,7 @@ describe("private-message declaration authority propagation", () => {
       merchantOrders.match(
         /signerInteraction: "external",\s*authenticatedPubkey,\s*shouldContinue: \(\) => isCurrentOrderAction\(authority\)/g
       )
-    ).toHaveLength(4)
+    ).toHaveLength(5)
     expect(paymentAutomation).toMatch(
       /shouldContinue: \(\) => authGenerationRef\.current === authGeneration/
     )

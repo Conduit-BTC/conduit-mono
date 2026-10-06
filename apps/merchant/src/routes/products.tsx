@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
+  prepareMerchantInventoryProductEdits,
+  commitMerchantInventoryProductEdits,
   fetchMerchantShippingSettings,
   fetchMerchantShippingPolicy,
   getMerchantShippingPolicyCoordinate,
@@ -26,8 +28,6 @@ import {
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
-  readEventMarketAuthorization,
-  readEventMarketRoster,
   waitForVisibleDocument,
   type CommerceResult,
   type ListingAvailabilityEvaluation,
@@ -166,7 +166,7 @@ import {
   type ProductSignerRequestProgress,
   type SignedProductWriteBundle,
 } from "../lib/product-publishing"
-import { setEventMarketProductAssociation } from "../lib/event-market-product"
+import { EventAssignmentPanel } from "../components/EventAssignmentPanel"
 import {
   getProductFamilyStockDisplay,
   getProductStockDisplay,
@@ -764,8 +764,7 @@ async function publishProduct(
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
   onSignerRequestsComplete?: () => void,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean,
-  associationContext?: string
+  shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -888,7 +887,7 @@ async function publishProduct(
     existing?.product
   )
 
-  let product: ProductSchema = canonicalizeProductPrice({
+  const product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${signerPubkey}:${dTag}`,
     pubkey: signerPubkey,
     title,
@@ -910,8 +909,7 @@ async function publishProduct(
     stock: parseProductStockInput(form.stock),
     images: prepareProductImages(form.images),
     tags,
-    eventGuestContactOptional:
-      !isDigital && form.eventGuestContactOptional === true,
+    eventGuestContactOptional: existing?.product.eventGuestContactOptional,
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
@@ -920,63 +918,6 @@ async function publishProduct(
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   })
-
-  const requestedMarket = form.futureEventMarketReference?.trim() ?? ""
-  const existingMarketRefs = existing?.product.eventMarketRefs ?? []
-  if (requestedMarket) {
-    const decoded = decodeEventMarketReference(requestedMarket, [
-      EVENT_KINDS.EVENT_MARKET,
-    ])
-    if (!decoded) throw new Error("Future Event Market reference is invalid.")
-    product = {
-      ...product,
-      eventMarketRefs: [
-        decoded.coordinate,
-        ...existingMarketRefs.filter((ref) => ref !== decoded.coordinate),
-      ],
-    }
-    if (!existingMarketRefs.includes(decoded.coordinate)) {
-      const [marketRead, authorizationRead] = await Promise.all([
-        readEventMarketRoster({
-          reference: decoded.coordinate,
-          authenticatedPubkey,
-          shouldContinue,
-        }),
-        readEventMarketAuthorization({
-          marketCoordinate: decoded.coordinate,
-          merchantPubkey: signerPubkey,
-          authenticatedPubkey,
-          shouldContinue,
-        }),
-      ])
-      if (
-        marketRead.resolution.state !== "current" ||
-        !["complete", "partial"].includes(marketRead.coverage) ||
-        !["complete", "partial"].includes(marketRead.calendarCoverage ?? "") ||
-        !marketRead.calendar ||
-        !marketRead.retained ||
-        authorizationRead.resolution.state !== "active" ||
-        !authorizationRead.actionable
-      ) {
-        throw new Error(
-          "Current organizer-signed Event Market approval and grant could not be confirmed. Retry before linking this product."
-        )
-      }
-      product = setEventMarketProductAssociation({
-        product,
-        market: marketRead.resolution.market,
-        enabled: true,
-        authorizationActive: true,
-      })
-    }
-  } else if (existingMarketRefs.length > 0) {
-    product = {
-      ...product,
-      eventMarketRefs: associationContext
-        ? existingMarketRefs.filter((ref) => ref !== associationContext)
-        : existingMarketRefs.slice(1),
-    }
-  }
 
   const plan = buildProductFamilyChangePlan({
     parentDTag: dTag,
@@ -1005,6 +946,12 @@ async function publishProduct(
     fulfillmentIntent: target.fulfillmentIntent,
   }))
   const deletions = buildProductRemovalDeletionTargets(plan.remove)
+  const inventoryRevisions = await prepareMerchantInventoryProductEdits(
+    plan.publish.map((target) => ({
+      coordinate: target.product.id,
+      eventId: target.existing?.eventId,
+    }))
+  )
   return signAndPublishProductWriteBundle({
     merchantPubkey,
     authenticatedPubkey,
@@ -1019,6 +966,10 @@ async function publishProduct(
       }),
     onSignerRequestsComplete,
     onSignedLocal: async (bundle) => {
+      await commitMerchantInventoryProductEdits(
+        bundle.events,
+        inventoryRevisions
+      )
       const rootPublishIndex = plan.publish.findIndex(
         (target) => target.dTag === dTag
       )
@@ -1155,29 +1106,6 @@ function ProductsPage() {
   const eventContextCoordinate = eventContextReference
     ? decodeEventMarketReference(eventContextReference, [30409])?.coordinate
     : undefined
-  const [eventProductFilter, setEventProductFilter] = useState<
-    "all" | "associated" | "available"
-  >("all")
-  const eventContext = useQuery({
-    queryKey: [
-      "merchant-products-event-context",
-      eventContextReference,
-      authenticatedPubkey,
-      authGeneration,
-    ],
-    queryFn: () =>
-      readEventMarketRoster({
-        reference: eventContextReference!,
-        authenticatedPubkey,
-        shouldContinue: () => authGenerationRef.current === authGeneration,
-      }),
-    enabled: !!eventContextReference,
-    retry: false,
-  })
-  const contextName =
-    eventContext.data?.schedule?.kind === "series"
-      ? eventContext.data.schedule.series.title
-      : eventContext.data?.calendar?.title
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -1602,8 +1530,7 @@ function ProductsPage() {
             }
           },
           authStatus === "connected" ? pubkey : null,
-          () => authGenerationRef.current === authGeneration,
-          payload.associationContext
+          () => authGenerationRef.current === authGeneration
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {
@@ -2120,21 +2047,6 @@ function ProductsPage() {
   const visibleProducts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
     const filtered = merchantProducts.filter((item) => {
-      const associated =
-        !!eventContextCoordinate &&
-        item.product.eventMarketRefs?.includes(eventContextCoordinate)
-      if (
-        eventContextCoordinate &&
-        eventProductFilter === "associated" &&
-        !associated
-      )
-        return false
-      if (
-        eventContextCoordinate &&
-        eventProductFilter === "available" &&
-        (associated || item.product.format !== "physical")
-      )
-        return false
       const tagMatch =
         selectedTag === "all" || item.product.tags.includes(selectedTag)
       if (!tagMatch) return false
@@ -2180,14 +2092,7 @@ function ProductsPage() {
           return b.eventCreatedAt - a.eventCreatedAt
       }
     })
-  }, [
-    merchantProducts,
-    searchQuery,
-    selectedTag,
-    sortOrder,
-    eventContextCoordinate,
-    eventProductFilter,
-  ])
+  }, [merchantProducts, searchQuery, selectedTag, sortOrder])
 
   const itemCountLabel = useMemo(() => {
     const count = merchantProducts.length
@@ -2668,117 +2573,19 @@ function ProductsPage() {
         </div>
       </div>
 
-      {eventContextReference ? (
-        <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-          <h2 className="text-xl font-semibold">
-            Products for {contextName ?? "this Event Market"}
-          </h2>
-          <p className="text-sm text-[var(--text-muted)]">
-            Choose existing products below or add a new product. Removing an
-            event association keeps the shop product. Stock is shared with your
-            shop and every event date.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button asChild variant="outline">
-              <a href={`/events/${encodeURIComponent(eventContextReference)}`}>
-                Back to event
-              </a>
-            </Button>
-            <Select
-              value={eventProductFilter}
-              onValueChange={(value) =>
-                setEventProductFilter(value as typeof eventProductFilter)
-              }
-            >
-              <SelectTrigger className="w-56" aria-label="Event product filter">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All shop products</SelectItem>
-                <SelectItem value="associated">
-                  Offered at this event
-                </SelectItem>
-                <SelectItem value="available">Available to add</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {eventContext.isError ? (
-            <p role="alert">
-              Event details could not be checked. Return to the event and
-              refresh your approval.
-            </p>
-          ) : null}
-          <div className="space-y-3" aria-label="Choose event products">
-            {visibleProducts.map((item) => {
-              const associated =
-                !!eventContextCoordinate &&
-                item.product.eventMarketRefs?.includes(eventContextCoordinate)
-              const unavailable =
-                item.product.format !== "physical"
-                  ? "Digital products cannot use event pickup"
-                  : !item.variationForm.supported
-                    ? "This product's options need repair before editing"
-                    : item.product.stock === 0
-                      ? "Out of stock"
-                      : !item.availability.marketVisible
-                        ? "Hidden or unavailable in your shop"
-                        : null
-              return (
-                <div
-                  key={item.addressId}
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] p-3"
-                >
-                  <div>
-                    <p className="font-medium">{item.product.title}</p>
-                    <p className="text-xs text-[var(--text-muted)]">
-                      {associated ? "Offered at this event" : "Shop product"}
-                      {unavailable ? ` · ${unavailable}` : ""}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      disabled={
-                        item.product.format !== "physical" ||
-                        !item.variationForm.supported
-                      }
-                      onClick={() => {
-                        if (openEditDialog(item))
-                          setForm((previous) => ({
-                            ...previous,
-                            futureEventMarketReference: associated
-                              ? ""
-                              : eventContextCoordinate,
-                          }))
-                      }}
-                    >
-                      {associated ? "Remove from event" : "Add to event"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      disabled={!item.variationForm.supported}
-                      onClick={() => {
-                        openEditDialog(item)
-                      }}
-                    >
-                      Edit product
-                    </Button>
-                  </div>
-                </div>
-              )
-            })}
-            {visibleProducts.length === 0 ? (
-              <p className="text-sm text-[var(--text-muted)]">
-                No products match. Choose All shop products or create a new
-                product.
-              </p>
-            ) : null}
-          </div>
-          <p className="text-xs text-[var(--text-muted)]">
-            Add and remove open the product editor. Review and save to publish
-            your choice.
-          </p>
-        </section>
+      {eventContextReference && accountPubkey ? (
+        <EventAssignmentPanel
+          authGeneration={authGeneration}
+          marketReference={eventContextReference}
+          merchantPubkey={accountPubkey}
+          authenticatedPubkey={authenticatedPubkey}
+          shouldContinue={() => authGenerationRef.current === authGeneration}
+          products={merchantProducts.flatMap((item) =>
+            item.product.type === "variable"
+              ? item.variations.map((entry) => entry.product)
+              : [item.product]
+          )}
+        />
       ) : null}
 
       {!accountPubkey && (
@@ -3702,33 +3509,6 @@ function ProductsPage() {
                   </span>
                 </label>
 
-                {form.format === "physical" ? (
-                  <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] p-3">
-                    <input
-                      type="checkbox"
-                      checked={form.eventGuestContactOptional === true}
-                      onChange={(event) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          eventGuestContactOptional: event.target.checked,
-                        }))
-                      }
-                      className="mt-1 h-4 w-4 accent-secondary-500"
-                    />
-                    <span>
-                      <span className="font-medium">
-                        Allow contact-free event handoff
-                      </span>
-                      <span className="mt-1 block text-xs text-[var(--text-muted)]">
-                        At your booth during an event, guests may use a name or
-                        pseudonym and retain a receipt. You cannot contact them
-                        later. Shipping and organizer pickup still require
-                        contact details. Refunds and rebates must be arranged
-                        manually with the receipt holder.
-                      </span>
-                    </span>
-                  </label>
-                ) : null}
                 <div className="grid gap-1.5">
                   <Label htmlFor="product-zap-message-policy">
                     Zap message policy
@@ -3898,47 +3678,6 @@ function ProductsPage() {
                   form.images.some((image) => image.url.trim().length > 0)
                 }
               />
-
-              <div className="grid gap-2 rounded-xl border border-[var(--border)] p-3">
-                <Label>Event participation</Label>
-                {eventContextCoordinate ? (
-                  <>
-                    <p className="text-sm">
-                      {contextName ?? "Selected Event Market"}
-                    </p>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={!!form.futureEventMarketReference}
-                        disabled={form.format !== "physical"}
-                        onChange={(event) =>
-                          setForm((previous) => ({
-                            ...previous,
-                            futureEventMarketReference: event.target.checked
-                              ? eventContextCoordinate
-                              : "",
-                          }))
-                        }
-                      />
-                      Offer this product at this event
-                    </label>
-                    <p className="text-xs text-[var(--text-muted)]">
-                      Saving checks your current signed approval. Clear the
-                      checkbox to remove this event association. Other events
-                      and shop shipping are preserved.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-xs text-[var(--text-muted)]">
-                      Open an approved event to choose products for it.
-                    </p>
-                    <Button asChild variant="outline">
-                      <a href="/events">Choose an event</a>
-                    </Button>
-                  </>
-                )}
-              </div>
 
               <div className="grid gap-1.5">
                 <Label htmlFor="product-tags">Tags</Label>
