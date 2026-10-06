@@ -445,19 +445,19 @@ async function rehearseRouter(
     await buyerContext.grantPermissions(["local-network-access"], {
       origin: marketUrl,
     })
-    beginNetworkTeardown.set(
-      buyerContext,
-      await installHermeticCommerceNetwork(buyerContext, {
-        ...networkOptions,
-        lnurl: lnurl.respond,
-        onLocalFailure: recordNetworkFailure,
-      })
-    )
+    const buyerNetwork = await installHermeticCommerceNetwork(buyerContext, {
+      ...networkOptions,
+      lnurl: lnurl.respond,
+      onLocalFailure: recordNetworkFailure,
+    })
+    beginNetworkTeardown.set(buyerContext, buyerNetwork)
     await installHermeticSparkTransport(buyerContext, transport, {
       appUrl: marketUrl,
     })
     const page = await buyerContext.newPage()
-    const buyerPersistence = installPersistenceReloadBarrier(page, marketUrl)
+    const buyerPersistence = installPersistenceReloadBarrier(page, marketUrl, {
+      isAbandonedCompletedRequest: buyerNetwork.isAbandonedCompletedRequest,
+    })
     await installRealTestSigner(page, buyer, TEST_RELAY_URL)
     setStage("buyer catalog product load")
     await page.goto(`${marketUrl}${catalogPath}`)
@@ -671,21 +671,22 @@ async function rehearseRouter(
       await coldContext.grantPermissions(["local-network-access"], {
         origin: merchantUrl,
       })
-      beginNetworkTeardown.set(
-        coldContext,
-        await installHermeticCommerceNetwork(coldContext, {
-          ...networkOptions,
-          lnurl: lnurl.respond,
-          onLocalFailure: recordNetworkFailure,
-        })
-      )
+      const coldNetwork = await installHermeticCommerceNetwork(coldContext, {
+        ...networkOptions,
+        lnurl: lnurl.respond,
+        onLocalFailure: recordNetworkFailure,
+      })
+      beginNetworkTeardown.set(coldContext, coldNetwork)
       await installHermeticSparkTransport(coldContext, transport, {
         appUrl: merchantUrl,
       })
       const coldPage = await coldContext.newPage()
       const coldPersistence = installPersistenceReloadBarrier(
         coldPage,
-        merchantUrl
+        merchantUrl,
+        {
+          isAbandonedCompletedRequest: coldNetwork.isAbandonedCompletedRequest,
+        }
       )
       await coldPage.clock.install({ time: new Date(sharedClock.nowMs()) })
       await installRealTestSigner(coldPage, merchant, TEST_RELAY_URL)
@@ -1009,9 +1010,11 @@ async function rehearseRouter(
       return
     }
     setStage("external QR remains mounted during funding polls")
-    await page
-      .getByRole("button", { name: "Show QR code", exact: true })
-      .click()
+    // The initial named QR action already approved and opened this invoice.
+    // Observe that same disclosure rather than toggling it a second time.
+    await expect(
+      page.getByRole("button", { name: "Hide QR code", exact: true })
+    ).toBeVisible()
     const qr = page.locator('svg:has(> title:text-is("Lightning invoice"))')
     await expect(qr).toBeVisible()
     const observationsBeforeQr = fundingObservations

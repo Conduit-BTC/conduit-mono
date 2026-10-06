@@ -52,6 +52,11 @@ type HermeticCommerceNetworkOptions = {
   onLocalFailure?: (diagnostic: HermeticNetworkFailureDiagnostic) => void
 }
 
+export type HermeticCommerceNetwork = (() => void) & {
+  /** Exact successful local delivery from a positively replaced source document. */
+  isAbandonedCompletedRequest: (request: Request) => Promise<boolean>
+}
+
 type ResourceDocument =
   | { type: "navigation" }
   | { type: "unavailable" }
@@ -184,7 +189,7 @@ function createResourceDocumentTracker(documentKey: string) {
     return true
   }
 
-  return async (request: Request): Promise<ResourceDocument> => {
+  const capture = async (request: Request): Promise<ResourceDocument> => {
     try {
       const frame = request.frame()
       const tracked = observePage(frame.page())
@@ -214,6 +219,10 @@ function createResourceDocumentTracker(documentKey: string) {
     } catch {
       return { type: "unavailable" }
     }
+  }
+  return {
+    capture,
+    revision: (frame: Frame) => states.get(frame)?.revision ?? null,
   }
 }
 
@@ -308,7 +317,7 @@ export function createHermeticCommerceNetworkPolicy(
 export async function installHermeticCommerceNetwork(
   context: BrowserContext,
   options: HermeticCommerceNetworkOptions
-): Promise<() => void> {
+): Promise<HermeticCommerceNetwork> {
   const policy = createHermeticCommerceNetworkPolicy(options)
   const lnurl = options.lnurl
   const onLocalFailure = options.onLocalFailure
@@ -320,7 +329,8 @@ export async function installHermeticCommerceNetwork(
   await context.addInitScript((key) => {
     Object.defineProperty(window, key, { value: crypto.randomUUID() })
   }, documentKey)
-  const captureResourceDocument = createResourceDocumentTracker(documentKey)
+  const resourceDocuments = createResourceDocumentTracker(documentKey)
+  const completedLocalRequests = new WeakMap<Request, ResourceDocument>()
   const failLocalApplicationRequest = async (
     route: Route,
     sourceDocument: ResourceDocument,
@@ -362,7 +372,7 @@ export async function installHermeticCommerceNetwork(
       // A navigation can commit while an LNURL responder is resolving; reading
       // the frame marker afterward would bind an old resource to the new
       // document and turn its expected cancellation into a false fatal error.
-      const sourceDocument = await captureResourceDocument(request)
+      const sourceDocument = await resourceDocuments.capture(request)
       if (lnurl) {
         try {
           const response = await lnurl({ url, method: request.method() })
@@ -416,8 +426,9 @@ export async function installHermeticCommerceNetwork(
       }
       let deliveryFailed = false
       let deliveryError: unknown
+      const status = response.status()
       try {
-        if (response.status() >= 300 && response.status() < 400) {
+        if (status >= 300 && status < 400) {
           await route.abort("blockedbyclient")
         } else {
           await route.fulfill({ response })
@@ -450,6 +461,9 @@ export async function installHermeticCommerceNetwork(
           disposalError
         )
       }
+      if (!tearingDown && status >= 200 && status < 300) {
+        completedLocalRequests.set(request, sourceDocument)
+      }
     } catch (error) {
       // Only explicit runner-owned teardown may settle current/unknown work.
       // Failures during the active scenario still escape and fail that test.
@@ -470,7 +484,45 @@ export async function installHermeticCommerceNetwork(
       await socket.close({ code: 1008, reason: "Isolated commerce smoke" })
     }
   })
-  return () => {
-    tearingDown = true
-  }
+  return Object.assign(
+    () => {
+      tearingDown = true
+    },
+    {
+      async isAbandonedCompletedRequest(request: Request): Promise<boolean> {
+        const source = completedLocalRequests.get(request)
+        if (
+          tearingDown ||
+          source?.type !== "resource" ||
+          source.marker === null
+        )
+          return false
+        try {
+          if (
+            request.frame() !== source.frame ||
+            source.frame.isDetached() ||
+            source.frame.page().isClosed()
+          )
+            return false
+          const revision = resourceDocuments.revision(source.frame)
+          if (revision === null) return false
+          const current = await readSettledDocumentMarker(
+            source.frame,
+            documentKey
+          )
+          return (
+            !tearingDown &&
+            request.frame() === source.frame &&
+            !source.frame.isDetached() &&
+            !source.frame.page().isClosed() &&
+            resourceDocuments.revision(source.frame) === revision &&
+            current !== null &&
+            current !== source.marker
+          )
+        } catch {
+          return false
+        }
+      },
+    }
+  )
 }

@@ -6,7 +6,13 @@ import type { Page, Request } from "@playwright/test"
  * This never permits transport, suppresses route errors, or locks future work.
  * Install before navigation; do not use in intentional interruption scenarios.
  */
-export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
+export function installPersistenceReloadBarrier(
+  page: Page,
+  appUrl: string,
+  options: {
+    isAbandonedCompletedRequest?: (request: Request) => Promise<boolean>
+  } = {}
+) {
   let app: URL
   try {
     app = new URL(appUrl)
@@ -27,6 +33,8 @@ export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
     throw new Error("Persistence reload requires an isolated app origin.")
 
   const pending = new Set<Request>()
+  const abandonedCompleted = new WeakSet<Request>()
+  const isAbandonedCompletedRequest = options.isAbandonedCompletedRequest
   const waiters = new Set<(error?: Error) => void>()
   let failed = false
   let disposed = false
@@ -44,7 +52,7 @@ export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
     if (pending.delete(request) && pending.size === 0) notify()
   }
   const onFailed = (request: Request) => {
-    if (!pending.delete(request)) return
+    if (!pending.delete(request) && !abandonedCompleted.has(request)) return
     failed = true
     notify(new Error("Persistence reload local request failed."))
   }
@@ -76,9 +84,15 @@ export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
       }
       if (pending.size === 0) return
       await new Promise<void>((resolve, reject) => {
+        let active = true
+        let probeTimer: ReturnType<typeof setTimeout> | undefined
+        const deadline = performance.now() + timeoutMs
         const settle = (error?: Error) => {
+          if (!active) return
+          active = false
           waiters.delete(settle)
           clearTimeout(timer)
+          clearTimeout(probeTimer)
           if (error) reject(error)
           else resolve()
         }
@@ -86,6 +100,34 @@ export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
           settle(new Error("Persistence reload work did not settle."))
         }, timeoutMs)
         waiters.add(settle)
+        const inspectAbandonedRequests = async () => {
+          if (!isAbandonedCompletedRequest || !active) return
+          await Promise.all(
+            [...pending].map(async (request) => {
+              let abandoned = false
+              try {
+                abandoned = await isAbandonedCompletedRequest(request)
+              } catch {
+                // Missing proof never removes admitted work.
+              }
+              if (!active || disposed || failed) return
+              if (performance.now() >= deadline) {
+                settle(new Error("Persistence reload work did not settle."))
+                return
+              }
+              if (abandoned === true && pending.delete(request)) {
+                abandonedCompleted.add(request)
+                if (pending.size === 0) notify()
+              }
+            })
+          )
+          if (active) {
+            probeTimer = setTimeout(() => {
+              void inspectAbandonedRequests()
+            }, 25)
+          }
+        }
+        void inspectAbandonedRequests()
       })
     },
     async reload() {

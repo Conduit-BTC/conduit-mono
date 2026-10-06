@@ -154,7 +154,7 @@ describe("same-merchant multi-item settled entry", () => {
             calculateCheckoutSparkSettledGrossFundingSats(2_750)
           )
           expect(terms.fundingExpirySecs).toBe(15 * 60)
-          expect(terms.takeoverAt).toBe(NOW + 45 * 60_000)
+          expect(terms.takeoverAt).toBe(NOW + 2 * 60_000)
           return {
             plan: { createdAt: NOW },
           } as PreparedCheckoutSparkSettledFunding
