@@ -2,10 +2,15 @@ import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { THEME_STORAGE_KEY } from "@conduit/ui/theme"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   TEST_RELAY_URL,
   installTestSigner,
+  publishTestRelayEvents,
   seedTestRelayIdentity,
 } from "./helpers/auth"
 
@@ -25,11 +30,28 @@ const layouts = [
 
 async function openNetwork(
   page: Page,
-  app: "market" | "merchant"
+  app: "market" | "merchant",
+  options: { emptyPersonal?: boolean } = {}
 ): Promise<{ appUrl: string; pubkey: string }> {
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
-  await seedTestRelayIdentity(secretKey)
+  await seedTestRelayIdentity(
+    secretKey,
+    options.emptyPersonal ? { inboxDeclaration: "omit" } : {}
+  )
+  if (options.emptyPersonal) {
+    await publishTestRelayEvents([
+      finalizeEvent(
+        {
+          kind: 10002,
+          created_at: Math.floor(Date.now() / 1000) + 1,
+          tags: [],
+          content: "",
+        },
+        secretKey
+      ),
+    ])
+  }
   await installTestSigner(page, pubkey, { secretKey })
   const appUrl = app === "market" ? marketUrl : merchantUrl
 
@@ -616,6 +638,158 @@ for (const app of ["market", "merchant"] as const) {
           animations: "disabled",
         })
       }
+    })
+
+    test(`${app} ${layout.name} edits a new relay while an exact update is pending and preserves its draft through retry @${app}`, async ({
+      page,
+    }) => {
+      test.setTimeout(60_000)
+      await page.setViewportSize(layout.viewport)
+      const { appUrl, pubkey } = await openNetwork(page, app, {
+        emptyPersonal: true,
+      })
+      await expect(
+        page.getByRole("button", { name: "Refresh", exact: true }).first()
+      ).toBeEnabled({ timeout: 20_000 })
+      const mutationModuleUrl = `/@fs/${join(process.cwd(), "packages/core/src/protocol/account-network-mutation.ts")}`
+      await expect
+        .poll(async () =>
+          page.evaluate(
+            async ({ moduleUrl, accountPubkey }) => {
+              const mutation = await import(/* @vite-ignore */ moduleUrl)
+              const snapshot =
+                await mutation.dexieAccountNetworkMutationRepository.get(
+                  accountPubkey
+                )
+              return Boolean(snapshot.ownerRelayList?.current.signedEvent)
+            },
+            { moduleUrl: mutationModuleUrl, accountPubkey: pubkey }
+          )
+        )
+        .toBe(true)
+      await expect(page.getByText("Checking relay preferences…")).toBeHidden()
+      await page.evaluate(
+        async ({ moduleUrl, accountPubkey, relayUrl }) => {
+          const mutation = await import(/* @vite-ignore */ moduleUrl)
+          const repository = mutation.dexieAccountNetworkMutationRepository
+          const snapshot = await repository.get(accountPubkey)
+          const current = snapshot.ownerRelayList.current.signedEvent
+          const signedEvent = await window.nostr!.signEvent({
+            pubkey: accountPubkey,
+            kind: 10002,
+            created_at: current.created_at + 1,
+            tags: current.tags,
+            content: "",
+          })
+          await repository.stage({
+            pubkey: accountPubkey,
+            expectedRelayListEventId: current.id,
+            expectedInboxDeclarationEventId:
+              snapshot.inboxDeclaration?.current.signedEvent.id ?? null,
+            expectedExcludedRelayUrls: snapshot.localState.exclusions.map(
+              (item: { relayUrl: string }) => item.relayUrl
+            ),
+            checkpoints: [
+              { kind: 10002, signedEvent, publishRelayUrls: [relayUrl] },
+            ],
+            previousInboxRelayUrls: [],
+            removedRelayUrls: [],
+            stagedAt: Date.now(),
+          })
+        },
+        {
+          moduleUrl: mutationModuleUrl,
+          accountPubkey: pubkey,
+          relayUrl: TEST_RELAY_URL,
+        }
+      )
+      await page.reload()
+      const retry = page.getByRole("button", {
+        name: "Retry exact signed update",
+        exact: true,
+      })
+      await expect(retry).toBeEnabled({ timeout: 20_000 })
+      const candidateUrl = TEST_RELAY_URL
+      await page.getByLabel("Add relay", { exact: true }).fill(candidateUrl)
+      await page.getByRole("button", { name: "Add relay", exact: true }).click()
+      const candidatePublish = page.getByRole("button", {
+        name: `Enable Publish for ${candidateUrl}`,
+        exact: true,
+      })
+      await expect(candidatePublish).toBeEnabled({ timeout: 15_000 })
+      await candidatePublish.click()
+      await expect(
+        page.getByRole("button", {
+          name: `Disable Publish for ${candidateUrl}`,
+          exact: true,
+        })
+      ).toHaveAttribute("aria-pressed", "true")
+      const review = page
+        .getByRole("button", {
+          name: "Review and publish",
+          exact: true,
+        })
+        .first()
+      await expect(review).toBeEnabled()
+      await review.click()
+      await expect(
+        page.getByRole("button", { name: "Sign and publish", exact: true })
+      ).toBeEnabled()
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Keep editing", exact: true })
+        .click()
+      await expect(retry).toBeEnabled()
+      if (screenshotDirectory) {
+        mkdirSync(screenshotDirectory, { recursive: true })
+        await page
+          .getByRole("region")
+          .first()
+          .screenshot({
+            path: join(
+              screenshotDirectory,
+              `${app}-${layout.name}-network-pending-edit.png`
+            ),
+            animations: "disabled",
+            style: "header { visibility: hidden !important; }",
+          })
+      }
+      await retry.click()
+      await expect(
+        page.getByRole("button", { name: "Discard changes", exact: true })
+      ).toBeEnabled({ timeout: 25_000 })
+      await expect(
+        page.getByRole("button", {
+          name: `Disable Publish for ${candidateUrl}`,
+          exact: true,
+        })
+      ).toHaveAttribute("aria-pressed", "true")
+      await expect(review).toBeEnabled()
+      await review.click()
+      await expect(
+        page.getByRole("button", { name: "Sign and publish", exact: true })
+      ).toBeEnabled()
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Keep editing", exact: true })
+        .click()
+      const leaveTrigger =
+        app === "merchant" && layout.name === "mobile"
+          ? page.getByRole("link", { name: "Home", exact: true })
+          : page.getByRole("link", { name: /Conduit/i }).first()
+      if (app === "merchant" && layout.name === "mobile")
+        await page.getByRole("button", { name: "Open menu" }).click()
+      await leaveTrigger.click()
+      await expect(
+        page.getByRole("heading", {
+          name: "Leave with unpublished relay changes?",
+          exact: true,
+        })
+      ).toBeVisible()
+      await page
+        .getByRole("button", { name: "Leave and discard", exact: true })
+        .click()
+      await expect(page).toHaveURL(`${appUrl}/`)
     })
 
     test(`${app} ${layout.name} warns before discarding unpublished relay edits @${app}`, async ({
