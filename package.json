@@ -64,7 +64,11 @@
     "test:e2e:mobile": "bun scripts/dev/run_playwright_e2e.ts mobile",
     "test:e2e:webkit": "bun scripts/dev/run_playwright_e2e.ts webkit",
     "test:e2e:areas": "bun scripts/ci/validate_playwright_smoke_areas.ts",
-    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules",
+    "dev:ui": "bun run --filter @conduit/market dev:ui",
+    "build:ui": "bun run --filter @conduit/market build:ui",
+    "preview:ui": "bun run --filter @conduit/market preview:ui",
+    "typecheck:ui": "tsc -p packages/ui/workbench/tsconfig.json --noEmit"
   },
   "dependencies": {
     "react": "^19.2.8",

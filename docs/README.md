@@ -8,6 +8,8 @@ This directory contains public implementation context for the `conduit-mono` cli
 - `docs/OPEN_MARKETS.md`: commerce implementation map, compatibility differences, examples, and experimental proposal status
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
+- [UI workbench and authoring guide](../packages/ui/workbench/README.md): executable shared-component review reference
+- [Shared UI baseline](knowledge/shared-ui-baseline.md): Conduit/Ditto/shadcn inventory, proposed recipes and review gaps
 - `docs/specs/*`: durable feature, protocol, and product contracts where the repository maintains one
 - `docs/nips/*`: compact Nostr implementation notes linked to canonical public NIPs
 - `docs/knowledge/*`: public-safe implementation notes, research, interoperability references, and reusable agent context

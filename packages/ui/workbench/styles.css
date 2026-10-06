@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@config "../tailwind.preset.js";
+@source "../src";
+@source ".";
+
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--border);
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
