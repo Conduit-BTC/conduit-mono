@@ -8,6 +8,7 @@ import {
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
   type WalletNetwork,
+  type BreezAddressSigner,
 } from "@conduit/core"
 
 import {
@@ -24,6 +25,7 @@ import {
   type SparkSdkFactory,
   type SparkSdkPayment,
 } from "./spark-wallet"
+import { createSparkBreezAddressAccess } from "./breez-lightning-address"
 import { isSparkWalletSessionCoordinationAvailable } from "./spark-wallet-lease"
 
 export type SparkNetwork = WalletNetwork
@@ -81,6 +83,7 @@ interface SparkNativeLightningSendRequest {
 }
 
 export interface SparkNativeWallet {
+  readonly breezAddressSigner?: BreezAddressSigner
   on(event: string, listener: (...args: unknown[]) => void): unknown
   off(event: string, listener: (...args: unknown[]) => void): unknown
   cleanup(): Promise<void>
@@ -579,6 +582,10 @@ function adaptFirstPartySparkWallet(input: {
       listeners.delete(listenerId)
       return true
     },
+    ...createSparkBreezAddressAccess({
+      network: input.network === "MAINNET" ? "mainnet" : "regtest",
+      signer: input.wallet.breezAddressSigner,
+    }),
     async disconnect() {
       listeners.clear()
       await input.wallet.cleanup()
@@ -1789,7 +1796,29 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
     getNetworkFromSparkAddress: module.getNetworkFromSparkAddress,
     isValidSparkAddress: module.isValidSparkAddress,
     async initialize(input) {
-      const { wallet } = await module.SparkWallet.initialize(input)
+      // This is the sole wallet signer, passed to the first-party wallet itself.
+      // Address management never derives another account or opens a Breez wallet.
+      const signer = new module.DefaultSparkSigner()
+      const { wallet } = await module.SparkWallet.initialize({
+        ...input,
+        signer,
+      })
+      let active = true
+      try {
+        const expectedIdentity = await module.deriveViewerIdentityPublicKey(
+          input.options,
+          input.mnemonicOrSeed,
+          input.accountNumber
+        )
+        if ((await wallet.getIdentityPublicKey()) !== expectedIdentity)
+          throw new Error(
+            "Spark wallet identity did not match recovery parameters."
+          )
+      } catch (error) {
+        active = false
+        await wallet.cleanup()
+        throw error
+      }
       return {
         wallet: {
           on(event, listener) {
@@ -1804,7 +1833,26 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
               listener
             )
           },
-          cleanup: () => wallet.cleanup(),
+          breezAddressSigner: {
+            assertActive() {
+              if (!active)
+                throw new Error("Portable Wallet is locked on this device.")
+            },
+            async getIdentityPublicKey() {
+              if (!active)
+                throw new Error("Portable Wallet is locked on this device.")
+              return wallet.getIdentityPublicKey()
+            },
+            signDigest(digest) {
+              if (!active)
+                throw new Error("Portable Wallet is locked on this device.")
+              return signer.signMessageWithIdentityKey(digest)
+            },
+          },
+          cleanup: async () => {
+            active = false
+            await wallet.cleanup()
+          },
           setPrivacyEnabled: (enabled) => wallet.setPrivacyEnabled(enabled),
           getWalletSettings: () => wallet.getWalletSettings(),
           getBalance: async () => {

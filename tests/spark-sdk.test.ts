@@ -32,6 +32,44 @@ const PAYMENT_ATTEMPT_ID = "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
 const CHECKOUT_OUTGOING_ID = "c7fb0ad2-c85c-5d93-b542-6dc9d10d8c00"
 
 describe("first-party Spark SDK adapter", () => {
+  it("unconfigured branded addresses preserve the same open wallet and invoice receive", async () => {
+    let opens = 0
+    const wallet = createNativeWallet()
+    const factory = createFactory(wallet, {
+      async initialize() {
+        opens++
+        return { wallet }
+      },
+    })
+    const manager = new SparkWalletManager(factory, async () => ({
+      async release() {},
+    }))
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: MNEMONIC,
+      accountNumber: 1,
+    })
+    expect(await manager.getLightningAddress("wallet-personal", true)).toEqual({
+      status: "unavailable",
+      reason: "unconfigured",
+    })
+    expect(
+      (
+        await manager.receiveLightning("wallet-personal", {
+          description: "Receive",
+        })
+      ).paymentRequest
+    ).toMatch(/^lnbc/)
+    expect(opens).toBe(1)
+    expect(manager.isOpen("wallet-personal")).toBe(true)
+    await manager.close("wallet-personal")
+    expect(await manager.getLightningAddress("wallet-personal", true)).toEqual({
+      status: "unavailable",
+      reason: "locked",
+    })
+    expect(opens).toBe(1)
+  })
+
   it("fails closed on networks without first-party production defaults", () => {
     expect(getSparkConfigurationForNetwork("mainnet")).toEqual({
       status: "ready",

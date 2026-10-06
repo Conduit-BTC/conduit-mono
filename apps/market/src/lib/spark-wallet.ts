@@ -5,6 +5,7 @@ import {
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
   type WalletPaymentFeeApproval,
+  type BreezAddressState,
 } from "@conduit/core"
 
 import {
@@ -143,6 +144,8 @@ export type SparkLightningSendReconciliation =
   | { status: "conflicting_evidence"; reason: string }
 
 export interface SparkSdkClient {
+  lookupBreezAddress?(): Promise<BreezAddressState>
+  ensureBreezAddress?(): Promise<BreezAddressState>
   addEventListener?(listener: () => void): Promise<string>
   removeEventListener?(listenerId: string): Promise<boolean>
   disconnect(): Promise<void>
@@ -339,6 +342,30 @@ export class SparkWalletManager {
     this.#acquireSessionLease = acquireSessionLease
     this.#sendSafety = sendSafety
     this.#now = now
+  }
+
+  async getLightningAddress(
+    walletId: string,
+    register = false
+  ): Promise<BreezAddressState> {
+    let client: SparkSdkClient
+    try {
+      client = this.#getClient(walletId)
+    } catch {
+      return { status: "unavailable", reason: "locked" }
+    }
+    const operation = register
+      ? client.ensureBreezAddress
+      : client.lookupBreezAddress
+    if (!operation) return { status: "unavailable", reason: "unconfigured" }
+    const result = await operation.call(client)
+    // Ignore address results if the exact session was locked/replaced meanwhile.
+    if (
+      this.#clients.get(walletId) !== client ||
+      this.#quarantinedWallets.has(walletId)
+    )
+      return { status: "unavailable", reason: "locked" }
+    return result
   }
 
   async openWithMnemonic(input: {
