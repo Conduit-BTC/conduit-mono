@@ -27,6 +27,7 @@ import {
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import { MERCHANT_PAGE_SIZE } from "../lib/clientHydration"
+import { getMerchantNameSearchFeedback } from "../lib/sellerDirectory"
 
 export interface MerchantsSearch {
   source?: ProductCatalogSourceMode
@@ -112,6 +113,15 @@ function MerchantsPage() {
     })
   const visibleSellers = directory.filteredSellers.slice(0, visibleSellerCount)
   const hasMoreSellers = directory.filteredSellers.length > visibleSellerCount
+  const nameSearchFeedback = getMerchantNameSearchFeedback({
+    evidence: directory.accountSearch.data?.evidence,
+    isFetching: directory.accountSearch.isFetching,
+    matchCount: directory.filteredSellers.length,
+  })
+  const hasMoreNamesToCheck =
+    !!directory.query &&
+    nameSearchFeedback.incomplete &&
+    directory.sellers.length > visibleSellerCount
   const loadMoreSellers = useCallback(() => {
     setVisibleSellerCount(visibleSellerCount + MERCHANT_PAGE_SIZE)
   }, [visibleSellerCount])
@@ -178,14 +188,15 @@ function MerchantsPage() {
             </Button>
           </div>
         ) : directory.filteredSellers.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
+          <p
+            role="status"
+            className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-pretty text-sm text-[var(--text-muted)]"
+          >
             {directory.sellers.length === 0
               ? directory.isFetching
                 ? "Loading listings from your perspective..."
                 : "No merchants have been discovered from this perspective yet."
-              : directory.accountSearch.isFetching
-                ? "Searching merchant names..."
-                : "No matching merchant names found yet. Some profiles may still be unavailable."}
+              : nameSearchFeedback.message}
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -205,17 +216,19 @@ function MerchantsPage() {
             label="Load more merchants"
             onLoadMore={loadMoreSellers}
           />
+        ) : hasMoreNamesToCheck ? (
+          <Button type="button" variant="outline" onClick={loadMoreSellers}>
+            Check more merchant names
+          </Button>
         ) : null}
         {directory.query &&
         directory.filteredSellers.length > 0 &&
-        directory.accountSearch.data?.evidence !== "present_current" ? (
+        nameSearchFeedback.message ? (
           <p
             role="status"
             className="text-pretty text-sm text-[var(--text-muted)]"
           >
-            {directory.accountSearch.isFetching
-              ? "Searching merchant names..."
-              : "Merchant name results may be incomplete."}
+            {nameSearchFeedback.message}
           </p>
         ) : null}
       </section>

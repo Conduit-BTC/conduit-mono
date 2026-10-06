@@ -39,6 +39,7 @@ import {
 } from "../lib/searchPolicy"
 import {
   filterSellersByName,
+  getMerchantNameSearchFeedback,
   groupDiscoveredSellers,
 } from "../lib/sellerDirectory"
 import { useShopperPresets } from "./useShopperPresets"
@@ -467,13 +468,11 @@ export function useMarketBrowseModel({
   )
   const merchantSearchStatus = !merchantQuery.trim()
     ? undefined
-    : merchantProfileSearch.isFetching
-      ? "Searching merchant names..."
-      : merchantProfileSearch.data?.evidence !== "present_current"
-        ? "Merchant name results may be incomplete."
-        : storeFacetOptions.length === 0
-          ? "No matching merchants found in this catalog."
-          : undefined
+    : getMerchantNameSearchFeedback({
+        evidence: merchantProfileSearch.data?.evidence,
+        isFetching: merchantProfileSearch.isFetching,
+        matchCount: storeFacetOptions.length,
+      }).message
   const productCards: MarketProductCardView[] = useMemo(
     () =>
       visibleProducts.map((product) => ({

@@ -92,9 +92,14 @@ load-more action remains available for keyboard and observer fallback use.
 The multi-select merchant picker searches names through the existing scoped
 device/relay profile search, including merchants beyond its displayed page;
 typing does not restart product discovery. Menu profile prefetch follows its
-display order. Product totals are labeled as products, and each merchant option
-names its matching product count; “All merchants” has no ambiguous aggregate
-count. Directory totals count matching merchants.
+display order. Each merchant option names its matching product count; “All
+merchants” has no aggregate count, and the products page has no results total.
+Refresh, loading, degraded and empty-state feedback remain visible. Directory
+totals count matching merchants. For short, partial or unavailable name searches,
+a check-more action advances staged hydration of undisplayed discovered sellers,
+even with no matching rows. Matching rows retain automatic scroll paging.
+Completed empty profile searches report absence only on the searched relays;
+device-only, partial and unavailable evidence retains incomplete feedback.
 Inline seller-name search
 uses a bounded preview and links to the merchant directory. Unchecked names
 remain explicitly incomplete rather than implying no matches. Profile query keys

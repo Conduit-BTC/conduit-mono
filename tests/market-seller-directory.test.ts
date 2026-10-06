@@ -10,6 +10,7 @@ import {
   excludeDiscoveredSellers,
   filterSellersByName,
   getSellerEligibilityState,
+  getMerchantNameSearchFeedback,
   groupDiscoveredSellers,
   isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
@@ -20,6 +21,55 @@ import type { Product } from "../packages/core/src/types"
 const SELLER = "1".repeat(64)
 const OTHER_SELLER = "2".repeat(64)
 const OTHER_ACCOUNT = "3".repeat(64)
+
+describe("merchant name-search evidence", () => {
+  it("reserves incomplete feedback and recovery for incomplete evidence", () => {
+    for (const evidence of [
+      undefined,
+      "not_queried",
+      "lookup_partial",
+      "lookup_unavailable",
+    ] as const) {
+      const feedback = getMerchantNameSearchFeedback({
+        evidence,
+        isFetching: false,
+        matchCount: 0,
+      })
+      expect(feedback.incomplete).toBe(true)
+      expect(feedback.message).toContain("may be incomplete")
+    }
+  })
+  it("keeps completed empty absence bounded to searched relays", () => {
+    for (const matchCount of [0, 1]) {
+      expect(
+        getMerchantNameSearchFeedback({
+          evidence: "absent_within_scope",
+          isFetching: false,
+          matchCount,
+        })
+      ).toEqual({
+        incomplete: false,
+        message: "No matching merchant names found on the searched relays.",
+      })
+    }
+    expect(
+      getMerchantNameSearchFeedback({
+        evidence: "present_current",
+        isFetching: false,
+        matchCount: 0,
+      }).message
+    ).toBe("No matching merchants found in this catalog.")
+  })
+  it("retains progress feedback while search is running", () => {
+    expect(
+      getMerchantNameSearchFeedback({
+        evidence: "not_queried",
+        isFetching: true,
+        matchCount: 0,
+      })
+    ).toEqual({ incomplete: true, message: "Searching merchant names..." })
+  })
+})
 
 function match(
   overrides: Partial<ProfileSearchMatch> & { pubkey: string }
@@ -282,9 +332,9 @@ describe("merchant matches on the product search", () => {
     expect(route).toContain('aria-labelledby="matching-merchants-heading"')
     expect(route).toContain("MERCHANT_SEARCH_PREVIEW_SIZE")
     expect(route).toContain('to="/merchants"')
-    // The row sits before the result count, and the grid stays product-only.
+    // The row sits before loading/results, and the grid stays product-only.
     expect(route.indexOf("matching-merchants-heading")).toBeLessThan(
-      route.indexOf("{filtered.length} {filtered.length === 1")
+      route.indexOf("{/* Loading */}")
     )
   })
 

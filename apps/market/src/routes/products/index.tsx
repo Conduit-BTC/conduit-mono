@@ -581,9 +581,6 @@ function ProductsPage() {
 
       <div className="flex min-h-10 flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
         <div className="flex items-center gap-1">
-          <span>
-            {filtered.length} {filtered.length === 1 ? "product" : "products"}
-          </span>
           <RefreshChip
             iconOnly
             refreshing={isUpdatingListings}

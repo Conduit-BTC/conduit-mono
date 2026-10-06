@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test"
 import { readFileSync } from "node:fs"
-import { nip19 } from "nostr-tools"
+import { fileURLToPath } from "node:url"
+import { nip19, matchFilter, type Filter } from "nostr-tools"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { installTestSigner } from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${
@@ -130,10 +136,14 @@ async function seedAccounts(
   )
 }
 
-async function seedMerchantImageRows(page: Page): Promise<void> {
+async function seedMerchantImageRows(
+  page: Page,
+  pubkeys = IMAGE_FIXTURE_MERCHANTS,
+  cacheProfiles = true
+): Promise<void> {
   await page.waitForLoadState("networkidle")
   await page.evaluate(
-    ({ pubkeys, imageBase }) =>
+    ({ pubkeys, imageBase, cacheProfiles }) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("conduit")
         request.onerror = () => reject(request.error)
@@ -148,14 +158,15 @@ async function seedMerchantImageRows(page: Page): Promise<void> {
           const products = transaction.objectStore("products")
           pubkeys.forEach((pubkey, index) => {
             const fixtureId = `hydration-fixture-${index}`
-            profiles.put({
-              pubkey,
-              name: `Fixture Merchant ${index}`,
-              displayName: `Fixture Merchant ${index}`,
-              picture: `${imageBase}-avatar-${index}.png`,
-              banner: `${imageBase}-banner.png`,
-              cachedAt: timestamp,
-            })
+            if (cacheProfiles)
+              profiles.put({
+                pubkey,
+                name: `Fixture Merchant ${index}`,
+                displayName: `Fixture Merchant ${index}`,
+                picture: `${imageBase}-avatar-${index}.png`,
+                banner: `${imageBase}-banner.png`,
+                cachedAt: timestamp,
+              })
             products.put({
               id: `30402:${pubkey}:${fixtureId}`,
               pubkey,
@@ -183,8 +194,273 @@ async function seedMerchantImageRows(page: Page): Promise<void> {
           transaction.onabort = () => reject(transaction.error)
         }
       }),
-    { pubkeys: IMAGE_FIXTURE_MERCHANTS, imageBase: IMAGE_FIXTURE_BASE }
+    { pubkeys, imageBase: IMAGE_FIXTURE_BASE, cacheProfiles }
   )
+}
+
+async function prepareScopedNameSearch(
+  page: Page,
+  mode: "complete" | "partial" | "unavailable"
+) {
+  const keys = Array.from({ length: 48 }, generateSecretKey).sort((a, b) =>
+    getPublicKey(a).localeCompare(getPublicKey(b))
+  )
+  const pubkeys = keys.map(getPublicKey)
+  const ownerKey = generateSecretKey()
+  const owner = getPublicKey(ownerKey)
+  const now = Math.floor(Date.now() / 1000)
+  const follows = finalizeEvent(
+    {
+      kind: 3,
+      created_at: now,
+      content: "",
+      tags: pubkeys.map((pubkey) => ["p", pubkey]),
+    },
+    ownerKey
+  )
+  const profiles = keys.map((key, index) =>
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: now,
+        tags: [],
+        content: JSON.stringify({
+          name: index === 47 ? "Zebra Store" : `Alpha Merchant ${index}`,
+        }),
+      },
+      key
+    )
+  )
+  const requests: Filter[] = []
+  await page.routeWebSocket(/.*/, (socket) => {
+    socket.onMessage((payload) => {
+      const frame = JSON.parse(String(payload))
+      if (frame[0] !== "REQ") return
+      const filters = frame.slice(2) as Filter[]
+      requests.push(...filters)
+      const nameSearch = filters.some(
+        (filter) => filter.search && filter.kinds?.includes(0)
+      )
+      if (nameSearch && mode === "unavailable") {
+        socket.send(
+          JSON.stringify([
+            "CLOSED",
+            frame[1],
+            "error: fixture search unavailable",
+          ])
+        )
+        return
+      }
+      if (nameSearch && mode === "partial") {
+        // A rejected signature keeps even an EOSE answer incomplete.
+        socket.send(
+          JSON.stringify([
+            "EVENT",
+            frame[1],
+            { ...profiles[0], sig: "0".repeat(128) },
+          ])
+        )
+      } else if (!nameSearch) {
+        for (const event of [follows, ...profiles]) {
+          if (filters.some((filter) => matchFilter(filter, event))) {
+            socket.send(JSON.stringify(["EVENT", frame[1], event]))
+          }
+        }
+      }
+      socket.send(JSON.stringify(["EOSE", frame[1]]))
+    })
+  })
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  // Seed display listings, but leave every profile to the staged signed read.
+  await page.goto(`${marketUrl}/products?source=following`)
+  await seedMerchantImageRows(page, pubkeys, false)
+  return { pubkeys, requests }
+}
+
+async function enableFixtureNameSearch(page: Page, useSearchSocket = false) {
+  // NIP-50 planning requires wss. Every socket is intercepted by this fixture;
+  // the default isolated development relay uses ws and is not search eligible.
+  const moduleUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/config.ts", import.meta.url))}`
+  await page.evaluate(
+    async ({ moduleUrl, useSearchSocket }) => {
+      const { config } = await import(moduleUrl)
+      config.searchIndexRelayUrls = ["wss://merchant-search-fixture.example"]
+      // The composed evidence tests must observe the same wss target they plan.
+      // All WebSockets are intercepted; no external relay connection is opened.
+      if (useSearchSocket) config.e2eRelayIsolationEnabled = false
+    },
+    { moduleUrl, useSearchSocket }
+  )
+}
+
+for (const scenario of [
+  { query: "z", mode: "complete" as const, description: "one-character query" },
+  {
+    query: "Zebra",
+    mode: "unavailable" as const,
+    description: "unavailable search with initially empty results",
+  },
+]) {
+  test(`directory progressively checks an off-page name for ${scenario.description} @market`, async ({
+    page,
+  }) => {
+    const { pubkeys, requests } = await prepareScopedNameSearch(
+      page,
+      scenario.mode
+    )
+    await page.goto(`${marketUrl}/merchants?source=following`)
+    await enableFixtureNameSearch(page)
+    await page
+      .getByRole("textbox", { name: "Filter merchants" })
+      .fill(scenario.query)
+    const directory = page.locator(
+      'section[aria-labelledby="discovered-merchants-heading"]'
+    )
+    const more = directory.getByRole("button", {
+      name: "Check more merchant names",
+    })
+    await expect(directory).toContainText("0 of 0 merchants")
+    await expect(directory).toContainText(
+      "Merchant name results may be incomplete"
+    )
+    await expect(more).toBeVisible()
+    if (process.env.FOLLOWUP_UI_EVIDENCE) {
+      await page.screenshot({
+        path: `${process.env.FOLLOWUP_UI_EVIDENCE}/directory-empty-${scenario.mode}.png`,
+      })
+      await page.setViewportSize({ width: 390, height: 844 })
+      await expect(more).toBeVisible()
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth
+        )
+      ).toBe(true)
+      await page.screenshot({
+        path: `${process.env.FOLLOWUP_UI_EVIDENCE}/directory-empty-${scenario.mode}-mobile.png`,
+      })
+      await page.setViewportSize({ width: 1280, height: 720 })
+    }
+    const exactProfiles = () =>
+      requests.filter((filter) => filter.kinds?.includes(0) && !filter.search)
+    expect(
+      exactProfiles().flatMap((filter) => filter.authors ?? [])
+    ).not.toContain(pubkeys[47])
+    const catalogReads = requests.filter((filter) =>
+      filter.kinds?.includes(30402)
+    ).length
+    for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
+      if (pageIndex === 0 && scenario.query.length === 1) {
+        await more.focus()
+        await more.press("Enter")
+      } else {
+        await more.click()
+      }
+    }
+    await expect(
+      directory.getByRole("link", { name: /Zebra Store/ })
+    ).toBeVisible()
+    await expect(more).toHaveCount(0)
+    expect(
+      new Set(
+        exactProfiles()
+          .flatMap((filter) => filter.authors ?? [])
+          .filter((pubkey) => pubkeys.includes(pubkey))
+      ).size
+    ).toBe(48)
+    expect(
+      requests.filter((filter) => filter.kinds?.includes(30402)).length
+    ).toBe(catalogReads)
+    if (scenario.query.length === 1) {
+      expect(
+        requests.some(
+          (filter) =>
+            filter.search === scenario.query && filter.kinds?.includes(0)
+        )
+      ).toBe(false)
+    } else {
+      await expect(directory).toContainText("Search relays are unavailable")
+    }
+    if (process.env.FOLLOWUP_UI_EVIDENCE) {
+      await page.screenshot({
+        path: `${process.env.FOLLOWUP_UI_EVIDENCE}/directory-${scenario.mode}.png`,
+      })
+      await page.setViewportSize({ width: 390, height: 844 })
+      await expect(
+        directory.getByRole("link", { name: /Zebra Store/ })
+      ).toBeVisible()
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth
+        )
+      ).toBe(true)
+      await page.screenshot({
+        path: `${process.env.FOLLOWUP_UI_EVIDENCE}/directory-${scenario.mode}-mobile.png`,
+      })
+    }
+  })
+}
+
+for (const mode of ["complete", "partial", "unavailable"] as const) {
+  test(`merchant name search distinguishes ${mode} empty evidence @market`, async ({
+    page,
+  }) => {
+    const { requests } = await prepareScopedNameSearch(page, mode)
+    await page.goto(`${marketUrl}/products?source=following`)
+    await enableFixtureNameSearch(page, true)
+    await page
+      .getByRole("combobox", { name: "All merchants", exact: true })
+      .click()
+    const input = page.getByRole("combobox", {
+      name: "Search merchants",
+      exact: true,
+    })
+    await input.fill("no-such-name")
+    const status = page.getByRole("status").filter({
+      hasText:
+        mode === "complete"
+          ? "No matching merchant names found on the searched relays"
+          : "Merchant name results may be incomplete",
+    })
+    await expect(status).toBeVisible()
+    await expect
+      .poll(
+        () =>
+          requests.filter(
+            (filter) =>
+              filter.search === "no-such-name" && filter.kinds?.includes(0)
+          ).length
+      )
+      .toBeGreaterThan(0)
+    if (mode === "partial")
+      await expect(status).toHaveText(
+        "Merchant name results may be incomplete."
+      )
+    if (mode === "unavailable")
+      await expect(status).toContainText("Search relays are unavailable")
+    if (mode === "complete")
+      await expect(
+        page.getByText(/Merchant name results may be incomplete/)
+      ).toHaveCount(0)
+    await page.keyboard.press("Escape")
+    await page.goto(`${marketUrl}/merchants?source=following`)
+    await enableFixtureNameSearch(page, true)
+    await page
+      .getByRole("textbox", { name: "Filter merchants" })
+      .fill("no-such-name")
+    const directory = page.locator(
+      'section[aria-labelledby="discovered-merchants-heading"]'
+    )
+    await expect(directory).toContainText(
+      mode === "complete"
+        ? "No matching merchant names found on the searched relays"
+        : "Merchant name results may be incomplete"
+    )
+    await expect(
+      directory.getByRole("button", { name: "Check more merchant names" })
+    ).toHaveCount(mode === "complete" ? 0 : 1)
+    if (mode === "complete")
+      await expect(directory).not.toContainText("may be incomplete")
+  })
 }
 
 test("guest catalog uses the repository list despite legacy follows and relay failure @market", async ({
@@ -452,7 +728,9 @@ test("merchants tab lists discovered merchants and filters by name @market", asy
     .getByRole("textbox", { name: "Filter merchants" })
     .fill("zzzz-no-match")
   await expect(page).toHaveURL(/\/merchants\?.*q=zzzz-no-match/)
-  await expect(directory).toContainText("No matching merchant names found yet")
+  await expect(directory).toContainText(
+    "Merchant name results may be incomplete"
+  )
   await expect(networkAccounts).toBeVisible()
 })
 
@@ -548,7 +826,12 @@ test("merchant picker and directory load more rows on scroll @market", async ({
   await expect(
     page.getByText(/Hydration product \d+/, { exact: true }).first()
   ).toBeVisible()
-  await expect(page.getByText("48 products", { exact: true })).toBeVisible()
+  await expect(page.getByText(/^\d+ products?$/, { exact: true })).toHaveCount(
+    0
+  )
+  await expect(
+    page.getByRole("button", { name: /Refresh|Updating listings/ }).first()
+  ).toBeVisible()
   await page
     .getByRole("combobox", { name: "All merchants", exact: true })
     .click()
@@ -667,7 +950,7 @@ test("merchant picker searches beyond its first page and preserves multi-selecti
   await expect(directory).toContainText("1 of 1 merchants")
   await expect(
     directory.getByRole("button", { name: "Check more merchant names" })
-  ).toHaveCount(0)
+  ).toBeVisible()
 })
 
 test("merchant paging retains an action when intersection observers are unavailable @market", async ({
