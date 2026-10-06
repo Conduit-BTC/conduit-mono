@@ -74,6 +74,7 @@ is an intentional second example. Do not add credentials or live mutations here.
 - Badge is a small rectangular classification/attention tag. Counts are plain text.
 - Use a real pressed button for filters and segmented choices. Tabs have an active underline.
 - Keep primary price neutral, prominent and tabular. Orange is not a readable price role in Day Market.
+- Product cards retain an 8 px-radius border and surface, with media above a padded body. Labels use an explicit 8 px gap above controls.
 - Product and merchant names wrap. An accessible name alone does not reveal clipped content to sighted readers.
 - Phone and coarse-pointer actions, selectors, switch targets and cart quantity controls use 44 px hit areas. Desktop compact variants remain available.
 - Quantity controls remain visible after adding an item, with focus preserved as Add becomes Remove and back.

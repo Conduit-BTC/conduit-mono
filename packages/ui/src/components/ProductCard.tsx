@@ -87,9 +87,9 @@ export function ProductCard({
       tabIndex={onActivate ? 0 : undefined}
       data-availability={soldOut ? "sold-out" : "available"}
       className={cn(
-        "group flex h-full min-w-0 flex-col text-[var(--text-primary)]",
+        "group flex h-full min-w-0 flex-col rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]",
         onActivate &&
-          "cursor-pointer rounded-[var(--radius-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
+          "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
         className
       )}
       onClick={onActivate}
@@ -113,13 +113,10 @@ export function ProductCard({
         enableHoverZoom={Boolean(onActivate) && !disableImageHoverZoom}
         soldOut={soldOut}
         onInvalidImage={onInvalidImage}
-        className={cn(
-          "rounded-[var(--radius-sm)] border border-[var(--border)]",
-          mediaClassName
-        )}
+        className={cn("rounded-t-[var(--radius-md)]", mediaClassName)}
       />
 
-      <div className="flex flex-1 flex-col py-3">
+      <div className="flex flex-1 flex-col p-4">
         <div className="min-h-[3.25rem] space-y-1">
           <div className="flex items-start justify-between gap-2">
             <h3 className="min-w-0 flex-1 break-words text-base font-semibold leading-snug text-[var(--text-primary)]">
@@ -314,9 +311,9 @@ export function ProductCartAction({
 
 export function ProductCardSkeleton() {
   return (
-    <div className="flex animate-pulse flex-col">
-      <div className="aspect-[4/3] rounded-[var(--radius-sm)] bg-[var(--surface-elevated)]" />
-      <div className="flex flex-1 flex-col py-3">
+    <div className="flex animate-pulse flex-col rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
+      <div className="aspect-[4/3] rounded-t-[var(--radius-md)] border-b border-[var(--border)] bg-[var(--surface-elevated)]" />
+      <div className="flex flex-1 flex-col p-4">
         <div className="min-h-[3.25rem] space-y-1.5">
           <div className="h-4 w-4/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-4 w-3/5 rounded bg-[var(--surface-elevated)]" />

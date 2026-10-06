@@ -284,10 +284,11 @@ export function Baseline() {
                 its FeedEmptyState carries explicit retry/offline context.
               </li>
               <li>
-                MUJI informed unframed merchandise; GOV.UK informed
-                noninteractive status and ruled summaries. Carbon informed the
-                separation of status, classification and selected controls.
-                Impeccable supplied the craft and accessibility critique.
+                MUJI informed product hierarchy and quiet metadata; Conduit
+                retains contained product cards. GOV.UK informed noninteractive
+                status and ruled summaries. Carbon informed the separation of
+                status, classification and selected controls. Impeccable
+                supplied the craft and accessibility critique.
               </li>
               <li>
                 shadcn’s composable semantic table and field association

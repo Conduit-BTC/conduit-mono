@@ -27,7 +27,7 @@ export function Field({
     .join(" ")
 
   return (
-    <div className="min-w-0 space-y-2">
+    <div className="grid min-w-0 gap-2">
       <Label htmlFor={id}>{label}</Label>
       {children({
         id,

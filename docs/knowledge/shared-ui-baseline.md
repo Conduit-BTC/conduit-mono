@@ -108,7 +108,7 @@ does not deprecate them merely because they lack a story in the initial referenc
 The follow-up critique used [Impeccable's craft floor](https://github.com/pbakaus/impeccable/blob/cf3d2fa07d3ad1814ac5fbbbb5b2043b795eaef1/.agents/skills/impeccable/reference/craft-floor.md)
 as a UI quality checklist, with Conduit intent taking precedence over its stylistic defaults.
 Direct desktop/phone inspection of [MUJI's catalogue](https://www.muji.us/collections/paper-goods)
-informed unframed merchandise, readable prices and quiet metadata. Its clipped mobile
+informed product-first hierarchy, readable prices and quiet metadata. Conduit retains contained product cards. Its clipped mobile
 names were not adopted. [McMaster's materials catalogue](https://www.mcmaster.com/products/materials/)
 informed aligned, task-specific information, not its narrow-screen layout.
 [GOV.UK tags](https://design-system.service.gov.uk/components/tag/) and
@@ -121,11 +121,12 @@ Applied changes:
 
 - Passive status is icon plus text; attention tags are small rectangles and counts are plain text.
 - Tabs use an underline, segmented choices use flat rectangles, and settings use headings and rules.
-- Product and event compositions lose their enclosing window, hover shadow and passive glow.
+- Product cards keep one restrained bordered surface with padded content and contained media. Event compositions remain flat; both avoid hover shadows and passive glow.
 - Bricolage, purple primary actions, product imagery, merchant identity and event time/place remain.
 - Checkout uses aligned receipt-like totals without a nested pickup card.
 - The default shape vocabulary is 4/8/12 px, with round avatars and switches retained.
 - Product/merchant names wrap. Cart quantity controls stay visible and preserve the focused first action.
+- Shared labels are block-level and Field uses an explicit 8 px gap, preventing selectors and inputs from crowding the label above.
 - Readable foreground roles correct status/validation colors independently of existing signal fills.
   The previous Day price accent (2.29:1 on white) is replaced by the primary text role.
 - Buttons/selectors use 44 px phone and coarse-pointer hit areas; the switch has a 44 px target
@@ -146,12 +147,11 @@ remain distinct from a desktop browser resized to phone dimensions.
 ## Local workbench observations
 
 At 1280 px desktop and 390/320 px phone widths, the revised examples preserve
-reading order and keep tables in named horizontal scroll regions. The initial
-product starts at 342 px on the 390 px viewport, compared with roughly 727 px in
-the earlier candidate. Buttons, cart steppers and selectors measured 44 px high
+reading order and keep tables in named horizontal scroll regions. Collapsed preview controls bring the first product above the fold on the 390 px
+viewport, compared with roughly 727 px down the page in the earlier candidate. Buttons, cart steppers and selectors measured 44 px high
 on that phone layout. Long product and merchant names remain visible.
 
-Measured Day Market product price contrast is 14.64:1 on the actual page canvas;
+Measured Day Market product price contrast is 17.61:1 on the restored white card;
 unavailable-media text is 10.39:1 on its surface. The sampled status labels and
 attention tags exceed 4.5:1 in both themes (lowest sampled Day tag: 4.96:1).
 These measurements cover the workbench examples, not arbitrary caller overrides.

@@ -204,6 +204,11 @@ Use token mapping rather than copying raw asset colors into components.
 - Use `shadow-[var(--shadow-dialog)]` for dialog depth.
 - Decorative glow effects should derive from token colors via `color-mix(...)`, not raw `rgba(...)` values.
 
+### Field Spacing
+
+- Labels render as blocks with a readable line height. `Field` uses a grid with an 8 px gap between label, control and supporting text.
+- Do not rely on vertical margins on inline labels; they do not establish the intended label-to-control separation.
+
 ## Hardcoded Value Policy
 
 Avoid adding raw values directly in app code when they represent any of the following:
@@ -240,7 +245,7 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 
 - Use the radius tokens from `theme.css` and Tailwind config.
 - Default to 4 px for tags/media/segmented choices, 8 px for contained cards and 12 px for dialogs. Most buttons and fields retain the established small control radius.
-- Settings use headings and rules. Product listings use unframed identity/price content below the image.
+- Settings use headings and rules. Product cards retain one 8 px-radius bordered surface: media at the top, with identity, options, price and action contained in a padded body. Avoid adding another frame inside it.
 - Fully round geometry belongs to avatars, switches and genuine circular controls. Do not use a capsule as the default for status, metadata or navigation.
 
 ## Shared Patterns
