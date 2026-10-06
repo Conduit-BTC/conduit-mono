@@ -57,6 +57,7 @@ import {
   Textarea,
 } from "@conduit/ui"
 
+import { SparkLightningAddress } from "../components/SparkLightningAddress"
 import { SparkRecoveryBundleDetails } from "../components/SparkRecoveryBundleDetails"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
@@ -1575,6 +1576,11 @@ function ReceiveWalletDialog({
             available as an advanced wallet-to-wallet option.
           </DialogDescription>
         </DialogHeader>
+        <SparkLightningAddress
+          key={wallet?.id ?? "closed"}
+          walletId={wallet?.id ?? null}
+          resolve={wallets.getSparkLightningAddress}
+        />
         <div className="grid gap-2">
           <Label htmlFor="receive-amount">Amount in sats (optional)</Label>
           <Input
