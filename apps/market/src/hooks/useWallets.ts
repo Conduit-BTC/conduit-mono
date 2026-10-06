@@ -123,6 +123,10 @@ export interface UseWalletsReturn {
     password: string
   ): Promise<{ mnemonic: string; accountNumber: number }>
   lockSpark(walletId: string): Promise<void>
+  getSparkLightningAddress(
+    walletId: string,
+    register?: boolean
+  ): Promise<import("@conduit/core").BreezAddressState>
   receiveSparkLightning(walletId: string, amountSats?: number): Promise<string>
   getSparkAddress(walletId: string): Promise<string>
   listSparkPayments(walletId: string): Promise<SparkPaymentSummary[]>
@@ -762,6 +766,13 @@ export function useWallets(
     []
   )
 
+  const getSparkLightningAddress = useCallback(
+    async (walletId: string, register = false) => {
+      return requireSparkManager().getLightningAddress(walletId, register)
+    },
+    []
+  )
+
   const getSparkAddress = useCallback(async (walletId: string) => {
     return requireSparkManager().getSparkAddress(walletId)
   }, [])
@@ -942,6 +953,7 @@ export function useWallets(
     revealSparkRecovery,
     lockSpark,
     receiveSparkLightning,
+    getSparkLightningAddress,
     getSparkAddress,
     listSparkPayments,
     prepareSparkSend,
