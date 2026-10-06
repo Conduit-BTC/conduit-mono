@@ -6,7 +6,7 @@ import {
 } from "../pricing"
 import { EVENT_KINDS } from "./kinds"
 import { encodeLnurl, isValidLud16Address } from "./lightning"
-import { evaluateListingSafety } from "./listing-safety"
+import { evaluateListingAvailability } from "./listing-availability"
 import { parseProductEvent } from "./products"
 import {
   applyPreparedProductFulfillment,
@@ -358,8 +358,8 @@ export function authorizeAnonZapCheckout(input: {
       shippingOptions
     )
     const product = applyPreparedProductFulfillment(parsedProduct, fulfillment)
-    const safety = evaluateListingSafety(product)
-    if (!safety.purchasable || product.visibility !== "public") {
+    const availability = evaluateListingAvailability(product)
+    if (!availability.purchasable || product.visibility !== "public") {
       throw new Error("Checkout product is not active for purchase.")
     }
     if (!product.publicZapPolicyKnown || !product.publicZapEnabled) {

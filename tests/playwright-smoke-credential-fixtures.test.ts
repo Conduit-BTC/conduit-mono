@@ -139,7 +139,9 @@ function findStaticCredentialFixtures(
 function runGit(args: string[]): string {
   const result = spawnSync("git", args, {
     encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
+    // Main's generated place data can exceed 16 MiB in a merge diff. Scan the
+    // complete history without excluding generated files or truncating hunks.
+    maxBuffer: 32 * 1024 * 1024,
   })
   if (result.status !== 0) {
     throw new Error("Static credential history inspection failed.")

@@ -5,7 +5,7 @@ import { nip19 } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetFollowListTestState,
-  __resetNdkTestState,
+  __resetPublicReaderTestState,
   __resetRelayHealth,
   __setFollowListTestOverrides,
   buildMerchantTrustSocialSummary,
@@ -518,9 +518,18 @@ describe("NIP-02 merchant trust helpers", () => {
     )
 
     expect(read.authors[0]?.coverage).toBe("limited")
-    expect(requirePublishableContactListSnapshot(read, viewerPubkey)).toBe(
-      event
-    )
+    const snapshot = requirePublishableContactListSnapshot(read, viewerPubkey)
+    expect(snapshot).not.toBe(event)
+    expect(snapshot).toEqual({
+      id: event.id,
+      pubkey: event.pubkey,
+      kind: event.kind,
+      created_at: event.created_at,
+      tags: event.tags,
+      content: event.content,
+      sig: event.sig,
+    })
+    expect(snapshot.tags).not.toBe(event.tags)
   })
 
   it("rejects capped exact owner-local evidence before replacing a follow list", async () => {
@@ -865,7 +874,7 @@ describe("NIP-02 merchant trust helpers", () => {
       writable: true,
       value: undefined,
     })
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
 
     try {
       const read = await readLatestFollowLists(
@@ -890,7 +899,7 @@ describe("NIP-02 merchant trust helpers", () => {
       expect(
         read.authors[0]?.relays.some(
           (relay) =>
-            relay.status === "success" &&
+            relay.status === "partial" &&
             relay.eventCount === 0 &&
             relay.rejectedEventCount === 1
         )
@@ -907,7 +916,7 @@ describe("NIP-02 merchant trust helpers", () => {
       ).toThrow("completed the read")
     } finally {
       disconnectNdk()
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       Object.defineProperty(globalThis, "WebSocket", {
         configurable: true,
         writable: true,
@@ -1250,7 +1259,7 @@ describe("NIP-02 merchant trust helpers", () => {
       getAccountSigner: () => plainTestSigner(ndk.signer!),
       readLatestFollowLists: readWithLag,
       publishWithPlanner: async (event, input) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return {
           plan: {
             intent: input.intent,
@@ -1327,7 +1336,7 @@ describe("NIP-02 merchant trust helpers", () => {
         })
       },
       publishWithPlanner: async (event, input) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return {
           plan: {
             intent: input.intent,

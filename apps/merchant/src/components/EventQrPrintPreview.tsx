@@ -24,8 +24,8 @@ import {
   isEventSignQrValueWithinBudget,
   type EventQrSignSheet,
   type EventSignPreviewMode,
+  type EventSignEvidenceState,
 } from "../lib/event-signage"
-import type { MerchantOrganizerEventMarketState } from "../lib/event-market"
 
 const LETTER_WIDTH_PX = 816
 const LETTER_HEIGHT_PX = 1_056
@@ -153,7 +153,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
       >
         <header className="event-sign-brand flex items-center justify-between gap-6 border-b-4 border-primary-500 px-10 py-4">
           <img
-            src="/images/logo/logo-full.svg"
+            src="/images/logo/merchant-logo-full.svg"
             alt="Conduit"
             className="h-auto w-40"
           />
@@ -325,7 +325,7 @@ export function EventQrPrintPreview({
   title: string
   sheets: readonly EventQrSignSheet[]
   mode: EventSignPreviewMode
-  eventState: MerchantOrganizerEventMarketState
+  eventState: EventSignEvidenceState
   refreshing: boolean
   onRefresh: () => void | Promise<void>
 }) {

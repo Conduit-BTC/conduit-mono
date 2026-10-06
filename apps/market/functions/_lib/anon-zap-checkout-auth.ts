@@ -9,7 +9,7 @@ import {
   type AnonZapSigningAuthorization,
   type SignedPublicNostrEvent,
 } from "@conduit/core/protocol/anon-zap-checkout"
-import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
+import { fetchSignedEventsFanoutDetailed } from "@conduit/core/protocol/relay-reader"
 import { fetchLnurlPayMetadata } from "@conduit/core/protocol/lightning"
 import {
   PROJECT_TIP_LIGHTNING_ADDRESS,
@@ -145,8 +145,8 @@ function toSignedPublicEvent(value: unknown): SignedPublicNostrEvent | null {
 
 const defaultDependencies: AnonZapPagesDependencies = {
   fetchPublicEvents: async (filter, relayUrls) => {
-    const result = await fetchEventsFanoutDetailed(
-      filter as Parameters<typeof fetchEventsFanoutDetailed>[0],
+    const result = await fetchSignedEventsFanoutDetailed(
+      filter as Parameters<typeof fetchSignedEventsFanoutDetailed>[0],
       {
         relayUrls,
         connectTimeoutMs: 2_500,

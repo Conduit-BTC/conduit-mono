@@ -79,7 +79,7 @@ beforeEach(() => {
   products = []
   tombstones = []
   __setRelayListTestOverrides({
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
     loadCached: async () => undefined,
     putCached: async () => {},
     now: () => now,
@@ -124,7 +124,7 @@ it("cancels a bounded catalog fallback before persisting an obsolete response", 
   const candidate = listing(fastSecret, "obsolete-header-fallback")
   let reads = 0
   __setCommerceTestOverrides({
-    fetchEventsFanout: async (_filter, options) => {
+    fetchPublicEvents: async (_filter, options) => {
       reads += 1
       expect(options?.signal).toBe(controller.signal)
       started.release()
@@ -150,7 +150,7 @@ it("aborts a progressive catalog read before it emits or starts later reads", as
   let reads = 0
   let snapshots = 0
   __setCommerceTestOverrides({
-    fetchEventsFanoutProgressive: async (_filter, options) => {
+    fetchPublicEventsProgressive: async (_filter, options) => {
       reads += 1
       expect(options?.signal).toBe(controller.signal)
       started.release()
@@ -182,7 +182,7 @@ it("cancels relay-list discovery before catalog deletion reads start", async () 
   const candidate = listing(fastSecret, "cancel-deletion-planning")
   let deletionReads = 0
   __setCommerceTestOverrides({
-    fetchEventsFanoutProgressive: async () => [candidate],
+    fetchPublicEventsProgressive: async () => [candidate],
     getRelayLists: async (_pubkeys, options) => {
       expect(options?.signal).toBe(controller.signal)
       discoveryStarted.release()
@@ -194,7 +194,7 @@ it("cancels relay-list discovery before catalog deletion reads start", async () 
         )
       })
     },
-    fetchEventsFanoutWithDiagnostics: async () => {
+    fetchPublicEventsWithDiagnostics: async () => {
       deletionReads += 1
       return {
         events: [],
@@ -233,7 +233,7 @@ it("cancels header fallback relay-list discovery before product reads start", as
         )
       })
     },
-    fetchEventsFanoutWithDiagnostics: async () => {
+    fetchPublicEventsWithDiagnostics: async () => {
       productReads += 1
       return {
         events: [],
@@ -263,7 +263,7 @@ function installHeldRead(
   const fastReturned = gate()
   const filters: Array<{ authors?: string[]; dTags?: string[] }> = []
   __setCommerceTestOverrides({
-    fetchEventsFanout: async (filter) => {
+    fetchPublicEvents: async (filter) => {
       if (filter.kinds?.includes(5))
         return networkDeletion ? [networkDeletion] : []
       if (!filter.kinds?.includes(30402)) return []
@@ -305,7 +305,7 @@ describe("exact product cache stage", () => {
             (row) => !authors || authors.includes(row.pubkey)
           )
         },
-        fetchEventsFanout: async (filter) =>
+        fetchPublicEvents: async (filter) =>
           filter.kinds?.includes(30402) ? [candidate] : [],
       })
       __setCommerceTestOverrides({
@@ -477,7 +477,7 @@ describe("progressive exact product reads", () => {
               row,
             ]
         },
-        fetchEventsFanout: async (filter) => {
+        fetchPublicEvents: async (filter) => {
           if (!filter.kinds?.includes(30402)) return []
           const index = records.findIndex((record) =>
             filter.authors?.includes(record.pubkey)
@@ -589,7 +589,7 @@ describe("progressive exact product reads", () => {
           ]
         if (rows.some((row) => row.pubkey === first.pubkey)) armFirstRead = true
       },
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(30402)) return []
         if (filter.authors?.includes(parent.pubkey)) {
           await cacheEntered.promise
@@ -656,7 +656,7 @@ describe("progressive exact product reads", () => {
     const bothStarted = gate()
     let started = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(30402)) return []
         if (
           blockers.some((record) => filter.authors?.includes(record.pubkey))
@@ -774,7 +774,7 @@ describe("progressive exact product reads", () => {
           (row) => !authors || authors.includes(row.pubkey)
         )
       },
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(30402)) return []
         const index = listings.findIndex((record) =>
           filter.authors?.includes(record.pubkey)
@@ -869,7 +869,7 @@ describe("progressive exact product reads", () => {
         }
         return rows
       },
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(30402)
           ? records.filter((record) => filter.authors?.includes(record.pubkey))
           : [],
@@ -917,7 +917,7 @@ describe("progressive exact product reads", () => {
     let starts = 0
     const snapshots: ProductsByIdsResult[] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(30402)) return []
         if (filter.authors?.includes(parent.pubkey)) return [parent, child]
         starts++
@@ -945,7 +945,7 @@ describe("progressive exact product reads", () => {
       expect(
         cached.diagnostics.some((row) => row.addressId === address(parent))
       ).toBe(false)
-      expect(cached.data[0]!.safety.state).not.toBe("blocked")
+      expect(cached.data[0]!.availability.state).toBe("hidden")
     } finally {
       held.release()
       await read.catch(() => undefined)
@@ -962,7 +962,7 @@ describe("progressive exact product reads", () => {
     const deletionStarted = gate()
     const snapshots: ProductsByIdsResult[] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(30402)) return [product]
         if (filter.kinds?.includes(5)) {
           deletionStarted.release()
@@ -1070,7 +1070,7 @@ describe("progressive exact product reads", () => {
     let starts = 0
     let active = true
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(30402)) return []
         starts++
         if (starts === 2) started.release()
@@ -1105,7 +1105,7 @@ describe("progressive exact product reads", () => {
     let starts = 0
     const snapshots: ProductsByIdsResult[] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(30402)) return []
         expect(options?.signal).toBe(controller.signal)
         starts++
@@ -1130,7 +1130,7 @@ describe("progressive exact product reads", () => {
     expect(snapshots).toEqual([])
   })
 
-  it("keeps the newest cached revision and the existing merchant-hidden safety exception", async () => {
+  it("keeps the newest cached revision and admits hidden exact listings regardless of title", async () => {
     const old = listing(fastSecret, "hidden", [["visibility", "private"]])
     const newer = listing(
       fastSecret,
@@ -1138,15 +1138,15 @@ describe("progressive exact product reads", () => {
       [["visibility", "private"]],
       150
     )
-    const unsafe = listing(fastSecret, "Counterfeit goods", [
+    const titledHidden = listing(fastSecret, "Counterfeit goods", [
       ["visibility", "private"],
     ])
     const slow = listing(slowSecret, "other")
     await cacheSignedProductListingEvent(newer)
-    const { held, fastReturned } = installHeldRead([old, unsafe], slow)
+    const { held, fastReturned } = installHeldRead([old, titledHidden], slow)
     const snapshots: ProductsByIdsResult[] = []
-    const read = getProductsByIds([old, unsafe, slow].map(address), {
-      includeMerchantHiddenProductIds: [address(old), address(unsafe)],
+    const read = getProductsByIds([old, titledHidden, slow].map(address), {
+      includeMerchantHiddenProductIds: [address(old), address(titledHidden)],
       onProgress: (snapshot) => snapshots.push(snapshot),
     })
     try {
@@ -1155,16 +1155,15 @@ describe("progressive exact product reads", () => {
         snapshots[0]?.data.find((record) => record.addressId === address(old))
           ?.eventId
       ).toBe(newer.id)
-      expect(
-        snapshots[0]?.data.some(
-          (record) => record.addressId === address(unsafe)
-        )
-      ).toBe(false)
     } finally {
       held.release()
       await read.catch(() => undefined)
     }
-    await read
+    const final = await read
+    expect(
+      final.data.find((record) => record.addressId === address(titledHidden))
+        ?.availability.state
+    ).toBe("hidden")
   })
   it("keeps variation families browse-only and retracts a deleted child during final cache persistence", async () => {
     const parent = listing(fastSecret, "family", [
@@ -1262,7 +1261,7 @@ describe("progressive exact product reads", () => {
           putCachedProducts: async () => {
             throw new Error("Storage unavailable")
           },
-          fetchEventsFanout: async (filter) => {
+          fetchPublicEvents: async (filter) => {
             if (!filter.kinds?.includes(30402)) return []
             // Family transport is unavailable: retained sibling context must
             // survive the direct target's new topology and failed persistence.
@@ -1515,7 +1514,7 @@ describe("progressive exact product reads", () => {
       listing(slowSecret, "unchanged-other"),
     ]
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(30402)
           ? records.filter((record) => filter.authors?.includes(record.pubkey))
           : [],

@@ -1,6 +1,8 @@
+import type { SignedPublicNostrEvent } from "./signed-event"
+import type { Filter } from "nostr-tools"
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js"
 import { argon2idAsync } from "@noble/hashes/argon2.js"
-import { default as NDK, NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import NDK from "@nostr-dev-kit/ndk"
 import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { z } from "zod"
@@ -13,11 +15,11 @@ import {
 import { SHIPPING_COUNTRIES } from "./countries"
 import type { AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
+import { getNdk } from "./ndk"
 import {
-  fetchEventsFanoutDetailed,
+  fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
-  getNdk,
-} from "./ndk"
+} from "./relay-reader"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { NostrSignerError } from "./nostr-event-signer"
@@ -201,7 +203,7 @@ export type ShopperPresetsWriteResult = {
 export type ShopperPresetsProtocolDependencies = {
   ndk?: NDK
   signer?: AccountSigner
-  fetchEvents?: typeof fetchEventsFanoutDetailed
+  fetchEvents?: typeof fetchSignedEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
   publishEvent?: typeof publishWithPlanner
   accountNetworkLocalStateRepository?: Pick<
@@ -510,12 +512,15 @@ export async function decryptShopperPresetsDocument(
   }
 }
 
-function getDTag(event: Pick<NDKEvent, "tags">): string | null {
+function getDTag(event: Pick<SignedPublicNostrEvent, "tags">): string | null {
   return event.tags.find((tag) => tag[0] === "d")?.[1] ?? null
 }
 
 export function selectLatestShopperPresetsEvent<
-  T extends Pick<NDKEvent, "id" | "kind" | "pubkey" | "created_at" | "tags">,
+  T extends Pick<
+    SignedPublicNostrEvent,
+    "id" | "kind" | "pubkey" | "created_at" | "tags"
+  >,
 >(events: readonly T[], pubkey: string): T | null {
   const owner = normalizePubkey(pubkey)
   return (
@@ -630,14 +635,15 @@ export async function fetchShopperPresets(
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.APPLICATION_DATA],
     authors: [owner],
     "#d": [SHOPPER_PRESETS_D_TAG],
     limit: 12,
   }
-  const fetchEvents = dependencies.fetchEvents ?? fetchEventsFanoutDetailed
-  let result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>
+  const fetchEvents =
+    dependencies.fetchEvents ?? fetchSignedEventsFanoutDetailed
+  let result: Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>>
   try {
     result = await fetchEvents(filter, {
       relayUrls,
@@ -716,7 +722,7 @@ async function verifyShopperPresetsConvergence({
   createdAt: number
   relayUrls: readonly string[]
   ownerSelectedRelayUrls: readonly string[]
-  fetchEvents: typeof fetchEventsFanoutDetailed
+  fetchEvents: typeof fetchSignedEventsFanoutDetailed
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -734,7 +740,7 @@ async function verifyShopperPresetsConvergence({
     attempt < SHOPPER_PRESETS_CONVERGENCE_ATTEMPTS;
     attempt += 1
   ) {
-    let result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>
+    let result: Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>>
     try {
       result = await fetchEvents(
         {
@@ -852,7 +858,6 @@ export async function publishShopperPresets({
   dependencies?: ShopperPresetsProtocolDependencies
 }): Promise<ShopperPresetsWriteResult> {
   const owner = normalizePubkey(pubkey)
-  const ndk = dependencies.ndk ?? getNdk()
   const signer = dependencies.signer ?? getAccountSigner()
   if (!signer) {
     throw new Error("Connect a signer before syncing shopper presets.")
@@ -862,7 +867,7 @@ export async function publishShopperPresets({
   const authenticatedDependencies = {
     ...dependencies,
     authenticatedPubkey: owner,
-    ndk,
+    ndk: dependencies.ndk ?? getNdk(),
   }
   const current = await fetchShopperPresets(owner, authenticatedDependencies)
   if (current.state === "unavailable") {
@@ -889,16 +894,14 @@ export async function publishShopperPresets({
     password,
     dependencies.randomBytes
   )
-  const event = new NDKEvent(ndk)
-  event.kind = EVENT_KINDS.APPLICATION_DATA
-  event.pubkey = owner
-  event.created_at = createdAt
-  event.tags = appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId)
-  event.content = serializeShopperPresetsEnvelope(envelope)
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
+  const draft: UnsignedNostrEvent = {
+    kind: EVENT_KINDS.APPLICATION_DATA,
+    pubkey: owner,
+    created_at: createdAt,
+    tags: appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId),
+    content: serializeShopperPresetsEnvelope(envelope),
+  }
+  const event = await signer.signEvent(draft)
 
   const publishEvent = dependencies.publishEvent ?? publishWithPlanner
   const publish = await publishEvent(event, {
@@ -929,7 +932,7 @@ export async function publishShopperPresets({
     createdAt,
     relayUrls: publish.successfulRelayUrls,
     ownerSelectedRelayUrls,
-    fetchEvents: dependencies.fetchEvents ?? fetchEventsFanoutDetailed,
+    fetchEvents: dependencies.fetchEvents ?? fetchSignedEventsFanoutDetailed,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
     shouldContinue: dependencies.shouldContinue,

@@ -3,6 +3,7 @@
  * LNURL helpers, and NWC URI parsing.
  */
 import { describe, expect, it, mock, afterEach } from "bun:test"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import {
   buildShippingAddressFromForm,
   getShippingRecipientName,
@@ -2087,72 +2088,12 @@ describe("order payload schema", () => {
     buyerIdentityKind: "signed_in" | "guest_ephemeral",
     guestContact?: { email?: string; phone?: string }
   ) {
-    const organizer = "c".repeat(64)
-    const merchant = "d".repeat(64)
-    const pickupCoordinate = `30406:${organizer}:event-pickup`
+    const { order } = createEventMarketOrderFixture({ price: 1_000 })
     return {
+      ...order,
       id: `pickup-${buyerIdentityKind}`,
-      merchantPubkey: merchant,
-      buyerPubkey: "b".repeat(64),
       buyerIdentityKind,
-      items: [
-        {
-          productId: `30402:${merchant}:coffee`,
-          format: "physical" as const,
-          fulfillment: {
-            type: "pickup" as const,
-            organizerPubkey: organizer,
-            product: {
-              coordinate: `30402:${merchant}:coffee`,
-              merchantPubkey: merchant,
-              eventId: "1".repeat(64),
-              createdAt: 100,
-            },
-            calendar: {
-              coordinate: `31923:${organizer}:market-day`,
-              eventId: "2".repeat(64),
-              createdAt: 101,
-            },
-            collection: {
-              coordinate: `30405:${organizer}:market-day`,
-              eventId: "3".repeat(64),
-              createdAt: 102,
-            },
-            option: {
-              coordinate: pickupCoordinate,
-              eventId: "4".repeat(64),
-              createdAt: 103,
-              title: "Organizer table",
-              location: "Public hall",
-            },
-            handoffMode: "organizer_handoff" as const,
-            handlerPubkey: organizer,
-            costSats: 0,
-            sourceCost: {
-              amount: 0,
-              currency: "SATS",
-              normalizedCurrency: "SATS",
-            },
-          },
-          quantity: 1,
-          priceAtPurchase: 1_000,
-          currency: "SATS",
-          shippingOptionId: pickupCoordinate,
-          shippingOptionDTag: "event-pickup",
-          shippingCostSats: 0,
-          sourceShippingCost: {
-            amount: 0,
-            currency: "SATS",
-            normalizedCurrency: "SATS",
-          },
-        },
-      ],
-      subtotal: 1_000,
-      currency: "SATS",
-      shippingCostSats: 0,
-      shippingCostStatus: "included" as const,
       guestContact,
-      createdAt: 1_700_000_000_000,
     }
   }
 
@@ -2281,10 +2222,10 @@ describe("order payload schema", () => {
 
     expect(parsed.guestContact).toBeUndefined()
     expect(parsed.shippingAddress).toBeUndefined()
-    expect(parsed.items[0]?.fulfillment?.type).toBe("pickup")
+    expect(parsed.items[0]?.fulfillment?.type).toBe("event_market_pickup")
   })
 
-  it("parses historical guest pickup orders with one recovery contact", () => {
+  it("parses current guest pickup orders with one recovery contact", () => {
     expect(
       orderSchema.parse(
         pickupOrder("guest_ephemeral", { email: "alice@example.com" })

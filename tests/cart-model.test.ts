@@ -8,7 +8,6 @@ import {
 } from "@conduit/core"
 import {
   cartItemsMatchCurrentProducts,
-  createPendingEventPickupFulfillment,
   createCartItemFromProduct,
   getCartAvailabilityBlockingMessage,
   getCartFulfillmentLane,
@@ -16,7 +15,6 @@ import {
   getCartItemStockEvidenceForAvailability,
   getCartProductAvailability,
   getCartItemKey,
-  getPendingEventPickupCartItems,
   getCartPurchaseReference,
   getCartCostSummary,
   getCartCommerceFingerprint,
@@ -30,14 +28,13 @@ import {
   getMixedFulfillmentBlockingMessage,
   isCartAvailabilityReadComplete,
   isCartProductAvailabilityBlocking,
-  isPendingEventPickupCartItem,
   isSameCartLineFulfillment,
   parsePersistedCart,
   selectCartItem,
-  type CartPickupFulfillment,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
 import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import { getHudZapAuthorizationBindingMismatch } from "../apps/market/src/lib/hud-zap-intent"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
@@ -52,40 +49,19 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
   }
 }
 
-function pickupFulfillment(): CartPickupFulfillment {
-  const organizer = "a".repeat(64)
-  const merchant = "b".repeat(64)
-  return {
-    type: "pickup",
-    organizerPubkey: organizer,
-    product: {
-      coordinate: `30402:${merchant}:product-a`,
-      eventId: "1".repeat(64),
-      createdAt: 100,
-      merchantPubkey: merchant,
-    },
-    calendar: {
-      coordinate: `31922:${organizer}:event-a`,
-      eventId: "2".repeat(64),
-      createdAt: 101,
-    },
-    collection: {
-      coordinate: `30405:${organizer}:market-a`,
-      eventId: "3".repeat(64),
-      createdAt: 102,
-    },
-    option: {
-      coordinate: `30406:${organizer}:pickup-a`,
-      eventId: "4".repeat(64),
-      createdAt: 103,
-      title: "Main entrance",
-      location: "Fixture Hall",
-    },
-    handoffMode: "organizer_handoff",
-    handlerPubkey: organizer,
-    costSats: 0,
-    sourceCost: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
-  }
+function pickupFulfillment(
+  options: Parameters<typeof createEventMarketOrderFixture>[0] = {}
+) {
+  return createEventMarketOrderFixture(options).fulfillment
+}
+
+function pickupItem(fulfillment = pickupFulfillment()): CartItem {
+  return item({
+    productId: fulfillment.product.coordinate,
+    merchantPubkey: fulfillment.merchantPubkey,
+    format: "physical",
+    fulfillment,
+  })
 }
 
 function refreshedProduct(
@@ -217,121 +193,51 @@ describe("cart model", () => {
     expect(groups.map((group) => group.merchantAddedAt)).toEqual([400, 100])
   })
 
-  it("partitions purchases by merchant, delivery, and exact pickup graph", () => {
+  it("partitions purchases by merchant, delivery, market, and selected date", () => {
     const eventA = pickupFulfillment()
-    const eventB = {
-      ...pickupFulfillment(),
-      calendar: {
-        ...pickupFulfillment().calendar,
-        coordinate: `31922:${"a".repeat(64)}:event-b`,
-        eventId: "5".repeat(64),
-        createdAt: 201,
-      },
-    }
-    const merchantA = eventA.product.merchantPubkey
-    const merchantB = "c".repeat(64)
+    const eventASecond = pickupFulfillment({ productDTag: "second-product" })
+    const eventB = pickupFulfillment({ calendarDTag: "second-date" })
+    const anotherMarket = pickupFulfillment({ dTag: "another-market" })
+    const merchant = eventA.merchantPubkey
     const groups = groupCartPurchases([
       item({
-        merchantPubkey: merchantA,
-        productId: `30402:${merchantA}:shipping`,
-        title: "Shipped",
+        merchantPubkey: merchant,
         format: "physical",
         fulfillment: { type: "shipping" },
       }),
+      pickupItem(eventA),
+      pickupItem(eventASecond),
+      pickupItem(eventB),
+      pickupItem(anotherMarket),
       item({
-        merchantPubkey: merchantA,
-        productId: `30402:${merchantA}:pickup-a-1`,
-        title: "Event A first",
-        format: "physical",
-        fulfillment: eventA,
-      }),
-      item({
-        merchantPubkey: merchantA,
-        productId: `30402:${merchantA}:pickup-a-2`,
-        title: "Event A second",
-        format: "physical",
-        fulfillment: {
-          ...eventA,
-          product: {
-            ...eventA.product,
-            coordinate: `30402:${merchantA}:pickup-a-2`,
-            eventId: "6".repeat(64),
-          },
-        },
-      }),
-      item({
-        merchantPubkey: merchantA,
-        productId: `30402:${merchantA}:pickup-b`,
-        title: "Event B",
-        format: "physical",
-        fulfillment: eventB,
-      }),
-      item({
-        merchantPubkey: merchantB,
-        productId: `30402:${merchantB}:digital`,
-        title: "Other merchant",
+        merchantPubkey: "c".repeat(64),
         format: "digital",
         fulfillment: { type: "digital" },
       }),
     ])
-
-    expect(groups).toHaveLength(4)
+    expect(groups).toHaveLength(5)
+    expect(groups.filter((group) => group.kind === "delivery")).toHaveLength(2)
     expect(
-      groups.map((group) => ({
-        merchant: group.merchantPubkey,
-        kind: group.kind,
-        titles: group.items.map((entry) => entry.title),
-      }))
-    ).toEqual([
-      {
-        merchant: merchantB,
-        kind: "delivery",
-        titles: ["Other merchant"],
-      },
-      { merchant: merchantA, kind: "delivery", titles: ["Shipped"] },
-      {
-        merchant: merchantA,
-        kind: "pickup",
-        titles: ["Event A first", "Event A second"],
-      },
-      { merchant: merchantA, kind: "pickup", titles: ["Event B"] },
-    ])
-    expect(new Set(groups.map((group) => group.id)).size).toBe(4)
+      groups
+        .filter((group) => group.kind === "pickup")
+        .map((group) => group.items.length)
+    ).toEqual([2, 1, 1])
+    expect(new Set(groups.map((group) => group.id)).size).toBe(5)
     expect(
       new Set(groups.map((group) => getCartPurchaseReference(group.id))).size
-    ).toBe(4)
+    ).toBe(5)
   })
 
-  it("separates signed pickup revisions so readiness stays one-to-one", () => {
-    const originalFulfillment = pickupFulfillment()
-    const currentFulfillment: CartPickupFulfillment = {
-      ...originalFulfillment,
-      product: {
-        ...originalFulfillment.product,
-        eventId: "9".repeat(64),
-        createdAt: originalFulfillment.product.createdAt + 1,
-      },
-    }
-    const baseItem = item({
-      merchantPubkey: originalFulfillment.product.merchantPubkey,
-      productId: originalFulfillment.product.coordinate,
-      format: "physical",
-    })
-    const originalItem = { ...baseItem, fulfillment: originalFulfillment }
-    const currentItem = { ...baseItem, fulfillment: currentFulfillment }
-    const groups = groupCartPurchases([originalItem, currentItem])
-
-    expect(groups).toHaveLength(2)
-    expect(new Set(groups.map((group) => group.id)).size).toBe(2)
-
-    const currentPurchase = groups.find((group) =>
-      group.items.includes(currentItem)
-    )!
-    const currentReference = getCartPurchaseReference(currentPurchase.id)
+  it("keeps signed product revisions distinct within one current event purchase", () => {
+    const originalItem = pickupItem(pickupFulfillment())
+    const currentItem = pickupItem(pickupFulfillment({ productCreatedAt: 102 }))
+    expect(isSameCartLineFulfillment(originalItem, currentItem)).toBe(false)
+    const currentPurchase = groupCartPurchases([originalItem, currentItem])[0]!
+    expect(currentPurchase.items).toHaveLength(2)
     const survivingPurchase = groupCartPurchases([currentItem])[0]!
     expect(survivingPurchase.id).toBe(currentPurchase.id)
     expect(getCartPurchaseReference(survivingPurchase.id)).toBe(
-      currentReference
+      getCartPurchaseReference(currentPurchase.id)
     )
     expect(
       getHudZapAuthorizationBindingMismatch(
@@ -340,34 +246,28 @@ describe("cart model", () => {
           purchaseId: currentPurchase.id,
           buyerPubkey: "buyer-a",
           cartFingerprint: getCartCommerceFingerprint(currentPurchase.items),
-          totalMsats: 1_000_000,
-          createdAt: 1_000,
+          totalMsats: 1000000,
+          createdAt: 1000,
         },
         {
           merchantPubkey: survivingPurchase.merchantPubkey,
           purchaseId: survivingPurchase.id,
           buyerPubkey: "buyer-a",
           items: survivingPurchase.items,
-          totalMsats: 1_000_000,
+          totalMsats: 1000000,
         }
       )
-    ).toBeNull()
-
-    const product = refreshedProduct(baseItem, {
-      updatedAt: currentFulfillment.product.createdAt,
-    })
-    for (const group of groups) {
-      const availability = getCartProductAvailability(group.items, [product])
-      expect(
-        getCartAvailabilityReadDecision({
-          productIds: [product.id],
-          availability,
-          meta: { source: "commerce", stale: false, degraded: false },
-          diagnostics: [exactLiveDiagnostic(product.id)],
-          querySucceeded: true,
-        })
-      ).toEqual({ status: "verified_at_read", coverage: "complete" })
-    }
+    ).not.toBeNull()
+    const product = refreshedProduct(currentItem)
+    expect(
+      getCartAvailabilityReadDecision({
+        productIds: [product.id],
+        availability: getCartProductAvailability([currentItem], [product]),
+        meta: { source: "commerce", stale: false, degraded: false },
+        diagnostics: [exactLiveDiagnostic(product.id)],
+        querySucceeded: true,
+      })
+    ).toEqual({ status: "verified_at_read", coverage: "complete" })
   })
 
   it("preserves product stock and shipping-shape safety when creating a cart item snapshot", () => {
@@ -919,30 +819,12 @@ describe("cart model", () => {
     })
   })
 
-  it("migrates duplicate legacy product rows without merging fulfillment terms", () => {
-    const merchantPubkey = "b".repeat(64)
-    const productId = `30402:${merchantPubkey}:shared-fulfillment`
-    const pickup = {
-      ...pickupFulfillment(),
-      product: {
-        ...pickupFulfillment().product,
-        coordinate: productId,
-        merchantPubkey,
-      },
+  it("retains separate shipping and current pickup rows in persisted carts", () => {
+    const eventPickup = pickupItem()
+    const shipping = {
+      ...eventPickup,
+      fulfillment: { type: "shipping" as const },
     }
-    const shipping = item({
-      merchantPubkey,
-      productId,
-      format: "physical",
-      fulfillment: { type: "shipping" },
-    })
-    const eventPickup = item({
-      merchantPubkey,
-      productId,
-      format: "physical",
-      fulfillment: pickup,
-    })
-
     for (const items of [
       [shipping, eventPickup],
       [eventPickup, shipping],
@@ -951,127 +833,66 @@ describe("cart model", () => {
       expect(parsed.state.items).toHaveLength(2)
       expect(
         parsed.state.items.map((entry) => entry.fulfillment?.type).sort()
-      ).toEqual(["pickup", "shipping"])
+      ).toEqual(["event_market_pickup", "shipping"])
       expect(parsed.state.items.map((entry) => entry.quantity)).toEqual([1, 1])
     }
   })
 
-  it("parses signed pickup fulfillment from a v2 persisted cart", () => {
-    const fulfillment = pickupFulfillment()
-    const merchantPubkey = fulfillment.product.merchantPubkey
-    const persisted = {
-      version: 2,
-      items: [
-        item({
-          productId: fulfillment.product.coordinate,
-          merchantPubkey,
-          format: "physical",
-          fulfillment,
-        }),
-      ],
-    }
-
+  it("parses signed current pickup fulfillment from persisted carts", () => {
+    const current = pickupItem()
+    const persisted = JSON.parse(
+      JSON.stringify({ version: 2, items: [current] })
+    )
     expect(parsePersistedCart(persisted).state.items[0]?.fulfillment).toEqual(
-      fulfillment
+      persisted.items[0].fulfillment
     )
   })
 
-  it("persists pending event pickup without granting shipping or purchase authority", () => {
-    const merchantPubkey = "b".repeat(64)
-    const collectionCoordinate = `30405:${"a".repeat(64)}:market-a`
-    const fulfillment = createPendingEventPickupFulfillment(
-      `30405:${"A".repeat(64)}:market-a`
-    )
-    expect(fulfillment).toEqual({
+  it("rejects retired pending pickup instead of granting shipping authority", () => {
+    const fulfillment = {
       type: "event_pickup_pending",
-      collectionCoordinate,
-    })
-
-    const parsed = parsePersistedCart({
-      version: 2,
-      items: [
-        item({
-          productId: `30402:${merchantPubkey}:product-a`,
-          merchantPubkey,
-          format: "physical",
-          fulfillment: fulfillment!,
-        }),
-      ],
-    })
-    const pendingItem = parsed.state.items[0]!
-
-    expect(isPendingEventPickupCartItem(pendingItem)).toBe(true)
-    expect(getCartItemFulfillmentType(pendingItem)).toBe("event_pickup_pending")
-    expect(getCartFulfillmentLane([pendingItem])).toBe("event_pickup_pending")
-    expect(getMixedFulfillmentBlockingMessage([pendingItem])).toBe(
-      "Event pickup is still being verified. Review it after verification finishes."
-    )
-    expect(getPendingEventPickupCartItems([pendingItem])).toEqual([pendingItem])
-    expect(groupCartPurchases([pendingItem])).toEqual([])
-    expect(getCartTotals([pendingItem])).toEqual({ count: 1, subtotal: 1_000 })
+      collectionCoordinate: `30405:${"a".repeat(64)}:market-a`,
+    }
+    expect(
+      parsePersistedCart({
+        version: 2,
+        items: [{ ...pickupItem(), fulfillment }],
+      }).state.items
+    ).toEqual([])
     expect(orderItemFulfillmentSchema.safeParse(fulfillment).success).toBe(
       false
     )
   })
 
-  it("rejects malformed or digital pending event pickup persistence", () => {
-    const merchantPubkey = "b".repeat(64)
-    const base = item({
-      productId: `30402:${merchantPubkey}:product-a`,
-      merchantPubkey,
-      format: "physical",
-    })
-
-    for (const fulfillment of [
-      {
-        type: "event_pickup_pending",
-        collectionCoordinate: "30405:not-a-pubkey:market-a",
-      },
-      {
-        type: "event_pickup_pending",
-        collectionCoordinate: `30402:${merchantPubkey}:product-a`,
-      },
-    ]) {
-      expect(
-        parsePersistedCart({
-          version: 2,
-          items: [{ ...base, fulfillment }],
-        }).state.items
-      ).toEqual([])
+  it("rejects unsupported saved fulfillment for both physical and digital products", () => {
+    for (const type of ["pickup", "event_pickup_pending", "unknown"]) {
+      for (const format of ["physical", "digital"]) {
+        expect(
+          parsePersistedCart({
+            version: 2,
+            items: [{ ...pickupItem(), format, fulfillment: { type } }],
+          }).state.items
+        ).toEqual([])
+      }
     }
+  })
 
-    const pending = createPendingEventPickupFulfillment(
-      `30405:${"a".repeat(64)}:market-a`
-    )!
+  it("drops persisted cart rows whose pickup payee differs from the signed merchant", () => {
+    const current = pickupItem()
     expect(
       parsePersistedCart({
         version: 2,
-        items: [{ ...base, format: "digital", fulfillment: pending }],
+        items: [
+          {
+            ...current,
+            fulfillment: {
+              ...current.fulfillment,
+              payeePubkey: "d".repeat(64),
+            },
+          },
+        ],
       }).state.items
     ).toEqual([])
-  })
-
-  it("drops persisted cart rows with malformed pickup authority", () => {
-    const fulfillment = pickupFulfillment()
-    const merchantPubkey = fulfillment.product.merchantPubkey
-    const parsed = parsePersistedCart({
-      version: 2,
-      items: [
-        {
-          ...item({
-            productId: fulfillment.product.coordinate,
-            merchantPubkey,
-            format: "physical",
-          }),
-          fulfillment: {
-            ...fulfillment,
-            handlerPubkey: merchantPubkey,
-          },
-        },
-      ],
-    })
-
-    expect(parsed.state.items).toEqual([])
   })
 
   it("deduplicates only exact identities using the latest snapshot", () => {
@@ -1222,190 +1043,53 @@ describe("cart model", () => {
     ).toBe(false)
   })
 
-  it("compares pickup cart terms against freshly resolved fulfillment", () => {
+  it("compares current pickup terms against freshly resolved signed fulfillment", () => {
     const fulfillment = pickupFulfillment()
-    const baseItem = item({
-      productId: fulfillment.product.coordinate,
-      merchantPubkey: fulfillment.product.merchantPubkey,
-    })
-    const product = refreshedProduct(baseItem)
-    const cartItem = {
-      ...createCartItemFromProduct(product, fulfillment),
-      quantity: 1,
-    }
-    const reorderedFulfillment: CartPickupFulfillment = {
-      sourceCost: { ...fulfillment.sourceCost },
-      costSats: fulfillment.costSats,
-      handlerPubkey: fulfillment.handlerPubkey,
-      handoffMode: fulfillment.handoffMode,
-      option: { ...fulfillment.option },
-      collection: { ...fulfillment.collection },
-      calendar: { ...fulfillment.calendar },
-      product: { ...fulfillment.product },
-      organizerPubkey: fulfillment.organizerPubkey,
-      type: "pickup",
-    }
-
+    const product = refreshedProduct(pickupItem(fulfillment))
+    const current = createCartItemFromProduct(product, fulfillment)
     expect(
       cartItemsMatchCurrentProducts(
-        [cartItem],
+        [current],
         [product],
-        new Map([[product.id, reorderedFulfillment]])
-      )
-    ).toBe(true)
-    expect(getCartCommerceFingerprint([cartItem])).toBe(
-      getCartCommerceFingerprint([
-        { ...cartItem, fulfillment: reorderedFulfillment },
-      ])
-    )
-  })
-
-  it("ignores only quote-derived pickup sats when signed source terms match", () => {
-    const storedFulfillment: CartPickupFulfillment = {
-      ...pickupFulfillment(),
-      costSats: 1_000,
-      sourceCost: {
-        amount: 1,
-        currency: "USD",
-        normalizedCurrency: "USD",
-      },
-    }
-    const baseItem = item({
-      productId: storedFulfillment.product.coordinate,
-      merchantPubkey: storedFulfillment.product.merchantPubkey,
-    })
-    const product = refreshedProduct(baseItem)
-    const cartItem = {
-      ...createCartItemFromProduct(product, storedFulfillment),
-      quantity: 1,
-    }
-    const refreshedFulfillment: CartPickupFulfillment = {
-      ...storedFulfillment,
-      costSats: 2_000,
-    }
-
-    expect(
-      cartItemsMatchCurrentProducts(
-        [cartItem],
-        [product],
-        new Map([[product.id, refreshedFulfillment]])
+        new Map([[product.id, fulfillment]])
       )
     ).toBe(true)
     expect(
       cartItemsMatchCurrentProducts(
-        [cartItem],
+        [current],
         [product],
         new Map([
-          [
-            product.id,
-            {
-              ...refreshedFulfillment,
-              sourceCost: {
-                ...refreshedFulfillment.sourceCost,
-                amount: 2,
-              },
-            },
-          ],
+          [product.id, pickupFulfillment({ assignment: "New pickup desk" })],
         ])
       )
     ).toBe(false)
-
-    const satsFulfillment: CartPickupFulfillment = {
-      ...storedFulfillment,
-      costSats: 1_000,
-      sourceCost: {
-        amount: 1_000,
-        currency: "SATS",
-        normalizedCurrency: "SATS",
-      },
-    }
-    const satsItem = {
-      ...createCartItemFromProduct(product, satsFulfillment),
-      quantity: 1,
-    }
-    expect(
-      cartItemsMatchCurrentProducts(
-        [satsItem],
-        [product],
-        new Map([[product.id, { ...satsFulfillment, costSats: 2_000 }]])
-      )
-    ).toBe(false)
+    expect(getCartItemFulfillmentType(current)).toBe("event_market_pickup")
+    expect(getCartFulfillmentLane([current])).toBe("pickup")
+    expect(getMixedFulfillmentBlockingMessage([current])).toBeNull()
   })
 
-  it("keeps pickup line identity stable only for fiat quote changes", () => {
-    const initialFulfillment: CartPickupFulfillment = {
-      ...pickupFulfillment(),
-      costSats: 1_000,
-      sourceCost: {
-        amount: 1,
-        currency: "USD",
-        normalizedCurrency: "USD",
-      },
+  it("does not add a pickup fee to either current handoff mode", () => {
+    for (const mode of ["merchant_present", "organizer_handoff"] as const) {
+      const current = pickupItem(pickupFulfillment({ mode }))
+      expect(getCartCostSummary([current]).shippingTotalSats).toBe(0)
     }
-    const refreshedFulfillment: CartPickupFulfillment = {
-      ...initialFulfillment,
-      costSats: 2_000,
-    }
-    const product = refreshedProduct(
-      item({
-        productId: initialFulfillment.product.coordinate,
-        merchantPubkey: initialFulfillment.product.merchantPubkey,
-      })
-    )
+  })
 
-    const initialItem = {
-      ...createCartItemFromProduct(product, initialFulfillment),
-      quantity: 1,
-    }
-    const refreshedItem = {
-      ...createCartItemFromProduct(product, refreshedFulfillment),
-      quantity: 2,
-    }
-    const combined = [refreshedItem]
-
-    expect(isSameCartLineFulfillment(initialItem, refreshedItem)).toBe(true)
+  it("changes pickup line identity when signed assignment or handoff mode changes", () => {
+    const original = pickupItem()
     expect(
-      cartItemsMatchCurrentProducts(
-        combined,
-        [product],
-        new Map([[product.id, refreshedFulfillment]])
+      isSameCartLineFulfillment(
+        original,
+        pickupItem(pickupFulfillment({ assignment: "Desk B" }))
       )
-    ).toBe(true)
-
-    const changedSignedCost = createCartItemFromProduct(product, {
-      ...refreshedFulfillment,
-      sourceCost: { ...refreshedFulfillment.sourceCost, amount: 2 },
-    })
-    expect(isSameCartLineFulfillment(initialItem, changedSignedCost)).toBe(
-      false
-    )
-
-    for (const sourceCost of [
-      { amount: 1_000, currency: "SATS", normalizedCurrency: "SATS" },
-      { amount: 1_000_000, currency: "MSATS", normalizedCurrency: "MSATS" },
-      { amount: 0.00001, currency: "BTC", normalizedCurrency: "BTC" },
-      { amount: 0, currency: "USD", normalizedCurrency: "USD" },
-    ]) {
-      const deterministicFulfillment: CartPickupFulfillment = {
-        ...initialFulfillment,
-        costSats: 1_000,
-        sourceCost,
-      }
-      const initialDeterministicItem = createCartItemFromProduct(
-        product,
-        deterministicFulfillment
+    ).toBe(false)
+    expect(
+      isSameCartLineFulfillment(
+        original,
+        pickupItem(pickupFulfillment({ mode: "merchant_present" }))
       )
-      const changedDeterministicCost = createCartItemFromProduct(product, {
-        ...deterministicFulfillment,
-        costSats: 2_000,
-      })
-      expect(
-        isSameCartLineFulfillment(
-          initialDeterministicItem,
-          changedDeterministicCost
-        )
-      ).toBe(false)
-    }
+    ).toBe(false)
+    expect(isSameCartLineFulfillment(original, pickupItem())).toBe(true)
   })
 
   it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {

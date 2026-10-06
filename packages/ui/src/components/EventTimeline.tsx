@@ -134,6 +134,7 @@ export interface EventTimelineViewportProps {
   nowAnchorRef: Ref<HTMLDivElement>
   onLoadEarlier: () => void
   onLoadLater: () => void
+  onScroll?: () => void
   pageSize: number
   pastEvents: ReactNode
   viewportRef: Ref<HTMLDivElement>
@@ -156,6 +157,7 @@ export function EventTimelineViewport({
   nowAnchorRef,
   onLoadEarlier,
   onLoadLater,
+  onScroll,
   pageSize,
   pastEvents,
   viewportRef,
@@ -165,6 +167,7 @@ export function EventTimelineViewport({
   return (
     <div
       ref={viewportRef}
+      onScroll={onScroll}
       id={`${timelineId}-results`}
       role="region"
       aria-label="Chronological events"

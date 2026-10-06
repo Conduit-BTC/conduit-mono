@@ -1,3 +1,4 @@
+import type { Filter } from "nostr-tools"
 /**
  * Kind-30406 shipping option protocol helpers.
  *
@@ -6,7 +7,6 @@
  * The canonical fixed-shipping writer publishes one complete, product-scoped
  * Gamma kind-30406 before its referencing kind-30402.
  */
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   db,
   type CachedProductTombstone,
@@ -22,12 +22,12 @@ import {
 import type { ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import {
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutResult,
-} from "./ndk"
+  type PublicRelayReadOptions,
+  type PublicRelayReadResult,
+} from "./relay-reader"
 import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
@@ -39,6 +39,15 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+
+import {
+  MERCHANT_SHIPPING_POLICY_D_TAG,
+  SHIPPING_POLICY_EXTENSION_TAG,
+  parseShippingPolicyEventTags,
+  shippingMinorUnitsToAmount,
+  type ShippingPolicy,
+  type ShippingPolicyQuote,
+} from "./shipping-policy"
 
 export const CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG = "conduit-default"
 export const FIXED_PRODUCT_SHIPPING_D_TAG_SUFFIX = "-shipping-standard"
@@ -65,8 +74,8 @@ export interface ShippingDeletionFallbackStorage {
 }
 
 export interface ShippingTestOverrides {
-  fetchEventsFanout?: typeof fetchEventsFanout
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  fetchPublicEvents?: typeof fetchPublicEvents
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   getCachedDeletionTombstones?: (
@@ -167,6 +176,7 @@ export function getProductShippingOptionAddress(
 export type ProductFulfillmentIntent =
   | { kind: "digital" }
   | { kind: "coordinate_after_order" }
+  | { kind: "weight_table"; policyCoordinate: string; policyEventId: string }
   | {
       kind: "fixed_standard"
       amount: number
@@ -383,6 +393,27 @@ export interface ParsedShippingOption {
   createdAt: number
   /** Fields outside Conduit's narrow fixed-standard launch slice. */
   launchUnsupportedTags: string[]
+  shippingPolicy?: ShippingPolicy
+  signedEvent?: SignedPublicNostrEvent
+  readSource?: "relay" | "retained"
+  readCoverage?: "complete" | "partial" | "unavailable"
+  /** The option lookup hit its event budget; observed terms may be truncated. */
+  optionReadSaturated?: boolean
+}
+
+/** A retained policy is display/recovery evidence, not authority for new terms.
+ * Partial reads may authorize when the selected revision was observed now;
+ * missing deletion coverage alone does not veto that positive evidence.
+ * A capped option lookup cannot establish current terms. */
+export function hasCurrentShippingPolicyEvidence(
+  option: ParsedShippingOption
+): boolean {
+  return (
+    !!option.shippingPolicy &&
+    !!option.signedEvent &&
+    option.readSource === "relay" &&
+    option.optionReadSaturated !== true
+  )
 }
 
 export type ProductFulfillmentResolutionReason =
@@ -397,7 +428,8 @@ export type ProductFulfillmentResolutionReason =
   | "stale"
 
 export type PreparedProductFulfillment = {
-  intent: "digital" | "coordinate_after_order" | "fixed_standard"
+  intent:
+    "digital" | "coordinate_after_order" | "fixed_standard" | "weight_table"
   status: "ready" | "order_first"
   reason?: ProductFulfillmentResolutionReason
   option?: ParsedShippingOption
@@ -427,6 +459,8 @@ export interface CartShippingCostLine extends CommerceShippingCostLike {
   productId: string
   quantity: number
   format?: "physical" | "digital"
+  shippingPolicyQuote?: ShippingPolicyQuote
+  shippingAllocatedCostSats?: number
 }
 
 export interface ResolvedCartShippingCostSummary {
@@ -452,6 +486,17 @@ export function resolveCartShippingCost(
   let totalSats = 0
 
   for (const item of physicalItems) {
+    if (item.shippingPolicyQuote) {
+      if (
+        !Number.isSafeInteger(item.shippingAllocatedCostSats) ||
+        item.shippingAllocatedCostSats! < 0
+      ) {
+        missingProductIds.push(item.productId)
+      } else {
+        totalSats += item.shippingAllocatedCostSats!
+      }
+      continue
+    }
     const shippingCost = getShippingCostSats(item, rateInput)
     if (!shippingCost) {
       missingProductIds.push(item.productId)
@@ -484,9 +529,16 @@ export function resolveCartShippingCost(
 // ---------------------------------------------------------------------------
 
 export function parseShippingOptionEvent(
-  event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">
+  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">
 ): ParsedShippingOption | null {
   const tags = event.tags ?? []
+  const hasPolicyMarker = tags.some(
+    (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
+  )
+  const shippingPolicy = hasPolicyMarker
+    ? parseShippingPolicyEventTags(tags)
+    : undefined
+  if (hasPolicyMarker && !shippingPolicy) return null
 
   const getUniqueTag = (name: string): string[] | null => {
     const matches = tags.filter((tag) => tag[0] === name)
@@ -501,7 +553,7 @@ export function parseShippingOptionEvent(
   if (
     dTagEntry?.length !== 2 ||
     titleTag?.length !== 2 ||
-    priceTag?.length !== 3 ||
+    (!shippingPolicy && priceTag?.length !== 3) ||
     serviceTag?.length !== 2 ||
     clientTags.length > 1 ||
     clientTags.some(
@@ -518,11 +570,22 @@ export function parseShippingOptionEvent(
   if (dTag !== dTag.trim() || serviceValue !== serviceValue.trim()) return null
 
   // ["price", amount, currency]
-  const priceAmount = priceTag[1] ?? ""
-  const priceCurrency = priceTag[2] ?? ""
-  if (!FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount)) return null
+  const priceAmount = priceTag?.[1] ?? ""
+  const priceCurrency = shippingPolicy?.currency ?? priceTag?.[2] ?? ""
+  if (!shippingPolicy && !FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount))
+    return null
   if (!priceCurrency || priceCurrency !== priceCurrency.trim()) return null
-  const price = Number(priceAmount)
+  // This display summary is never a fixed shipping quote. Table fulfillment
+  // always prices the full signed policy for the actual shipment.
+  const firstRule =
+    shippingPolicy?.domestic?.rules[0] ??
+    shippingPolicy?.international?.rules[0]
+  const price = shippingPolicy
+    ? shippingMinorUnitsToAmount(
+        firstRule!.bands[0]!.priceMinor,
+        shippingPolicy.currency
+      )
+    : Number(priceAmount)
   const currency = normalizeCurrencyCode(priceCurrency)
   if (
     !Number.isFinite(price) ||
@@ -574,6 +637,13 @@ export function parseShippingOptionEvent(
         .filter(Boolean) ?? [],
   }))
 
+  let signedEvent: SignedPublicNostrEvent | undefined
+  if ("rawEvent" in event && typeof event.rawEvent === "function") {
+    const raw = event.rawEvent() as SignedPublicNostrEvent
+    if (isValidSignedPublicNostrEvent(raw)) signedEvent = cloneSignedEvent(raw)
+  } else if (isValidSignedPublicNostrEvent(event as SignedPublicNostrEvent)) {
+    signedEvent = cloneSignedEvent(event as SignedPublicNostrEvent)
+  }
   return {
     eventId: event.id,
     id: getShippingOptionAddress(event.pubkey, dTag),
@@ -586,6 +656,8 @@ export function parseShippingOptionEvent(
     countryRules,
     service,
     createdAt: (event.created_at ?? 0) * 1000,
+    ...(shippingPolicy ? { shippingPolicy } : {}),
+    ...(signedEvent ? { signedEvent } : {}),
     launchUnsupportedTags: Array.from(
       new Set(
         tags
@@ -676,12 +748,12 @@ function validateCachedShippingOptionFrontier(
 }
 
 function observedShippingOptionEvents(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   coordinates: ReadonlySet<string>
 ): SignedPublicNostrEvent[] {
   const observed = new Map<string, SignedPublicNostrEvent>()
   for (const event of events) {
-    const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+    const rawEvent = event
     const address = getShippingEventCoordinate(rawEvent)
     if (
       rawEvent.kind !== EVENT_KINDS.SHIPPING_OPTION ||
@@ -802,9 +874,10 @@ function rememberVolatileShippingOptionFrontiers(
 
 async function mergeObservedShippingOptionFrontiers(
   coordinates: readonly string[],
-  observedEvents: readonly NDKEvent[]
+  observedEvents: readonly SignedPublicNostrEvent[],
+  retainPositiveEvidence = false
 ): Promise<{
-  shippingEvents: NDKEvent[]
+  shippingEvents: SignedPublicNostrEvent[]
   retainedEventIds: string[]
 }> {
   const requested = new Set(coordinates)
@@ -896,6 +969,7 @@ async function mergeObservedShippingOptionFrontiers(
   )
 
   const shippingEvents = selectedRows.flatMap((row) => {
+    if (retainPositiveEvidence) return validateCachedShippingOptionFrontier(row)
     const live = liveByCoordinate.get(row.coordinate)
     if (!live || live.strongestCreatedAt !== row.strongestCreatedAt) return []
     const retainedEvents = validateCachedShippingOptionFrontier(row)
@@ -910,16 +984,16 @@ async function mergeObservedShippingOptionFrontiers(
     }
     // The retained frontier is only an authority gate. Pricing always comes
     // from the complete, currently verified relay observation.
-    return liveEvents.map((event) => new NDKEvent(undefined, event))
+    return liveEvents.map((event) => event)
   })
 
   return { shippingEvents, retainedEventIds }
 }
 
 function shippingTombstonesFromDeletionEvent(
-  event: NDKEvent
+  event: SignedPublicNostrEvent
 ): CachedProductTombstone[] {
-  const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+  const rawEvent = event
   if (
     event.kind !== EVENT_KINDS.DELETION ||
     !isValidSignedPublicNostrEvent(rawEvent)
@@ -994,10 +1068,7 @@ function parseShippingDeletionFallbackEvent(
     throw new Error("Invalid fixed shipping deletion fallback")
   }
   const cloned = cloneSignedEvent(event)
-  if (
-    shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, cloned))
-      .length === 0
-  ) {
+  if (shippingTombstonesFromDeletionEvent(cloned).length === 0) {
     throw new Error("Invalid fixed shipping deletion fallback")
   }
   return cloned
@@ -1223,7 +1294,7 @@ async function loadCachedShippingTombstones(
   const fallback = loadShippingDeletionFallback()
   const fallbackEvents = fallback.events
   const fallbackRows = fallbackEvents.flatMap((event) =>
-    shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, event))
+    shippingTombstonesFromDeletionEvent(event)
   )
   if (fallbackRows.length > 0) {
     try {
@@ -1264,9 +1335,7 @@ function isValidCachedShippingTombstone(row: CachedProductTombstone): boolean {
     return false
   }
   try {
-    return shippingTombstonesFromDeletionEvent(
-      new NDKEvent(undefined, row.signedEvent)
-    ).some(
+    return shippingTombstonesFromDeletionEvent(row.signedEvent).some(
       (derived) =>
         derived.id === row.id &&
         derived.pubkey === row.pubkey &&
@@ -1311,9 +1380,7 @@ async function persistPrimaryShippingTombstones(
   // key can be removed so a multi-target withdrawal cannot be partially lost.
   const rowsToPersist = selectShippingTombstoneUpdates(
     [
-      ...events.flatMap((event) =>
-        shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, event))
-      ),
+      ...events.flatMap((event) => shippingTombstonesFromDeletionEvent(event)),
       ...rows,
     ],
     []
@@ -1421,7 +1488,7 @@ async function flushVolatileShippingTombstones(): Promise<boolean> {
 }
 
 async function rememberObservedShippingDeletionEvidence(
-  observedDeletionEvents: readonly NDKEvent[],
+  observedDeletionEvents: readonly SignedPublicNostrEvent[],
   targetIds: readonly string[]
 ): Promise<CachedProductTombstone[]> {
   const targetIdSet = new Set(targetIds)
@@ -1455,9 +1522,7 @@ function signedDeletionEventsFromShippingTombstones(
     }
     const signedEvent = row.signedEvent
     if (!isValidSignedPublicNostrEvent(signedEvent)) continue
-    const validatedRows = shippingTombstonesFromDeletionEvent(
-      new NDKEvent(undefined, signedEvent)
-    )
+    const validatedRows = shippingTombstonesFromDeletionEvent(signedEvent)
     if (!validatedRows.some((validated) => validated.id === row.id)) continue
     events.set(signedEvent.id, cloneSignedEvent(signedEvent))
   }
@@ -1485,19 +1550,20 @@ async function getMergedShippingDeletionEvidence(
 }
 
 async function runShippingFetchEventsFanoutDetailed(
-  filter: NDKFilter,
-  options: Parameters<typeof fetchEventsFanoutDetailed>[1]
-): Promise<FetchEventsFanoutResult> {
+  filter: Filter,
+  options: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
+): Promise<PublicRelayReadResult> {
   const impl =
-    shippingTestOverrides.fetchEventsFanoutDetailed ?? fetchEventsFanoutDetailed
+    shippingTestOverrides.fetchSignedEventsFanoutDetailed ??
+    fetchSignedEventsFanoutDetailed
   return await impl(filter, options)
 }
 
 async function runShippingFetchEventsFanout(
-  filter: NDKFilter,
-  options: Parameters<typeof fetchEventsFanout>[1]
-): Promise<NDKEvent[]> {
-  const impl = shippingTestOverrides.fetchEventsFanout ?? fetchEventsFanout
+  filter: Filter,
+  options: Parameters<typeof fetchPublicEvents>[1]
+): Promise<SignedPublicNostrEvent[]> {
+  const impl = shippingTestOverrides.fetchPublicEvents ?? fetchPublicEvents
   return await impl(filter, options)
 }
 
@@ -1507,9 +1573,9 @@ export interface ShippingOptionReadOptions {
   /** Active authenticated account; requested merchant authors grant no authority. */
   authenticatedPubkey?: string | null
   /** Injectable durable policy reader for deterministic boundary tests. */
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   /** Live caller authority, rechecked immediately before final relay I/O. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   /** Cancel obsolete account-scoped reads when their caller is replaced. */
   signal?: AbortSignal
 }
@@ -1680,7 +1746,7 @@ export async function getShippingOptions(
   const executableIndependentRelayUrls = (
     readPlan.independentRelayUrls ?? []
   ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
   }
@@ -1708,15 +1774,18 @@ export async function getShippingOptions(
 }
 
 export function selectLatestShippingOptions(
-  events: readonly Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">[],
+  events: readonly Pick<
+    SignedPublicNostrEvent,
+    "id" | "pubkey" | "tags" | "created_at"
+  >[],
   deletionEvents: readonly Pick<
-    NDKEvent,
+    SignedPublicNostrEvent,
     "id" | "pubkey" | "tags" | "created_at"
   >[] = []
 ): ParsedShippingOption[] {
   const candidatesByCoordinate = new Map<
     string,
-    Array<Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">>
+    Array<Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">>
   >()
   for (const event of events) {
     const dTag = event.tags?.find((tag) => tag[0] === "d")?.[1]?.trim()
@@ -1735,10 +1804,12 @@ export function selectLatestShippingOptions(
     const newest = candidates.filter(
       (candidate) => (candidate.created_at ?? 0) === newestCreatedAt
     )
+    // Payment terms need an unambiguous revision. A relay's NIP-01 ID
+    // tie-break must not erase a known conflict in the retained frontier.
     if (new Set(newest.map((candidate) => candidate.id)).size !== 1) {
       continue
     }
-    const event = newest[0]!
+    const event = [...newest].sort((a, b) => a.id.localeCompare(b.id))[0]!
     const deleted = deletionEvents.some(
       (deletion) =>
         deletion.pubkey === event.pubkey &&
@@ -1800,14 +1871,15 @@ export function buildShippingOptionReadBatches(
 }
 
 function requireCompleteShippingRead(
-  result: FetchEventsFanoutResult,
+  result: PublicRelayReadResult,
   relayUrls: readonly string[],
   queryLimit: number
-): NDKEvent[] {
+): SignedPublicNostrEvent[] {
   const relayStatuses = new Map(
     result.relays.map((relay) => [relay.relayUrl, relay])
   )
   if (
+    relayUrls.length === 0 ||
     result.eventsVerified !== true ||
     relayStatuses.size !== relayUrls.length ||
     relayUrls.some(
@@ -1846,12 +1918,138 @@ async function mapWithConcurrency<T, TResult>(
   return results
 }
 
+export interface ShippingOptionsDetailedResult {
+  options: ParsedShippingOption[]
+  coverage: "complete" | "partial" | "unavailable"
+  signedEvents: SignedPublicNostrEvent[]
+  deletionEvents: SignedPublicNostrEvent[]
+}
+
+/** Fixed-only reads retain their original complete-current-observation contract. */
 export async function getShippingOptionsByCoordinates(
   coordinates: readonly string[],
   options: ShippingOptionReadOptions = {}
 ): Promise<ParsedShippingOption[]> {
+  const policies = coordinates.filter((coordinate) =>
+    coordinate.endsWith(`:${MERCHANT_SHIPPING_POLICY_D_TAG}`)
+  )
+  if (policies.length > 0) {
+    const fixed = coordinates.filter(
+      (coordinate) => !coordinate.endsWith(`:${MERCHANT_SHIPPING_POLICY_D_TAG}`)
+    )
+    const [policyRead, fixedRead] = await Promise.all([
+      getShippingOptionsByCoordinatesDetailed(policies, options),
+      fixed.length
+        ? readShippingOptionsByCoordinates(fixed, options).catch(() => null)
+        : null,
+    ])
+    if (options.shouldContinue?.() === false || options.signal?.aborted)
+      throw new Error("Shipping read was cancelled.")
+    return [...policyRead.options, ...(fixedRead?.options ?? [])]
+  }
+  return (await readShippingOptionsByCoordinates(coordinates, options)).options
+}
+
+/** Policy reads preserve signed positive evidence through partial relay reads. */
+export async function getShippingOptionsByCoordinatesDetailed(
+  coordinates: readonly string[],
+  options: ShippingOptionReadOptions = {}
+): Promise<ShippingOptionsDetailedResult> {
+  try {
+    return await readShippingOptionsByCoordinates(coordinates, options, true)
+  } catch {
+    if (options.shouldContinue?.() === false || options.signal?.aborted)
+      throw new Error("Shipping read was cancelled.")
+    try {
+      const retained = await mergeObservedShippingOptionFrontiers(
+        coordinates,
+        [],
+        true
+      )
+      const signedEvents = retained.shippingEvents
+      const targetIds = uniqueStrings([
+        ...coordinates.map(shippingTombstoneIdForAddress),
+        ...signedEvents.map((event) =>
+          shippingTombstoneIdForEvent(event.pubkey, event.id)
+        ),
+      ])
+      const deletionEvents = await getMergedShippingDeletionEvidence(targetIds)
+      if (options.shouldContinue?.() === false || options.signal?.aborted)
+        throw new Error("Shipping read was cancelled.")
+      return {
+        options: selectLatestShippingOptions(
+          retained.shippingEvents,
+          deletionEvents
+        ).map((option) => ({
+          ...option,
+          readSource: "retained" as const,
+          readCoverage: "unavailable" as const,
+        })),
+        coverage: "unavailable",
+        signedEvents,
+        deletionEvents,
+      }
+    } catch {
+      if (options.shouldContinue?.() === false || options.signal?.aborted)
+        throw new Error("Shipping read was cancelled.")
+      return {
+        options: [],
+        coverage: "unavailable",
+        signedEvents: [],
+        deletionEvents: [],
+      }
+    }
+  }
+}
+
+/** Preserve a acknowledged signed replacement or withdrawal before another read. */
+export async function rememberPublishedShippingEvidence(
+  event: SignedPublicNostrEvent
+): Promise<void> {
+  if (!isValidSignedPublicNostrEvent(event))
+    throw new Error("Invalid signed shipping evidence.")
+  if (event.kind === EVENT_KINDS.SHIPPING_OPTION) {
+    const address = getShippingEventCoordinate(event)
+    if (!address) throw new Error("Invalid shipping coordinate.")
+    await mergeObservedShippingOptionFrontiers(
+      [address.coordinate],
+      [event],
+      true
+    )
+  } else if (event.kind === EVENT_KINDS.DELETION) {
+    await rememberObservedShippingDeletionEvidence(
+      [event],
+      shippingTombstonesFromDeletionEvent(event).map((row) => row.id)
+    )
+  } else throw new Error("Unsupported shipping evidence kind.")
+}
+
+async function readShippingOptionsByCoordinates(
+  coordinates: readonly string[],
+  options: ShippingOptionReadOptions = {},
+  allowPartial = false
+): Promise<ShippingOptionsDetailedResult> {
+  let coverage: ShippingOptionsDetailedResult["coverage"] = "complete"
+  const observedIds = new Set<string>()
+  const saturatedCoordinates = new Set<string>()
+  const inspectRead = (
+    result: PublicRelayReadResult,
+    relayUrls: readonly string[],
+    limit: number
+  ): SignedPublicNostrEvent[] => {
+    try {
+      return requireCompleteShippingRead(result, relayUrls, limit)
+    } catch (error) {
+      if (!allowPartial) throw error
+      if (result.relays.some((relay) => relay.status === "success"))
+        coverage = "partial"
+      else if (coverage === "complete") coverage = "unavailable"
+      return result.eventsVerified ? result.events : []
+    }
+  }
   const batches = buildShippingOptionReadBatches(coordinates)
-  if (batches.length === 0) return []
+  if (batches.length === 0)
+    return { options: [], coverage, signedEvents: [], deletionEvents: [] }
 
   const authors = Array.from(new Set(batches.map((batch) => batch.pubkey)))
   const ownerRelayAuthority = await readShippingOwnerRelayAuthority(options)
@@ -1930,35 +2128,48 @@ export async function getShippingOptionsByCoordinates(
       const executableIndependentRelayUrls = (
         readPlan.independentRelayUrls ?? []
       ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-      const observedShippingEvents = requireCompleteShippingRead(
-        await runShippingFetchEventsFanoutDetailed(
-          {
-            kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
-            authors: [batch.pubkey],
-            "#d": batch.dTags,
-            limit: SHIPPING_OPTION_READ_LIMIT,
-          },
-          {
-            relayUrls,
-            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
-            authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-            appRelayUrls: executableAppRelayUrls,
-            personalRelayUrls: executablePersonalRelayUrls,
-            independentRelayUrls: executableIndependentRelayUrls,
-            accountNetworkLocalStateRepository:
-              options.accountNetworkLocalStateRepository,
-            shouldContinue: options.shouldContinue,
-            signal: options.signal,
-          }
-        ),
+      const optionRead = await runShippingFetchEventsFanoutDetailed(
+        {
+          kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
+          authors: [batch.pubkey],
+          "#d": batch.dTags,
+          limit: SHIPPING_OPTION_READ_LIMIT,
+        },
+        {
+          relayUrls,
+          accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+          authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+          appRelayUrls: executableAppRelayUrls,
+          personalRelayUrls: executablePersonalRelayUrls,
+          independentRelayUrls: executableIndependentRelayUrls,
+          accountNetworkLocalStateRepository:
+            options.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+          signal: options.signal,
+        }
+      )
+      if (
+        optionRead.relays.some(
+          (relay) =>
+            relay.eventCount + (relay.rejectedEventCount ?? 0) >=
+            SHIPPING_OPTION_READ_LIMIT
+        )
+      ) {
+        for (const coordinate of batch.coordinates)
+          saturatedCoordinates.add(coordinate)
+      }
+      const observedShippingEvents = inspectRead(
+        optionRead,
         relayUrls,
         SHIPPING_OPTION_READ_LIMIT
       )
+      for (const event of observedShippingEvents) observedIds.add(event.id)
       const { shippingEvents, retainedEventIds } =
         await mergeObservedShippingOptionFrontiers(
           batch.coordinates,
-          observedShippingEvents
+          observedShippingEvents,
+          allowPartial
         )
       const addressDeletionResult = await runShippingFetchEventsFanoutDetailed(
         {
@@ -1985,7 +2196,7 @@ export async function getShippingOptionsByCoordinates(
         addressDeletionResult.events,
         batch.coordinates.map(shippingTombstoneIdForAddress)
       )
-      requireCompleteShippingRead(
+      inspectRead(
         addressDeletionResult,
         relayUrls,
         SHIPPING_DELETION_READ_LIMIT
@@ -2025,7 +2236,7 @@ export async function getShippingOptionsByCoordinates(
             shippingTombstoneIdForEvent(batch.pubkey, eventId)
           )
         )
-        requireCompleteShippingRead(
+        inspectRead(
           eventDeletionResult,
           relayUrls,
           SHIPPING_DELETION_READ_LIMIT
@@ -2050,9 +2261,21 @@ export async function getShippingOptionsByCoordinates(
   ])
   const deletionEvents =
     await getMergedShippingDeletionEvidence(deletionTargetIds)
-  return selectLatestShippingOptions(shippingEvents, deletionEvents).filter(
-    (option) => requested.has(option.id)
-  )
+  return {
+    options: selectLatestShippingOptions(shippingEvents, deletionEvents)
+      .filter((option) => requested.has(option.id))
+      .map((option) => ({
+        ...option,
+        readSource: observedIds.has(option.eventId)
+          ? ("relay" as const)
+          : ("retained" as const),
+        readCoverage: coverage,
+        optionReadSaturated: saturatedCoordinates.has(option.id),
+      })),
+    coverage,
+    signedEvents: shippingEvents,
+    deletionEvents,
+  }
 }
 
 export function resolveProductFulfillment(
@@ -2139,7 +2362,7 @@ export function resolveProductFulfillment(
   const option = newest[0]!
   if (
     option.service !== "standard" ||
-    option.launchUnsupportedTags.length > 0
+    (!option.shippingPolicy && option.launchUnsupportedTags.length > 0)
   ) {
     return {
       intent: "fixed_standard",
@@ -2153,7 +2376,10 @@ export function resolveProductFulfillment(
       product.sourcePrice?.currency ??
       product.currency
   )
-  if (option.currency !== productCurrency) {
+  if (
+    (!option.shippingPolicy || option.shippingPolicy.version === 1) &&
+    option.currency !== productCurrency
+  ) {
     return {
       intent: "fixed_standard",
       status: "order_first",
@@ -2161,9 +2387,10 @@ export function resolveProductFulfillment(
     }
   }
   if (
-    !Number.isFinite(product.updatedAt) ||
-    product.updatedAt <= 0 ||
-    option.createdAt > product.updatedAt
+    !option.shippingPolicy &&
+    (!Number.isFinite(product.updatedAt) ||
+      product.updatedAt <= 0 ||
+      option.createdAt > product.updatedAt)
   ) {
     return {
       intent: "fixed_standard",
@@ -2173,7 +2400,7 @@ export function resolveProductFulfillment(
   }
 
   return {
-    intent: "fixed_standard",
+    intent: option.shippingPolicy ? "weight_table" : "fixed_standard",
     status: "ready",
     option,
   }
@@ -2194,7 +2421,8 @@ export function applyPreparedProductFulfillment(
     shippingOptionLaunchUnsupported: undefined,
   }
   if (
-    prepared.intent !== "fixed_standard" ||
+    (prepared.intent !== "fixed_standard" &&
+      prepared.intent !== "weight_table") ||
     prepared.status !== "ready" ||
     !prepared.option
   ) {
@@ -2210,7 +2438,9 @@ export function applyPreparedProductFulfillment(
   const option = prepared.option
   return {
     ...withoutShipping,
-    ...canonicalizeShippingCost(option.price, option.currency),
+    ...(!option.shippingPolicy
+      ? canonicalizeShippingCost(option.price, option.currency)
+      : {}),
     shippingOptionId: option.id,
     shippingOptionDTag: option.dTag,
     shippingCountries: [...option.countries],

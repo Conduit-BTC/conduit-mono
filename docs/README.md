@@ -35,9 +35,13 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
-- `docs/specs/event-markets.md`: organizer-authored calendar/collection,
-  merchant- or organizer-operated pickup, private handoff receipts, catalog
-  membership, and checkout provenance contract
+- `docs/knowledge/signed-event-publication.md`: plain signed-event writer,
+  fixed relay targets, retry ownership, and per-relay delivery evidence
+- `docs/specs/event-markets.md`: organizer-authored Event Market and NIP-52
+  calendar, causal merchant authorization, product association, checkout and
+  private handoff provenance; current-model cutover and repost-only old links
+- `docs/knowledge/event-market-collection-extension.md`: retirement notice for
+  the removed collection-based Event Market extension
 - `docs/knowledge/decentralized-network-product-posture.md`: product decisions
   under partial, delayed, divergent, and unevenly adopted network state
 - `docs/knowledge/compatibility-exception-template.md`: required governance for
@@ -48,6 +52,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
   source, versioning, release, and public-route isolation
 - `docs/knowledge/nip42-protected-read-rollout.md`: recipient-scoped protected
   inbox authentication, relay operator contract, and client-first rollout
+
+- `docs/knowledge/merchant-shipping-tables.md`: signed shipping tables, local
+  combined-weight calculation, fixed-option compatibility, and order evidence
 
 ### QA Runbooks
 
@@ -62,7 +69,7 @@ Reviewers may request a durable contract update when the behavior has broad or l
   without organizer verification, unchanged fulfillment, and regression coverage
 
 - `docs/knowledge/event-market-lifecycle.md`: signed open/closed acceptance,
-  legacy compatibility, retained history, and coordinated release/rollback
+  current-model history, printable QR signs, and coordinated release/rollback
 - `docs/knowledge/event-market-validation-evidence.md`: stable event-market
   acceptance/evidence IDs, candidate-head test mapping, and live-validation gaps
 - `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and
@@ -73,9 +80,6 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order
   compatibility routing while users migrate to discoverable NIP-17 inbox
   declarations
-- `docs/knowledge/event-market-collection-extension.md`: bounded preview writer
-  for event-backed and initially empty Open Markets collections while the
-  upstream clarification is under review
 - `docs/knowledge/nip46-connected-relay-retention.md`: temporary retention of
   established secure NIP-46 relays until relay migration can complete or cancel
   without mutating a returned signer after timeout

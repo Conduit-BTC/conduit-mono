@@ -12,6 +12,34 @@ import {
 } from "@conduit/ui"
 
 describe("getConversationMessageDisplayContent", () => {
+  it("summarizes valid event participation in previews and bubbles", () => {
+    const organizer = "a".repeat(64)
+    const labels = {
+      request: "Requested to join an event.",
+      invite: "Invited a merchant to join an event.",
+      decline: "Declined a request to join an event.",
+      withdraw: "Withdrew a request to join an event.",
+    } as const
+    for (const action of Object.keys(labels) as (keyof typeof labels)[]) {
+      const content = `Event Market participation v1\n${JSON.stringify({ version: 1, action, marketCoordinate: `30409:${organizer}:fair`, organizerPubkey: organizer, merchantPubkey: "b".repeat(64), createdAt: 100 })}`
+      expect(getConversationMessageDisplayContent(content)).toBe(labels[action])
+      const markup = renderToStaticMarkup(
+        createElement(ConversationMessageBubble, { content, mine: false })
+      )
+      expect(markup).toContain(labels[action])
+      expect(markup).not.toContain("organizerPubkey")
+      expect(markup).not.toContain("Approved")
+    }
+  })
+  it("preserves malformed event envelopes verbatim", () => {
+    for (const content of [
+      "Event Market participation v1\ninvalid",
+      "Event Market participation v1\n{}",
+      "Event Market participation v2\n{}",
+    ])
+      expect(getConversationMessageDisplayContent(content)).toBe(content)
+  })
+
   it("extracts the readable text from a legacy order-status DM", () => {
     const content = JSON.stringify({
       id: "2e2811f8-d38e-4929-a937-7b41e5fa6f2e",

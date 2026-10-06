@@ -22,6 +22,10 @@ import {
 } from "../packages/core/src/protocol/relay-executor"
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
 import {
+  refreshNdkRelaySettingsWhenIdle,
+  disconnectNdk,
+} from "../packages/core/src/protocol/ndk"
+import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
@@ -237,7 +241,373 @@ afterEach(() => {
   __resetProtectedReadSigner()
 })
 
+describe("public relay result accounting", () => {
+  const event = finalizeEvent(
+    { kind: 1, created_at: 1_700_000_000, tags: [], content: "fixture" },
+    PRIVATE_KEY_A
+  )
+
+  function behavior(
+    status: "success" | "partial" | "failed"
+  ): FakeRelayBehavior {
+    return {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        if (status === "failed") {
+          socket.relay(["CLOSED", frame[1], "restricted: fixture"])
+          return
+        }
+        socket.relay(["EVENT", frame[1], event])
+        if (status === "partial") {
+          socket.relay(["EVENT", frame[1], { ...event, id: "invalid" }])
+        }
+        socket.relay(["EOSE", frame[1]])
+      },
+    }
+  }
+
+  for (const status of ["success", "partial", "failed"] as const) {
+    it(`accounts for a ${status} public source`, async () => {
+      const harness = new FakeRelayHarness().at(
+        "wss://public.example",
+        behavior(status)
+      )
+      const result = await createExecutor(harness).query(publicRequest())
+
+      expect(result).toMatchObject({
+        status: status === "failed" ? "unavailable" : status,
+        attemptedCount: 1,
+        completedCount: status === "success" ? 1 : 0,
+        failedCount: status === "success" ? 0 : 1,
+        authoritativeEmpty: false,
+      })
+      expect(result.relays).toHaveLength(1)
+      expect(source(result).status).toBe(status)
+      expect(result.events.map((value) => value.id)).toEqual(
+        status === "failed" ? [] : [event.id]
+      )
+      expect(result.completedCount + result.failedCount).toBe(
+        result.relays.length
+      )
+    })
+  }
+
+  for (const phase of ["before planning", "after REQ"] as const) {
+    it(`accounts for a public source aborted ${phase}`, async () => {
+      const controller = new AbortController()
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (_, frame) => {
+          if (frame[0] === "REQ") controller.abort()
+        },
+      })
+      if (phase === "before planning") controller.abort()
+      const result = await createExecutor(harness).query(publicRequest(), {
+        signal: controller.signal,
+      })
+
+      expect(result).toMatchObject({
+        status: "aborted",
+        attemptedCount: phase === "before planning" ? 0 : 1,
+        completedCount: 0,
+        failedCount: phase === "before planning" ? 0 : 1,
+        events: [],
+        authoritativeEmpty: false,
+      })
+      expect(result.relays).toHaveLength(phase === "before planning" ? 0 : 1)
+      if (phase === "after REQ") {
+        expect(source(result)).toMatchObject({
+          status: "aborted",
+          failure: "aborted",
+        })
+      }
+      expect(harness.sockets).toHaveLength(phase === "before planning" ? 0 : 1)
+      expect(result.completedCount + result.failedCount).toBe(
+        result.relays.length
+      )
+    })
+  }
+
+  it("partitions mixed public outcomes while retaining useful evidence", async () => {
+    const statuses = ["success", "partial", "failed"] as const
+    const relayUrls = statuses.map((status) => `wss://${status}.example`)
+    const harness = new FakeRelayHarness()
+    for (const [index, status] of statuses.entries()) {
+      harness.at(relayUrls[index], behavior(status))
+    }
+    const result = await createExecutor(harness).query(publicRequest(relayUrls))
+
+    expect(result).toMatchObject({
+      status: "partial",
+      attemptedCount: 3,
+      completedCount: 1,
+      failedCount: 2,
+      authoritativeEmpty: false,
+    })
+    expect(result.relays.map((relay) => relay.status)).toEqual([...statuses])
+    expect(result.events.map((value) => value.id)).toEqual([event.id])
+    expect(result.completedCount + result.failedCount).toBe(
+      result.relays.length
+    )
+  })
+})
+
 describe("NDK-neutral relay executor NIP-42 state machine", () => {
+  for (const teardown of ["closeAll", "dispose"] as const) {
+    it(`idle refresh during planning preserves ownership until ${teardown}`, async () => {
+      let started!: () => void
+      const requestStarted = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (_, frame) => {
+          if (frame[0] === "REQ") started()
+        },
+      })
+      const executor = createExecutor(harness)
+      const pending = executor.query(publicRequest())
+      refreshNdkRelaySettingsWhenIdle()
+      await requestStarted
+
+      executor[teardown]()
+      await expect(pending).resolves.toMatchObject({ status: "aborted" })
+      expect(harness.sockets).toHaveLength(1)
+      expect(harness.sockets[0].closed).toBe(true)
+    })
+  }
+
+  it("idle refresh waits for planning reads to finish and then retires their pools", async () => {
+    let started!: () => void
+    const requestsStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let requestCount = 0
+    let completeImmediately = false
+    const subscriptions: Array<[FakeRelaySocket, unknown]> = []
+    const harness = new FakeRelayHarness().at("wss://public.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        if (completeImmediately) {
+          socket.relay(["EOSE", frame[1]])
+          return
+        }
+        subscriptions.push([socket, frame[1]])
+        if (++requestCount === 2) started()
+      },
+    })
+    const executor = createExecutor(harness)
+    const sibling = createExecutor(harness)
+    const first = executor.query(publicRequest())
+    const second = sibling.query(publicRequest())
+    refreshNdkRelaySettingsWhenIdle()
+    await requestsStarted
+
+    subscriptions[0][0].relay(["EOSE", subscriptions[0][1]])
+    await expect(first).resolves.toMatchObject({ status: "success" })
+    expect(harness.sockets.every((socket) => !socket.closed)).toBe(true)
+
+    subscriptions[1][0].relay(["EOSE", subscriptions[1][1]])
+    await expect(second).resolves.toMatchObject({ status: "success" })
+    expect(harness.sockets.every((socket) => socket.closed)).toBe(true)
+    completeImmediately = true
+    await expect(executor.query(publicRequest())).resolves.toMatchObject({
+      status: "success",
+    })
+    expect(harness.sockets).toHaveLength(3)
+  })
+
+  it("global retirement cancels planning reads before they can open detached sockets", async () => {
+    const harness = new FakeRelayHarness().at("wss://public.example", {})
+    const executor = createExecutor(harness)
+    const pending = executor.query(publicRequest(), { queryTimeoutMs: 100 })
+    disconnectNdk()
+
+    await expect(pending).resolves.toMatchObject({ status: "aborted" })
+    expect(harness.sockets).toHaveLength(0)
+  })
+
+  it("closeAll aborts active public reads and permits a fresh read", async () => {
+    let complete = false
+    let started!: () => void
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://public.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        started()
+        if (complete) socket.relay(["EOSE", frame[1]])
+      },
+    })
+    const executor = createExecutor(harness)
+    const pending = executor.query(publicRequest(), { queryTimeoutMs: 100 })
+    await requestStarted
+
+    executor.closeAll()
+    await expect(pending).resolves.toMatchObject({ status: "aborted" })
+    expect(harness.sockets[0].closed).toBe(true)
+
+    complete = true
+    await expect(executor.query(publicRequest())).resolves.toMatchObject({
+      status: "success",
+    })
+    expect(harness.sockets).toHaveLength(2)
+  })
+
+  for (const teardown of ["closeAll", "dispose"] as const) {
+    it(`${teardown} cancels a public read before planning finishes`, async () => {
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (socket, frame) => {
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
+      const executor = createExecutor(harness)
+      const pending = executor.query(publicRequest())
+      executor[teardown]()
+
+      await expect(pending).resolves.toMatchObject({ status: "aborted" })
+      expect(harness.sockets).toHaveLength(0)
+    })
+
+    it(`${teardown} cancels queued public attempts without cancelling a sibling executor`, async () => {
+      const relayUrls = Array.from(
+        { length: 9 },
+        (_, index) => `wss://teardown-${index}.example`
+      )
+      const harness = new FakeRelayHarness()
+      let started!: () => void
+      let requestCount = 0
+      const requestsStarted = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      for (const relayUrl of relayUrls)
+        harness.at(relayUrl, {
+          onSend: (_, frame) => {
+            if (frame[0] === "REQ" && ++requestCount === 8) started()
+          },
+        })
+      const executor = createExecutor(harness)
+      const pending = executor.query(publicRequest(relayUrls), {
+        queryTimeoutMs: 100,
+      })
+      await requestsStarted
+
+      const siblingHarness = new FakeRelayHarness().at(
+        "wss://sibling.example",
+        {
+          onSend: (socket, frame) => {
+            if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+          },
+        }
+      )
+      const sibling = createExecutor(siblingHarness)
+      const siblingRead = sibling.query(
+        publicRequest(["wss://sibling.example"])
+      )
+
+      executor[teardown]()
+      const result = await pending
+      expect(result).toMatchObject({
+        status: "aborted",
+        attemptedCount: 8,
+        completedCount: 0,
+        failedCount: 8,
+      })
+      // The queued ninth request never became an attempted source result.
+      expect(result.publicRead?.requestedRelayUrls).toHaveLength(9)
+      expect(result.relays).toHaveLength(8)
+      expect(result.relays.every((relay) => relay.status === "aborted")).toBe(
+        true
+      )
+      expect(result.completedCount + result.failedCount).toBe(
+        result.relays.length
+      )
+      await expect(siblingRead).resolves.toMatchObject({ status: "success" })
+      // The sibling's completed read proves the shared queue has advanced.
+      expect(harness.sockets).toHaveLength(8)
+      expect(harness.sockets.every((socket) => socket.closed)).toBe(true)
+      expect(siblingHarness.sockets).toHaveLength(1)
+      expect(siblingHarness.sockets[0].closed).toBe(false)
+    })
+  }
+
+  it("closeAll ends the public observation stream with cancellation evidence", async () => {
+    let started!: () => void
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://public.example", {
+      onSend: (_, frame) => {
+        if (frame[0] === "REQ") started()
+      },
+    })
+    const executor = createExecutor(harness)
+    const observations = []
+    const pending = (async () => {
+      for await (const observation of executor.req(publicRequest()))
+        observations.push(observation)
+    })()
+    await requestStarted
+    executor.closeAll()
+    await pending
+
+    expect(observations).toContainEqual({ type: "abort", relayIndex: 0 })
+    expect(harness.sockets[0].closed).toBe(true)
+  })
+
+  for (const phase of ["before connect", "after REQ"] as const) {
+    it(`completes injected public reads without global WebSocket ${phase}`, async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "WebSocket"
+      )
+      let deadline: ReturnType<typeof setTimeout> | undefined
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (socket, frame) => {
+          if (frame[0] !== "REQ") return
+          if (phase === "after REQ")
+            Reflect.deleteProperty(globalThis, "WebSocket")
+          queueMicrotask(() => socket.relay(["EOSE", frame[1]]))
+        },
+      })
+      const executor = createExecutor(harness)
+
+      try {
+        if (phase === "before connect")
+          Reflect.deleteProperty(globalThis, "WebSocket")
+        const result = await Promise.race([
+          executor.query(publicRequest()),
+          new Promise<never>((_, reject) => {
+            deadline = setTimeout(
+              () => reject(new Error("Injected public read did not settle")),
+              1_000
+            )
+          }),
+        ])
+
+        expect(result.status).toBe("success")
+        expect(source(result)).toMatchObject({
+          status: "success",
+          eventCount: 0,
+        })
+        expect(result.observations).toContainEqual({
+          type: "eose",
+          relayIndex: 0,
+        })
+        const frames = harness.sockets[0].sent
+        const request = frames.find((frame) => frame[0] === "REQ")
+        expect(request).toBeDefined()
+        expect(frames).toContainEqual(["CLOSE", request![1]])
+        expect(frames.some((frame) => frame[0] === "AUTH")).toBe(false)
+      } finally {
+        if (deadline) clearTimeout(deadline)
+        if (descriptor)
+          Object.defineProperty(globalThis, "WebSocket", descriptor)
+        else Reflect.deleteProperty(globalThis, "WebSocket")
+        executor.dispose()
+      }
+    })
+  }
+
   it("forces explicit executor reads onto loopback during E2E isolation", async () => {
     const isolatedRelayUrl = "ws://127.0.0.1:7777"
     Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
@@ -2408,6 +2778,32 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       malformedCount: 2,
       unusableCount: 1,
     })
+    const streamed = []
+    for await (const observation of executor.req(publicRequest()))
+      streamed.push(observation)
+    for (const [type, count] of [
+      ["event", 1],
+      ["duplicate", 1],
+      ["malformed", 2],
+      ["unusable", 1],
+    ] as const) {
+      expect(streamed.filter((entry) => entry.type === type)).toHaveLength(
+        count
+      )
+    }
+
+    expect(
+      result.observations.filter((entry) => entry.type === "event")
+    ).toHaveLength(1)
+    expect(
+      result.observations.filter((entry) => entry.type === "duplicate")
+    ).toHaveLength(1)
+    expect(
+      result.observations.filter((entry) => entry.type === "malformed")
+    ).toHaveLength(2)
+    expect(
+      result.observations.filter((entry) => entry.type === "unusable")
+    ).toHaveLength(1)
   })
 })
 
@@ -2457,5 +2853,52 @@ describe("relay executor dependency boundary", () => {
       expect(sourceText).not.toContain("@nostr-dev-kit/ndk")
       expect(sourceText).not.toMatch(/\bNDK(?:Event|Relay|Subscription)\b/)
     }
+  })
+})
+
+it("keeps requested relay indices when completion order precedes cancellation", async () => {
+  const controller = new AbortController()
+  const harness = new FakeRelayHarness()
+    .at("wss://first.example", {})
+    .at("wss://second.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+      },
+    })
+  const executor = createExecutor(harness)
+  const observations = []
+  for await (const observation of executor.req(
+    publicRequest(["wss://first.example", "wss://second.example"]),
+    { signal: controller.signal, queryTimeoutMs: 1000 }
+  )) {
+    observations.push(observation)
+    if (observation.type === "eose") controller.abort()
+  }
+  expect(
+    observations
+      .filter((entry) => entry.type === "eose")
+      .map((entry) => entry.relayIndex)
+  ).toEqual([1])
+  expect(
+    observations
+      .filter((entry) => entry.type === "abort")
+      .map((entry) => entry.relayIndex)
+  ).toEqual([0])
+})
+
+it("reports public connection timeout in the connect phase", async () => {
+  const executor = createExecutor(
+    new FakeRelayHarness().at("wss://public.example", { autoOpen: false })
+  )
+  const result = await executor.query(publicRequest(), { connectTimeoutMs: 5 })
+  expect(result.observations).toContainEqual({
+    type: "timeout",
+    relayIndex: 0,
+    phase: "connect",
+  })
+  expect(result.observations).toContainEqual({
+    type: "connection",
+    relayIndex: 0,
+    state: "failed",
   })
 })

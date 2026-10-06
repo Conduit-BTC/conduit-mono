@@ -96,7 +96,7 @@ describe("Merchant shipping kind 30078 settings", () => {
     let published: NDKEvent | null = null
     const fetchEvents = (async () =>
       readResult(
-        published ? [published.rawEvent() as SignedPublicNostrEvent] : []
+        published ? [published] : []
       )) as typeof fetchSignedEventsFanoutDetailed
     const publishEvent = (async (event: NDKEvent) => {
       published = event
@@ -115,7 +115,7 @@ describe("Merchant shipping kind 30078 settings", () => {
       },
     })
     expect(published).not.toBeNull()
-    const raw = published!.rawEvent() as SignedPublicNostrEvent
+    const raw = published!
     expect(raw.kind).toBe(EVENT_KINDS.APPLICATION_DATA)
     expect(raw.tags).toEqual([["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]])
     expect(isValidSignedPublicNostrEvent(raw)).toBe(true)

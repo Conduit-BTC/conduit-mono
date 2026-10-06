@@ -1,9 +1,11 @@
 import {
   buildMarketEventCatalogUrl,
+  decodeEventMarketReference,
   buildMarketProductShareUrl,
   buildMerchantEventParticipationUrl,
   inferConduitAppOrigin,
   normalizeExactEventCatalogNaddr,
+  parseAddressableCoordinate,
   pubkeyToNpub,
   type ConduitBrowserLocation,
 } from "@conduit/core"
@@ -83,13 +85,14 @@ export function getMerchantEventParticipationUrl(
 export interface MerchantEventsSearch {
   event?: string
   relation?: MerchantEventRelationshipFilter
+  occurrence?: string
 }
 
 export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
   authRequired?: true
 }
 
-/** Accept only one exact kind-30405 naddr from the Merchant route query. */
+/** Accept only one exact kind-30409 naddr from the Merchant route query. */
 export function parseMerchantEventsSearch(
   search: Record<string, unknown>
 ): MerchantEventsSearch {
@@ -101,7 +104,8 @@ export function parseMerchantEventsSearch(
   let event: string | undefined
   if (typeof search.event === "string") {
     try {
-      event = normalizeExactEventCatalogNaddr(search.event)
+      if (decodeEventMarketReference(search.event, [30409]))
+        event = normalizeExactEventCatalogNaddr(search.event)
     } catch {
       event = undefined
     }
@@ -109,6 +113,10 @@ export function parseMerchantEventsSearch(
   return {
     ...(event ? { event } : {}),
     ...(relation ? { relation } : {}),
+    ...(typeof search.occurrence === "string" &&
+    parseAddressableCoordinate(search.occurrence, [31922, 31923])
+      ? { occurrence: search.occurrence }
+      : {}),
   }
 }
 

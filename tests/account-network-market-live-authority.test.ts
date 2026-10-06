@@ -46,7 +46,7 @@ describe("Market live account authority", () => {
       "apps/market/src/hooks/useMerchantTrustContext.ts",
       "apps/market/src/routes/cart.tsx",
       "apps/market/src/routes/checkout.tsx",
-      "apps/market/src/routes/events/$collectionRef.tsx",
+      "apps/market/src/components/FutureEventMarketPage.tsx",
       "apps/market/src/components/MarketEventsTimeline.tsx",
       "apps/market/src/routes/messages.tsx",
       "apps/market/src/routes/orders.tsx",
@@ -82,14 +82,13 @@ describe("Market live account authority", () => {
 
     expect(browse).toContain("!signal.aborted && shouldContinueAccountRead()")
     expect(progressive).toMatch(
-      /const controller = new AbortController\(\)\s+const \{ signal \} = controller\s+const shouldContinue = \(\) =>\s+!signal\.aborted && authGenerationRef\.current === authGeneration/
+      /read: async \(onProgress, signal\) => \{[\s\S]{0,250}const shouldContinue = \(\) =>\s+!signal\.aborted && authGenerationRef\.current === authGeneration/
     )
     expect(progressive).toMatch(
       /getMarketplaceProductsProgressive\([\s\S]{0,600}accountPubkey: finalIoAccountPubkey,\s+shouldContinue,\s+signal,/
     )
-    expect(progressive).toMatch(
-      /return \(\) => \{\s+controller\.abort\(\)\s+cancelScheduledFlush\(\)/
-    )
+    expect(progressive).toContain("authGeneration,")
+    expect(progressive).toContain('session.relayScope ?? "no-relay-scope"')
     expect(
       progressive.match(
         /!signal\.aborted && authGenerationRef\.current === authGeneration/g

@@ -15,6 +15,9 @@ import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
   buildDirectMessageRumor,
+  buildFutureMarketPrivateRumor,
+  buildFutureMarketHandoffAck,
+  buildFutureMarketRevocation,
   classifyPrivateMessageKind,
   config,
   createInMemoryInboxDeclarationEvidenceRepository,
@@ -25,6 +28,7 @@ import {
   detectNip44Capabilities,
   EVENT_KINDS,
   fetchInboxRelayUrls,
+  futureMarketReadyReceiptSchema,
   getInboxDeclarationEvidence,
   inspectOwnPrivateMessageRelayReadiness,
   inspectRetainedOwnPrivateMessageRelayReadiness,
@@ -32,6 +36,7 @@ import {
   mergeInboxDeclarationEvidenceInMemory,
   mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
+  parseOrderMessageRumorEvent,
   parsePrivateMessageRelays,
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
@@ -44,7 +49,7 @@ import {
   type OwnPrivateMessageRelayReadiness,
   type ProgressivePublishSnapshot,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 
 const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
 const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)
@@ -89,7 +94,7 @@ const signer = plainTestSigner({
 } as unknown as NDKSigner)
 
 function wrap(id: string): NDKEvent {
-  return { id } as unknown as NDKEvent
+  return new NDKEvent(undefined, { id })
 }
 
 function rumor(kind: number, overrides: Partial<NDKEvent> = {}): NDKEvent {
@@ -336,6 +341,65 @@ describe("unwrapGiftWrap", () => {
     const outcome = await unwrapGiftWrap(wrap("w2"), signer, { giftUnwrap })
     expect(outcome.status).toBe("ok")
     if (outcome.status === "ok") expect(outcome.category).toBe("order")
+  })
+
+  it("classifies future ready, revoke, and ACK as private kind-16 order messages", async () => {
+    const merchant = INBOX_OWNER
+    const organizer = INBOX_PEER
+    const receipt = futureMarketReadyReceiptSchema.parse({
+      version: 2,
+      type: "future_market_ready",
+      releaseAuthorized: true,
+      claimRef: "a".repeat(64),
+      merchantPubkey: merchant,
+      organizerPubkey: organizer,
+      market: {
+        coordinate: `30409:${organizer}:fair`,
+        eventId: "b".repeat(64),
+        createdAt: 100,
+      },
+      calendar: {
+        coordinate: `31923:${organizer}:fair`,
+        eventId: "c".repeat(64),
+        createdAt: 100,
+      },
+      grant: { eventId: "d".repeat(64), createdAt: 100 },
+      items: [
+        {
+          product: {
+            coordinate: `30402:${merchant}:soap`,
+            eventId: "e".repeat(64),
+            createdAt: 100,
+          },
+          quantity: 2,
+        },
+      ],
+      issuedAt: 200,
+    })
+    const readyReceiptId = "f".repeat(64)
+    const payloads = [
+      receipt,
+      buildFutureMarketRevocation({ receipt, readyReceiptId, issuedAt: 201 }),
+      buildFutureMarketHandoffAck({
+        receipt,
+        readyReceiptId,
+        handedOutAt: 202,
+      }),
+    ]
+    for (const payload of payloads) {
+      const privateRumor = buildFutureMarketPrivateRumor(payload)
+      const outcome = await unwrapGiftWrap(
+        wrap(`future-${payload.type}`),
+        signer,
+        {
+          giftUnwrap: async () => privateRumor,
+        }
+      )
+      expect(outcome.status).toBe("ok")
+      if (outcome.status !== "ok") continue
+      expect(outcome.category).toBe("order")
+      expect(parseOrderMessageRumorEvent(outcome.rumor).type).toBe(payload.type)
+    }
   })
 
   it("ignores a NIP-18-shaped kind-16 generic repost", async () => {
@@ -749,6 +813,71 @@ describe("publishPrivateMessage", () => {
       } as unknown as NDKSigner),
       recipientInboxRelays: undefined,
     }
+  }
+
+  for (const status of [
+    "error",
+    "auth_required",
+    "cancelled",
+    "policy_blocked",
+  ] as const) {
+    it(`retains ${status} in the initial signed order delivery checkpoint`, async () => {
+      const ackRelay = "wss://acked.inbox.conduit.market"
+      const failedRelay = "wss://failed.inbox.conduit.market"
+      const delivery = signedOrderDeliveryFixture([ackRelay, failedRelay])
+      const signedRecipientWrap = new NDKEvent(
+        undefined,
+        finalizeEvent(
+          {
+            kind: EVENT_KINDS.GIFT_WRAP,
+            created_at: 1_700_000_000,
+            tags: [["p", delivery.recipientPubkey]],
+            content: "encrypted",
+          },
+          new Uint8Array(32).fill(21)
+        )
+      )
+      const snapshot = {
+        ...progressiveSnapshot({ successful: [ackRelay] }),
+        attemptedRelayUrls:
+          status === "policy_blocked" ? [ackRelay] : [ackRelay, failedRelay],
+        failedRelayUrls: [failedRelay],
+        relayAttempts: [
+          {
+            relayUrl: failedRelay,
+            eventId: signedRecipientWrap.id,
+            attempt: 1,
+            status,
+          },
+        ],
+      }
+      const result = await publishPrivateMessage({
+        ...delivery,
+        rumorKind: EVENT_KINDS.ORDER,
+        recipientDeliveryBoundary: "accepted",
+        onRecipientPrepared: async () => {},
+        onRecipientPublishStarting: async () => {},
+        onRecipientPublishAccepted: async () => {},
+        onRecipientPublishSettled: async () => {},
+        giftWrapFn: (async () => signedRecipientWrap) as never,
+        publishProgressiveFn: (async () => ({
+          accepted: Promise.resolve(snapshot),
+          settled: Promise.resolve(snapshot),
+        })) as never,
+      })
+      expect(result.orderRelayDelivery?.relayDelivery).toMatchObject([
+        { relayUrl: ackRelay, status: "acked" },
+        { relayUrl: failedRelay, status },
+      ])
+      expect(result.orderRelayDelivery?.relayDelivery[1]).not.toHaveProperty(
+        "timedOutAt"
+      )
+      if (status === "policy_blocked")
+        expect(result.orderRelayDelivery?.nextRetryAt).toBeUndefined()
+      expect(result.orderRelayDelivery?.signedRecipientWrap).toEqual(
+        structuredClone(signedRecipientWrap.rawEvent())
+      )
+    })
   }
 
   it("returns only after the first ACK is durable and settles remaining relays in background", async () => {
@@ -2161,9 +2290,9 @@ describe("publishPrivateMessage", () => {
         },
         onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         publishFn: (async (event, options) => {
-          expect(event).toBe(staged)
+          expect(JSON.stringify(event)).toBe(JSON.stringify(staged!.rawEvent()))
           expect(options.exclusiveRelayUrls).toEqual([target])
-          received = event
+          received = new NDKEvent(undefined, event)
           return { successfulRelayUrls: [target], failedRelayUrls: [] }
         }) as never,
       })

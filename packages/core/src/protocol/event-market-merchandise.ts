@@ -1,14 +1,14 @@
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import type { EventMarketReadyReceiptSchema } from "../schemas"
+import type { Filter } from "nostr-tools"
+import type { FutureMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
-  fetchEventsFanoutDetailed,
+  fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutResult,
-} from "./ndk"
+  type PublicRelayReadOptions,
+  type PublicRelayReadResult,
+} from "./relay-reader"
 import {
   isProductDeletedByNip09,
   parseProductAddressCoordinate,
@@ -19,12 +19,13 @@ import { parseProductEvent } from "./products"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
-import { EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT } from "./event-market"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
 
+// Client execution budget; this is not a protocol receipt item limit.
+const MAX_RECEIPT_ITEMS = 64
 const MAX_RECEIPT_READ_RELAYS = 8
 const RECEIPT_DELETION_REVISIONS_PER_TARGET = 4
 const RECEIPT_READ_CONCURRENCY = 4
@@ -46,9 +47,14 @@ export type EventMarketReceiptMerchandiseItemState =
 
 export interface EventMarketReceiptMerchandiseItem {
   state: EventMarketReceiptMerchandiseItemState
-  product: EventMarketReadyReceiptSchema["items"][number]["product"]
+  product: FutureMarketReadyReceiptSchema["items"][number]["product"]
   quantity: number
   title?: string
+  /** Parsed from the exact authenticated product revision. */
+  signedProduct?: Pick<
+    ReturnType<typeof parseProductEvent>,
+    "type" | "specifications"
+  >
   sourceRelayUrls: string[]
 }
 
@@ -73,8 +79,21 @@ export function isVerifiedEventMarketReceiptMerchandiseResolution(
   )
 }
 
+/** Only receipt identity and exact item snapshots are needed for this read. */
+export type EventMarketReceiptMerchandiseEvidence = Pick<
+  FutureMarketReadyReceiptSchema,
+  "claimRef" | "merchantPubkey" | "organizerPubkey"
+> & {
+  items: readonly Pick<
+    FutureMarketReadyReceiptSchema["items"][number],
+    "product" | "quantity"
+  >[]
+}
+
 export interface ResolveEventMarketReceiptMerchandiseEvidenceInput {
-  receipt: EventMarketReadyReceiptSchema
+  receipt: EventMarketReceiptMerchandiseEvidence
+  /** Future physical release terms remain pinned despite later listing deletion. */
+  receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   events: readonly SignedPublicNostrEvent[]
   coverage: EventMarketReceiptMerchandiseCoverage
   sourceRelayUrlsById?: ReadonlyMap<string, readonly string[]>
@@ -169,6 +188,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
       } satisfies EventMarketReceiptMerchandiseItem
     }
     if (
+      input.receiptRevisionPolicy !== "historical_physical_receipt" &&
       isProductDeletedByNip09(
         {
           authorPubkey: event.pubkey,
@@ -188,12 +208,14 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
     }
 
     try {
-      const parsed = parseProductEvent(new NDKEvent(undefined, event))
+      const parsed = parseProductEvent(event)
       if (
         parsed.id !== expectedAddress.addressId ||
         parsed.pubkey.toLowerCase() !== receipt.merchantPubkey.toLowerCase() ||
         parsed.createdAt !== receiptItem.product.createdAt ||
-        parsed.priceEvidenceMalformed
+        parsed.priceEvidenceMalformed ||
+        (input.receiptRevisionPolicy === "historical_physical_receipt" &&
+          (parsed.format !== "physical" || parsed.visibility !== "public"))
       ) {
         throw new Error("Exact receipt product metadata is invalid.")
       }
@@ -202,6 +224,10 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
         product: receiptItem.product,
         quantity: receiptItem.quantity,
         title: parsed.title,
+        signedProduct: {
+          type: parsed.type,
+          specifications: parsed.specifications,
+        },
         sourceRelayUrls,
       } satisfies EventMarketReceiptMerchandiseItem
     } catch {
@@ -229,7 +255,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
 }
 
 interface EventMarketMerchandiseTestOverrides {
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
 }
 
@@ -247,7 +273,7 @@ export function __resetEventMarketMerchandiseTestOverrides(): void {
 
 function combineCoverage(
   relayUrls: readonly string[],
-  results: readonly FetchEventsFanoutResult[]
+  results: readonly PublicRelayReadResult[]
 ): EventMarketReceiptMerchandiseCoverage {
   let completeRelayCount = 0
   let partialRelayCount = 0
@@ -274,14 +300,14 @@ function combineCoverage(
   }
 }
 
-function rawEvents(result: FetchEventsFanoutResult): {
+function rawEvents(result: PublicRelayReadResult): {
   events: SignedPublicNostrEvent[]
   sourceRelayUrlsById: Map<string, string[]>
 } {
   const events: SignedPublicNostrEvent[] = []
   const sourceRelayUrlsById = new Map<string, string[]>()
   for (const event of result.events) {
-    const raw = event.rawEvent() as SignedPublicNostrEvent
+    const raw = event
     events.push(raw)
     const id = raw.id.toLowerCase()
     sourceRelayUrlsById.set(id, [
@@ -295,11 +321,13 @@ function rawEvents(result: FetchEventsFanoutResult): {
 }
 
 export interface GetEventMarketReceiptMerchandiseInput {
-  receipt: EventMarketReadyReceiptSchema
+  receipt: EventMarketReceiptMerchandiseEvidence
+  /** Future physical release terms remain pinned despite later listing deletion. */
+  receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   authenticatedPubkey?: string | null
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }
 
@@ -307,10 +335,7 @@ export interface GetEventMarketReceiptMerchandiseInput {
 export async function getEventMarketReceiptMerchandise(
   input: GetEventMarketReceiptMerchandiseInput
 ): Promise<EventMarketReceiptMerchandiseResolution> {
-  if (
-    input.receipt.items.length >
-    EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-  ) {
+  if (input.receipt.items.length > MAX_RECEIPT_ITEMS) {
     throw new Error("Receipt merchandise exceeds the bounded read budget.")
   }
   const merchant = input.receipt.merchantPubkey.toLowerCase()
@@ -392,20 +417,20 @@ export async function getEventMarketReceiptMerchandise(
   const addresses = Array.from(
     new Set(input.receipt.items.map((item) => item.product.coordinate))
   )
-  const filters: NDKFilter[] = [
+  const filters: Filter[] = [
     {
       kinds: [EVENT_KINDS.PRODUCT],
       authors: [merchant],
       ids: productIds,
-      limit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
+      limit: MAX_RECEIPT_ITEMS,
     },
-    ...productIds.map((eventId): NDKFilter => ({
+    ...productIds.map((eventId): Filter => ({
       kinds: [EVENT_KINDS.DELETION],
       authors: [merchant],
       "#e": [eventId],
       limit: RECEIPT_DELETION_REVISIONS_PER_TARGET,
     })),
-    ...addresses.map((address): NDKFilter => ({
+    ...addresses.map((address): Filter => ({
       kinds: [EVENT_KINDS.DELETION],
       authors: [merchant],
       "#a": [address],
@@ -413,8 +438,9 @@ export async function getEventMarketReceiptMerchandise(
     })),
   ]
   const fetch =
-    testOverrides.fetchEventsFanoutDetailed ?? fetchEventsFanoutDetailed
-  const results: FetchEventsFanoutResult[] = []
+    testOverrides.fetchSignedEventsFanoutDetailed ??
+    fetchSignedEventsFanoutDetailed
+  const results: PublicRelayReadResult[] = []
   let remainingRelayUrls = [...relayUrls]
   for (
     let index = 0;
@@ -474,6 +500,7 @@ export async function getEventMarketReceiptMerchandise(
   }
   return resolveEventMarketReceiptMerchandiseEvidence({
     receipt: input.receipt,
+    receiptRevisionPolicy: input.receiptRevisionPolicy,
     events: Array.from(events.values()),
     sourceRelayUrlsById,
     coverage: combineCoverage(relayUrls, results),

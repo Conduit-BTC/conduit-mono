@@ -1,70 +1,38 @@
 import {
-  formatEventMarketPickupClaimCode,
-  getEventMarketPickupClaimRef,
   resolveEventMarketOrganizerInbox,
-  resolveOrderPickupHandoffAuthority,
   type EventMarketOrganizerInboxResolution,
   type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
-import type { CartItem, CartPickupFulfillment } from "./cart-model"
+import type { CartEventMarketPickupFulfillment, CartItem } from "./cart-model"
 
 export type PickupHandoffSummary = {
   mode: "merchant_handoff" | "organizer_handoff"
   handlerPubkey: string
-  legacySafeDefault: boolean
   label: "Pickup from merchant booth" | "Pickup from event organizer"
-}
-
-export function getPickupHandoffSummary(
-  fulfillment: CartPickupFulfillment
-): PickupHandoffSummary {
-  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
-  return {
-    ...authority,
-    label:
-      authority.mode === "organizer_handoff"
-        ? "Pickup from event organizer"
-        : "Pickup from merchant booth",
-  }
 }
 
 export function getCartPickupHandoffSummary(
   items: readonly Pick<CartItem, "fulfillment">[]
 ): PickupHandoffSummary | null {
   const pickup = items.find(
-    (item): item is { fulfillment: CartPickupFulfillment } =>
-      item.fulfillment?.type === "pickup"
+    (item) => item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
-  return pickup ? getPickupHandoffSummary(pickup) : null
+  if (pickup?.type !== "event_market_pickup") return null
+  return getFuturePickupHandoffSummary(pickup)
 }
 
-/**
- * Derive the buyer-visible code locally from private order context. The
- * organizer receives the same opaque claim in the redacted ready receipt.
- */
-export function getOrganizerPickupClaimCode(
-  orderId: string,
-  fulfillment: CartPickupFulfillment
-): string | null {
-  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
-  if (
-    authority.legacySafeDefault ||
-    authority.mode !== "organizer_handoff" ||
-    authority.handlerPubkey !== fulfillment.organizerPubkey.toLowerCase()
-  ) {
-    return null
-  }
-  try {
-    return formatEventMarketPickupClaimCode(
-      getEventMarketPickupClaimRef({
-        orderId,
-        merchantPubkey: fulfillment.product.merchantPubkey,
-        organizerPubkey: fulfillment.organizerPubkey,
-        collectionCoordinate: fulfillment.collection.coordinate,
-      })
-    )
-  } catch {
-    return null
+export function getFuturePickupHandoffSummary(
+  fulfillment: CartEventMarketPickupFulfillment
+): PickupHandoffSummary {
+  const organizer = fulfillment.mode === "organizer_handoff"
+  return {
+    mode: organizer ? "organizer_handoff" : "merchant_handoff",
+    handlerPubkey: organizer
+      ? fulfillment.organizerPubkey
+      : fulfillment.merchantPubkey,
+    label: organizer
+      ? "Pickup from event organizer"
+      : "Pickup from merchant booth",
   }
 }
 

@@ -1,3 +1,5 @@
+import type { SignedPublicNostrEvent } from "../protocol/signed-event"
+import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
 import type {
   KnownOrderStatus,
   OrderItemFulfillmentSchema,
@@ -20,6 +22,7 @@ export interface Product {
   id: string
   /** Signed kind-30402 event id behind this exact product projection. */
   sourceEventId?: EventId
+  signedProductEvent?: SignedPublicNostrEvent
   pubkey: Pubkey
   title: string
   summary?: string
@@ -41,6 +44,15 @@ export interface Product {
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
+  shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+  shippingAdjustmentsMalformed?: true
+  shippingDimensionsCm?: { length: number; width: number; height: number }
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number
@@ -58,6 +70,7 @@ export interface Product {
   collectionRefs?: string[]
   /** Repeated kind-30409 Event Market association references in signed tag order. */
   eventMarketRefs?: string[]
+  eventGuestContactOptional?: boolean
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
@@ -127,6 +140,8 @@ export interface OrderItem {
   quantity: number
   priceAtPurchase: number
   currency: string
+  shippingPolicyQuote?: ShippingPolicyQuote
+  shippingAllocatedCostSats?: number
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number

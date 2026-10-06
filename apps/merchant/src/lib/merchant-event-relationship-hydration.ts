@@ -1,204 +1,256 @@
-export const MERCHANT_EVENT_RELATIONSHIP_HYDRATION_CONCURRENCY = 4
-export const MERCHANT_EVENT_RELATIONSHIP_HYDRATION_TARGET_LIMIT = 64
-export const MERCHANT_EVENT_RELATIONSHIP_HYDRATION_DEADLINE_MS = 20_000
+import {
+  compareReplaceableEventFrontiers,
+  decodeEventMarketReference,
+  resolveEventMarketRoster,
+  type EventMarketRosterReadResult,
+  type ProductSchema,
+} from "@conduit/core"
 
-export interface MerchantEventRelationshipReference {
-  coordinate: string
-  reference: string
+export const MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT = 64
+const CONCURRENCY = 4
+const DEADLINE_MS = 20_000
+
+/** Product revisions are already reconciled by the merchant storefront read. */
+export function getMerchantProductMarketReferences(
+  products: readonly Pick<ProductSchema, "eventMarketRefs">[]
+): string[] {
+  const references = new Set<string>()
+  for (const product of products) {
+    for (const reference of product.eventMarketRefs ?? []) {
+      const decoded = decodeEventMarketReference(reference, [30409])
+      if (decoded) references.add(decoded.coordinate)
+    }
+  }
+  return [...references]
 }
 
-export interface MerchantEventRelationshipReferenceGroups {
-  current?: MerchantEventRelationshipReference
-  products: readonly MerchantEventRelationshipReference[]
-  saved: readonly MerchantEventRelationshipReference[]
-}
-
-export type MerchantEventRelationshipDeadlineScheduler = (
-  onDeadline: () => void,
-  deadlineMs: number
-) => () => void
-
-interface HydrateMerchantEventRelationshipsInput<T> {
+export async function hydrateMerchantProductMarkets(input: {
   references: readonly string[]
-  resolve: (reference: string, signal: AbortSignal) => Promise<T>
+  read: (
+    reference: string,
+    signal: AbortSignal
+  ) => Promise<EventMarketRosterReadResult>
   signal?: AbortSignal
   shouldContinue?: () => boolean
-  concurrency?: number
   targetLimit?: number
+  concurrency?: number
   deadlineMs?: number
-  scheduleDeadline?: MerchantEventRelationshipDeadlineScheduler
-}
-
-export interface MerchantEventRelationshipHydrationResult<T> {
-  values: T[]
+}): Promise<{
+  markets: EventMarketRosterReadResult[]
   failedCount: number
-}
-
-/**
- * Orders exact relationship reads by immediate user value. A saved naddr may
- * enrich the opened or product coordinate with relay hints without changing
- * its priority, while the currently opened coordinate always remains first.
- */
-export function prioritizeMerchantEventRelationshipReferences(
-  groups: MerchantEventRelationshipReferenceGroups
-): string[] {
-  const ordered: Array<
-    MerchantEventRelationshipReference & {
-      source: "current" | "product" | "saved"
-    }
-  > = []
-  const indexByCoordinate = new Map<string, number>()
-
-  const add = (
-    candidate: MerchantEventRelationshipReference,
-    source: "current" | "product" | "saved"
-  ) => {
-    const existingIndex = indexByCoordinate.get(candidate.coordinate)
-    if (existingIndex !== undefined) {
-      const existing = ordered[existingIndex]
-      if (source === "saved" && existing.source !== "saved") {
-        existing.reference = candidate.reference
-      }
-      return
-    }
-    indexByCoordinate.set(candidate.coordinate, ordered.length)
-    ordered.push({ ...candidate, source })
-  }
-
-  if (groups.current) add(groups.current, "current")
-  for (const product of groups.products) add(product, "product")
-  for (const saved of groups.saved) add(saved, "saved")
-
-  return ordered.map(({ reference }) => reference)
-}
-
-/**
- * Hydrates a bounded prefix without allowing a held relay read to block the
- * entire timeline. Completed values retain input order; rejected, timed-out,
- * in-flight, never-started, and over-limit references are all reported as
- * incomplete through failedCount.
- */
-export async function hydrateMerchantEventRelationships<T>(
-  input: HydrateMerchantEventRelationshipsInput<T>
-): Promise<MerchantEventRelationshipHydrationResult<T>> {
-  throwIfCallerStopped(input.signal, input.shouldContinue)
-
-  const targetLimit = boundedPositiveInteger(
-    input.targetLimit,
-    MERCHANT_EVENT_RELATIONSHIP_HYDRATION_TARGET_LIMIT
+}> {
+  const abortError = () =>
+    new DOMException("Market read cancelled.", "AbortError")
+  if (input.signal?.aborted || input.shouldContinue?.() === false)
+    throw abortError()
+  const limit = Math.max(
+    1,
+    Math.floor(input.targetLimit ?? MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT)
   )
-  const concurrency = boundedPositiveInteger(
-    input.concurrency,
-    MERCHANT_EVENT_RELATIONSHIP_HYDRATION_CONCURRENCY
-  )
-  const deadlineMs = boundedPositiveInteger(
-    input.deadlineMs,
-    MERCHANT_EVENT_RELATIONSHIP_HYDRATION_DEADLINE_MS
-  )
-  const scheduledReferences = input.references.slice(0, targetLimit)
-  if (scheduledReferences.length === 0) {
-    return { values: [], failedCount: 0 }
-  }
+  const references = input.references.slice(0, limit)
+  if (!references.length) return { markets: [], failedCount: 0 }
 
   const controller = new AbortController()
-  const completed = new Map<number, T>()
-  let nextIndex = 0
-  let stopReason: "caller" | "deadline" | undefined
-  let resolveStopped: (reason: "caller" | "deadline") => void = () => undefined
-  const stopped = new Promise<"caller" | "deadline">((resolve) => {
-    resolveStopped = resolve
+  const completed = new Map<number, EventMarketRosterReadResult>()
+  let next = 0
+  let stop: "deadline" | "caller" | undefined
+  let notifyStop: (reason: "deadline" | "caller") => void = () => undefined
+  const stopped = new Promise<"deadline" | "caller">((resolve) => {
+    notifyStop = resolve
   })
-  const stop = (reason: "caller" | "deadline") => {
-    if (stopReason) return
-    stopReason = reason
+  const halt = (reason: "deadline" | "caller") => {
+    if (stop) return
+    stop = reason
     controller.abort()
-    resolveStopped(reason)
+    notifyStop(reason)
   }
-  const stopForCaller = () => stop("caller")
-  input.signal?.addEventListener("abort", stopForCaller, { once: true })
-
-  const scheduleDeadline =
-    input.scheduleDeadline ??
-    ((onDeadline: () => void, delayMs: number) => {
-      const timeout = setTimeout(onDeadline, delayMs)
-      return () => clearTimeout(timeout)
-    })
-  const cancelDeadline = scheduleDeadline(() => stop("deadline"), deadlineMs)
-  const authorityCheck = input.shouldContinue
+  const onAbort = () => halt("caller")
+  input.signal?.addEventListener("abort", onAbort, { once: true })
+  const timer = setTimeout(
+    () => halt("deadline"),
+    input.deadlineMs ?? DEADLINE_MS
+  )
+  const authorityTimer = input.shouldContinue
     ? setInterval(() => {
-        if (input.shouldContinue?.() === false) stop("caller")
-      }, 25)
+        if (input.shouldContinue?.() === false) halt("caller")
+      }, 50)
     : undefined
 
   const worker = async () => {
-    while (!stopReason) {
+    while (!stop) {
       if (input.signal?.aborted || input.shouldContinue?.() === false) {
-        stop("caller")
+        halt("caller")
         return
       }
-      const index = nextIndex
-      if (index >= scheduledReferences.length) return
-      nextIndex += 1
+      const index = next++
+      if (index >= references.length) return
       try {
-        const value = await input.resolve(
-          scheduledReferences[index],
-          controller.signal
-        )
-        if (!stopReason) completed.set(index, value)
+        const market = await input.read(references[index]!, controller.signal)
+        if (!stop) completed.set(index, market)
       } catch {
-        // A rejected read remains incomplete; another worker can continue.
+        // One failed market does not suppress other exact relationships.
       }
     }
   }
-
   try {
     const workers = Array.from(
-      {
-        length: Math.min(concurrency, scheduledReferences.length),
-      },
+      { length: Math.min(input.concurrency ?? CONCURRENCY, references.length) },
       () => worker()
     )
     const outcome = await Promise.race([
       Promise.all(workers).then(() => "complete" as const),
       stopped,
     ])
-    if (outcome === "caller") {
-      throwIfCallerStopped(input.signal, input.shouldContinue)
+    if (
+      outcome === "caller" ||
+      input.signal?.aborted ||
+      input.shouldContinue?.() === false
+    )
       throw abortError()
-    }
-    throwIfCallerStopped(input.signal, input.shouldContinue)
   } finally {
-    cancelDeadline()
-    if (authorityCheck !== undefined) clearInterval(authorityCheck)
-    input.signal?.removeEventListener("abort", stopForCaller)
+    clearTimeout(timer)
+    if (authorityTimer !== undefined) clearInterval(authorityTimer)
+    input.signal?.removeEventListener("abort", onAbort)
     controller.abort()
   }
-
-  const values = Array.from(completed.entries())
-    .sort(([left], [right]) => left - right)
-    .map(([, value]) => value)
   return {
-    values,
-    failedCount: input.references.length - values.length,
+    markets: [...completed.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, market]) => market),
+    failedCount: input.references.length - completed.size,
   }
 }
 
-function boundedPositiveInteger(
-  value: number | undefined,
-  fallback: number
-): number {
-  return Number.isFinite(value)
-    ? Math.max(1, Math.floor(value as number))
-    : fallback
+const knownNegative = (read: EventMarketRosterReadResult) =>
+  read.resolution.state === "deleted" ||
+  read.resolution.state === "malformed" ||
+  read.resolution.state === "conflicting"
+
+function mergedMarketEvidence(
+  existing: EventMarketRosterReadResult,
+  next: EventMarketRosterReadResult
+) {
+  const evidence = (read: EventMarketRosterReadResult) =>
+    read.observedEvidence ??
+    (read.resolution.state === "current"
+      ? [read.resolution.market.signedEvent]
+      : [])
+  return [
+    ...new Map(
+      [...evidence(existing), ...evidence(next)].map((event) => [
+        event.id,
+        event,
+      ])
+    ).values(),
+  ]
 }
 
-function throwIfCallerStopped(
-  signal?: AbortSignal,
-  shouldContinue?: () => boolean
-): void {
-  if (signal?.aborted || shouldContinue?.() === false) throw abortError()
+function chooseMarketRead(
+  existing: EventMarketRosterReadResult,
+  next: EventMarketRosterReadResult
+): EventMarketRosterReadResult {
+  const evidence = mergedMarketEvidence(existing, next)
+  const reduce = (events: Readonly<typeof evidence>) =>
+    resolveEventMarketRoster({
+      coordinate: existing.coordinate,
+      revisions: events.filter((event) => event.kind === 30409),
+      deletions: events.filter((event) => event.kind === 5),
+    })
+  // Never discard a negative summary whose signed frontier is unavailable.
+  // Real roster reads carry the observations needed to re-reduce both sources.
+  const reproducible = [existing, next].every((read) => {
+    if (!knownNegative(read)) return true
+    const observed = reduce(read.observedEvidence ?? [])
+    return (
+      observed.state === read.resolution.state &&
+      "eventId" in observed &&
+      "eventId" in read.resolution &&
+      observed.eventId === read.resolution.eventId
+    )
+  })
+  if (reproducible && evidence.length > 0) {
+    const resolution = reduce(evidence)
+    if (resolution.state !== "current") {
+      return { ...existing, resolution }
+    }
+    const matches = (read: EventMarketRosterReadResult) =>
+      read.resolution.state === "current" &&
+      read.resolution.market.eventId === resolution.market.eventId
+    if (!matches(existing) && matches(next)) return next
+    if (!matches(next) && matches(existing)) return existing
+  }
+  if (knownNegative(next)) return next
+  if (knownNegative(existing)) return existing
+  if (existing.resolution.state !== "current") return next
+  if (next.resolution.state !== "current") return existing
+  const left = existing.resolution.market.signedEvent
+  const right = next.resolution.market.signedEvent
+  const frontier = compareReplaceableEventFrontiers(
+    { createdAt: right.created_at, eventId: right.id },
+    { createdAt: left.created_at, eventId: left.id }
+  )
+  if (frontier !== 0) return frontier > 0 ? next : existing
+
+  // The market revision can stay fixed while the linked schedule or date is
+  // replaced. Compare that signed frontier before read completeness.
+  const linkedEvent = (read: EventMarketRosterReadResult) =>
+    read.schedule?.kind === "series"
+      ? read.schedule.series.signedEvent
+      : read.schedule?.kind === "single"
+        ? read.schedule.occurrenceEvent
+        : (read.calendarSignedEvent ?? read.calendar?.signedEvent)
+  const previousLinked = linkedEvent(existing)
+  const nextLinked = linkedEvent(next)
+  if (previousLinked && nextLinked) {
+    const linkedFrontier = compareReplaceableEventFrontiers(
+      { createdAt: nextLinked.created_at, eventId: nextLinked.id },
+      { createdAt: previousLinked.created_at, eventId: previousLinked.id }
+    )
+    if (linkedFrontier !== 0) return linkedFrontier > 0 ? next : existing
+  } else if (previousLinked || nextLinked) {
+    return nextLinked ? next : existing
+  }
+
+  const coverageRank = (coverage: string | undefined) =>
+    coverage === "complete"
+      ? 3
+      : coverage === "partial"
+        ? 2
+        : coverage === "stale"
+          ? 1
+          : 0
+  const coverageOrder = (read: EventMarketRosterReadResult) => [
+    coverageRank(read.calendarCoverage),
+    coverageRank(read.scheduleCoverage),
+    coverageRank(read.coverage),
+    Number(read.retained),
+  ]
+  const previousCoverage = coverageOrder(existing)
+  const nextCoverage = coverageOrder(next)
+  for (let index = 0; index < previousCoverage.length; index++) {
+    const difference = nextCoverage[index]! - previousCoverage[index]!
+    if (difference !== 0) return difference > 0 ? next : existing
+  }
+  return existing
 }
 
-function abortError(): DOMException {
-  return new DOMException("Aborted", "AbortError")
+/** Exact product relationships fill discovery gaps without duplicating markets. */
+export function mergeMerchantTimelineMarketReads(
+  perspective: readonly EventMarketRosterReadResult[],
+  exact: readonly EventMarketRosterReadResult[]
+): EventMarketRosterReadResult[] {
+  const byCoordinate = new Map<string, EventMarketRosterReadResult>()
+  for (const read of [...perspective, ...exact]) {
+    const prior = byCoordinate.get(read.coordinate)
+    byCoordinate.set(
+      read.coordinate,
+      prior
+        ? {
+            ...chooseMarketRead(prior, read),
+            observedEvidence: mergedMarketEvidence(prior, read),
+          }
+        : read
+    )
+  }
+  return [...byCoordinate.values()]
 }

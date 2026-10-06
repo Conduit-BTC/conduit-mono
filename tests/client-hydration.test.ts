@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import type { CommerceProductRecord, CommerceResult } from "@conduit/core"
 import {
+  getBrowseBackgroundHydrationPubkeys,
+  getPagedMerchantPubkeys,
   getProductSourceRelayHintsByPubkey,
   mergeRelayHintsByPubkey,
   normalizeRelayHints,
@@ -122,5 +124,44 @@ describe("client hydration helpers", () => {
       visibleMerchantPubkeys: ["b"],
       backgroundMerchantPubkeys: ["a", "c"],
     })
+  })
+
+  it("requests off-screen merchant profiles only for active browse surfaces", () => {
+    const input = {
+      menuMerchantPubkeys: ["menu", "menu"],
+      selectedMerchantPubkeys: ["selected"],
+      searchMerchantPubkeys: ["visible", "menu"],
+      isSearching: false,
+      storeMenuOpen: false,
+    }
+
+    expect(getBrowseBackgroundHydrationPubkeys(input)).toEqual(["selected"])
+    expect(
+      getBrowseBackgroundHydrationPubkeys({ ...input, storeMenuOpen: true })
+    ).toEqual(["menu", "selected"])
+    expect(
+      getBrowseBackgroundHydrationPubkeys({ ...input, isSearching: true })
+    ).toEqual(["visible", "menu", "selected"])
+    expect(
+      getBrowseBackgroundHydrationPubkeys({
+        ...input,
+        isSearching: true,
+        storeMenuOpen: true,
+        menuMerchantPubkeys: ["new-menu"],
+      })
+    ).toEqual(["visible", "menu", "new-menu", "selected"])
+  })
+
+  it("keeps merchant profile targets to visible rows plus one next page", () => {
+    const pubkeys = Array.from(
+      { length: 80 },
+      (_, index) => `merchant-${index}`
+    )
+    expect(getPagedMerchantPubkeys(pubkeys, 12)).toEqual(pubkeys.slice(0, 24))
+    expect(getPagedMerchantPubkeys(pubkeys, 24)).toEqual(pubkeys.slice(0, 36))
+    expect(getPagedMerchantPubkeys(["a", "a", "b", "c"], 1, 1)).toEqual([
+      "a",
+      "b",
+    ])
   })
 })

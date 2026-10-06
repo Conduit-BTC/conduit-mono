@@ -280,7 +280,7 @@ describe("merchant matches on the product search", () => {
       "utf8"
     )
     expect(route).toContain('aria-labelledby="matching-merchants-heading"')
-    expect(route).toContain("MATCHING_MERCHANT_LIMIT")
+    expect(route).toContain("MERCHANT_SEARCH_PREVIEW_SIZE")
     expect(route).toContain('to="/merchants"')
     // The row sits before the result count, and the grid stays product-only.
     expect(route.indexOf("matching-merchants-heading")).toBeLessThan(

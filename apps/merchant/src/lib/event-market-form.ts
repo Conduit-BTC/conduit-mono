@@ -1,5 +1,13 @@
 export type OrganizerCalendarType = "timed" | "date"
 
+export const MAX_ORGANIZER_EVENT_DATES = 32
+
+export interface OrganizerEventDateRow {
+  id: string
+  start: string
+  end: string
+}
+
 export interface OrganizerEventMarketFormValues {
   calendarType: OrganizerCalendarType
   title: string
@@ -10,13 +18,6 @@ export interface OrganizerEventMarketFormValues {
   start: string
   end: string
   timezone: string
-  organizerHandoffEnabled: boolean
-  pickupTitle: string
-  pickupLocation: string
-  pickupGeohash: string
-  pickupCountry: string
-  pickupPrice: string
-  pickupCurrency: string
 }
 
 export type OrganizerEventMarketFormField =
@@ -27,13 +28,26 @@ export type OrganizerEventMarketFormField =
   | "start"
   | "end"
   | "timezone"
-  | "pickupLocation"
-  | "pickupCountry"
 
 export interface OrganizerEventMarketFormValidation {
   canPublish: boolean
   firstError: string | null
   errors: Partial<Record<OrganizerEventMarketFormField, string>>
+}
+
+export interface OrganizerEventValidationOptions {
+  requireFutureStart?: boolean
+  nowMs?: number
+  /** Saved publishing plans store the NIP-52 exclusive date, including v1 plans. */
+  endDateIsExclusive?: boolean
+}
+
+export interface OrganizerEventRepeat {
+  frequency: "weekly" | "monthly"
+  weekdays: number[]
+  ends: "on_date" | "after_count"
+  throughDate: string
+  count: number
 }
 
 export interface PreparedOrganizerEventMarketForm {
@@ -47,19 +61,6 @@ export interface PreparedOrganizerEventMarketForm {
     start: string | number
     end?: string | number
     timezone?: string
-  }
-  pickup?: {
-    title: string
-    location?: string
-    geohash?: string
-    country: string
-    price: string
-    currency: string
-  }
-  collection: {
-    title: string
-    summary: string
-    imageUrl: string
   }
 }
 
@@ -117,8 +118,7 @@ export function getOrganizerEventEndMinimum(
   if (!start) return fallbackStartMinimum
   const parsed = new Date(calendarType === "date" ? `${start}T00:00:00` : start)
   if (!Number.isFinite(parsed.getTime())) return fallbackStartMinimum
-  if (calendarType === "date") parsed.setDate(parsed.getDate() + 1)
-  else parsed.setMinutes(parsed.getMinutes() + 1)
+  if (calendarType === "timed") parsed.setMinutes(parsed.getMinutes() + 1)
   return calendarType === "date"
     ? localDateInputValue(parsed)
     : localDateTimeInputValue(parsed)
@@ -135,13 +135,6 @@ export function createEmptyOrganizerEventMarketForm(): OrganizerEventMarketFormV
     start: "",
     end: "",
     timezone: browserTimezone(),
-    organizerHandoffEnabled: false,
-    pickupTitle: "Event pickup",
-    pickupLocation: "",
-    pickupGeohash: "",
-    pickupCountry: "US",
-    pickupPrice: "0",
-    pickupCurrency: "SAT",
   }
 }
 
@@ -165,6 +158,168 @@ function isValidCalendarDate(value: string): boolean {
     date.getUTCMonth() === Number(month) - 1 &&
     date.getUTCDate() === Number(day)
   )
+}
+
+function shiftCalendarDate(value: string, days: number): string {
+  if (!isValidCalendarDate(value)) throw new Error("Add a valid calendar date.")
+  const date = new Date(`${value}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+/** The date shown in the form is the last day of the event. */
+export function getOrganizerInclusiveEndDate(
+  start: string,
+  exclusiveEnd?: string
+): string {
+  return exclusiveEnd ? shiftCalendarDate(exclusiveEnd, -1) : start
+}
+
+/** Keep date arithmetic in civil calendar days, independent of timezone/DST. */
+export function getOrganizerExclusiveEndDate(
+  start: string,
+  inclusiveEnd: string
+): string {
+  if (
+    !isValidCalendarDate(start) ||
+    !isValidCalendarDate(inclusiveEnd) ||
+    inclusiveEnd < start
+  )
+    throw new Error("End date must be on or after the start date.")
+  return shiftCalendarDate(inclusiveEnd, 1)
+}
+
+export function toStoredOrganizerEventForm(
+  form: OrganizerEventMarketFormValues
+): OrganizerEventMarketFormValues {
+  return {
+    ...form,
+    end:
+      form.calendarType === "date" && form.end
+        ? getOrganizerExclusiveEndDate(form.start, form.end)
+        : form.end,
+  }
+}
+
+export function fromStoredOrganizerEventForm(
+  form: OrganizerEventMarketFormValues
+): OrganizerEventMarketFormValues {
+  return {
+    ...form,
+    end:
+      form.calendarType === "date"
+        ? getOrganizerInclusiveEndDate(form.start, form.end)
+        : form.end,
+  }
+}
+
+/** Expand the form's repeat choice to finite, editable NIP-52 occurrences. */
+export function generateOrganizerRecurringDates(
+  form: OrganizerEventMarketFormValues,
+  repeat: OrganizerEventRepeat
+): OrganizerEventDateRow[] {
+  const firstDate = form.start.slice(0, 10)
+  const lastDate = form.end.slice(0, 10)
+  if (!isValidCalendarDate(firstDate) || !isValidCalendarDate(lastDate))
+    throw new Error("Choose the event's start and end before repeating it.")
+  if (form.calendarType === "date") {
+    getOrganizerExclusiveEndDate(firstDate, lastDate)
+  } else {
+    try {
+      if (
+        localDateTimeToEpochSeconds(form.end, form.timezone) <=
+        localDateTimeToEpochSeconds(form.start, form.timezone)
+      )
+        throw new Error("End time must be after the start time.")
+    } catch (cause) {
+      throw new Error(
+        `${firstDate}: ${cause instanceof Error ? cause.message : "Invalid local hours."}`,
+        { cause }
+      )
+    }
+  }
+  if (
+    repeat.ends === "after_count" &&
+    (!Number.isInteger(repeat.count) ||
+      repeat.count < 1 ||
+      repeat.count > MAX_ORGANIZER_EVENT_DATES)
+  )
+    throw new Error(`Choose 1 to ${MAX_ORGANIZER_EVENT_DATES} occurrences.`)
+  if (
+    repeat.ends === "on_date" &&
+    (!isValidCalendarDate(repeat.throughDate) || repeat.throughDate < firstDate)
+  )
+    throw new Error("Repeat until must be on or after the event's first date.")
+  if (
+    repeat.frequency === "weekly" &&
+    (!repeat.weekdays.length ||
+      repeat.weekdays.some(
+        (day) => !Number.isInteger(day) || day < 0 || day > 6
+      ))
+  )
+    throw new Error("Choose at least one weekday.")
+  const daySpan =
+    (Date.parse(`${lastDate}T00:00:00Z`) -
+      Date.parse(`${firstDate}T00:00:00Z`)) /
+    86_400_000
+  const rows: OrganizerEventDateRow[] = []
+  const weekdays = new Set(repeat.weekdays)
+  const first = new Date(`${firstDate}T00:00:00Z`)
+  let cursor = firstDate
+  let monthOffset = 0
+  while (
+    repeat.ends === "after_count"
+      ? rows.length < repeat.count
+      : cursor <= repeat.throughDate
+  ) {
+    const day = new Date(`${cursor}T00:00:00Z`)
+    if (repeat.frequency === "monthly" || weekdays.has(day.getUTCDay())) {
+      const endDate = shiftCalendarDate(cursor, daySpan)
+      const start = cursor + form.start.slice(10)
+      const end = endDate + form.end.slice(10)
+      if (form.calendarType === "timed") {
+        try {
+          if (
+            localDateTimeToEpochSeconds(end, form.timezone) <=
+            localDateTimeToEpochSeconds(start, form.timezone)
+          )
+            throw new Error("End must be after start in the selected timezone.")
+        } catch (cause) {
+          throw new Error(
+            `${cursor}: ${cause instanceof Error ? cause.message : "Invalid local hours."}`,
+            { cause }
+          )
+        }
+      }
+      rows.push({ id: `${repeat.frequency}-${cursor}`, start, end })
+      if (rows.length > MAX_ORGANIZER_EVENT_DATES)
+        throw new Error(
+          `Generate at most ${MAX_ORGANIZER_EVENT_DATES} dates at a time.`
+        )
+    }
+    if (repeat.frequency === "weekly") cursor = shiftCalendarDate(cursor, 1)
+    else {
+      // A monthly event on the 31st skips months without a 31st; it never moves earlier.
+      do {
+        monthOffset += 1
+        const next = new Date(
+          Date.UTC(
+            first.getUTCFullYear(),
+            first.getUTCMonth() + monthOffset,
+            first.getUTCDate()
+          )
+        )
+        const expectedMonth = (first.getUTCMonth() + monthOffset) % 12
+        if (next.getUTCMonth() === expectedMonth) {
+          cursor = next.toISOString().slice(0, 10)
+          break
+        }
+      } while (monthOffset <= MAX_ORGANIZER_EVENT_DATES * 12)
+    }
+  }
+  if (!rows.length)
+    throw new Error("No selected dates fall in that repeat range.")
+  return rows
 }
 
 function isValidTimezone(timezone: string): boolean {
@@ -243,6 +398,14 @@ export function localDateTimeToEpochSeconds(
     minute: Number(match[5]),
     second: Number(match[6] ?? "0"),
   }
+  if (
+    !isValidCalendarDate(value.slice(0, 10)) ||
+    desired.hour > 23 ||
+    desired.minute > 59 ||
+    desired.second > 59
+  ) {
+    throw new Error("Enter a valid local date, time, and timezone.")
+  }
   const utcGuess = Date.UTC(
     desired.year,
     desired.month - 1,
@@ -252,9 +415,15 @@ export function localDateTimeToEpochSeconds(
     desired.second
   )
 
-  let epochMs = utcGuess
-  for (let iteration = 0; iteration < 3; iteration += 1) {
-    const observed = timezoneParts(epochMs, timezone)
+  // Sampling either side of the local day finds both offsets at a DST fold.
+  // A single round trip can silently choose one of two valid instants.
+  const offsets = new Set<number>()
+  for (const probe of [
+    utcGuess - 86_400_000,
+    utcGuess,
+    utcGuess + 86_400_000,
+  ]) {
+    const observed = timezoneParts(probe, timezone)
     const observedAsUtc = Date.UTC(
       observed.year,
       observed.month - 1,
@@ -263,26 +432,63 @@ export function localDateTimeToEpochSeconds(
       observed.minute,
       observed.second
     )
-    const correction = utcGuess - observedAsUtc
-    if (correction === 0) break
-    epochMs += correction
+    offsets.add(observedAsUtc - probe)
   }
-
-  const roundTrip = timezoneParts(epochMs, timezone)
-  if (
-    roundTrip.year !== desired.year ||
-    roundTrip.month !== desired.month ||
-    roundTrip.day !== desired.day ||
-    roundTrip.hour !== desired.hour ||
-    roundTrip.minute !== desired.minute ||
-    roundTrip.second !== desired.second
-  ) {
+  const matches = [...offsets]
+    .map((offset) => utcGuess - offset)
+    .filter((epochMs) => {
+      const roundTrip = timezoneParts(epochMs, timezone)
+      return (
+        roundTrip.year === desired.year &&
+        roundTrip.month === desired.month &&
+        roundTrip.day === desired.day &&
+        roundTrip.hour === desired.hour &&
+        roundTrip.minute === desired.minute &&
+        roundTrip.second === desired.second
+      )
+    })
+  if (matches.length === 0) {
     throw new Error(
       "That local time does not exist in the selected timezone. Choose another time."
     )
   }
+  if (matches.length > 1) {
+    throw new Error(
+      "That local time occurs twice in the selected timezone. Choose another time."
+    )
+  }
 
-  return Math.floor(epochMs / 1000)
+  return Math.floor(matches[0] / 1000)
+}
+
+export function prepareOrganizerEventMarketDates(
+  form: OrganizerEventMarketFormValues,
+  rows: OrganizerEventDateRow[],
+  options: OrganizerEventValidationOptions = {}
+): PreparedOrganizerEventMarketForm[] {
+  if (rows.length === 0 || rows.length > MAX_ORGANIZER_EVENT_DATES) {
+    throw new Error(`Add 1 to ${MAX_ORGANIZER_EVENT_DATES} dates.`)
+  }
+  const seen = new Set<string>()
+  return rows.map((row, index) => {
+    let prepared: PreparedOrganizerEventMarketForm
+    try {
+      prepared = prepareOrganizerEventMarketForm(
+        { ...form, start: row.start, end: row.end },
+        options
+      )
+    } catch (cause) {
+      throw new Error(
+        `Date ${index + 1}: ${cause instanceof Error ? cause.message : "Invalid date."}`,
+        { cause }
+      )
+    }
+    const key = `${prepared.calendar.kind}:${String(prepared.calendar.start)}`
+    if (seen.has(key))
+      throw new Error(`Date ${index + 1} duplicates another start.`)
+    seen.add(key)
+    return prepared
+  })
 }
 
 function addError(
@@ -300,7 +506,7 @@ function normalizedOptional(value: string): string | undefined {
 
 export function validateOrganizerEventMarketForm(
   form: OrganizerEventMarketFormValues,
-  options: { requireFutureStart?: boolean; nowMs?: number } = {}
+  options: OrganizerEventValidationOptions = {}
 ): OrganizerEventMarketFormValidation {
   const errors: OrganizerEventMarketFormValidation["errors"] = {}
   const title = form.title.trim()
@@ -308,22 +514,14 @@ export function validateOrganizerEventMarketForm(
   const imageUrl = form.imageUrl.trim()
   const eventLocation = form.eventLocation.trim()
   const timezone = form.timezone.trim()
-  const pickupCountry = form.pickupCountry.trim().toUpperCase()
 
   if (!title) addError(errors, "title", "Add an event title.")
   if (!summary) addError(errors, "summary", "Add a public event summary.")
-  if (!imageUrl) {
-    addError(errors, "imageUrl", "Add an event image URL.")
-  } else if (!/^https:\/\//i.test(imageUrl)) {
+  if (imageUrl && !/^https:\/\//i.test(imageUrl)) {
     addError(errors, "imageUrl", "Event image URL must start with https://.")
   }
   if (!eventLocation) {
     addError(errors, "eventLocation", "Add the public event location.")
-  }
-  if (form.organizerHandoffEnabled) {
-    if (!/^[A-Z]{2}$/.test(pickupCountry)) {
-      addError(errors, "pickupCountry", "Use a two-letter country code.")
-    }
   }
 
   if (form.calendarType === "date") {
@@ -338,8 +536,19 @@ export function validateOrganizerEventMarketForm(
     }
     if (form.end && !isValidCalendarDate(form.end)) {
       addError(errors, "end", "Add a valid end date.")
-    } else if (form.end && form.start && form.end <= form.start) {
-      addError(errors, "end", "End date must be after the start date.")
+    } else if (
+      form.end &&
+      form.start &&
+      (form.end < form.start ||
+        (options.endDateIsExclusive && form.end === form.start))
+    ) {
+      addError(
+        errors,
+        "end",
+        options.endDateIsExclusive
+          ? "End date must be after the start date."
+          : "End date must be on or after the start date."
+      )
     }
   } else {
     if (!timezone || !isValidTimezone(timezone)) {
@@ -387,7 +596,7 @@ export function validateOrganizerEventMarketForm(
 
 export function prepareOrganizerEventMarketForm(
   form: OrganizerEventMarketFormValues,
-  options: { requireFutureStart?: boolean; nowMs?: number } = {}
+  options: OrganizerEventValidationOptions = {}
 ): PreparedOrganizerEventMarketForm {
   const validation = validateOrganizerEventMarketForm(form, options)
   if (!validation.canPublish) {
@@ -411,28 +620,11 @@ export function prepareOrganizerEventMarketForm(
       end: end
         ? timed
           ? localDateTimeToEpochSeconds(end, timezone)
-          : end
+          : options.endDateIsExclusive
+            ? end
+            : getOrganizerExclusiveEndDate(form.start, end)
         : undefined,
       timezone: timed ? timezone : undefined,
-    },
-    pickup: form.organizerHandoffEnabled
-      ? {
-          title: "Event pickup",
-          location:
-            normalizedOptional(form.pickupLocation) ??
-            normalizedOptional(form.eventLocation),
-          geohash:
-            normalizedOptional(form.pickupGeohash) ??
-            normalizedOptional(form.eventGeohash),
-          country: form.pickupCountry.trim().toUpperCase(),
-          price: "0",
-          currency: "SAT",
-        }
-      : undefined,
-    collection: {
-      title: form.title.trim(),
-      summary: form.summary.trim(),
-      imageUrl: form.imageUrl.trim(),
     },
   }
 }

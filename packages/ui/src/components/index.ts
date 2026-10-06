@@ -1,3 +1,8 @@
+export {
+  EventFulfillmentChoice,
+  type EventFulfillmentSelection,
+} from "./EventFulfillmentChoice"
+export { EventGuestReceiptVerifier } from "./EventGuestReceiptVerifier"
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export {
   SearchSuggestions,
@@ -18,6 +23,7 @@ export {
 } from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export { Breadcrumb } from "./Breadcrumb"
 export { LightningStrikeOverlay } from "./LightningStrikeOverlay"
 export {
   ProjectTip,
@@ -80,6 +86,7 @@ export {
   AlertDialogDescription,
 } from "./Dialog"
 export { Input, type InputProps } from "./Input"
+export { InputWithSuffix, type InputWithSuffixProps } from "./InputWithSuffix"
 export { Textarea, type TextareaProps } from "./Textarea"
 export {
   ConversationMessageBubble,
@@ -233,7 +240,11 @@ export {
 } from "./OrderMessagesWidget"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
-export { LegalFooter, type LegalFooterProps } from "./LegalFooter"
+export {
+  LegalFooter,
+  legalFooterActionClassName,
+  type LegalFooterProps,
+} from "./LegalFooter"
 export {
   PRODUCT_LEGAL_EFFECTIVE_DATE,
   PRODUCT_LEGAL_EFFECTIVE_DATE_LABEL,

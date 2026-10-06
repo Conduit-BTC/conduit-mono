@@ -12,6 +12,8 @@ interface UseMerchantIdentitiesInput {
   shouldContinue?: () => boolean
   allMerchantPubkeys: string[]
   deferBackgroundHydration?: boolean
+  /** Merchant rows currently exposed by a menu or search surface. */
+  backgroundHydrationPubkeys?: string[]
   visibleMerchantPubkeys: string[]
   relayHintsByPubkey: Record<string, string[]>
 }
@@ -27,6 +29,7 @@ export function useMerchantIdentities({
   shouldContinue,
   allMerchantPubkeys,
   deferBackgroundHydration = false,
+  backgroundHydrationPubkeys,
   visibleMerchantPubkeys,
   relayHintsByPubkey,
 }: UseMerchantIdentitiesInput): UseMerchantIdentitiesResult {
@@ -37,6 +40,22 @@ export function useMerchantIdentities({
         visibleMerchantPubkeys,
       }),
     [allMerchantPubkeys, visibleMerchantPubkeys]
+  )
+  const requestedBackgroundPubkeys = useMemo(() => {
+    if (deferBackgroundHydration || !backgroundHydrationPubkeys)
+      return merchantHydrationTargets.backgroundMerchantPubkeys
+    const requested = new Set(backgroundHydrationPubkeys)
+    return merchantHydrationTargets.backgroundMerchantPubkeys.filter((pubkey) =>
+      requested.has(pubkey)
+    )
+  }, [
+    backgroundHydrationPubkeys,
+    deferBackgroundHydration,
+    merchantHydrationTargets.backgroundMerchantPubkeys,
+  ])
+  const requestedBackgroundSet = useMemo(
+    () => new Set(requestedBackgroundPubkeys),
+    [requestedBackgroundPubkeys]
   )
   const visibleMerchantProfiles = useProfiles(
     merchantHydrationTargets.visibleMerchantPubkeys,
@@ -50,19 +69,16 @@ export function useMerchantIdentities({
       maxUnresolvedRefetches: 2,
     }
   )
-  const backgroundMerchantProfiles = useProfiles(
-    merchantHydrationTargets.backgroundMerchantPubkeys,
-    {
-      accountPubkey,
-      authenticatedPubkey,
-      shouldContinue,
-      enabled: !deferBackgroundHydration,
-      priority: "background",
-      relayHintsByPubkey,
-      refetchUnresolvedMs: 12_000,
-      maxUnresolvedRefetches: 1,
-    }
-  )
+  const backgroundMerchantProfiles = useProfiles(requestedBackgroundPubkeys, {
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue,
+    enabled: !deferBackgroundHydration,
+    priority: "background",
+    relayHintsByPubkey,
+    refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 1,
+  })
   const visibleLookupSettledByPubkey = useMemo(
     () =>
       Object.fromEntries(
@@ -81,6 +97,7 @@ export function useMerchantIdentities({
           pubkey,
           backgroundMerchantProfiles.hasProfile(pubkey) ||
             (!deferBackgroundHydration &&
+              requestedBackgroundSet.has(pubkey) &&
               backgroundMerchantProfiles.lookupSettled),
         ])
       ),
@@ -88,6 +105,7 @@ export function useMerchantIdentities({
       backgroundMerchantProfiles,
       deferBackgroundHydration,
       merchantHydrationTargets.backgroundMerchantPubkeys,
+      requestedBackgroundSet,
     ]
   )
   const lookupSettledByPubkey = useMemo(

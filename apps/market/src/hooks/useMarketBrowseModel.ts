@@ -26,6 +26,12 @@ import {
 } from "../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import {
+  getBrowseBackgroundHydrationPubkeys,
+  getPagedMerchantPubkeys,
+  MERCHANT_SEARCH_PREVIEW_SIZE,
+  PRODUCT_PAGE_SIZE,
+} from "../lib/clientHydration"
+import {
   isRemoteMarketSearchEligible,
   MARKET_SEARCH_QUERY_POLICY,
 } from "../lib/searchPolicy"
@@ -33,7 +39,6 @@ import {
   filterSellersByName,
   groupDiscoveredSellers,
 } from "../lib/sellerDirectory"
-import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useShopperPresets } from "./useShopperPresets"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
@@ -43,6 +48,7 @@ interface UseMarketBrowseModelInput {
   catalogSource: ProductCatalogSourceMode
   search: MarketBrowseSearch
   storeMenuOpen: boolean
+  visibleMerchantCount: number
   visibleCount: number
 }
 
@@ -51,6 +57,7 @@ export function useMarketBrowseModel({
   catalogSource,
   search,
   storeMenuOpen,
+  visibleMerchantCount,
   visibleCount,
 }: UseMarketBrowseModelInput) {
   const { pubkey, status, authGeneration } = useAuth()
@@ -78,9 +85,6 @@ export function useMarketBrowseModel({
   const usesAnonymousPerspective = status !== "connected"
   const effectiveCatalogSource =
     status === "connected" ? catalogSource : "conduit"
-  const guestMarket = useGuestMarketDiscovery({
-    enabled: usesAnonymousPerspective,
-  })
   const normalizedSearchQuery = search.q?.trim() ?? ""
   const isSearching = normalizedSearchQuery.length > 0
   const isRemoteSearchEligible = isRemoteMarketSearchEligible(
@@ -89,10 +93,8 @@ export function useMarketBrowseModel({
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
     catalogSource: effectiveCatalogSource,
-    perspectivePubkey:
-      status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
+    perspectivePubkey: status === "connected" && pubkey ? pubkey : null,
     authenticatedPubkey: status === "connected" ? pubkey : null,
-    seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
     networkEnabled: !isSearching,
   })
@@ -185,24 +187,14 @@ export function useMarketBrowseModel({
     [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
   const refreshCatalog = productsQuery.refetch
-  const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
   const refetch = useCallback(async () => {
     await refreshMarketBrowseData({
       globalSearchEnabled,
-      refreshDiscovery: usesAnonymousPerspective
-        ? refreshGuestDiscovery
-        : undefined,
       refreshCatalog,
       refreshGlobalSearch,
     })
-  }, [
-    globalSearchEnabled,
-    refreshCatalog,
-    refreshGlobalSearch,
-    refreshGuestDiscovery,
-    usesAnonymousPerspective,
-  ])
+  }, [globalSearchEnabled, refreshCatalog, refreshGlobalSearch])
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
@@ -214,8 +206,7 @@ export function useMarketBrowseModel({
     isHydrating:
       isSearching && isRemoteSearchEligible
         ? globalSearchEnabled && globalSearchQuery.isFetching
-        : productsQuery.isHydrating ||
-          (usesAnonymousPerspective && guestMarket.isRefreshing),
+        : productsQuery.isHydrating,
     error:
       isSearching && isRemoteSearchEligible
         ? globalSearchQuery.error
@@ -224,7 +215,6 @@ export function useMarketBrowseModel({
       isSearching && isRemoteSearchEligible
         ? isShowingCachedSearch ||
           productsQuery.discoveryStale ||
-          (usesAnonymousPerspective && guestMarket.stale) ||
           !!globalSearchQuery.error ||
           globalSearchQuery.isPaused ||
           !!globalSearchQuery.data?.meta.degraded ||
@@ -233,9 +223,7 @@ export function useMarketBrowseModel({
             catalogMeta: productsQuery.meta,
             catalogError: productsQuery.error,
             catalogPaused: productsQuery.isRefreshPaused,
-            discoveryStale:
-              productsQuery.discoveryStale ||
-              (usesAnonymousPerspective && guestMarket.stale),
+            discoveryStale: productsQuery.discoveryStale,
             globalSearchEnabled: false,
             globalSearchMeta: undefined,
             globalSearchError: null,
@@ -300,19 +288,57 @@ export function useMarketBrowseModel({
     [filtered, visibleCount]
   )
   const visibleMerchantPubkeys = useMemo(
-    () => Array.from(new Set(visibleProducts.map((product) => product.pubkey))),
-    [visibleProducts]
+    () =>
+      Array.from(
+        new Set(
+          filtered
+            .slice(0, visibleCount + PRODUCT_PAGE_SIZE)
+            .map((product) => product.pubkey)
+        )
+      ),
+    [filtered, visibleCount]
   )
+  const storeFacetSortProducts = useMemo(
+    () =>
+      filterProductsByFacets(productData, {
+        q: isSearching ? undefined : search.q,
+        tags: selectedTags,
+      }),
+    [isSearching, productData, search.q, selectedTags]
+  )
+  const backgroundHydrationPubkeys = useMemo(() => {
+    return getBrowseBackgroundHydrationPubkeys({
+      menuMerchantPubkeys: getPagedMerchantPubkeys(
+        storeFacetSortProducts.map((product) => product.pubkey),
+        visibleMerchantCount
+      ),
+      selectedMerchantPubkeys: selectedMerchants,
+      searchMerchantPubkeys: getPagedMerchantPubkeys(
+        allMerchantPubkeys,
+        MERCHANT_SEARCH_PREVIEW_SIZE,
+        MERCHANT_SEARCH_PREVIEW_SIZE
+      ),
+      isSearching,
+      storeMenuOpen,
+    })
+  }, [
+    allMerchantPubkeys,
+    isSearching,
+    selectedMerchants,
+    storeFacetSortProducts,
+    storeMenuOpen,
+    visibleMerchantCount,
+  ])
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const merchantIdentities = useMerchantIdentities({
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     allMerchantPubkeys,
-    // Hydrate off-screen merchants (the rest of the store dropdown) in parallel
-    // with product streaming instead of waiting for hydration to settle, so the
-    // store list shows names/avatars rather than bare npubs when first opened.
-    deferBackgroundHydration: false,
+    // Prepare identities for displayed cards and one next page. The menu and
+    // seller-name results request additional identities only while in use.
+    deferBackgroundHydration: !storeMenuOpen && !isSearching,
+    backgroundHydrationPubkeys,
     visibleMerchantPubkeys,
     relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
   })
@@ -368,23 +394,20 @@ export function useMarketBrowseModel({
       query
     )
   }, [getMerchantIdentity, merchantCandidateProducts, search.q])
-  const storeFacetSortProducts = useMemo(
-    () =>
-      filterProductsByFacets(productData, {
-        q: isSearching ? undefined : search.q,
-        tags: selectedTags,
-      }),
-    [isSearching, productData, search.q, selectedTags]
-  )
   const visibleStoreFacetOptions = useMemo(
     () =>
       storeMenuOpen
         ? sortStoreFacetOptionsByRecentPublisher(
             storeFacetOptions,
             storeFacetSortProducts
-          )
-        : storeFacetOptions,
-    [storeFacetOptions, storeFacetSortProducts, storeMenuOpen]
+          ).slice(0, visibleMerchantCount)
+        : storeFacetOptions.slice(0, visibleMerchantCount),
+    [
+      storeFacetOptions,
+      storeFacetSortProducts,
+      storeMenuOpen,
+      visibleMerchantCount,
+    ]
   )
   const storeFacetTotal = storeFacetSortProducts.length
   const productCards: MarketProductCardView[] = useMemo(
@@ -452,6 +475,7 @@ export function useMarketBrowseModel({
     showCategorySkeleton:
       productsQuery.isInitialLoading && categoryFacetOptions.length === 0,
     storeFacetOptions: visibleStoreFacetOptions,
+    hasMoreStoreFacets: storeFacetOptions.length > visibleMerchantCount,
     storeFacetTotal,
     storeTriggerLabel: getStoreTriggerLabel(selectedMerchants),
     visibleProducts,

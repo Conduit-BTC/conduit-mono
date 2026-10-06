@@ -90,6 +90,65 @@ function decisionStorage() {
 const storage = decisionStorage()
 
 describe("future Event Market organizer updates", () => {
+  it.each([
+    "kind",
+    "content",
+    "extra tag",
+    "reordered tags",
+    "in-place tag mutation",
+  ] as const)(
+    "rejects signer changes to %s before saving or publishing",
+    async (change) => {
+      const effects: string[] = []
+      await expect(
+        publishEventMarketRoster(
+          {
+            organizerPubkey: organizer,
+            authenticatedPubkey: organizer,
+            dTag: "fair-market",
+            calendarCoordinate,
+            state: "open",
+            merchants: [initialRow],
+            expectedPreviousEventId: first.id,
+            onSignedLocal: async () => {
+              effects.push("saved")
+            },
+          },
+          {
+            read: async () => ({
+              coordinate: marketCoordinate,
+              resolution: {
+                state: "current",
+                market: parseEventMarketRosterEvent(first)!,
+              },
+              coverage: "complete",
+              retained: true,
+              observedRelayUrls: [],
+            }),
+            sign: async ({ draft, createdAt }) => {
+              effects.push("signed")
+              const changed = { ...draft, created_at: createdAt }
+              if (change === "kind") changed.kind = 30410
+              if (change === "content") changed.content = "Signer-added content"
+              if (change === "extra tag")
+                changed.tags = [...draft.tags, ["client", "signer-added"]]
+              if (change === "reordered tags")
+                changed.tags = [...draft.tags].reverse()
+              if (change === "in-place tag mutation")
+                draft.tags.push(["client", "signer-added"])
+              return finalizeEvent(changed, secret)
+            },
+            publish: async () => {
+              effects.push("published")
+              return delivery
+            },
+          }
+        )
+      ).rejects.toThrow("Signer changed the Event Market roster draft.")
+      expect(effects).toEqual(["signed"])
+    }
+  )
+
   it("requires the paired decision for membership changes", async () => {
     let signed = false
     await expect(
@@ -488,6 +547,8 @@ describe("future Event Market organizer updates", () => {
       marketCoordinate,
       merchantPubkey: merchant,
       state: "active",
+      sequence: 0,
+      parentIds: [],
     })
     const active = finalizeEvent({ ...activeDraft, created_at: 101 }, secret)
     const order: string[] = []
@@ -628,6 +689,8 @@ describe("future Event Market organizer updates", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
+          sequence: 0,
+          parentIds: [],
         }),
         created_at: 101,
       },
@@ -639,7 +702,8 @@ describe("future Event Market organizer updates", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "revoked",
-          parents: [parseEventMarketAuthorizationEvent(active)!],
+          sequence: 1,
+          parentIds: [active.id],
         }),
         created_at: 102,
       },
@@ -702,6 +766,8 @@ describe("future Event Market organizer updates", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
+          sequence: 0,
+          parentIds: [],
         }),
         created_at: 101,
       },

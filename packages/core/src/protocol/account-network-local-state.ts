@@ -788,6 +788,8 @@ export async function filterEligibleAccountRelayUrls(input: {
    */
   independentRelayUrls?: readonly string[]
   repository?: Pick<AccountNetworkLocalStateRepository, "get">
+  /** Publication needs local error evidence distinct from a policy exclusion. */
+  propagatePolicyReadErrors?: boolean
 }): Promise<string[]> {
   const accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
   if (!accountPubkey) return []
@@ -854,8 +856,9 @@ export async function filterEligibleAccountRelayUrls(input: {
       }
       return (isAppRelay && appEnabled) || (isPersonalRelay && personalEnabled)
     })
-  } catch {
+  } catch (error) {
     // Durable local policy is the authority for whole-relay contact cutoffs.
+    if (input.propagatePolicyReadErrors) throw error
     return []
   }
 }

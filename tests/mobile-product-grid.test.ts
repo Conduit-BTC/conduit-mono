@@ -45,7 +45,7 @@ describe("Market product grid layout", () => {
     )
 
     const eventRoute = await readFile(
-      "apps/market/src/routes/events/$collectionRef.tsx",
+      "apps/market/src/components/FutureEventMarketPage.tsx",
       "utf8"
     )
     const resolvedCard = await readFile(
@@ -54,12 +54,12 @@ describe("Market product grid layout", () => {
     )
 
     expect(content).toContain('className ?? "h-full"')
-    expect(resolvedCard).toContain("notice={")
+    expect(eventRoute).toContain("notice={")
     expect(resolvedCard).toContain("{...props}")
     expect(resolvedCard).not.toContain('className="h-full space-y-2"')
     expect(eventRoute).toContain('className="h-auto"')
     const eventBrowser = await readFile(
-      "apps/market/src/components/EventCatalogBrowser.tsx",
+      "apps/market/src/components/FutureEventMarketPage.tsx",
       "utf8"
     )
     expect(eventBrowser).toContain("`${PRODUCT_GRID_CLASS_NAME} items-start`")

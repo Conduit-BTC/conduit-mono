@@ -1,8 +1,9 @@
-import type { FollowedEventMarketDiscoveryState } from "@conduit/core"
 import { Button, getResultPresentation } from "@conduit/ui"
+import type { EventTimelineDiscoveryResult } from "../hooks/useEventTimeline"
 
 export interface EventTimelineEmptyStateProps {
-  discoveryState: FollowedEventMarketDiscoveryState | undefined
+  discoveryState:
+    NonNullable<EventTimelineDiscoveryResult["data"]>["state"] | undefined
   hasError: boolean
   refreshIncomplete: boolean
   onRetry?: () => void

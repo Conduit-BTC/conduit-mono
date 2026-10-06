@@ -9,7 +9,7 @@ export function normalizeEventActorPubkey(pubkey: string): string {
 }
 
 export function selectEventHandoffIdentity(input: {
-  mode: "merchant_handoff" | "organizer_handoff"
+  mode: "merchant_present" | "organizer_handoff"
   handlerPubkey: string
   merchant: { pubkey: string; identity: EventActorIdentityView }
   organizer: { pubkey: string; identity: EventActorIdentityView }
