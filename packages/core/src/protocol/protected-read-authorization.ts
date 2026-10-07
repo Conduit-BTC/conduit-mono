@@ -1,3 +1,4 @@
+import { isAccountAuthMethod } from "./auth-session"
 import type { NostrEventSigner } from "./nostr-event-signer"
 
 export type ProtectedReadOperation = "private_inbox_read"
@@ -118,7 +119,7 @@ export function installProtectedReadSigner(
   expectedPubkey: string,
   hasAuthority: () => boolean
 ): ProtectedReadSignerLease {
-  if (signer.authMethod !== "nip07" && signer.authMethod !== "nip46") {
+  if (!isAccountAuthMethod(signer.authMethod)) {
     throw new Error("Protected reads require a NIP-07 or NIP-46 account signer")
   }
   if (activeLease) revokeLease(activeLease)

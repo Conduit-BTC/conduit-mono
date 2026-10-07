@@ -1,3 +1,5 @@
+import type { ProtectedReadSessionLifecycle } from "./protected-read-session-lifecycle"
+import type { AuthMethod } from "./auth-session"
 import {
   classifyNostrSignerError,
   NostrSignerError,
@@ -32,6 +34,22 @@ export function activateAccountSigner(signer: SessionSigner): void {
   activeAccountSigner = signer
 }
 
+/** Commit the existing account owner only after protected-read installation. */
+export function installAccountSigner(
+  signer: SessionSigner,
+  protectedReads: ProtectedReadSessionLifecycle,
+  hasAuthority: () => boolean
+): void {
+  try {
+    protectedReads.activate(signer, signer.pubkey, hasAuthority)
+    activateAccountSigner(signer)
+  } catch (cause) {
+    protectedReads.deactivate()
+    signer.invalidateLocal(cause)
+    throw cause
+  }
+}
+
 export function retireAccountSigner(signer: SessionSigner): void {
   if (activeAccountSigner === signer) activeAccountSigner = null
   signer.invalidateLocal()
@@ -52,7 +70,7 @@ export function getAccountSigner(): AccountSigner | undefined {
 export interface SessionSignerOptions {
   expectedPubkey: string
   revision: string
-  authMethod: "nip07" | "nip46"
+  authMethod: AuthMethod
   getCapabilities: () => AccountSignerCapabilities
   operationTimeoutMs?: number
   hasAuthority: () => boolean
@@ -74,7 +92,7 @@ export class SessionSigner implements AccountSigner {
   private readonly hasAuthority: SessionSignerOptions["hasAuthority"]
   private readonly onInvalidated?: SessionSignerOptions["onInvalidated"]
   readonly revision: string
-  readonly authMethod: "nip07" | "nip46"
+  readonly authMethod: AuthMethod
   private readonly getCapabilities: () => AccountSignerCapabilities
   private readonly operationTimeoutMs: number
   private operationTail: Promise<void> = Promise.resolve()

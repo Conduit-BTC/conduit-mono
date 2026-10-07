@@ -543,7 +543,7 @@ describe("remote signer UI", () => {
 
   it("waits beyond an abandoned browser auth lease", async () => {
     const source = await readFile(
-      "packages/core/src/protocol/remote-signer-vault.ts",
+      "packages/core/src/protocol/auth-operation-lock.ts",
       "utf8"
     )
 
