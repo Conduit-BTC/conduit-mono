@@ -94,6 +94,7 @@ export {
   type ConversationMessageBubbleProps,
 } from "./ConversationMessageBubble"
 export { MessageComposer, type MessageComposerProps } from "./MessageComposer"
+export { PrivateSendNotice } from "./PrivateSendNotice"
 export { SearchInput, type SearchInputProps } from "./SearchInput"
 export {
   ConversationCardScroller,
@@ -317,3 +318,9 @@ export {
   TableCell,
   TableCaption,
 } from "./Table"
+
+export {
+  CommerceInboxRecovery,
+  type CommerceInboxRecoveryProps,
+} from "./CommerceInboxRecovery"
+export { PrivateAttachment } from "./PrivateAttachment"

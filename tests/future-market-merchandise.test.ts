@@ -1,3 +1,7 @@
+import {
+  installPrivateInboxTestRead,
+  cleanupPrivateInboxTestReads,
+} from "./helpers/private-inbox"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
@@ -144,7 +148,8 @@ function receiptFor(
   })
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await cleanupPrivateInboxTestReads()
   __resetFutureMarketHandoffTestState()
   __resetEventMarketMerchandiseTestOverrides()
   __resetCommerceTestOverrides()
@@ -388,32 +393,10 @@ describe("future organizer exact merchandise", () => {
     const payload = receiptFor([product], true)
     const publicReads = forbidPublicMerchandiseReads()
     const rumor = buildFutureMarketPrivateRumor(payload)
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () =>
-        ({ getPublicKey: async () => ORGANIZER }) as never,
-      resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
-      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-        events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: rumor.created_at!,
-                tags: [["p", ORGANIZER]],
-                content: rumor.id!,
-              },
-              MERCHANT_SECRET
-            )
-          ),
-        ],
-        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-        successfulRelayUrls: [...(options?.relayUrls ?? [])],
-        failedRelayUrls: [],
-        cappedRelayUrls: [],
-      }),
-      giftUnwrap: async () => rumor,
+    installPrivateInboxTestRead({
+      principalSecret: ORGANIZER_SECRET,
+      authorSecrets: [MERCHANT_SECRET],
+      rumors: [rumor],
     })
     const read = await readFutureMarketReadyReceipts({
       organizerPubkey: ORGANIZER,
@@ -446,32 +429,10 @@ describe("future organizer exact merchandise", () => {
     delete payload.authorityEvidence
     const publicReads = forbidPublicMerchandiseReads()
     const rumor = buildFutureMarketPrivateRumor(payload)
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () =>
-        ({ getPublicKey: async () => ORGANIZER }) as never,
-      resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
-      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-        events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: rumor.created_at!,
-                tags: [["p", ORGANIZER]],
-                content: rumor.id!,
-              },
-              MERCHANT_SECRET
-            )
-          ),
-        ],
-        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-        successfulRelayUrls: [...(options?.relayUrls ?? [])],
-        failedRelayUrls: [],
-        cappedRelayUrls: [],
-      }),
-      giftUnwrap: async () => rumor,
+    installPrivateInboxTestRead({
+      principalSecret: ORGANIZER_SECRET,
+      authorSecrets: [MERCHANT_SECRET],
+      rumors: [rumor],
     })
     const read = await readFutureMarketReadyReceipts({
       organizerPubkey: ORGANIZER,

@@ -8,6 +8,7 @@ import {
 } from "nostr-tools/pure"
 
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
@@ -2440,6 +2441,27 @@ test("two future market products form one order and one private organizer releas
         )
     )
   await expect.poll(() => completionMessages().length).toBe(1)
+  // Recipient publication precedes optional self-copy work and local persistence.
+  // Reload must verify the encrypted completion record, not an in-flight send.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async ({ root, principal, rumorId }) => {
+          const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
+          const owner = getCommerceInbox(principal)
+          return (await owner.store.projections()).some(
+            ({ projection }: { projection: InboxProjection }) =>
+              projection.kind === "order" && projection.message.id === rumorId
+          )
+        },
+        {
+          root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+          principal: MERCHANT_PUBKEY,
+          rumorId: completionMessages()[0]!.rumor.id,
+        }
+      )
+    )
+    .toBe(true)
   await page.reload()
   await expect(
     page
