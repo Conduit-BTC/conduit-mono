@@ -19,6 +19,12 @@ export interface ReplaceableEventFrontier {
 
 const HEX_64 = /^[0-9a-f]{64}$/i
 
+// Reuse only the mathematical signature verdict. Every arrival still passes
+// shape validation and the canonical hash check below. This bounded cache
+// grants no public admission/projection proof, including on the private lane.
+const MAX_VERIFIED_SIGNATURES = 4_096
+const verifiedSignatures = new Set<string>()
+
 function normalizeFrontierCreatedAt(
   value: number | undefined
 ): number | undefined {
@@ -103,11 +109,18 @@ export function isValidSignedPublicNostrEvent(
       return false
     }
     if (computeEventId(event) !== event.id.toLowerCase()) return false
+    const signatureKey = `${event.pubkey.toLowerCase()}:${event.id.toLowerCase()}:${event.sig.toLowerCase()}`
+    if (verifiedSignatures.has(signatureKey)) return true
     const valid = schnorr.verify(
       hexToBytes(event.sig),
       hexToBytes(event.id),
       hexToBytes(event.pubkey)
     )
+    if (valid) {
+      if (verifiedSignatures.size >= MAX_VERIFIED_SIGNATURES)
+        verifiedSignatures.delete(verifiedSignatures.values().next().value!)
+      verifiedSignatures.add(signatureKey)
+    }
     return valid
   } catch {
     return false

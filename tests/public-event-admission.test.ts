@@ -12,6 +12,7 @@ import {
   __resetPublicEventVerificationForTests,
 } from "../packages/core/src/protocol/verified-public-event"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
+import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 
 const secret = generateSecretKey()
 const fixture = () =>
@@ -66,6 +67,26 @@ describe("immutable public admission", () => {
     expect(
       (await admitPublicEvent({ ...raw, content: "changed" })).status
     ).toBe("invalid")
+  })
+
+  it("reuses a signature verdict without granting public proof or accepting changed bytes", async () => {
+    const raw = fixture()
+    expect(isValidSignedPublicNostrEvent(raw)).toBe(true)
+    expect(isValidSignedPublicNostrEvent(structuredClone(raw))).toBe(true)
+    expect(isVerifiedNostrEvent(raw)).toBe(false)
+    expect(() => parseProductEvent(raw as never)).toThrow("admitted")
+    for (const mutated of [
+      { ...raw, id: "0".repeat(64) },
+      { ...raw, sig: "0".repeat(128) },
+      { ...raw, pubkey: "0".repeat(64) },
+      { ...raw, created_at: 124 },
+      { ...raw, kind: 1 },
+      { ...raw, tags: [["d", "changed"]] },
+      { ...raw, content: "changed" },
+    ])
+      expect(isValidSignedPublicNostrEvent(mutated)).toBe(false)
+    expect(isVerifiedNostrEvent(raw)).toBe(false)
+    expect((await admitPublicEvent(raw)).status).toBe("verified")
   })
 
   it("snapshots a whole batch before yielding and keeps raw restoration untrusted", async () => {

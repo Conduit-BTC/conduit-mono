@@ -81,6 +81,13 @@ another owner. The following still validate their own operation-specific bytes:
 No Nostr identity key custody, signing authority, wallet authority, dependency,
 relay default, private envelope protocol, or NIP-44 capability migration is added.
 
+The synchronous private-envelope validator retains at most 4,096 positive
+Schnorr verdicts keyed by public key, event ID, and signature. It recomputes the
+canonical event hash for every arrival before reusing a verdict. That internal
+cache cannot mint `VerifiedNostrEvent` or authorize a public projection. This
+keeps repeated durable private-inbox reads bounded without restoring the old
+public-proof side effect of synchronous validation.
+
 ## Validation and reproduction
 
 - `bun test`: includes genuine signatures, mutation/forgery/clone rejection,
