@@ -35,6 +35,8 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
+import { verifyCheckoutSparkInvoiceRecipient } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 
 const NOW = Math.floor(Date.now() / 1_000) * 1_000 - 60_000
 const MERCHANT_SECRET = generateSecretKey()
@@ -257,6 +259,10 @@ describe("buyer local invoice-origin settlement", () => {
           input.buyerPubkey,
           () => {}
         )
+        const receiverInvoices = new Map<
+          string,
+          ReturnType<typeof qualifiedReceiverFixture>
+        >()
         const prepared = await prepareCheckoutSparkSettledOutgoingLeg(
           {
             checkoutId: input.plan.checkoutId,
@@ -267,11 +273,19 @@ describe("buyer local invoice-origin settlement", () => {
           {
             repository,
             walletManager: { estimateCheckoutLightningFee: async () => 1 },
-            resolveInvoice: (request) =>
-              resolveCheckoutSparkFixtureInvoice(
+            resolveInvoice: (request) => {
+              const receiver = qualifiedReceiverFixture({
+                lud16: request.lud16,
+                amountSats: request.amountSats,
+                nowSeconds: NOW / 1_000,
+                preimageByte: 2,
+              })
+              receiverInvoices.set(receiver.paymentRequest, receiver)
+              return resolveCheckoutSparkFixtureInvoice(
                 request,
-                invoice(request.amountSats, 2)
-              ),
+                receiver.paymentRequest
+              )
+            },
             acknowledgeRecoverySnapshot: async () => {},
             nowMs: () => NOW + 3_000,
           }
@@ -282,6 +296,29 @@ describe("buyer local invoice-origin settlement", () => {
           paidFeeSats
         )
         await repository.assertLocalInvoiceOrigin(input.plan, target)
+        const receiver = receiverInvoices.get(target.intent.paymentRequest)!
+        const recipient = await verifyCheckoutSparkInvoiceRecipient(
+          {
+            plan: input.plan,
+            target,
+            now: NOW + 4_000,
+            assertCurrent: () => {},
+          },
+          {
+            contracts: receiver.contracts,
+            fetchMetadata: async () => receiver.metadata,
+            fetchVerify: async () =>
+              receiver.verifier(observation.status === "paid"),
+          }
+        )
+        if (recipient.status !== "verified" || !recipient.settled)
+          throw new Error("Expected independent ordinary recipient settlement")
+        await repository.recordInvoiceRecipientVerification(
+          input.plan,
+          target,
+          recipient.proof,
+          () => {}
+        )
         const settlement = await repository.recordMerchantPayout(
           input.plan,
           target,

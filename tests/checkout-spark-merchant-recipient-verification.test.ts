@@ -3,6 +3,7 @@ import { verifySavedMerchantCheckoutSparkRecipients } from "../apps/merchant/src
 import {
   createCheckoutSparkInvoiceRecipientRecord,
   hasCheckoutSparkInvoiceRecipient,
+  hasCheckoutSparkInvoiceRecipientSettlement,
   verifyCheckoutSparkInvoiceRecipient,
   type CheckoutSparkInvoiceRecipientRecord,
 } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
@@ -22,6 +23,7 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 
 const NOW = 1_800_000_000_000
 const MERCHANT = "a".repeat(64)
@@ -41,7 +43,8 @@ function invoice(amount: number, byte: number) {
   })
 }
 
-function fixture(address = "merchant@coinos.io") {
+function fixture(address = "merchant@receiver.conduit.cash") {
+  const receiver = qualifiedReceiverFixture({ lud16: address })
   const plan = freezeCheckoutSparkSettledPlan({
     checkoutId: "merchant-recipient-checkout",
     orderId: "merchant-recipient-order",
@@ -115,23 +118,14 @@ function fixture(address = "merchant@coinos.io") {
   const state = prepareCheckoutSparkSettledLeg(credited, {
     legId,
     transferId: deriveCheckoutSparkSettledTransferId(plan, legId),
-    paymentRequest: invoice(995, 4),
-    paymentHash: "04".repeat(32),
+    paymentRequest: receiver.paymentRequest,
+    paymentHash: receiver.paymentHash,
     invoiceAmountSats: 995,
     maxFeeSats: 5,
     preparedAt: NOW + 2,
+    receiverBinding: receiver.receiverBinding,
   })
-  const intent = state.legs[0]!.intent!
-  const canonical = {
-    id: "provider-invoice-1",
-    type: "lightning",
-    text: intent.paymentRequest,
-    hash: intent.paymentRequest,
-    paymentHash: intent.paymentHash,
-    amount: intent.invoiceAmountSats,
-    uid: "provider-user-1",
-    user: { id: "provider-user-1", username: "merchant" },
-  }
+  const canonical = receiver.verifier()
   const records: CheckoutSparkInvoiceRecipientRecord[] = []
   let current = true
   let fetches = 0
@@ -143,6 +137,12 @@ function fixture(address = "merchant@coinos.io") {
       guard?.()
       return records.some((record) =>
         hasCheckoutSparkInvoiceRecipient(record, savedPlan, target)
+      )
+    },
+    async hasInvoiceRecipientSettlement(savedPlan, target, guard) {
+      guard?.()
+      return records.some((record) =>
+        hasCheckoutSparkInvoiceRecipientSettlement(record, savedPlan, target)
       )
     },
     async recordInvoiceRecipientVerification(savedPlan, target, proof, guard) {
@@ -158,14 +158,16 @@ function fixture(address = "merchant@coinos.io") {
       records.push(structuredClone(record))
     },
   }
-  const fetchInvoiceRecord = async (url: string) => {
+  const fetchVerify = async (url: string) => {
     fetches += 1
     // No provider invoice-creation endpoint is used in this read-only phase.
-    expect(
-      url ===
-        `https://coinos.io/api/invoice/${encodeURIComponent(intent.paymentRequest)}`
-    ).toBe(true)
+    expect(url === receiver.receiverBinding.verifyUrl).toBe(true)
     return canonical
+  }
+  const verificationDependencies = {
+    contracts: address === "merchant@example.test" ? [] : receiver.contracts,
+    fetchMetadata: async () => receiver.metadata,
+    fetchVerify,
   }
   const input: VerificationInput = {
     state,
@@ -174,12 +176,13 @@ function fixture(address = "merchant@coinos.io") {
     now: () => NOW + 3,
     allowProviderCompatibility: true,
     verifyInvoice: (request) =>
-      verifyCheckoutSparkInvoiceRecipient(request, { fetchInvoiceRecord }),
+      verifyCheckoutSparkInvoiceRecipient(request, verificationDependencies),
   }
   return {
     input,
     records,
     canonical,
+    verificationDependencies,
     fetches: () => fetches,
     deactivate: () => {
       current = false
@@ -188,26 +191,26 @@ function fixture(address = "merchant@coinos.io") {
 }
 
 describe("merchant saved invoice recipient verification", () => {
-  it("does not enable provider lookup when public routing is enabled without compatibility approval", async () => {
+  it("verifies an approved ordinary receiver without the retired compatibility flag", async () => {
     const context = fixture()
     context.input.allowProviderCompatibility = false
     const original = JSON.stringify(context.input.state)
     expect(
       await verifySavedMerchantCheckoutSparkRecipients(context.input)
     ).toBe("complete")
-    expect(context.fetches()).toBe(0)
-    expect(context.records).toHaveLength(0)
+    expect(context.fetches()).toBe(1)
+    expect(context.records).toHaveLength(1)
     expect(JSON.stringify(context.input.state)).toBe(original)
   })
 
-  it("defaults to no experimental lookup outside a compiled local rehearsal", async () => {
+  it("verifies an approved ordinary receiver when the retired compatibility flag is omitted", async () => {
     const context = fixture()
     delete context.input.allowProviderCompatibility
     expect(
       await verifySavedMerchantCheckoutSparkRecipients(context.input)
     ).toBe("complete")
-    expect(context.fetches()).toBe(0)
-    expect(context.records).toHaveLength(0)
+    expect(context.fetches()).toBe(1)
+    expect(context.records).toHaveLength(1)
   })
 
   it("preserves trusted local recipient records when compatibility lookup is disabled", async () => {
@@ -233,11 +236,12 @@ describe("merchant saved invoice recipient verification", () => {
     expect(Object.keys(context.records[0]!).sort()).toEqual([
       "intentDigest",
       "legId",
+      "providerSettled",
       "schemaVersion",
       "source",
       "verifiedAt",
     ])
-    expect(context.records[0]!.source).toBe("coinos_account_lookup_v1")
+    expect(context.records[0]!.source).toBe("qualified_receiver_v1")
     expect(context.records[0]!.verifiedAt).toBe(NOW + 3)
     expect(JSON.stringify(context.input.state) === original).toBe(true)
     expect(context.input.state.legs.every((leg) => leg.status !== "paid")).toBe(
@@ -275,7 +279,8 @@ describe("merchant saved invoice recipient verification", () => {
     const retry = context.input.verifyInvoice
     context.input.verifyInvoice = (request) =>
       verifyCheckoutSparkInvoiceRecipient(request, {
-        fetchInvoiceRecord: async () => {
+        ...context.verificationDependencies,
+        fetchVerify: async () => {
           throw new Error("Provider temporarily unavailable")
         },
       })
@@ -299,7 +304,8 @@ describe("merchant saved invoice recipient verification", () => {
       const context = fixture()
       context.input.verifyInvoice = (request) =>
         verifyCheckoutSparkInvoiceRecipient(request, {
-          fetchInvoiceRecord: async () => {
+          ...context.verificationDependencies,
+          fetchVerify: async () => {
             context.deactivate()
             return context.canonical
           },
@@ -314,7 +320,7 @@ describe("merchant saved invoice recipient verification", () => {
 
   it("checks the active session again after an existing-proof read", async () => {
     const context = fixture()
-    context.input.repository.hasInvoiceRecipient = async () => {
+    context.input.repository.hasInvoiceRecipientSettlement = async () => {
       context.deactivate()
       return false
     }
@@ -330,7 +336,8 @@ describe("merchant saved invoice recipient verification", () => {
     const context = fixture()
     context.input.verifyInvoice = async (request) => {
       const result = await verifyCheckoutSparkInvoiceRecipient(request, {
-        fetchInvoiceRecord: async () => context.canonical,
+        ...context.verificationDependencies,
+        fetchVerify: async () => context.canonical,
       })
       expect(result.status).toBe("verified")
       context.deactivate()

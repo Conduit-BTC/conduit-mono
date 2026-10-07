@@ -62,6 +62,7 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { qualifiedReceiverMetadataFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 
 const NOW = 1_800_000_000_000
 const MERCHANT_SECRET = generateSecretKey()
@@ -161,6 +162,9 @@ function fixture(storage: MemoryStorage) {
     controls,
     options: {
       now: () => NOW,
+      receiverContracts: qualifiedReceiverMetadataFixture(
+        "merchant@wallet.conduit.market"
+      ).contracts,
       fetchPayoutMetadata: (address: string) =>
         fetchLnurlPayMetadata(address, {
           fetchImpl: async () =>
@@ -171,7 +175,8 @@ function fixture(storage: MemoryStorage) {
                 minSendable: 1_000,
                 maxSendable: 10_000_000,
                 allowsNostr: false,
-                metadata: "[]",
+                metadata:
+                  qualifiedReceiverMetadataFixture(address).metadata.metadata,
               }),
               { status: 200 }
             ),

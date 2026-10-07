@@ -36,6 +36,7 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 
 const CREATED_AT = 1_800_000_000_000
 const PREIMAGE = "07".repeat(32)
@@ -96,7 +97,9 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
         {
           kind: 0,
           created_at: CREATED_AT / 1_000,
-          content: JSON.stringify({ lud16: `${recipientUsername}@coinos.io` }),
+          content: JSON.stringify({
+            lud16: `${recipientUsername}@receiver.conduit.cash`,
+          }),
           tags: [],
         },
         recipientKey
@@ -106,7 +109,9 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
             {
               kind: 0,
               created_at: CREATED_AT / 1_000,
-              content: JSON.stringify({ lud16: "merchant@coinos.io" }),
+              content: JSON.stringify({
+                lud16: "merchant@receiver.conduit.cash",
+              }),
               tags: [],
             },
             merchantKey
@@ -149,7 +154,7 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
             weightSats: supplierMode ? 250 : 1_000,
             destination: {
               type: "lightning_address",
-              value: `${recipientUsername}@coinos.io`,
+              value: `${recipientUsername}@receiver.conduit.cash`,
               source: {
                 type: "signed_profile",
                 profileEventId: profile.id,
@@ -165,7 +170,7 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
                   weightSats: 750,
                   destination: {
                     type: "lightning_address" as const,
-                    value: "merchant@coinos.io",
+                    value: "merchant@receiver.conduit.cash",
                     source: {
                       type: "signed_profile" as const,
                       profileEventId: merchantProfile.id,
@@ -208,14 +213,20 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
       })
       const leg = credited.legs[0]!
       const amountSats = leg.allocationSats! - 1
+      const receiver = qualifiedReceiverFixture({
+        lud16: `${recipientUsername}@receiver.conduit.cash`,
+        amountSats,
+        preimageByte: 7,
+      })
       const intent = {
         legId: leg.legId,
         transferId: deriveCheckoutSparkSettledTransferId(plan, leg.legId),
-        paymentRequest: invoice(amountSats, PAYMENT_HASH),
+        paymentRequest: receiver.paymentRequest,
         paymentHash: PAYMENT_HASH,
         invoiceAmountSats: amountSats,
         maxFeeSats: 1,
         preparedAt: CREATED_AT + 3_000,
+        receiverBinding: receiver.receiverBinding,
       }
       const prepared = prepareCheckoutSparkSettledLeg(credited, intent)
       const latest = createCheckoutSparkSettledRecoveryProgressPayload({
@@ -397,28 +408,20 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
         }
         expect(calls.sends).toBe(0)
 
-        const attribution = await verifyCheckoutSparkInvoiceRecipient(
-          { plan, target, now, assertCurrent: () => {} },
-          {
-            fetchInvoiceRecord: async (url) => {
-              expect(new URL(url).origin).toBe("https://coinos.io")
-              calls.lookups += 1
-              return {
-                type: "lightning",
-                text: intent.paymentRequest,
-                hash: intent.paymentRequest,
-                paymentHash: PAYMENT_HASH,
-                amount: amountSats,
-                uid: "synthetic-merchant-account",
-                user: {
-                  id: "synthetic-merchant-account",
-                  username: recipientUsername,
-                  lud16: `${recipientUsername}@coinos.io`,
-                },
-              }
-            },
-          }
-        )
+        const inspectReceiver = () =>
+          verifyCheckoutSparkInvoiceRecipient(
+            { plan, target, now, assertCurrent: () => {} },
+            {
+              contracts: receiver.contracts,
+              fetchMetadata: async () => receiver.metadata,
+              fetchVerify: async (url) => {
+                expect(url === receiver.receiverBinding.verifyUrl).toBe(true)
+                calls.lookups += 1
+                return receiver.verifier(sent)
+              },
+            }
+          )
+        const attribution = await inspectReceiver()
         expect(attribution.status).toBe("verified")
         if (attribution.status !== "verified")
           throw new Error("Expected independent recipient attribution")
@@ -470,7 +473,18 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
           sendAttempted: !alreadyPaid,
         })
         expect(calls.sends).toBe(alreadyPaid ? 0 : 1)
-        expect(calls.lookups).toBe(1)
+        if (!alreadyPaid) {
+          const settled = await inspectReceiver()
+          if (settled.status !== "verified" || !settled.settled)
+            throw new Error("Expected independent recipient settlement")
+          await repository.recordInvoiceRecipientVerification(
+            plan,
+            target,
+            settled.proof,
+            () => {}
+          )
+        }
+        expect(calls.lookups).toBe(alreadyPaid ? 1 : 2)
         const saved = await repository.load(plan.checkoutId, plan.planDigest)
         expect(saved.status === "active" && saved.state.legs[0]).toMatchObject({
           status: "paid",

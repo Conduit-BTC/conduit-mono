@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
-import { createHash } from "node:crypto"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import {
   clearTestAccountSigner,
@@ -25,6 +24,7 @@ import {
   orderSchema,
   projectCheckoutSparkMerchantSettlement,
   wrapPrivateMessage,
+  type CheckoutSparkSettledOutgoingTarget,
   type MerchantCheckoutSparkProgressTransport,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -32,6 +32,7 @@ import {
   __resetProtectedReadSigner,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
+import { verifyCheckoutSparkInvoiceRecipient } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
 import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
 import {
@@ -58,6 +59,7 @@ import {
 } from "./support/bolt11-fixture"
 import { createCheckoutSparkGuestSupplierFixture } from "./support/checkout-spark-guest-supplier-fixture"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
@@ -132,9 +134,8 @@ function protectedRead(
 }
 
 describe("offline cold Merchant guest supplier recovery", () => {
-  it.each([false, true])(
-    "restores before any buyer payout and completes commerce before Conduit without replay (physical=%s)",
-    async (physical) => {
+  for (const physical of [false, true]) {
+    it(`restores before any buyer payout and completes commerce before Conduit without replay (physical=${physical})`, async () => {
       const createdAt = Math.floor(Date.now() / 1_000) * 1_000 - 46 * 60_000
       let now = createdAt + 1_000
       const fixture = createCheckoutSparkGuestSupplierFixture(
@@ -415,6 +416,10 @@ describe("offline cold Merchant guest supplier recovery", () => {
           string,
           { preimage: string; amountSats: number }
         >()
+        const receiverInvoices = new Map<
+          string,
+          ReturnType<typeof qualifiedReceiverFixture>
+        >()
         type SendRequest = NonNullable<
           Awaited<
             ReturnType<
@@ -646,14 +651,21 @@ describe("offline cold Merchant guest supplier recovery", () => {
               resolveInvoice: async (input) => {
                 expect(input.lud16).toBe(recipient.destination.value)
                 calls.resolutions.push(input.lud16)
-                const preimage = new Uint8Array(32).fill(index + 10)
-                const hash = createHash("sha256").update(preimage).digest()
-                const paymentRequest = invoice(input.amountSats, hash, now)
-                details.set(paymentRequest, {
-                  preimage: Buffer.from(preimage).toString("hex"),
+                const receiver = qualifiedReceiverFixture({
+                  lud16: input.lud16,
+                  amountSats: input.amountSats,
+                  preimageByte: index + 10,
+                  nowSeconds: Math.floor(now / 1_000),
+                })
+                receiverInvoices.set(receiver.paymentRequest, receiver)
+                details.set(receiver.paymentRequest, {
+                  preimage: receiver.preimage,
                   amountSats: input.amountSats,
                 })
-                return resolveCheckoutSparkFixtureInvoice(input, paymentRequest)
+                return resolveCheckoutSparkFixtureInvoice(
+                  input,
+                  receiver.paymentRequest
+                )
               },
             }
           )
@@ -685,6 +697,35 @@ describe("offline cold Merchant guest supplier recovery", () => {
             sendAttempted: true,
           })
           expect(calls.sends).toHaveLength(index + 1)
+          const target: CheckoutSparkSettledOutgoingTarget = {
+            walletId: plan.walletId,
+            network: plan.network,
+            legId: recipient.legId,
+            recipientId: recipient.recipientId,
+            allocationSats: selection.review.allocationSats,
+            unpaidAllocationSats: selection.review.allocationSats,
+            intent: selection.review.intent,
+          }
+          const receiver = receiverInvoices.get(target.intent.paymentRequest)!
+          const attribution = await verifyCheckoutSparkInvoiceRecipient(
+            { plan, target, now, assertCurrent: () => {} },
+            {
+              contracts: receiver.contracts,
+              fetchMetadata: async () => receiver.metadata,
+              fetchVerify: async () =>
+                receiver.verifier(sent.has(target.intent.transferId)),
+            }
+          )
+          if (attribution.status !== "verified" || !attribution.settled)
+            throw new Error(
+              "Expected independent ordinary recipient settlement"
+            )
+          await repository.recordInvoiceRecipientVerification(
+            plan,
+            target,
+            attribution.proof,
+            () => {}
+          )
           const facts = await repository.loadMerchantSettlement(
             plan.merchantPubkey,
             plan.checkoutId,
@@ -828,9 +869,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
         database.close()
         await database.delete()
       }
-    },
-    // Multiple full signed recovery, payout, replay and retirement loops take
-    // about 35s per case alone; retain bounded headroom under full-suite load.
-    90_000
-  )
+    }, // about 35s per case alone; retain bounded headroom under full-suite load. // Multiple full signed recovery, payout, replay and retirement loops take
+    90_000)
+  }
 })

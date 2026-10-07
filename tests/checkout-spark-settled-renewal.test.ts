@@ -22,6 +22,7 @@ import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import { ConduitDB } from "../packages/core/src/db"
 import { DexieCheckoutSparkSettledRepository } from "../packages/core/src/protocol/checkout-spark-settled-router-repository"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 import {
   createCheckoutSparkMerchantProgress,
   parseCheckoutSparkMerchantProgress,
@@ -610,7 +611,12 @@ describe("bounded settled payout renewal", () => {
             resolveInvoice: (request) =>
               resolveCheckoutSparkFixtureInvoice(
                 request,
-                invoice(request.amountSats, 5, NOW)
+                qualifiedReceiverInvoiceFixture({
+                  lud16: request.lud16,
+                  amountSats: request.amountSats,
+                  paymentHash: "05".repeat(32),
+                  createdAt: Math.floor(NOW / 1_000),
+                })
               ),
             estimateFee: async () => 1,
             acknowledgeRecoverySnapshot: async () => {
@@ -677,7 +683,12 @@ describe("bounded settled payout renewal", () => {
             clock += 6_001
             return resolveCheckoutSparkFixtureInvoice(
               { ...request, nowSeconds: Math.floor(clock / 1000) },
-              invoice(request.amountSats, 5, clock)
+              qualifiedReceiverInvoiceFixture({
+                lud16: request.lud16,
+                amountSats: request.amountSats,
+                paymentHash: "05".repeat(32),
+                createdAt: Math.floor(clock / 1_000),
+              })
             )
           },
           estimateFee: async () => {
@@ -917,6 +928,8 @@ describe("bounded settled payout renewal", () => {
       availableLeaves: _leaves,
       ...terminalEvidence
     } = evidence
+    void _available
+    void _leaves
     const closed = proveCheckoutSparkSettledClosedReturnedTransfer({
       plan,
       target,

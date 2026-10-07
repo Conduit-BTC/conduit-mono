@@ -25,6 +25,7 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 
 const NOW = 1_800_000_000_000
 const MERCHANT = "a".repeat(64)
@@ -41,7 +42,8 @@ function invoice(amount: number, byte: number) {
   })
 }
 
-function fixture() {
+function fixture(qualified = false) {
+  const receiver = qualifiedReceiverFixture({ lud16: "merchant@coinos.io" })
   const plan = freezeCheckoutSparkSettledPlan({
     checkoutId: "saved-review-checkout",
     orderId: "saved-review-order",
@@ -115,11 +117,12 @@ function fixture() {
   const state = prepareCheckoutSparkSettledLeg(credited, {
     legId,
     transferId: deriveCheckoutSparkSettledTransferId(plan, legId),
-    paymentRequest: invoice(995, 4),
-    paymentHash: "04".repeat(32),
+    paymentRequest: qualified ? receiver.paymentRequest : invoice(995, 4),
+    paymentHash: qualified ? receiver.paymentHash : "04".repeat(32),
     invoiceAmountSats: 995,
     maxFeeSats: 5,
     preparedAt: NOW + 2,
+    ...(qualified ? { receiverBinding: receiver.receiverBinding } : {}),
   })
   const selected: MerchantCheckoutSparkRecoveryCandidate = {
     wrapId: "e".repeat(64),
@@ -130,7 +133,7 @@ function fixture() {
     takeoverAt: plan.takeoverAt,
     preparedAt: NOW + 2,
   }
-  return { plan, credited, state, selected }
+  return { plan, credited, state, selected, receiver }
 }
 
 async function withRepository(
@@ -219,7 +222,7 @@ describe("Merchant read-only saved payout review", () => {
   })
 
   it("recognizes existing recipient evidence without making another provider lookup", async () => {
-    const { plan, state, selected } = fixture()
+    const { plan, state, selected, receiver } = fixture(true)
     const leg = state.legs[0]!
     const intent = leg.intent!
     const target: CheckoutSparkSettledOutgoingTarget = {
@@ -234,15 +237,9 @@ describe("Merchant read-only saved payout review", () => {
     const verified = await verifyCheckoutSparkInvoiceRecipient(
       { plan, target, now: NOW + 3, assertCurrent: () => {} },
       {
-        fetchInvoiceRecord: async () => ({
-          type: "lightning",
-          text: intent.paymentRequest,
-          hash: intent.paymentRequest,
-          paymentHash: intent.paymentHash,
-          amount: intent.invoiceAmountSats,
-          uid: "synthetic-user",
-          user: { id: "synthetic-user", username: "merchant" },
-        }),
+        contracts: receiver.contracts,
+        fetchMetadata: async () => receiver.metadata,
+        fetchVerify: async () => receiver.verifier(),
       }
     )
     if (verified.status !== "verified") throw new Error("Missing fixture proof")

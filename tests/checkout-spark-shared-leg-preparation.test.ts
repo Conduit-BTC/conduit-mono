@@ -1,10 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { checkoutSparkSettledTimingForContext } from "../apps/market/src/lib/checkout-spark-local-router-canary"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
-import {
-  CheckoutSparkLnurlInvoiceRangeError,
-  resolveCheckoutSparkLnurlInvoice,
-} from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
+import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualified-receiver-fixture"
+import { CheckoutSparkLnurlInvoiceRangeError } from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
 import {
   CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS,
   assertCheckoutSparkSettledBuyerPreparationWindow,
@@ -193,7 +191,12 @@ function harness(actor: "shopper" | "merchant" = "merchant") {
       const hashByte = invoiceRequests.length + 3
       return resolveCheckoutSparkFixtureInvoice(
         request,
-        signedInvoice(request.amountSats, hashByte)
+        qualifiedReceiverInvoiceFixture({
+          lud16: request.lud16,
+          amountSats: request.amountSats,
+          paymentHash: hashByte.toString(16).padStart(2, "0").repeat(32),
+          createdAt: CREATED_AT / 1_000,
+        })
       )
     },
     estimateFee: async (request) => {
@@ -262,31 +265,23 @@ function configureInvoiceRange(
   const callbackAmounts: number[] = []
   test.dependencies.resolveInvoice = async (request) => {
     test.invoiceRequests.push(request)
-    return resolveCheckoutSparkLnurlInvoice(request, {
-      fetchMetadata: async () => ({
-        payRequestUrl:
-          "https://wallet.conduit.market/.well-known/lnurlp/seller",
-        lnurl: "lnurl1fixture",
-        callback: "https://wallet.conduit.market/fixture-invoice",
+    return resolveCheckoutSparkFixtureInvoice(
+      request,
+      qualifiedReceiverInvoiceFixture({
+        lud16: request.lud16,
+        amountSats: request.amountSats,
+        paymentHash: (callbackAmounts.length + 4)
+          .toString(16)
+          .padStart(2, "0")
+          .repeat(32),
+        createdAt: request.nowSeconds,
+      }),
+      {
         minSendable: minimumMsats,
         maxSendable: maximumMsats,
-        tag: "payRequest",
-        allowsNostr: false,
-        metadata: "[]",
-      }),
-      fetchInvoice: async (_callback, amountMsats) => {
-        callbackAmounts.push(amountMsats / 1_000)
-        return {
-          invoice: signedInvoice(
-            amountMsats / 1_000,
-            callbackAmounts.length + 3,
-            {
-              createdAt: request.nowSeconds,
-            }
-          ),
-        }
-      },
-    })
+        onInvoice: (amountMsats) => callbackAmounts.push(amountMsats / 1_000),
+      }
+    )
   }
   return callbackAmounts
 }
@@ -499,7 +494,10 @@ describe("shared settled Spark payout preparation", () => {
       test.invoiceRequests.push(request)
       return resolveCheckoutSparkFixtureInvoice(
         request,
-        signedInvoice(request.amountSats, 7, {
+        qualifiedReceiverInvoiceFixture({
+          lud16: request.lud16,
+          amountSats: request.amountSats,
+          paymentHash: "07".repeat(32),
           createdAt: issuedAt / 1_000,
           expiresSeconds: 59,
         })

@@ -51,6 +51,8 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 
 const MNEMONIC = createRuntimeMnemonic()
 const OTHER_MNEMONIC = createRuntimeMnemonic()
@@ -377,22 +379,15 @@ async function harness(
       expect(request.lud16).toBe(value.plan.recipients[0]!.destination.value)
       calls.invoices.push(request.amountSats)
       const hashByte = calls.invoices.length + 3
-      return resolveCheckoutSparkLnurlInvoice(request, {
-        fetchMetadata: async () => ({
-          payRequestUrl:
-            "https://wallet.conduit.market/.well-known/lnurlp/recipient",
-          lnurl: "lnurl1test",
-          callback: "https://wallet.conduit.market/pay",
-          minSendable: 1_000,
-          maxSendable: 100_000_000,
-          tag: "payRequest",
-          allowsNostr: false,
-          metadata: "[]",
-        }),
-        fetchInvoice: async () => ({
-          invoice: invoice(request.amountSats, hashByte),
-        }),
-      })
+      return resolveCheckoutSparkFixtureInvoice(
+        request,
+        qualifiedReceiverInvoiceFixture({
+          lud16: request.lud16,
+          amountSats: request.amountSats,
+          paymentHash: hashByte.toString(16).padStart(2, "0").repeat(32),
+          createdAt: CREATED_AT / 1_000,
+        })
+      )
     },
   }
   const input = {
@@ -631,30 +626,15 @@ async function seedReturnedRenewal(test: Awaited<ReturnType<typeof harness>>) {
   ).join("")
   test.dependencies.resolveInvoice = async (request) => {
     test.calls.invoices.push(request.amountSats)
-    return resolveCheckoutSparkLnurlInvoice(request, {
-      fetchMetadata: async () => ({
-        payRequestUrl:
-          "https://wallet.conduit.market/.well-known/lnurlp/merchant",
-        lnurl: "lnurl1synthetic",
-        callback: "https://wallet.conduit.market/pay",
-        minSendable: 1_000,
-        maxSendable: 100_000_000,
-        tag: "payRequest",
-        allowsNostr: false,
-        metadata: "[]",
-      }),
-      fetchInvoice: async () => ({
-        invoice: makeSignedBolt11Fixture({
-          hrp: `lnbc${request.amountSats * 10}n`,
-          createdAt: request.nowSeconds,
-          fields: [
-            bolt11PaymentHashField(paymentHashBytes),
-            bolt11PaymentSecretField(),
-            bolt11PlainDescriptionField(),
-          ],
-        }),
-      }),
-    })
+    return resolveCheckoutSparkFixtureInvoice(
+      request,
+      qualifiedReceiverInvoiceFixture({
+        lud16: request.lud16,
+        amountSats: request.amountSats,
+        paymentHash,
+        createdAt: request.nowSeconds,
+      })
+    )
   }
   return {
     original,
@@ -2618,22 +2598,15 @@ describe("Merchant payout preparation and exact recovery delivery adapter", () =
       test.dependencies.resolveInvoice = async (request) => {
         expect(request.lud16).toBe(test.plan.recipients[1]!.destination.value)
         test.calls.invoices.push(request.amountSats)
-        return resolveCheckoutSparkLnurlInvoice(request, {
-          fetchMetadata: async () => ({
-            payRequestUrl:
-              "https://wallet.conduit.market/.well-known/lnurlp/fee",
-            lnurl: "lnurl1test",
-            callback: "https://wallet.conduit.market/pay",
-            minSendable: 1_000,
-            maxSendable: 100_000_000,
-            tag: "payRequest",
-            allowsNostr: false,
-            metadata: "[]",
-          }),
-          fetchInvoice: async () => ({
-            invoice: invoice(request.amountSats, 6),
-          }),
-        })
+        return resolveCheckoutSparkFixtureInvoice(
+          request,
+          qualifiedReceiverInvoiceFixture({
+            lud16: request.lud16,
+            amountSats: request.amountSats,
+            paymentHash: "06".repeat(32),
+            createdAt: CREATED_AT / 1_000,
+          })
+        )
       }
       expect((await test.run()).preparation?.status).toBe("prepared")
       expect(test.calls.history).toEqual([transferId, conduitTransferId])

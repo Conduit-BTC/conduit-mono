@@ -272,7 +272,7 @@ describe("fixed-shipping settled entry", () => {
     expect(isCheckoutSparkSettledCart([])).toBe(false)
   })
 
-  it("keeps fiat carts outside the mounted entry pending independent quote authority", async () => {
+  it("admits fiat cart discovery while preparation still requires independent quote authority", async () => {
     const { raw } = await shippingQuote()
     const physical = raw[0]!
     for (const change of [
@@ -282,7 +282,7 @@ describe("fixed-shipping settled entry", () => {
       },
     ]) {
       expect(isCheckoutSparkSettledCart([{ ...physical, ...change }])).toBe(
-        false
+        true
       )
     }
   })

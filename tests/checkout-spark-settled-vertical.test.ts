@@ -64,6 +64,10 @@ import {
 } from "./support/signed-bolt11-fixture"
 import { checkoutSparkQuoteFixture } from "./support/checkout-spark-quote-fixture"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import {
+  qualifiedReceiverInvoiceFixture,
+  qualifiedReceiverMetadataFixture,
+} from "./support/checkout-spark-qualified-receiver-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 
 const NOW = 1_800_000_000_000
@@ -444,6 +448,9 @@ function harness(options: {
           {
             now: () => NOW + 1_000,
             repository,
+            receiverContracts: qualifiedReceiverMetadataFixture(
+              "merchant@wallet.conduit.market"
+            ).contracts,
             fetchPayoutMetadata: (lud16) =>
               fetchLnurlPayMetadata(lud16, {
                 fetchImpl: (async (url) => {
@@ -468,7 +475,8 @@ function harness(options: {
                     callback: "https://wallet.conduit.market/lnurl/callback",
                     minSendable: 1_000,
                     maxSendable: 10_000_000,
-                    metadata: "[]",
+                    metadata:
+                      qualifiedReceiverMetadataFixture(lud16).metadata.metadata,
                     allowsNostr: false,
                   })
                 }) as typeof fetch,
@@ -852,7 +860,12 @@ describe("settled Spark no-funds vertical flow", () => {
       const hashByte = input.lud16 === "merchant@wallet.conduit.market" ? 4 : 5
       return resolveCheckoutSparkFixtureInvoice(
         input,
-        invoice(input.amountSats, hashByte)
+        qualifiedReceiverInvoiceFixture({
+          lud16: input.lud16,
+          amountSats: input.amountSats,
+          paymentHash: hashByte.toString(16).padStart(2, "0").repeat(32),
+          createdAt: NOW / 1_000,
+        })
       )
     }
     for (const recipient of plan.recipients) {

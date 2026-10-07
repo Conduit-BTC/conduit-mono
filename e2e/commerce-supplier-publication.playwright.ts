@@ -9,7 +9,9 @@ import {
 } from "./helpers/auth"
 import {
   createHermeticCommerceNetworkPolicy,
+  HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS,
   installHermeticCommerceNetwork,
+  type HermeticNetworkFailureDiagnostic,
 } from "./helpers/hermetic-network"
 import { createHermeticLnurlFixture } from "./helpers/hermetic-lnurl"
 import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
@@ -252,8 +254,16 @@ async function readMarketConsumption(
 
 test("supplier percentages and readiness gate publish exact signed terms consumed by Market checkout @commerce", async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(120_000)
+  const onLocalFailure = (diagnostic: HermeticNetworkFailureDiagnostic) => {
+    for (const field of ["operation", "source", "category"] as const) {
+      testInfo.annotations.push({
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS[field],
+        description: diagnostic[field],
+      })
+    }
+  }
   // Commerce configuration also disables Playwright's automatic failure DOM
   // snapshot; generated identities and signed terms must not become artifacts.
   createHermeticCommerceNetworkPolicy(networkOptions)
@@ -285,6 +295,7 @@ test("supplier percentages and readiness gate publish exact signed terms consume
       merchantContext,
       await installHermeticCommerceNetwork(merchantContext, {
         ...networkOptions,
+        onLocalFailure,
         lnurl: async (request) => {
           if (
             !supplierEndpointReady &&
@@ -579,7 +590,10 @@ test("supplier percentages and readiness gate publish exact signed terms consume
     })
     beginNetworkTeardown.set(
       buyerContext,
-      await installHermeticCommerceNetwork(buyerContext, networkOptions)
+      await installHermeticCommerceNetwork(buyerContext, {
+        ...networkOptions,
+        onLocalFailure,
+      })
     )
     const buyerPage = await buyerContext.newPage()
     const buyerReload = installPersistenceReloadBarrier(buyerPage, marketUrl)

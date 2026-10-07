@@ -15,6 +15,7 @@ import { CheckoutSparkSettledRepositoryConflictError } from "../packages/core/sr
 import { prepareCheckoutSparkSettledOutgoingLeg } from "../apps/market/src/lib/checkout-spark-settled-leg-preparation"
 import type { CheckoutSparkLnurlInvoiceInput } from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -147,7 +148,12 @@ function harness() {
       const hashByte = invoiceAmounts.length + 3
       return resolveCheckoutSparkFixtureInvoice(
         request,
-        invoice(request.amountSats, hashByte)
+        qualifiedReceiverInvoiceFixture({
+          lud16: request.lud16,
+          amountSats: request.amountSats,
+          paymentHash: hashByte.toString(16).padStart(2, "0").repeat(32),
+          createdAt: CREATED_AT / 1_000,
+        })
       )
     },
     async acknowledgeRecoverySnapshot(
@@ -311,15 +317,12 @@ describe("settled Spark payout invoice preparation", () => {
     const test = harness()
     const plan = test.getState().plan
     const conduit = plan.recipients[1]!
-    const shortPaymentRequest = makeSignedBolt11Fixture({
-      hrp: "lnbc1100n",
+    const shortPaymentRequest = qualifiedReceiverInvoiceFixture({
+      lud16: conduit.destination.value,
+      amountSats: 110,
+      paymentHash: "06".repeat(32),
       createdAt: CREATED_AT / 1_000,
-      fields: [
-        bolt11PaymentHashField(new Uint8Array(32).fill(6)),
-        bolt11PaymentSecretField(),
-        bolt11PlainDescriptionField(),
-        { tag: "x", words: [1, 27] }, // 59 seconds in BOLT11's 5-bit words.
-      ],
+      expiresSeconds: 59,
     })
     let invoiceCalls = 0
     const dependencies = {

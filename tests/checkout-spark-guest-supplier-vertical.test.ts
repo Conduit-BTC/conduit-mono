@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
-import { createHash } from "node:crypto"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { wrapPrivateMessage } from "../packages/core/src/protocol/messaging"
@@ -21,6 +20,7 @@ import {
   type CheckoutSparkSettledReconciliation,
   type OrderRelayDeliveryRepository,
 } from "@conduit/core"
+import { verifyCheckoutSparkInvoiceRecipient } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 import { publishCheckoutSparkSettledBoundOrder } from "../apps/market/src/lib/checkout-spark-bound-order"
 import { readCheckoutSparkRecipientPayoutAddress } from "../apps/market/src/lib/checkout-spark-recipient-profile"
 import {
@@ -51,6 +51,10 @@ import {
 } from "./support/bolt11-fixture"
 import { createCheckoutSparkGuestSupplierFixture } from "./support/checkout-spark-guest-supplier-fixture"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import {
+  qualifiedReceiverFixture,
+  qualifiedReceiverMetadataFixture,
+} from "./support/checkout-spark-qualified-receiver-fixture"
 import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
@@ -163,6 +167,15 @@ describe("offline guest supplier settled checkout composition", () => {
       "merchant@wallet.conduit.market",
       "supplier@wallet.conduit.market",
     ]
+    const unavailablePreflightReads = [
+      requiredAddresses[0]!,
+      requiredAddresses[0]!,
+      requiredAddresses[1]!,
+    ]
+    const supportedPreflightReads = requiredAddresses.flatMap((address) => [
+      address,
+      address,
+    ])
     let orderWrap: NDKEvent | undefined
     let lastProgressId: string | undefined
     let lastAcknowledgedState: string | undefined
@@ -256,6 +269,9 @@ describe("offline guest supplier settled checkout composition", () => {
                 {
                   now: () => now,
                   repository,
+                  receiverContracts: qualifiedReceiverMetadataFixture(
+                    "merchant@wallet.conduit.market"
+                  ).contracts,
                   fetchPayoutMetadata: (lud16) =>
                     fetchLnurlPayMetadata(lud16, {
                       fetchImpl: async (url, options) => {
@@ -286,14 +302,16 @@ describe("offline guest supplier settled checkout composition", () => {
                           minSendable: 1_000,
                           maxSendable: 1_000_000_000,
                           allowsNostr: false,
-                          metadata: "[]",
+                          metadata:
+                            qualifiedReceiverMetadataFixture(lud16).metadata
+                              .metadata,
                         })
                       },
                     }),
                   createWalletMaterial: () => {
                     expect(calls.metadata).toEqual([
-                      ...requiredAddresses,
-                      ...requiredAddresses,
+                      ...unavailablePreflightReads,
+                      ...supportedPreflightReads,
                     ])
                     calls.material += 1
                     return {
@@ -420,7 +438,7 @@ describe("offline guest supplier settled checkout composition", () => {
         receive: 0,
         order: 0,
         payer: 0,
-        metadata: requiredAddresses,
+        metadata: unavailablePreflightReads,
         sends: [],
       })
       expect(getCheckoutSparkSettledPreparation(checkoutId, storage)).toBeNull()
@@ -573,6 +591,32 @@ describe("offline guest supplier settled checkout composition", () => {
         string,
         { paymentHash: string; preimage: string }
       >()
+      const receiverInvoices = new Map<
+        string,
+        ReturnType<typeof qualifiedReceiverFixture>
+      >()
+      const recordReceiverSettlement = async (
+        target: CheckoutSparkSettledOutgoingTarget
+      ) => {
+        const receiver = receiverInvoices.get(target.intent.paymentRequest)!
+        const attribution = await verifyCheckoutSparkInvoiceRecipient(
+          { plan, target, now, assertCurrent: () => {} },
+          {
+            contracts: receiver.contracts,
+            fetchMetadata: async () => receiver.metadata,
+            fetchVerify: async () =>
+              receiver.verifier(completed.has(target.intent.transferId)),
+          }
+        )
+        if (attribution.status !== "verified" || !attribution.settled)
+          throw new Error("Expected independent ordinary recipient settlement")
+        await repository.recordInvoiceRecipientVerification(
+          plan,
+          target,
+          attribution.proof,
+          () => {}
+        )
+      }
       let availableSats = credit.creditedSats
       const manager: Pick<
         SparkWalletManager,
@@ -627,6 +671,20 @@ describe("offline guest supplier settled checkout composition", () => {
           calls.sends.push(leg.legId)
           completed.add(request.transferId)
           availableSats -= request.amountSats + 1
+          const recipient = plan.recipients.find(
+            (candidate) => candidate.legId === leg.legId
+          )!
+          // The receiver independently publishes its genuine settled receipt
+          // after this send completes, before the shopper records payout facts.
+          await recordReceiverSettlement({
+            walletId,
+            network: "mainnet",
+            legId: leg.legId,
+            recipientId: recipient.recipientId,
+            allocationSats: leg.allocationSats!,
+            unpaidAllocationSats: leg.allocationSats!,
+            intent: leg.intent!,
+          })
           return { status: "ambiguous" }
         },
       }
@@ -664,18 +722,20 @@ describe("offline guest supplier settled checkout composition", () => {
                 ...dependencies,
                 resolveInvoice: async (input) => {
                   resolvedAddresses.push(input.lud16)
-                  const preimage = new Uint8Array(32).fill(
-                    resolvedAddresses.length + 10
-                  )
-                  const hash = createHash("sha256").update(preimage).digest()
-                  const paymentRequest = invoice(input.amountSats, hash, now)
-                  paymentDetails.set(paymentRequest, {
-                    paymentHash: hash.toString("hex"),
-                    preimage: Buffer.from(preimage).toString("hex"),
+                  const receiver = qualifiedReceiverFixture({
+                    lud16: input.lud16,
+                    amountSats: input.amountSats,
+                    preimageByte: resolvedAddresses.length + 10,
+                    nowSeconds: Math.floor(now / 1_000),
+                  })
+                  receiverInvoices.set(receiver.paymentRequest, receiver)
+                  paymentDetails.set(receiver.paymentRequest, {
+                    paymentHash: receiver.paymentHash,
+                    preimage: receiver.preimage,
                   })
                   return resolveCheckoutSparkFixtureInvoice(
                     input,
-                    paymentRequest
+                    receiver.paymentRequest
                   )
                 },
               }),
@@ -824,7 +884,7 @@ describe("offline guest supplier settled checkout composition", () => {
           f.merchantPubkey,
           f.supplierPubkey,
         ],
-        metadata: [...requiredAddresses, ...requiredAddresses],
+        metadata: [...unavailablePreflightReads, ...supportedPreflightReads],
         sends: [merchantLeg!.legId, supplierLeg!.legId],
       })
     } finally {

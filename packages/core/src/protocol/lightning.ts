@@ -170,7 +170,10 @@ export async function fetchLnurlPayMetadataFromUrl(
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!res.ok || res.redirected || (res.url && res.url !== safePayRequestUrl))
+    if (!res.ok) {
+      throw new Error(`LNURL endpoint returned ${res.status}`)
+    }
+    if (res.redirected || (res.url && res.url !== safePayRequestUrl))
       throw new Error("LNURL endpoint response is unavailable")
     const contentLength = Number(res.headers?.get("content-length") ?? "0")
     if (
