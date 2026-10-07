@@ -135,6 +135,8 @@ export interface InboxRangeRow {
   until?: number
   /** A valid historical wrapper failed local admission on a completed page. */
   admissionRejected?: true
+  /** Distinguishes an attempted older read from a recent-window cursor seed. */
+  historyAttempted?: boolean
   /** Content-free fingerprint of the last recent window for this source/transport. */
   recentReadKey?: string
   /** Fences history commits against concurrent page progress or recent-window resets. */

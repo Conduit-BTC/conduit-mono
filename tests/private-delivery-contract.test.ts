@@ -1150,6 +1150,33 @@ describe("private delivery composed contract", () => {
     })
   }
 
+  it("preserves accepted order updates when the delivery checkpoint write fails", async () => {
+    const fixture = setup()
+    fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
+      if ("state" in changes && changes.state === "accepted")
+        throw new Error("simulated order ACK checkpoint failure")
+    })
+    let checkpointCalls = 0
+    let recipientPublishes = 0
+    const result = await publishPrivateMessage({
+      ...sendInput(fixture, 16),
+      selfCopy: false,
+      onRecipientAccepted: async () => {
+        checkpointCalls++
+      },
+      publishFn: (async () => {
+        recipientPublishes++
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+    })
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      RECIPIENT_RELAY,
+    ])
+    expect(result.checkpointFailure).toBe(true)
+    expect(checkpointCalls).toBe(1)
+    expect(recipientPublishes).toBe(1)
+  })
+
   it("reports a failed post-ACK callback without revoking recipient acceptance", async () => {
     const fixture = setup()
     const result = await publishPrivateMessage({
@@ -1191,7 +1218,7 @@ describe("private delivery composed contract", () => {
     ).rejects.toThrow()
   })
 
-  it("keeps kind-16 ACK checkpoint persistence mandatory", async () => {
+  it("keeps order checkpoint persistence mandatory without an accepted-result owner", async () => {
     const fixture = setup()
     fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
       if (changes.state === "accepted")
@@ -1200,7 +1227,6 @@ describe("private delivery composed contract", () => {
     await expect(
       publishPrivateMessage({
         ...sendInput(fixture, 16),
-        onRecipientAccepted: async () => {},
         publishFn: (async () => acknowledged(RECIPIENT_RELAY)) as NonNullable<
           PublishPrivateMessageInput["publishFn"]
         >,

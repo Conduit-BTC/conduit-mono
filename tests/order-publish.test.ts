@@ -536,6 +536,9 @@ describe("buyer order publishing", () => {
       })
       let selfRecoveryStarts = 0
       let cacheAttempts = 0
+      const cacheFailure =
+        identityKind === "signed_in" && terminalStatus === "timed_out"
+      const recoveryNotices: string[] = []
       let companionPublishes = 0
       const committedLifecycle = {
         ...lifecycle,
@@ -654,9 +657,12 @@ describe("buyer order publishing", () => {
           }) as never,
           cacheBuyerOrderRumorFn: async () => {
             cacheAttempts += 1
-            return null
+            return cacheFailure ? "Local order history unavailable" : null
           },
-          patchOrderLifecycleFn: (async () => committedLifecycle) as never,
+          patchOrderLifecycleFn: (async (_id, patch) => {
+            if (patch.deliveryNotice) recoveryNotices.push(patch.deliveryNotice)
+            return committedLifecycle
+          }) as never,
         }
       )
 
@@ -667,8 +673,18 @@ describe("buyer order publishing", () => {
         },
       ])
       expect(selfRecoveryStarts).toBe(0)
-      expect(cacheAttempts).toBe(0)
+      expect(cacheAttempts).toBe(identityKind === "signed_in" ? 1 : 0)
       expect(companionPublishes).toBe(0)
+      expect(result.localCacheError).toBe(
+        cacheFailure ? "Local order history unavailable" : null
+      )
+      expect(recoveryNotices).toEqual(
+        cacheFailure
+          ? [
+              "Order was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync.",
+            ]
+          : []
+      )
 
       const firstPostWork = result.startPostAcceptanceWork!()
       const secondPostWork = result.startPostAcceptanceWork!()
@@ -690,6 +706,33 @@ describe("buyer order publishing", () => {
       })
     })
   }
+
+  it("preserves a delivery checkpoint warning through the buyer caller result", async () => {
+    const signer = getAccountSigner()!
+    const result = await publishBuyerOrderMessage(
+      orderRumor(),
+      "merchant-pubkey",
+      {
+        kind: "signed_in",
+        pubkey: signer.pubkey,
+        signer: signer as never,
+      },
+      {
+        cacheBuyerOrderRumorFn: async () => null,
+        publishPrivateMessageFn: (async () => ({
+          buyerSelfCopyError: null,
+          selfCopyError: null,
+          checkpointFailure: true,
+          deliveryRoute: "declared_inbox",
+          wrappedToRecipient: {} as never,
+        })) as never,
+      }
+    )
+    expect(result.checkpointFailure).toBe(true)
+    expect(getDeliveryNotice(result, "Message")).toBe(
+      "Message was accepted by Nostr delivery relays for merchant pickup and saved locally, but its delivery status could not be saved. Do not send it again."
+    )
+  })
 
   it("publishes a recipient-only kind-14 companion after signed-in order delivery", async () => {
     const signer = getAccountSigner()!

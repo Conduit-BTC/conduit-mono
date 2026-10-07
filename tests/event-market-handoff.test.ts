@@ -28,6 +28,7 @@ import type {
   NostrKeySigner,
   SignedNostrEvent,
 } from "../packages/core/src/protocol/nostr-event-signer"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import { getEventHash } from "nostr-tools"
 import { v2 } from "nostr-tools/nip44"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
@@ -203,20 +204,33 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     ).resolves.toMatchObject({ state: "blocked", reason: "not_observed" })
   })
 
-  function recoveryOwner(database?: ConduitDB): CommerceInbox {
+  function recoveryOwner(
+    database?: ConduitDB,
+    options: {
+      principalSecret?: Uint8Array
+      refuseDecrypt?: () => boolean
+    } = {}
+  ): CommerceInbox {
+    const principalSecret = options.principalSecret ?? ORGANIZER_SECRET
+    const principal = getPublicKey(principalSecret)
     const signer: NostrKeySigner = {
-      pubkey: ORGANIZER,
+      pubkey: principal,
       authMethod: "nip07",
-      getPublicKey: async () => ORGANIZER,
-      signEvent: async (event) => finalizeEvent(event, ORGANIZER_SECRET),
+      getPublicKey: async () => principal,
+      signEvent: async (event) => finalizeEvent(event, principalSecret),
       encryptNip44: async (peer, value) =>
-        v2.encrypt(value, v2.utils.getConversationKey(ORGANIZER_SECRET, peer)),
-      decryptNip44: async (peer, value) =>
-        v2.decrypt(value, v2.utils.getConversationKey(ORGANIZER_SECRET, peer)),
+        v2.encrypt(value, v2.utils.getConversationKey(principalSecret, peer)),
+      decryptNip44: async (peer, value) => {
+        if (options.refuseDecrypt?.()) throw new NostrSignerError("unavailable")
+        return v2.decrypt(
+          value,
+          v2.utils.getConversationKey(principalSecret, peer)
+        )
+      },
       decryptLegacy: async () => "",
     }
-    installProtectedReadSigner(signer, ORGANIZER, () => true)
-    const authorization = getProtectedReadAuthorization(ORGANIZER)
+    installProtectedReadSigner(signer, principal, () => true)
+    const authorization = getProtectedReadAuthorization(principal)
     if (!authorization) throw new Error("Expected organizer authorization")
     const resolvedDatabase =
       database ??
@@ -238,14 +252,19 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     rumor: {
       kind: number
       pubkey: string
-      created_at: number
+      created_at?: number
       tags: string[][]
       content: string
       id?: string
     },
-    createdAt = ISSUED_AT + 1_000
+    createdAt = ISSUED_AT + 1_000,
+    recipient = ORGANIZER
   ): SignedNostrEvent {
-    const inner = { ...rumor, id: rumor.id ?? "" }
+    const inner = {
+      ...rumor,
+      created_at: rumor.created_at ?? createdAt,
+      id: rumor.id ?? "",
+    }
     const seal = finalizeEvent(
       {
         kind: 13,
@@ -253,7 +272,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
         tags: [],
         content: v2.encrypt(
           JSON.stringify(inner),
-          v2.utils.getConversationKey(MERCHANT_SECRET, ORGANIZER)
+          v2.utils.getConversationKey(MERCHANT_SECRET, recipient)
         ),
       },
       MERCHANT_SECRET
@@ -262,10 +281,10 @@ describe("current Event Market private inbox authority and bounded scanning", ()
       {
         kind: 1_059,
         created_at: createdAt,
-        tags: [["p", ORGANIZER]],
+        tags: [["p", recipient]],
         content: v2.encrypt(
           JSON.stringify(seal),
-          v2.utils.getConversationKey(WRAP_SECRET, ORGANIZER)
+          v2.utils.getConversationKey(WRAP_SECRET, recipient)
         ),
       },
       WRAP_SECRET
@@ -490,5 +509,193 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     })
     expect(result.data[0]?.state).toBe("ready_for_pickup")
     expect(result.inbox?.coverage).toBe("partial")
+  })
+
+  it("keeps an undecoded merchant self-copy unresolved until signer retry", async () => {
+    const relay = "wss://merchant.inbox.relay.dev"
+    let refuseDecrypt = true
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+      refuseDecrypt: () => refuseDecrypt,
+    })
+    const ready = buildFutureMarketPrivateRumor(readyPayload())
+    const wrap = encryptedRecoveryWrap(ready, ISSUED_AT + 1_000, MERCHANT)
+    const { read } = recoveryRead(new Map([[relay, [wrap]]]))
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [relay],
+      readProtectedInbox: read,
+    })
+
+    const refused = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(refused.messages).toEqual([])
+    expect(refused.inbox?.coverage).toBe("partial")
+    expect(refused.decryptFailures).toEqual([
+      { wrapId: wrap.id, reason: "nip44_failed" },
+    ])
+    expect(await owner.recoveryEvidence([relay])).toMatchObject({
+      unresolved: true,
+      decryptFailures: [{ wrapId: wrap.id, reason: "nip44_failed" }],
+    })
+
+    refuseDecrypt = false
+    await owner.retryDecode()
+    const recovered = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(recovered.messages.map((message) => message.id)).toContain(ready.id)
+    expect(recovered.authenticatedWraps?.[ready.id]?.id).toBe(wrap.id)
+    expect(recovered.decryptFailures).toEqual([])
+    expect(recovered.inbox?.coverage).toBe("complete")
+    expect((await owner.recoveryEvidence([relay])).unresolved).toBe(false)
+  })
+
+  it("does not let a different source's failed wrap degrade declared recovery", async () => {
+    const declaredRelay = "wss://merchant.inbox.relay.dev"
+    const otherRelay = "wss://merchant.other.relay.dev"
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+      refuseDecrypt: () => true,
+    })
+    const wrap = encryptedRecoveryWrap(
+      buildFutureMarketPrivateRumor(readyPayload()),
+      ISSUED_AT + 1_001,
+      MERCHANT
+    )
+    await owner.ingest(wrap, [otherRelay])
+    await owner.waitForDecode()
+    const { read } = recoveryRead(new Map())
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [declaredRelay],
+      readProtectedInbox: read,
+    })
+
+    const evidence = await owner.recoveryEvidence([declaredRelay])
+    expect(evidence.unresolved).toBe(false)
+    expect(evidence.decryptFailures).toEqual([])
+    const result = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(result.inbox?.coverage).toBe("complete")
+    expect(result.decryptFailures).toEqual([])
+  })
+
+  it("keeps a malformed decoded commerce record adverse while excluding an unsupported one", async () => {
+    const declaredRelay = "wss://merchant.inbox.relay.dev"
+    const otherRelay = "wss://merchant.other.relay.dev"
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+    })
+    const malformedRumor = {
+      kind: 16,
+      pubkey: MERCHANT,
+      created_at: ISSUED_AT + 3_000,
+      tags: [
+        ["p", MERCHANT],
+        ["type", "message"],
+        ["order", "order-malformed"],
+      ],
+      content: "{}",
+    }
+    const unsupportedRumor = {
+      ...malformedRumor,
+      created_at: malformedRumor.created_at + 1,
+      tags: [
+        ["p", MERCHANT],
+        ["type", "unrecognized-commerce-type"],
+        ["order", "order-unsupported"],
+      ],
+    }
+    const malformedWrap = encryptedRecoveryWrap(
+      { ...malformedRumor, id: getEventHash(malformedRumor) },
+      malformedRumor.created_at,
+      MERCHANT
+    )
+    const unsupportedWrap = encryptedRecoveryWrap(
+      { ...unsupportedRumor, id: getEventHash(unsupportedRumor) },
+      unsupportedRumor.created_at,
+      MERCHANT
+    )
+    await owner.ingest(unsupportedWrap, [otherRelay])
+    await owner.waitForDecode()
+    const { read } = recoveryRead(new Map([[declaredRelay, [malformedWrap]]]))
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [declaredRelay],
+      readProtectedInbox: read,
+    })
+
+    const strict = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(strict.messages).toEqual([])
+    expect(strict.inbox?.coverage).toBe("partial")
+    expect(strict.decryptFailures).toEqual([
+      { wrapId: malformedWrap.id, reason: "malformed" },
+    ])
+    const rows = await owner.store.wrappers()
+    expect(rows.find((row) => row.event.id === malformedWrap.id)?.state).toBe(
+      "malformed"
+    )
+    expect(rows.find((row) => row.event.id === unsupportedWrap.id)?.state).toBe(
+      "unsupported"
+    )
+    expect((await owner.recoveryEvidence([otherRelay])).unresolved).toBe(false)
+  })
+
+  it("classifies retained undecoded wraps without treating resolved states as failures", async () => {
+    const relay = "wss://merchant.inbox.relay.dev"
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+    })
+    const states = [
+      "queued",
+      "waiting_for_signer",
+      "opening",
+      "permission_declined",
+      "provider_unavailable",
+      "retryable_failure",
+      "malformed",
+      "invalid_envelope",
+      "machine",
+      "unrelated",
+      "unsupported",
+      "deleted",
+      "expired",
+    ] as const
+    const wraps = states.map((state, index) => ({
+      state,
+      wrap: encryptedRecoveryWrap(
+        buildFutureMarketPrivateRumor(readyPayload()),
+        ISSUED_AT + 2_000 + index,
+        MERCHANT
+      ),
+    }))
+    for (const { state, wrap } of wraps) {
+      await owner.store.receive(wrap, [relay])
+      await owner.store.database.commerceInboxWrappers.update(
+        owner.store.key(wrap.id),
+        { state }
+      )
+    }
+    const evidence = await owner.recoveryEvidence([relay])
+    expect(evidence.unresolved).toBe(true)
+    expect(
+      evidence.decryptFailures.map((failure) => failure.wrapId).sort()
+    ).toEqual(
+      wraps
+        .filter(({ state }) =>
+          [
+            "permission_declined",
+            "provider_unavailable",
+            "retryable_failure",
+            "malformed",
+            "invalid_envelope",
+          ].includes(state)
+        )
+        .map(({ wrap }) => wrap.id)
+        .sort()
+    )
+    for (const { wrap } of wraps.slice(0, 8))
+      await owner.store.database.commerceInboxWrappers.update(
+        owner.store.key(wrap.id),
+        { state: "unrelated" }
+      )
+    expect((await owner.recoveryEvidence([relay])).unresolved).toBe(false)
   })
 })

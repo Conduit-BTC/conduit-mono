@@ -5697,16 +5697,19 @@ describe("commerce gateway", () => {
     const h = setupOrderInbox(MERCHANT_B_SECRET)
     const merchant = MERCHANT_A_PUBKEY
     const payload = orderPayload("order-2", h.principalPubkey, merchant, 1_250)
-    await cacheParsedOrderMessage({
-      id: "local-order-msg",
-      orderId: "order-2",
-      type: "order",
-      createdAt: FIXED_NOW - 1_000,
-      senderPubkey: h.principalPubkey,
-      recipientPubkey: merchant,
-      rawContent: JSON.stringify(payload),
-      payload: payload as never,
-    })
+    await cacheParsedOrderMessage(
+      {
+        id: "local-order-msg",
+        orderId: "order-2",
+        type: "order",
+        createdAt: FIXED_NOW - 1_000,
+        senderPubkey: h.principalPubkey,
+        recipientPubkey: merchant,
+        rawContent: JSON.stringify(payload),
+        payload: payload as never,
+      },
+      h.owner
+    )
 
     const result = await getBuyerConversationList({
       principalPubkey: h.principalPubkey,

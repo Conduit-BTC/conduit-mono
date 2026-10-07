@@ -43,6 +43,21 @@ not prevent reaching valid older records. Capped equal-timestamp pages retain
 unresolved range evidence; an empty or short page describes that bounded
 observation, not global historical absence.
 
+Recent sync can seed a partial cursor before any older-page read. The durable
+`historyAttempted` marker explicitly distinguishes that seed from an attempted
+historical read. Older partial ranges without the marker remain conservatively
+incomplete until a historical retry resolves them. Attempted partial, capped, unavailable or admission-rejected ranges make
+conversation metadata incomplete, including empty Messages and Orders views.
+Successful paging remains usable without requiring an exhaustive archive read.
+
+Handoff recovery combines declared-source transport coverage with retained
+wrapper decoding evidence. An unreadable or malformed wrapper on those sources
+keeps recovery incomplete and prevents new release issuance from treating it as
+absence. Records from other sources do not veto the declared read. Authenticated
+recovered claims remain retained; an exact authenticated acknowledgement can
+still support completion despite unrelated incomplete reads, unless stronger
+conflict or revocation evidence exists.
+
 Signer queue waiting is separate from active provider time. Permission refusal
 pauses recovery. Provider timeout holds ownership of unresolved provider work;
 late results cannot write into a replacement account/session. History admission
@@ -113,14 +128,26 @@ acceptance checkpoint. Guest retries remain explicitly authorized and bounded.
 
 Recipient delivery precedes optional self-copy route resolution, signing, staging
 and publication for orders, ordinary replies and attachments. Self-copy failures
-cannot revoke recipient success. Accepted ordinary text and file sends save a
+cannot revoke recipient success. Accepted text, file and order sends save a
 device-encrypted sender projection before optional self-copy work and report local-history availability
 separately from recipient acceptance and cross-device sync. Initial orders return
 after their first ACK is durable; their caller starts the same shared self-copy
-operation afterward. Signed-in order callers capture the initiating inbox owner
-before publication. Revoked or replaced account authority prevents local writes
-and reports unavailable history without reversing recipient acceptance. Guest
+operation afterward. Market replies, signed-in checkout and payment proofs,
+Merchant replies, status/shipping updates and invoice/payment adapters capture
+the initiating inbox owner before publication. The cache APIs require that owner;
+they never resolve ambient post-delivery authority. Revoked or replaced account
+authority prevents local writes and reports unavailable history without reversing
+recipient acceptance. Guest
 checkout retains its separate order-scoped history.
+Merchant callers preserve accepted delivery separately from unavailable local
+history. Invoice attempts are recorded before publication. If saving sent status
+fails, an exact invoice match in the initiating account's encrypted order history
+preserves acceptance after reload. An interrupted attempt without reliable
+acceptance evidence blocks a fresh send and directs recovery to saved transport
+bytes. A proven zero-ACK failure remains eligible for retry. Background payment
+automation does not semantically resend an accepted update because its projection
+failed. Accepted notices remain scoped to the account and order; draft clearing
+also requires the initiating signer generation.
 Enrollment and handoff callers explicitly require a self-wrap as authenticated
 local recovery evidence before their persistence checkpoint; optional relay
 publication of that evidence still follows recipient delivery. Their existing

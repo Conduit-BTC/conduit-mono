@@ -3695,31 +3695,23 @@ async function loadCachedOrderMessages(
 
 async function storeCachedOrderMessages(
   rows: CachedOrderMessage[],
-  accountOwner?: CommerceInbox
+  accountOwner: CommerceInbox
 ): Promise<void> {
   if (rows.length === 0) return
 
   // An account send must retain the owner captured before publication. Looking
   // up the ambient signer after the relay ACK could write A's order under B.
-  accountOwner?.assertCurrent()
-  if (
-    accountOwner &&
-    rows.some((row) => row.senderPubkey !== accountOwner.store.principal)
-  )
+  accountOwner.assertCurrent()
+  if (rows.some((row) => row.senderPubkey !== accountOwner.store.principal))
     throw new Error("Order message does not belong to the active account")
 
   if (testOverrides.putCachedOrderMessages) {
     await testOverrides.putCachedOrderMessages(rows)
-    accountOwner?.assertCurrent()
+    accountOwner.assertCurrent()
     return
   }
 
-  const signer = accountOwner ? undefined : getAccountSigner()
-  if (!accountOwner && !signer)
-    throw new Error("Local order history needs an account signer")
-  const owner = accountOwner ?? getCommerceInbox(signer!.pubkey)
-  if (rows.some((row) => row.senderPubkey !== owner.store.principal))
-    throw new Error("Order message does not belong to the active account")
+  const owner = accountOwner
   await owner.initialize()
   for (const row of rows)
     await owner.store.putProjection(
@@ -3730,7 +3722,7 @@ async function storeCachedOrderMessages(
       1
     )
   await owner.refresh()
-  accountOwner?.assertCurrent()
+  accountOwner.assertCurrent()
 }
 
 function cachedOrderMessageRow(
@@ -3749,9 +3741,10 @@ function cachedOrderMessageRow(
 }
 
 export async function cacheParsedOrderMessage(
-  message: ParsedOrderMessage
+  message: ParsedOrderMessage,
+  accountOwner: CommerceInbox
 ): Promise<void> {
-  await storeCachedOrderMessages([cachedOrderMessageRow(message)])
+  await storeCachedOrderMessages([cachedOrderMessageRow(message)], accountOwner)
 }
 
 /** Normalize authenticated local sends through the shared commerce boundary. */
@@ -7947,6 +7940,7 @@ async function fetchEventMarketPrivateMessagesStrict(
       (range) => range.relayUrl === url && range.status === "unavailable"
     )
   )
+  const evidence = await owner.recoveryEvidence(relayUrls)
   const coverage = unavailable
     ? "unavailable"
     : relayUrls.every((url) =>
@@ -7956,14 +7950,16 @@ async function fetchEventMarketPrivateMessagesStrict(
               range.status === "source_eose" &&
               range.pageCount === 1
           )
-        ) && !declaration.stale
+        ) &&
+        !declaration.stale &&
+        !evidence.unresolved
       ? "complete"
       : "partial"
-  const evidence = await owner.recoveryEvidence(relayUrls)
   return {
-    ...evidence,
-    stale: declaration.stale || unavailable,
-    decryptFailures: [],
+    messages: evidence.messages,
+    authenticatedWraps: evidence.authenticatedWraps,
+    stale: declaration.stale || unavailable || evidence.unresolved,
+    decryptFailures: evidence.decryptFailures,
     inbox: {
       declarationState: declaration.state,
       coverage,
@@ -8960,6 +8956,13 @@ export async function markDirectMessageConversationRead(input: {
 function inboxSnapshotIncomplete(snapshot: CommerceInboxSnapshot): boolean {
   return (
     snapshot.diagnostics.coverage !== "complete" ||
+    snapshot.diagnostics.historyRanges.some(
+      (range) =>
+        range.admissionRejected ||
+        range.status === "capped" ||
+        range.status === "unavailable" ||
+        (range.historyAttempted !== false && range.status === "partial")
+    ) ||
     snapshot.diagnostics.storageUnavailable ||
     snapshot.decryptFailures.length > 0 ||
     snapshot.legacyDecryptFailures.length > 0 ||

@@ -24,6 +24,52 @@ export interface AccountInboxSendResult {
   checkpointFailure?: true
 }
 
+/** Save sender history once at recipient acceptance, before optional self-copy. */
+export function createAcceptedInboxSendCheckpoint(
+  persist: () => Promise<void>
+) {
+  let checkpoint: Promise<void> | undefined
+  let localHistory: AccountInboxSendResult["localHistory"] = "unavailable"
+  const onRecipientAccepted = () => {
+    checkpoint ??= (async () => {
+      try {
+        await persist()
+        localHistory = "saved"
+      } catch {
+        // An accepted recipient leg cannot become a semantic resend.
+      }
+    })()
+    return checkpoint
+  }
+  return {
+    onRecipientAccepted,
+    async complete(
+      sent: Pick<
+        Awaited<ReturnType<typeof publishPrivateMessage>>,
+        "selfDeliveryStatus" | "selfCopyError" | "checkpointFailure"
+      >,
+      selfCopy = true
+    ): Promise<AccountInboxSendResult> {
+      // Exact saved resumes and alternate transports may skip the callback.
+      await onRecipientAccepted()
+      return {
+        recipient: "accepted",
+        selfCopy:
+          !selfCopy ||
+          (sent.selfDeliveryStatus === "full_success" && !sent.selfCopyError)
+            ? "complete"
+            : sent.selfDeliveryStatus === "partial_success"
+              ? "partial"
+              : "pending",
+        localHistory,
+        ...(sent.checkpointFailure || localHistory === "unavailable"
+          ? { checkpointFailure: true as const }
+          : {}),
+      }
+    },
+  }
+}
+
 interface AccountInboxSendDependencies {
   getSigner: typeof getAccountSigner
   send: typeof publishPrivateMessage
@@ -75,23 +121,16 @@ export async function sendAccountInboxRumor(
     rumor.kind === 14 || rumor.kind === 15
       ? projectDirectOrFileRumor(rumor, input.principal)
       : null
-  let localHistory: AccountInboxSendResult["localHistory"] = "unavailable"
-  let persistAttempted = false
-  const persistAcceptedProjection = async () => {
-    persistAttempted = true
-    if (!projection) return
-    try {
-      assertProtectedReadAuthorization(authorization, input.principal)
-      if (dependencies.persistProjection)
-        await dependencies.persistProjection(projection)
-      else
-        await new CommerceInboxStore(authorization).putProjection(projection, 1)
-      assertProtectedReadAuthorization(authorization, input.principal)
-      localHistory = "saved"
-    } catch {
-      // Return an explicit unavailable result without undoing recipient acceptance.
-    }
-  }
+  const checkpoint = createAcceptedInboxSendCheckpoint(async () => {
+    if (!projection)
+      throw new Error("Local conversation projection unavailable")
+    assertProtectedReadAuthorization(authorization, input.principal)
+    if (dependencies.persistProjection)
+      await dependencies.persistProjection(projection)
+    else
+      await new CommerceInboxStore(authorization).putProjection(projection, 1)
+    assertProtectedReadAuthorization(authorization, input.principal)
+  })
   const sent = await dependencies.send({
     rumor,
     senderPubkey: input.principal,
@@ -104,21 +143,7 @@ export async function sendAccountInboxRumor(
       assertProtectedReadAuthorization(authorization, input.principal)
       return true
     },
-    onRecipientAccepted: persistAcceptedProjection,
+    onRecipientAccepted: checkpoint.onRecipientAccepted,
   })
-  // An exact saved-delivery resume can return before the callback is reached.
-  if (!persistAttempted) await persistAcceptedProjection()
-  return {
-    recipient: "accepted",
-    selfCopy:
-      sent.selfDeliveryStatus === "partial_success"
-        ? "partial"
-        : sent.selfDeliveryStatus === "full_success" && !sent.selfCopyError
-          ? "complete"
-          : "pending",
-    localHistory,
-    ...(sent.checkpointFailure || localHistory === "unavailable"
-      ? { checkpointFailure: true as const }
-      : {}),
-  }
+  return await checkpoint.complete(sent)
 }

@@ -178,7 +178,10 @@ import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
-import { publishBuyerOrderMessage } from "../lib/order-publish"
+import {
+  getDeliveryNotice,
+  publishBuyerOrderMessage,
+} from "../lib/order-publish"
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
@@ -672,6 +675,7 @@ function OrderDetail({
   authenticatedPubkey,
   paymentFocused = false,
   signerReady,
+  historyIncomplete,
 }: {
   row: OrderRow
   buyerPubkey: string
@@ -680,6 +684,7 @@ function OrderDetail({
   authenticatedPubkey?: string | null
   paymentFocused?: boolean
   signerReady: boolean
+  historyIncomplete: boolean
 }) {
   const { vm, headerStatus } = row
   const currentViewRef = useRef(vm)
@@ -759,6 +764,12 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
+  const [replyNotice, setReplyNotice] = useState<{
+    buyerPubkey: string
+    merchantPubkey: string
+    orderId: string
+    text: string | null
+  } | null>(null)
   const persistedRetryTarget = row.lifecycle?.paymentTarget ?? null
   const persistedRetryTargetType = persistedRetryTarget?.type ?? null
   const persistedRetryWalletId =
@@ -1638,22 +1649,48 @@ function OrderDetail({
         buyerPubkey,
         createdAt: Date.now(),
       })
-      await publishBuyerOrderMessage(rumor, row.merchantPubkey, buyerPubkey, {
-        accountPubkey: authenticatedPubkey ?? null,
-        authenticatedPubkey: authenticatedPubkey ?? null,
-        shouldContinue: shouldContinueBuyerSession,
-      })
+      const delivery = await publishBuyerOrderMessage(
+        rumor,
+        row.merchantPubkey,
+        buyerPubkey,
+        {
+          accountPubkey: authenticatedPubkey ?? null,
+          authenticatedPubkey: authenticatedPubkey ?? null,
+          shouldContinue: shouldContinueBuyerSession,
+        }
+      )
+      return {
+        delivery,
+        buyerPubkey,
+        merchantPubkey: row.merchantPubkey,
+        orderId: vm.orderId,
+        draft: replyText,
+        isCurrent: shouldContinueBuyerSession,
+      }
     },
-    onSuccess: async () => {
-      setReplyText("")
-      await Promise.all([
+    onSuccess: (sent) => {
+      setReplyNotice({
+        buyerPubkey: sent.buyerPubkey,
+        merchantPubkey: sent.merchantPubkey,
+        orderId: sent.orderId,
+        text: getDeliveryNotice(sent.delivery, "Message"),
+      })
+      if (
+        !sent.isCurrent() ||
+        !viewMountedRef.current ||
+        currentViewRef.current.orderId !== sent.orderId ||
+        currentViewRef.current.merchantPubkey !== sent.merchantPubkey
+      )
+        return
+      setReplyText((draft) => (draft === sent.draft ? "" : draft))
+      void Promise.all([
         queryClient.invalidateQueries({
           queryKey: ["buyer-messages", buyerPubkey],
         }),
         queryClient.invalidateQueries({
           queryKey: ["buyer-messages-live", buyerPubkey],
         }),
-      ])
+      ]).catch(() => console.warn("Could not refresh accepted order reply"))
     },
   })
 
@@ -2474,6 +2511,17 @@ function OrderDetail({
           onReplyChange={setReplyText}
           onSend={() => replyMutation.mutate()}
           sending={replyMutation.isPending}
+          historyIncomplete={historyIncomplete}
+          notice={
+            replyNotice?.buyerPubkey === buyerPubkey &&
+            replyNotice.merchantPubkey === row.merchantPubkey &&
+            replyNotice.orderId === vm.orderId &&
+            replyNotice.text ? (
+              <p role="status" className="text-sm text-warning">
+                {replyNotice.text}
+              </p>
+            ) : null
+          }
           readOnly={!signerReady}
           error={
             replyMutation.error instanceof Error
@@ -3150,7 +3198,7 @@ function OrdersPage() {
           <section className="min-w-0">
             {selectedRow ? (
               <OrderDetail
-                key={`${activeBuyerPubkey}:${selectedRow.orderId}`}
+                key={`${activeBuyerPubkey}:${selectedRow.merchantPubkey}:${selectedRow.orderId}`}
                 row={selectedRow}
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
@@ -3158,6 +3206,7 @@ function OrdersPage() {
                 authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
                 paymentFocused={paymentFocused}
                 signerReady={signerConnected}
+                historyIncomplete={protectedOrdersReadState !== "complete"}
               />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">

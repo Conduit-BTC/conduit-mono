@@ -1082,6 +1082,153 @@ it.each([
   }
 )
 
+it.each([
+  { status: "partial" as const, incomplete: true },
+  { status: "partial" as const, legacyRange: true, incomplete: true },
+  { status: "capped" as const, incomplete: true },
+  { status: "unavailable" as const, incomplete: true },
+  {
+    status: "source_eose" as const,
+    admissionRejected: true as const,
+    incomplete: true,
+  },
+  { status: "advanced" as const, incomplete: false },
+  { status: "source_eose" as const, incomplete: false },
+])(
+  "projects attempted history $status truthfully into all empty conversation views",
+  async ({
+    status,
+    admissionRejected,
+    legacyRange,
+    incomplete,
+  }: {
+    status: import("../packages/core/src/protocol/protected-inbox-history").ProtectedInboxHistoryPageStatus
+    admissionRejected?: true
+    legacyRange?: true
+    incomplete: boolean
+  }) => {
+    const { owner, pubkey, store } = setup()
+    const relayUrl = "wss://history-presentation.synthetic.example"
+    await owner.syncRecent({
+      declaration: {
+        pubkey,
+        state: "declared",
+        relayUrls: [relayUrl],
+        stale: false,
+        fetchedAt: Date.now(),
+      },
+      includeLegacy: false,
+      read: async () => completeRead([]),
+    })
+    expect(owner.getSnapshot().diagnostics.coverage).toBe("complete")
+    for (const view of Object.values(
+      projectCommerceInbox(owner.getSnapshot(), pubkey)
+    ))
+      expect(
+        deriveProtectedReadPresentationState({
+          visibleCount: 0,
+          meta: view.meta,
+        })
+      ).toBe("complete")
+    await store.database.commerceInboxRanges.put({
+      id: store.key(`${relayUrl}:nip17`),
+      accountPubkey: pubkey,
+      relayUrl,
+      status,
+      admissionRejected,
+      historyAttempted: legacyRange ? undefined : true,
+      observedAt: Date.now(),
+      observedCount: 0,
+      pageCount: 1,
+    })
+    await owner.refresh()
+    for (const view of Object.values(
+      projectCommerceInbox(owner.getSnapshot(), pubkey)
+    )) {
+      expect(view.data).toHaveLength(0)
+      expect(view.meta.stale).toBe(incomplete)
+      const presentation = deriveProtectedReadPresentationState({
+        visibleCount: 0,
+        meta: view.meta,
+      })
+      if (incomplete) expect(presentation).not.toBe("complete")
+      else expect(presentation).toBe("complete")
+    }
+  }
+)
+
+it.each(["partial", "unavailable"] as const)(
+  "keeps empty views non-terminal after an actual %s older read until retry completes",
+  async (coverage) => {
+    const { owner, pubkey } = setup()
+    const options = {
+      includeLegacy: false,
+      declaration: {
+        pubkey,
+        state: "declared" as const,
+        relayUrls: ["wss://history-attempt.synthetic.example"],
+        stale: false,
+        fetchedAt: Date.now(),
+      },
+    }
+    const completeEmpty = () => {
+      const result = completeRead([])
+      result.relayResult.observations = [{ type: "eose", relayIndex: 0 }]
+      result.relayResult.relays = [
+        {
+          relayIndex: 0,
+          status: "success",
+          auth: "not_challenged",
+          eventCount: 0,
+          duplicateCount: 0,
+          malformedCount: 0,
+          unusableCount: 0,
+        },
+      ]
+      return result
+    }
+    await owner.syncRecent({ ...options, read: async () => completeEmpty() })
+    await owner.loadOlder({
+      ...options,
+      read: async () => {
+        const result = completeEmpty()
+        result.coverage = coverage
+        result.relayResult.status =
+          coverage === "unavailable" ? "unavailable" : "partial"
+        result.relayResult.observations = []
+        return result
+      },
+    })
+    // A successful recent window cannot erase failed older-source evidence.
+    await owner.syncRecent({ ...options, read: async () => completeEmpty() })
+    expect(owner.getSnapshot().diagnostics.coverage).toBe("complete")
+    expect(
+      owner.getSnapshot().diagnostics.historyRanges[0]?.historyAttempted
+    ).toBe(true)
+    for (const view of Object.values(
+      projectCommerceInbox(owner.getSnapshot(), pubkey)
+    )) {
+      expect(view.data).toHaveLength(0)
+      expect(
+        deriveProtectedReadPresentationState({
+          visibleCount: 0,
+          meta: view.meta,
+        })
+      ).not.toBe("complete")
+    }
+    await owner.loadOlder({ ...options, read: async () => completeEmpty() })
+    for (const view of Object.values(
+      projectCommerceInbox(owner.getSnapshot(), pubkey)
+    ))
+      expect(
+        deriveProtectedReadPresentationState({
+          visibleCount: 0,
+          meta: view.meta,
+        })
+      ).toBe("complete")
+  }
+)
+
 it("retires successful coverage after a refresh throws while retaining opened messages", async () => {
   const { owner, pubkey, wrapper } = setup()
   const declaration = {

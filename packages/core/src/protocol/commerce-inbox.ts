@@ -145,6 +145,7 @@ export interface CommerceInboxDiagnostic {
     observedAt: number
     observedCount: number
     admissionRejected?: true
+    historyAttempted?: boolean
   }>
   received: number
   observedAt: number | null
@@ -426,6 +427,7 @@ export class CommerceInbox {
       observedAt: range.observedAt,
       observedCount: range.observedCount,
       admissionRejected: range.admissionRejected,
+      historyAttempted: range.historyAttempted,
     }))
     this.snapshot = {
       ...this.snapshot,
@@ -725,6 +727,7 @@ export class CommerceInbox {
           status: "partial" as const,
           observedAt: Date.now(),
           observedCount: 0,
+          historyAttempted: false,
         }),
         ...(restart
           ? {
@@ -1013,6 +1016,7 @@ export class CommerceInbox {
                 : (stored?.pageCount ?? 0) + (completedPage ? 1 : 0),
             status: pageStatus,
             admissionRejected: admissionRejected ? true : undefined,
+            historyAttempted: true,
             observedAt: Date.now(),
             observedCount: page.range.observedCount,
             revision: (stored?.revision ?? 0) + 1,
@@ -1026,6 +1030,8 @@ export class CommerceInbox {
   async recoveryEvidence(relayUrls?: readonly string[]): Promise<{
     messages: ParsedEventMarketPrivateMessage[]
     authenticatedWraps: Record<string, SignedNostrEvent>
+    decryptFailures: DecryptFailure[]
+    unresolved: boolean
   }> {
     await this.initialize()
     this.assertCurrent()
@@ -1033,21 +1039,56 @@ export class CommerceInbox {
       (await this.store.wrappers())
         .filter(
           (row) =>
-            !relayUrls || row.sources.some((url) => relayUrls.includes(url))
+            row.event.kind === 1059 &&
+            (!relayUrls || row.sources.some((url) => relayUrls.includes(url)))
         )
-        .map((row) => [row.event.id, row.event])
+        .map((row) => [row.event.id, row])
     )
     const messages: ParsedEventMarketPrivateMessage[] = []
     const authenticatedWraps: Record<string, SignedNostrEvent> = {}
+    const resolvedWrapIds = new Set<string>()
     for (const { row, projection } of await this.store.projections()) {
-      if (projection.kind !== "recovery" || !row.wrapId) continue
-      const wrap = permitted.get(row.wrapId)
-      if (!wrap) continue
+      if (!row.wrapId || !permitted.has(row.wrapId)) continue
+      resolvedWrapIds.add(row.wrapId)
+      if (projection.kind !== "recovery") continue
       messages.push(projection.message)
-      authenticatedWraps[projection.message.id] = wrap
+      authenticatedWraps[projection.message.id] = permitted.get(
+        row.wrapId
+      )!.event
+    }
+    const decryptFailures: DecryptFailure[] = []
+    let unresolved = false
+    for (const row of permitted.values()) {
+      if (
+        resolvedWrapIds.has(row.event.id) &&
+        row.state !== "malformed" &&
+        row.state !== "invalid_envelope"
+      )
+        continue
+      switch (row.state) {
+        case "queued":
+        case "waiting_for_signer":
+        case "opening":
+          unresolved = true
+          break
+        case "permission_declined":
+        case "provider_unavailable":
+        case "retryable_failure":
+        case "malformed":
+        case "invalid_envelope":
+          unresolved = true
+          decryptFailures.push({
+            wrapId: row.event.id,
+            reason:
+              row.state === "malformed" || row.state === "invalid_envelope"
+                ? "malformed"
+                : "nip44_failed",
+          })
+          break
+      }
     }
     this.assertCurrent()
-    return { messages, authenticatedWraps }
+    return { messages, authenticatedWraps, decryptFailures, unresolved }
   }
   async recoveryMessages(
     relayUrls?: readonly string[]

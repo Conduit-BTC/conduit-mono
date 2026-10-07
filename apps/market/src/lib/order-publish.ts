@@ -5,6 +5,7 @@ import {
   appendConduitClientTag,
   beginOrderRelayDeliveryAttempt,
   cacheOrderMessageRumor,
+  createAcceptedInboxSendCheckpoint,
   createOrderCompanionNotificationRumor,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
@@ -45,6 +46,7 @@ import { inferMerchantOrigin } from "./merchant-links"
 export type BuyerMessageDeliveryResult = {
   buyerSelfCopyError: string | null
   localCacheError: string | null
+  checkpointFailure?: true
   /** Write lane that delivered the merchant leg (CND-208). */
   deliveryRoute: OrderDeliveryRoute
   /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
@@ -58,6 +60,7 @@ export type BuyerMessageDeliveryResult = {
 export type BuyerPostAcceptanceResult = {
   buyerSelfCopyError: string | null
   localCacheError: string | null
+  checkpointFailure?: true
   companionNotification: OrderCompanionNotificationStatus
 }
 
@@ -441,7 +444,10 @@ async function cacheBuyerOrderRumor(
  * delivery relay accepted the merchant leg for pickup.
  */
 export function getDeliveryNotice(
-  delivery: BuyerMessageDeliveryResult,
+  delivery: Pick<
+    BuyerMessageDeliveryResult,
+    "localCacheError" | "buyerSelfCopyError" | "checkpointFailure"
+  >,
   label: string
 ): string | null {
   if (delivery.localCacheError && delivery.buyerSelfCopyError) {
@@ -449,6 +455,9 @@ export function getDeliveryNotice(
   }
   if (delivery.localCacheError) {
     return `${label} was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync.`
+  }
+  if (delivery.checkpointFailure) {
+    return `${label} was accepted by Nostr delivery relays for merchant pickup and saved locally, but its delivery status could not be saved. Do not send it again.`
   }
   if (delivery.buyerSelfCopyError) {
     return `${label} was accepted by Nostr delivery relays for merchant pickup and saved locally. Buyer relay backup needs retry.`
@@ -494,6 +503,23 @@ export async function publishBuyerOrderMessage(
       // Report a local-cache failure after recipient acceptance.
     }
   }
+
+  let localCacheError: string | null = null
+  const historyCheckpoint = createAcceptedInboxSendCheckpoint(async () => {
+    if (buyerIdentity.kind === "guest_ephemeral") return
+    try {
+      localCacheError = await (
+        dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor
+      )(clonePreparedBuyerRumor(rumor), accountOwner)
+      if (localCacheError) throw new Error(localCacheError)
+    } catch (error) {
+      localCacheError = getErrorMessage(
+        error,
+        "Failed to cache buyer order message"
+      )
+      throw error
+    }
+  })
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
   const orderRelayDeliveryOptions = dependencies.orderRelayDeliveryRepository
@@ -602,6 +628,9 @@ export async function publishBuyerOrderMessage(
         recipientPubkey: merchantPubkey,
       }),
       telemetryApp: "market",
+      ...(buyerIdentity.kind !== "guest_ephemeral"
+        ? { onRecipientAccepted: historyCheckpoint.onRecipientAccepted }
+        : {}),
       ...(dependencies.orderLifecycle
         ? {
             recipientDeliveryBoundary: "accepted" as const,
@@ -678,6 +707,7 @@ export async function publishBuyerOrderMessage(
   }
   const {
     selfCopyError: buyerSelfCopyError,
+    checkpointFailure,
     deliveryRoute,
     orderRelayDelivery,
     startPostAcceptanceWork: startPrivateMessagePostAcceptanceWork,
@@ -691,6 +721,24 @@ export async function publishBuyerOrderMessage(
         publishPhase,
         null
       )
+    }
+    await historyCheckpoint.onRecipientAccepted()
+    const initialNotice = getDeliveryNotice(
+      {
+        localCacheError,
+        buyerSelfCopyError: null,
+        ...(checkpointFailure ? { checkpointFailure: true } : {}),
+      },
+      "Order"
+    )
+    if (initialNotice && (shouldContinue?.() ?? true)) {
+      try {
+        await patchLifecycle(committedLifecycle.orderId, {
+          deliveryNotice: initialNotice,
+        })
+      } catch {
+        console.warn("Failed to persist accepted order history notice")
+      }
     }
 
     const stableRumor = clonePreparedBuyerRumor(rumor)
@@ -724,20 +772,6 @@ export async function publishBuyerOrderMessage(
           }
         }
 
-        let localCacheError: string | null = null
-        if (buyerIdentity.kind !== "guest_ephemeral") {
-          try {
-            localCacheError = await (
-              dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor
-            )(stableRumor, accountOwner)
-          } catch (error) {
-            localCacheError = getErrorMessage(
-              error,
-              "Failed to cache buyer order message"
-            )
-          }
-        }
-
         const companionStatus = await publishOrderCompanionNotification({
           authoritativeOrder: stableRumor,
           buyerIdentity,
@@ -756,16 +790,10 @@ export async function publishBuyerOrderMessage(
         const backgroundResult: BuyerPostAcceptanceResult = {
           buyerSelfCopyError: selfResult.selfCopyError,
           localCacheError,
+          ...(checkpointFailure ? { checkpointFailure: true } : {}),
           companionNotification: companionStatus,
         }
-        const deliveryNotice = getDeliveryNotice(
-          {
-            ...backgroundResult,
-            deliveryRoute,
-            companionNotification: Promise.resolve(companionStatus),
-          },
-          "Order"
-        )
+        const deliveryNotice = getDeliveryNotice(backgroundResult, "Order")
         if (deliveryNotice && (shouldContinue?.() ?? true)) {
           try {
             await patchLifecycle(committedLifecycle.orderId, {
@@ -782,7 +810,8 @@ export async function publishBuyerOrderMessage(
 
     return {
       buyerSelfCopyError: null,
-      localCacheError: null,
+      localCacheError,
+      ...(checkpointFailure ? { checkpointFailure: true } : {}),
       deliveryRoute,
       companionNotification,
       startPostAcceptanceWork,
@@ -794,13 +823,7 @@ export async function publishBuyerOrderMessage(
     }
   }
 
-  const localCacheError =
-    buyerIdentity.kind === "guest_ephemeral"
-      ? null
-      : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
-          rumor,
-          accountOwner
-        )
+  await historyCheckpoint.onRecipientAccepted()
   // Start the advisory attempt only after the authoritative order has a relay
   // ACK and any signed-in local recovery copy is committed. Do not await it:
   // a slow or unavailable notification path must never keep checkout in a
@@ -821,6 +844,7 @@ export async function publishBuyerOrderMessage(
   return {
     buyerSelfCopyError,
     localCacheError,
+    ...(checkpointFailure ? { checkpointFailure: true } : {}),
     deliveryRoute,
     companionNotification,
     ...(orderRelayDelivery ? { orderRelayDelivery } : {}),

@@ -5,6 +5,7 @@ import {
   db,
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
+  getCommerceInbox,
   isValidLud16Address,
   mockMakeInvoice,
   normalizeLightningInvoice,
@@ -12,6 +13,7 @@ import {
   nwcGetInfo,
   nwcMakeInvoice,
   publishMerchantOrderMessage,
+  RelayPublishDiagnosticsError,
   validateLightningInvoiceForPayment,
   weblnMakeInvoice,
   type LnurlPayMetadata,
@@ -19,6 +21,7 @@ import {
   type NwcConnection,
   type NwcGetInfoResult,
   type PublishMerchantOrderMessageInput,
+  type PublishMerchantOrderMessageResult,
   type StoredMerchantPendingInvoice,
 } from "@conduit/core"
 
@@ -54,7 +57,10 @@ export type RetryMerchantInvoiceInput = MerchantInvoiceScope & {
 }
 
 export type MerchantInvoiceStatus =
-  { state: "none" } | { state: "pending" | "sent" }
+  | { state: "none" }
+  | {
+      state: "pending" | "sent" | "accepted_unrecorded" | "delivery_unknown"
+    }
 
 export interface MerchantPendingInvoiceStore {
   get(
@@ -103,7 +109,10 @@ export interface MerchantInvoiceDependencies {
     invoice: string
   }
   isMockPayments(): boolean
-  publish(input: PublishMerchantOrderMessageInput): Promise<unknown>
+  publish(
+    input: PublishMerchantOrderMessageInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
+  hasAcceptedInvoice?(saved: MerchantPendingInvoice): Promise<boolean>
   now(): number
   nwcTimeoutMs?: number
   lockManager?: MerchantInvoiceLockManager | null
@@ -111,8 +120,12 @@ export interface MerchantInvoiceDependencies {
 
 export interface MerchantInvoiceModule {
   getStatus(input: MerchantInvoiceScope): Promise<MerchantInvoiceStatus>
-  createAndDeliver(input: CreateMerchantInvoiceInput): Promise<void>
-  retryDelivery(input: RetryMerchantInvoiceInput): Promise<void>
+  createAndDeliver(
+    input: CreateMerchantInvoiceInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
+  retryDelivery(
+    input: RetryMerchantInvoiceInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
 }
 
 const MERCHANT_INVOICE_SOURCES: readonly MerchantInvoiceSource[] = [
@@ -416,7 +429,7 @@ async function deliverSavedInvoice(
   dependencies: MerchantInvoiceDependencies,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
-): Promise<void> {
+): Promise<PublishMerchantOrderMessageResult | void> {
   if (saved.source !== "mock") {
     validateGeneratedInvoice(
       saved.invoice,
@@ -428,20 +441,58 @@ async function deliverSavedInvoice(
   const attempting: MerchantPendingInvoice = {
     ...saved,
     deliveryState: "pending",
+    deliveryAttempted: true,
     updatedAt: now,
   }
   await dependencies.store.put(attempting)
 
-  await dependencies.publish(
-    toPublishInput(attempting, authenticatedPubkey, shouldContinue)
-  )
+  // A generic post-stage failure does not prove the recipient never accepted.
+  // Keep this marker until positive sender history or exact delivery recovery
+  // resolves the attempt; never create a fresh rumor merely because a call threw.
+  let delivery: PublishMerchantOrderMessageResult | void
+  try {
+    delivery = await dependencies.publish(
+      toPublishInput(attempting, authenticatedPubkey, shouldContinue)
+    )
+  } catch (error) {
+    if (
+      error instanceof RelayPublishDiagnosticsError &&
+      error.diagnostics.successfulRelayUrls.length === 0
+    ) {
+      await dependencies.store.put({
+        ...attempting,
+        deliveryAttempted: false,
+        updatedAt: dependencies.now(),
+      })
+    }
+    throw error
+  }
+
+  let stillCurrent: boolean
+  try {
+    stillCurrent = shouldContinue?.() !== false
+  } catch {
+    stillCurrent = false
+  }
+  if (!stillCurrent) {
+    if (delivery) return { ...delivery, checkpointFailure: true }
+    throw new Error("Merchant signer session changed after invoice delivery")
+  }
 
   const sentAt = dependencies.now()
-  await dependencies.store.put({
-    ...attempting,
-    deliveryState: "sent",
-    updatedAt: sentAt,
-  })
+  try {
+    await dependencies.store.put({
+      ...attempting,
+      deliveryState: "sent",
+      updatedAt: sentAt,
+    })
+  } catch (error) {
+    // A real publisher returns an accepted receipt. A failed local status write
+    // must not turn that known acceptance into a request to resend the invoice.
+    if (delivery) return { ...delivery, checkpointFailure: true }
+    throw error
+  }
+  return delivery
 }
 
 // Navigator locks coordinate tabs where supported. This JavaScript-realm
@@ -496,10 +547,20 @@ export function createMerchantInvoiceModule(
       assertSavedInvoiceBuyer(saved, scope.buyerPubkey, "used")
       const expired =
         saved.invoiceExpiresAt <= Math.floor(dependencies.now() / 1_000)
-      return expired ? { state: "none" } : { state: saved.deliveryState }
+      if (expired) return { state: "none" }
+      if (
+        saved.deliveryState === "pending" &&
+        (await dependencies.hasAcceptedInvoice?.(saved))
+      )
+        return { state: "accepted_unrecorded" }
+      if (saved.deliveryState === "pending" && saved.deliveryAttempted)
+        return { state: "delivery_unknown" }
+      return { state: saved.deliveryState }
     },
 
-    async createAndDeliver(input): Promise<void> {
+    async createAndDeliver(
+      input
+    ): Promise<PublishMerchantOrderMessageResult | void> {
       const scope = validateScope(input)
       const scopeId = pendingInvoiceId(scope.merchantPubkey, scope.orderId)
       return runExclusive(scopeId, async () => {
@@ -514,6 +575,20 @@ export function createMerchantInvoiceModule(
           ) {
             await dependencies.store.delete(scope.merchantPubkey, scope.orderId)
           } else {
+            if (
+              existing.deliveryState === "pending" &&
+              (await dependencies.hasAcceptedInvoice?.(existing))
+            )
+              throw new Error(
+                "The saved invoice was already accepted. Do not send it again."
+              )
+            if (
+              existing.deliveryState === "pending" &&
+              existing.deliveryAttempted
+            )
+              throw new Error(
+                "The saved invoice has an unresolved delivery attempt. Check exact delivery recovery before sending again."
+              )
             throw new Error(
               existing.deliveryState === "pending"
                 ? "A saved invoice still needs delivery. Retry it before creating another."
@@ -560,7 +635,9 @@ export function createMerchantInvoiceModule(
       })
     },
 
-    async retryDelivery(input): Promise<void> {
+    async retryDelivery(
+      input
+    ): Promise<PublishMerchantOrderMessageResult | void> {
       const scope = validateScope(input)
       const scopeId = pendingInvoiceId(scope.merchantPubkey, scope.orderId)
       return runExclusive(scopeId, async () => {
@@ -570,6 +647,17 @@ export function createMerchantInvoiceModule(
         )
         if (!saved) throw new Error("No saved invoice is available for retry.")
         assertSavedInvoiceBuyer(saved, scope.buyerPubkey, "retried")
+        if (
+          saved.deliveryState === "pending" &&
+          (await dependencies.hasAcceptedInvoice?.(saved))
+        )
+          throw new Error(
+            "The saved invoice was already accepted. Do not send it again."
+          )
+        if (saved.deliveryState === "pending" && saved.deliveryAttempted)
+          throw new Error(
+            "The saved invoice has an unresolved delivery attempt. Check exact delivery recovery before sending again."
+          )
         return deliverSavedInvoice(
           saved,
           dependencies,
@@ -591,6 +679,26 @@ async function getStoredMerchantProfileLud16(
   )
 }
 
+async function hasAcceptedInvoiceInEncryptedHistory(
+  saved: MerchantPendingInvoice
+): Promise<boolean> {
+  const owner = getCommerceInbox(saved.merchantPubkey)
+  owner.assertCurrent()
+  const projections = await owner.store.projections()
+  owner.assertCurrent()
+  return projections.some(({ projection }) => {
+    if (projection.kind !== "order") return false
+    const message = projection.message
+    return (
+      message.type === "payment_request" &&
+      message.orderId === saved.orderId &&
+      message.senderPubkey === saved.merchantPubkey &&
+      message.recipientPubkey === saved.buyerPubkey &&
+      message.payload.invoice === saved.invoice
+    )
+  })
+}
+
 export function createDefaultMerchantInvoiceModule(
   store: MerchantPendingInvoiceStore = new DexieMerchantPendingInvoiceStore()
 ): MerchantInvoiceModule {
@@ -602,6 +710,7 @@ export function createDefaultMerchantInvoiceModule(
     makeWeblnInvoice: weblnMakeInvoice,
     getNwcInfo: (connection, timeoutMs) =>
       nwcGetInfo(connection, timeoutMs, "merchant"),
+    hasAcceptedInvoice: hasAcceptedInvoiceInEncryptedHistory,
     // Invoice issuance is not safely retryable after a client-side timeout.
     // Keep awaiting the original NWC response while the per-order lock is held.
     makeNwcInvoice: (connection, input) =>

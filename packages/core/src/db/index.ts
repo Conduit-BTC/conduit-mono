@@ -729,6 +729,8 @@ export interface StoredMerchantPendingInvoice {
   source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock"
   invoiceExpiresAt: number
   deliveryState: "pending" | "sent"
+  /** A semantic publish began; absent positive evidence, only exact-wrap recovery is safe. */
+  deliveryAttempted?: boolean
   updatedAt: number
 }
 

@@ -1267,8 +1267,7 @@ export async function publishPrivateMessage(
       onSettled: preparedRecipientDelivery
         ? input.onRecipientPublishSettled
         : undefined,
-      ...(input.onRecipientAccepted &&
-      (input.rumorKind === 14 || input.rumorKind === 15)
+      ...(input.onRecipientAccepted
         ? {
             onAcceptedCheckpointFailure: () => {
               checkpointFailure = true

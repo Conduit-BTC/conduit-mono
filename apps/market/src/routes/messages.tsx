@@ -36,6 +36,7 @@ import {
   appendConduitClientTag,
   createParticipantMessageRumor,
   sendAccountInboxRumor,
+  createAcceptedInboxSendCheckpoint,
   cacheOrderMessageRumor,
   clearProtectedReadAuthenticationSuppression,
   createValidatedOrderRouteScope,
@@ -555,6 +556,10 @@ function MessagesWorkspace() {
       // Reply inside an existing validated order thread: order identity and
       // counterparty match the parsed conversation, so the compatibility lane
       // may carry it when the merchant has no usable declaration.
+      const checkpoint = createAcceptedInboxSendCheckpoint(async () => {
+        if (!accountOwner) throw new Error("Local order history unavailable")
+        await cacheOrderMessageRumor(rumor, accountOwner)
+      })
       const sent = await publishPrivateMessage({
         rumor,
         senderPubkey: input.accountPubkey,
@@ -576,32 +581,13 @@ function MessagesWorkspace() {
           recipientPubkey: input.merchantPubkey,
         }),
         telemetryApp: "market",
+        onRecipientAccepted: checkpoint.onRecipientAccepted,
       })
       if (sent.selfCopyError) {
         console.warn("Buyer message self-copy publish failed")
       }
 
-      let localHistory: AccountInboxSendResult["localHistory"] = "saved"
-      try {
-        if (!accountOwner) throw new Error("Local order history unavailable")
-        await cacheOrderMessageRumor(rumor, accountOwner)
-      } catch {
-        console.warn("Failed to cache buyer message")
-        localHistory = "unavailable"
-      }
-      return {
-        recipient: "accepted",
-        selfCopy:
-          sent.selfDeliveryStatus === "partial_success"
-            ? "partial"
-            : sent.selfDeliveryStatus === "full_success" && !sent.selfCopyError
-              ? "complete"
-              : "pending",
-        localHistory,
-        ...(sent.checkpointFailure || localHistory === "unavailable"
-          ? { checkpointFailure: true as const }
-          : {}),
-      } satisfies AccountInboxSendResult
+      return await checkpoint.complete(sent)
     },
     onSuccess: async (_, input) => {
       const current = orderReplyContextRef.current

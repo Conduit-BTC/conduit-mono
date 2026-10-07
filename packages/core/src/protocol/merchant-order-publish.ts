@@ -1,7 +1,12 @@
 import { getEventHash } from "nostr-tools"
 import { type PrivateMessageEvent } from "./messaging"
 import { cacheParsedOrderMessage } from "./commerce"
+import { getCommerceInbox, type CommerceInbox } from "./commerce-inbox"
 import { EVENT_KINDS } from "./kinds"
+import {
+  createAcceptedInboxSendCheckpoint,
+  type AccountInboxSendResult,
+} from "./inbox-send"
 import { getAccountSigner } from "./session-signer"
 import { appendConduitClientTag } from "./nip89"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
@@ -64,12 +69,11 @@ export function buildMerchantOrderRumorTags(
 
 export async function cachePublishedMerchantOrderMessage(
   message: ParsedOrderMessage,
-  cacheMessage: (
-    message: ParsedOrderMessage
-  ) => Promise<void> = cacheParsedOrderMessage
+  owner: CommerceInbox,
+  cacheMessage: typeof cacheParsedOrderMessage = cacheParsedOrderMessage
 ): Promise<boolean> {
   try {
-    await cacheMessage(message)
+    await cacheMessage(message, owner)
     return true
   } catch {
     console.warn("Published merchant order message could not be cached locally")
@@ -90,7 +94,7 @@ function prepareMerchantRumor(
     })
 }
 
-export interface PublishMerchantOrderMessageResult {
+export interface PublishMerchantOrderMessageResult extends AccountInboxSendResult {
   /** Lane used for the critical recipient leg (route-lane provenance). */
   deliveryRoute: Exclude<PrivateMessageDeliveryRoute, "blocked">
 }
@@ -122,6 +126,12 @@ export async function publishMerchantOrderMessage(
 ): Promise<PublishMerchantOrderMessageResult> {
   const signer = getAccountSigner()
   if (!signer) throw new Error("Signer not connected")
+  let accountOwner: CommerceInbox | null = null
+  try {
+    accountOwner = getCommerceInbox(input.merchantPubkey)
+  } catch {
+    // Recipient delivery remains available; local history is reported after ACK.
+  }
 
   const rumor = {
     id: "",
@@ -141,9 +151,15 @@ export async function publishMerchantOrderMessage(
     createdAt: Date.now(),
   })
   prepareMerchantRumor(rumor, input.merchantPubkey)
+  const parsed = parseOrderMessageRumorEvent(rumor)
+  const checkpoint = createAcceptedInboxSendCheckpoint(async () => {
+    if (!accountOwner) throw new Error("Local order history unavailable")
+    if (!(await cachePublishedMerchantOrderMessage(parsed, accountOwner)))
+      throw new Error("Local order history unavailable")
+  })
 
   const target = getMerchantOrderPublishTarget(input, rumor)
-  const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
+  const sent = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,
     accountPubkey: input.merchantPubkey,
@@ -154,16 +170,18 @@ export async function publishMerchantOrderMessage(
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: target.selfCopy,
     signerInteraction: input.signerInteraction ?? "background_external",
+    onRecipientAccepted: checkpoint.onRecipientAccepted,
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
     validatedOrderScope: target.validatedOrderScope,
     telemetryApp: "merchant",
   })
-  if (selfCopyError) {
-    console.warn("Merchant order self-copy publish failed", selfCopyError)
+  if (sent.selfCopyError) {
+    console.warn("Merchant order self-copy publish failed")
   }
 
-  const parsed = parseOrderMessageRumorEvent(rumor)
-  await cachePublishedMerchantOrderMessage(parsed)
-  return { deliveryRoute }
+  return {
+    ...(await checkpoint.complete(sent, target.selfCopy)),
+    deliveryRoute: sent.deliveryRoute,
+  }
 }

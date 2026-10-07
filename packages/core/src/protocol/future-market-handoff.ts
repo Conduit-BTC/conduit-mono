@@ -169,6 +169,12 @@ function assertFutureMarketReadCurrent(shouldContinue?: () => boolean): void {
   }
 }
 
+function eventMarketPrivateReadIncomplete(
+  read: Awaited<ReturnType<typeof getEventMarketPrivateMessageList>>
+): boolean {
+  return read.inbox?.coverage !== "complete" || read.decryptFailures.length > 0
+}
+
 export async function readFutureMarketReadyReceipts(input: {
   organizerPubkey: string
   marketCoordinate?: string
@@ -197,7 +203,7 @@ export async function readFutureMarketReadyReceipts(input: {
   return {
     claims,
     stale: read.stale,
-    coverageDegraded: read.inbox?.coverage !== "complete",
+    coverageDegraded: eventMarketPrivateReadIncomplete(read),
     inbox: read.inbox,
   }
 }
@@ -274,7 +280,7 @@ export async function readFutureMarketHandoffAcks(input: {
       acks.length > 1 ||
       (revoked && acks.length > 0),
     stale,
-    coverageDegraded: read.inbox?.coverage !== "complete",
+    coverageDegraded: eventMarketPrivateReadIncomplete(read),
   }
 }
 
@@ -1360,7 +1366,7 @@ export async function readFutureMarketMerchantClaim(input: {
   return {
     claim,
     stale: read.stale,
-    coverageDegraded: read.inbox?.coverage !== "complete",
+    coverageDegraded: eventMarketPrivateReadIncomplete(read),
   }
 }
 

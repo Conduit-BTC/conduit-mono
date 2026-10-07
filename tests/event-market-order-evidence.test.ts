@@ -8,7 +8,9 @@ import {
   removeTestAccountSigner as removeSigner,
 } from "./helpers/plain-signer"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
+import * as messaging from "../packages/core/src/protocol/messaging"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -1127,6 +1129,66 @@ describe("future Event Market private physical handoff", () => {
     ).rejects.toThrow("already exists")
     expect(signatures).toBe(0)
   })
+
+  it.each([
+    "permission_declined",
+    "provider_unavailable",
+    "decrypt_failed",
+  ] as const)(
+    "stops fresh-device issuance on retained %s self-copy and recovers the original claim",
+    async (reason) => {
+      const receipt = buildFutureMarketReadyReceipt({
+        order: handoffOrder,
+        signedOrderEvidence: evidence,
+        paymentAuthenticated: true,
+        releaseConfirmed: true,
+        issuedAt: 250,
+      })
+      const ready = buildFutureMarketPrivateRumor(receipt)
+      const owner = installPrivateInboxTestRead({
+        principalSecret: merchantSecret,
+        authorSecrets: [merchantSecret],
+        rumors: [ready],
+      })
+      const decrypt = owner.signer.decryptNip44!
+      owner.signer.decryptNip44 = async () => {
+        throw new NostrSignerError(reason)
+      }
+      let persisted = 0
+      const publisher = spyOn(
+        messaging,
+        "publishPrivateMessage"
+      ).mockResolvedValue({} as never)
+      const issue = () =>
+        publishFutureMarketReadyReceipt({
+          order: handoffOrder,
+          signedOrderEvidence: evidence,
+          paymentAuthenticated: true,
+          releaseConfirmed: true,
+          signer: owner.signer,
+          persistExactWraps: () => {
+            persisted += 1
+          },
+        })
+      try {
+        await expect(issue()).rejects.toThrow("recovery is incomplete")
+        expect(publisher).not.toHaveBeenCalled()
+        expect(persisted).toBe(0)
+        expect(
+          (await owner.store.wrappers()).some((row) => row.state !== "opened")
+        ).toBe(true)
+        owner.signer.decryptNip44 = decrypt
+        await owner.retryDecode()
+        __resetFutureMarketHandoffTestState()
+        await expect(issue()).rejects.toThrow("already exists")
+        expect(publisher).not.toHaveBeenCalled()
+        expect(persisted).toBe(0)
+      } finally {
+        owner.signer.decryptNip44 = decrypt
+        publisher.mockRestore()
+      }
+    }
+  )
 
   it("payment retry verifies retained physical terms without requiring current roster admission", () => {
     const original = JSON.stringify(handoffOrder)
