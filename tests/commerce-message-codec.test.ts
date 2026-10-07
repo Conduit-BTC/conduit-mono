@@ -473,6 +473,35 @@ test("kind-15 hex metadata retains fixed lengths and accepts uppercase", async (
   }
 })
 
+test("kind-15 terminal line separators retain generic metadata errors", async () => {
+  const { ciphertext, envelope } = await encryptPrivateFileBytes(
+    new TextEncoder().encode("synthetic line separator attachment")
+  )
+  const expectedError = /^Invalid private file key, nonce, or hash$/
+  for (const field of [
+    "key",
+    "nonce",
+    "encryptedSha256",
+    "originalSha256",
+  ] as const) {
+    for (const separator of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) {
+      const value = envelope[field].slice(0, -separator.length) + separator
+      const invalid = { ...envelope, [field]: value }
+      expect(() =>
+        buildPrivateFileRumor({
+          recipientPubkeys: ["merchant"],
+          url: "https://files.conduit.market/file",
+          mimeType: "text/plain",
+          envelope: invalid,
+        })
+      ).toThrow(expectedError)
+      await expect(
+        decryptPrivateFileBytes(ciphertext, invalid)
+      ).rejects.toThrow(expectedError)
+    }
+  }
+})
+
 describe("two-party reply and attachment boundaries", () => {
   const principal = "a".repeat(64)
   const peer = "b".repeat(64)
