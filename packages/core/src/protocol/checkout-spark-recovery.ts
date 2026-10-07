@@ -1,8 +1,9 @@
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import { getEventHash } from "nostr-tools"
 import { type PrivateMessageEvent } from "./messaging"
 import type { NostrKeySigner } from "./nostr-event-signer"
-import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
+import { retryPrivateMessageWraps } from "./private-message-delivery"
 
 import {
   createCheckoutSparkReconciliation,
@@ -18,14 +19,9 @@ import {
   type PublishPrivateMessageResult,
 } from "./messaging"
 import { appendConduitClientTag } from "./nip89"
-import {
-  MAX_DECLARED_INBOX_WRITE_RELAYS,
-  resolveInboxDeclaration,
-  type ResolveInboxDeclarationOptions,
-} from "./private-message-routing"
+import { type ResolveInboxDeclarationOptions } from "./private-message-routing"
 import {
   publishWithPlanner,
-  RelayPublishDiagnosticsError,
   type PublishWithPlannerResult,
 } from "./relay-publish"
 import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
@@ -670,38 +666,6 @@ export async function publishCheckoutSparkRecovery(input: {
   }
 }
 
-async function currentRecipientRelays(input: {
-  merchantPubkey: string
-  recipientInboxRelays?: readonly string[]
-  inboxDeclarationOptions?: ResolveInboxDeclarationOptions
-}): Promise<string[]> {
-  if (input.recipientInboxRelays) {
-    return normalizeSecureOrIsolatedE2eRelayUrls(
-      input.recipientInboxRelays
-    ).slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
-  }
-  const declaration = await resolveInboxDeclaration(
-    input.merchantPubkey,
-    input.inboxDeclarationOptions
-  )
-  if (declaration.state !== "declared") {
-    throw new Error("Merchant private-message inbox is not currently usable.")
-  }
-  return normalizeSecureOrIsolatedE2eRelayUrls(declaration.relayUrls).slice(
-    0,
-    MAX_DECLARED_INBOX_WRITE_RELAYS
-  )
-}
-
-function recoverPartialPublish(
-  error: unknown
-): PublishWithPlannerResult | null {
-  return error instanceof RelayPublishDiagnosticsError &&
-    error.diagnostics.successfulRelayUrls.length > 0
-    ? error.diagnostics
-    : null
-}
-
 /** Retry the same signed ciphertext; never re-encrypt or re-sign recovery data. */
 export async function retryCheckoutSparkRecoveryDelivery(input: {
   record: CheckoutSparkRecoveryDeliveryRecord
@@ -716,48 +680,29 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
     input.deliveryProgress,
     input.record
   )
-  const relayUrls = await currentRecipientRelays({
-    merchantPubkey: input.record.merchantPubkey,
+  const { recipientDelivery } = await retryPrivateMessageWraps({
+    rumorId: input.record.rumorId,
+    senderPubkey: input.record.senderPubkey,
+    recipientPubkey: input.record.merchantPubkey,
+    wrappedToRecipient: input.record.signedRecipientWrap,
     recipientInboxRelays: input.recipientInboxRelays,
     inboxDeclarationOptions: input.inboxDeclarationOptions,
+    shouldContinue:
+      input.shouldContinue ?? input.inboxDeclarationOptions?.shouldContinue,
+    publishFn: input.publishFn,
+    acknowledged: (url) =>
+      deliveryProgress.acknowledgedRelayRefs.includes(recoveryRelayRef(url)),
   })
-  if (relayUrls.length === 0) {
-    throw new Error("Merchant private-message inbox is not currently usable.")
-  }
-  const acknowledged = new Set(deliveryProgress.acknowledgedRelayRefs)
-  const pendingRelayUrls = relayUrls.filter(
-    (relayUrl) => !acknowledged.has(recoveryRelayRef(relayUrl))
-  )
-  let recipientDelivery: PublishWithPlannerResult | null = null
-  if (pendingRelayUrls.length > 0) {
-    try {
-      recipientDelivery = await (input.publishFn ?? publishWithPlanner)(
-        input.record.signedRecipientWrap,
-        {
-          intent: "recipient_event",
-          authorPubkey: input.record.senderPubkey,
-          recipientPubkeys: [input.record.merchantPubkey],
-          exclusiveRelayUrls: pendingRelayUrls,
-          deliveryMode: "critical",
-          shouldContinue:
-            input.shouldContinue ??
-            input.inboxDeclarationOptions?.shouldContinue,
-        }
-      )
-    } catch (error) {
-      const partial = recoverPartialPublish(error)
-      if (!partial) throw error
-      recipientDelivery = partial
-    }
+  if (recipientDelivery)
     deliveryProgress = {
       ...deliveryProgress,
       acknowledgedRelayRefs: mergeAcknowledgedRelayRefs({
         existing: deliveryProgress.acknowledgedRelayRefs,
-        attemptedRelayUrls: pendingRelayUrls,
+        attemptedRelayUrls: recipientDelivery.attemptedRelayUrls,
         successfulRelayUrls: recipientDelivery.successfulRelayUrls,
       }),
     }
-  }
+
   return {
     recipientDelivery,
     deliveryProgress,

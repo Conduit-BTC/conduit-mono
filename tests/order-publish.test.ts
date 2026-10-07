@@ -27,6 +27,7 @@ import {
   publishPrivateMessage,
   unwrapGiftWrap,
   type OrderLifecycle,
+  type PrivateMessageRumor,
   type OrderRelayDeliveryRepository,
   type StagedOrderLifecycleInput,
 } from "@conduit/core"
@@ -1239,16 +1240,26 @@ describe("buyer order publishing", () => {
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     }
 
+    const merchant = "d".repeat(64)
+    const guestRumor = guestOrderRumor() as PrivateMessageRumor
+    guestRumor.tags = guestRumor.tags.map((tag) =>
+      tag[0] === "p" ? ["p", merchant] : tag
+    )
+    guestRumor.content = JSON.stringify({
+      ...JSON.parse(guestRumor.content),
+      merchantPubkey: merchant,
+    })
+    guestRumor.id = getEventHash(guestRumor)
     const result = await publishBuyerOrderMessage(
-      guestOrderRumor(),
-      "merchant-pubkey",
+      guestRumor,
+      merchant,
       {
         kind: "guest_ephemeral",
         pubkey:
           "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         signer: guestSigner as never,
         orderId: "guest-order",
-        merchantPubkey: "merchant-pubkey",
+        merchantPubkey: merchant,
       },
       {
         publishPrivateMessageFn: async (input) =>
@@ -1279,7 +1290,7 @@ describe("buyer order publishing", () => {
       EVENT_KINDS.ORDER,
       EVENT_KINDS.DIRECT_MESSAGE,
     ])
-    expect(wrappedRecipients).toEqual(["merchant-pubkey", "merchant-pubkey"])
+    expect(wrappedRecipients).toEqual([merchant, merchant])
     expect(guestInboxChecks).toBe(0)
     expect(result.deliveryRoute).toBe("declared_inbox")
     expect(result.buyerSelfCopyError).toBeNull()

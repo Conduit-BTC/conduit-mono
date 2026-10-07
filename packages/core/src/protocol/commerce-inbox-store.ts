@@ -1,3 +1,4 @@
+import { parseCachedDirectMessage } from "./cached-direct-message"
 import type { CheckoutRecoveryDescriptor } from "./checkout-spark-recovery"
 import {
   db,
@@ -660,14 +661,7 @@ export class CommerceInboxStore {
         if ([4, 14].includes(row.kind) && !machine)
           projection = {
             kind: "direct",
-            message: {
-              id: row.id,
-              senderPubkey: row.senderPubkey,
-              recipientPubkey: row.recipientPubkey,
-              createdAt: row.createdAt,
-              content,
-              transport: row.kind === 4 ? "nip04" : "nip17",
-            },
+            message: parseCachedDirectMessage(row),
           }
       } else {
         const row = old.row as CachedOrderMessage

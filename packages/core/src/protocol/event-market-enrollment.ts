@@ -1,20 +1,21 @@
-import type { NostrKeySigner } from "./nostr-event-signer"
-import { getAccountSigner } from "./session-signer"
 import { z } from "zod"
 import {
-  getDirectMessageConversationList,
   cacheParsedDirectMessage,
+  getDirectMessageConversationList,
 } from "./commerce"
 import { decodeEventMarketReference } from "./event-market"
 import { resolveEventMarketOrganizerInbox } from "./event-market-handoff"
 import {
   buildDirectMessageRumor,
-  publishPrivateMessage,
   parseDirectMessageRumor,
+  publishPrivateMessage,
   unwrapGiftWrap,
   type ParsedDirectMessage,
 } from "./messaging"
+import type { NostrKeySigner } from "./nostr-event-signer"
+import { retryPrivateMessageWraps } from "./private-message-delivery"
 import { publishWithPlanner } from "./relay-publish"
+import { getAccountSigner } from "./session-signer"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -285,6 +286,7 @@ export async function publishEventMarketEnrollment(
     signer: input.signer,
     rumorKind: 14,
     selfCopy: true,
+    requireSelfWrap: true,
     signerInteraction: "external",
     shouldContinue: input.shouldContinue,
     onWrapped: (prepared) => {
@@ -362,32 +364,34 @@ export async function retryEventMarketEnrollmentDelivery(
     throw new Error(
       "Saved participation does not match its authenticated recovery copy."
     )
-  for (const [owner, wrap] of [
-    [recipient, record.signedRecipientWrap],
-    [sender, record.signedSelfWrap],
-  ] as const) {
-    const inbox = await dependencies.inbox(owner, {
-      requestingAccountPubkey: sender,
-      authenticatedPubkey: sender,
-      shouldContinue: input.shouldContinue,
-    })
-    if (inbox.state !== "ready")
-      throw new Error(
-        "Set up a private-message inbox in Network settings, then retry saved participation."
-      )
-    const result = await dependencies.publish(wrap, {
-      intent: "recipient_event",
-      authorPubkey: sender,
-      accountPubkey: sender,
-      authenticatedPubkey: sender,
-      recipientPubkeys: [owner],
-      exclusiveRelayUrls: inbox.relayUrls,
-      deliveryMode: "critical",
-      shouldContinue: input.shouldContinue,
-    })
-    if (!result.successfulRelayUrls.length)
-      throw new Error("Participation still needs a relay acknowledgment.")
-  }
+  const result = await retryPrivateMessageWraps({
+    rumorId: record.rumorId,
+    senderPubkey: sender,
+    recipientPubkey: recipient,
+    wrappedToRecipient: record.signedRecipientWrap,
+    wrappedToSelf: record.signedSelfWrap,
+    accountPubkey: sender,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    publishFn: dependencies.publish,
+    resolveInboxRelays: async (owner) => {
+      const inbox = await dependencies.inbox(owner, {
+        requestingAccountPubkey: sender,
+        authenticatedPubkey: sender,
+        shouldContinue: input.shouldContinue,
+      })
+      if (inbox.state !== "ready")
+        throw new Error(
+          "Set up a private-message inbox in Network settings, then retry saved participation."
+        )
+      return inbox.relayUrls
+    },
+  })
+  if (
+    !result.recipientDelivery?.successfulRelayUrls.length ||
+    !result.selfDelivery?.successfulRelayUrls.length
+  )
+    throw new Error("Participation still needs a relay acknowledgment.")
   await dependencies.cache(
     parseDirectMessageRumor(
       recovered.status === "ok" ? recovered.rumor : rumorFor(record.payload)

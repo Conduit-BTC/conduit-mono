@@ -82,15 +82,39 @@ consumer before generic rendering and are excluded from general search.
 
 Private attachments reject files larger than 8 MiB before allocating file bytes.
 
+`private-message-delivery.ts` owns outbound private delivery: recipient validation,
+declared/compatibility routing, signer/session checks, durable staging, publication,
+ACK completion, optional self-copy and exact-wrap replay. `messaging.ts` preserves
+the public interface; `inbox-send.ts` prepares conversation payloads for that same
+owner. Order, enrollment, attachment and recovery/handoff callers supply domain
+payloads and persistence checkpoints. They do not run their own transport loops.
+`private-message-primitives.ts` holds envelope/rumor construction and parsing;
+it does not publish.
+
 Signed bytes and the authorized relay plan are staged before delivery I/O, after
 caller-owned pre-publish persistence callbacks succeed. A rejected persistence
-callback must leave no generic delivery job that can bypass that boundary. Retry
+callback leaves no generic delivery job that can bypass that boundary. Retry
 replays those bytes against saved targets and stronger current refusal evidence.
-Concurrent acknowledgements merge atomically. A relay ACK describes delivery;
-it does not prove the recipient read the message or paid an order. Initial-order
-first-ACK completion, guest merchant-only scope and existing routing-lane rollout
-controls remain owned by their established coordinators. Initial-order self-copy
-routing, signing and staging run only after the recipient ACK is durably committed.
+Legacy domain records that predate a saved relay plan use their current declared
+inbox; account-owned replay retains that first plan before publication.
+Concurrent acknowledgements merge atomically and claims cover an entire attempt.
+A relay ACK describes delivery; it does not prove reading, payment or fulfillment.
+Order lifecycle transactions retain their generations, leases and first-ACK
+acceptance checkpoint. Guest retries remain explicitly authorized and bounded.
+
+Recipient delivery precedes optional self-copy route resolution, signing, staging
+and publication for orders, ordinary replies and attachments. Self-copy failures
+cannot revoke recipient success. Initial orders return after their first ACK is
+durable; their caller starts the same shared self-copy operation afterward.
+Enrollment and handoff callers explicitly require a self-wrap as authenticated
+local recovery evidence before their persistence checkpoint; optional relay
+publication of that evidence still follows recipient delivery. Their existing
+archive/completion rules remain domain-owned.
+
+Legacy cache migration and live cache adapters use the same direct-message
+conversion, preserving companion identity and read markers. Search omits a date
+that JavaScript cannot format while retaining the authenticated record. Attachment
+downloads use the shared public-HTTPS admission rule before invoking network I/O.
 
 ## Bounded client-seal metadata compatibility
 

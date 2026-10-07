@@ -1,3 +1,4 @@
+import { privateMessageCounterparty } from "./private-message-delivery"
 import { createUploadAuth } from "nostr-tools/nipb7"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
 import {
@@ -28,11 +29,7 @@ export async function sendPrivateAttachment(
 ): Promise<void> {
   if (file.size === 0 || file.size > MAX_PRIVATE_FILE_BYTES)
     throw new Error("Private file is outside the supported size range")
-  if (
-    new Set(recipients.filter((recipient) => recipient !== principal)).size !==
-    1
-  )
-    throw new Error("Attachments require one explicit counterparty")
+  const recipient = privateMessageCounterparty(principal, recipients)
   const authorization = getProtectedReadAuthorization(principal)
   const signer = getAccountSigner()
   if (!authorization || !signer || signer.pubkey !== principal)
@@ -141,11 +138,11 @@ export async function sendPrivateAttachment(
   )
     throw new Error("Upload descriptor does not match encrypted attachment")
   const wire = buildPrivateFileRumor({
-    recipientPubkeys: recipients,
+    recipientPubkeys: [recipient],
     url,
     mimeType: file.type || "application/octet-stream",
     envelope: encrypted.envelope,
     replyTo,
   })
-  await sendAccountInboxRumor({ principal, recipients, ...wire })
+  await sendAccountInboxRumor({ principal, recipients: [recipient], ...wire })
 }

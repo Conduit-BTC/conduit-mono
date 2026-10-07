@@ -1,3 +1,4 @@
+import { normalizePublicHttpsUrl } from "../network-target-safety"
 /** NIP-17 kind-15 AES-GCM byte handling. Callers own upload and explicit download UI. */
 export const MAX_PRIVATE_FILE_BYTES = 8 * 1024 * 1024
 
@@ -173,8 +174,8 @@ export async function downloadAndDecryptPrivateFile(
   envelope: PrivateFileReadEnvelope,
   fetchFile: (url: string) => Promise<Response>
 ): Promise<Uint8Array> {
-  if (!/^https:\/\//i.test(url))
-    throw new Error("Private file URL must use HTTPS")
+  const publicUrl = normalizePublicHttpsUrl(url)
+  if (!publicUrl) throw new Error("Private file URL must use public HTTPS")
   if (
     envelope.encryptedSize !== undefined &&
     (!Number.isSafeInteger(envelope.encryptedSize) ||
@@ -183,7 +184,7 @@ export async function downloadAndDecryptPrivateFile(
   ) {
     throw new Error("Unsupported private file size")
   }
-  const response = await fetchFile(url)
+  const response = await fetchFile(publicUrl)
   if (!response.ok || !response.body)
     throw new Error("Private file download failed")
   const reader = response.body.getReader()

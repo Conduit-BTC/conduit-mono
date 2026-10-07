@@ -186,6 +186,22 @@ describe("current Open Markets private commerce grammar", () => {
     expect(search).not.toContain("private-confirmation-token")
   })
 
+  test("extreme safe timestamps remain searchable without date conversion failures", () => {
+    const decoded = decodeCommerceMessageRumor({
+      ...rumor({
+        kind: 16,
+        tags: [
+          ["p", "merchant"],
+          ["type", "future-commerce"],
+          ["order", "extreme-time-order"],
+        ],
+      }),
+      created_at: Number.MAX_SAFE_INTEGER,
+    })
+    expect(decoded.category).toBe("commerce")
+    expect(commerceMessageSearchText(decoded)).toContain("extreme-time-order")
+  })
+
   test("NIP-18 generic repost collision is unrelated", () => {
     const decoded = decodeCommerceMessageRumor(
       rumor({
@@ -268,7 +284,7 @@ test("kind-15 AES-GCM bytes verify both hashes and require explicit download", a
   const { ciphertext, envelope } = await encryptPrivateFileBytes(plaintext)
   const fileRumor = buildPrivateFileRumor({
     recipientPubkeys: ["merchant"],
-    url: "https://example.invalid/file",
+    url: "https://files.conduit.market/file",
     mimeType: "text/plain",
     envelope,
     replyTo: "parent",
@@ -295,22 +311,36 @@ test("kind-15 AES-GCM bytes verify both hashes and require explicit download", a
   ).rejects.toThrow()
   let requests = 0
   const result = await downloadAndDecryptPrivateFile(
-    "https://example.invalid/file",
+    "https://files.conduit.market/file",
     envelope,
     async () => {
       requests += 1
-      return new Response(ciphertext)
+      return new Response(new Uint8Array(ciphertext))
     }
   )
   expect(requests).toBe(1)
   expect(result).toEqual(plaintext)
+  for (const unsafeUrl of [
+    "http://files.conduit.market/file",
+    "https://127.0.0.1/file",
+    "https://localhost/file",
+    "https://169.254.169.254/latest/meta-data",
+  ]) {
+    await expect(
+      downloadAndDecryptPrivateFile(unsafeUrl, envelope, async () => {
+        requests += 1
+        return new Response(new Uint8Array(ciphertext))
+      })
+    ).rejects.toThrow("public HTTPS")
+  }
+  expect(requests).toBe(1)
   expect(
     downloadAndDecryptPrivateFile(
-      "https://example.invalid/file",
+      "https://files.conduit.market/file",
       { ...envelope, encryptedSize: ciphertext.byteLength - 1 },
       async () => {
         requests += 1
-        return new Response(ciphertext)
+        return new Response(new Uint8Array(ciphertext))
       }
     )
   ).rejects.toThrow()
@@ -330,7 +360,7 @@ test("kind-15 reads optional size and original hash without weakening ciphertext
   expect(await decryptPrivateFileBytes(ciphertext, minimal)).toEqual(plaintext)
   expect(
     await downloadAndDecryptPrivateFile(
-      "https://example.invalid/file",
+      "https://files.conduit.market/file",
       minimal,
       async () => new Response(ciphertext)
     )
@@ -342,7 +372,7 @@ test("kind-15 reads optional size and original hash without weakening ciphertext
   )
   await expect(
     downloadAndDecryptPrivateFile(
-      "https://example.invalid/file",
+      "https://files.conduit.market/file",
       minimal,
       async () => new Response(new Uint8Array(8 * 1024 * 1024 + 17))
     )

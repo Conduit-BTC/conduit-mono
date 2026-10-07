@@ -5,8 +5,10 @@ async function source(path: string): Promise<string> {
 }
 
 describe("private-message declaration authority propagation", () => {
-  it("carries live authority through both send-time declaration reads", async () => {
-    const messaging = await source("packages/core/src/protocol/messaging.ts")
+  it("carries live authority through send and exact-replay declaration reads", async () => {
+    const messaging = await source(
+      "packages/core/src/protocol/private-message-delivery.ts"
+    )
 
     expect(messaging).toContain(
       'shouldContinue?: PublicRelayReadOptions["shouldContinue"]'
@@ -15,7 +17,7 @@ describe("private-message declaration authority propagation", () => {
       messaging.match(
         /input\.accountNetworkLocalStateRepository,\s*input\.shouldContinue/g
       )
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(messaging).toMatch(
       /return resolveInboxDeclaration\(pubkey, \{[\s\S]*?shouldContinue,\s*\}\)/
     )

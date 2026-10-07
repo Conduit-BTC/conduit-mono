@@ -44,19 +44,6 @@ const contracts = [
     ],
   },
   {
-    path: "packages/core/src/protocol/future-market-handoff.ts",
-    calls: [
-      {
-        intent: "recipient_event",
-        authorIdentity: "record.senderPubkey",
-        authenticatedIdentity: "input.authenticatedOwnerPubkey",
-        accountIdentity: "record.senderPubkey",
-        count: 2,
-      },
-    ],
-    guards: ["record\\.senderPubkey !== input\\.authenticatedOwnerPubkey"],
-  },
-  {
     path: "apps/merchant/src/lib/product-publishing.ts",
     calls: [
       {
@@ -137,10 +124,18 @@ describe("account network publish call contract", () => {
     expect(source).toMatch(
       /senderPubkey: sender\(payload\),\s+recipientPubkey: recipient\(payload\),\s+accountPubkey: sender\(payload\),\s+authenticatedPubkey: input\.authenticatedPubkey,/
     )
-    expect(
-      source.match(
-        /authenticatedPubkey: input\.authenticatedOwnerPubkey,\s+shouldContinue: input\.shouldContinue,/g
-      )
-    ).toHaveLength(2)
+    expect(source).toMatch(
+      /retryPrivateMessageWraps\(\{[\s\S]*?accountPubkey: record\.senderPubkey,[\s\S]*?authenticatedPubkey: input\.authenticatedOwnerPubkey,/
+    )
+    expect(source).toContain(
+      "record.senderPubkey !== input.authenticatedOwnerPubkey"
+    )
+    expect(source).not.toContain("publishWithPlanner(")
+    const delivery = await Bun.file(
+      "packages/core/src/protocol/private-message-delivery.ts"
+    ).text()
+    expect(delivery).toMatch(
+      /accountPubkey: input\.accountPubkey,\s+authenticatedPubkey: input\.authenticatedPubkey,/
+    )
   })
 })

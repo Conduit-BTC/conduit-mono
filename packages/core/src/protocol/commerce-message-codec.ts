@@ -470,6 +470,7 @@ export function commerceMessageSearchText(
   )
     ? undefined
     : message.text
+  const date = new Date((message.provenance.createdAt ?? NaN) * 1000)
   return [
     message.fields.orderId,
     message.fields.messageType,
@@ -483,9 +484,7 @@ export function commerceMessageSearchText(
       .map((tag) =>
         tag.slice(1, tag[0] === "payment" ? 3 : undefined).join(" ")
       ),
-    message.provenance.createdAt === undefined
-      ? undefined
-      : new Date(message.provenance.createdAt * 1000).toISOString(),
+    Number.isFinite(date.getTime()) ? date.toISOString() : undefined,
     text,
   ]
     .filter(Boolean)

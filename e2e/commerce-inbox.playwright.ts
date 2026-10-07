@@ -578,7 +578,7 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           }
         let persisted: {
           wrappedToRecipient: { id: string }
-          wrappedToSelf: { id: string }
+          wrappedToSelf: { id: string } | null
         } | null = null
         try {
           await publishPrivateMessage({
@@ -628,7 +628,7 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
         return {
           rejectedEvidence,
           successfulBoundary: !!persisted && jobs.length === 1 && !!resumed,
-          exactRetry: exactRetry && retried === 2,
+          exactRetry: exactRetry && retried === 1,
         }
       },
       {

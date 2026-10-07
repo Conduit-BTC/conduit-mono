@@ -24,6 +24,7 @@ import {
   readRetainedCommerceInbox,
 } from "../packages/core/src/protocol/commerce-inbox"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import type { ParsedOrderMessage } from "../packages/core/src/protocol/orders"
 import {
   getProtectedReadAuthorization,
   installProtectedReadSigner,
@@ -63,12 +64,17 @@ function setup() {
   const owner = new CommerceInbox(authorization, signer, store)
   owners.push(owner)
   const sender = generateSecretKey()
-  const wrapper = (index = 0, kind = 14, tags: string[][] = []) =>
+  const wrapper = (
+    index = 0,
+    kind = 14,
+    tags: string[][] = [],
+    createdAt = 1_700_000_000 + index
+  ) =>
     wrapEvent(
       {
         kind,
         pubkey: getPublicKey(sender),
-        created_at: 1_700_000_000 + index,
+        created_at: createdAt,
         tags: [["p", pubkey], ...tags],
         content: kind === 14 ? `private-synthetic-${index}` : '{"version":99}',
       },
@@ -224,6 +230,35 @@ describe("durable account-owned commerce inbox", () => {
     expect(await owner.search("synthetic-correlation")).toHaveLength(1)
     expect(result.diagnostics.states.unsupported).toBe(1)
     owner.stop()
+  })
+
+  it("searches and reloads authenticated commerce with an extreme safe timestamp", async () => {
+    const { owner, database, pubkey, signer, wrapper } = setup()
+    await owner.ingest(
+      wrapper(
+        0,
+        16,
+        [
+          ["type", "future-commerce"],
+          ["order", "extreme-time-order"],
+        ],
+        Number.MAX_SAFE_INTEGER
+      )
+    )
+    await owner.waitForDecode()
+    expect(await owner.search("extreme-time-order")).toHaveLength(1)
+    owner.stop()
+
+    const authorization = getProtectedReadAuthorization(pubkey)!
+    const reloaded = new CommerceInbox(
+      authorization,
+      signer,
+      new CommerceInboxStore(authorization, database)
+    )
+    owners.push(reloaded)
+    await reloaded.initialize()
+    expect(reloaded.getSnapshot().externalRecords).toHaveLength(1)
+    expect(await reloaded.search("extreme-time-order")).toHaveLength(1)
   })
 
   it("keeps expiry and authenticated wrapper provenance when associating external commerce", async () => {
@@ -470,6 +505,100 @@ describe("durable account-owned commerce inbox", () => {
     )
     await store.migrateLegacy()
     expect(await database.commerceInboxRecords.count()).toBe(2)
+    owner.stop()
+  })
+
+  it("migrates order companions with participant identity and suppresses only an exact order", async () => {
+    const { owner, database, pubkey, store } = setup()
+    const peer = getPublicKey(generateSecretKey())
+    const companions = [
+      {
+        id: "companion-matched",
+        orderRumorId: "matched-order",
+        read: 1 as const,
+      },
+      {
+        id: "companion-mismatched",
+        orderRumorId: "other-order",
+        read: 0 as const,
+      },
+      {
+        id: "companion-missing",
+        orderRumorId: "missing-order",
+        read: 1 as const,
+      },
+    ]
+    for (const companion of companions) {
+      await database.messages.put({
+        id: companion.id,
+        senderPubkey: peer,
+        recipientPubkey: pubkey,
+        content: "synthetic order companion",
+        orderCompanion: {
+          orderId: "order-1",
+          orderRumorId: companion.orderRumorId,
+        },
+        kind: 14,
+        createdAt: 12,
+        read: companion.read,
+      })
+    }
+    const orderPayload = {
+      id: "order-1",
+      buyerPubkey: peer,
+      merchantPubkey: pubkey,
+      items: [],
+      subtotal: 100,
+      currency: "SATS",
+      createdAt: 12,
+    }
+    await store.putProjection({
+      kind: "order",
+      message: {
+        id: "matched-order",
+        orderId: "order-1",
+        type: "order",
+        senderPubkey: peer,
+        recipientPubkey: pubkey,
+        createdAt: 12,
+        rawContent: JSON.stringify(orderPayload),
+        payload: orderPayload,
+      } as ParsedOrderMessage,
+    })
+
+    await owner.initialize()
+    const visible = owner.getSnapshot().directMessages
+    expect(visible.map((message) => message.id).sort()).toEqual([
+      "companion-mismatched",
+      "companion-missing",
+    ])
+    expect(visible[0]?.orderCompanionIdentity).toMatchObject({
+      orderId: "order-1",
+      orderRumorId: "other-order",
+      senderPubkey: peer,
+      recipientPubkey: pubkey,
+    })
+    const migrated = await store.projections()
+    const migratedDirect = new Map(
+      migrated
+        .filter(({ projection }) => projection.kind === "direct")
+        .map(({ row, projection }) => [
+          row.logicalId,
+          { read: row.read, projection },
+        ])
+    )
+    for (const companion of companions) {
+      const result = migratedDirect.get(companion.id)
+      expect(result?.read).toBe(companion.read)
+      if (result?.projection.kind === "direct") {
+        expect(result.projection.message.orderCompanionIdentity).toMatchObject({
+          orderId: "order-1",
+          orderRumorId: companion.orderRumorId,
+          senderPubkey: peer,
+          recipientPubkey: pubkey,
+        })
+      }
+    }
     owner.stop()
   })
 
