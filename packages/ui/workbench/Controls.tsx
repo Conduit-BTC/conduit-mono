@@ -149,7 +149,7 @@ export function Controls() {
                 <Input {...props} disabled placeholder="Unavailable" />
               )}
             </Field>
-            <div className="space-y-2">
+            <div className="space-y-1">
               <Label htmlFor="sample-category">Searchable category</Label>
               <Combobox
                 id="sample-category"

@@ -126,7 +126,7 @@ Applied changes:
 - Checkout uses aligned receipt-like totals without a nested pickup card.
 - The default shape vocabulary is 4/8/12 px, with round avatars and switches retained.
 - Product/merchant names wrap. Cart quantity controls stay visible and preserve the focused first action.
-- Shared labels are block-level and Field uses an explicit 8 px gap, preventing selectors and inputs from crowding the label above.
+- Shared labels are block-level and Field uses an explicit 4 px label-to-control gap, with 8 px before supporting text. Labels stay close to the controls they describe without touching them.
 - Readable foreground roles correct status/validation colors independently of existing signal fills.
   The previous Day price accent (2.29:1 on white) is replaced by the primary text role.
 - Buttons/selectors use 44 px phone and coarse-pointer hit areas; the switch has a 44 px target

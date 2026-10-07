@@ -206,7 +206,7 @@ Use token mapping rather than copying raw asset colors into components.
 
 ### Field Spacing
 
-- Labels render as blocks with a readable line height. `Field` uses a grid with an 8 px gap between label, control and supporting text.
+- Labels render as blocks with a readable line height. `Field` uses a 4 px label-to-control gap and 8 px before help or error text.
 - Do not rely on vertical margins on inline labels; they do not establish the intended label-to-control separation.
 
 ## Hardcoded Value Policy
