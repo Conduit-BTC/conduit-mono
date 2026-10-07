@@ -60,7 +60,7 @@ describe("Market shopper price display contract", () => {
       "const authoritativeCheckoutItems =",
       freshPricing
     )
-    const orderEvent = checkout.indexOf("new NDKEvent(ndk)", placeOrder)
+    const orderEvent = checkout.indexOf("const orderRumor =", placeOrder)
 
     expect(placeOrder).toBeGreaterThan(-1)
     expect(freshPricing).toBeGreaterThan(placeOrder)

@@ -63,12 +63,11 @@ describe("Event Market private-delivery authority propagation", () => {
       commerce.indexOf("async function fetchEventMarketPrivateMessagesStrict("),
       commerce.indexOf("async function resolvePrincipalInboxDeclaration(")
     )
-    expect(privateRead).toContain(
-      "resolveInboxSyncAuthorization(principalPubkey)"
-    )
+    expect(privateRead).toContain("getCommerceInbox(principalPubkey)")
     expect(
-      privateRead.match(/assertInboxSyncAuthority\(authorization\)/g)?.length
-    ).toBeGreaterThanOrEqual(3)
+      privateRead.match(/owner.authorization/g)?.length
+    ).toBeGreaterThanOrEqual(2)
+    expect(privateRead).toContain("owner.assertCurrent()")
     const recovery = orders.slice(
       orders.indexOf("const futureRecoveryQuery = useQuery({"),
       orders.indexOf("const futureRecoveredClaim =")
