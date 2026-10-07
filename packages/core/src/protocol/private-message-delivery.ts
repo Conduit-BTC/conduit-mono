@@ -497,6 +497,10 @@ export interface PublishPrivateMessageInput {
   onRecipientPublishSettled?: (
     delivery: PublishWithPlannerResult | null
   ) => void | Promise<void>
+  /** Best-effort local work after recipient acceptance and before optional self-copy. */
+  onRecipientAccepted?: (
+    delivery: PublishWithPlannerResult | ProgressivePublishSnapshot
+  ) => void | Promise<void>
   /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
@@ -646,6 +650,8 @@ export interface PublishPrivateMessageResult {
   deliveryStatus: "full_success" | "partial_success"
   deliveryRelaySources: DeliveryRouteSelection["relaySources"]
   deliveryPlanTruncated: boolean
+  /** A post-ACK local checkpoint failed; recipient acceptance still stands. */
+  checkpointFailure?: true
   /** Present for a real signed kind-16 recipient wrap; content-safe and local. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
   /**
@@ -1203,6 +1209,7 @@ export async function publishPrivateMessage(
       shouldContinue: input.shouldContinue,
       publishFn,
     }
+    let checkpointFailure = false
     const recipientDelivery = await stageAndPublishPrivateLeg({
       ...context,
       rumorId: stableRumor.id,
@@ -1215,6 +1222,14 @@ export async function publishPrivateMessage(
       onSettled: preparedRecipientDelivery
         ? input.onRecipientPublishSettled
         : undefined,
+      ...(input.onRecipientAccepted &&
+      (input.rumorKind === 14 || input.rumorKind === 15)
+        ? {
+            onAcceptedCheckpointFailure: () => {
+              checkpointFailure = true
+            },
+          }
+        : {}),
     })
     const deliveryStatus =
       (recipientDelivery.failedRelayUrls?.length ?? 0) ||
@@ -1222,6 +1237,17 @@ export async function publishPrivateMessage(
         recipientDelivery.pendingRelayUrls.length)
         ? ("partial_success" as const)
         : ("full_success" as const)
+    if (
+      input.onRecipientAccepted &&
+      recipientDelivery.successfulRelayUrls?.length
+    ) {
+      try {
+        await input.onRecipientAccepted?.(recipientDelivery)
+      } catch {
+        // Expose the local failure without turning acceptance into a resend.
+        checkpointFailure = true
+      }
+    }
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
       declarationClass: recipientDeclaration.state,
       deliveryRoute: recipientRoute.route,
@@ -1276,12 +1302,18 @@ export async function publishPrivateMessage(
             selfCopyError = summary.error
             if (deliveryStore) await deliveryStore.receive(wrappedToSelf)
           } catch (error) {
-            selfCopyError =
-              input.shouldContinue?.() === false
-                ? "Sender self-copy was skipped because the signer session changed after recipient delivery."
-                : error instanceof Error
-                  ? error.message
-                  : "Self-copy failed"
+            let sessionChanged = false
+            try {
+              sessionChanged = input.shouldContinue?.() === false
+            } catch {
+              // A revoked session guard may throw; recipient acceptance stands.
+              sessionChanged = true
+            }
+            selfCopyError = sessionChanged
+              ? "Sender self-copy was skipped because the signer session changed after recipient delivery."
+              : error instanceof Error
+                ? error.message
+                : "Self-copy failed"
           }
         }
         return {
@@ -1302,6 +1334,7 @@ export async function publishPrivateMessage(
       deliveryStatus,
       deliveryRelaySources: recipientRoute.relaySources,
       deliveryPlanTruncated: recipientRoute.truncated,
+      ...(checkpointFailure ? { checkpointFailure: true as const } : {}),
       orderRelayDelivery,
     }
     return progressiveRecipientDelivery
@@ -1574,6 +1607,7 @@ export async function publishPrivateDeliveryLeg(
     onSettled?: (
       delivery: PublishWithPlannerResult | null
     ) => void | Promise<void>
+    onAcceptedCheckpointFailure?: () => void
     requireAck?: boolean
   }
 ): Promise<PublishWithPlannerResult | ProgressivePublishSnapshot> {
@@ -1631,7 +1665,16 @@ export async function publishPrivateDeliveryLeg(
     }
     delivery = error.diagnostics
   }
-  await input.onSettled?.(delivery)
+  try {
+    await input.onSettled?.(delivery)
+  } catch (error) {
+    if (
+      !delivery.successfulRelayUrls.length ||
+      !input.onAcceptedCheckpointFailure
+    )
+      throw error
+    input.onAcceptedCheckpointFailure()
+  }
   if (
     input.requireAck !== false &&
     Array.isArray(delivery.successfulRelayUrls) &&
@@ -1989,8 +2032,10 @@ async function stageAndPublishPrivateLeg(
       )
     : null
   const claim = store && id ? await holdPrivateDeliveryClaim(store, id) : null
+  let acceptedDelivery:
+    Awaited<ReturnType<typeof publishPrivateDeliveryLeg>> | undefined
   try {
-    return await publishPrivateDeliveryLeg({
+    acceptedDelivery = await publishPrivateDeliveryLeg({
       ...input,
       shouldContinue: () => {
         if (input.shouldContinue?.() === false) return false
@@ -2005,7 +2050,17 @@ async function stageAndPublishPrivateLeg(
           })
       },
     })
+    return acceptedDelivery
   } finally {
-    await claim?.release()
+    try {
+      await claim?.release()
+    } catch (error) {
+      if (
+        !acceptedDelivery?.successfulRelayUrls.length ||
+        !input.onAcceptedCheckpointFailure
+      )
+        throw error
+      input.onAcceptedCheckpointFailure()
+    }
   }
 }

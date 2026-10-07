@@ -6,8 +6,15 @@ import {
   type CachedOrderMessage,
   type StoredMessage,
 } from "../db"
-import type { DecodedCommerceMessage } from "./commerce-message-codec"
+import {
+  decodeCommerceMessageRumor,
+  type DecodedCommerceMessage,
+} from "./commerce-message-codec"
 import type { ParsedDirectMessage } from "./messaging"
+import {
+  getOrderCompanionNotificationIdentity,
+  type PrivateMessageEvent,
+} from "./private-message-primitives"
 import {
   parseOrderMessageRumorEvent,
   type ParsedOrderMessage,
@@ -77,6 +84,38 @@ export type InboxProjection =
   | { kind: "checkout_recovery"; message: CheckoutRecoveryDescriptor }
   | { kind: "recovery"; message: ParsedEventMarketPrivateMessage }
   | { kind: "record"; record: DecodedCommerceMessage }
+
+/** The same direct/file projection is used for opened wraps and accepted sends. */
+export function projectDirectOrFileRumor(
+  rumor: PrivateMessageEvent,
+  principal: string,
+  decoded: DecodedCommerceMessage = decodeCommerceMessageRumor(rumor)
+): { kind: "direct"; message: ParsedDirectMessage } {
+  if (decoded.category !== "direct" && decoded.category !== "file")
+    throw new Error("Only direct and file rumors enter a conversation")
+  const participants = decoded.participants
+  const counterparties = participants.filter((pubkey) => pubkey !== principal)
+  const companion = getOrderCompanionNotificationIdentity(rumor)
+  return {
+    kind: "direct",
+    message: {
+      id: rumor.id,
+      senderPubkey: rumor.pubkey,
+      recipientPubkey:
+        rumor.pubkey === principal
+          ? (counterparties[0] ?? principal)
+          : principal,
+      createdAt: (rumor.created_at ?? 0) * 1000,
+      content: decoded.category === "direct" ? decoded.text : "Encrypted file",
+      transport: "nip17",
+      participants,
+      conversationId: `nip17:${participants.join(":")}`,
+      replyTo: decoded.replyTo,
+      file: decoded.category === "file" ? decoded : undefined,
+      ...(companion ? { orderCompanionIdentity: companion } : {}),
+    },
+  }
+}
 export interface InboxProjectionRow {
   id: string
   accountPubkey: string

@@ -18,7 +18,10 @@ import {
   getProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
-import { sendAccountInboxRumor } from "./inbox-send"
+import {
+  sendAccountInboxRumor,
+  type AccountInboxSendResult,
+} from "./inbox-send"
 
 /** The existing media preference owner selects the target. Only encrypted bytes leave the device. */
 export async function sendPrivateAttachment(
@@ -26,7 +29,7 @@ export async function sendPrivateAttachment(
   recipients: string[],
   file: File,
   replyTo?: string
-): Promise<void> {
+): Promise<AccountInboxSendResult> {
   if (file.size === 0 || file.size > MAX_PRIVATE_FILE_BYTES)
     throw new Error("Private file is outside the supported size range")
   const recipient = privateMessageCounterparty(principal, recipients)
@@ -144,5 +147,9 @@ export async function sendPrivateAttachment(
     envelope: encrypted.envelope,
     replyTo,
   })
-  await sendAccountInboxRumor({ principal, recipients: [recipient], ...wire })
+  return await sendAccountInboxRumor({
+    principal,
+    recipients: [recipient],
+    ...wire,
+  })
 }

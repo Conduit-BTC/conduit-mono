@@ -3,21 +3,25 @@ import { getEventHash } from "nostr-tools/pure"
 import { createWrap } from "nostr-tools/nip59"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { publishTestRelayEvents } from "./helpers/auth"
+import { interceptBlossom } from "./helpers/blossom"
 import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
   encryptRuntimeTestPayload,
   installRealTestSigner,
+  parseCanonicalRuntimePrivateRumor,
+  readAuthenticatedGiftWraps,
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
-test("buyer and seller open tagged messages, reply, recover external records and reload encrypted state @commerce", async ({
+test("buyer and seller retain conversations and files through self-copy failure, reload and reconnect @commerce", async ({
   browser,
 }, testInfo) => {
   const buyer = createRuntimeSignerIdentity()
   const seller = createRuntimeSignerIdentity()
+  const mediaServer = "https://cdn.conduit.market"
   const relayUrl = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
   const contextOptions = {
     viewport: testInfo.project.use.viewport,
@@ -43,6 +47,12 @@ test("buyer and seller open tagged messages, reply, recover external records and
           kind: 10002,
           created_at: createdAt,
           tags: [["r", relayUrl]],
+          content: "",
+        }),
+        signRuntimeTestEvent(identity, {
+          kind: 10063,
+          created_at: createdAt,
+          tags: [["server", mediaServer]],
           content: "",
         }),
       ])
@@ -104,6 +114,12 @@ test("buyer and seller open tagged messages, reply, recover external records and
     const sellerPage = await contexts[1]!.newPage()
     await installRealTestSigner(buyerPage, buyer, relayUrl)
     await installRealTestSigner(sellerPage, seller, relayUrl)
+    await interceptBlossom(buyerPage, mediaServer, {
+      resourcePathPrefix: "private-fixture",
+    })
+    await interceptBlossom(sellerPage, mediaServer, {
+      resourcePathPrefix: "private-fixture",
+    })
     const root = `/@fs${process.cwd()}/packages/core/src/protocol`
     const counts = async (page: typeof sellerPage) =>
       await page.evaluate(async (path) => {
@@ -278,6 +294,115 @@ test("buyer and seller open tagged messages, reply, recover external records and
     await expect(
       buyerPage.getByText("synthetic external reply", { exact: true }).last()
     ).toBeVisible()
+    await sellerPage
+      .getByRole("button")
+      .filter({
+        hasText: /synthetic (buyer response|external reply|seller reply)/,
+      })
+      .first()
+      .click()
+    for (const [page, sender, recipient] of [
+      [buyerPage, buyer, seller],
+      [sellerPage, seller, buyer],
+    ] as const) {
+      // Reject only optional sender self encryption after real recipient delivery.
+      await page.evaluate((principal) => {
+        const provider = (
+          window as unknown as {
+            nostr: {
+              nip44: {
+                encrypt: (peer: string, text: string) => Promise<string>
+              }
+            }
+          }
+        ).nostr.nip44
+        const encrypt = provider.encrypt.bind(provider)
+        provider.encrypt = async (peer, text) => {
+          if (peer === principal) throw new Error("Synthetic self-copy refusal")
+          return encrypt(peer, text)
+        }
+      }, sender.pubkey)
+      await page.getByLabel("Choose an encrypted attachment").setInputFiles({
+        name: "synthetic.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("synthetic encrypted attachment"),
+      })
+      await expect(
+        page.getByRole("status").filter({
+          hasText:
+            "Attachment sent and saved on this device. Sync to your other devices is incomplete.",
+        })
+      ).toBeVisible({ timeout: 30_000 })
+      const savedFile = async () =>
+        page.evaluate(
+          async ({ root, principal }) => {
+            const { getCommerceInbox } = await import(
+              `${root}/commerce-inbox.ts`
+            )
+            const { downloadAndDecryptPrivateFile } = await import(
+              `${root}/private-file-message.ts`
+            )
+            const owner = getCommerceInbox(principal)
+            const files = (await owner.store.projections()).flatMap(
+              ({ projection }: { projection: InboxProjection }) =>
+                projection.kind === "direct" &&
+                projection.message.senderPubkey === principal &&
+                projection.message.file
+                  ? [projection.message.file]
+                  : []
+            )
+            const file = files[0]
+            if (
+              !file ||
+              file.algorithm !== "aes-gcm" ||
+              !file.key ||
+              !file.nonce ||
+              !file.encryptedSha256
+            )
+              return { count: files.length, decrypts: false }
+            const bytes = await downloadAndDecryptPrivateFile(
+              file.url,
+              {
+                algorithm: file.algorithm,
+                key: file.key,
+                nonce: file.nonce,
+                encryptedSha256: file.encryptedSha256,
+                originalSha256: file.originalSha256,
+                encryptedSize: Number(file.size),
+              },
+              (url: string) => fetch(url)
+            )
+            return {
+              count: files.length,
+              decrypts:
+                new TextDecoder().decode(bytes) ===
+                "synthetic encrypted attachment",
+            }
+          },
+          { root, principal: sender.pubkey }
+        )
+      await expect.poll(savedFile).toEqual({ count: 1, decrypts: true })
+      await page.reload()
+      await expect(
+        page.getByLabel(
+          sender === buyer ? "Open account menu" : "Open merchant account menu"
+        )
+      ).toBeVisible()
+      await expect.poll(savedFile).toEqual({ count: 1, decrypts: true })
+      const wraps = await readAuthenticatedGiftWraps(recipient, relayUrl)
+      expect(
+        wraps.filter(
+          (wrap) =>
+            parseCanonicalRuntimePrivateRumor({
+              inboxOwner: recipient,
+              recipient,
+              sender,
+              rumorKind: 15,
+              wrap,
+            })?.kind === 15
+        ).length
+      ).toBe(1)
+    }
   } finally {
     try {
       await Promise.all(contexts.map((context) => context.close()))

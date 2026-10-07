@@ -7,10 +7,30 @@ import {
   privateMessageCounterparty,
 } from "./private-message-delivery"
 import {
+  CommerceInboxStore,
+  projectDirectOrFileRumor,
+} from "./commerce-inbox-store"
+import {
   getProtectedReadAuthorization,
   assertProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { getAccountSigner } from "./session-signer"
+
+export interface AccountInboxSendResult {
+  recipient: "accepted"
+  selfCopy: "complete" | "partial" | "pending"
+  localHistory: "saved" | "unavailable"
+  /** A local post-ACK checkpoint failed; never retry the semantic send. */
+  checkpointFailure?: true
+}
+
+interface AccountInboxSendDependencies {
+  getSigner: typeof getAccountSigner
+  send: typeof publishPrivateMessage
+  persistProjection?: (
+    projection: ReturnType<typeof projectDirectOrFileRumor>
+  ) => Promise<void>
+}
 
 /** Conversation payload adapter; delivery, staging and replay have one core owner. */
 export async function sendAccountInboxRumor(
@@ -22,8 +42,11 @@ export async function sendAccountInboxRumor(
     tags?: string[][]
     rumor?: PrivateMessageEvent
   },
-  dependencies = { getSigner: getAccountSigner, send: publishPrivateMessage }
-): Promise<void> {
+  dependencies: AccountInboxSendDependencies = {
+    getSigner: getAccountSigner,
+    send: publishPrivateMessage,
+  }
+): Promise<AccountInboxSendResult> {
   const signer = dependencies.getSigner()
   const authorization = getProtectedReadAuthorization(input.principal)
   if (!authorization || !signer || signer.pubkey !== input.principal)
@@ -48,7 +71,28 @@ export async function sendAccountInboxRumor(
   })
   if (input.rumor?.id && rumor.id !== input.rumor.id)
     throw new Error("Conversation rumor changed")
-  await dependencies.send({
+  const projection =
+    rumor.kind === 14 || rumor.kind === 15
+      ? projectDirectOrFileRumor(rumor, input.principal)
+      : null
+  let localHistory: AccountInboxSendResult["localHistory"] = "unavailable"
+  let persistAttempted = false
+  const persistAcceptedProjection = async () => {
+    persistAttempted = true
+    if (!projection) return
+    try {
+      assertProtectedReadAuthorization(authorization, input.principal)
+      if (dependencies.persistProjection)
+        await dependencies.persistProjection(projection)
+      else
+        await new CommerceInboxStore(authorization).putProjection(projection, 1)
+      assertProtectedReadAuthorization(authorization, input.principal)
+      localHistory = "saved"
+    } catch {
+      // Return an explicit unavailable result without undoing recipient acceptance.
+    }
+  }
+  const sent = await dependencies.send({
     rumor,
     senderPubkey: input.principal,
     recipientPubkey: recipient,
@@ -60,5 +104,21 @@ export async function sendAccountInboxRumor(
       assertProtectedReadAuthorization(authorization, input.principal)
       return true
     },
+    onRecipientAccepted: persistAcceptedProjection,
   })
+  // An exact saved-delivery resume can return before the callback is reached.
+  if (!persistAttempted) await persistAcceptedProjection()
+  return {
+    recipient: "accepted",
+    selfCopy:
+      sent.selfDeliveryStatus === "partial_success"
+        ? "partial"
+        : sent.selfDeliveryStatus === "full_success" && !sent.selfCopyError
+          ? "complete"
+          : "pending",
+    localHistory,
+    ...(sent.checkpointFailure || localHistory === "unavailable"
+      ? { checkpointFailure: true as const }
+      : {}),
+  }
 }

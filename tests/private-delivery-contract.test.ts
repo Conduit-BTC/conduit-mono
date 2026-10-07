@@ -8,6 +8,7 @@ import {
 import { v2 } from "nostr-tools/nip44"
 import { ConduitDB } from "../packages/core/src/db"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
 import { createInMemoryAccountNetworkLocalStateRepository } from "../packages/core/src/protocol/account-network-local-state"
 import { buildPrivateFileRumor } from "../packages/core/src/protocol/private-file-message"
 import { sendAccountInboxRumor } from "../packages/core/src/protocol/inbox-send"
@@ -21,6 +22,7 @@ import {
 import {
   createPrivateMessageRumor,
   unwrapPrivateMessageEnvelope,
+  wrapPrivateMessage,
 } from "../packages/core/src/protocol/private-message-primitives"
 import {
   __resetProtectedReadSigner,
@@ -52,6 +54,7 @@ function keySigner(secret: Uint8Array): NostrKeySigner {
 function setup(
   options: {
     selfEncrypt?: (plaintext: string) => Promise<string>
+    selfSign?: () => Promise<void>
     operationTimeoutMs?: number
   } = {}
 ) {
@@ -61,17 +64,24 @@ function setup(
   const recipient = getPublicKey(recipientSecret)
   const rawSigner = keySigner(senderSecret)
   let signCalls = 0
+  let sealRecipient: string | null = null
   const signer = new SessionSigner(
     {
       ...rawSigner,
       signEvent: async (event) => {
         signCalls++
+        if (event.kind === 13 && sealRecipient === sender) {
+          sealRecipient = null
+          await options.selfSign?.()
+        }
         return await rawSigner.signEvent(event)
       },
-      encryptNip44: async (peer, plaintext) =>
-        peer === sender && options.selfEncrypt
+      encryptNip44: async (peer, plaintext) => {
+        sealRecipient = peer
+        return peer === sender && options.selfEncrypt
           ? await options.selfEncrypt(plaintext)
-          : await rawSigner.encryptNip44(peer, plaintext),
+          : await rawSigner.encryptNip44(peer, plaintext)
+      },
     },
     {
       expectedPubkey: sender,
@@ -583,6 +593,377 @@ describe("private delivery composed contract", () => {
       { getSigner: () => fixture.signer, send }
     )
     expect(seenKinds).toEqual([14, 15])
+  })
+
+  for (const kind of [14, 15] as const) {
+    for (const failure of ["self_wrap", "self_sign", "self_publish"] as const) {
+      it(`retains an accepted kind ${kind} sender projection after ${failure} failure`, async () => {
+        const fixture = setup(
+          failure === "self_sign"
+            ? {
+                selfSign: async () => {
+                  throw new Error("self signing refused")
+                },
+              }
+            : {}
+        )
+        const wire =
+          kind === 15
+            ? buildPrivateFileRumor({
+                recipientPubkeys: [fixture.recipient],
+                url: "https://files.conduit.market/encrypted",
+                mimeType: "image/png",
+                envelope: {
+                  algorithm: "aes-gcm",
+                  key: "1".repeat(64),
+                  nonce: "2".repeat(24),
+                  encryptedSha256: "3".repeat(64),
+                  originalSha256: "4".repeat(64),
+                  encryptedSize: 128,
+                },
+              })
+            : { kind: 14 as const, tags: [["e", "reply-id"]], content: "Reply" }
+        let recipientPublishes = 0
+        let selfPublishes = 0
+        let publishedRumorId = ""
+        const result = await sendAccountInboxRumor(
+          {
+            principal: fixture.sender,
+            recipients: [fixture.recipient],
+            ...wire,
+          },
+          {
+            getSigner: () => fixture.signer,
+            persistProjection: async (projection) =>
+              await fixture.store.putProjection(projection, 1),
+            send: async (input) => {
+              publishedRumorId = input.rumor.id
+              return await publishPrivateMessage({
+                ...input,
+                deliveryStore: fixture.store,
+                accountNetworkLocalStateRepository:
+                  fixture.accountNetworkLocalStateRepository,
+                recipientInboxRelays: [RECIPIENT_RELAY],
+                senderInboxRelays: [SELF_RELAY],
+                inspectOwnInboxReadiness: sendInput(fixture, kind)
+                  .inspectOwnInboxReadiness,
+                giftWrapFn: async (event, recipient, signer, params) => {
+                  if (recipient.pubkey === fixture.sender)
+                    expect(
+                      await fixture.database.commerceInboxRecords.count()
+                    ).toBe(1)
+                  if (
+                    failure === "self_wrap" &&
+                    recipient.pubkey === fixture.sender
+                  )
+                    throw new Error("self wrapping refused")
+                  return await wrapPrivateMessage(
+                    event,
+                    recipient,
+                    signer,
+                    params
+                  )
+                },
+                publishFn: (async (event, options) => {
+                  if (options.exclusiveRelayUrls?.includes(SELF_RELAY)) {
+                    selfPublishes++
+                    if (failure === "self_publish")
+                      throw new Error("self relay unavailable")
+                    return acknowledged(SELF_RELAY)
+                  }
+                  recipientPublishes++
+                  const opened = await unwrapPrivateMessageEnvelope(
+                    event,
+                    fixture.recipientSigner
+                  )
+                  expect(opened.kind).toBe(kind)
+                  return acknowledged(RECIPIENT_RELAY)
+                }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+              })
+            },
+          }
+        )
+        expect(result).toEqual({
+          recipient: "accepted",
+          selfCopy: "pending",
+          localHistory: "saved",
+        })
+        expect(recipientPublishes).toBe(1)
+        expect(selfPublishes).toBe(failure === "self_publish" ? 1 : 0)
+        const stored = await fixture.database.commerceInboxRecords.toArray()
+        expect(stored).toHaveLength(1)
+        expect(stored[0]?.logicalId).toBe(publishedRumorId)
+        expect(JSON.stringify(stored[0])).not.toContain(wire.content)
+        const authorization = getProtectedReadAuthorization(fixture.sender)!
+        const reopened = new CommerceInbox(
+          authorization,
+          fixture.signer,
+          new CommerceInboxStore(authorization, fixture.database)
+        )
+        try {
+          await reopened.initialize()
+          const messages = reopened.getSnapshot().directMessages
+          expect(messages).toHaveLength(1)
+          expect(messages[0]?.id).toBe(publishedRumorId)
+          expect(messages[0]?.recipientPubkey).toBe(fixture.recipient)
+          if (kind === 15) {
+            expect(messages[0]?.file?.key).toBe("1".repeat(64))
+            expect(messages[0]?.content).toBe("Encrypted file")
+          } else {
+            expect(messages[0]?.content).toBe("Reply")
+            expect(messages[0]?.replyTo).toBe("reply-id")
+          }
+        } finally {
+          reopened.stop()
+        }
+      })
+    }
+
+    it(`reports unavailable local history after an accepted kind ${kind} send`, async () => {
+      const fixture = setup()
+      const wire =
+        kind === 15
+          ? buildPrivateFileRumor({
+              recipientPubkeys: [fixture.recipient],
+              url: "https://files.conduit.market/encrypted",
+              mimeType: "image/png",
+              envelope: {
+                algorithm: "aes-gcm",
+                key: "1".repeat(64),
+                nonce: "2".repeat(24),
+                encryptedSha256: "3".repeat(64),
+                originalSha256: "4".repeat(64),
+                encryptedSize: 128,
+              },
+            })
+          : { kind: 14 as const, tags: [], content: "Reply" }
+      let recipientPublishes = 0
+      const result = await sendAccountInboxRumor(
+        { principal: fixture.sender, recipients: [fixture.recipient], ...wire },
+        {
+          getSigner: () => fixture.signer,
+          persistProjection: async () => {
+            throw new Error("device storage unavailable")
+          },
+          send: async (input) =>
+            await publishPrivateMessage({
+              ...input,
+              deliveryStore: fixture.store,
+              accountNetworkLocalStateRepository:
+                fixture.accountNetworkLocalStateRepository,
+              recipientInboxRelays: [RECIPIENT_RELAY],
+              senderInboxRelays: [SELF_RELAY],
+              inspectOwnInboxReadiness: sendInput(fixture, kind)
+                .inspectOwnInboxReadiness,
+              giftWrapFn: async (event, recipient, signer, params) => {
+                if (recipient.pubkey === fixture.sender)
+                  throw new Error("self wrapping refused")
+                return await wrapPrivateMessage(
+                  event,
+                  recipient,
+                  signer,
+                  params
+                )
+              },
+              publishFn: (async () => {
+                recipientPublishes++
+                return acknowledged(RECIPIENT_RELAY)
+              }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+            }),
+        }
+      )
+      expect(result).toEqual({
+        recipient: "accepted",
+        selfCopy: "pending",
+        localHistory: "unavailable",
+        checkpointFailure: true,
+      })
+      expect(recipientPublishes).toBe(1)
+      expect(await fixture.database.commerceInboxRecords.count()).toBe(0)
+    })
+  }
+
+  for (const kind of [14, 15] as const) {
+    it(`keeps an accepted kind ${kind} send when the ACK checkpoint write fails`, async () => {
+      const fixture = setup()
+      const wire =
+        kind === 15
+          ? buildPrivateFileRumor({
+              recipientPubkeys: [fixture.recipient],
+              url: "https://files.conduit.market/encrypted",
+              mimeType: "image/png",
+              envelope: {
+                algorithm: "aes-gcm",
+                key: "1".repeat(64),
+                nonce: "2".repeat(24),
+                encryptedSha256: "3".repeat(64),
+                originalSha256: "4".repeat(64),
+                encryptedSize: 128,
+              },
+            })
+          : { kind: 14 as const, tags: [], content: "Reply" }
+      fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
+        if (changes.state === "accepted")
+          throw new Error("simulated ACK checkpoint write failure")
+      })
+      let recipientPublishes = 0
+      const result = await sendAccountInboxRumor(
+        { principal: fixture.sender, recipients: [fixture.recipient], ...wire },
+        {
+          getSigner: () => fixture.signer,
+          persistProjection: async (projection) =>
+            await fixture.store.putProjection(projection, 1),
+          send: async (input) =>
+            await publishPrivateMessage({
+              ...input,
+              deliveryStore: fixture.store,
+              accountNetworkLocalStateRepository:
+                fixture.accountNetworkLocalStateRepository,
+              recipientInboxRelays: [RECIPIENT_RELAY],
+              senderInboxRelays: [SELF_RELAY],
+              inspectOwnInboxReadiness: sendInput(fixture, kind)
+                .inspectOwnInboxReadiness,
+              giftWrapFn: async (event, recipient, signer, params) => {
+                if (recipient.pubkey === fixture.sender)
+                  throw new Error("self wrapping refused")
+                return await wrapPrivateMessage(
+                  event,
+                  recipient,
+                  signer,
+                  params
+                )
+              },
+              publishFn: (async (event, options) => {
+                expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
+                const opened = await unwrapPrivateMessageEnvelope(
+                  event,
+                  fixture.recipientSigner
+                )
+                expect(opened.kind).toBe(kind)
+                recipientPublishes++
+                return acknowledged(RECIPIENT_RELAY)
+              }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+            }),
+        }
+      )
+      expect(result).toEqual({
+        recipient: "accepted",
+        selfCopy: "pending",
+        localHistory: "saved",
+        checkpointFailure: true,
+      })
+      expect(recipientPublishes).toBe(1)
+      expect(await fixture.database.commerceInboxRecords.count()).toBe(1)
+    })
+  }
+
+  it("reports a failed post-ACK callback without revoking recipient acceptance", async () => {
+    const fixture = setup()
+    const result = await publishPrivateMessage({
+      ...sendInput(fixture, 14),
+      onRecipientAccepted: async () => {
+        throw new Error("local callback failed")
+      },
+      giftWrapFn: async (event, recipient, signer, params) => {
+        if (recipient.pubkey === fixture.sender)
+          throw new Error("self wrapping refused")
+        return await wrapPrivateMessage(event, recipient, signer, params)
+      },
+      publishFn: (async () => acknowledged(RECIPIENT_RELAY)) as NonNullable<
+        PublishPrivateMessageInput["publishFn"]
+      >,
+    })
+    expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+      RECIPIENT_RELAY,
+    ])
+    expect(result.checkpointFailure).toBe(true)
+  })
+
+  it("keeps a zero-ACK conversation send rejected when checkpoint storage fails", async () => {
+    const fixture = setup()
+    fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
+      if (changes.state === "failed")
+        throw new Error("simulated checkpoint write failure")
+    })
+    await expect(
+      publishPrivateMessage({
+        ...sendInput(fixture, 14),
+        onRecipientAccepted: async () => {},
+        publishFn: (async () => ({
+          ...acknowledged(RECIPIENT_RELAY),
+          successfulRelayUrls: [],
+          failedRelayUrls: [RECIPIENT_RELAY],
+        })) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+      })
+    ).rejects.toThrow()
+  })
+
+  it("keeps kind-16 ACK checkpoint persistence mandatory", async () => {
+    const fixture = setup()
+    fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
+      if (changes.state === "accepted")
+        throw new Error("simulated ACK checkpoint write failure")
+    })
+    await expect(
+      publishPrivateMessage({
+        ...sendInput(fixture, 16),
+        onRecipientAccepted: async () => {},
+        publishFn: (async () => acknowledged(RECIPIENT_RELAY)) as NonNullable<
+          PublishPrivateMessageInput["publishFn"]
+        >,
+      })
+    ).rejects.toThrow(/simulated ACK checkpoint write failure/)
+  })
+
+  it("keeps recipient acceptance when the session guard throws during optional self-copy", async () => {
+    const fixture = setup()
+    let recipientPublishes = 0
+    const result = await sendAccountInboxRumor(
+      {
+        principal: fixture.sender,
+        recipients: [fixture.recipient],
+        kind: 14,
+        content: "Reply",
+      },
+      {
+        getSigner: () => fixture.signer,
+        persistProjection: async (projection) =>
+          await fixture.store.putProjection(projection, 1),
+        send: async (input) =>
+          await publishPrivateMessage({
+            ...input,
+            deliveryStore: fixture.store,
+            accountNetworkLocalStateRepository:
+              fixture.accountNetworkLocalStateRepository,
+            recipientInboxRelays: [RECIPIENT_RELAY],
+            senderInboxRelays: [SELF_RELAY],
+            inspectOwnInboxReadiness: sendInput(fixture, 14)
+              .inspectOwnInboxReadiness,
+            giftWrapFn: async (event, recipient, signer, params) => {
+              if (recipient.pubkey === fixture.sender) {
+                expect(
+                  await fixture.database.commerceInboxRecords.count()
+                ).toBe(1)
+                __resetProtectedReadSigner()
+                throw new Error("session changed")
+              }
+              return await wrapPrivateMessage(event, recipient, signer, params)
+            },
+            publishFn: (async (_event, options) => {
+              if (options.exclusiveRelayUrls?.includes(SELF_RELAY))
+                throw new Error("self publish should not start")
+              recipientPublishes++
+              return acknowledged(RECIPIENT_RELAY)
+            }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+          }),
+      }
+    )
+    expect(result).toEqual({
+      recipient: "accepted",
+      selfCopy: "pending",
+      localHistory: "saved",
+    })
+    expect(recipientPublishes).toBe(1)
   })
 
   it("rejects extra conversation participants before signing or publishing", async () => {

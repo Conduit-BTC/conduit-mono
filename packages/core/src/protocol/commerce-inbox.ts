@@ -7,6 +7,7 @@ import {
 } from "./checkout-spark-recovery"
 import { sendPrivateAttachment } from "./private-file-upload"
 import { sendAccountInboxRumor } from "./inbox-send"
+import type { AccountInboxSendResult } from "./inbox-send"
 import { retryPrivateDeliveries } from "./private-message-delivery"
 import { liveQuery } from "dexie"
 import {
@@ -18,6 +19,7 @@ import {
 import {
   CommerceInboxStore,
   INBOX_DECODE_RULES_VERSION,
+  projectDirectOrFileRumor,
   readRetainedInboxProjections,
   type InboxProjectionRow,
   type InboxDecodeState,
@@ -26,7 +28,6 @@ import {
 } from "./commerce-inbox-store"
 import {
   unwrapPrivateMessageEnvelope,
-  getOrderCompanionNotificationIdentity,
   type ParsedDirectMessage,
   type DecryptFailure,
   type LegacyDmDecryptFailure,
@@ -602,28 +603,11 @@ export class CommerceInbox {
                   record.status === "malformed" ? "malformed" : "unsupported"
               }
             } else {
-              const participants = record.participants
-              const counterparties = participants.filter(
-                (p) => p !== this.store.principal
-              )
-              const message: ParsedDirectMessage = {
-                id: rumor.id,
-                senderPubkey: rumor.pubkey,
-                recipientPubkey:
-                  rumor.pubkey === this.store.principal
-                    ? (counterparties[0] ?? this.store.principal)
-                    : this.store.principal,
-                createdAt: (rumor.created_at ?? 0) * 1000,
-                content:
-                  record.category === "direct" ? record.text : "Encrypted file",
-                transport: "nip17",
-                participants,
-                conversationId: `nip17:${participants.join(":")}`,
-                replyTo: record.replyTo,
-                file: record.category === "file" ? record : undefined,
-              }
-              const companion = getOrderCompanionNotificationIdentity(rumor)
-              if (companion) message.orderCompanionIdentity = companion
+              const message = projectDirectOrFileRumor(
+                rumor,
+                this.store.principal,
+                record
+              ).message
               projection = { kind: "direct", message }
             }
             phase = "persisting"
@@ -1079,10 +1063,13 @@ export class CommerceInbox {
       commerceMessageSearchText(r).toLocaleLowerCase().includes(term)
     )
   }
-  async reply(record: DecodedCommerceMessage, content: string): Promise<void> {
+  async reply(
+    record: DecodedCommerceMessage,
+    content: string
+  ): Promise<AccountInboxSendResult> {
     if (record.category !== "commerce")
       throw new Error("Only authenticated commerce records can be replied to")
-    await sendAccountInboxRumor({
+    const result = await sendAccountInboxRumor({
       principal: this.store.principal,
       recipients: [
         commerceReplyCounterparty(this.store.principal, record.provenance),
@@ -1094,7 +1081,13 @@ export class CommerceInbox {
         ...(record.fields.orderId ? [["order", record.fields.orderId]] : []),
       ],
     })
-    await this.waitForDecode()
+    if (result.localHistory === "unavailable") this.storageFailed()
+    try {
+      await this.refresh()
+    } catch {
+      this.storageFailed()
+    }
+    return result
   }
   async associate(
     record: DecodedCommerceMessage,
@@ -1112,9 +1105,22 @@ export class CommerceInbox {
     })
     await this.refresh()
   }
-  async attach(recipients: string[], file: File): Promise<void> {
-    await sendPrivateAttachment(this.store.principal, recipients, file)
-    await this.waitForDecode()
+  async attach(
+    recipients: string[],
+    file: File
+  ): Promise<AccountInboxSendResult> {
+    const result = await sendPrivateAttachment(
+      this.store.principal,
+      recipients,
+      file
+    )
+    if (result.localHistory === "unavailable") this.storageFailed()
+    try {
+      await this.refresh()
+    } catch {
+      this.storageFailed()
+    }
+    return result
   }
   async retrySends(): Promise<void> {
     await retryPrivateDeliveries(this.store.principal)
