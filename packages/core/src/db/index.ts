@@ -1080,6 +1080,76 @@ export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTo
   checkoutId: string
 }
 
+/** Durable merchant inventory, separate from the relay-scoped product cache. */
+export interface MerchantInventoryPublicationJob {
+  id: string
+  state: "awaiting_signature" | "signed" | "delivered"
+  /** Immutable accepted local revision; signing must follow this sequence. */
+  revision: number
+  createdAt: number
+  productStock?: number
+  assignmentSnapshot?: {
+    state: "active" | "removed"
+    inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
+    fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+  }
+  draft?: {
+    pubkey: string
+    kind: number
+    created_at: number
+    tags: string[][]
+    content: string
+  }
+  signedEvent?: SignedPublicNostrEvent
+}
+
+export interface MerchantInventoryProduct {
+  coordinate: string
+  merchantPubkey: string
+  /** Undefined means genuinely untracked, never zero or infinity. */
+  stock?: number
+  revision: number
+  sourceProductEvent: SignedPublicNostrEvent
+  signedProductEvent: SignedPublicNostrEvent
+  publicationJobs: MerchantInventoryPublicationJob[]
+}
+
+export interface MerchantInventoryAssignment {
+  coordinate: string
+  merchantPubkey: string
+  productCoordinate: string
+  marketCoordinate: string
+  occurrenceCoordinate: string
+  inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
+  state: "active" | "removed"
+  fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+  /** Exclusive end from a validated signed occurrence snapshot. */
+  occurrenceEndMs: number
+  /** Only verified terminal cancellation or applicable deletion sets this. */
+  terminal: boolean
+  revision: number
+  signedAssignmentEvent?: SignedPublicNostrEvent
+  publicationJobs: MerchantInventoryPublicationJob[]
+}
+
+export interface MerchantInventoryAcceptedOrder {
+  orderId: string
+  merchantPubkey: string
+  identityBinding: string
+  termsBinding: string
+  /** Exact validated order evidence snapshot, private to the local DB. */
+  evidence: string
+  items: Array<{
+    productCoordinate: string
+    assignmentCoordinate?: string
+    method: "ordinary" | "pickup" | "shipping" | "digital"
+    quantity: number
+    remainingStock?: number
+    remainingAllocation?: number
+  }>
+  acceptedAt: number
+}
+
 export class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
@@ -1130,6 +1200,18 @@ export class ConduitDB extends Dexie {
   checkoutSparkRetirements!: EntityTable<
     StoredCheckoutSparkRetirement,
     "checkoutId"
+  >
+  merchantInventoryProducts!: EntityTable<
+    MerchantInventoryProduct,
+    "coordinate"
+  >
+  merchantInventoryAssignments!: EntityTable<
+    MerchantInventoryAssignment,
+    "coordinate"
+  >
+  merchantInventoryAcceptedOrders!: EntityTable<
+    MerchantInventoryAcceptedOrder,
+    "orderId"
   >
 
   constructor(databaseName = "conduit", options?: DexieOptions) {
@@ -1356,6 +1438,15 @@ export class ConduitDB extends Dexie {
       // merchant and update-time indexes available for organizer decisions.
       eventMarketMerchantDecisionJobs:
         "id, marketCoordinate, merchantPubkey, status, updatedAt",
+    })
+
+    this.version(25).stores({
+      // Merchant working state and accepted commitments are never cache-pruned
+      // or cleared when a relay scope changes.
+      merchantInventoryProducts: "coordinate, merchantPubkey",
+      merchantInventoryAssignments:
+        "coordinate, productCoordinate, merchantPubkey, occurrenceCoordinate",
+      merchantInventoryAcceptedOrders: "orderId, merchantPubkey, acceptedAt",
     })
   }
 }

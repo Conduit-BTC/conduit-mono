@@ -112,14 +112,17 @@ describe("current Merchant Event Market routes", () => {
     expect(anchor).toContain("timelineViewportPositions.has(input.viewportKey)")
   })
 
-  it("keeps event product selection on ordinary products and the current signed association", async () => {
-    const [products, fulfillment] = await Promise.all([
+  it("keeps occurrence assignment controls separate from ordinary product editing", async () => {
+    const [products, fulfillment, assignments] = await Promise.all([
       source("apps/merchant/src/routes/products.tsx"),
       source("apps/merchant/src/components/ProductFulfillmentEditor.tsx"),
+      source("apps/merchant/src/components/EventAssignmentPanel.tsx"),
     ])
-    expect(products).toContain("Offer this product at this event")
-    expect(products).toContain("readEventMarketAuthorization")
-    expect(products).toContain("setEventMarketProductAssociation")
+    expect(products).toContain("<EventAssignmentPanel")
+    expect(products).not.toContain("setEventMarketProductAssociation")
+    expect(products).not.toContain("Offer this product at this event")
+    expect(assignments).toContain("saveMerchantOccurrenceAssignment")
+    expect(assignments).toContain("resumeMerchantOccurrencePublication")
     expect(products).toContain("existing?.product.eventMarketRefs")
     expect(products).toMatch(
       /buildShippingMetadata\(\s*signerPubkey,\s*dTag,\s*form,\s*presetShippingConfig\s*\)/

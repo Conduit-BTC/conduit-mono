@@ -6,6 +6,7 @@ import {
 import { parseEventMarketCalendarEvent } from "./event-market"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { parseEventMarketRosterEvent } from "./event-market-roster"
+import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
 import { parseEventMarketSeriesEvent } from "./event-market-schedule"
 import {
   canonicalizeProductSpecifications,
@@ -34,6 +35,7 @@ export type EventMarketOrderEvidenceResult =
         | "calendar"
         | "grant"
         | "product"
+        | "assignment"
         | "terms"
     }
 
@@ -105,12 +107,32 @@ export function verifyEventMarketOrderEvidence(input: {
     ...first.grant.ancestryEventIds,
     ...first.grant.observedDeletionEventIds,
     ...future.map((item) => item.fulfillment.product.eventId),
+    ...future.flatMap((item) =>
+      item.fulfillment.parentProduct
+        ? [item.fulfillment.parentProduct.eventId]
+        : []
+    ),
+    ...future.flatMap((item) =>
+      item.fulfillment.occurrenceAssignment
+        ? [item.fulfillment.occurrenceAssignment.eventId]
+        : []
+    ),
   ])
   const embeddedEvidence = [
     first.market.signedEvent,
     first.calendar.signedEvent,
     ...(first.schedule ? [first.schedule.signedEvent] : []),
     ...future.map((item) => item.fulfillment.product.signedEvent),
+    ...future.flatMap((item) =>
+      item.fulfillment.parentProduct
+        ? [item.fulfillment.parentProduct.signedEvent]
+        : []
+    ),
+    ...future.flatMap((item) =>
+      item.fulfillment.occurrenceAssignment
+        ? [item.fulfillment.occurrenceAssignment.signedEvent]
+        : []
+    ),
     first.grant.signedEvidence.tip,
     ...first.grant.signedEvidence.ancestry,
     ...first.grant.signedEvidence.deletions,
@@ -190,7 +212,10 @@ export function verifyEventMarketOrderEvidence(input: {
       signed.kind !== 30402 ||
       signed.pubkey !== order.merchantPubkey ||
       signed.created_at * 1_000 !== evidence.createdAt ||
-      !signed.tags.some((tag) => tag[0] === "a" && tag[1] === market.coordinate)
+      (!item.fulfillment.occurrenceAssignment &&
+        !signed.tags.some(
+          (tag) => tag[0] === "a" && tag[1] === market.coordinate
+        ))
     )
       return { status: "invalid", reason: "product" }
     let product: ReturnType<typeof parseProductEvent>
@@ -219,6 +244,56 @@ export function verifyEventMarketOrderEvidence(input: {
       )
     )
       return { status: "invalid", reason: "product" }
+    if (item.fulfillment.occurrenceAssignment) {
+      const assignmentEvidence = item.fulfillment.occurrenceAssignment
+      if (product.type === "variable")
+        return { status: "invalid", reason: "product" }
+      if (product.type === "variation") {
+        const parentEvidence = item.fulfillment.parentProduct
+        const parentSigned = parentEvidence && byId.get(parentEvidence.eventId)
+        if (
+          !parentSigned ||
+          !parentEvidence ||
+          product.parentProductId !== parentEvidence.coordinate ||
+          parentSigned.pubkey !== order.merchantPubkey ||
+          parentSigned.created_at * 1_000 !== parentEvidence.createdAt
+        )
+          return { status: "invalid", reason: "product" }
+        try {
+          const parent = parseProductEvent(parentSigned)
+          if (
+            parent.id !== parentEvidence.coordinate ||
+            parent.type !== "variable" ||
+            parent.visibility !== "public"
+          )
+            return { status: "invalid", reason: "product" }
+        } catch {
+          return { status: "invalid", reason: "product" }
+        }
+      }
+      const assignment = parseEventMarketAssignmentEvent(
+        byId.get(assignmentEvidence.eventId)!
+      )
+      if (
+        !assignment ||
+        assignment.eventId !== assignmentEvidence.eventId ||
+        assignment.coordinate !== assignmentEvidence.coordinate ||
+        assignment.createdAt * 1_000 !== assignmentEvidence.createdAt ||
+        assignment.marketCoordinate !== market.coordinate ||
+        assignment.occurrenceCoordinate !== calendar.coordinate ||
+        assignment.productCoordinate !== item.productId ||
+        assignment.merchantPubkey !== order.merchantPubkey ||
+        assignment.state !== "active" ||
+        !assignment.fulfillmentMethods.includes("pickup") ||
+        (assignment.inventory.mode === "tracked" &&
+          (product.stock === undefined ||
+            assignment.inventory.quantity < item.quantity ||
+            assignment.inventory.quantity > product.stock)) ||
+        (assignment.inventory.mode === "untracked" &&
+          product.stock !== undefined)
+      )
+        return { status: "invalid", reason: "assignment" }
+    }
   }
   return {
     status: "verified",

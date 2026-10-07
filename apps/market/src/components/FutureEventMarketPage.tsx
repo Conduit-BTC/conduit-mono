@@ -198,6 +198,7 @@ export function FutureEventMarketPage({
   const catalogQueryKey = [
     "future-event-market",
     reference,
+    selectedOccurrence,
     session.relayScope,
     authenticatedPubkey,
     authGeneration,
@@ -209,6 +210,7 @@ export function FutureEventMarketPage({
     queryFn: ({ signal }) =>
       readEventMarketCatalog({
         reference,
+        selectedOccurrenceCoordinate: selectedOccurrence,
         authenticatedPubkey,
         limit,
         search: catalogSearch || undefined,
@@ -232,6 +234,8 @@ export function FutureEventMarketPage({
     (entry) => entry.occurrence.coordinate === selectedOccurrence
   )
   const calendar = selectedDate?.occurrence ?? catalog?.marketRead.calendar
+  const activeOccurrenceCoordinate =
+    selectedOccurrence ?? (series ? undefined : calendar?.coordinate)
   const organizerPubkey = market?.organizerPubkey ?? ""
   const organizerProfile = useProfile(organizerPubkey, {
     accountPubkey: authenticatedPubkey,
@@ -368,6 +372,7 @@ export function FutureEventMarketPage({
     const productRead = await readEventMarketProduct({
       marketRead,
       productCoordinate: entry.productCoordinate,
+      selectedOccurrenceCoordinate: activeOccurrenceCoordinate,
       authenticatedPubkey,
       shouldContinue,
     })
@@ -390,9 +395,9 @@ export function FutureEventMarketPage({
     const fulfillment = createEventMarketPickupSnapshot({
       marketRead,
       productRead,
-      selectedOccurrenceCoordinate: selectedOccurrence,
+      selectedOccurrenceCoordinate: activeOccurrenceCoordinate,
     })
-    await cart.addItem(
+    const added = await cart.addItem(
       {
         ...cartItemInputFromProductSelection(
           productRead.resolution.product,
@@ -406,6 +411,10 @@ export function FutureEventMarketPage({
       },
       1
     )
+    if (!added)
+      throw new Error(
+        "The selected pickup allocation is no longer available. Review the item and try again."
+      )
   }
 
   function navigateToProduct(productId: string): void {
@@ -415,7 +424,9 @@ export function FutureEventMarketPage({
       params: { productId },
       search: {
         event: market.coordinate,
-        ...(selectedOccurrence ? { occurrence: selectedOccurrence } : {}),
+        ...(activeOccurrenceCoordinate
+          ? { occurrence: activeOccurrenceCoordinate }
+          : {}),
       },
     })
   }
@@ -616,7 +627,7 @@ export function FutureEventMarketPage({
                           .displayName
                       }
                       marketCoordinate={market.coordinate}
-                      selectedOccurrence={selectedOccurrence}
+                      selectedOccurrence={activeOccurrenceCoordinate}
                       canPurchase={canPurchase}
                       quote={pricing.quote}
                       preference={pricing.preference}

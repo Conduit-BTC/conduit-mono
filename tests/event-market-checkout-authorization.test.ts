@@ -7,6 +7,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketAuthorizationDraft,
+  buildEventMarketAssignmentDraft,
   buildEventMarketRosterDraft,
   buildEventMarketSeriesDraft,
   createEventMarketPickupSnapshot,
@@ -102,12 +103,25 @@ function product(createdAt = 100, price = "100") {
       ["title", "Handmade soap"],
       ["price", price, "SAT"],
       ["type", "simple", "physical"],
-      ["a", marketCoordinate],
+      ["stock", "6"],
     ],
     createdAt,
     merchantSecret,
     "Soap"
   )
+}
+
+function assignment(occurrenceCoordinate = calendarCoordinate) {
+  const draft = buildEventMarketAssignmentDraft({
+    marketCoordinate,
+    occurrenceCoordinate,
+    productCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
+    inventory: { mode: "tracked", quantity: 6 },
+    fulfillmentMethods: ["pickup"],
+  })
+  return signed(draft.kind, draft.tags, 101, merchantSecret)
 }
 
 function grant(
@@ -131,8 +145,14 @@ async function fixture(series = false) {
     calendar(),
     grant(),
     product(),
+    assignment(),
   ]
-  if (series) live.push(schedule(), calendar("second", 100, 1_900_086_400))
+  if (series)
+    live.push(
+      schedule(),
+      calendar("second", 100, 1_900_086_400),
+      assignment(secondCalendarCoordinate)
+    )
   const retained = new Map<string, SignedPublicNostrEvent>()
   const dependencies: NonNullable<Parameters<typeof readEventMarketRoster>[1]> =
     {
@@ -161,7 +181,11 @@ async function fixture(series = false) {
   const readProduct = (query: Parameters<typeof readEventMarketProduct>[0]) =>
     readEventMarketProduct(query, dependencies)
   const marketRead = await readMarket({ reference: marketCoordinate })
-  const productRead = await readProduct({ marketRead, productCoordinate })
+  const productRead = await readProduct({
+    marketRead,
+    productCoordinate,
+    selectedOccurrenceCoordinate: calendarCoordinate,
+  })
   expect(productRead.actionable).toBe(true)
   const accepted = createEventMarketPickupSnapshot({
     marketRead,
@@ -174,7 +198,10 @@ async function fixture(series = false) {
       [...retained.values()].filter((entry) => entry.kind === 30402).at(-1)!
     return { ...parseProductEvent(event), sourceEventId: event.id } as Product
   }
-  const item = createCartItemFromProduct(parsedProduct(), accepted)
+  const item: CartItem = {
+    ...createCartItemFromProduct(parsedProduct(), accepted),
+    quantity: 1,
+  }
   let handlerCalls = 0
   const submit = (
     reviewedItems: CartItem[] = [item],
@@ -220,13 +247,13 @@ async function fixture(series = false) {
 }
 
 describe("composed Event Market submit authorization", () => {
-  it("keeps an open single-date market purchasable after its calendar ends", async () => {
+  it("blocks a single-date market after its occurrence ends", async () => {
+    const state = await fixture(false)
     const originalNow = Date.now
     Date.now = () => 1_900_004_000_000
     try {
-      const state = await fixture(false)
-      expect((await state.submit()).status).toBe("ok")
-      expect(state.handlerCalls()).toBe(1)
+      expect((await state.submit()).status).toBe("changed")
+      expect(state.handlerCalls()).toBe(0)
     } finally {
       Date.now = originalNow
     }
@@ -237,15 +264,13 @@ describe("composed Event Market submit authorization", () => {
     const originalNow = Date.now
     Date.now = () => 1_900_004_000_000
     try {
-      await expect(fixture(true)).rejects.toThrow(
-        "Current signed Event Market participation is required"
-      )
       expect((await state.submit()).status).not.toBe("ok")
       expect(state.handlerCalls()).toBe(0)
       const marketRead = await state.readMarket({ reference: marketCoordinate })
       const productRead = await state.readProduct({
         marketRead,
         productCoordinate,
+        selectedOccurrenceCoordinate: secondCalendarCoordinate,
       })
       expect(
         createEventMarketPickupSnapshot({
@@ -317,7 +342,11 @@ describe("composed Event Market submit authorization", () => {
         }
       }
       const marketRead = await state.readMarket({ reference: marketCoordinate })
-      const exact = await state.readProduct({ marketRead, productCoordinate })
+      const exact = await state.readProduct({
+        marketRead,
+        productCoordinate,
+        selectedOccurrenceCoordinate: calendarCoordinate,
+      })
       expect(marketRead.coverage).toBe("partial")
       expect(marketRead.calendarCoverage).toBe("partial")
       expect(exact.coverage).toBe("partial")
@@ -330,6 +359,7 @@ describe("composed Event Market submit authorization", () => {
   for (const change of [
     "mode",
     "assignment",
+    "venue",
     "date",
     "product",
     "price",

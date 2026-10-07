@@ -20,7 +20,7 @@ describe("app account-network read propagation", () => {
       'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
     expect(eventPage).toMatch(
-      /"future-event-market",\s+reference,\s+session\.relayScope,\s+authenticatedPubkey,\s+authGeneration,/
+      /"future-event-market",\s+reference,\s+selectedOccurrence,\s+session\.relayScope,\s+authenticatedPubkey,\s+authGeneration,/
     )
     expect(eventPage).toMatch(
       /readEventMarketCatalog\(\{[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,180}signal,\s+shouldContinue: \(\) => !signal\.aborted && shouldContinue\(\)/
@@ -33,7 +33,7 @@ describe("app account-network read propagation", () => {
     for (const read of ["readEventMarketRoster", "readEventMarketProduct"]) {
       expect(eventPage).toMatch(
         new RegExp(
-          `${read}\\(\\{[\\s\\S]{0,180}authenticatedPubkey,\\s+shouldContinue,`
+          `${read}\\(\\{[\\s\\S]{0,220}authenticatedPubkey,\\s+shouldContinue,`
         )
       )
     }
@@ -236,6 +236,7 @@ describe("app account-network read propagation", () => {
       manager,
       eventDetailRoute,
       products,
+      assignmentPanel,
       participation,
       enrollment,
     ] = await Promise.all([
@@ -243,6 +244,7 @@ describe("app account-network read propagation", () => {
       source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       source("apps/merchant/src/routes/events/$collectionRef.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
+      source("apps/merchant/src/components/EventAssignmentPanel.tsx"),
       source(
         "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
       ),
@@ -268,11 +270,15 @@ describe("app account-network read propagation", () => {
     expect(products).toContain(
       'const authenticatedPubkey = authStatus === "connected" ? pubkey : null'
     )
-    expect(products).toMatch(
-      /readEventMarketRoster\(\{\s+reference: eventContextReference!,\s+authenticatedPubkey,\s+shouldContinue: \(\) => authGenerationRef\.current === authGeneration/
+    expect(products).toContain("authGeneration={authGeneration}")
+    expect(products).toContain(
+      "shouldContinue={() => authGenerationRef.current === authGeneration}"
     )
-    expect(products).toMatch(
-      /"merchant-products-event-context",\s+eventContextReference,\s+authenticatedPubkey,\s+authGeneration,/
+    expect(assignmentPanel).toMatch(
+      /readEventMarketRoster\(\{\s+reference: props.marketReference,\s+authenticatedPubkey: props.authenticatedPubkey,\s+signal,\s+shouldContinue: \(\) => !signal.aborted && props.shouldContinue\(\)/
+    )
+    expect(assignmentPanel).toMatch(
+      /"merchant-assignment-market",\s+props.marketReference,\s+props.authenticatedPubkey,\s+props.authGeneration,/
     )
     expect(participation).toMatch(
       /readEventMarketAuthorization\(\{[\s\S]{0,180}merchantPubkey: authenticatedPubkey!,\s+authenticatedPubkey,\s+signal,\s+shouldContinue: \(\) =>\s+!signal\.aborted && isAuthGenerationCurrent\(authGeneration\)/
@@ -416,9 +422,9 @@ describe("app account-network read propagation", () => {
   })
 
   it("keeps organizer inbox and event-product action reads session-bound", async () => {
-    const [authorization, products, enrollment, manager] = await Promise.all([
+    const [authorization, workflow, enrollment, manager] = await Promise.all([
       source("apps/market/src/lib/checkout-authorization.ts"),
-      source("apps/merchant/src/routes/products.tsx"),
+      source("packages/core/src/protocol/merchant-occurrence-workflow.ts"),
       source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
       source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
     ])
@@ -430,9 +436,9 @@ describe("app account-network read propagation", () => {
       "readEventMarketRoster",
       "readEventMarketAuthorization",
     ]) {
-      expect(products).toMatch(
+      expect(workflow).toMatch(
         new RegExp(
-          `${read}\\(\\{[\\s\\S]{0,180}authenticatedPubkey,\\s+shouldContinue,`
+          `${read}\\(\\{[\\s\\S]{0,220}authenticatedPubkey: input.authenticatedPubkey,\\s+shouldContinue: input.shouldContinue,`
         )
       )
     }

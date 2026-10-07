@@ -84,14 +84,16 @@ or expose a full buyer order. Their contract remains in
 
 The current client uses dedicated kind `30409` markets linked to same-author
 NIP-52 calendars or finite schedules and immutable kind `3841` merchant grants.
-Merchant manages roster admission and product association. Market displays fast
+Merchant manages occurrence-scoped kind `30410` assignments for ordinary products. Market displays fast
 provisional catalog candidates and rechecks exact signed authority before adding
 or purchasing a selected product. Created orders retain accepted signed terms.
-Private organizer handoff conveys physical release authority only.
+The existing historical private organizer handoff conveys physical release
+authority. New organizer acceptance requires the separate advance delegation
+and reconciliation integration described below.
 
 This remains an experimental implementation of upstream PR #15, not accepted
 Open Markets default-branch behavior. The proposal head was rechecked on
-2026-09-28 at `b2c20adce43598a17d67ea450d137f820fb08570`. See the
+2026-10-05 at `8aa6d83331c750be22bf01413a1f932778e64568`. See the
 [contract](specs/event-markets.md) and [current evidence index](knowledge/event-market-validation-evidence.md).
 
 Collection-based Event Market readers, writers, pickup checkout and private
@@ -216,3 +218,9 @@ author, signature, and privacy invariants, and do not silently copy a peer's
 non-spec behavior. When discovery or external-to-Conduit checkout breaks,
 report a minimal public-safe reproduction, source expectation, observed peer
 behavior, Conduit behavior, compatibility consequence, and proposed repair.
+
+## Occurrence-scoped inventory and acceptance
+
+The current experimental merchant-owned assignment and durable acceptance path,
+its frozen proposal revision, and remaining integration limits are documented in
+[Signed event publication](knowledge/signed-event-publication.md#occurrence-scoped-inventory-and-acceptance).

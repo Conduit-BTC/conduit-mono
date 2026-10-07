@@ -1,4 +1,7 @@
-import type { SignedPublicNostrEvent } from "./signed-event"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 import { z } from "zod"
 import {
   hasSameShippingPolicyQuote,
@@ -72,6 +75,69 @@ export function serializeOrderRumorContent(order: OrderSchema): string {
     items,
     shippingPolicyQuotes: { version: 1, groups },
   })
+}
+
+/** Standard encrypted kind-16 tags for a new occurrence-scoped pickup order. */
+export function buildEventMarketOrderRumorTags(order: OrderSchema): string[][] {
+  const parsed = orderSchema.parse(order)
+  const pickup = parsed.items.filter(
+    (item) =>
+      item.fulfillment?.type === "event_market_pickup" &&
+      !!item.fulfillment.occurrenceAssignment
+  )
+  if (!pickup.length) return []
+  if (pickup.length !== parsed.items.length)
+    throw new Error("Occurrence pickup items require a separate order.")
+  const first = pickup[0]!.fulfillment!
+  if (first.type !== "event_market_pickup")
+    throw new Error("Invalid pickup order.")
+  const tags: string[][] = [
+    ["openmarkets", "event-market-order", "1"],
+    ["event_market", first.market.coordinate, first.market.eventId],
+    ["event_occurrence", first.calendar.coordinate, first.calendar.eventId],
+    ...(first.schedule
+      ? [["event_schedule", first.schedule.coordinate, first.schedule.eventId]]
+      : []),
+    ["event_auth", first.grant.eventId],
+    ["fulfillment", "pickup"],
+  ]
+  const evidence = new Map<string, SignedPublicNostrEvent>()
+  const add = (event: SignedPublicNostrEvent) => {
+    if (!isValidSignedPublicNostrEvent(event))
+      throw new Error("Occurrence order requires valid signed public evidence.")
+    evidence.set(event.id, event)
+  }
+  add(first.market.signedEvent)
+  add(first.calendar.signedEvent)
+  if (first.schedule) add(first.schedule.signedEvent)
+  for (const event of first.grant.signedEvidence.ancestry) add(event)
+  for (const event of first.grant.signedEvidence.deletions) add(event)
+  const products = new Set<string>()
+  for (const item of pickup) {
+    const fulfillment = item.fulfillment!
+    if (
+      fulfillment.type !== "event_market_pickup" ||
+      !fulfillment.occurrenceAssignment
+    )
+      throw new Error("Occurrence assignment evidence is required.")
+    if (!products.has(item.productId)) {
+      products.add(item.productId)
+      tags.push([
+        "event_assignment",
+        item.productId,
+        fulfillment.occurrenceAssignment.coordinate,
+        fulfillment.occurrenceAssignment.eventId,
+      ])
+    }
+    add(fulfillment.product.signedEvent)
+    if (fulfillment.parentProduct) add(fulfillment.parentProduct.signedEvent)
+    add(fulfillment.occurrenceAssignment.signedEvent)
+  }
+  if (evidence.size > 64)
+    throw new Error("Occurrence order evidence exceeds the recovery bound.")
+  for (const event of evidence.values())
+    tags.push(["evidence", event.id, JSON.stringify(event)])
+  return tags
 }
 
 function expandOrderShippingPolicyQuotes(input: unknown): unknown {
