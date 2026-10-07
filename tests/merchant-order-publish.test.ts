@@ -134,10 +134,12 @@ describe("merchant order publish", () => {
       signalAccepted = resolve
     })
     let recipientSends = 0
+    let deliveryBoundary = 0
     const publish = spyOn(
       messaging,
       "publishPrivateMessage"
     ).mockImplementation(async (input) => {
+      await input.onRecipientDeliveryStarting?.()
       recipientSends += 1
       await input.onRecipientAccepted?.({
         successfulRelayUrls: ["wss://merchant-send.example"],
@@ -152,12 +154,18 @@ describe("merchant order publish", () => {
     })
     const warning = spyOn(console, "warn").mockImplementation(() => {})
     try {
-      const sending = publishMerchantOrderMessage(statusInput(account.pubkey))
+      const sending = publishMerchantOrderMessage({
+        ...statusInput(account.pubkey),
+        onRecipientDeliveryStarting: () => {
+          deliveryBoundary++
+        },
+      })
       await accepted
       expect(await account.database.commerceInboxRecords.count()).toBe(1)
       releaseSelf()
       const result = await sending
       expect(recipientSends).toBe(1)
+      expect(deliveryBoundary).toBe(1)
       expect(result).toMatchObject({
         recipient: "accepted",
         selfCopy: "pending",

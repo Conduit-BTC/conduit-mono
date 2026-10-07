@@ -35,6 +35,8 @@ export interface PublishMerchantOrderMessageInput {
   authenticatedPubkey?: string | null
   /** Live account session authority for declaration reads and relay writes. */
   shouldContinue?: () => boolean
+  /** Durable caller fence before immutable recipient staging or recovery. */
+  onRecipientDeliveryStarting?: () => void | Promise<void>
   /** Background automation skips foreground-only interactive coordination. */
   signerInteraction?: "external" | "background_external"
 }
@@ -171,6 +173,7 @@ export async function publishMerchantOrderMessage(
     selfCopy: target.selfCopy,
     signerInteraction: input.signerInteraction ?? "background_external",
     onRecipientAccepted: checkpoint.onRecipientAccepted,
+    onRecipientDeliveryStarting: input.onRecipientDeliveryStarting,
     // Merchant replies, invoices, and proofs belong to a validated inbound
     // order lifecycle, so they qualify for compatibility routing (CND-208).
     validatedOrderScope: target.validatedOrderScope,

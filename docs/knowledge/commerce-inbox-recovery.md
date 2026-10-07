@@ -140,7 +140,14 @@ authority prevents local writes and reports unavailable history without reversin
 recipient acceptance. Guest
 checkout retains its separate order-scoped history.
 Merchant callers preserve accepted delivery separately from unavailable local
-history. Invoice attempts are recorded before publication. If saving sent status
+history. The saved invoice precedes readiness and signer work. Its attempt fence
+is recorded at the shared immutable-delivery boundary, immediately before staging
+or recovering saved bytes, so a crash cannot permit a fresh send alongside an
+existing delivery. Refusal, readiness, session and wrapping failures before that
+boundary leave the same invoice retryable. The fence is required before staging
+or relay I/O; a checkpoint failure stops both. Failures during staging remain
+conservative because a durable write may already have committed.
+If saving sent status
 fails, an exact invoice match in the initiating account's encrypted order history
 preserves acceptance after reload. An interrupted attempt without reliable
 acceptance evidence blocks a fresh send and directs recovery to saved transport

@@ -441,19 +441,26 @@ async function deliverSavedInvoice(
   const attempting: MerchantPendingInvoice = {
     ...saved,
     deliveryState: "pending",
-    deliveryAttempted: true,
+    deliveryAttempted: false,
     updatedAt: now,
   }
   await dependencies.store.put(attempting)
 
-  // A generic post-stage failure does not prove the recipient never accepted.
-  // Keep this marker until positive sender history or exact delivery recovery
-  // resolves the attempt; never create a fresh rumor merely because a call threw.
+  // Save the invoice before signer/readiness work, but fence retries only at
+  // the immutable-delivery boundary. The fence must precede staging so a crash
+  // cannot leave a recoverable send paired with a freely retryable invoice.
   let delivery: PublishMerchantOrderMessageResult | void
   try {
-    delivery = await dependencies.publish(
-      toPublishInput(attempting, authenticatedPubkey, shouldContinue)
-    )
+    delivery = await dependencies.publish({
+      ...toPublishInput(attempting, authenticatedPubkey, shouldContinue),
+      onRecipientDeliveryStarting: async () => {
+        await dependencies.store.put({
+          ...attempting,
+          deliveryAttempted: true,
+          updatedAt: dependencies.now(),
+        })
+      },
+    })
   } catch (error) {
     if (
       error instanceof RelayPublishDiagnosticsError &&
@@ -484,6 +491,7 @@ async function deliverSavedInvoice(
     await dependencies.store.put({
       ...attempting,
       deliveryState: "sent",
+      deliveryAttempted: true,
       updatedAt: sentAt,
     })
   } catch (error) {

@@ -408,12 +408,15 @@ export async function resumePrivateDelivery(
   store: CommerceInboxStore,
   rumorId: string,
   recipient: string,
-  publisher = publishWithPlanner
+  publisher = publishWithPlanner,
+  onDeliveryStarting?: () => void | Promise<void>
 ) {
   const id = `delivery:${rumorId}`
   let row = await store.database.commerceInboxDeliveries.get(store.key(id))
   store.assertCurrent()
   if (!row) return null
+  // A retained immutable send needs the same caller fence before recovery I/O.
+  await onDeliveryStarting?.()
   if (row.state !== "accepted") {
     await retryPrivateDeliveries(store.principal, publisher, id, store)
     row = await store.database.commerceInboxDeliveries.get(store.key(id))
@@ -546,6 +549,12 @@ export interface PublishPrivateMessageInput {
   onRecipientAccepted?: (
     delivery: PublishWithPlannerResult | ProgressivePublishSnapshot
   ) => void | Promise<void>
+  /**
+   * Durable caller fence immediately before recipient staging or saved-send
+   * recovery. Readiness, wrapping and session checks precede this boundary;
+   * checkpoint failure prevents staging/publication. No private data is passed.
+   */
+  onRecipientDeliveryStarting?: () => void | Promise<void>
   /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
@@ -947,7 +956,8 @@ export async function publishPrivateMessage(
         new CommerceInboxStore(currentDeliveryAuthorization),
       stableRumor.id,
       recipientPubkey,
-      input.publishFn
+      input.publishFn,
+      input.onRecipientDeliveryStarting
     )
     if (resumed) return resumed
   }
@@ -1257,6 +1267,7 @@ export async function publishPrivateMessage(
     let checkpointFailure = false
     const recipientDelivery = await stageAndPublishPrivateLeg({
       ...context,
+      onDeliveryStarting: input.onRecipientDeliveryStarting,
       rumorId: stableRumor.id,
       leg: recipientLeg,
       // Accepted-order staging and retry stay in the domain transaction.
@@ -2060,9 +2071,13 @@ async function stageAndPublishPrivateLeg(
     rumorId: string
     store: CommerceInboxStore | null
     selfCopy?: boolean
+    onDeliveryStarting?: () => void | Promise<void>
   }
 ) {
   const { store, leg } = input
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
+  store?.assertCurrent()
+  await input.onDeliveryStarting?.()
   const id = store
     ? await stagePrivateDelivery(
         store,

@@ -35,6 +35,11 @@ import {
   __setRelayPublishTestOverrides,
 } from "../packages/core/src/protocol/relay-publish"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
+import {
+  createMerchantInvoiceModule,
+  type MerchantInvoiceDependencies,
+  type MerchantPendingInvoice,
+} from "../apps/merchant/src/lib/merchant-invoice"
 
 const RECIPIENT_RELAY = "wss://recipient.inbox.conduit.market"
 const SELF_RELAY = "wss://sender.inbox.conduit.market"
@@ -205,6 +210,172 @@ function acknowledged(relay: string) {
 }
 
 describe("private delivery composed contract", () => {
+  it("prevents staging and relay I/O when the caller attempt fence fails", async () => {
+    const fixture = setup()
+    const input = sendInput(fixture, 16)
+    input.selfCopy = false
+    let publications = 0
+    input.onRecipientDeliveryStarting = async () => {
+      throw new Error("Attempt checkpoint unavailable")
+    }
+    input.publishFn = (async () => {
+      publications++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await expect(publishPrivateMessage(input)).rejects.toThrow(
+      "Attempt checkpoint unavailable"
+    )
+    expect(publications).toBe(0)
+    expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
+  })
+
+  it("fences accepted saved-send recovery without wrapping or publishing again", async () => {
+    const fixture = setup()
+    const input = sendInput(fixture, 16)
+    input.selfCopy = false
+    let publications = 0
+    input.publishFn = (async () => {
+      publications++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await publishPrivateMessage(input)
+    const signs = fixture.signCalls()
+    input.onRecipientDeliveryStarting = async () => {
+      throw new Error("Attempt checkpoint unavailable")
+    }
+    await expect(publishPrivateMessage(input)).rejects.toThrow(
+      "Attempt checkpoint unavailable"
+    )
+    let checkpointed = false
+    input.onRecipientDeliveryStarting = async () => {
+      checkpointed = true
+    }
+    await publishPrivateMessage(input)
+    expect(checkpointed).toBe(true)
+    expect(fixture.signCalls()).toBe(signs)
+    expect(publications).toBe(1)
+    expect(await fixture.database.commerceInboxDeliveries.count()).toBe(1)
+  })
+  it.each(["readiness", "refusal", "session", "wrapping"] as const)(
+    "keeps an invoice retryable after actual pre-stage %s failure",
+    async (failure) => {
+      let failing = true
+      const fixture = setup()
+      const scope = {
+        merchantPubkey: fixture.sender,
+        buyerPubkey: fixture.recipient,
+        orderId: "contract-order",
+      }
+      let saved: MerchantPendingInvoice | null = null
+      let invoiceCreations = 0
+      let publications = 0
+      const unused = async (): Promise<never> => {
+        throw new Error("Unexpected provider call")
+      }
+      const dependencies: MerchantInvoiceDependencies = {
+        store: {
+          get: async () => saved,
+          put: async (row) => {
+            saved = structuredClone(row)
+          },
+          delete: async () => {
+            saved = null
+          },
+        },
+        getProfileLud16: unused,
+        fetchLnurlPayMetadata: unused,
+        fetchLnurlInvoice: unused,
+        makeWeblnInvoice: unused,
+        getNwcInfo: unused,
+        makeNwcInvoice: unused,
+        isMockPayments: () => true,
+        makeMockInvoice: () => {
+          invoiceCreations++
+          return { invoice: "synthetic-invoice" }
+        },
+        now: () => Date.now(),
+        lockManager: null,
+        publish: async (invoiceInput) => {
+          const input = sendInput(fixture, 16)
+          input.selfCopy = false
+          input.rumor = createPrivateMessageRumor({
+            pubkey: fixture.sender,
+            kind: 16,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              ["p", fixture.recipient],
+              ["type", "payment_request"],
+              ["order", scope.orderId],
+            ],
+            content: JSON.stringify(invoiceInput.payload),
+          })
+          input.onRecipientDeliveryStarting =
+            invoiceInput.onRecipientDeliveryStarting
+          if (failing && failure === "readiness")
+            input.recipientInboxRelays = []
+          if (failing && failure === "session")
+            input.shouldContinue = () => false
+          input.giftWrapFn = async (...args) => {
+            if (failing && failure === "wrapping")
+              throw new Error("Synthetic wrapping failure")
+            if (failing && failure === "refusal") {
+              const signer = args[2]
+              return await wrapPrivateMessage(
+                args[0],
+                args[1],
+                {
+                  pubkey: signer.pubkey,
+                  getPublicKey: () => signer.getPublicKey(),
+                  signEvent: (event) => signer.signEvent(event),
+                  encryptNip44: async () => {
+                    throw new Error("Synthetic signer refusal")
+                  },
+                  decryptNip44: (peer, ciphertext) =>
+                    signer.decryptNip44(peer, ciphertext),
+                  decryptLegacy: (peer, ciphertext) =>
+                    signer.decryptLegacy(peer, ciphertext),
+                },
+                args[3]
+              )
+            }
+            return await wrapPrivateMessage(...args)
+          }
+          input.publishFn = (async () => {
+            publications++
+            expect(saved?.deliveryAttempted).toBe(true)
+            expect(await fixture.database.commerceInboxDeliveries.count()).toBe(
+              1
+            )
+            return acknowledged(RECIPIENT_RELAY)
+          }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+          await publishPrivateMessage(input)
+          return {
+            recipient: "accepted",
+            localHistory: "saved",
+            selfCopy: "complete",
+            deliveryRoute: "declared_inbox",
+          }
+        },
+      }
+      await expect(
+        createMerchantInvoiceModule(dependencies).createAndDeliver({
+          ...scope,
+          amountSats: 50,
+          delivery: "buyer_and_self",
+          source: { type: "manual", invoice: "unused" },
+        })
+      ).rejects.toThrow()
+      expect(publications).toBe(0)
+      expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
+      const reloaded = createMerchantInvoiceModule(dependencies)
+      expect(await reloaded.getStatus(scope)).toEqual({ state: "pending" })
+      failing = false
+      await reloaded.retryDelivery(scope)
+      expect(invoiceCreations).toBe(1)
+      expect(publications).toBe(1)
+      expect(await reloaded.getStatus(scope)).toEqual({ state: "sent" })
+    }
+  )
   for (const kind of [16, 14, 15] as const) {
     it(`preserves recipient success for kind ${kind} when optional self delivery fails`, async () => {
       const fixture = setup()

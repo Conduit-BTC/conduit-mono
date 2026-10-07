@@ -495,6 +495,7 @@ describe("merchant invoice validation and durability", () => {
       orderId: ORDER_ID,
       type: "payment_request",
       signerInteraction: "external",
+      onRecipientDeliveryStarting: expect.any(Function),
       tags: [
         ["amount", "50"],
         ["currency", "SATS"],
@@ -558,10 +559,13 @@ describe("merchant invoice validation and durability", () => {
       localHistory: "unavailable" as const,
       deliveryRoute: "declared_inbox" as const,
     }
-    const publish = mock(async () => {
-      current = false
-      return accepted
-    })
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        await input.onRecipientDeliveryStarting?.()
+        current = false
+        return accepted
+      }
+    )
     const module = createMerchantInvoiceModule(
       createDependencies(store, { publish })
     )
@@ -572,7 +576,7 @@ describe("merchant invoice validation and durability", () => {
         shouldContinue: () => current,
       })
     ).toEqual({ ...accepted, checkpointFailure: true })
-    expect(store.putCount).toBe(1)
+    expect(store.putCount).toBe(2)
     expect(await module.getStatus(createInput())).toEqual({
       state: "delivery_unknown",
     })
@@ -593,15 +597,48 @@ describe("merchant invoice validation and durability", () => {
     expect(dependencies.publish).toHaveBeenCalledTimes(0)
   })
 
+  it("leaves the saved invoice retryable when its attempt fence cannot be written", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    store.failOnPutNumber = 2
+    let publications = 0
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        await input.onRecipientDeliveryStarting?.()
+        publications++
+      }
+    )
+    const dependencies = createDependencies(store, { publish })
+    await expect(
+      createMerchantInvoiceModule(dependencies).createAndDeliver({
+        ...createInput(),
+        source: { type: "manual", invoice: INVOICE },
+      })
+    ).rejects.toThrow(/storage failure/i)
+    expect(publications).toBe(0)
+    const reloaded = createMerchantInvoiceModule(dependencies)
+    expect(await reloaded.getStatus(createInput())).toEqual({
+      state: "pending",
+    })
+    store.failOnPutNumber = null
+    await reloaded.retryDelivery(createInput())
+    expect(publications).toBe(1)
+    expect(store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)?.invoice).toBe(
+      INVOICE
+    )
+  })
+
   it("retains an ambiguous publish attempt without issuing or sending another invoice", async () => {
     const store = new MemoryPendingInvoiceStore()
     let failDelivery = true
     const fetchLnurlInvoice = mock(async () => ({ invoice: INVOICE }))
     const publishedInvoices: string[] = []
-    const publish = mock(async (input: { payload: { invoice?: string } }) => {
-      publishedInvoices.push(input.payload.invoice ?? "")
-      if (failDelivery) throw new Error("relay delivery failed")
-    })
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        await input.onRecipientDeliveryStarting?.()
+        publishedInvoices.push(input.payload.invoice ?? "")
+        if (failDelivery) throw new Error("relay delivery failed")
+      }
+    )
     const dependencies = createDependencies(store, {
       fetchLnurlInvoice,
       publish,
@@ -626,6 +663,48 @@ describe("merchant invoice validation and durability", () => {
     expect(fetchLnurlInvoice).toHaveBeenCalledTimes(1)
     expect(publishedInvoices).toEqual([INVOICE])
   })
+
+  it.each(["readiness", "signer refusal", "session change", "wrapping"])(
+    "keeps the same saved invoice retryable after a pre-stage %s failure",
+    async (failure) => {
+      const store = new MemoryPendingInvoiceStore()
+      const fetchLnurlInvoice = mock(async () => ({ invoice: INVOICE }))
+      let failBeforeStage = true
+      const publish: MerchantInvoiceDependencies["publish"] = mock(
+        async (input) => {
+          if (failBeforeStage) throw new Error(`Pre-stage ${failure}`)
+          await input.onRecipientDeliveryStarting?.()
+        }
+      )
+      const dependencies = createDependencies(store, {
+        fetchLnurlInvoice,
+        publish,
+      })
+      await expect(
+        createMerchantInvoiceModule(dependencies).createAndDeliver({
+          ...createInput(),
+          source: { type: "profile_lud16" },
+        })
+      ).rejects.toThrow(`Pre-stage ${failure}`)
+      const reloaded = createMerchantInvoiceModule(dependencies)
+      expect(await reloaded.getStatus(createInput())).toEqual({
+        state: "pending",
+      })
+      expect(
+        store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)?.deliveryAttempted
+      ).not.toBe(true)
+      failBeforeStage = false
+      await reloaded.retryDelivery(createInput())
+      expect(fetchLnurlInvoice).toHaveBeenCalledTimes(1)
+      expect(publish).toHaveBeenCalledTimes(2)
+      expect(
+        (publish as ReturnType<typeof mock>).mock.calls.map(
+          ([input]) => input.payload.invoice
+        )
+      ).toEqual([INVOICE, INVOICE])
+      expect(await reloaded.getStatus(createInput())).toEqual({ state: "sent" })
+    }
+  )
 
   it("allows the saved invoice to retry only after a proven zero-ACK outcome is checkpointed", async () => {
     const store = new MemoryPendingInvoiceStore()
@@ -747,12 +826,13 @@ describe("merchant invoice validation and durability", () => {
 
   it("does not resend after a final status-write failure without an accepted receipt", async () => {
     const store = new MemoryPendingInvoiceStore()
-    store.failOnPutNumber = 2
+    store.failOnPutNumber = 3
     const fetchLnurlInvoice = mock(async () => ({ invoice: INVOICE }))
     const publishedInvoices: string[] = []
     const dependencies = createDependencies(store, {
       fetchLnurlInvoice,
-      publish: mock(async (input: { payload: { invoice?: string } }) => {
+      publish: mock(async (input) => {
+        await input.onRecipientDeliveryStarting?.()
         publishedInvoices.push(input.payload.invoice ?? "")
       }),
     })
