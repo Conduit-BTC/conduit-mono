@@ -13,14 +13,17 @@ const pubkey = "a".repeat(64)
 const npub = pubkeyToNpub(pubkey)
 
 describe("Market public identity references", () => {
-  it("shows the advisory Brainstorm score for identities without listings", async () => {
+  it("keeps Brainstorm inside the existing identity badge", async () => {
     const identityPage = await Bun.file(
       "apps/market/src/routes/$identityRef.tsx"
     ).text()
-    expect(identityPage).toContain(
-      "<BrainstormGlobalScoreLink pubkey={pubkey} />"
-    )
-    expect(identityPage).toContain("showBrainstorm={false}")
+    expect(identityPage).toContain("Nip05TrustIndicator")
+    expect(identityPage).not.toContain("BrainstormGlobalScoreLink")
+    expect(identityPage).not.toContain("BrainstormStatusLink")
+    const trustSummary = await Bun.file(
+      "apps/market/src/components/MerchantTrustSummary.tsx"
+    ).text()
+    expect(trustSummary).not.toContain("Brainstorm")
   })
 
   it("maps npub, hex, and nprofile to one canonical path", () => {
