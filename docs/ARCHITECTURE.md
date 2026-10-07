@@ -103,15 +103,19 @@ anchors so navigation re-enters that boot boundary.
 
 Market and Merchant currently use external NIP-07 and NIP-46 account signers.
 An optional installed-PWA local signer has an approved bounded policy exception:
-an existing user-backed-up key may be imported only inside the separately
-reviewed `conduit-signer` repository's dedicated HTTPS origin. That origin owns
-import, persistence, key use and logout. Market/Merchant origins and Conduit
-services receive no key, backup or material that independently unwraps it.
-Account creation, server custody, wallet derivation, settings sync and recovery
-remain outside this exception. Physical-iPhone persistence and maintainer
-security sign-off must pass before runtime integration; an origin, deployment or
-release requires separate approval. The current client path remains external
-signers.
+an existing NSEC may be imported only inside the separate `conduit-signer`
+repository's dedicated HTTPS origin. That origin owns import, device-local
+persistence, automatic restore and ordinary signing without per-action
+approvals. Explicit logout deletes its stored key and revokes live sessions.
+Market/Merchant receive public identity and operation results, never the raw key,
+backup or independent unwrapping material. Conduit services never receive the
+key. Account creation, server custody, wallet derivation, settings sync and
+recovery remain outside this exception. Implementation and composed preview
+testing may proceed before production device sign-off. Exact-origin isolation,
+session integrity, privacy review, physical-iPhone validation and maintainer
+security sign-off remain required for a production decision; origin, deployment
+and release approval remain separate. This documentation enables no runtime
+provider; the current client paths remain NIP-07/NIP-46.
 
 Shared connection UI will embed the exact approved signer origin for import.
 The local provider must adapt to the existing SessionSigner/AccountSigner owner,
@@ -126,8 +130,7 @@ unlock or hardware-backed at-rest guarantee. Browsing and external signers stay
 available; installed mode is a UX gate.
 
 Guest checkout may create a temporary order-scoped browser key, and an NIP-46
-connection may use an
-encrypted browser-local client key; neither is a Conduit-custodied user account
+connection may use an encrypted browser-local client key; neither is a Conduit-custodied user account
 key. The only approved server-side private-key exception is the Anon Conduit
 Shopper public zap signer described in `docs/specs/protocol.md`; it is limited
 to authenticated, merchant-authorized checkout zap requests and fixed-scope

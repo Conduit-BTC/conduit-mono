@@ -49,25 +49,31 @@ Read only the rows the change actually touches. A route can cross several rows.
 ## Trust and product boundaries
 
 - Durable Nostr account signing currently uses external NIP-07 or NIP-46 signers.
-  The approved optional installed-PWA local signer may import an existing,
-  user-backed-up account key only inside the separately reviewed `conduit-signer`
-  repository's dedicated signer origin. That origin exclusively owns import,
-  persistence, key use and logout. Market/Merchant origins and Conduit services
-  must never receive or store the key, backup or material that independently
-  unwraps it. Physical-iPhone persistence and maintainer security sign-off are
-  mandatory before runtime integration. Origin, deployment and release approval
-  remain separate. Automatic restore provides no independent unlock or
-  hardware-backed at-rest protection. Preserve browsing and external signers;
+  The approved optional installed-PWA NSEC path imports an existing account key
+  only inside the separate `conduit-signer` repository's dedicated signer origin.
+  The signer owns import, device-local persistence, automatic restore, ordinary
+  signing without per-action approvals, and stored-key deletion on explicit
+  logout. Market/Merchant receive public identity and operation results, never
+  the raw key, backup or independent unwrapping material; Conduit services never
+  receive the key. Implementation and composed preview testing may proceed
+  before production device sign-off. Exact-origin isolation, session integrity,
+  privacy review, physical-iPhone validation and maintainer security sign-off
+  remain required for a production decision. Origin, deployment and release
+  approval remain separate. Automatic restore provides no independent unlock or
+  hardware-backed at-rest protection. Preserve browsing and NIP-07/NIP-46;
   installed mode is a UX gate, not key authority.
   Apps must not generate, store, or derive account keys. The bounded guest-order
   key and isolated device-local Portable Wallet credential boundaries are distinct
   exceptions; neither creates a Nostr account. The device-owned `/wallet`
   surface works without a connected signer.
-- Runtime disposable fixtures are allowed only in the separate signer's isolated
-  development test control and unit-test process, from a CSPRNG source. No fixed
-  scalar, encoded credential, real key, export, diagnostic or network sink is
-  allowed. This does not widen protected-smoke credential rules or authorize
-  product account-key creation, wallet derivation, settings sync or recovery.
+- Test identities are ordinary newly generated Nostr keys from a CSPRNG, used
+  in controlled test processes and the signer-owned test surface. They are not
+  a separate class of non-account key. No fixed credential may enter source or
+  history, and no raw key may reach app origins, services, diagnostics or
+  artifacts. Composed preview tests may use these identities through the same
+  account/session boundary. This does not widen protected-smoke credential rules
+  or authorize product account creation, wallet derivation, settings sync or
+  recovery.
 - Product listings use NIP-99 plus the Open Markets working specification for
   `kind:30402`, derived from the earlier GammaMarkets `market-spec`. Check public
   protocol authority before changing event meaning or canonical emission. Do

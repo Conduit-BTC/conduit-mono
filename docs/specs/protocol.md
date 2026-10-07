@@ -27,37 +27,59 @@ Non-goals for the current client repository:
 ## Authentication
 
 Conduit Market and Merchant Portal currently authenticate through external
-signers. The separate-origin local path below is approved in policy and remains
-gated before runtime integration.
+NIP-07/NIP-46 signers. The approved separate-origin NSEC path below permits
+implementation and composed preview testing before production device sign-off.
+This policy change does not add a runtime provider.
 
-| Signer path                  | Status                             | Notes                                                              |
-| ---------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
-| NIP-07 browser signer        | Current client support             | Required path for current interactive signing                      |
-| NIP-46 remote signer         | Current client support             | Uses a revocable encrypted browser-local client key                |
-| Separate-origin local signer | Approved policy; integration gated | Existing-key import only; physical-iPhone and security gates below |
-| App-generated keys           | Prohibited by default              | Only the bounded guest-order exception below is allowed            |
+| Signer path                 | Status                                                | Notes                                                             |
+| --------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| NIP-07 browser signer       | Current client support                                | Alternative account connection method                             |
+| NIP-46 remote signer        | Current client support                                | Alternative using a revocable encrypted browser-local client key  |
+| Separate-origin NSEC signer | Approved policy; implementation and preview permitted | Existing-key import; production validation below remains required |
+| App-generated keys          | Prohibited by default                                 | Only the bounded guest-order exception below is allowed           |
 
 ### Separate-Origin Imported Account Key Exception
 
-An optional installed-PWA local signer may import an existing, user-backed-up
-Nostr account key only inside the independently reviewed `conduit-signer`
-repository's dedicated HTTPS origin. The signer owns entry, validation, device-
-local persistence, key use and logout. No key, backup or independent unwrapping
-capability may reach Market/Merchant origins or Conduit services. No account-key
-creation, server custody, recovery, wallet derivation or settings sync is allowed.
-Runtime disposable fixtures are allowed only inside that repository's isolated
-development control and unit-test process, without fixed keys or export,
-diagnostic or network sinks; they are not a product creation feature.
+An optional installed-PWA NSEC path imports an existing Nostr account key only
+inside the separate `conduit-signer` repository's dedicated HTTPS origin. The
+signer owns entry, validation, device-local persistence and key use. Market and
+Merchant receive public identity and operation results, never the raw key,
+backup or independent unwrapping capability. Conduit services never receive the
+key. Product account creation, server custody, recovery, wallet derivation and
+settings sync remain outside this exception.
 
-Physical-iPhone persistence in normal Safari and installed Market/Merchant PWAs
-on the exact approved origins and maintainer security sign-off must pass before
-runtime integration. Repository/policy approval
-does not approve an origin, deployment or release. Existing external signers and
-signer-free browsing remain available. Show the local option only in installed
-mode; this is a UX gate, not signing authority. Automatic restore and ordinary
-operations have no routine per-action approval and provide no independent unlock
-or hardware-backed at-rest guarantee. Explain separate imports and logout per
-storage partition using physical device evidence.
+After import, restore automatically on a fresh app session and perform ordinary
+signing and encryption/decryption without per-action approvals. Do not add a
+passkey, Face ID, password unlock, backup-verification step or recovery ceremony
+for this path. Users retain their own backup and can reimport after local data
+loss. Explicit logout deletes the stored key, clears accessible key memory on a
+best-effort basis, revokes live sessions in that storage partition and cancels
+pending operations. Subsequent local-key use requires reimport. A failed key
+deletion must not be reported as successful logout.
+
+Show the local option only in installed standalone Market/Merchant PWAs. This
+is a UX gate, not signing authority; installation remains optional for browsing
+and NIP-07/NIP-46 connections. Explain any required separate imports or logout
+per Safari/PWA or Market/Merchant storage partition using observed device
+behavior. Do not promise shared storage or independent unlock/hardware-backed
+at-rest protection.
+
+Test identities are ordinary newly generated Nostr keys from a CSPRNG. Generate
+them in controlled test processes or the signer-owned test surface and exercise
+the same account/session behavior in composed previews. This is test equipment,
+not product account creation. Never commit credentials or expose raw keys to app
+origins, services, diagnostics or evidence; existing credential-history and
+protected-smoke guards remain enforced.
+
+Implementation and composed previews with test identities may proceed before
+physical production device sign-off. Exact origin allowlists/CSP, session integrity and privacy
+controls apply during preview testing too. Before production, require maintainer
+security review and physical-iPhone validation on the exact intended HTTPS
+origins in normal Safari and installed Market/Merchant PWAs: import, restart,
+automatic restore, signing, frame reload, offline/online, storage loss and
+logout/reimport. Repository/policy approval does not approve an origin,
+deployment or release. Failed persistence requires a reviewed storage/UX
+resolution; never move raw keys or unwrapping capability into app origins.
 
 The narrow typed API comprises status/public key, complete verified event
 signing, NIP-44 v2 encryption/decryption, logout and explicit legacy NIP-04
@@ -67,8 +89,9 @@ account/session binding, bounded timeouts and stale-response rejection. Adapt to
 the existing AccountSigner/SessionSigner and AuthContext owners; auth/frame
 replacement and logout cancel pending work. A reported public key, profile or
 restoration candidate cannot grant protected reads. A future local adapter may
-become eligible only through the existing authenticated-account owner after the
-gate passes; guest-order keys remain ineligible.
+become eligible only through the existing authenticated-account owner after its
+account-bound lifecycle is implemented and validated; guest-order keys remain
+ineligible.
 
 Preserve the existing shared NIP-17/NIP-59 construction and verification:
 unsigned rumors, author-signed seals and ephemeral-key gift wraps. No new legacy
@@ -92,10 +115,10 @@ source IP, destination, timing, and traffic volume.
 The protected-read executor owns plain Nostr request/event contracts,
 WebSockets, subscription lifecycles, authentication, reconnects, validation,
 and typed per-relay outcomes without importing NDK. NIP-07 and NIP-46 are the
-currently eligible account signer adapters. The gated local provider must satisfy
-the account-owner requirements above before eligibility changes. Guest-order
-keys and unsigned sessions
-cannot authenticate and have no fallback. NDK remains a named edge adapter for
+currently eligible account signer adapters. The local provider must satisfy the
+account-owner requirements above before eligibility changes; it must use an
+explicit local method, never impersonate NIP-07/NIP-46. Guest-order keys and
+unsigned sessions cannot authenticate and have no fallback. NDK remains a named edge adapter for
 existing signer and gift-wrap/unwrap work; protected reads must not deepen its
 relay ownership.
 

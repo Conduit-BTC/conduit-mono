@@ -96,20 +96,26 @@ status are maintained in the guide rather than duplicated here.
 ### Auth and payments
 
 - Conduit Market and Merchant currently use external NIP-07/NIP-46 signers.
-  The approved optional installed-PWA local exception imports an existing,
-  user-backed-up account key only in the separately reviewed `conduit-signer`
-  repository's dedicated signer origin. That origin owns import, persistence,
-  key use and logout. Apps/services must never receive a key, backup or material
-  that independently unwraps it. Physical-iPhone persistence and maintainer
-  security sign-off precede runtime integration; origin, deployment and release
-  approval remain separate. No account-key creation, server custody, wallet
-  derivation, settings sync or recovery. Automatic restore is not independent
-  at-rest protection. See `docs/specs/protocol.md` for the bounded contract.
+  The approved optional installed-PWA NSEC path imports an existing account key
+  only in the separate `conduit-signer` repository's dedicated signer origin.
+  That origin owns import, persistence, automatic restore, ordinary operations
+  without per-action approvals, and key deletion/session revocation on explicit
+  logout. Apps receive public identity and operation results, never the raw key,
+  backup or independent unwrapping material; services never receive the key.
+  Implementation and composed preview testing may precede production device
+  sign-off. Exact-origin isolation, session integrity, privacy and maintainer
+  security review plus physical-iPhone validation remain production requirements;
+  origin, deployment and release approval remain separate. No product account
+  creation, server custody, wallet derivation, settings sync or recovery.
+  Automatic restore is not independent at-rest protection. See
+  `docs/specs/protocol.md` for the bounded contract.
 - Approved browser-generated exceptions remain the outbound-only
   `guest_ephemeral` order sender and encrypted browser-local NIP-46 client
-  connection key. Runtime disposable fixtures in the separate signer's isolated
-  development control/test process are permitted without fixed credentials,
-  export, diagnostic or network sinks; they are not product key creation.
+  connection key. Test identities are ordinary newly generated CSPRNG Nostr
+  keys in controlled test processes or the signer-owned test surface, including
+  composed previews. They are not a product key-creation feature. Fixed
+  credentials in source/history and raw-key app/service/diagnostic/artifact sinks
+  remain prohibited.
   Existing guest-order/Portable Wallet boundaries and protected-smoke checks
   remain enforced. The only approved server-side private-key exception is the
   Anon Conduit Shopper public zap signer, scoped to authenticated merchant-
@@ -118,7 +124,7 @@ status are maintained in the guide rather than duplicated here.
 - NIP-42 relay AUTH is ephemeral relay-session authentication, not an app login
   system or persisted Conduit identity layer. The Conduit client keeps challenge
   and auth-event state in memory, but sends the signing request to the selected
-  external signer and the signed auth event to the selected relay; those
+  account signer and the signed auth event to the selected relay; those
   signers and relays may retain records under their own policies.
 - NWC/NIP-47 payment behavior remains non-custodial. NWC secrets stay in the
   isolated Connected Wallet provider path. Portable Wallet seed handling is a
