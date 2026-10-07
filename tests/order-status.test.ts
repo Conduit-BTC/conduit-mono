@@ -380,6 +380,11 @@ describe("getMerchantOrderActions", () => {
           label: "Add shipping details",
           kind: "primary",
         },
+        {
+          action: "manual_complete",
+          label: "Complete fulfilled order",
+          kind: "primary",
+        },
       ]
     )
   })
@@ -395,6 +400,11 @@ describe("getMerchantOrderActions", () => {
       {
         action: "record_shipment",
         label: "Add shipping details",
+        kind: "primary",
+      },
+      {
+        action: "manual_complete",
+        label: "Complete fulfilled order",
         kind: "primary",
       },
     ])
@@ -581,9 +591,9 @@ describe("getMerchantOrderActions", () => {
     expect(buildOrderStatusTimeline(state).map((step) => step.key)).toContain(
       "shipped"
     )
-    expect(getMerchantOrderActions(state).at(-1)?.action).toBe(
-      "record_shipment"
-    )
+    expect(
+      getMerchantOrderActions(state).map((action) => action.action)
+    ).toEqual(["cancel", "record_shipment", "manual_complete"])
   })
 
   it("routes buyer payment evidence to verification before fulfillment", () => {
@@ -660,6 +670,11 @@ describe("getMerchantOrderActions", () => {
         label: "Add shipping details",
         kind: "primary",
       },
+      {
+        action: "manual_complete",
+        label: "Complete fulfilled order",
+        kind: "primary",
+      },
     ])
   })
 
@@ -725,7 +740,7 @@ describe("getMerchantOrderActions", () => {
         paid: true,
         buyerReplyable: false,
       }).map((action) => action.action)
-    ).toEqual(["cancel", "record_shipment"])
+    ).toEqual(["cancel", "record_shipment", "manual_complete"])
     expect(
       getMerchantOrderActions({
         status: "accepted",

@@ -27,6 +27,7 @@ import {
   getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
+import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
 
@@ -626,5 +627,144 @@ describe("private delivery composed contract", () => {
     ).rejects.toThrow("one explicit counterparty")
     expect(publishes).toBe(0)
     expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
+  })
+})
+
+describe("durable merchant completion", () => {
+  function completionInput(fixture: ReturnType<typeof setup>) {
+    const input = sendInput(fixture, 16)
+    input.rumor = createPrivateMessageRumor({
+      pubkey: fixture.sender,
+      kind: 16,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["p", fixture.recipient],
+        ["type", "status_update"],
+        ["order", "historical-order"],
+        ["status", "complete"],
+      ],
+      content: JSON.stringify({
+        completionBasis: "historical_handoff",
+        note: "Collected previously",
+      }),
+    })
+    const parsed = parseOrderMessageRumorEvent(input.rumor)
+    if (parsed.type !== "status_update")
+      throw new Error("Invalid completion fixture")
+    input.localCompletion = parsed
+    return input
+  }
+  it("retains an encrypted completion before I/O, reloads it and retries only the exact signed wrap", async () => {
+    const fixture = setup()
+    const input = completionInput(fixture)
+    const attempts: string[] = []
+    input.publishFn = (async (event) => {
+      attempts.push(event.id)
+      const projected = await fixture.store.projections()
+      expect(
+        projected.some(
+          (row) =>
+            row.projection.kind === "order" &&
+            row.projection.message.id === input.rumor.id
+        )
+      ).toBe(true)
+      throw new Error("transport interrupted")
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await expect(publishPrivateMessage(input)).rejects.toThrow(
+      "transport interrupted"
+    )
+    const calls = fixture.signCalls()
+    const reopened = new CommerceInboxStore(
+      getProtectedReadAuthorization(fixture.sender)!,
+      fixture.database
+    )
+    expect(
+      (await reopened.projections()).some(
+        (row) =>
+          row.projection.kind === "order" &&
+          row.projection.message.type === "status_update" &&
+          row.projection.message.payload.note === "Collected previously"
+      )
+    ).toBe(true)
+    const rows = await fixture.database.commerceInboxRecords.toArray()
+    expect(JSON.stringify(rows)).not.toContain("Collected previously")
+    expect(
+      JSON.stringify(await fixture.database.commerceInboxDeliveries.toArray())
+    ).not.toContain("historical-order")
+    await retryPrivateDeliveries(
+      fixture.sender,
+      (async (event) => {
+        attempts.push(event.id)
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+      undefined,
+      reopened,
+      async (pubkey) => ({
+        pubkey,
+        state: "declared",
+        relayUrls: [RECIPIENT_RELAY],
+        fetchedAt: Date.now(),
+        stale: false,
+      })
+    )
+    expect(new Set(attempts).size).toBe(1)
+    expect(fixture.signCalls()).toBe(calls)
+    const repeat = completionInput(fixture)
+    repeat.rumor = createPrivateMessageRumor({
+      ...repeat.rumor,
+      content: JSON.stringify({
+        completionBasis: "historical_handoff",
+        note: "Second completion",
+      }),
+    })
+    const parsed = parseOrderMessageRumorEvent(repeat.rumor)
+    if (parsed.type !== "status_update")
+      throw new Error("Invalid completion fixture")
+    repeat.localCompletion = parsed
+    repeat.publishFn = (async () => {
+      throw new Error("must not publish twice")
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await expect(publishPrivateMessage(repeat)).rejects.toThrow(
+      "already staged"
+    )
+    expect(await fixture.database.commerceInboxRecords.count()).toBe(1)
+  })
+  it("rejects a local completion projection that differs from its authenticated rumor", async () => {
+    const fixture = setup()
+    const input = completionInput(fixture)
+    input.localCompletion = {
+      ...input.localCompletion!,
+      payload: {
+        ...input.localCompletion!.payload,
+        note: "Unbound projection",
+      },
+    }
+    let publishes = 0
+    input.publishFn = (async () => {
+      publishes++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await expect(publishPrivateMessage(input)).rejects.toThrow(
+      "Completion must match"
+    )
+    expect(publishes).toBe(0)
+    expect(fixture.signCalls()).toBe(0)
+    expect(await fixture.database.commerceInboxRecords.count()).toBe(0)
+    expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
+  })
+  it("never publishes or retains a completion when its atomic transaction fails", async () => {
+    const fixture = setup()
+    const input = completionInput(fixture)
+    let publishes = 0
+    fixture.database.commerceInboxDeliveries.hook("creating", () => {
+      throw new Error("storage quota")
+    })
+    input.publishFn = (async () => {
+      publishes++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await expect(publishPrivateMessage(input)).rejects.toThrow("storage quota")
+    expect(publishes).toBe(0)
+    expect(await fixture.database.commerceInboxRecords.count()).toBe(0)
   })
 })

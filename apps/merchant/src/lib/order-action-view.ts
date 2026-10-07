@@ -115,16 +115,20 @@ export function buildMerchantOrderActionView({
     (action) =>
       action.kind === "primary" &&
       action.action !== "record_shipment" &&
-      (fulfillmentActionsAuthorized || action.action !== "complete")
+      (fulfillmentActionsAuthorized ||
+        (action.action !== "complete" && action.action !== "manual_complete"))
   )
   const destructiveActions = actions.filter(
     (action) => action.kind === "destructive"
   )
-  const nextStep: MerchantOrderNextStep =
-    primaryButtonActions.length > 0
-      ? "primary_action"
-      : canRecordShipping && fulfillmentActionsAuthorized
-        ? "shipping"
+  const nextStep: MerchantOrderNextStep = primaryButtonActions.some(
+    (action) => action.action !== "manual_complete"
+  )
+    ? "primary_action"
+    : canRecordShipping && fulfillmentActionsAuthorized
+      ? "shipping"
+      : primaryButtonActions.length > 0
+        ? "primary_action"
         : canSendInvoice
           ? "invoice"
           : canRequestPaymentOutOfBand

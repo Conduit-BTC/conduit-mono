@@ -4,10 +4,15 @@ import {
   isPaymentProofEvidenceMessage,
   type ParsedOrderMessage,
 } from "./orders"
-import type { OrderItemFulfillmentSchema } from "../schemas"
+import type {
+  MerchantCompletionBasis,
+  OrderItemFulfillmentSchema,
+} from "../schemas"
 import type { ShippingPolicyQuote } from "./shipping-policy"
 
 export type OrderSummary = {
+  completionBasis?: MerchantCompletionBasis
+  completionNote?: string
   buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
   items: Array<{
     productId: string
@@ -195,8 +200,19 @@ export function extractOrderSummary(
     isMerchantOrderAccepted({ status: message.payload.status })
   )
   const paymentConfirmed = merchantStatuses.some((message) =>
-    isMerchantOrderPaid({ status: message.payload.status })
+    isMerchantOrderPaid({
+      status: message.payload.status,
+      completionBasis: message.payload.completionBasis,
+    })
   )
+
+  const completion = [...merchantStatuses]
+    .reverse()
+    .find(
+      (message) =>
+        ["complete", "delivered"].includes(message.payload.status) &&
+        message.payload.completionBasis
+    )
 
   const items =
     firstOrder?.type === "order"
@@ -315,6 +331,12 @@ export function extractOrderSummary(
       : null
 
   return {
+    ...(completion
+      ? {
+          completionBasis: completion.payload.completionBasis,
+          completionNote: completion.payload.note,
+        }
+      : {}),
     buyerIdentityKind:
       firstOrder?.type === "order"
         ? (firstOrder.payload.buyerIdentityKind ?? null)

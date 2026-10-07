@@ -11,6 +11,9 @@ import {
 import {
   getProfilePaymentAddress,
   buildOrderStatusTimeline,
+  completeMerchantOrder,
+  getMerchantManualCompletionMethods,
+  type MerchantCompletionBasis,
   clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
@@ -93,6 +96,7 @@ import {
 import { requireAuth } from "../lib/auth"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
+import { ManualOrderCompletionDialog } from "../components/ManualOrderCompletionDialog"
 import { OrderItemsCard } from "../components/OrderItemsCard"
 import { MerchantProjectTip } from "../components/MerchantProjectTip"
 import { ShopperTrustCard } from "../components/ShopperTrustCard"
@@ -624,6 +628,12 @@ function OrdersWorkspace() {
   const [trackingUrl, setTrackingUrl] = useState("")
   const [shippingNote, setShippingNote] = useState("")
   const [replyNote, setReplyNote] = useState("")
+  const [completionTarget, setCompletionTarget] = useState<{
+    conversation: MerchantConversationSummary
+    authority: OrderActionAuthority
+    delivery: MerchantOrderDelivery
+    methods: MerchantCompletionBasis[]
+  } | null>(null)
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [sessionStockDecisionKeys, setSessionStockDecisionKeys] = useState(
     () => new Set<string>()
@@ -683,6 +693,7 @@ function OrdersWorkspace() {
   useLayoutEffect(() => {
     orderActionLockRef.current = false
     setPendingDestructiveAction(null)
+    setCompletionTarget(null)
     setReopenConfirmation(null)
     setReopenConfirmationError(null)
     setPaymentConfirmationTarget(null)
@@ -1292,6 +1303,7 @@ function OrdersWorkspace() {
             : communicationState === "guest_out_of_band"
               ? false
               : "unknown",
+        pickupClaimed: snapshottedOrderFulfillment.hasPickupClaim,
         fulfillmentMode: orderFulfillment.mode,
         requiresShipping: orderFulfillment.requiresShipping,
         isZeroCostPickup: isAuthorizedZeroCostPickup({
@@ -2321,6 +2333,58 @@ function OrdersWorkspace() {
     },
   })
 
+  const manualCompletionMutation = useMutation({
+    mutationFn: (input: {
+      target: NonNullable<typeof completionTarget>
+      basis: MerchantCompletionBasis
+      note: string
+    }) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        const { target } = input
+        if (!isCurrentOrderAction(target.authority))
+          throw new Error("Merchant signer session changed")
+        return await completeMerchantOrder({
+          merchantPubkey: target.authority.accountPubkey,
+          buyerPubkey: target.conversation.buyerPubkey,
+          orderId: target.conversation.orderId,
+          messages: target.conversation.messages ?? [],
+          delivery: target.delivery,
+          authenticatedPubkey: target.authority.accountPubkey,
+          shouldContinue: () => isCurrentOrderAction(target.authority),
+          basis: input.basis,
+          note: input.note,
+        })
+      }),
+    onSuccess: (_result, { target }) => {
+      if (!isCurrentOrderAction(target.authority)) return
+      setCompletionTarget(null)
+      flash(
+        target.delivery === "buyer_and_self"
+          ? "Completion recorded and update submitted to buyer"
+          : "Completion recorded in your order history"
+      )
+    },
+    onSettled: async (_result, _error, { target }) => {
+      if (isCurrentOrderAccount(target.authority.accountPubkey))
+        await invalidateOrderQueries()
+    },
+  })
+  const completionRetryMutation = useMutation({
+    mutationFn: () =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        const authority = captureFreshOrderAuthority()
+        if (!inbox.retrySends)
+          throw new Error("Reconnect the intended merchant to retry delivery.")
+        await inbox.retrySends()
+        return authority
+      }),
+    onSuccess: async (authority) => {
+      if (!isCurrentOrderAction(authority)) return
+      flash("Recorded updates retried")
+      await invalidateOrderQueries()
+    },
+  })
+
   const reopenOrderMutation = useMutation({
     mutationFn: (input: ReopenOrderMutationInput) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
@@ -2470,6 +2534,8 @@ function OrdersWorkspace() {
 
   const orderDeliveryPending =
     !hasAccount ||
+    manualCompletionMutation.isPending ||
+    completionRetryMutation.isPending ||
     stockUpdateMutation.isPending ||
     confirmPaymentMutation.isPending ||
     futureReadyMutation.isPending ||
@@ -2889,6 +2955,50 @@ function OrdersWorkspace() {
                             </div>
                           )}
 
+                          {orderSummary.completionBasis && (
+                            <div
+                              className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                              data-testid="merchant-completion-record"
+                            >
+                              <p className="text-sm font-medium">
+                                {orderSummary.completionBasis ===
+                                "historical_handoff"
+                                  ? "Past handoff confirmed by merchant"
+                                  : "Delivery confirmed by merchant without tracking"}
+                              </p>
+                              {orderSummary.completionNote && (
+                                <p className="whitespace-pre-wrap break-words text-sm text-[var(--text-secondary)]">
+                                  {orderSummary.completionNote}
+                                </p>
+                              )}
+                              <p className="text-xs text-[var(--text-secondary)]">
+                                Original order and payment history retained.
+                                This is your fulfillment statement; buyer
+                                receipt is not independently confirmed.
+                              </p>
+                            </div>
+                          )}
+                          {!!inbox.snapshot?.diagnostics.outgoingPending && (
+                            <div className="space-y-2">
+                              <p className="text-sm text-[var(--text-secondary)]">
+                                Some account updates still need relay delivery.
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={orderActionPending}
+                                onClick={() => completionRetryMutation.mutate()}
+                              >
+                                Retry recorded updates
+                              </Button>
+                              {completionRetryMutation.error && (
+                                <p role="alert" className="text-sm text-error">
+                                  Recorded updates could not be delivered.
+                                  Reconnect your signer and retry.
+                                </p>
+                              )}
+                            </div>
+                          )}
                           {primaryButtonActions.length > 0 && (
                             <div className="space-y-2">
                               <div className="flex flex-wrap gap-2">
@@ -2896,7 +3006,11 @@ function OrdersWorkspace() {
                                   <Button
                                     key={action.action}
                                     size="sm"
-                                    variant="primary"
+                                    variant={
+                                      action.action === "manual_complete"
+                                        ? "outline"
+                                        : "primary"
+                                    }
                                     disabled={
                                       orderActionPending ||
                                       (action.action === "reopen" &&
@@ -2905,6 +3019,23 @@ function OrdersWorkspace() {
                                         organizerCompletionBlocked)
                                     }
                                     onClick={() => {
+                                      if (action.action === "manual_complete") {
+                                        if (!selected) return
+                                        const methods =
+                                          getMerchantManualCompletionMethods(
+                                            merchantOrderState
+                                          )
+                                        if (!methods.length) return
+                                        manualCompletionMutation.reset()
+                                        setCompletionTarget({
+                                          conversation: selected,
+                                          authority:
+                                            captureFreshOrderAuthority(),
+                                          delivery: operationalDelivery,
+                                          methods,
+                                        })
+                                        return
+                                      }
                                       if (action.action === "confirm_payment") {
                                         if (!selected) return
                                         confirmPaymentMutation.reset()
@@ -3982,6 +4113,33 @@ function OrdersWorkspace() {
                   </AlertDialogContent>
                 </AlertDialog>
 
+                {completionTarget && (
+                  <ManualOrderCompletionDialog
+                    key={`${completionTarget.authority.authGeneration}:${completionTarget.conversation.id}`}
+                    methods={completionTarget.methods}
+                    buyerNotified={
+                      completionTarget.delivery === "buyer_and_self"
+                    }
+                    pending={manualCompletionMutation.isPending}
+                    error={
+                      manualCompletionMutation.error
+                        ? orderSummary.completionBasis
+                          ? "Completion is recorded locally. Close this dialog and retry recorded updates to finish delivery."
+                          : manualCompletionMutation.error instanceof Error
+                            ? manualCompletionMutation.error.message
+                            : "Could not record completion."
+                        : null
+                    }
+                    onClose={() => setCompletionTarget(null)}
+                    onConfirm={(basis, note) =>
+                      manualCompletionMutation.mutate({
+                        target: completionTarget,
+                        basis,
+                        note,
+                      })
+                    }
+                  />
+                )}
                 <AlertDialog
                   open={reopenConfirmation !== null}
                   onOpenChange={(open) => {

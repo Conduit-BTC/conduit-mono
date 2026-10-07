@@ -23,6 +23,8 @@ export interface PublishMerchantOrderMessageInput {
     | "shipping_update"
     | "receipt"
     | "message"
+  /** Completion is persisted atomically before any recipient relay write. */
+  persistCompletion?: boolean
   payload: Record<string, unknown>
   tags?: string[][]
   delivery: MerchantOrderDelivery
@@ -142,9 +144,20 @@ export async function publishMerchantOrderMessage(
   })
   prepareMerchantRumor(rumor, input.merchantPubkey)
 
+  const parsed = parseOrderMessageRumorEvent(rumor)
+  const localCompletion =
+    input.persistCompletion && parsed.type === "status_update"
+      ? parsed
+      : undefined
+  if (
+    input.persistCompletion &&
+    (!localCompletion || input.authenticatedPubkey !== input.merchantPubkey)
+  )
+    throw new Error("Connect the intended merchant to record completion")
   const target = getMerchantOrderPublishTarget(input, rumor)
   const { selfCopyError, deliveryRoute } = await publishPrivateMessage({
     rumor,
+    localCompletion,
     senderPubkey: input.merchantPubkey,
     accountPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -163,7 +176,6 @@ export async function publishMerchantOrderMessage(
     console.warn("Merchant order self-copy publish failed", selfCopyError)
   }
 
-  const parsed = parseOrderMessageRumorEvent(rumor)
-  await cachePublishedMerchantOrderMessage(parsed)
+  if (!input.persistCompletion) await cachePublishedMerchantOrderMessage(parsed)
   return { deliveryRoute }
 }

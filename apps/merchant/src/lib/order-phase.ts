@@ -260,6 +260,7 @@ export function getMerchantConversationState(
   )
   return {
     status: effectiveStatus.status,
+    completionBasis: summary.completionBasis,
     cancellation: effectiveStatus.cancellation,
     paid: summary.paymentConfirmed,
     paymentObserved:
