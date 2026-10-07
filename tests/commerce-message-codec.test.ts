@@ -3,9 +3,8 @@ import {
   commerceMessageSearchText,
   commerceReplyCounterparty,
   decodeCommerceMessageRumor,
-  encodeOpenMarketsCommerceMessage,
+  type CommerceFields,
   type CommerceRumor,
-  type OpenMarketsCommerceInput,
 } from "../packages/core/src/protocol/commerce-message-codec"
 import {
   buildPrivateFileRumor,
@@ -31,74 +30,129 @@ function rumor(input: {
 }
 
 describe("current Open Markets private commerce grammar", () => {
-  const cases: OpenMarketsCommerceInput[] = [
+  const cases: Array<{
+    wire: Pick<CommerceRumor, "kind" | "tags" | "content">
+    fields: Partial<CommerceFields>
+  }> = [
     {
-      type: "order",
-      recipientPubkey: "merchant",
-      orderId: "order-1",
-      subject: "Order",
-      amountSats: "200",
-      items: [{ coordinate: "30402:merchant:book", quantity: "2" }],
-      shippingCoordinate: "30406:merchant:post",
-      notes: "Please wrap it",
+      wire: {
+        kind: 16,
+        tags: [
+          ["p", "merchant"],
+          ["subject", "Order"],
+          ["type", "1"],
+          ["order", "order-1"],
+          ["amount", "200"],
+          ["item", "30402:merchant:book", "2"],
+          ["shipping", "30406:merchant:post"],
+        ],
+        content: "Please wrap it",
+      },
+      fields: {
+        messageType: "order",
+        amountSats: "200",
+        items: [{ coordinate: "30402:merchant:book", quantity: "2" }],
+        shippingCoordinate: "30406:merchant:post",
+      },
     },
     {
-      type: "payment_request",
-      recipientPubkey: "buyer",
-      orderId: "order-1",
-      subject: "Payment",
-      amountSats: "200",
-      paymentOptions: [{ medium: "lightning", reference: "synthetic-invoice" }],
-      expiration: "1000",
+      wire: {
+        kind: 16,
+        tags: [
+          ["p", "buyer"],
+          ["subject", "Payment"],
+          ["type", "2"],
+          ["order", "order-1"],
+          ["amount", "200"],
+          ["payment", "lightning", "synthetic-invoice"],
+          ["expiration", "1000"],
+        ],
+        content: "",
+      },
+      fields: {
+        messageType: "payment_request",
+        amountSats: "200",
+        paymentOptions: [
+          { medium: "lightning", reference: "synthetic-invoice" },
+        ],
+        expiration: "1000",
+      },
     },
     {
-      type: "status_update",
-      recipientPubkey: "buyer",
-      orderId: "order-1",
-      subject: "Status",
-      status: "confirmed",
+      wire: {
+        kind: 16,
+        tags: [
+          ["p", "buyer"],
+          ["subject", "Status"],
+          ["type", "3"],
+          ["order", "order-1"],
+          ["status", "confirmed"],
+        ],
+        content: "",
+      },
+      fields: { messageType: "status_update", status: "confirmed" },
     },
     {
-      type: "shipping_update",
-      recipientPubkey: "buyer",
-      orderId: "order-1",
-      subject: "Shipping",
-      status: "shipped",
-      carrier: "Example",
-      tracking: "TRACK-1",
-      eta: "1000",
+      wire: {
+        kind: 16,
+        tags: [
+          ["p", "buyer"],
+          ["subject", "Shipping"],
+          ["type", "4"],
+          ["order", "order-1"],
+          ["status", "shipped"],
+          ["tracking", "TRACK-1"],
+          ["carrier", "Example"],
+          ["eta", "1000"],
+        ],
+        content: "",
+      },
+      fields: {
+        messageType: "shipping_update",
+        status: "shipped",
+        carrier: "Example",
+        tracking: "TRACK-1",
+        eta: "1000",
+      },
     },
     {
-      type: "payment_receipt",
-      recipientPubkey: "merchant",
-      orderId: "order-1",
-      subject: "Receipt",
-      amountSats: "200",
-      paymentProofs: [
-        {
-          medium: "lightning",
-          reference: "synthetic-invoice",
-          proof: "synthetic-proof",
-        },
-      ],
+      wire: {
+        kind: 17,
+        tags: [
+          ["p", "merchant"],
+          ["subject", "Receipt"],
+          ["order", "order-1"],
+          ["payment", "lightning", "synthetic-invoice", "synthetic-proof"],
+          ["amount", "200"],
+        ],
+        content: "",
+      },
+      fields: {
+        messageType: "payment_receipt",
+        amountSats: "200",
+        paymentProofs: [
+          {
+            medium: "lightning",
+            reference: "synthetic-invoice",
+            proof: "synthetic-proof",
+          },
+        ],
+      },
     },
   ]
 
-  for (const input of cases) {
-    test(`${input.type} has one verified wire representation and round trips`, () => {
-      const wire = encodeOpenMarketsCommerceMessage(input)
+  for (const { wire, fields } of cases) {
+    test(`${fields.messageType} reads a fixed wire fixture without order-action authority`, () => {
       const decoded = decodeCommerceMessageRumor(rumor(wire))
       expect(decoded.category).toBe("commerce")
       if (decoded.category !== "commerce") throw new Error("Expected commerce")
       expect(decoded.protocol).toBe("open_markets")
       expect(decoded.status).toBe("supported")
-      expect(decoded.fields.orderId).toBe(input.orderId)
-      expect(decoded.fields.messageType).toBe(input.type)
+      expect(decoded.fields.orderId).toBe("order-1")
+      expect(decoded.fields).toMatchObject(fields)
       expect(decoded.parsedOrderMessage).toBeUndefined()
-      expect(wire.tags.filter((tag) => tag[0] === "type")).toHaveLength(
-        input.type === "payment_receipt" ? 0 : 1
-      )
-      expect(wire.content).toBe(input.notes ?? "")
+      expect(decoded.provenance.tags).toEqual(wire.tags)
+      expect(decoded.text).toBe(wire.content)
     })
   }
 
@@ -145,14 +199,18 @@ describe("current Open Markets private commerce grammar", () => {
   })
 
   test("unrecognized Open Markets version remains visible without action authority", () => {
-    const wire = encodeOpenMarketsCommerceMessage({
-      type: "status_update",
-      recipientPubkey: "buyer",
-      orderId: "order-1",
-      subject: "Status",
-      status: "confirmed",
-    })
-    wire.tags.push(["version", "2"])
+    const wire = {
+      kind: 16,
+      tags: [
+        ["p", "buyer"],
+        ["subject", "Status"],
+        ["type", "3"],
+        ["order", "order-1"],
+        ["status", "confirmed"],
+        ["version", "2"],
+      ],
+      content: "",
+    }
     const decoded = decodeCommerceMessageRumor(rumor(wire))
     expect(decoded.category).toBe("commerce")
     if (decoded.category === "commerce") {
@@ -162,21 +220,17 @@ describe("current Open Markets private commerce grammar", () => {
   })
 
   test("payment references are searchable locally while proof material stays out of search", () => {
-    const wire = encodeOpenMarketsCommerceMessage({
-      type: "payment_receipt",
-      recipientPubkey: "merchant",
-      orderId: "order-1",
-      subject: "Receipt",
-      amountSats: "200",
-      paymentProofs: [
-        {
-          medium: "lightning",
-          reference: "invoice-token",
-          proof: "proof-token",
-        },
+    const wire = {
+      kind: 17,
+      tags: [
+        ["p", "merchant"],
+        ["subject", "Receipt"],
+        ["order", "order-1"],
+        ["payment", "lightning", "invoice-token", "proof-token"],
+        ["amount", "200"],
       ],
-      notes: "private-confirmation-token",
-    })
+      content: "private-confirmation-token",
+    }
     const decoded = decodeCommerceMessageRumor(rumor(wire))
     expect(decoded.category).toBe("commerce")
     const search = commerceMessageSearchText(decoded)
@@ -377,6 +431,46 @@ test("kind-15 reads optional size and original hash without weakening ciphertext
       async () => new Response(new Uint8Array(8 * 1024 * 1024 + 17))
     )
   ).rejects.toThrow("supported size")
+})
+
+test("kind-15 hex metadata retains fixed lengths and accepts uppercase", async () => {
+  const plaintext = new TextEncoder().encode("synthetic hex attachment")
+  const { ciphertext, envelope } = await encryptPrivateFileBytes(plaintext)
+  const uppercase = {
+    ...envelope,
+    key: envelope.key.toUpperCase(),
+    nonce: envelope.nonce.toUpperCase(),
+    encryptedSha256: envelope.encryptedSha256.toUpperCase(),
+    originalSha256: envelope.originalSha256.toUpperCase(),
+  }
+  expect(await decryptPrivateFileBytes(ciphertext, uppercase)).toEqual(
+    plaintext
+  )
+  for (const field of [
+    "key",
+    "nonce",
+    "encryptedSha256",
+    "originalSha256",
+  ] as const) {
+    for (const value of [
+      envelope[field].slice(2),
+      `${envelope[field]}00`,
+      `g${envelope[field].slice(1)}`,
+    ]) {
+      const invalid = { ...envelope, [field]: value }
+      expect(() =>
+        buildPrivateFileRumor({
+          recipientPubkeys: ["merchant"],
+          url: "https://files.conduit.market/file",
+          mimeType: "text/plain",
+          envelope: invalid,
+        })
+      ).toThrow("Invalid private file key, nonce, or hash")
+      await expect(
+        decryptPrivateFileBytes(ciphertext, invalid)
+      ).rejects.toThrow("Invalid private file key, nonce, or hash")
+    }
+  }
 })
 
 describe("two-party reply and attachment boundaries", () => {
