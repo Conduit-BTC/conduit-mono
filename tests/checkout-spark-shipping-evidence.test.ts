@@ -203,7 +203,7 @@ describe("checkout Spark signed fixed fulfillment", () => {
     }
   })
 
-  it("preserves digital shipping absence and excludes variable/pickup product forms", () => {
+  it("preserves digital shipping absence and rejects unproven variable/variation product forms", () => {
     const input = fixture()
     const baseTags = input.productEvent.tags.filter(
       (tag) => tag[0] !== "type" && tag[0] !== "shipping_option"
@@ -227,7 +227,7 @@ describe("checkout Spark signed fixed fulfillment", () => {
         ],
       })
       expect(() => resolveCheckoutSparkSignedShipping(variant)).toThrow(
-        UNAVAILABLE
+        "Checkout Spark frozen product pricing is unavailable."
       )
     }
     const missing = fixture({

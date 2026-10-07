@@ -136,6 +136,7 @@ describe("offline guest supplier settled checkout composition", () => {
     )
     const storage = new MemoryStorage()
     const sessionStorage = new MemoryStorage()
+    const continuationStorage = new MemoryStorage()
     const checkoutId = "guest-supplier-checkout"
     const orderId = "guest-supplier-order"
     const walletId = "guest-supplier-wallet"
@@ -225,6 +226,7 @@ describe("offline guest supplier settled checkout composition", () => {
           {
             now: () => now,
             ndk: getNdk(),
+            continuationStorage,
             readRecipientPayout: (input) =>
               readCheckoutSparkRecipientPayoutAddress(input, {
                 readProfiles: async (query) => {

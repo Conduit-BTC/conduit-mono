@@ -355,6 +355,7 @@ function harness(options: {
   metadataAvailable?: () => boolean
 }) {
   const storage = new MemoryStorage()
+  const continuationStorage = new MemoryStorage()
   const repository = new MemorySettledRepository()
   const calls = {
     metadata: 0,
@@ -435,6 +436,7 @@ function harness(options: {
 
   const prepare = () =>
     prepareCheckoutSparkSettledDigitalOrder(entryRequest(options.checkoutId), {
+      continuationStorage,
       readRecipientPayout,
       prepareFunding: (terms) =>
         prepareCheckoutSparkSettledFunding(

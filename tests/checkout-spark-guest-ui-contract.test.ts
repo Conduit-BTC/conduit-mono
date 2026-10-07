@@ -19,12 +19,15 @@ describe("settled router guest UI contracts", () => {
   it("admits guests through an enabled same-merchant SAT supported router target", () => {
     const target = section(
       checkout,
-      "const routerBranchTargetCheckout =",
+      "const routerAdmission =",
       "const paymentRequired ="
     )
     expect(target).toContain("isQuantumRouterEnabled()")
-    expect(target).toContain("isCheckoutSparkSettledCart(rawCheckoutItems)")
-    expect(target).toContain("!verifiedZeroCostPickup")
+    expect(target).toContain("assessCheckoutSparkCheckoutAdmission({")
+    expect(target).toContain("freeOrderVerified: verifiedZeroCostPickup")
+    expect(target).toContain("items: rawCheckoutItems")
+    expect(target).toContain("fulfillment: preparedFulfillment.resolutions")
+    expect(target).toContain('routerAdmission.mode === "router"')
     expect(target).not.toContain("!isGuestCheckout")
     expect(checkout).not.toContain("canUseCheckoutSparkLocalRouterCanary()")
     expect(orders).not.toContain("canUseCheckoutSparkLocalRouterCanary()")

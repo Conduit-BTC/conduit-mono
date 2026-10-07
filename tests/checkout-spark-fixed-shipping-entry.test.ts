@@ -5,11 +5,16 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
-import { parseProductEvent, parseShippingOptionEvent } from "@conduit/core"
+import {
+  deriveCheckoutSparkSignedCommerceObligations,
+  parseProductEvent,
+  parseShippingOptionEvent,
+} from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import { createCartItemFromProduct } from "../apps/market/src/lib/cart-model"
 import { prepareCartFulfillment } from "../apps/market/src/lib/cart-shipping-options"
 import { buildCheckoutSparkQuoteAuthority } from "../apps/market/src/lib/checkout-spark-quote-authority"
+import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
 import {
   CheckoutSparkSettledPayoutPreflightError,
   isCheckoutSparkSettledCart,
@@ -35,7 +40,8 @@ async function shippingQuote(
   shippingSats = 9,
   includeDigital = false,
   shippingCurrency = "SAT",
-  productCurrency = "SAT"
+  productCurrency = "SAT",
+  variation = false
 ) {
   const shippingEvent = finalizeEvent(
     {
@@ -59,12 +65,18 @@ async function shippingQuote(
       created_at: NOW / 1_000,
       content: "Synthetic physical listing",
       tags: [
-        ["d", "physical"],
+        ["d", variation ? "physical-child" : "physical"],
         ["title", "Synthetic physical item"],
         ["price", "101", productCurrency],
-        ["type", "simple", "physical"],
+        ["type", variation ? "variation" : "simple", "physical"],
         ["stock", "6"],
         ["shipping_option", shipping.id],
+        ...(variation
+          ? [
+              ["a", `30402:${MERCHANT}:physical-family`],
+              ["spec", "Size", "Large"],
+            ]
+          : []),
       ],
     },
     MERCHANT_SECRET
@@ -94,6 +106,9 @@ async function shippingQuote(
   }
   const raw = products.map((candidate) => ({
     ...createCartItemFromProduct(candidate),
+    ...(candidate.type === "variation"
+      ? { familyProductId: candidate.parentProductId }
+      : {}),
     quantity: 3,
   }))
   const selected = { ...shipping, sourceEvent: shippingEvent }
@@ -235,25 +250,19 @@ describe("fixed-shipping settled entry", () => {
     }
   )
 
-  it("keeps manual, legacy, fiat, pickup and variation carts outside the mounted entry", async () => {
+  it("keeps manual, legacy, pickup and missing-format carts outside the mounted entry", async () => {
     const { raw } = await shippingQuote()
     const physical = raw[0]!
     const unsupported: Partial<CartItem>[] = [
       { shippingOptionId: undefined },
       { shippingOptionId: `30406:${MERCHANT}:conduit-default` },
       { shippingOptionLaunchUnsupported: true },
-      { currency: "USD" },
-      {
-        sourcePrice: { amount: 1, currency: "USD", normalizedCurrency: "USD" },
-      },
       {
         fulfillment: {
           type: "event_pickup_pending",
           collectionCoordinate: `30405:${MERCHANT}:event`,
         },
       },
-      { familyProductId: `30402:${MERCHANT}:parent` },
-      { selectedSpecifications: [] },
       { format: undefined },
     ]
     for (const change of unsupported)
@@ -261,6 +270,61 @@ describe("fixed-shipping settled entry", () => {
         false
       )
     expect(isCheckoutSparkSettledCart([])).toBe(false)
+  })
+
+  it("keeps fiat carts outside the mounted entry pending independent quote authority", async () => {
+    const { raw } = await shippingQuote()
+    const physical = raw[0]!
+    for (const change of [
+      { currency: "USD" },
+      {
+        sourcePrice: { amount: 1, currency: "USD", normalizedCurrency: "USD" },
+      },
+    ]) {
+      expect(isCheckoutSparkSettledCart([{ ...physical, ...change }])).toBe(
+        false
+      )
+    }
+  })
+
+  it("admits an exact signed SAT child variation with fixed shipping through recipient preflight", async () => {
+    const { quote, raw, shippingEvent } = await shippingQuote(
+      9,
+      false,
+      "SAT",
+      "SAT",
+      true
+    )
+    expect(isCheckoutSparkSettledCart(raw)).toBe(true)
+    const evidence = buildCheckoutSparkCommerceEvidence(quote)
+    expect(evidence.lines[0]?.variation).toEqual({
+      familyCoordinate: `30402:${MERCHANT}:physical-family`,
+      specifications: [{ key: "Size", value: "Large" }],
+    })
+    expect(evidence.lines[0]?.shippingOption?.eventId).toBe(shippingEvent.id)
+    expect(evidence.lines[0]?.unitMerchandiseSats).toBe(101)
+    expect(evidence.lines[0]?.unitShippingSats).toBe(9)
+    expect(evidence.pricing).toBeUndefined()
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: evidence,
+        products: quote.products,
+        shippingEvents: quote.shippingSourceEvents,
+        merchantPubkey: MERCHANT,
+        acceptedAtMs: NOW,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: MERCHANT, amountSats: 330 }])
+    let recipientReads = 0
+    await expect(
+      prepareCheckoutSparkSettledOrder(request(quote), {
+        now: () => NOW,
+        readRecipientPayout: async () => {
+          recipientReads++
+          return { state: "unavailable", reason: "profile_unavailable" }
+        },
+      })
+    ).rejects.toBeInstanceOf(CheckoutSparkSettledPayoutPreflightError)
+    expect(recipientReads).toBe(1)
   })
 
   it.each([
