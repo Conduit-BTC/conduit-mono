@@ -10,6 +10,10 @@ import {
 import type { Product } from "../types"
 import type { CheckoutSparkCommerceQuoteLine } from "./checkout-spark-reconciliation"
 import type { ShippingPolicyQuote } from "./shipping-policy"
+import {
+  checkoutSparkPricingRateAttestationDigestValue,
+  type CheckoutSparkPricingRateAttestation,
+} from "./checkout-spark-pricing-authority"
 
 /** Buyer-retained conversion evidence, not a merchant-signed exchange-rate oracle. */
 export const checkoutSparkCommercePricingSchema = z
@@ -121,6 +125,7 @@ export function checkoutSparkCommerceQuoteDigestValue(quote: {
   commerceTotalSats: number
   lines: readonly CheckoutSparkCommerceQuoteLine[]
   pricing?: CheckoutSparkCommercePricing
+  pricingAuthority?: CheckoutSparkPricingRateAttestation
 }): unknown[] {
   return [
     quote.commerceTotalSats,
@@ -201,6 +206,9 @@ export function checkoutSparkCommerceQuoteDigestValue(quote: {
             quote.pricing.rate.fiatSource ?? null,
           ],
         ]
+      : []),
+    ...(quote.pricingAuthority
+      ? [checkoutSparkPricingRateAttestationDigestValue(quote.pricingAuthority)]
       : []),
   ]
 }

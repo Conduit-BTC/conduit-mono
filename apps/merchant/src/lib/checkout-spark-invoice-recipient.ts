@@ -5,12 +5,13 @@ import {
   type CheckoutSparkSettledReconciliation,
   type DexieCheckoutSparkSettledRepository,
 } from "@conduit/core"
-import { canUseMerchantCheckoutSparkRecipientCompatibility } from "./checkout-spark-recovery-policy"
-
 type RecipientRepository = Pick<
   DexieCheckoutSparkSettledRepository,
   "hasInvoiceRecipient" | "recordInvoiceRecipientVerification"
->
+> &
+  Partial<
+    Pick<DexieCheckoutSparkSettledRepository, "hasInvoiceRecipientSettlement">
+  >
 
 /**
  * Recheck preserved invoices against their receiving provider, not the buyer.
@@ -23,7 +24,7 @@ export async function verifySavedMerchantCheckoutSparkRecipients(input: {
   assertCurrent: () => void
   now: () => number
   verifyInvoice?: typeof verifyCheckoutSparkInvoiceRecipient
-  /** Trusted caller/test seam, never sourced from a recovery message. */
+  /** @deprecated Receiver qualification is deployment policy, never this flag. */
   allowProviderCompatibility?: boolean
 }): Promise<"complete" | "unavailable"> {
   const { state, repository, assertCurrent, now } = input
@@ -47,19 +48,21 @@ export async function verifySavedMerchantCheckoutSparkRecipients(input: {
         ? { generation: 1 as const }
         : {}),
     }
-    if (
-      await repository.hasInvoiceRecipient(state.plan, target, assertCurrent)
-    ) {
+    // A preserved bound attempt may become paid during the following Spark
+    // read. Recheck receiver settlement until positive, even if its saved
+    // origin was verified while unpaid. Neither fact permits another send.
+    const verified = target.intent.receiverBinding
+      ? (await repository.hasInvoiceRecipientSettlement?.(
+          state.plan,
+          target,
+          assertCurrent
+        )) === true
+      : await repository.hasInvoiceRecipient(state.plan, target, assertCurrent)
+    if (verified) {
       assertCurrent()
       continue
     }
     assertCurrent()
-    if (!(
-      input.allowProviderCompatibility ??
-      canUseMerchantCheckoutSparkRecipientCompatibility()
-    )) {
-      continue
-    }
     const result = await (
       input.verifyInvoice ?? verifyCheckoutSparkInvoiceRecipient
     )({ plan: state.plan, target, now: now(), assertCurrent })

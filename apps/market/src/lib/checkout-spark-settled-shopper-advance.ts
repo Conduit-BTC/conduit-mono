@@ -18,6 +18,7 @@ import {
 } from "./checkout-spark-settled-funding"
 import { prepareCheckoutSparkSettledOutgoingLeg } from "./checkout-spark-settled-leg-preparation"
 import { createCheckoutSparkSettledOutgoingProvider } from "./checkout-spark-settled-outgoing-provider"
+import { verifyBuyerCheckoutSparkRecipientSettlement } from "./checkout-spark-invoice-recipient"
 import { getCheckoutSparkRecoveryDelivery } from "./checkout-spark-recovery-handoff"
 import {
   getCheckoutSparkSettledPreparation,
@@ -25,6 +26,7 @@ import {
 } from "./checkout-spark-settled-preparation"
 import { getSparkConfiguration, getSparkWalletManager } from "./spark-sdk"
 import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
+import { canInspectCheckoutSparkSettledSubmittedAttempt } from "./checkout-spark-settled-order-control"
 import {
   createBuyerCheckoutSparkNativeTreasuryProvider,
   proveBuyerCheckoutSparkTreasuryCommerce,
@@ -78,7 +80,13 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
     | "loadMerchantSettlement"
     | "saveTreasuryPrepared"
     | "recordMerchantTreasury"
-  >
+  > &
+    Partial<
+      Pick<
+        DexieCheckoutSparkSettledRepository,
+        "recordInvoiceRecipientVerification" | "hasInvoiceRecipientSettlement"
+      >
+    >
   sparkConfiguration?: typeof getSparkConfiguration
   sparkManager?: typeof getSparkWalletManager
   fundingBridge?: typeof createCheckoutSparkSettledFundingBridge
@@ -155,9 +163,39 @@ export async function advanceCheckoutSparkSettledShopper(
   ) {
     throw new Error("Checkout Spark shopper plan changed.")
   }
+  const snapshot = await repository.load(input.checkoutId, input.planDigest)
+  assertSession()
+  if (
+    snapshot.status !== "active" ||
+    snapshot.state.plan.planDigest !== plan.planDigest
+  ) {
+    throw new Error("Checkout Spark settled state is unavailable.")
+  }
+  let readOnlyExistingAttempt =
+    input.inspectionOnly === true &&
+    canInspectCheckoutSparkSettledSubmittedAttempt(snapshot.state, input.legId)
+  let admittedProviderDrained = false
 
   async function assertAuthority(fundingAdmission = false): Promise<void> {
     assertSession()
+    if (
+      !readOnlyExistingAttempt &&
+      admittedProviderDrained &&
+      input.legId !== null &&
+      now() >= plan.takeoverAt
+    ) {
+      // This invocation has already drained its provider call. A fresh exact
+      // possible-send marker permits only observation of that admitted attempt.
+      const current = await repository.load(input.checkoutId, input.planDigest)
+      assertSession()
+      readOnlyExistingAttempt =
+        current.status === "active" &&
+        current.state.plan.planDigest === plan.planDigest &&
+        canInspectCheckoutSparkSettledSubmittedAttempt(
+          current.state,
+          input.legId
+        )
+    }
     const lifecycle = await readOrder(input.orderId)
     assertSession()
     const binding = lifecycle?.checkoutSparkRouterBinding
@@ -199,22 +237,26 @@ export async function advanceCheckoutSparkSettledShopper(
       now() < plan.createdAt ||
       // Funding is a separate inbound invoice; a null leg cannot admit a
       // payout. The bridge independently enforces its exact invoice expiry.
-      (input.legId !== null && now() >= plan.takeoverAt) ||
+      (input.legId !== null &&
+        now() >= plan.takeoverAt &&
+        !readOnlyExistingAttempt) ||
       (fundingAdmission && now() >= plan.funding.expiresAt)
     ) {
       throw new Error("Checkout Spark shopper order authority changed.")
     }
   }
 
-  await assertAuthority()
-  const snapshot = await repository.load(input.checkoutId, input.planDigest)
-  await assertAuthority()
-  if (
-    snapshot.status !== "active" ||
-    snapshot.state.plan.planDigest !== plan.planDigest
-  ) {
-    throw new Error("Checkout Spark settled state is unavailable.")
+  async function assertDispatchAuthority(): Promise<void> {
+    await assertAuthority()
+    if (
+      readOnlyExistingAttempt ||
+      admittedProviderDrained ||
+      now() >= plan.takeoverAt
+    ) {
+      throw new Error("Checkout Spark inspection cannot admit a payment.")
+    }
   }
+  await assertAuthority()
   if (input.inspectionOnly && input.legId === null) {
     throw new Error("Checkout Spark inspection requires a payout leg.")
   }
@@ -296,7 +338,21 @@ export async function advanceCheckoutSparkSettledShopper(
             assertSession
           ),
       },
-      provider,
+      provider: {
+        reconcile: provider.reconcile,
+        preflight: async (target) => {
+          await assertDispatchAuthority()
+          return provider.preflight(target)
+        },
+        send: async (target) => {
+          await assertDispatchAuthority()
+          try {
+            return await provider.send(target)
+          } finally {
+            admittedProviderDrained = true
+          }
+        },
+      },
       proveCommerce: (state) =>
         proveBuyerCheckoutSparkTreasuryCommerce({
           state,
@@ -349,16 +405,24 @@ export async function advanceCheckoutSparkSettledShopper(
     plan,
     manager,
     assertBeforeSend: async (target) => {
-      await assertAuthority()
+      await assertDispatchAuthority()
       await repository.assertLocalInvoiceOrigin(plan, target, assertSession)
-      await assertAuthority()
+      await assertDispatchAuthority()
     },
   })
   const recordPaid = async (
     target: CheckoutSparkSettledOutgoingTarget,
     observation: CheckoutSparkSettledOutgoingObservation
   ) => {
-    if (observation.status !== "paid") return
+    if (observation.status !== "paid") return true
+    await assertAuthority()
+    const recipientSettled = await verifyBuyerCheckoutSparkRecipientSettlement({
+      plan,
+      target,
+      repository,
+      now,
+      assertCurrent: assertSession,
+    })
     await assertAuthority()
     await repository.recordMerchantPayout(
       plan,
@@ -366,33 +430,53 @@ export async function advanceCheckoutSparkSettledShopper(
       observation,
       now(),
       () => {
-        if (!currentSessionMatches() || now() >= plan.takeoverAt) {
+        if (
+          !currentSessionMatches() ||
+          (now() >= plan.takeoverAt && !readOnlyExistingAttempt)
+        ) {
           throw new Error("Checkout Spark shopper session changed.")
         }
       }
     )
     await assertAuthority()
+    return recipientSettled
   }
   const guardedProvider: CheckoutSparkSettledOutgoingProvider = {
     reconcile: async (target) => {
       await assertAuthority()
       const observation = await provider.reconcile(target)
       await assertAuthority()
-      await recordPaid(target, observation)
-      return observation
+      const recipientSettled = await recordPaid(target, observation)
+      return recipientSettled
+        ? observation
+        : {
+            ...observation,
+            status: "lookup_unavailable" as const,
+          }
     },
     preflight: async (target) => {
-      await assertAuthority()
+      await assertDispatchAuthority()
       const result = await provider.preflight(target)
       await assertAuthority()
       return result
     },
     send: async (target) => {
-      await assertAuthority()
-      const observation = await provider.send(target)
+      await assertDispatchAuthority()
+      let observation: Awaited<
+        ReturnType<CheckoutSparkSettledOutgoingProvider["send"]>
+      >
+      try {
+        observation = await provider.send(target)
+      } finally {
+        admittedProviderDrained = true
+      }
       await assertAuthority()
       if (observation.status === "paid") {
-        await recordPaid(target, observation)
+        if (!(await recordPaid(target, observation)))
+          return {
+            ...observation,
+            status: "lookup_unavailable" as const,
+          }
       }
       return observation
     },

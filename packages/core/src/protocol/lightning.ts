@@ -162,12 +162,16 @@ export async function fetchLnurlPayMetadataFromUrl(
   try {
     const res = await (options.fetchImpl ?? fetch)(safePayRequestUrl, {
       headers: { accept: "application/json" },
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
       // Cloudflare's edge fetch accepts manual but can reject error mode.
       // A redirect is still rejected below because a 3xx response is not ok.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!res.ok) throw new Error(`LNURL endpoint returned ${res.status}`)
+    if (!res.ok || res.redirected || (res.url && res.url !== safePayRequestUrl))
+      throw new Error("LNURL endpoint response is unavailable")
     const contentLength = Number(res.headers?.get("content-length") ?? "0")
     if (
       Number.isFinite(contentLength) &&
@@ -268,6 +272,8 @@ export interface ZapRequestParams {
 export interface FetchZapInvoiceResult {
   /** BOLT11 invoice returned by the LNURL callback. */
   invoice: string
+  /** Optional LUD-21 endpoint; a hint, not recipient or settlement authority. */
+  verifyUrl?: string
 }
 
 export const OMF_ZAPOUT_MARKER_TAG = ["omf", "zapout"] as const
@@ -381,10 +387,14 @@ export async function fetchLnurlInvoice(
   try {
     const res = await fetch(url.toString(), {
       headers: { accept: "application/json" },
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
       redirect: "error",
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
+    if (!res.ok || res.redirected || (res.url && res.url !== url.toString()))
+      throw new Error("LNURL callback response is unavailable")
     const contentLength = Number(res.headers?.get("content-length") ?? "0")
     if (
       Number.isFinite(contentLength) &&
@@ -418,7 +428,10 @@ export async function fetchLnurlInvoice(
   if (!invoice)
     throw new Error("LNURL callback did not return a BOLT11 invoice")
 
-  return { invoice }
+  return {
+    invoice,
+    ...(typeof data.verify === "string" ? { verifyUrl: data.verify } : {}),
+  }
 }
 
 /**

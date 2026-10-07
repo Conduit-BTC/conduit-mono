@@ -2,6 +2,26 @@ import type { PlaywrightWebServerTarget } from "./run_playwright_web_server"
 
 type Environment = Record<string, string | undefined>
 
+// These qualify only the offline provider implemented in hermetic-lnurl.ts.
+// V1 acceptance qualifies ordinary private invoices only.
+const hermeticReceiverContracts = JSON.stringify(
+  [
+    {
+      contractId: "hermetic-private-metadata-v1",
+      modes: ["private"],
+      binding: "metadata_hash",
+    },
+  ].map((contract) => ({
+    schemaVersion: 1,
+    qualification: "accepted",
+    payRequestOrigins: ["https://wallet.conduit.market"],
+    callbackOrigins: ["https://wallet.conduit.market"],
+    verifyOrigins: ["https://wallet.conduit.market"],
+    verifyPathPrefix: "/__hermetic_lnurl/verify/",
+    ...contract,
+  }))
+)
+
 function isolatedPort(value: string, allowDynamic = false): string {
   if (allowDynamic && value === "0") return value
   if (
@@ -54,6 +74,10 @@ export function resolvePlaywrightRouterWebServerTarget(
   }
   const { marketPort, merchantPort, relayPort } =
     resolvePlaywrightRouterPorts(environment)
+  if (environment.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS)
+    throw new Error(
+      "Router smoke requires isolated mock receiver configuration."
+    )
   if (target === "relay") {
     return {
       command: ["bun", "scripts/dev/run_playwright_router_relay.ts"],
@@ -99,6 +123,10 @@ export function resolvePlaywrightRouterWebServerTarget(
       // The existing application mock network maps to Spark/BOLT11 regtest.
       VITE_LIGHTNING_NETWORK: "mock",
       VITE_E2E_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
+      VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS: hermeticReceiverContracts,
+      VITE_E2E_PUBLIC_ZAP_RECEIPT_HINTS: "false",
+      VITE_ANON_ZAP_SIGNER_PUBKEY: "",
+      VITE_ANON_ZAP_SIGNER_URL: "",
       VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
       VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
     },

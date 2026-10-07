@@ -1,5 +1,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
+import { type CheckoutSparkReceiverContract } from "../packages/core/src/protocol/checkout-spark-receiver-capability"
+import { verifyCheckoutSparkReceiverInvoice } from "../packages/core/src/protocol/checkout-spark-receiver-verification"
 import {
   createHermeticLnurlFixture,
   type HermeticLnurlIssuedInvoice,
@@ -19,6 +21,95 @@ const NOW = 1_800_000_000
 const MERCHANT = "merchant@wallet.conduit.market"
 const CALLBACK =
   "https://wallet.conduit.market/__hermetic_lnurl/callback/merchant"
+
+const PRIVATE_RECEIVER_CONTRACT: CheckoutSparkReceiverContract = {
+  schemaVersion: 1,
+  contractId: "hermetic-private-metadata-v1",
+  qualification: "accepted",
+  payRequestOrigins: ["https://wallet.conduit.market"],
+  callbackOrigins: ["https://wallet.conduit.market"],
+  verifyOrigins: ["https://wallet.conduit.market"],
+  verifyPathPrefix: "/__hermetic_lnurl/verify/",
+  modes: ["private"],
+  binding: "metadata_hash",
+}
+
+test("a qualified offline receiver retains provider-owned issuance and exposes settlement only after its payment oracle completes", async () => {
+  const completedInvoices = new Set<string>()
+  const fixture = createHermeticLnurlFixture({
+    recipients: [{ lud16: MERCHANT }],
+    nowSeconds: () => NOW,
+    verification: {
+      isInvoiceSettled: (paymentRequest) =>
+        completedInvoices.has(paymentRequest),
+    },
+  })
+  const transport = spyOn(globalThis, "fetch").mockImplementation(
+    async (input, init) => {
+      const response = await fixture.respond({
+        url:
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url,
+        method: init?.method ?? "GET",
+      })
+      if (!response) throw new Error("Unconfigured offline request")
+      return new Response(response.body, {
+        status: response.status,
+        headers: response.headers,
+      })
+    }
+  )
+  try {
+    const invoice = await resolveCheckoutSparkLnurlInvoice(
+      {
+        lud16: MERCHANT,
+        amountSats: 700,
+        network: "regtest",
+        nowSeconds: NOW,
+        shouldContinue: () => true,
+        receiverMode: "private",
+      },
+      { receiverContracts: [PRIVATE_RECEIVER_CONTRACT] }
+    )
+    expect(invoice.receiverBinding !== undefined).toBe(true)
+    expect(
+      invoice.receiverBinding!.verifyUrl ===
+        `https://wallet.conduit.market/__hermetic_lnurl/verify/${invoice.paymentHash}`
+    ).toBe(true)
+    const verificationInput = {
+      binding: invoice.receiverBinding!,
+      paymentRequest: invoice.paymentRequest,
+      paymentHash: invoice.paymentHash,
+      amountSats: 700,
+      network: "regtest" as const,
+      assertCurrent: () => undefined,
+    }
+    const pending = await verifyCheckoutSparkReceiverInvoice(
+      verificationInput,
+      { contracts: [PRIVATE_RECEIVER_CONTRACT] }
+    )
+    expect(pending).toEqual({ status: "verified", settled: false })
+    const before = await fixture.respond({
+      url: invoice.receiverBinding!.verifyUrl,
+      method: "GET",
+    })
+    const pendingRecord = JSON.parse(before!.body)
+    expect(pendingRecord.pr === invoice.paymentRequest).toBe(true)
+    expect(pendingRecord.preimage === null).toBe(true)
+    completedInvoices.add(invoice.paymentRequest)
+    const settled = await verifyCheckoutSparkReceiverInvoice(
+      verificationInput,
+      { contracts: [PRIVATE_RECEIVER_CONTRACT] }
+    )
+    expect(settled).toEqual({ status: "verified", settled: true })
+    expect(fixture.snapshot().invoicesIssued).toBe(1)
+  } finally {
+    transport.mockRestore()
+  }
+})
 
 test("real LNURL resolution accepts an offline signed regtest invoice and retains local origin", async () => {
   const issued: HermeticLnurlIssuedInvoice[] = []

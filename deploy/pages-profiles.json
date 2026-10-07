@@ -4,6 +4,18 @@
     "mainnetAddress": "spark1pgssxg8d048c6ge7ysvjq0zg8xz7l8ryqjxmyhrlm7s56rjfns0ylpxymhm9sn",
     "retiredMainnetAddresses": []
   },
+  "quantumRouterTrust": {
+    "preview": {
+      "receiverContracts": [],
+      "pricingUrl": null,
+      "pricingPublicKeys": []
+    },
+    "production": {
+      "receiverContracts": [],
+      "pricingUrl": null,
+      "pricingPublicKeys": []
+    }
+  },
   "apps": {
     "market": {
       "package": "@conduit/market",

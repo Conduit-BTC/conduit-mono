@@ -24,6 +24,7 @@ import {
   type OrderSchema,
   type OrderLifecycle,
   type SignedPublicNostrEvent,
+  type CheckoutSparkMerchantPublicZapPolicy,
 } from "@conduit/core"
 
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
@@ -77,6 +78,8 @@ export interface PrepareCheckoutSparkSettledOrderInput {
   guestContact?: OrderSchema["guestContact"]
   shippingAddress?: OrderSchema["shippingAddress"]
   relayAuthMethod?: "nip07" | "nip46"
+  merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
+  anonymousPublicZap?: boolean
 }
 
 export type PrepareCheckoutSparkSettledDigitalOrderInput =
@@ -146,6 +149,11 @@ export async function prepareCheckoutSparkSettledOrder(
   input: PrepareCheckoutSparkSettledOrderInput,
   dependencies: Dependencies = {}
 ): Promise<PreparedCheckoutSparkSettledOrder> {
+  // Retain the old input shape only to explicitly reject deferred public modes.
+  // Never silently turn an approved public checkout into a private payment.
+  if (input.merchantPublicZapPolicy !== undefined || input.anonymousPublicZap) {
+    throw new Error("Public routed zaps are not supported in this checkout.")
+  }
   const buyer = { ...input.buyer }
   const now = dependencies.now ?? Date.now
   // Keep all line/product/pricing terms stable across the profile reads below.
@@ -320,6 +328,9 @@ export async function prepareCheckoutSparkSettledOrder(
   const orderDraft = orderSchema.parse({
     ...(commerceQuote.pricing
       ? { checkoutSparkPricing: commerceQuote.pricing }
+      : {}),
+    ...(commerceQuote.pricingAuthority
+      ? { checkoutSparkPricingAuthority: commerceQuote.pricingAuthority }
       : {}),
     id: input.orderId,
     merchantPubkey,
@@ -595,7 +606,9 @@ export async function resumeCheckoutSparkSettledOrder(
         )
     ) ||
     JSON.stringify(order.checkoutSparkPricing) !==
-      JSON.stringify(prepared.plan.commerceQuote.pricing)
+      JSON.stringify(prepared.plan.commerceQuote.pricing) ||
+    JSON.stringify(order.checkoutSparkPricingAuthority) !==
+      JSON.stringify(prepared.plan.commerceQuote.pricingAuthority)
   ) {
     throw new CheckoutSparkSettledContinuationManualRecoveryError()
   }

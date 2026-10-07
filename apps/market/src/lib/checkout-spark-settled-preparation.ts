@@ -1,5 +1,7 @@
 import {
   assertCheckoutSparkLnurlPayoutMetadata,
+  observeCheckoutSparkReceiverCapability,
+  type CheckoutSparkReceiverContract,
   assertCheckoutSparkSignedCommerceAllocations,
   calculateCheckoutSparkSettledGrossFundingSats,
   canonicalizeCheckoutSparkPlanSourceEvents,
@@ -21,9 +23,11 @@ import {
   type SignedPublicNostrEvent,
   type CheckoutSparkTreasuryConfiguration,
   type fetchLnurlPayMetadata,
+  type CheckoutSparkMerchantPublicZapPolicy,
 } from "@conduit/core"
 
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
+import { assertCheckoutSparkPrefundingPricingAuthority } from "./checkout-spark-prefunding-pricing-authority"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
 import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
 import { acquireCheckoutSparkWalletRetentionLock } from "./checkout-spark-wallet-retention-lock"
@@ -94,6 +98,7 @@ export interface PrepareCheckoutSparkSettledFundingInput {
   quoteAuthority: CheckoutSparkQuoteAuthority
   sourceEvents: readonly SignedPublicNostrEvent[]
   recipients: readonly CheckoutSparkSettledRecipientInput[]
+  merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
   storage?: CheckoutSparkSettledPreparationStorage | null
   recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
   /** Save the original private order draft before any recovery publication. */
@@ -158,6 +163,8 @@ export interface PrepareCheckoutSparkSettledFundingDependencies {
     input: SparkCheckoutTreasuryPrepareInput
   ) => Promise<SparkCheckoutTreasuryRequest>
   fetchPayoutMetadata?: typeof fetchLnurlPayMetadata
+  /** Public, deployment-qualified contracts; never buyer recovery input. */
+  receiverContracts?: readonly CheckoutSparkReceiverContract[]
   repository?: CheckoutSparkSettledPreparationRepository
   createWalletMaterial?: (
     network: CheckoutSparkNetwork
@@ -368,6 +375,11 @@ export async function prepareCheckoutSparkSettledFunding(
   input: PrepareCheckoutSparkSettledFundingInput,
   dependencies: PrepareCheckoutSparkSettledFundingDependencies = {}
 ): Promise<PreparedCheckoutSparkSettledFunding> {
+  // New routed commerce uses ordinary invoices only. Historical plan readers
+  // retain public attempts, but they cannot authorize a new public preparation.
+  if (input.merchantPublicZapPolicy !== undefined) {
+    throw new Error("Public routed zaps are not supported in this checkout.")
+  }
   const {
     checkoutId,
     orderId,
@@ -598,6 +610,17 @@ export async function prepareCheckoutSparkSettledFunding(
         { lud16, maximumAllocationSats: grossFundingSats, shouldContinue },
         { fetchMetadata: fetchPayoutMetadata }
       )
+      const capability = await observeCheckoutSparkReceiverCapability(
+        { lud16, mode: "private", assertCurrent },
+        {
+          ...(dependencies.receiverContracts
+            ? { contracts: dependencies.receiverContracts }
+            : {}),
+          fetchMetadata: fetchPayoutMetadata,
+        }
+      )
+      if (capability.status !== "supported")
+        throw new CheckoutSparkSettledFundingMetadataPreflightError()
     } catch {
       assertCurrent()
       throw new CheckoutSparkSettledFundingMetadataPreflightError()
@@ -665,6 +688,11 @@ export async function prepareCheckoutSparkSettledFunding(
       },
       recipients,
     }
+    assertCheckoutSparkPrefundingPricingAuthority({
+      quote: commerceQuote,
+      receive,
+      nowMs: now(),
+    })
     const nativeTreasury = treasuryDestination
       ? await (
           dependencies.prepareTreasuryRequest ??

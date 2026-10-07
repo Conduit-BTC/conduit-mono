@@ -183,8 +183,10 @@ total, the user must approve the new values. A missing approval callback fails
 closed.
 
 An explicitly approved, immutable checkout-scoped router plan may authorize
-automatic private outgoing payments to its frozen recipients. Each invoice and
-outgoing fee must remain within that recipient's settled allocation. Separate
+automatic outgoing payments to its frozen recipients. New V1 payouts are
+ordinary private payments; identified and anonymous public routed zaps are not
+offered. Each invoice and outgoing fee must remain within that recipient's
+settled allocation. Separate
 per-leg fee approval is not required within this authorization. Approval must
 explain the funding total, allocation policy, fee deductions, and Conduit-last
 ordering; recipient net amounts are determined after exact inbound settlement
@@ -269,6 +271,44 @@ model. Accidental replay, wrong-recipient payments, premature dispatch and
 loss of recoverable credentials remain correctness defects. Recovery guidance
 must state this bounded trust assumption without suggesting guaranteed recovery
 or cryptographic enforcement of the client timer.
+
+### Pricing and receiving authority
+
+Fiat-priced products, variations and shipping use an authenticated bounded
+snapshot of the existing live price feeds, without requiring a Merchant online
+for each quote. Preserve the exact pricing attestation with the frozen commerce
+terms. Fresh provider request creation time anchors funding admission; Merchant
+financial recovery independently authenticates the historical quote at the
+original native receive creation time, not the recovery clock or buyer labels.
+Deterministic SAT, MSAT and BTC terms require no rate service. Current rates and
+key rotation must not reprice existing orders; retain historical verification
+keys. Missing trusted authority or native time evidence pauses fiat admission.
+
+All required Lightning receivers must satisfy an accepted deployment-qualified
+capability before funding. V1 qualifies ordinary private metadata-hash
+receiving contracts; advertising LNURL verification alone is insufficient.
+Public-zap capability is not a V1 admission requirement. An exact intent retains
+a portable receiver binding, not a trusted shopper claim. Both clients
+independently verify its invoice/account association
+and receiver-settled result alongside native Spark debit, amount and preimage.
+Local invoice origin or an unpaid verifier result alone cannot establish bound
+recipient settlement. Delayed receiver history reconciles the same attempt,
+without a new send. Historical unbound imported attempts remain unverified.
+See the [router contract](universal-checkout-router.md) and
+[receiver qualification](../knowledge/checkout-spark-recipient-verification-compat.md).
+
+### Deferred public routed zaps
+
+V1 offers no identified or anonymous public Merchant-payout zap option,
+public-zap invoice or public signing authorization. Guests and signed-in
+shoppers use ordinary private funding and payouts. Ordinary non-routed zaps and
+global provider zap support remain unchanged.
+
+Historical public policies and exact intents retain their digests, invoice
+bindings and possible-send state. Never rewrite them as private payments or
+infer nonpayment from a missing receipt. Exact settlement can be reconciled;
+unavailable recipient proof or public renewal remains paused. Deferred public
+signing adds no new service activation or V1 acceptance dependency.
 
 ### Native final treasury allocation
 
@@ -438,8 +478,11 @@ Required coverage includes:
   revision-checked abandonment before cart retry;
 - exact fifteen-minute funding presentation/payment versus two-minute outgoing
   admission, late credit and cross-actor reconciliation;
-- original signed fiat/variation and shipping evidence with legacy digest
-  preservation, without claiming an independently signed exchange-rate oracle;
+- original signed fiat/variation and shipping evidence, authenticated live-rate
+  snapshots at independently verified funding creation time, unchanged-term
+  rate refresh and historical verification-key/digest preservation;
+- required receiver compatibility before funding and independently verified
+  supported cold partial recovery, with historical unverifiable attempts paused;
 - recovery and reopen behavior; and
 - content-free logs and telemetry.
 

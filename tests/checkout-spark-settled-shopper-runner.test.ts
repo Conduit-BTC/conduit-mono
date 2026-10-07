@@ -12,6 +12,8 @@ import {
   createCheckoutSparkSettledReconciliation,
   freezeCheckoutSparkSettledPlan,
   projectCheckoutSparkMerchantSettlement,
+  resolveCheckoutSparkLnurlInvoice,
+  verifyCheckoutSparkInvoiceRecipient,
   type OrderLifecycle,
 } from "@conduit/core"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
@@ -20,6 +22,7 @@ import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/sr
 import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
 import { createCheckoutSparkSettledFundingBridge } from "../apps/market/src/lib/checkout-spark-settled-funding"
 import { prepareCheckoutSparkSettledOutgoingLeg } from "../apps/market/src/lib/checkout-spark-settled-leg-preparation"
+import { createCheckoutSparkSettledOutgoingProvider } from "../apps/market/src/lib/checkout-spark-settled-outgoing-provider"
 import {
   getCheckoutSparkSettledPreparation,
   loadAuthorizedCheckoutSparkSettledFunding,
@@ -35,6 +38,7 @@ import {
   type CheckoutSparkSettledShopperRunnerDependencies,
 } from "../apps/market/src/lib/checkout-spark-settled-shopper-runner"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 import { canContinueCheckoutSparkSettledRouteSession } from "../apps/market/src/lib/checkout-spark-settled-route-session"
 import {
   bolt11PaymentHashField,
@@ -83,7 +87,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function fixture() {
+async function fixture(takeoverAfterMs = 45 * 60_000) {
   const database = new ConduitDB(`shopper-runner-${crypto.randomUUID()}`, {
     indexedDB,
     IDBKeyRange,
@@ -112,6 +116,7 @@ async function fixture() {
     beforeAck?: () => Promise<void>
     wrongOrigin?: boolean
     feeOverCap?: boolean
+    feeUnavailable?: boolean
   } = {}
   const manager = new SparkWalletManager(
     new FirstPartySparkSdkFactory({
@@ -138,6 +143,8 @@ async function fixture() {
                 return result
               },
               async getLightningSendFeeEstimate(request) {
+                if (hooks.feeUnavailable)
+                  throw new Error("Synthetic fee service unavailable")
                 return hooks.feeOverCap
                   ? 10_000
                   : opened.wallet.getLightningSendFeeEstimate(request)
@@ -167,7 +174,7 @@ async function fixture() {
     walletId,
     network: "mainnet",
     createdAt: NOW,
-    takeoverAt: NOW + 2_700_000,
+    takeoverAt: NOW + takeoverAfterMs,
     commerceQuote: {
       commerceTotalSats: 1_000,
       lines: [
@@ -274,6 +281,10 @@ async function fixture() {
   await database.orderLifecycles.put(lifecycle)
   const control = native.control.forIdentity(identity)
   const calls = { payer: 0, invoices: [] as string[], acknowledgments: 0 }
+  const receivers = new Map<
+    string,
+    ReturnType<typeof qualifiedReceiverFixture>
+  >()
   const loadAuthorized: typeof loadAuthorizedCheckoutSparkSettledFunding = (
     id,
     options
@@ -316,10 +327,85 @@ async function fixture() {
         requireCrossTabLock: false,
         withStoreWriteLock: async (operation) => operation(),
       }),
+    outgoingProvider: (input) => {
+      const provider = createCheckoutSparkSettledOutgoingProvider(input)
+      const assertReceiverSession = () => {
+        if (!authority.active || !manager.isOpen(walletId))
+          throw new Error("Synthetic receiver session unavailable")
+      }
+      const recordReceiverSettlement = async <
+        Observation extends Awaited<ReturnType<typeof provider.send>>,
+      >(
+        target: Parameters<typeof provider.reconcile>[0],
+        observation: Observation
+      ) => {
+        if (observation.status !== "paid") return observation
+        const receiver = receivers.get(target.intent.paymentHash)
+        if (!receiver) throw new Error("Synthetic receiver facts unavailable")
+        const verified = await verifyCheckoutSparkInvoiceRecipient(
+          {
+            plan: input.plan,
+            target,
+            now: authority.now,
+            // No handoff cutoff for observing an already-admitted payment;
+            // real provider/Market guards still own dispatch and drain checks.
+            assertCurrent: assertReceiverSession,
+          },
+          {
+            contracts: receiver.contracts,
+            fetchMetadata: async () => receiver.metadata,
+            fetchVerify: async () =>
+              receiver.verifier(
+                control.outgoingInvoices().includes(receiver.paymentRequest)
+              ),
+          }
+        )
+        if (verified.status !== "verified" || !verified.settled)
+          throw new Error("Synthetic receiver settlement unavailable")
+        await repository.recordInvoiceRecipientVerification(
+          input.plan,
+          target,
+          verified.proof,
+          assertReceiverSession
+        )
+        return observation
+      }
+      return {
+        preflight: (target) => provider.preflight(target),
+        reconcile: async (target) =>
+          recordReceiverSettlement(target, await provider.reconcile(target)),
+        send: async (target) =>
+          recordReceiverSettlement(target, await provider.send(target)),
+      }
+    },
     prepareLeg: (input, options) =>
       prepareCheckoutSparkSettledOutgoingLeg(input, {
         ...options,
         resolveInvoice: async (request) => {
+          if (!hooks.wrongOrigin) {
+            const receiver = qualifiedReceiverFixture({
+              lud16: request.lud16,
+              amountSats: request.amountSats,
+              nowSeconds: NOW / 1_000,
+              preimageByte: calls.invoices.length + 1,
+            })
+            calls.invoices.push(request.lud16)
+            receivers.set(receiver.paymentHash, receiver)
+            control.registerPayout({
+              paymentRequest: receiver.paymentRequest,
+              preimage: receiver.preimage,
+              feeSats: 1,
+            })
+            return resolveCheckoutSparkLnurlInvoice(request, {
+              receiverContracts: receiver.contracts,
+              fetchMetadata: async () => receiver.metadata,
+              fetchInvoice: async () => ({
+                invoice: receiver.paymentRequest,
+                verifyUrl: receiver.receiverBinding.verifyUrl,
+              }),
+              fetchReceiverVerify: async () => receiver.verifier(false),
+            })
+          }
           const preimage = randomBytes(32)
           const paymentRequest = invoice(request.amountSats, preimage)
           calls.invoices.push(request.lud16)
@@ -462,6 +548,183 @@ describe("foreground settled shopper routing", () => {
       await f.cleanup()
     }
   }, 20_000)
+
+  it("records an admitted commerce payment after handoff without preparing or sending the next sibling", async () => {
+    const f = await fixture(120_000)
+    try {
+      let admissionsAfterHandoff = 0
+      f.hooks.beforeNativeSend = async () => {
+        if (f.authority.now >= f.plan.takeoverAt) admissionsAfterHandoff += 1
+        expect(f.authority.now).toBeLessThan(f.plan.takeoverAt)
+        f.authority.now = f.plan.takeoverAt + 1
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(await runner.run(f.input)).toEqual({
+        status: "paused",
+        reason: "authorization_changed",
+      })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status !== "active") throw new Error("Expected active state")
+      expect(saved.state.legs[0]!.status).toBe("paid")
+      expect(saved.state.legs[0]!.finalDebitSats).toBe(
+        saved.state.legs[0]!.intent!.invoiceAmountSats +
+          saved.state.legs[0]!.finalFeeSats!
+      )
+      expect(
+        saved.state.legs.slice(1).every((leg) => leg.status === "unprepared")
+      ).toBe(true)
+      expect(
+        saved.state.legs.slice(1).every((leg) => leg.intent === null)
+      ).toBe(true)
+      expect(admissionsAfterHandoff).toBe(0)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(1)
+      expect(f.control.snapshot().outgoingPaymentCount).toBe(1)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("automatically rechecks a prepared exact attempt after transient recovery acknowledgment failure", async () => {
+    const f = await fixture()
+    try {
+      let interrupted = false
+      let waits = 0
+      let intent: unknown
+      f.hooks.beforeAck = async () => {
+        // Let the invoice preparation ACK succeed; interrupt the existing
+        // attempt's next pre-send ACK, which has a typed nonterminal result.
+        if (f.calls.acknowledgments === 1 && !interrupted) {
+          interrupted = true
+          throw new Error("Synthetic recovery transport unavailable")
+        }
+      }
+      f.hooks.beforeWait = async (milliseconds) => {
+        waits += 1
+        f.authority.now += milliseconds
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(saved.status).toBe("active")
+        if (saved.status !== "active") throw new Error("Expected active state")
+        expect(saved.state.legs[0]!.status).toBe("prepared")
+        intent = saved.state.legs[0]!.intent
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(0)
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(
+        await runner.run({
+          ...f.input,
+          fundingPoll: { attempts: 3, intervalMs: 1 },
+        })
+      ).toEqual({ status: "complete" })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.legs[0]!.intent).toEqual(
+        intent
+      )
+      expect(interrupted).toBe(true)
+      expect(waits).toBe(1)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(3)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("automatically rechecks fee availability without replacing the prepared invoice or funding payer", async () => {
+    const f = await fixture()
+    try {
+      f.hooks.beforeAck = async () => {
+        // The invoice's preparation estimate succeeds first. This isolates a
+        // transient preflight read for the already frozen exact intent.
+        if (f.calls.acknowledgments === 0) f.hooks.feeUnavailable = true
+      }
+      let waits = 0
+      let intent: unknown
+      f.hooks.beforeWait = async (milliseconds) => {
+        waits += 1
+        f.authority.now += milliseconds
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(saved.status).toBe("active")
+        if (saved.status !== "active") throw new Error("Expected active state")
+        expect(saved.state.legs[0]!.status).toBe("prepared")
+        intent = saved.state.legs[0]!.intent
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(0)
+        f.hooks.feeUnavailable = false
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(
+        await runner.run({
+          ...f.input,
+          fundingPoll: { attempts: 3, intervalMs: 1 },
+        })
+      ).toEqual({ status: "complete" })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.legs[0]!.intent).toEqual(
+        intent
+      )
+      expect(waits).toBe(1)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(3)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it.each(["visibility", "takeover"] as const)(
+    "stops transient availability rechecks when %s revokes dispatch",
+    async (change) => {
+      const f = await fixture(120_000)
+      try {
+        f.hooks.beforeAck = async () => {
+          if (f.calls.acknowledgments === 0) f.hooks.feeUnavailable = true
+        }
+        let waits = 0
+        f.hooks.beforeWait = async () => {
+          waits += 1
+          f.hooks.feeUnavailable = false
+          if (change === "visibility") f.authority.active = false
+          else f.authority.now = f.plan.takeoverAt
+        }
+        const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+        expect(
+          await runner.run({
+            ...f.input,
+            fundingPoll: { attempts: 3, intervalMs: 1 },
+          })
+        ).toEqual({
+          status: "paused",
+          reason: change === "visibility" ? "paused" : "authorization_changed",
+        })
+        expect(waits).toBe(1)
+        expect(f.calls.payer).toBe(1)
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(0)
+      } finally {
+        await f.cleanup()
+      }
+    },
+    20_000
+  )
 
   it("observes delayed funding and resumes without re-entering the payer", async () => {
     const f = await fixture()

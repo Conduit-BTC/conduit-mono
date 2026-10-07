@@ -326,6 +326,71 @@ jobs:
             --source-head-sha "$SOURCE_HEAD_SHA" \
             --base-sha "$BASE_SHA" \
             --tested-sha "$checkout_sha"
+      - name: Validate router receiver setup smoke selection
+        if: matrix.job.area == 'commerce'
+        env:
+          PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
+          PLAYWRIGHT_SMOKE_AREA: commerce
+          PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
+          PLAYWRIGHT_SMOKE_MANIFEST: playwright-router-receiver-setup-manifest.json
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ "$checkout_sha" != "$PLAYWRIGHT_SMOKE_TESTED_SHA" ]]; then
+            echo "The checked-out SHA does not match the workflow-tested SHA." >&2
+            exit 1
+          fi
+          bun run test:e2e:areas \
+            --config playwright.router.config.ts \
+            --area commerce \
+            --manifest-output "$PLAYWRIGHT_SMOKE_MANIFEST" \
+            --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" \
+            --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
+            --tested-sha "$checkout_sha"
+      - name: Run router receiver setup Playwright smoke
+        if: matrix.job.area == 'commerce'
+        env:
+          PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
+          PLAYWRIGHT_SMOKE_AREA: commerce
+          PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-results.json
+          PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-progress.log
+        run: |
+          set -euo pipefail
+          umask 077
+          : > "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          tail -n +1 -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" &
+          progress_pid=$!
+          trap 'sleep 1; kill "$progress_pid" 2>/dev/null || true' EXIT
+          bunx playwright test --config playwright.router.config.ts >/dev/null 2>&1
+      - name: Verify executed router receiver setup smoke evidence
+        if: always() && matrix.job.area == 'commerce'
+        env:
+          PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TESTED_SHA: ${{ github.sha }}
+          PLAYWRIGHT_SMOKE_MANIFEST: playwright-router-receiver-setup-manifest.json
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-results.json
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ "$checkout_sha" != "$TESTED_SHA" ]]; then
+            echo "The checked-out SHA changed during Playwright execution." >&2
+            exit 1
+          fi
+          bun run test:e2e:areas \
+            --config playwright.router.config.ts \
+            --area commerce \
+            --expected-manifest "$PLAYWRIGHT_SMOKE_MANIFEST" \
+            --execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE" \
+            --source-head-sha "$SOURCE_HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --tested-sha "$checkout_sha"
       - name: Remove raw Playwright output
         if: always() && matrix.job.area != 'none'
         env:
@@ -334,9 +399,13 @@ jobs:
           PLAYWRIGHT_ROUTER_RESULT_FILE: ${{ runner.temp }}/playwright-router-smoke-results.json
           PLAYWRIGHT_ROUTER_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-smoke-progress.log
           PLAYWRIGHT_ROUTER_MANIFEST: playwright-router-smoke-manifest.json
+          PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-results.json
+          PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-progress.log
+          PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST: playwright-router-receiver-setup-manifest.json
         run: |
           rm -f -- "$PLAYWRIGHT_SMOKE_RESULT_FILE" "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
           rm -f -- "$PLAYWRIGHT_ROUTER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_MANIFEST"
+          rm -f -- "$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"
           rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
   e2e-smoke:
     name: e2e-smoke

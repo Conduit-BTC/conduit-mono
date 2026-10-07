@@ -72,8 +72,9 @@ and final Conduit collection remain independently recorded, and delivery
 confirmation remains separate from all payment state. The historical direct and
 public-zap flows below keep their own checkpoint and retry semantics.
 
-1. Every checkout mode publishes the encrypted order first, then calls
-   `createOrderLifecycle(...)` with `orderDeliveryStatus: "sent"` and navigates
+1. The historical direct/public-zap and negotiated order-first flows described
+   below publish the encrypted order first, then call
+   `createOrderLifecycle(...)` with `orderDeliveryStatus: "sent"` and navigate
    to `/orders?order=<orderId>`. Anonymous public-zap preparation begins only
    after that durable checkpoint. Signer, authorization, pricing-attestation,
    or public-invoice failure can suppress the public receipt but cannot prevent
@@ -112,7 +113,7 @@ presentation of that projection, not an additional lifecycle authority.
 
 ## Order flows and gates
 
-Two checkout flows are first-class and produce the same NIP-17 order messages
+The following two non-router flows produce the same NIP-17 order messages
 (`order`, `payment_request`, `payment_proof`, `receipt`, `status_update`,
 `shipping_update`) in a different order:
 
@@ -174,6 +175,13 @@ Explicit signed-in orders and loaded legacy order rumors without an identity
 marker are `nostr_replyable`; explicit guest orders are `guest_out_of_band`;
 orderless partial reads remain `unknown` and may write merchant self-copies but
 must not claim buyer delivery.
+
+Routed settlement also requires the [router's pricing and receiver authority](universal-checkout-router.md):
+an authenticated fiat quote at its original provider funding time when needed,
+and independently verified recipient settlement alongside exact Spark payment
+evidence. Signed buyer progress, funding alone or a local issuance record cannot
+advance those financial gates. Delayed provider evidence preserves the exact
+attempt and does not request another buyer payment.
 
 These axes determine eligible merchant actions and prevent a generic status
 change from bypassing their gates:

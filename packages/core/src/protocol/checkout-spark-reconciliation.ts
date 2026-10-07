@@ -2,6 +2,10 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import type { SourcePriceQuote } from "../pricing"
 import {
+  freezeCheckoutSparkPricingRateAttestation,
+  type CheckoutSparkPricingRateAttestation,
+} from "./checkout-spark-pricing-authority"
+import {
   shippingPolicyQuoteSchema,
   type ShippingPolicyQuote,
 } from "./shipping-policy"
@@ -114,6 +118,8 @@ export interface CheckoutSparkCommerceQuote {
   commerceTotalSats: number
   lines: readonly CheckoutSparkCommerceQuoteLine[]
   pricing?: CheckoutSparkCommercePricing
+  /** Portable rate evidence; trust and accepted-time verification are separate gates. */
+  pricingAuthority?: CheckoutSparkPricingRateAttestation
 }
 
 export interface FreezeCheckoutSparkPlanInput {
@@ -362,6 +368,9 @@ function normalizeCommerceQuote(
   input: CheckoutSparkCommerceQuote,
   merchantPubkey: string
 ): CheckoutSparkCommerceQuote {
+  if (input.pricingAuthority !== undefined && input.pricing === undefined) {
+    throw new Error("Checkout Spark pricing authority requires its exact rate.")
+  }
   const commerceTotalSats = normalizeSats(
     input.commerceTotalSats,
     "Commerce quote total"
@@ -541,6 +550,13 @@ function normalizeCommerceQuote(
     ...(input.pricing !== undefined
       ? { pricing: freezeCheckoutSparkCommercePricing(input.pricing) }
       : {}),
+    ...(input.pricingAuthority !== undefined
+      ? {
+          pricingAuthority: freezeCheckoutSparkPricingRateAttestation(
+            input.pricingAuthority
+          ),
+        }
+      : {}),
   })
 }
 
@@ -659,6 +675,9 @@ function refreezePlan(plan: CheckoutSparkPlan): CheckoutSparkPlan {
             commerceTotalSats: plan.commerceQuote.commerceTotalSats,
             ...(plan.commerceQuote.pricing
               ? { pricing: plan.commerceQuote.pricing }
+              : {}),
+            ...(plan.commerceQuote.pricingAuthority
+              ? { pricingAuthority: plan.commerceQuote.pricingAuthority }
               : {}),
             lines: plan.commerceQuote.lines.map((line) => ({
               ...line,

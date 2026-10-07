@@ -41,17 +41,23 @@ export function createPlaywrightRouterConfig(
     )
   }
   const { marketPort, merchantPort } = resolvePlaywrightRouterPorts(environment)
+  const receiverSetupCase =
+    environment.PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE === "true"
   const serverEnvironment = {
     PLAYWRIGHT_MARKET_PORT: marketPort,
     PLAYWRIGHT_MERCHANT_PORT: merchantPort,
     VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS:
       environment.VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS ?? "",
+    PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: receiverSetupCase ? "true" : "false",
   }
   return defineConfig({
     metadata: hasEvidence ? { smokeEvidence } : undefined,
     testDir: "./e2e",
     testMatch: "**/commerce-router-recovery.playwright.ts",
-    grep: /@commerce/,
+    grep: receiverSetupCase
+      ? /receiver setup.*@commerce/
+      : /native router.*@commerce/,
+    grepInvert: undefined,
     fullyParallel: false,
     workers: 1,
     retries: 0,

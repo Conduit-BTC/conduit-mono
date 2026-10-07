@@ -7,6 +7,7 @@ import {
   prepareCheckoutSparkSettledLeg,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
+  type CheckoutSparkSettledRecipient,
 } from "./checkout-spark-settled-router"
 import {
   assertCheckoutSparkSettledReturnedProof,
@@ -72,7 +73,12 @@ export interface CheckoutSparkSettledLegPreparationDependencies {
     request: CheckoutSparkSettledFeeEstimateInput
   ) => Promise<number>
   resolveInvoice?: (
-    input: CheckoutSparkLnurlInvoiceInput
+    input: CheckoutSparkLnurlInvoiceInput,
+    context: {
+      state: CheckoutSparkSettledReconciliation
+      recipient: CheckoutSparkSettledRecipient
+      renewal: boolean
+    }
   ) => Promise<CheckoutSparkLnurlInvoice>
   /** Caller enforces its actor/time/plan authority; this helper cannot grant it. */
   assertAuthority: (
@@ -242,13 +248,17 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
     dependencies.assertAuthority(initial.state, currentMs)
     let invoice: CheckoutSparkLnurlInvoice
     try {
-      invoice = await resolveInvoice({
-        lud16: recipient.destination.value,
-        amountSats: invoiceAmountSats,
-        network: initial.state.plan.network,
-        nowSeconds: Math.floor(currentMs / 1_000),
-        shouldContinue: input.shouldContinue,
-      })
+      invoice = await resolveInvoice(
+        {
+          lud16: recipient.destination.value,
+          amountSats: invoiceAmountSats,
+          network: initial.state.plan.network,
+          nowSeconds: Math.floor(currentMs / 1_000),
+          shouldContinue: input.shouldContinue,
+          receiverMode: "private",
+        },
+        { state: initial.state, recipient, renewal }
+      )
     } catch (error) {
       assertAuthorized(initial.state)
       if (
@@ -267,6 +277,11 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       continue
     }
     assertAuthorized(initial.state)
+    if (renewal && leg.intent?.publicZap && !invoice.publicZap) {
+      throw new Error(
+        "Checkout Spark public payout renewal requires fresh buyer signing."
+      )
+    }
     let validationProof: CheckoutSparkSettledReturnedProof | null = null
     if (renewal) {
       validationProof = await dependencies.proveRenewalReturn!(
@@ -291,6 +306,10 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       invoiceAmountSats,
       maxFeeSats: allocationSats - invoiceAmountSats,
       preparedAt: validatedAt,
+      ...(invoice.publicZap ? { publicZap: invoice.publicZap } : {}),
+      ...(invoice.receiverBinding
+        ? { receiverBinding: invoice.receiverBinding }
+        : {}),
     }
     const validated = renewal
       ? renewCheckoutSparkSettledLeg(initial.state, {
@@ -327,6 +346,9 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       paymentRequest: canonicalIntent.paymentRequest,
       paymentHash: canonicalIntent.paymentHash,
       expiresAt: invoice.expiresAt,
+      ...(canonicalIntent.receiverBinding
+        ? { receiverBinding: canonicalIntent.receiverBinding }
+        : {}),
     })
     const estimateRequest: CheckoutSparkSettledFeeEstimateInput = {
       walletId: initial.state.plan.walletId,
@@ -364,6 +386,12 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
         paymentHash: canonicalIntent.paymentHash,
         expiresAt: invoice.expiresAt,
         origin: invoice.origin,
+        ...(canonicalIntent.publicZap
+          ? { publicZap: canonicalIntent.publicZap }
+          : {}),
+        ...(canonicalIntent.receiverBinding
+          ? { receiverBinding: canonicalIntent.receiverBinding }
+          : {}),
       }
       break
     }
@@ -433,6 +461,10 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       invoiceAmountSats,
       maxFeeSats: allocationSats - invoiceAmountSats,
       preparedAt,
+      ...(selected.publicZap ? { publicZap: selected.publicZap } : {}),
+      ...(selected.receiverBinding
+        ? { receiverBinding: selected.receiverBinding }
+        : {}),
     }
     const next = renewal
       ? renewCheckoutSparkSettledLeg(snapshot.state, {

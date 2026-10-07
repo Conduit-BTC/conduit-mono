@@ -266,6 +266,14 @@ export function validateCheckoutSparkPlanSources(
       const product = { ...parseProductEvent(event), sourceEventId: event.id }
       return product
     })
+    if (
+      frozen.merchantPublicZapPolicy &&
+      products.some(
+        (product) => !product.publicZapPolicyKnown || !product.publicZapEnabled
+      )
+    ) {
+      unavailable()
+    }
     assertCheckoutSparkSignedCommerceAllocations({
       quote: frozen.commerceQuote,
       products,
@@ -280,7 +288,10 @@ export function validateCheckoutSparkPlanSources(
           source.kind === 31_922 ||
           source.kind === 31_923
       ),
-      acceptedAtMs: frozen.createdAt,
+      // Reconstruct frozen terms only. Financial authority is separately
+      // checked against the independent provider creation time and rate keyring.
+      acceptedAtMs:
+        frozen.commerceQuote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
       commerce: frozen.recipients.flatMap((recipient) => {
         if (recipient.kind === "conduit") return []
         if (recipient.kind !== "merchant" && recipient.kind !== "supplier") {

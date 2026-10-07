@@ -2,6 +2,18 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { checkoutSparkCommerceQuoteDigestValue } from "./checkout-spark-commerce-pricing"
 import {
+  freezeCheckoutSparkReceiverBinding,
+  normalizeCheckoutSparkReceiverAddress,
+  type CheckoutSparkReceiverBinding,
+} from "./checkout-spark-receiver-capability"
+import {
+  checkoutSparkMerchantPublicZapPolicyDigestValue,
+  freezeCheckoutSparkMerchantPublicZapPolicy,
+  restoreCheckoutSparkPublicZapContext,
+  type CheckoutSparkMerchantPublicZapPolicy,
+  type CheckoutSparkPublicZapContext,
+} from "./checkout-spark-public-zap"
+import {
   assertCheckoutSparkSettledReturnedProof,
   restoreCheckoutSparkSettledReturnClosure,
   type CheckoutSparkSettledReturnedProof,
@@ -102,6 +114,7 @@ export interface FreezeCheckoutSparkSettledPlanInput {
   readonly commerceQuote: CheckoutSparkCommerceQuote
   readonly funding: CheckoutSparkSettledFundingPlan
   readonly recipients: readonly CheckoutSparkSettledRecipientInput[]
+  readonly merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
 }
 
 /** V3 freezes identities, endpoints and weights, but no outgoing invoice. */
@@ -130,6 +143,8 @@ export interface CheckoutSparkSettledLegIntentInput {
   readonly invoiceAmountSats: number
   readonly maxFeeSats: number
   readonly preparedAt: number
+  readonly publicZap?: CheckoutSparkPublicZapContext
+  readonly receiverBinding?: CheckoutSparkReceiverBinding
 }
 
 export type CheckoutSparkSettledLegStatus =
@@ -347,6 +362,13 @@ function canonicalPlanValue(
           ],
         ]
       : []),
+    ...(plan.merchantPublicZapPolicy
+      ? [
+          checkoutSparkMerchantPublicZapPolicyDigestValue(
+            plan.merchantPublicZapPolicy
+          ),
+        ]
+      : []),
   ]
 }
 
@@ -523,6 +545,13 @@ function freezeCheckoutSparkSettledPlanInternal(
     commerceQuote,
     funding,
     recipients: Object.freeze(recipients),
+    ...(input.merchantPublicZapPolicy
+      ? {
+          merchantPublicZapPolicy: freezeCheckoutSparkMerchantPublicZapPolicy(
+            input.merchantPublicZapPolicy
+          ),
+        }
+      : {}),
     ...(nativeTreasury
       ? {
           nativeTreasury: restoreCheckoutSparkNativeTreasuryPlan(
@@ -549,6 +578,7 @@ function freezeCheckoutSparkSettledPlanInternal(
 export function freezeCheckoutSparkSettledPlan(
   input: FreezeCheckoutSparkSettledPlanInput
 ): CheckoutSparkSettledPlan {
+  assertPrivateCheckoutSparkSettledPlanInput(input)
   return freezeCheckoutSparkSettledPlanInternal(input, false)
 }
 
@@ -558,11 +588,23 @@ export function freezeCheckoutSparkSettledTreasuryPlan(
     readonly nativeTreasury: CheckoutSparkNativeTreasuryPlan
   }
 ): CheckoutSparkSettledPlan {
+  assertPrivateCheckoutSparkSettledPlanInput(input)
   return freezeCheckoutSparkSettledPlanInternal(
     input,
     false,
     input.nativeTreasury
   )
+}
+
+/** New coordinated checkout is private; restore retains historical authority. */
+function assertPrivateCheckoutSparkSettledPlanInput(
+  input: FreezeCheckoutSparkSettledPlanInput
+): void {
+  if (input.merchantPublicZapPolicy !== undefined) {
+    throw new Error(
+      "Public routed zaps are unavailable for new checkout plans."
+    )
+  }
 }
 
 export function restoreCheckoutSparkSettledPlan(
@@ -589,6 +631,9 @@ export function restoreCheckoutSparkSettledPlan(
       commerceQuote: plan.commerceQuote,
       funding: plan.funding,
       recipients: plan.recipients,
+      ...(plan.merchantPublicZapPolicy
+        ? { merchantPublicZapPolicy: plan.merchantPublicZapPolicy }
+        : {}),
     },
     plan.schemaVersion === 3,
     plan.nativeTreasury
@@ -668,6 +713,8 @@ export function fingerprintCheckoutSparkSettledLegIntent(
     intent.invoiceAmountSats,
     intent.maxFeeSats,
     intent.preparedAt,
+    ...(intent.publicZap ? [intent.publicZap] : []),
+    ...(intent.receiverBinding ? [intent.receiverBinding] : []),
   ])
 }
 
@@ -1129,6 +1176,37 @@ function normalizeIntent(
     network: plan.network,
     at: preparedAt,
   })
+  const recipient = plan.recipients.find((item) => item.legId === leg.legId)!
+  if (
+    input.publicZap &&
+    (!plan.merchantPublicZapPolicy || recipient.kind !== "merchant")
+  ) {
+    throw new Error(
+      "Checkout Spark public zap is outside the approved Merchant leg."
+    )
+  }
+  const publicZap = input.publicZap
+    ? restoreCheckoutSparkPublicZapContext(input.publicZap, {
+        policy: plan.merchantPublicZapPolicy!,
+        recipientPubkey: plan.merchantPubkey,
+        lud16: recipient.destination.value,
+        amountSats: invoiceAmountSats,
+        paymentRequest: normalizedInvoice.paymentRequest,
+        preparedAt,
+        planCreatedAt: plan.createdAt,
+      })
+    : undefined
+  const receiverBinding = input.receiverBinding
+    ? freezeCheckoutSparkReceiverBinding(input.receiverBinding)
+    : undefined
+  if (
+    receiverBinding &&
+    (receiverBinding.lud16 !==
+      normalizeCheckoutSparkReceiverAddress(recipient.destination.value) ||
+      receiverBinding.mode !== (publicZap ? "public" : "private"))
+  ) {
+    throw new Error("Checkout Spark receiver binding is out of scope.")
+  }
   return Object.freeze({
     legId: leg.legId,
     transferId: input.transferId,
@@ -1137,6 +1215,8 @@ function normalizeIntent(
     invoiceAmountSats,
     maxFeeSats,
     preparedAt,
+    ...(publicZap ? { publicZap } : {}),
+    ...(receiverBinding ? { receiverBinding } : {}),
   })
 }
 
@@ -1242,6 +1322,11 @@ export function renewCheckoutSparkSettledLeg(
   })
   if (closure.observedAt < (leg.observedAt ?? leg.intent.preparedAt))
     throw new Error("Checkout Spark returned transfer observation is stale.")
+  if (leg.intent.publicZap && !input.intent.publicZap) {
+    throw new Error(
+      "Checkout Spark public payout renewal requires fresh buyer signing."
+    )
+  }
   const intent = normalizeIntent(current.plan, leg, input.intent, 1)
   const archived: CheckoutSparkSettledClosedGeneration = {
     generation: 0,

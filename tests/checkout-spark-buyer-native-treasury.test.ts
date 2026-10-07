@@ -751,6 +751,123 @@ async function runForeground(
 
 describe("Market native treasury composed provider evidence", () => {
   it(
+    "automatically observes an admitted native receiver claim after the two-minute handoff without new payment admission",
+    async () =>
+      runForeground(async (f) => {
+        f.control.setNativeCompletion(false)
+        let waits = 0
+        let admissionsAfterHandoff = 0
+        f.hooks.beforeNativeFulfill = async () => {
+          if (f.now() >= f.plan.takeoverAt) admissionsAfterHandoff += 1
+        }
+        let pendingIntent: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input } = await createForegroundRunner(f, {
+          wait: async () => {
+            waits += 1
+            pendingIntent = structuredClone(
+              (await f.loadState()).state.treasuryFinalization
+            )
+            expect(pendingIntent!.status).toBe("ambiguous")
+            expect(pendingIntent!.finalDebitSats).toBeNull()
+            expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+            f.setNow(f.plan.takeoverAt + 1)
+            f.control.setNativeCompletion(true)
+          },
+        })
+        expect(await runner.run(input)).toEqual({ status: "complete" })
+        const final = (await f.loadState()).state.treasuryFinalization!
+        expect(waits).toBe(1)
+        expect(final.intent).toEqual(pendingIntent!.intent)
+        expect(final.status).toBe("paid")
+        expect(final.providerTransferId).toBe(
+          f.control.nativeSnapshot().transfers[0]!.id
+        )
+        expect(final.finalDebitSats).toBe(final.intent!.authorizedDebitSats)
+        expect(admissionsAfterHandoff).toBe(0)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it.each(["visibility", "buyer", "cancelled", "deadline"] as const)(
+    "does not accept a post-handoff native claim after %s revocation",
+    async (change) =>
+      runForeground(async (f) => {
+        f.control.setNativeCompletion(false)
+        let active = true
+        let buyer = f.buyer.pubkey
+        let pendingIntent: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input } = await createForegroundRunner(f, {
+          wait: async () => {
+            pendingIntent = structuredClone(
+              (await f.loadState()).state.treasuryFinalization
+            )
+            expect(pendingIntent!.status).toBe("ambiguous")
+            f.setNow(f.plan.takeoverAt + 1)
+            f.control.setNativeCompletion(true)
+            if (change === "cancelled") {
+              await f.database.orderLifecycles.update(f.plan.orderId, {
+                phase: "cancelled",
+              })
+            } else {
+              f.hooks.beforeNativeQuery = () => {
+                if (change === "visibility") active = false
+                else if (change === "buyer") buyer = f.merchant.pubkey
+                else f.setNow(f.plan.createdAt + 301_000)
+              }
+            }
+          },
+        })
+        const result = await runner.run({
+          ...input,
+          shouldContinue: () => active && input.shouldContinue(),
+          currentBuyerPubkey: () => buyer,
+        })
+        expect(result).toMatchObject({ status: "paused" })
+        if (change === "deadline")
+          expect(result).toEqual({
+            status: "paused",
+            reason: "reconciliation_timeout",
+          })
+        expect((await f.loadState()).state.treasuryFinalization).toEqual(
+          pendingIntent!
+        )
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it(
+    "does not turn a prepared unsubmitted native intent into post-handoff payment authority",
+    async () =>
+      runForeground(async (f) => {
+        const { runner, input } = await createForegroundRunner(f, {
+          acknowledge: async () => {
+            throw new Error("Synthetic recovery transport unavailable")
+          },
+        })
+        expect(
+          await runner.run({
+            ...input,
+            fundingPoll: { attempts: 1, intervalMs: 1 },
+          })
+        ).toEqual({ status: "paused", reason: "recovery_handoff_unavailable" })
+        const prepared = (await f.loadState()).state.treasuryFinalization!
+        expect(prepared.status).toBe("prepared")
+        f.setNow(f.plan.takeoverAt)
+        expect(await runner.run(input)).toEqual({
+          status: "paused",
+          reason: "authorization_changed",
+        })
+        expect((await f.loadState()).state.treasuryFinalization).toEqual(
+          prepared
+        )
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(0)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(0)
+      }, 120_000),
+    15_000
+  )
+  it(
     "normal two-minute handoff completes a verified native payment just before the cutoff without Resume",
     async () =>
       runForeground(async (f) => {
@@ -779,7 +896,7 @@ describe("Market native treasury composed provider evidence", () => {
     15_000
   )
   it(
-    "normal two-minute handoff drains an admitted native payment across cutoff without claiming fresh buyer completion or resending",
+    "normal two-minute handoff drains and reconciles an admitted native payment across cutoff without resending",
     async () =>
       runForeground(async (f) => {
         let entered!: () => void
@@ -805,24 +922,22 @@ describe("Market native treasury composed provider evidence", () => {
           expect(f.now()).toBeLessThan(f.plan.takeoverAt)
           f.setNow(f.plan.takeoverAt + 1)
           release()
-          expect(await running).toEqual({
-            status: "paused",
-            reason: "unavailable",
-          })
+          expect(await running).toEqual({ status: "complete" })
           const retained = (await f.loadState()).state.treasuryFinalization!
-          expect(retained.status).toBe("submitted")
+          expect(retained.status).toBe("paid")
           expect(retained.intent).toEqual(admitted.intent)
-          expect(retained.providerTransferId).toBeNull()
-          expect(retained.finalDebitSats).toBeNull()
-          // The synthetic provider settled the admitted operation, but buyer
-          // authority ended before fresh receipt proof could be accepted.
+          expect(retained.providerTransferId).toBe(
+            f.control.nativeSnapshot().transfers[0]!.id
+          )
+          expect(retained.finalDebitSats).toBe(
+            admitted.intent!.authorizedDebitSats
+          )
+          // Only exact history and receiver-claimed proof may finish the
+          // admitted operation; no new admission survives the handoff.
           expect(f.control.nativeSnapshot().transfers[0]!.status).toBe(
             "TRANSFER_STATUS_COMPLETED"
           )
-          expect(await runner.run(input)).toEqual({
-            status: "paused",
-            reason: "authorization_changed",
-          })
+          expect(await runner.run(input)).toEqual({ status: "complete" })
           expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
           expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
           expect((await f.loadState()).state.treasuryFinalization).toEqual(
@@ -836,12 +951,13 @@ describe("Market native treasury composed provider evidence", () => {
     15_000
   )
   it(
-    "normal two-minute handoff preserves a pending native attempt at cutoff and never readmits its payment",
+    "normal two-minute handoff checks a pending native attempt until the foreground budget without readmitting its payment",
     async () =>
       runForeground(async (f) => {
         f.control.setNativeCompletion(false)
         let pending:
           CheckoutSparkSettledReconciliation["treasuryFinalization"] | undefined
+        let waits = 0
         const { runner, input } = await createForegroundRunner(f, {
           wait: async () => {
             pending = structuredClone(
@@ -852,26 +968,27 @@ describe("Market native treasury composed provider evidence", () => {
               f.control.nativeSnapshot().transfers[0]!.id
             )
             expect(pending!.finalDebitSats).toBeNull()
-            f.setNow(f.plan.takeoverAt)
+            waits += 1
+            f.setNow(
+              waits === 1 ? f.plan.takeoverAt : f.plan.createdAt + 301_000
+            )
           },
         })
         expect(await runner.run(input)).toEqual({
           status: "paused",
-          reason: "authorization_changed",
+          reason: "prior_possible_send",
         })
         expect((await f.loadState()).state.treasuryFinalization).toEqual(
           pending!
         )
-        // Later provider completion does not restore buyer dispatch or turn a
-        // missing buyer proof into permission to submit the saved intent again.
+        expect(waits).toBe(2)
+        // A new explicit inspection can observe later exact completion. It
+        // never restores dispatch or submits the saved intent again.
         f.control.setNativeCompletion(true)
-        expect(await runner.run(input)).toEqual({
-          status: "paused",
-          reason: "authorization_changed",
-        })
-        expect((await f.loadState()).state.treasuryFinalization).toEqual(
-          pending!
-        )
+        expect(await runner.run(input)).toEqual({ status: "complete" })
+        const completed = (await f.loadState()).state.treasuryFinalization!
+        expect(completed.intent).toEqual(pending!.intent)
+        expect(completed.status).toBe("paid")
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
       }, 120_000),

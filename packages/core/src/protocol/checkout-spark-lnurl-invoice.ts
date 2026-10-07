@@ -10,6 +10,20 @@ import {
   normalizeSafeLnurlPayRequestUrl,
 } from "./lightning"
 import type { CheckoutSparkNetwork } from "./checkout-spark-reconciliation"
+import type { CheckoutSparkPublicZapContext } from "./checkout-spark-public-zap"
+import {
+  createCheckoutSparkReceiverBinding,
+  observeCheckoutSparkReceiverCapability,
+  freezeCheckoutSparkReceiverBinding,
+  type CheckoutSparkReceiverBinding,
+  type CheckoutSparkReceiverCapability,
+  type CheckoutSparkReceiverContract,
+  type CheckoutSparkReceiverMode,
+} from "./checkout-spark-receiver-capability"
+import {
+  verifyCheckoutSparkReceiverInvoice,
+  type CheckoutSparkReceiverVerificationDependencies,
+} from "./checkout-spark-receiver-verification"
 
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER)
 const MAX_PAYMENT_REQUEST_LENGTH = 16_384
@@ -22,6 +36,8 @@ export interface CheckoutSparkLnurlInvoiceInput {
   nowSeconds: number
   /** Same signed-account and checkout generation that authorized the payout. */
   shouldContinue: () => boolean
+  /** Selected routed plans require a qualified receiver in the chosen mode. */
+  receiverMode?: CheckoutSparkReceiverMode
 }
 
 export interface CheckoutSparkLnurlInvoice {
@@ -30,6 +46,10 @@ export interface CheckoutSparkLnurlInvoice {
   expiresAt: number
   /** Live local resolution evidence; never serialize or include in recovery. */
   origin?: CheckoutSparkLnurlInvoiceOrigin
+  /** Optional exact Merchant-only public request; not settlement authority. */
+  publicZap?: CheckoutSparkPublicZapContext
+  /** Portable hint for fresh-device verification; never payment authority. */
+  receiverBinding?: CheckoutSparkReceiverBinding
 }
 
 declare const invoiceOriginBrand: unique symbol
@@ -45,6 +65,7 @@ interface InvoiceOriginSnapshot {
   paymentHash: string
   expiresAt: number
   resolvedAt: number
+  receiverBinding?: CheckoutSparkReceiverBinding
 }
 
 const invoiceOrigins = new WeakMap<
@@ -72,7 +93,13 @@ export function assertCheckoutSparkLnurlInvoiceOrigin(
     observed.amountSats !== expected.amountSats ||
     observed.paymentRequest !== expected.paymentRequest ||
     observed.paymentHash !== expected.paymentHash ||
-    observed.expiresAt !== expected.expiresAt
+    observed.expiresAt !== expected.expiresAt ||
+    JSON.stringify(observed.receiverBinding ?? null) !==
+      JSON.stringify(
+        expected.receiverBinding
+          ? freezeCheckoutSparkReceiverBinding(expected.receiverBinding)
+          : null
+      )
   ) {
     throw new CheckoutSparkInvoiceOriginUnavailableError()
   }
@@ -82,6 +109,10 @@ export function assertCheckoutSparkLnurlInvoiceOrigin(
 export interface CheckoutSparkLnurlInvoiceDependencies {
   fetchMetadata?: typeof fetchLnurlPayMetadata
   fetchInvoice?: typeof fetchLnurlInvoice
+  receiverContracts?: readonly CheckoutSparkReceiverContract[]
+  fetchReceiverVerify?: CheckoutSparkReceiverVerificationDependencies["fetchVerify"]
+  /** Public callback creates the exact request before invoice verification. */
+  receiverPublicRequestJson?: () => string | undefined
 }
 
 /** A usable whole-sat range observed from valid, safe plain-LNURL metadata. */
@@ -110,7 +141,7 @@ export async function resolveCheckoutSparkLnurlInvoice(
     }
   }
   assertCurrent()
-  const lud16 = input.lud16.trim()
+  const lud16 = input.lud16.trim().toLowerCase()
   if (!isValidLud16Address(lud16)) {
     throw new Error("Checkout Spark recipient address is invalid.")
   }
@@ -151,6 +182,22 @@ export async function resolveCheckoutSparkLnurlInvoice(
   if (!callback) {
     throw new Error("Checkout Spark recipient payment callback is unsafe.")
   }
+  let receiverCapability: CheckoutSparkReceiverCapability | undefined
+  if (input.receiverMode !== undefined) {
+    const observed = await observeCheckoutSparkReceiverCapability(
+      { lud16, mode: input.receiverMode, assertCurrent },
+      {
+        contracts: dependencies.receiverContracts,
+        fetchMetadata: async () => lnurlMetadata,
+      }
+    )
+    if (observed.status !== "supported") {
+      throw new Error(
+        "Checkout Spark recipient recovery capability is unavailable."
+      )
+    }
+    receiverCapability = observed.capability
+  }
   const minimumSats = Number(
     (BigInt(lnurlMetadata.minSendable) + 999n) / 1_000n
   )
@@ -163,6 +210,7 @@ export async function resolveCheckoutSparkLnurlInvoice(
   }
 
   let invoice: string
+  let verifyUrl: string | undefined
   try {
     // Intentionally pass no third argument: the core helper strips any
     // pre-existing `nostr` or `lnurl` callback parameters for plain invoices.
@@ -171,6 +219,7 @@ export async function resolveCheckoutSparkLnurlInvoice(
       amountMsats
     )
     invoice = response.invoice
+    verifyUrl = response.verifyUrl
   } catch {
     throw new Error("Checkout Spark recipient invoice is unavailable.")
   }
@@ -203,6 +252,39 @@ export async function resolveCheckoutSparkLnurlInvoice(
   if (!paymentHash) {
     throw new Error("Checkout Spark recipient invoice hash is invalid.")
   }
+  let receiverBinding: CheckoutSparkReceiverBinding | undefined
+  if (receiverCapability) {
+    if (!verifyUrl)
+      throw new Error(
+        "Checkout Spark recipient verification endpoint is unavailable."
+      )
+    receiverBinding = createCheckoutSparkReceiverBinding(receiverCapability, {
+      verifyUrl,
+      paymentHash,
+    })
+    const verified = await verifyCheckoutSparkReceiverInvoice(
+      {
+        binding: receiverBinding,
+        paymentRequest,
+        paymentHash,
+        amountSats: input.amountSats,
+        network: input.network,
+        publicRequestJson: dependencies.receiverPublicRequestJson?.(),
+        assertCurrent,
+      },
+      {
+        contracts: dependencies.receiverContracts,
+        fetchMetadata: async () => lnurlMetadata,
+        fetchVerify: dependencies.fetchReceiverVerify,
+      }
+    )
+    if (verified.status !== "verified" || verified.settled) {
+      throw new Error(
+        "Checkout Spark recipient invoice verification is unavailable."
+      )
+    }
+    assertCurrent()
+  }
 
   const origin = Object.freeze({}) as CheckoutSparkLnurlInvoiceOrigin
   invoiceOrigins.set(
@@ -215,6 +297,7 @@ export async function resolveCheckoutSparkLnurlInvoice(
       paymentHash,
       expiresAt: invoiceMetadata.expiresAt,
       resolvedAt: input.nowSeconds * 1_000,
+      ...(receiverBinding ? { receiverBinding } : {}),
     })
   )
   return {
@@ -222,5 +305,6 @@ export async function resolveCheckoutSparkLnurlInvoice(
     paymentHash,
     expiresAt: invoiceMetadata.expiresAt,
     origin,
+    ...(receiverBinding ? { receiverBinding } : {}),
   }
 }

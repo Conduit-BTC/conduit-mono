@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Plugin } from "vite"
 import {
   createPublicDeploymentManifest,
   resolveDeploymentProfile,
+  type ResolvedDeploymentProfile,
 } from "./deployment_profile.ts"
 
 type PackageJson = {
@@ -69,6 +71,27 @@ function getSourceUrl(): string {
   )
 }
 
+/** Managed trust is code-owned; local Vite dotenv remains an explicit boundary. */
+export function defineCheckoutSparkDeploymentTrust(
+  profile: ResolvedDeploymentProfile
+): Record<string, string> {
+  if (profile.name === "local") return {}
+  return {
+    "import.meta.env.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS": JSON.stringify(
+      profile.quantumRouterTrust.receiverContracts
+    ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_URL": JSON.stringify(
+      profile.quantumRouterTrust.pricingUrl
+    ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS": JSON.stringify(
+      profile.quantumRouterTrust.pricingPublicKeys
+    ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST": JSON.stringify(
+      profile.quantumRouterTrustDigest
+    ),
+  }
+}
+
 export function createConduitBuildContract(appDir: string): {
   define: Record<string, string>
   deploymentManifestPlugin: Plugin
@@ -130,10 +153,22 @@ export function createConduitBuildContract(appDir: string): {
     define["import.meta.env.VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES"] =
       JSON.stringify(profile.quantumRouterTreasury.retiredAddresses.join(","))
   }
+  Object.assign(define, defineCheckoutSparkDeploymentTrust(profile))
 
   const deploymentManifestPlugin: Plugin = {
     name: "conduit-deployment-manifest",
     apply: "build",
+    buildStart() {
+      if (profile.name === "local") return
+      this.emitFile({
+        type: "chunk",
+        id: fileURLToPath(
+          new URL("./checkout_spark_trust_probe.ts", import.meta.url)
+        ),
+        fileName: ".well-known/conduit-checkout-trust.js",
+        preserveSignature: "strict",
+      })
+    },
     generateBundle() {
       this.emitFile({
         type: "asset",

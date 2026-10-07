@@ -11,8 +11,86 @@ import {
   resolvePlaywrightRouterWebServerTarget,
 } from "../scripts/dev/run_playwright_router_web_server"
 import { createPlaywrightRouterConfig } from "../scripts/dev/playwright_router_config"
+import { parseCheckoutSparkReceiverContracts } from "../packages/core/src/protocol/checkout-spark-receiver-capability"
 
 describe("isolated router Playwright launcher", () => {
+  it("selects receiver setup and pre-funding admission separately from all routing lanes", () => {
+    const setup = createPlaywrightRouterConfig({
+      PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true",
+    })
+    const setupTitle = "receiver setup supported payment profile @commerce"
+    expect((setup.grep as RegExp).test(setupTitle)).toBe(true)
+    expect((setup.grep as RegExp).test("native router funding @commerce")).toBe(
+      false
+    )
+    expect(
+      (setup.grep as RegExp).test("routed public Zapout shopper @commerce")
+    ).toBe(false)
+    expect(
+      (setup.grep as RegExp).test("routed anonymous Zapout guest @commerce")
+    ).toBe(false)
+    expect(
+      (createPlaywrightRouterConfig({}).grep as RegExp).test(setupTitle)
+    ).toBe(false)
+    if (!Array.isArray(setup.webServer))
+      throw new Error("Router servers unavailable.")
+    expect(
+      setup.webServer.every(
+        (server) => server.env?.PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE === "true"
+      )
+    ).toBe(true)
+  })
+  it("qualifies only the fixture provider's private receiver contract in both isolated apps", () => {
+    for (const target of ["market", "merchant"] as const) {
+      const launch = resolvePlaywrightRouterWebServerTarget(target, {
+        PLAYWRIGHT_RELAY_PORT: "54321",
+      })
+      const contracts = parseCheckoutSparkReceiverContracts(
+        launch.env.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS
+      )
+      expect(contracts.length).toBe(1)
+      expect(
+        contracts.map(({ modes, binding }) => ({ modes, binding }))
+      ).toEqual([{ modes: ["private"], binding: "metadata_hash" }])
+      expect(
+        contracts.every(
+          (contract) =>
+            contract.qualification === "accepted" &&
+            contract.payRequestOrigins.length === 1 &&
+            contract.payRequestOrigins[0] === "https://wallet.conduit.market" &&
+            JSON.stringify(contract.payRequestOrigins) ===
+              JSON.stringify(contract.callbackOrigins) &&
+            JSON.stringify(contract.payRequestOrigins) ===
+              JSON.stringify(contract.verifyOrigins) &&
+            contract.verifyPathPrefix === "/__hermetic_lnurl/verify/"
+        )
+      ).toBe(true)
+      expect(() =>
+        resolvePlaywrightRouterWebServerTarget(target, {
+          PLAYWRIGHT_RELAY_PORT: "54321",
+          VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS: "[]",
+        })
+      ).toThrow("isolated mock receiver configuration")
+    }
+  })
+  it("selects ordinary signed-in and guest routing with no public signing service", () => {
+    const config = createPlaywrightRouterConfig({})
+    for (const title of [
+      "native router funding automatically @commerce",
+      "native router cold Merchant restores @commerce",
+      "native router ordinary guest checkout @commerce",
+    ])
+      expect((config.grep as RegExp).test(title)).toBe(true)
+    expect(config.grepInvert).toBeUndefined()
+    for (const target of ["market", "merchant"] as const) {
+      const launch = resolvePlaywrightRouterWebServerTarget(target, {
+        PLAYWRIGHT_RELAY_PORT: "54321",
+      })
+      expect(launch.env.VITE_E2E_PUBLIC_ZAP_RECEIPT_HINTS).toBe("false")
+      expect(launch.env.VITE_ANON_ZAP_SIGNER_PUBKEY).toBe("")
+      expect(launch.env.VITE_ANON_ZAP_SIGNER_URL).toBe("")
+    }
+  })
   it("keeps real event-catalog links inside its configured local app pair", () => {
     const ports = resolvePlaywrightRouterPorts({})
     const marketOrigin = `http://127.0.0.1:${ports.marketPort}`
@@ -241,7 +319,7 @@ describe("isolated router Playwright config", () => {
     const config = createPlaywrightRouterConfig({})
     expect(config.testDir).toBe("./e2e")
     expect(config.testMatch).toBe("**/commerce-router-recovery.playwright.ts")
-    expect(config.grep?.toString()).toBe("/@commerce/")
+    expect(config.grep?.toString()).toBe("/native router.*@commerce/")
     expect(config.workers).toBe(1)
     expect(config.fullyParallel).toBe(false)
     expect(config.retries).toBe(0)

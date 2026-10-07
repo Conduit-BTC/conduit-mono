@@ -367,6 +367,14 @@ export function createCheckoutSparkSettledRecoveryPayload(
   const state = canonicalSettledState(input.state)
   const plan = state.plan
   const senderPubkey = normalizeHex64(input.senderPubkey, "Sender pubkey")
+  if (
+    plan.merchantPublicZapPolicy?.schemaVersion === 1 &&
+    plan.merchantPublicZapPolicy.signerPubkey !== senderPubkey
+  ) {
+    throw new Error(
+      "Checkout Spark public zap approval is outside buyer scope."
+    )
+  }
   const preparedAt = normalizeTimestamp(input.preparedAt, "Recovery time")
   const accountNumber = normalizeAccountNumber(input.accountNumber)
   const mnemonic = normalizeMnemonic(input.mnemonic)
@@ -419,6 +427,14 @@ export function createCheckoutSparkSettledRecoveryProgressPayload(
   const state = canonicalSettledState(input.state)
   const plan = state.plan
   const senderPubkey = normalizeHex64(input.senderPubkey, "Sender pubkey")
+  if (
+    plan.merchantPublicZapPolicy?.schemaVersion === 1 &&
+    plan.merchantPublicZapPolicy.signerPubkey !== senderPubkey
+  ) {
+    throw new Error(
+      "Checkout Spark public zap approval is outside buyer scope."
+    )
+  }
   const initialHandoffId = normalizeHex64(
     input.initialHandoffId,
     "Initial recovery handoff id"

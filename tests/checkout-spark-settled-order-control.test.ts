@@ -271,6 +271,66 @@ describe("funding availability is independent of buyer payout takeover", () => {
       }).status
     ).toBe("blocked")
   })
+  it("offers only exact saved possible-send inspection after takeover, never preparation or dispatch", () => {
+    const { plan, input } = fixture(NOW + 120_000)
+    const credited = recordCheckoutSparkSettledCredit(input.snapshot.state, {
+      requestId: plan.funding.requestId,
+      paymentHash: plan.funding.paymentHash,
+      transferId: "funding-transfer",
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+      grossSats: 1_113,
+      creditedSats: 1_111,
+      observedAt: NOW + 2,
+    })
+    const legId = plan.recipients[0]!.legId
+    const prepared = prepareCheckoutSparkSettledLeg(credited, {
+      legId,
+      transferId: deriveCheckoutSparkSettledTransferId(plan, legId),
+      paymentRequest: invoice(995, 4),
+      paymentHash: "04".repeat(32),
+      invoiceAmountSats: 995,
+      maxFeeSats: 5,
+      preparedAt: NOW + 3,
+    })
+    const assess = (state: typeof prepared) =>
+      assessCheckoutSparkSettledOrderControl({
+        ...input,
+        now: plan.takeoverAt,
+        snapshot: { ...input.snapshot, state },
+      })
+    expect(assess(credited).status).toBe("blocked")
+    expect(assess(prepared).status).toBe("blocked")
+    for (const status of [
+      "submitted",
+      "ambiguous",
+      "lookup_unavailable",
+    ] as const) {
+      const possible = recordCheckoutSparkSettledLegStatus(prepared, {
+        legId,
+        transferId: prepared.legs[0]!.intent!.transferId,
+        paymentHash: "04".repeat(32),
+        status,
+        observedAt: NOW + 4,
+      })
+      expect(assess(possible)).toMatchObject({ status: "check_payout", legId })
+    }
+    for (const status of [
+      "terminal_failure",
+      "conflicting_evidence",
+    ] as const) {
+      expect(
+        assess(
+          recordCheckoutSparkSettledLegStatus(prepared, {
+            legId,
+            transferId: prepared.legs[0]!.intent!.transferId,
+            paymentHash: "04".repeat(32),
+            status,
+            observedAt: NOW + 4,
+          })
+        ).status
+      ).toBe("blocked")
+    }
+  })
 })
 
 function preparedNativeFixture() {

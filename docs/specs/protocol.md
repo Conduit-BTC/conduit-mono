@@ -192,6 +192,23 @@ original order draft for same-wrap repair and retry, rather than replacing its
 wallet or invoice. Only positively verified pristine, unexposed state permits
 revision-checked abandonment. See the wallet contract for these recovery gates.
 
+The optional pricing attestation is private, versioned economic evidence,
+separate from the order signature. Exact signed listing/variation/shipping
+revisions and original provider-confirmed funding creation time bind its use.
+Restoration never substitutes a current rate or treats the shopper's plan time
+as independent pricing authority. Existing plans without this field retain
+their original digest; unsupported or unverifiable fiat evidence pauses.
+
+Exact Lightning intents may retain a portable, mode-qualified receiver binding.
+Its canonical endpoint/metadata/verifier facts are untrusted lookup hints until
+independently checked against trusted deployment qualification and the exact
+invoice. Receiver settlement and native Spark payment/debit evidence remain
+separate hard gates. New V1 commerce uses ordinary private metadata-hash
+invoice association. Public requests or receipts in retained historical attempts
+are not receiving-account proof. No provider-brand adapter, buyer progress or
+aggregate balance supplies missing authority. See the wallet and
+universal-router contracts.
+
 ### Settled Router Closed-Attempt Renewal
 
 Closed-attempt renewal is a Conduit private recovery extension, not a new Nostr
@@ -255,10 +272,27 @@ The guest exception retains its existing order scope and lifetime. Native
 recovery adds no account credential, signer permission, generic message,
 public event, diagnostic payload or service-operated wallet executor.
 
+### Service Signer Exception: Checkout Pricing Attestations
+
+The separate pricing-only Worker may sign bounded live-rate snapshots derived
+from the existing feeds. Its dedicated runtime-secret key must not be reused
+for account signing, anonymous zaps, orders, messages or payment execution.
+This is not a Nostr identity or a custodial wallet. Public verification keys,
+including retained historical keys, belong to shared managed deployment policy;
+the private key never enters client configuration, tracked files or diagnostics.
+
+Requests contain currency codes only, under exact approved origins, bounded
+request/response/deadline limits and a mandatory native rate limiter. No cart,
+order, invoice, identity, recipient or recovery material is accepted or logged.
+The standalone entry/configuration is dormant until explicitly provisioned and
+activated; it does not change the anonymous-zap Worker's existing purpose,
+route or secret. Code availability is not authorization to generate/deploy a
+key or enable a live service.
+
 ### Service Signer Exception: Anon Public Zaps
 
-The Anon Conduit Shopper public zap signer is the only approved server-side
-private-key exception in this repository. It exists to sign NIP-57 zap request
+The Anon Conduit Shopper public zap signer is the bounded public-zap server-side
+private-key exception. It exists to sign NIP-57 zap request
 events (`kind:9734`) for checkout flows where a merchant explicitly allows
 public anonymous zaps, and for the Conduit.Market project tip described below.
 
@@ -290,6 +324,9 @@ This exception is constrained as follows:
 - For checkout, the trusted server boundary derives the anonymous zap amount from current,
   signed product listings and a fresh server-owned conversion quote when fiat
   pricing is present. Browser-provided totals are not authorization evidence.
+- Quantum Router V1 does not issue routed public signing authorization or
+  public-zap invoices. Ordinary non-routed checkout and project-tip purposes
+  remain unchanged; this does not disable a provider's global zap capability.
 - Anonymous checkout request content is server-owned and limited to copy such as
   `Zapped out 1 item at https://shop.conduit.market/` or
   `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
@@ -435,6 +472,14 @@ Checkout privacy behavior:
   contents, shipping details, contact data, invoices, payment request strings,
   product names, product identifiers, or other private checkout data unless the
   shopper writes a custom public comment.
+
+New settled router plans use only ordinary private payments, regardless of a
+listing's public-zap policy. V1 exposes no public routed options, public-zap
+invoice requests or anonymous public signing authorization. Existing listing
+policy tags retain their meaning for non-routed zaps. Historical funded public
+policies/intents retain their original authority and exact no-replay safeguards;
+never convert them into a new private payout. Public routed zaps are deferred,
+not a V1 receiving-service API or acceptance dependency.
 
 ## Client Hydration And Relay Hints
 

@@ -3,8 +3,10 @@ import type {
   PricingRateInput,
   Product,
   SignedPublicNostrEvent,
+  CheckoutSparkPricingRateAttestation,
 } from "@conduit/core"
 import { orderEventMarketPickupFulfillmentSchema } from "@conduit/core"
+import { freezeCheckoutSparkPricingRateAttestation } from "@conduit/core/protocol/checkout-spark-pricing-authority"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
 import type { CheckoutAuthorizationResult } from "./checkout-authorization"
@@ -36,6 +38,8 @@ export interface CheckoutSparkQuoteLineEvidence {
  */
 export interface CheckoutSparkQuoteAuthority {
   pricing: PricedIntent
+  /** Independently signed rate snapshot retained with the final fiat conversion. */
+  pricingAuthority?: CheckoutSparkPricingRateAttestation
   products: readonly Product[]
   lines: readonly CheckoutSparkQuoteLineEvidence[]
   /** Exact selected 30406 revisions, retained from the same authorized read. */
@@ -144,6 +148,7 @@ function requireMatchingProduct(
 export function buildCheckoutSparkQuoteAuthority(input: {
   authorization: AuthorizedItems
   rateInput: PricingRateInput
+  pricingAuthority?: CheckoutSparkPricingRateAttestation
   nowMs?: number
 }): CheckoutSparkQuoteAuthority {
   const { authorization } = input
@@ -295,6 +300,13 @@ export function buildCheckoutSparkQuoteAuthority(input: {
 
   return freezeDeep({
     pricing: structuredClone(pricing),
+    ...(input.pricingAuthority
+      ? {
+          pricingAuthority: freezeCheckoutSparkPricingRateAttestation(
+            input.pricingAuthority
+          ),
+        }
+      : {}),
     products: structuredClone(authorization.listingReadProducts),
     lines: structuredClone(lines),
     ...(selectedShipping.size > 0

@@ -14,6 +14,7 @@ import {
   type DexieCheckoutSparkSettledRepository,
 } from "@conduit/core"
 import type { SparkWalletManager } from "./spark-wallet"
+import { verifyBuyerCheckoutSparkRecipientSettlement } from "./checkout-spark-invoice-recipient"
 
 export type CheckoutSparkTreasuryRepository = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -23,7 +24,13 @@ export type CheckoutSparkTreasuryRepository = Pick<
   | "assertLocalInvoiceOrigin"
   | "loadMerchantSettlement"
   | "recordMerchantTreasury"
->
+> &
+  Partial<
+    Pick<
+      DexieCheckoutSparkSettledRepository,
+      "recordInvoiceRecipientVerification" | "hasInvoiceRecipientSettlement"
+    >
+  >
 
 export type CheckoutSparkTreasuryManager = Pick<
   SparkWalletManager,
@@ -163,6 +170,16 @@ export async function inspectBuyerCheckoutSparkTreasuryCommerce(input: {
       closedReturnedProofs.push(closedProof)
     }
     await repository.assertLocalInvoiceOrigin(plan, target, assertCurrent)
+    if (
+      !(await verifyBuyerCheckoutSparkRecipientSettlement({
+        plan,
+        target,
+        repository,
+        now,
+        assertCurrent,
+      }))
+    )
+      throw new Error("Checkout Spark recipient settlement is unavailable.")
     await assertAuthority()
     const request = requireCheckoutSparkSettledExactOutgoingRequest(
       plan,

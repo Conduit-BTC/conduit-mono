@@ -70,8 +70,6 @@ const imageUrl = "https://cdn.conduit.market/router-native-smoke.svg"
 const merchantName = "Isolated Router Merchant"
 // Exact offline responses only. Reserved example domains are intentionally
 // rejected by the real payout URL policy, so use allowed-shaped test targets.
-const merchantAddress = "router-merchant@wallet.conduit.market"
-const supplierAddress = "router-supplier@wallet.conduit.market"
 const merchantProfileRelay = new URL(CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!)
   .href
 const supplierProfileRelay = merchantProfileRelay
@@ -105,6 +103,88 @@ async function merchantWalletState(page: Page, orderId: string | null) {
       return retired ? "retired" : "active"
     },
     { modulePath, orderId }
+  )
+}
+
+// Observe the real repository's validated local receipt. The fixture never
+// writes attribution or settlement rows, and only content-free facts leave it.
+async function merchantRecordedCompletion(
+  page: Page,
+  merchantPubkey: string,
+  orderId: string | null
+) {
+  const repositoryPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/protocol/checkout-spark-settled-router-repository.ts", import.meta.url)).replaceAll("\\", "/")}`
+  const projectionPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/protocol/checkout-spark-merchant-settlement.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ repositoryPath, projectionPath, merchantPubkey, orderId }) => {
+      const [{ DexieCheckoutSparkSettledRepository }, projection] =
+        await Promise.all([
+          import(/* @vite-ignore */ repositoryPath),
+          import(/* @vite-ignore */ projectionPath),
+        ])
+      if (!orderId) return null
+      const records =
+        await new DexieCheckoutSparkSettledRepository().loadMerchantOrderSettlements(
+          merchantPubkey,
+          [orderId]
+        )
+      if (records.length !== 1) return null
+      const record = records[0].settlement
+      return {
+        ...projection.projectCheckoutSparkMerchantSettlement(record),
+        creditedSats: record.credit?.creditedSats ?? null,
+        paidCommerceCount: record.paidLegs.length,
+        commerceDebitSats: record.paidLegs.reduce(
+          (sum: number, leg: { finalDebitSats: number }) =>
+            sum + leg.finalDebitSats,
+          0
+        ),
+        nativePrincipalSats: record.nativeTreasury?.principalSats ?? null,
+        nativeDebitSats: record.nativeTreasury?.finalDebitSats ?? null,
+        nativeFeeSats: record.nativeTreasury?.finalFeeSats ?? null,
+      }
+    },
+    { repositoryPath, projectionPath, merchantPubkey, orderId }
+  )
+}
+
+// Read only the isolated checkout's frozen clock facts. No invoice, wallet,
+// identity or order content leaves the page, and this helper never alters the
+// saved deadlines or produces payment authority.
+async function frozenRouterTiming(page: Page, orderId: string | null) {
+  const dbPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
+  const lightningPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/protocol/lightning.ts", import.meta.url)).replaceAll("\\", "/")}`
+  const timingPath = `/@fs/${fileURLToPath(new URL("../apps/market/src/lib/checkout-spark-local-router-canary.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ dbPath, lightningPath, timingPath, orderId }) => {
+      const [{ db }, { decodeLightningInvoiceMetadata }, timing] =
+        await Promise.all([
+          import(/* @vite-ignore */ dbPath),
+          import(/* @vite-ignore */ lightningPath),
+          import(/* @vite-ignore */ timingPath),
+        ])
+      const rows = await db.checkoutSparkReconciliations.toArray()
+      const matching = rows.filter(
+        (row: { state: { plan: { orderId: string } } }) =>
+          row.state.plan.orderId === orderId
+      )
+      if (matching.length !== 1) return null
+      const plan = matching[0].state.plan
+      const invoice = decodeLightningInvoiceMetadata(
+        plan.funding.paymentRequest
+      )
+      return {
+        createdAt: plan.createdAt as number,
+        takeoverAt: plan.takeoverAt as number,
+        fundingCreatedAt: plan.funding.createdAt as number,
+        fundingExpiresAt: plan.funding.expiresAt as number,
+        signedFundingCreatedAt: invoice.createdAt as number | null,
+        signedFundingExpiresAt: invoice.expiresAt as number | null,
+        configuredTakeoverAfterMs: timing.getCheckoutSparkSettledTiming()
+          .takeoverAfterMs as number,
+      }
+    },
+    { dbPath, lightningPath, timingPath, orderId }
   )
 }
 
@@ -178,7 +258,7 @@ async function publishSupplierListing(
   onStage("public zap preference")
   await dialog
     .getByRole("checkbox", { name: /Enable public zaps for purchases/ })
-    .uncheck()
+    .setChecked(true)
   onStage("required product tags")
   const tags = dialog.getByRole("combobox", { name: "Tags" })
   for (const tag of ["commerce", "supplier", "hermetic"]) {
@@ -239,7 +319,13 @@ function fundingInvoice(amountSats: number, expirySeconds: number): string {
 
 async function rehearseRouter(
   browser: Browser,
-  continuation: "buyer" | "cold-merchant" | "partial-cold-merchant" = "buyer"
+  continuation: "buyer" | "cold-merchant" | "partial-cold-merchant" = "buyer",
+  buyerMode: "signed-in" | "guest" = "signed-in",
+  receiverAdmission:
+    | "supported-setup"
+    | "unsupported-merchant"
+    | "unsupported-supplier"
+    | null = null
 ): Promise<void> {
   test.setTimeout(240_000)
   const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
@@ -250,6 +336,17 @@ async function rehearseRouter(
   const merchant = createRuntimeSignerIdentity()
   const buyer = createRuntimeSignerIdentity()
   const supplier = createRuntimeSignerIdentity()
+  // These are the legitimate original signed account profiles for admission
+  // checks, not replacement invoices or alternate recipients after funding.
+  const merchantAddress =
+    receiverAdmission === "unsupported-merchant"
+      ? "router-merchant@unsupported.wallet.conduit.market"
+      : "router-merchant@wallet.conduit.market"
+  const supplierAddress =
+    receiverAdmission === "unsupported-supplier"
+      ? "router-supplier@unsupported.wallet.conduit.market"
+      : "router-supplier@wallet.conduit.market"
+  let webLnSends = 0
   const supplierNoticeCount = async () => {
     const wraps = await readAuthenticatedGiftWraps(
       supplier,
@@ -316,6 +413,8 @@ async function rehearseRouter(
   }
   let identity: string | undefined
   let grossFundingSats: number | undefined
+  let walletInitializations = 0
+  const issued = new Map<string, HermeticLnurlIssuedInvoice>()
   const native = createHermeticSparkNative({
     encodeAddress: (identityPublicKey) =>
       encodeSparkAddress({ identityPublicKey, network: "REGTEST" }),
@@ -327,6 +426,7 @@ async function rehearseRouter(
       getNetworkFromSparkAddress,
     },
     async deriveIdentity(mnemonic, accountNumber) {
+      walletInitializations += 1
       // The runner uses the pinned SDK's local derivation primitive. Do not
       // import browser app modules (or initialize a provider) during discovery.
       const signer = new DefaultSparkSigner()
@@ -340,6 +440,10 @@ async function rehearseRouter(
     issueFundingInvoice: async (request) => {
       identity = request.identityPublicKey
       grossFundingSats = request.amountSats
+      // Callback issuance may precede the funding account's creation. Preserve
+      // legitimate provider records; registration itself never pays an invoice.
+      for (const invoice of issued.values())
+        native.control.forIdentity(identity).registerPayout(invoice)
       return fundingInvoice(request.amountSats, request.expirySeconds)
     },
   })
@@ -358,20 +462,28 @@ async function rehearseRouter(
       return result
     },
   }
-  const issued = new Map<string, HermeticLnurlIssuedInvoice>()
   const control = () => {
     if (!identity) throw new Error("Isolated checkout wallet was not prepared.")
     return native.control.forIdentity(identity)
   }
   const lnurl = createHermeticLnurlFixture({
-    recipients: [merchantAddress, supplierAddress].map((lud16) => ({ lud16 })),
+    recipients: [merchantAddress, supplierAddress].map((lud16) => ({
+      lud16,
+    })),
     nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
     // Preparation reserves one sat per commerce leg. A zero final fee proves
     // the exact two-sat unused reserve is carried into the native treasury leg.
     feeSats: 0,
+    verification: {
+      isInvoiceSettled: (paymentRequest) =>
+        identity !== undefined &&
+        control().snapshot().outgoingPaymentCount ===
+          control().outgoingInvoices().length &&
+        control().outgoingInvoices().includes(paymentRequest),
+    },
     onInvoiceIssued: async (invoice) => {
       issued.set(invoice.paymentRequest, invoice)
-      control().registerPayout(invoice)
+      if (identity !== undefined) control().registerPayout(invoice)
     },
   })
   let stage: RouterSmokePhase = "isolated setup"
@@ -381,7 +493,11 @@ async function rehearseRouter(
     phaseRecorder.phase(next)
   }
   try {
-    await seedIdentity(merchant, merchantName, merchantAddress)
+    await seedIdentity(
+      merchant,
+      merchantName,
+      receiverAdmission === "supported-setup" ? undefined : merchantAddress
+    )
     await seedIdentity(supplier, "Isolated Router Supplier", supplierAddress)
     await seedIdentity(buyer, "Isolated Router Buyer")
     const merchantContext = await browser.newContext({
@@ -391,19 +507,85 @@ async function rehearseRouter(
     await merchantContext.grantPermissions(["local-network-access"], {
       origin: merchantUrl,
     })
-    beginNetworkTeardown.set(
+    const merchantNetwork = await installHermeticCommerceNetwork(
       merchantContext,
-      await installHermeticCommerceNetwork(merchantContext, {
+      {
         ...networkOptions,
         lnurl: lnurl.respond,
         onLocalFailure: recordNetworkFailure,
-      })
+      }
     )
+    beginNetworkTeardown.set(merchantContext, merchantNetwork)
     await installHermeticSparkTransport(merchantContext, transport, {
       appUrl: merchantUrl,
     })
     const merchantPage = await merchantContext.newPage()
     await installRealTestSigner(merchantPage, merchant, TEST_RELAY_URL)
+    if (receiverAdmission === "supported-setup") {
+      const persistence = installPersistenceReloadBarrier(
+        merchantPage,
+        merchantUrl,
+        {
+          isAbandonedCompletedRequest:
+            merchantNetwork.isAbandonedCompletedRequest,
+        }
+      )
+      setStage("Merchant setup checks a supported receiver before signing")
+      await merchantPage.goto(`${merchantUrl}/payments`)
+      await expect(
+        merchantPage.getByRole("heading", { name: "Payments", exact: true })
+      ).toBeVisible()
+      await merchantPage
+        .getByRole("button", { name: "Add", exact: true })
+        .click()
+      await merchantPage
+        .getByLabel("Lightning Address", { exact: true })
+        .fill(merchantAddress)
+      const save = merchantPage.getByRole("button", {
+        name: "Save changes",
+        exact: true,
+      })
+      await expect(save).toBeEnabled()
+      await save.click()
+      await expect(
+        merchantPage.getByText("Lightning Address signed and saved.", {
+          exact: true,
+        })
+      ).toBeVisible({ timeout: 30_000 })
+      await expect(
+        merchantPage.getByText("Checkout routing ready", { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+      setStage("Merchant setup reads back its genuine signed receiving profile")
+      await expect
+        .poll(async () => {
+          const events = await readTestRelayEvents({
+            kinds: [0],
+            authors: [merchant.pubkey],
+          })
+          return events.some((event) => {
+            if (!verifyEvent(event)) return false
+            try {
+              return JSON.parse(event.content).lud16 === merchantAddress
+            } catch {
+              return false
+            }
+          })
+        })
+        .toBe(true)
+      await persistence.reload()
+      await expect(
+        merchantPage.getByText("Checkout routing ready", { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+      expect(walletInitializations).toBe(0)
+      expect(identity === undefined && grossFundingSats === undefined).toBe(
+        true
+      )
+      expect(lnurl.snapshot().invoicesIssued).toBe(0)
+      expect(lnurl.verificationSnapshot().verificationRequests).toBe(0)
+      expect(webLnSends).toBe(0)
+      bodyCompleted = true
+      return
+    }
     setStage("mounted supplier listing publication")
     await publishSupplierListing(
       merchantPage,
@@ -458,7 +640,30 @@ async function rehearseRouter(
     const buyerPersistence = installPersistenceReloadBarrier(page, marketUrl, {
       isAbandonedCompletedRequest: buyerNetwork.isAbandonedCompletedRequest,
     })
-    await installRealTestSigner(page, buyer, TEST_RELAY_URL)
+    if (buyerMode !== "guest")
+      await installRealTestSigner(page, buyer, TEST_RELAY_URL)
+    {
+      // External wallet capability only. HUD intent and explicit QR approval
+      // must never make this runner-owned WebLN provider send a payment.
+      await page.exposeFunction("__routerWeblnSend", () => {
+        webLnSends += 1
+        throw new Error("Unexpected synthetic WebLN payment")
+      })
+      await page.addInitScript(() => {
+        const runner = window as typeof window & {
+          __routerWeblnSend: () => Promise<never>
+        }
+        window.webln = {
+          async enable() {},
+          async makeInvoice() {
+            throw new Error("Unexpected synthetic WebLN invoice")
+          },
+          async sendPayment() {
+            return runner.__routerWeblnSend()
+          },
+        }
+      })
+    }
     setStage("buyer catalog product load")
     await page.goto(`${marketUrl}${catalogPath}`)
     setStage("browser SDK module preload without wallet initialization")
@@ -483,10 +688,39 @@ async function rehearseRouter(
     setStage("buyer add product to cart")
     await product.getByRole("button", { name: "Add", exact: true }).click()
     setStage("buyer continue to checkout")
-    await page
-      .getByRole("region", { name: "Cart inventory", exact: true })
-      .getByRole("link", { name: "Continue to checkout", exact: true })
-      .click()
+    const cart = page.getByRole("region", {
+      name: "Cart inventory",
+      exact: true,
+    })
+    await expect(
+      cart.getByRole("button", { name: "Continue to Zap Out", exact: true })
+    ).toHaveCount(0)
+    const continueFromHud = cart.getByRole("link", {
+      name: "Continue to checkout",
+      exact: true,
+    })
+    await expect(continueFromHud).toBeVisible()
+    if (buyerMode === "guest") {
+      // Cover the full-cart entry point as well as the compact HUD; neither
+      // may offer public Zapout for a coordinated V1 purchase.
+      await cart
+        .getByRole("link", { name: "View full cart", exact: true })
+        .click()
+      await expect(
+        page.getByRole("button", { name: "Zap out", exact: true })
+      ).toHaveCount(0)
+      await page.getByRole("button", { name: "Order", exact: true }).click()
+    } else {
+      await continueFromHud.click()
+    }
+    await expect(
+      page.getByRole("region", { name: "Payment visibility", exact: true })
+    ).toHaveCount(0)
+    if (buyerMode === "guest") {
+      // Ordinary guest contact is private order data, entered via the real form.
+      await page.locator("#ship-email").fill("guest@offline.conduit.market")
+      await page.locator("#ship-phone").fill("+1 202 555 0123")
+    }
     const checkoutPrice = page.getByRole("region", {
       name: "Order price",
       exact: true,
@@ -516,6 +750,36 @@ async function rehearseRouter(
     await expect(prepare).toBeEnabled({ timeout: 30_000 })
     setStage("buyer router order submission")
     await prepare.click()
+    if (receiverAdmission !== null) {
+      setStage(
+        "unsupported required recipient blocks before wallet funding or disclosure"
+      )
+      await expect(
+        page.getByText(
+          /A required recipient's payout setup could not be verified\. No checkout wallet or order was created/
+        )
+      ).toBeVisible({ timeout: 45_000 })
+      expect(walletInitializations).toBe(0)
+      expect(identity === undefined && grossFundingSats === undefined).toBe(
+        true
+      )
+      expect(webLnSends).toBe(0)
+      expect(lnurl.snapshot().invoicesIssued).toBe(0)
+      expect(lnurl.verificationSnapshot().verificationRequests).toBe(0)
+      expect(new URL(page.url()).pathname).toBe("/checkout")
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Copy invoice", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.locator('svg:has(> title:text-is("Lightning invoice"))')
+      ).toHaveCount(0)
+      expect((await readTestRelayEvents({ kinds: [1059] })).length).toBe(0)
+      bodyCompleted = true
+      return
+    }
     setStage("buyer order preparation completion")
     await expect
       .poll(
@@ -542,6 +806,23 @@ async function rehearseRouter(
     })
     expect(lnurl.snapshot().metadataRequests).toBeGreaterThanOrEqual(2)
     expect(lnurl.snapshot().invoicesIssued).toBe(0)
+
+    if (buyerMode === "guest") {
+      const dbPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
+      const orderId = new URL(page.url()).searchParams.get("order")
+      const genuinePrivateGuest = await page.evaluate(
+        async ({ dbPath, orderId }) => {
+          const { db } = await import(/* @vite-ignore */ dbPath)
+          const order = await db.orderLifecycles.get(orderId)
+          return (
+            order?.buyerIdentityKind === "guest_ephemeral" &&
+            order.orderRelayDelivery?.signedRecipientWrap?.kind === 1059
+          )
+        },
+        { dbPath, orderId }
+      )
+      expect(genuinePrivateGuest).toBe(true)
+    }
 
     setStage("inline price and authorization without a popup")
     const external = page.getByRole("button", {
@@ -653,6 +934,35 @@ async function rehearseRouter(
       )
       const orderId = new URL(page.url()).searchParams.get("order")
       expect(typeof orderId === "string" && orderId.length > 0).toBe(true)
+      setStage("buyer freezes independent funding and handoff deadlines")
+      const frozenTiming = await frozenRouterTiming(page, orderId)
+      expect(frozenTiming !== null).toBe(true)
+      expect(frozenTiming!.configuredTakeoverAfterMs).toBe(120_000)
+      // The handoff starts at the original entry time. Provider invoice
+      // creation happens later and is floored to seconds, so those saved times
+      // do not imply an exact millisecond interval from provider creation.
+      expect(
+        frozenTiming!.takeoverAt - frozenTiming!.createdAt
+      ).toBeGreaterThan(0)
+      expect(
+        frozenTiming!.takeoverAt - frozenTiming!.createdAt
+      ).toBeLessThanOrEqual(120_999)
+      expect(frozenTiming!.fundingCreatedAt).toBe(frozenTiming!.createdAt)
+      expect(frozenTiming!.signedFundingCreatedAt !== null).toBe(true)
+      expect(frozenTiming!.signedFundingExpiresAt !== null).toBe(true)
+      expect(
+        frozenTiming!.signedFundingExpiresAt! -
+          frozenTiming!.signedFundingCreatedAt!
+      ).toBe(900)
+      expect(frozenTiming!.fundingCreatedAt).toBe(
+        frozenTiming!.signedFundingCreatedAt! * 1_000
+      )
+      expect(frozenTiming!.fundingExpiresAt).toBe(
+        frozenTiming!.signedFundingExpiresAt! * 1_000
+      )
+      expect(frozenTiming!.fundingExpiresAt).toBeGreaterThan(
+        frozenTiming!.takeoverAt
+      )
       beginNetworkTeardown.get(buyerContext)?.()
       beginNetworkTeardown.get(merchantContext)?.()
       await buyerContext.close()
@@ -665,6 +975,8 @@ async function rehearseRouter(
 
       // A fresh browser has no buyer or former Merchant IndexedDB/session state.
       // Recovery must come from the real signed private order/inbox messages.
+      const verificationRequestsBeforeCold =
+        lnurl.verificationSnapshot().verificationRequests
       setStage("cold Merchant discovers the signed recovery")
       const coldContext = await browser.newContext({ serviceWorkers: "block" })
       contexts.push(coldContext)
@@ -688,7 +1000,14 @@ async function rehearseRouter(
           isAbandonedCompletedRequest: coldNetwork.isAbandonedCompletedRequest,
         }
       )
-      await coldPage.clock.install({ time: new Date(sharedClock.nowMs()) })
+      // Keep Date exactly one millisecond before the saved handoff while the
+      // fresh browser discovers recovery. Timers continue normally. Never
+      // rewind provider/relay history if fixture setup already used this window.
+      expect(sharedClock.nowMs() < frozenTiming!.takeoverAt - 1).toBe(true)
+      await coldPage.clock.install({
+        time: new Date(frozenTiming!.takeoverAt - 1),
+      })
+      await coldPage.clock.setFixedTime(frozenTiming!.takeoverAt - 1)
       await installRealTestSigner(coldPage, merchant, TEST_RELAY_URL)
       await coldPage.goto(`${merchantUrl}/orders?order=${orderId}`)
       const recovery = coldPage.getByRole("region", {
@@ -718,6 +1037,10 @@ async function rehearseRouter(
         expect(coldPage.url() === selectedUrl).toBe(true)
       }
       setStage("cold Merchant respects the frozen shopper handoff")
+      expect(await frozenRouterTiming(coldPage, orderId)).toEqual(frozenTiming)
+      expect(await coldPage.evaluate(() => Date.now())).toBe(
+        frozenTiming!.takeoverAt - 1
+      )
       await expect(
         recovery.getByRole("button", {
           name: "Pause",
@@ -726,6 +1049,9 @@ async function rehearseRouter(
       ).toBeVisible()
       const beforeHandoff = control().snapshot()
       expect(beforeHandoff.sendInvocationCount).toBe(partialRecovery ? 2 : 0)
+      expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(
+        partialRecovery ? 1 : 0
+      )
       await recovery.getByRole("button", { name: "Pause", exact: true }).click()
       await expect(
         recovery.getByRole("button", {
@@ -742,8 +1068,13 @@ async function rehearseRouter(
       setStage(
         "cold Merchant automatically continues after handoff without a prompt"
       )
-      const resumedClockTime = sharedClock.advanceBy(46 * 60_000)
+      const resumedClockTime = frozenTiming!.takeoverAt + 1
+      const clockAdvance = resumedClockTime - sharedClock.nowMs()
+      expect(clockAdvance >= 0).toBe(true)
+      sharedClock.advanceBy(clockAdvance)
       setStage("cold Merchant browser clock follows the isolated clock advance")
+      // Resume ticking at the exact post-cutoff instant. Newly issued provider
+      // invoices use the same forward-only shared clock, not rewritten history.
       await coldPage.clock.setSystemTime(resumedClockTime)
       setStage("cold Merchant stays paused across the isolated clock advance")
       await expect(
@@ -788,17 +1119,18 @@ async function rehearseRouter(
           timeout: 75_000,
         })
         .toBe(1)
-      if (partialRecovery) {
-        await expect(
-          recoveredOrder.getByText("Payment needs attention", { exact: true })
-        ).toBeVisible({ timeout: 30_000 })
-      } else {
-        await expect(
-          recoveredOrder.getByText("Payment verified", {
-            exact: true,
-          })
-        ).toBeVisible({ timeout: 30_000 })
-      }
+      setStage(
+        "cold Merchant independently verifies supported recipient invoices"
+      )
+      await expect(
+        recoveredOrder.getByText("Payment verified", {
+          exact: true,
+        })
+      ).toBeVisible({ timeout: 30_000 })
+      expect(
+        lnurl.verificationSnapshot().verificationRequests -
+          verificationRequestsBeforeCold
+      ).toBeGreaterThanOrEqual(2)
       expect(control().snapshot()).toEqual({
         fundingInvoiceCount: 1,
         sendInvocationCount: 2,
@@ -819,7 +1151,7 @@ async function rehearseRouter(
       })
 
       setStage("cold Merchant preserves recovery while residual funds remain")
-      if (!partialRecovery) control().setAdditionalOwnedSats(1)
+      control().setAdditionalOwnedSats(1)
       control().setNativeCompletion(true)
       setStage("cold Merchant reconciles the completed transfer without replay")
       await coldPersistence.reload()
@@ -834,24 +1166,44 @@ async function rehearseRouter(
       setStage("cold Merchant retains accurate recovery verification status")
       await expect(
         recovery.getByRole("heading", {
-          name: partialRecovery
-            ? "Payment needs attention"
-            : "Payment verified",
+          name: "Payment verified",
           exact: true,
         })
       ).toBeVisible({ timeout: 30_000 })
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      if (!partialRecovery) {
-        await expect(
-          recovery.getByText("Payment details", { exact: true })
-        ).toHaveCount(0)
-        await expect(
-          recovery.getByRole("button", {
-            name: "Verify recovery key",
-            exact: true,
-          })
-        ).toHaveCount(0)
+      await expect(
+        recovery.getByText("Payment details", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        recovery.getByRole("button", {
+          name: "Verify recovery key",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      setStage(
+        "cold Merchant records independently verified commerce and native receipt"
+      )
+      const completedReceipt = {
+        creditVerified: true,
+        merchantVerified: true,
+        commerceVerified: true,
+        feePending: false,
+        recipientUnverified: false,
+        creditedSats: 1_113,
+        paidCommerceCount: 2,
+        commerceDebitSats: 1_000,
+        nativePrincipalSats: 113,
+        nativeDebitSats: 113,
+        nativeFeeSats: 0,
       }
+      await expect
+        .poll(
+          () => merchantRecordedCompletion(coldPage, merchant.pubkey, orderId),
+          {
+            timeout: 30_000,
+          }
+        )
+        .toEqual(completedReceipt)
       setStage(
         "cold Merchant payments match the frozen destinations and allocations"
       )
@@ -894,77 +1246,7 @@ async function rehearseRouter(
       setStage(
         "Merchant sends only the verified supplier's private notification"
       )
-      if (partialRecovery) {
-        expect(await supplierNoticeCount()).toBe(0)
-      } else {
-        await expect.poll(supplierNoticeCount, { timeout: 30_000 }).toBe(1)
-      }
-
-      if (partialRecovery) {
-        // Provider evidence prevents replay, but a new device cannot invent the
-        // buyer's local invoice-origin proof. Keep recovery, never claim full
-        // recipient verification or retire it from a zero balance alone.
-        setStage(
-          "cold Merchant never replays prior payments or invents recipient proof"
-        )
-        const pauseBeforeReplayCheck = recovery.getByRole("button", {
-          name: "Pause",
-          exact: true,
-        })
-        if (await pauseBeforeReplayCheck.isVisible()) {
-          await pauseBeforeReplayCheck.click()
-          await expect(
-            recovery.getByRole("button", {
-              name: "Resume payment processing",
-              exact: true,
-            })
-          ).toBeVisible()
-        }
-        const completed = control().snapshot()
-        await coldPersistence.reload()
-        await expect(
-          recovery.getByRole("heading", {
-            name: "Payment needs attention",
-            exact: true,
-          })
-        ).toBeVisible({ timeout: 45_000 })
-        await expect(
-          recoveredOrder.getByText("Payment verified", {
-            exact: true,
-          })
-        ).toHaveCount(0)
-        expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-        expect(control().snapshot()).toEqual(completed)
-        expect(completed.sendInvocationCount).toBe(2)
-        setStage("recovery access check opens payment details")
-        await recovery.getByText("Payment details", { exact: true }).click()
-        setStage("recovery access check starts account verification")
-        await recovery
-          .getByRole("button", { name: "Check recovery access", exact: true })
-          .click()
-        setStage("recovery access check confirms account access")
-        await expect(
-          recovery.getByText(
-            "Recovery access confirmed for this order. Automatic payments are paused. This check did not inspect funds or recipient payments, reveal the recovery phrase, or move money.",
-            { exact: true }
-          )
-        ).toBeVisible()
-        setStage("recovery access check remains paused")
-        await expect(
-          recovery.getByRole("button", {
-            name: "Resume payment processing",
-            exact: true,
-          })
-        ).toBeVisible()
-        setStage("recovery access check preserves provider history")
-        expect(control().snapshot()).toEqual(completed)
-        setStage("recovery access check publishes no public payment event")
-        expect(
-          (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
-        ).toBe(0)
-        bodyCompleted = true
-        return
-      }
+      await expect.poll(supplierNoticeCount, { timeout: 30_000 }).toBe(1)
 
       setStage("cold Merchant drains automatic recovery before retirement")
       const pauseBeforeRetirement = recovery.getByRole("button", {
@@ -1002,6 +1284,10 @@ async function rehearseRouter(
       setStage("cold Merchant retired reload does not replay payments")
       expect(control().snapshot()).toEqual(completed)
       expect(completed.sendInvocationCount).toBe(2)
+      expect(
+        await merchantRecordedCompletion(coldPage, merchant.pubkey, orderId)
+      ).toEqual(completedReceipt)
+      expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
       expect(await supplierNoticeCount()).toBe(1)
       expect(
         (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
@@ -1239,7 +1525,8 @@ async function rehearseRouter(
           return (
             actual?.lud16 === expected.lud16 &&
             actual.amountSats === expected.amountSats &&
-            actual.feeSats === expected.feeSats
+            actual.feeSats === expected.feeSats &&
+            actual.publicZap === undefined
           )
         })
     ).toBe(true)
@@ -1320,11 +1607,10 @@ async function rehearseRouter(
       settled.sendInvocationCount
     )
     expect(control().snapshot()).toEqual(settled)
-    // Supplier allocation tags are not public zaps. No public zap request or
-    // receipt should be emitted by this private router scenario.
-    expect((await readTestRelayEvents({ kinds: [9_734, 9_735] })).length).toBe(
-      0
-    )
+    // Ordinary V1 routing never requests or publishes a public zap.
+    expect((await readTestRelayEvents({ kinds: [9_734] })).length).toBe(0)
+    expect((await readTestRelayEvents({ kinds: [9_735] })).length).toBe(0)
+    expect(webLnSends).toBe(0)
     // This buyer-led case is not evidence for cold Merchant takeover, browser
     // suspension, real provider fees, or production funded settlement.
     bodyCompleted = true
@@ -1367,6 +1653,22 @@ test("native router cold Merchant restores a funded checkout and finishes all pa
   browser,
 }) => rehearseRouter(browser, "cold-merchant"))
 
-test("native router cold Merchant finishes a partial checkout without replaying paid commerce or inventing recipient proof @commerce", async ({
+test("native router cold Merchant independently verifies supported recipients and finishes a partial checkout without replaying paid commerce @commerce", async ({
   browser,
 }) => rehearseRouter(browser, "partial-cold-merchant"))
+
+test("native router ordinary guest checkout completes private commerce and native treasury without public zap signing @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "buyer", "guest"))
+
+test("receiver setup saves and reads back a supported Merchant payment profile without creating a wallet or invoice @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "buyer", "signed-in", "supported-setup"))
+
+test("receiver setup blocks an unsupported original Merchant before wallet funding or invoice disclosure @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "buyer", "signed-in", "unsupported-merchant"))
+
+test("receiver setup blocks an unsupported original supplier before wallet funding or invoice disclosure @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "buyer", "signed-in", "unsupported-supplier"))

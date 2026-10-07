@@ -36,6 +36,7 @@ import {
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
 import type { CheckoutSparkCommerceQuoteLine } from "./checkout-spark-reconciliation"
+import type { CheckoutSparkPricingRateAttestation } from "./checkout-spark-pricing-authority"
 import {
   restoreCheckoutSparkSettledPlan,
   type CheckoutSparkSettledPlan,
@@ -143,6 +144,7 @@ export interface CheckoutSparkMerchantOrderEvidence {
   readonly orderCreatedAt: number
   readonly commerceTotalSats: number
   readonly pricing?: CheckoutSparkCommercePricing
+  readonly pricingAuthority?: CheckoutSparkPricingRateAttestation
   readonly lines: readonly {
     readonly productCoordinate: string
     readonly quantity: number
@@ -243,6 +245,9 @@ export function readCheckoutSparkMerchantOrderEvidence(
       ...(message.payload.checkoutSparkPricing
         ? { pricing: message.payload.checkoutSparkPricing }
         : {}),
+      ...(message.payload.checkoutSparkPricingAuthority
+        ? { pricingAuthority: message.payload.checkoutSparkPricingAuthority }
+        : {}),
       lines: message.payload.items.map((item) => ({
         productCoordinate: item.productId,
         quantity: item.quantity,
@@ -328,6 +333,12 @@ export function createCheckoutSparkMerchantOrderWitness(
         canonicalCheckoutSparkCommerceEvidence(evidence.pricing)
       ) !==
         JSON.stringify(canonicalCheckoutSparkCommerceEvidence(quote.pricing)) ||
+      JSON.stringify(
+        canonicalCheckoutSparkCommerceEvidence(evidence.pricingAuthority)
+      ) !==
+        JSON.stringify(
+          canonicalCheckoutSparkCommerceEvidence(quote.pricingAuthority)
+        ) ||
       evidence.lines.length !== quote.lines.length ||
       lines.size !== quote.lines.length ||
       new Set(evidence.lines.map((line) => line.productCoordinate)).size !==
@@ -349,7 +360,8 @@ export function createCheckoutSparkMerchantOrderWitness(
             product: parseProductEvent(productEvent),
             line,
             pricing: quote.pricing,
-            acceptedAtMs: frozen.createdAt,
+            acceptedAtMs:
+              quote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
           })
         }
         let fulfillmentMatches =
@@ -386,7 +398,8 @@ export function createCheckoutSparkMerchantOrderWitness(
             line,
             shippingEvents: sourceEvents,
             pricing: quote.pricing,
-            acceptedAtMs: frozen.createdAt,
+            acceptedAtMs:
+              quote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
           })
           fulfillmentMatches =
             option !== undefined &&

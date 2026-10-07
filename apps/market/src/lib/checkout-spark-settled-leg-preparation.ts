@@ -62,9 +62,19 @@ export async function prepareCheckoutSparkSettledOutgoingLeg(
     estimateFee(request) {
       return requireManager().estimateCheckoutLightningFee(request)
     },
-    resolveInvoice(request) {
+    async resolveInvoice(request, context) {
       // No LNURL side effect until the buyer's exact wallet is available.
       requireManager()
+      if (
+        context.state.plan.merchantPublicZapPolicy &&
+        context.recipient.kind === "merchant"
+      ) {
+        // Existing exact intents may still be re-ACKed/reconciled by Core.
+        // Never sign or replace a historical public attempt with a private one.
+        throw new Error(
+          "Historical public routed payments require exact-attempt recovery."
+        )
+      }
       return (dependencies.resolveInvoice ?? resolveCheckoutSparkLnurlInvoice)(
         request
       )

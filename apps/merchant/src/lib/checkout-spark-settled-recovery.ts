@@ -49,6 +49,7 @@ import {
   type CheckoutSparkMerchantSettlementRecord,
 } from "@conduit/core"
 import merchantPackage from "../../package.json"
+import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 
 type RecoveryStore = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -725,6 +726,7 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
     proof.creditedSats !== state.credit.creditedSats
   )
     throw new Error("Checkout Spark attributed credit changed.")
+  assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
   await repository.recordMerchantCredit(plan, proof, now(), assertCurrent)
   assertCurrent()
   const expectedTransferIds = [proof.transferId]
@@ -1203,6 +1205,7 @@ export async function reconcileMerchantCheckoutSparkSettledCredit(
         receive,
         transfer,
       })
+      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
       const current = await repository.load(plan.checkoutId, plan.planDigest)
       assertEligible()
       if (
@@ -1471,6 +1474,7 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
         proof.creditedSats !== state.credit.creditedSats
       )
         return
+      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
       await repository.recordMerchantCredit(plan, proof, now(), assertEligible)
       assertEligible()
       const expectedTransferIds = [proof.transferId]

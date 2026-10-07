@@ -1,36 +1,40 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
-  decodeLightningInvoiceMetadata,
-  getLightningInvoiceNetwork,
-  isValidLightningInvoice,
-} from "./lightning"
+  freezeCheckoutSparkReceiverBinding,
+  normalizeCheckoutSparkReceiverAddress,
+} from "./checkout-spark-receiver-capability"
+import {
+  verifyCheckoutSparkReceiverInvoice,
+  type CheckoutSparkReceiverVerificationDependencies,
+} from "./checkout-spark-receiver-verification"
 import { requireCheckoutSparkSettledExactOutgoingRequest } from "./checkout-spark-settled-outgoing-history"
 import type { CheckoutSparkSettledOutgoingTarget } from "./checkout-spark-settled-outgoing"
 import type { CheckoutSparkSettledPlan } from "./checkout-spark-settled-router"
 
-const SOURCE = "coinos_account_lookup_v1" as const
-const LOOKUP_TIMEOUT_MS = 8_000
-const MAX_RESPONSE_BYTES = 65_536
+const SOURCE = "qualified_receiver_v1" as const
 
 declare const invoiceRecipientBrand: unique symbol
 export interface CheckoutSparkInvoiceRecipientProof {
   readonly [invoiceRecipientBrand]: true
 }
 
-/** Device-local provider observation; never accept this record from Nostr. */
+/** Device-local fresh provider observation; never accept this record from Nostr. */
 export interface CheckoutSparkInvoiceRecipientRecord {
   readonly schemaVersion: 1
   readonly source: typeof SOURCE
   readonly legId: string
   readonly intentDigest: string
   readonly verifiedAt: number
+  /** Receiver settlement is separate from the exact Spark transfer/debit proof. */
+  readonly providerSettled: boolean
 }
 
 export type CheckoutSparkInvoiceRecipientResult =
   | {
       readonly status: "verified"
       readonly proof: CheckoutSparkInvoiceRecipientProof
+      readonly settled: boolean
     }
   | { readonly status: "unsupported" | "unavailable" | "conflicting" }
 
@@ -42,17 +46,16 @@ export interface CheckoutSparkInvoiceRecipientInput {
   readonly assertCurrent: () => void
 }
 
-export interface CheckoutSparkInvoiceRecipientDependencies {
-  /** Trusted transport seam. Return the provider's canonical JSON, not a claim. */
-  readonly fetchInvoiceRecord?: (
-    url: string,
-    options: { readonly signal: AbortSignal }
-  ) => Promise<unknown>
-}
+export type CheckoutSparkInvoiceRecipientDependencies =
+  CheckoutSparkReceiverVerificationDependencies
 
 const proofs = new WeakMap<
   CheckoutSparkInvoiceRecipientProof,
-  { readonly intentDigest: string; readonly verifiedAt: number }
+  {
+    readonly intentDigest: string
+    readonly verifiedAt: number
+    readonly providerSettled: boolean
+  }
 >()
 
 function intentDigest(
@@ -85,169 +88,85 @@ function intentDigest(
           exact.amountSats,
           exact.maxFeeSats,
           target.intent.preparedAt,
+          target.intent.receiverBinding
+            ? freezeCheckoutSparkReceiverBinding(target.intent.receiverBinding)
+            : null,
         ])
       )
     )
   )
 }
 
-function object(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined
-}
-
-async function fetchInvoiceRecord(
-  url: string,
-  options: { readonly signal: AbortSignal }
-): Promise<unknown> {
-  const response = await fetch(url, {
-    method: "GET",
-    credentials: "omit",
-    redirect: "error",
-    cache: "no-store",
-    referrerPolicy: "no-referrer",
-    headers: { Accept: "application/json" },
-    signal: options.signal,
-  })
-  if (
-    !response.ok ||
-    response.redirected ||
-    (response.url && response.url !== url) ||
-    !response.headers
-      .get("content-type")
-      ?.toLowerCase()
-      .includes("application/json") ||
-    Number(response.headers.get("content-length") ?? "0") >
-      MAX_RESPONSE_BYTES ||
-    !response.body
-  ) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error("Checkout recipient lookup is unavailable.")
-  }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let length = 0
-  let json = ""
-  try {
-    while (true) {
-      const part = await reader.read()
-      if (part.done) break
-      length += part.value.byteLength
-      if (length > MAX_RESPONSE_BYTES || options.signal.aborted) {
-        throw new Error("Checkout recipient lookup is unavailable.")
-      }
-      json += decoder.decode(part.value, { stream: true })
-    }
-    return JSON.parse(json + decoder.decode()) as unknown
-  } finally {
-    await reader.cancel().catch(() => undefined)
-    reader.releaseLock()
-  }
-}
-
-/**
- * A narrow Coinos compatibility adapter, not a generic LNURL receipt. It checks
- * recipient attribution only; the caller must separately verify Spark payment,
- * exact debit, fees and preimage before declaring a leg paid or notifying it.
- */
+/** Generic qualified issuer proof, not a provider-specific lookup or payment claim. */
 export async function verifyCheckoutSparkInvoiceRecipient(
   input: CheckoutSparkInvoiceRecipientInput,
   dependencies: CheckoutSparkInvoiceRecipientDependencies = {}
 ): Promise<CheckoutSparkInvoiceRecipientResult> {
   input.assertCurrent()
+  if (!input.target.intent.receiverBinding) return { status: "unsupported" }
   let digest: string
-  let username: string
+  let binding
+  let exact
+  const observedAt = input.now
   try {
     digest = intentDigest(input.plan, input.target)
-    if (
-      !Number.isSafeInteger(input.now) ||
-      input.now < input.target.intent.preparedAt ||
-      !Number.isSafeInteger(input.target.intent.preparedAt) ||
-      input.target.intent.preparedAt < input.plan.createdAt ||
-      !isValidLightningInvoice(input.target.intent.paymentRequest) ||
-      getLightningInvoiceNetwork(input.target.intent.paymentRequest) !==
-        input.plan.network ||
-      decodeLightningInvoiceMetadata(input.target.intent.paymentRequest)
-        .msats !==
-        input.target.intent.invoiceAmountSats * 1_000
-    ) {
-      return { status: "conflicting" }
-    }
+    exact = requireCheckoutSparkSettledExactOutgoingRequest(
+      input.plan,
+      input.target
+    )
+    binding = freezeCheckoutSparkReceiverBinding(
+      input.target.intent.receiverBinding
+    )
     const recipient = input.plan.recipients.find(
       (leg) => leg.legId === input.target.legId
     )!
-    const match = /^([a-z0-9._-]+)@coinos\.io$/i.exec(
-      recipient.destination.value
+    if (
+      !Number.isSafeInteger(observedAt) ||
+      observedAt < input.target.intent.preparedAt ||
+      !Number.isSafeInteger(input.target.intent.preparedAt) ||
+      input.target.intent.preparedAt < input.plan.createdAt ||
+      recipient.destination.type !== "lightning_address" ||
+      binding.lud16 !==
+        normalizeCheckoutSparkReceiverAddress(recipient.destination.value) ||
+      binding.mode !== (input.target.intent.publicZap ? "public" : "private")
     )
-    if (input.plan.network !== "mainnet" || !match) {
-      return { status: "unsupported" }
-    }
-    username = match[1]!.toLowerCase()
-  } catch {
-    return { status: "conflicting" }
-  }
-
-  const controller = new AbortController()
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  let record: unknown
-  try {
-    const unavailable = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
-        controller.abort()
-        reject(new Error("Checkout recipient lookup timed out."))
-      }, LOOKUP_TIMEOUT_MS)
-    })
-    record = await Promise.race([
-      (dependencies.fetchInvoiceRecord ?? fetchInvoiceRecord)(
-        `https://coinos.io/api/invoice/${encodeURIComponent(input.target.intent.paymentRequest)}`,
-        { signal: controller.signal }
-      ),
-      unavailable,
-    ])
-  } catch {
-    input.assertCurrent()
-    return { status: "unavailable" }
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout)
-  }
-  input.assertCurrent()
-  // The caller's plan/intent may have changed while the provider was loading.
-  try {
-    if (digest !== intentDigest(input.plan, input.target)) {
       return { status: "conflicting" }
-    }
   } catch {
     return { status: "conflicting" }
   }
-  const invoice = object(record)
-  const user = object(invoice?.user)
-  if (
-    !invoice ||
-    !user ||
-    invoice.type !== "lightning" ||
-    invoice.text !== input.target.intent.paymentRequest ||
-    invoice.hash !== input.target.intent.paymentRequest ||
-    invoice.paymentHash !== input.target.intent.paymentHash ||
-    !Number.isSafeInteger(invoice.amount) ||
-    invoice.amount !== input.target.intent.invoiceAmountSats ||
-    typeof invoice.uid !== "string" ||
-    invoice.uid.length === 0 ||
-    invoice.uid !== user.id ||
-    typeof user.username !== "string" ||
-    user.username.toLowerCase() !== username
-  ) {
+  const verification = await verifyCheckoutSparkReceiverInvoice(
+    {
+      binding,
+      paymentRequest: exact.paymentRequest,
+      paymentHash: input.target.intent.paymentHash,
+      amountSats: exact.amountSats,
+      network: exact.network,
+      publicRequestJson: input.target.intent.publicZap?.requestJson,
+      assertCurrent: input.assertCurrent,
+    },
+    dependencies
+  )
+  input.assertCurrent()
+  if (verification.status !== "verified") return verification
+  try {
+    if (digest !== intentDigest(input.plan, input.target))
+      return { status: "conflicting" }
+  } catch {
     return { status: "conflicting" }
   }
   const proof = Object.freeze({}) as CheckoutSparkInvoiceRecipientProof
   proofs.set(
     proof,
-    Object.freeze({ intentDigest: digest, verifiedAt: input.now })
+    Object.freeze({
+      intentDigest: digest,
+      verifiedAt: observedAt,
+      providerSettled: verification.settled,
+    })
   )
-  return { status: "verified", proof }
+  return { status: "verified", proof, settled: verification.settled }
 }
 
-/** Persist only this opaque digest record, never the provider's invoice/user. */
+/** Persist only the opaque exact digest and closed facts, not provider contents. */
 export function createCheckoutSparkInvoiceRecipientRecord(
   plan: CheckoutSparkSettledPlan,
   target: CheckoutSparkSettledOutgoingTarget,
@@ -255,19 +174,19 @@ export function createCheckoutSparkInvoiceRecipientRecord(
 ): CheckoutSparkInvoiceRecipientRecord {
   const observation = proofs.get(proof)
   const digest = intentDigest(plan, target)
-  if (!observation || observation.intentDigest !== digest) {
+  if (!observation || observation.intentDigest !== digest)
     throw new Error("Checkout invoice recipient proof is unavailable.")
-  }
   return {
     schemaVersion: 1,
     source: SOURCE,
     legId: target.legId,
     intentDigest: digest,
     verifiedAt: observation.verifiedAt,
+    providerSettled: observation.providerSettled,
   }
 }
 
-/** Accept only records read from this device's trusted verification storage. */
+/** Accept only records from this device's trusted verification storage. */
 export function hasCheckoutSparkInvoiceRecipient(
   record: CheckoutSparkInvoiceRecipientRecord | undefined,
   plan: CheckoutSparkSettledPlan,
@@ -278,14 +197,25 @@ export function hasCheckoutSparkInvoiceRecipient(
     record.schemaVersion !== 1 ||
     record.source !== SOURCE ||
     record.legId !== target.legId ||
+    typeof record.providerSettled !== "boolean" ||
     !Number.isSafeInteger(record.verifiedAt) ||
     record.verifiedAt < target.intent.preparedAt
-  ) {
+  )
     return false
-  }
   try {
     return record.intentDigest === intentDigest(plan, target)
   } catch {
     return false
   }
+}
+
+export function hasCheckoutSparkInvoiceRecipientSettlement(
+  record: CheckoutSparkInvoiceRecipientRecord | undefined,
+  plan: CheckoutSparkSettledPlan,
+  target: CheckoutSparkSettledOutgoingTarget
+): boolean {
+  return (
+    record?.providerSettled === true &&
+    hasCheckoutSparkInvoiceRecipient(record, plan, target)
+  )
 }

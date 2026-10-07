@@ -9,6 +9,7 @@ import {
   fetchLnurlPayMetadata,
   parseProductEvent,
   type LnurlPayMetadata,
+  type CheckoutSparkReceiverContract,
   type CheckoutSparkSettledRepositorySnapshot,
 } from "@conduit/core"
 import {
@@ -44,6 +45,20 @@ import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 const MNEMONIC = createRuntimeMnemonic()
 
 const NOW = 1_800_000_000_000
+// Only this offline provider is qualified. No real receiver is configured.
+const RECEIVER_CONTRACTS: readonly CheckoutSparkReceiverContract[] = [
+  {
+    schemaVersion: 1,
+    contractId: "preparation-fixture-private-v1",
+    qualification: "accepted",
+    payRequestOrigins: ["https://wallet.conduit.market"],
+    callbackOrigins: ["https://wallet.conduit.market"],
+    verifyOrigins: ["https://wallet.conduit.market"],
+    verifyPathPrefix: "/__preparation_fixture/verify/",
+    modes: ["private"],
+    binding: "metadata_hash",
+  },
+]
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
 const MERCHANT_PROFILE = finalizeEvent(
@@ -149,6 +164,7 @@ function dependencies(acknowledged: boolean) {
     calls,
     options: {
       now: () => NOW,
+      receiverContracts: RECEIVER_CONTRACTS,
       fetchPayoutMetadata: (lud16: string) =>
         fetchLnurlPayMetadata(lud16, {
           fetchImpl: async () =>
@@ -159,7 +175,10 @@ function dependencies(acknowledged: boolean) {
                 minSendable: 1_000,
                 maxSendable: 10_000_000,
                 allowsNostr: false,
-                metadata: "[]",
+                metadata: JSON.stringify([
+                  ["text/plain", "Offline preparation fixture"],
+                  ["text/identifier", lud16],
+                ]),
               }),
               { status: 200 }
             ),
@@ -456,8 +475,13 @@ describe("settled Spark pre-funding metadata", () => {
       const { options, calls } = dependencies(true)
       const reads: string[] = []
       const expected = shared
-        ? ["merchant@wallet.conduit.market"]
-        : ["merchant@wallet.conduit.market", "supplier@wallet.conduit.market"]
+        ? ["merchant@wallet.conduit.market", "merchant@wallet.conduit.market"]
+        : [
+            "merchant@wallet.conduit.market",
+            "merchant@wallet.conduit.market",
+            "supplier@wallet.conduit.market",
+            "supplier@wallet.conduit.market",
+          ]
       const prepared = await prepareCheckoutSparkSettledFunding(input, {
         ...options,
         fetchPayoutMetadata: async (lud16) => {
@@ -559,7 +583,7 @@ describe("settled Spark pre-funding metadata", () => {
       retryOptions
     )
     expect(prepared.plan.checkoutId).toBe(input.checkoutId)
-    expect(reads).toBe(2)
+    expect(reads).toBe(3)
     expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
   })
 

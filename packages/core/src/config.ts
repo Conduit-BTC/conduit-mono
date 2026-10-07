@@ -1,3 +1,5 @@
+import { resolveCheckoutSparkPublicTrust } from "./checkout-spark-deployment-trust"
+
 export type RelayBucketId =
   | "app_backplane"
   | "core_public_fallback"
@@ -228,6 +230,10 @@ export interface ConduitConfig {
   nip89MerchantDTag: string
   anonZapSignerUrl: string | null
   anonZapSignerPubkey: string | null
+  /** Public receiver-contract descriptors; parsed at the payment boundary. */
+  checkoutSparkReceiverContracts: string | null
+  checkoutSparkPricingUrl: string | null
+  checkoutSparkPricingPublicKeys: string | null
 }
 
 // Vite only statically replaces direct property access (import.meta.env.VITE_FOO).
@@ -237,6 +243,7 @@ function getViteEnv(): {
   mode: string
   dev: boolean
   e2eRelayUrl: string
+  e2ePublicZapReceiptHints: string
   relayUrl: string
   defaultRelayUrl: string
   defaultRelays: string
@@ -257,12 +264,18 @@ function getViteEnv(): {
   nip89MerchantDTag: string
   anonZapSignerUrl: string
   anonZapSignerPubkey: string
+  checkoutSparkReceiverContracts: string
+  checkoutSparkPricingUrl: string
+  checkoutSparkPricingPublicKeys: string
+  checkoutSparkPublicTrustDigest: string
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
       mode: import.meta.env.MODE ?? "",
       dev: (import.meta.env.DEV as unknown) === true,
       e2eRelayUrl: import.meta.env.VITE_E2E_RELAY_URL ?? "",
+      e2ePublicZapReceiptHints:
+        import.meta.env.VITE_E2E_PUBLIC_ZAP_RECEIPT_HINTS ?? "",
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
       defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
@@ -286,12 +299,21 @@ function getViteEnv(): {
       nip89MerchantDTag: import.meta.env.VITE_NIP89_MERCHANT_D_TAG ?? "",
       anonZapSignerUrl: import.meta.env.VITE_ANON_ZAP_SIGNER_URL ?? "",
       anonZapSignerPubkey: import.meta.env.VITE_ANON_ZAP_SIGNER_PUBKEY ?? "",
+      checkoutSparkReceiverContracts:
+        import.meta.env.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS ?? "",
+      checkoutSparkPricingUrl:
+        import.meta.env.VITE_CHECKOUT_SPARK_PRICING_URL ?? "",
+      checkoutSparkPricingPublicKeys:
+        import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS ?? "",
+      checkoutSparkPublicTrustDigest:
+        import.meta.env.VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST ?? "",
     }
   }
   return {
     mode: "",
     dev: false,
     e2eRelayUrl: "",
+    e2ePublicZapReceiptHints: "",
     relayUrl: "",
     defaultRelayUrl: "",
     defaultRelays: "",
@@ -312,6 +334,10 @@ function getViteEnv(): {
     nip89MerchantDTag: "",
     anonZapSignerUrl: "",
     anonZapSignerPubkey: "",
+    checkoutSparkReceiverContracts: "",
+    checkoutSparkPricingUrl: "",
+    checkoutSparkPricingPublicKeys: "",
+    checkoutSparkPublicTrustDigest: "",
   }
 }
 
@@ -387,8 +413,12 @@ export function resolveE2eRelayIsolation(
 
 export function applyE2eRelayIsolation(
   input: ConduitConfig,
-  relayUrls: readonly string[]
+  relayUrls: readonly string[],
+  publicZapReceiptHints = false
 ): ConduitConfig {
+  if (publicZapReceiptHints && relayUrls.length === 0) {
+    throw new Error("Public E2E zap receipt hints require relay isolation")
+  }
   if (relayUrls.length === 0) return input
   if (relayUrls.length !== 1) {
     throw new Error("E2E relay isolation requires exactly one relay")
@@ -426,9 +456,29 @@ export function applyE2eRelayIsolation(
     commerceDmFallbackRelayUrls: [...isolatedRelayUrls],
     dmInboxDefaultRelayUrls: [...isolatedRelayUrls],
     dmCompatibilityOrderRelayUrls: [...isolatedRelayUrls],
-    zapRelayUrls: [...isolatedRelayUrls],
+    // Receipt hints in a signed request are not permission for network access.
+    // The dedicated public-zap rehearsal still blocks all public transports.
+    zapRelayUrls: publicZapReceiptHints
+      ? [...CANONICAL_ZAP_PUBLIC_RELAYS]
+      : [...isolatedRelayUrls],
     nip89RelayHint: relayUrl,
   }
+}
+
+export function resolveE2ePublicZapReceiptHints(
+  mode: string,
+  relayUrls: readonly string[],
+  raw: string
+): boolean {
+  const flag = raw.trim()
+  if (!flag || flag === "false") return false
+  if (flag !== "true" || mode !== "mock" || relayUrls.length !== 1) {
+    throw new Error(
+      "Public E2E zap receipt hints require explicit mock relay isolation"
+    )
+  }
+  resolveE2eRelayIsolation(mode, relayUrls[0])
+  return true
 }
 
 /**
@@ -629,7 +679,21 @@ function logRelayDebugConfig(input: {
 }
 
 const env = getViteEnv()
+const checkoutSparkPublicTrust = resolveCheckoutSparkPublicTrust({
+  deploymentProfile: env.deploymentProfile,
+  compiledDigest: env.checkoutSparkPublicTrustDigest,
+  configuration: {
+    receiverContracts: env.checkoutSparkReceiverContracts,
+    pricingUrl: env.checkoutSparkPricingUrl,
+    pricingPublicKeys: env.checkoutSparkPricingPublicKeys,
+  },
+})
 const e2eRelayUrls = resolveE2eRelayIsolation(env.mode, env.e2eRelayUrl)
+const e2ePublicZapReceiptHints = resolveE2ePublicZapReceiptHints(
+  env.mode,
+  e2eRelayUrls,
+  env.e2ePublicZapReceiptHints
+)
 
 const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
 const envRelayUrl = uniqueConfiguredRelayUrls([env.relayUrl])
@@ -765,11 +829,17 @@ const configuredRelayConfig: ConduitConfig = {
   nip89MerchantDTag: env.nip89MerchantDTag.trim() || "conduit-merchant",
   anonZapSignerUrl: env.anonZapSignerUrl.trim() || null,
   anonZapSignerPubkey: env.anonZapSignerPubkey.trim() || null,
+  checkoutSparkReceiverContracts:
+    checkoutSparkPublicTrust.receiverContracts || null,
+  checkoutSparkPricingUrl: checkoutSparkPublicTrust.pricingUrl || null,
+  checkoutSparkPricingPublicKeys:
+    checkoutSparkPublicTrust.pricingPublicKeys || null,
 }
 
 export const config = applyE2eRelayIsolation(
   configuredRelayConfig,
-  e2eRelayUrls
+  e2eRelayUrls,
+  e2ePublicZapReceiptHints
 )
 
 logRelayDebugConfig({

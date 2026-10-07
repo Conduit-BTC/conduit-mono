@@ -9,6 +9,7 @@ import { decodeLightningInvoiceMetadata } from "./lightning"
 import { requireCheckoutSparkSettledExactOutgoingRequest } from "./checkout-spark-settled-outgoing-history"
 import type { CheckoutSparkSettledOutgoingTarget } from "./checkout-spark-settled-outgoing"
 import type { CheckoutSparkSettledPlan } from "./checkout-spark-settled-router"
+import { freezeCheckoutSparkReceiverBinding } from "./checkout-spark-receiver-capability"
 
 /** Private device-local attestation. Never accept this from recovery or Nostr. */
 export interface CheckoutSparkInvoiceOriginRecord {
@@ -41,6 +42,24 @@ function intentDigest(
           exact.amountSats,
           exact.maxFeeSats,
           target.intent.preparedAt,
+          ...(target.intent.publicZap
+            ? [
+                [
+                  "conduit:checkout-spark-public-invoice-origin:v1",
+                  target.intent.publicZap,
+                ],
+              ]
+            : []),
+          ...(target.intent.receiverBinding
+            ? [
+                [
+                  "conduit:checkout-spark-receiver-binding:v1",
+                  freezeCheckoutSparkReceiverBinding(
+                    target.intent.receiverBinding
+                  ),
+                ],
+              ]
+            : []),
         ])
       )
     )
@@ -63,6 +82,9 @@ export function createCheckoutSparkInvoiceOriginRecord(
     paymentHash: target.intent.paymentHash,
     expiresAt: decodeLightningInvoiceMetadata(target.intent.paymentRequest)
       .expiresAt!,
+    ...(target.intent.receiverBinding
+      ? { receiverBinding: target.intent.receiverBinding }
+      : {}),
   })
   if (
     !Number.isSafeInteger(resolvedAt) ||

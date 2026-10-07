@@ -1,45 +1,37 @@
-import { describe, expect, it, spyOn } from "bun:test"
+import { describe, expect, it } from "bun:test"
+import { IDBKeyRange, indexedDB } from "fake-indexeddb"
+import { ConduitDB } from "@conduit/core/db"
 import {
   createCheckoutSparkInvoiceRecipientRecord,
   hasCheckoutSparkInvoiceRecipient,
+  hasCheckoutSparkInvoiceRecipientSettlement,
   verifyCheckoutSparkInvoiceRecipient,
 } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 import {
-  createCheckoutSparkSettledReconciliation,
   deriveCheckoutSparkSettledTransferId,
   freezeCheckoutSparkSettledPlan,
-  prepareCheckoutSparkSettledLeg,
+  createCheckoutSparkSettledReconciliation,
   recordCheckoutSparkSettledCredit,
+  prepareCheckoutSparkSettledLeg,
 } from "../packages/core/src/protocol/checkout-spark-settled-router"
+import { DexieCheckoutSparkSettledRepository } from "../packages/core/src/protocol/checkout-spark-settled-router-repository"
+import { verifySavedMerchantCheckoutSparkRecipients } from "../apps/merchant/src/lib/checkout-spark-invoice-recipient"
+import { verifyBuyerCheckoutSparkRecipientSettlement } from "../apps/market/src/lib/checkout-spark-invoice-recipient"
 import type { CheckoutSparkSettledOutgoingTarget } from "../packages/core/src/protocol/checkout-spark-settled-outgoing"
 import { CONDUIT_CHECKOUT_FEE_RECIPIENT } from "../packages/core/src/protocol/checkout-spark-router-obligations"
-import {
-  bolt11PaymentHashField,
-  bolt11PlainDescriptionField,
-} from "./support/bolt11-fixture"
-import {
-  bolt11PaymentSecretField,
-  makeSignedBolt11Fixture,
-} from "./support/signed-bolt11-fixture"
+import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 
 const NOW = 1_800_000_000_000
 const MERCHANT = "a".repeat(64)
 
-function invoice(amount: number, byte: number) {
-  return makeSignedBolt11Fixture({
-    hrp: `lnbc${amount * 10}n`,
-    createdAt: NOW / 1_000,
-    fields: [
-      bolt11PaymentHashField(new Uint8Array(32).fill(byte)),
-      bolt11PaymentSecretField(),
-      bolt11PlainDescriptionField(),
-    ],
+function fixture() {
+  const provider = qualifiedReceiverFixture()
+  const funding = qualifiedReceiverFixture({
+    amountSats: 1_113,
+    preimageByte: 3,
   })
-}
-
-function fixture(address = "merchant@coinos.io", checkoutId = "checkout-1") {
   const plan = freezeCheckoutSparkSettledPlan({
-    checkoutId,
+    checkoutId: "checkout-1",
     orderId: "order-1",
     merchantPubkey: MERCHANT,
     walletId: "wallet-1",
@@ -61,8 +53,8 @@ function fixture(address = "merchant@coinos.io", checkoutId = "checkout-1") {
     },
     funding: {
       requestId: "receive-1",
-      paymentRequest: invoice(1_113, 3),
-      paymentHash: "03".repeat(32),
+      paymentRequest: funding.paymentRequest,
+      paymentHash: funding.paymentHash,
       receiverIdentityPublicKey: `02${"c".repeat(64)}`,
       grossFundingSats: 1_113,
       createdAt: NOW,
@@ -74,7 +66,7 @@ function fixture(address = "merchant@coinos.io", checkoutId = "checkout-1") {
         recipientId: MERCHANT,
         destination: {
           type: "lightning_address",
-          value: address,
+          value: provider.lud16,
           source: {
             type: "signed_profile",
             profileEventId: "d".repeat(64),
@@ -95,28 +87,7 @@ function fixture(address = "merchant@coinos.io", checkoutId = "checkout-1") {
       },
     ],
   })
-  const credited = recordCheckoutSparkSettledCredit(
-    createCheckoutSparkSettledReconciliation(plan),
-    {
-      requestId: plan.funding.requestId,
-      paymentHash: plan.funding.paymentHash,
-      transferId: "funding-transfer-1",
-      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
-      grossSats: 1_113,
-      creditedSats: 1_111,
-      observedAt: NOW + 1,
-    }
-  )
   const recipient = plan.recipients[0]!
-  const state = prepareCheckoutSparkSettledLeg(credited, {
-    legId: recipient.legId,
-    transferId: deriveCheckoutSparkSettledTransferId(plan, recipient.legId),
-    paymentRequest: invoice(995, 4),
-    paymentHash: "04".repeat(32),
-    invoiceAmountSats: 995,
-    maxFeeSats: 5,
-    preparedAt: NOW + 2,
-  })
   const target: CheckoutSparkSettledOutgoingTarget = {
     walletId: plan.walletId,
     network: plan.network,
@@ -124,226 +95,327 @@ function fixture(address = "merchant@coinos.io", checkoutId = "checkout-1") {
     recipientId: recipient.recipientId,
     allocationSats: 1_000,
     unpaidAllocationSats: 1_111,
-    intent: state.legs[0]!.intent!,
+    intent: {
+      legId: recipient.legId,
+      transferId: deriveCheckoutSparkSettledTransferId(plan, recipient.legId),
+      paymentRequest: provider.paymentRequest,
+      paymentHash: provider.paymentHash,
+      invoiceAmountSats: 995,
+      maxFeeSats: 5,
+      preparedAt: NOW + 2,
+      receiverBinding: provider.receiverBinding,
+    },
   }
   return {
     plan,
     target,
     now: NOW + 3,
     assertCurrent: () => undefined,
-    canonical: {
-      id: "provider-invoice-1",
-      type: "lightning",
-      text: target.intent.paymentRequest,
-      hash: target.intent.paymentRequest,
-      paymentHash: target.intent.paymentHash,
-      amount: target.intent.invoiceAmountSats,
-      uid: "provider-user-1",
-      user: { id: "provider-user-1", username: "merchant" },
-    },
+    provider,
   }
 }
 
-describe("Coinos invoice recipient attribution", () => {
-  it("looks up the exact invoice and persists only the bound verification record", async () => {
+describe("qualified provider invoice recipient attribution", () => {
+  it("continues buyer verification when delayed receiver settlement becomes available", async () => {
     const input = fixture()
-    let requested = ""
+    const state = prepareCheckoutSparkSettledLeg(
+      recordCheckoutSparkSettledCredit(
+        createCheckoutSparkSettledReconciliation(input.plan),
+        {
+          requestId: input.plan.funding.requestId,
+          paymentHash: input.plan.funding.paymentHash,
+          transferId: "synthetic-credit",
+          receiverIdentityPublicKey:
+            input.plan.funding.receiverIdentityPublicKey,
+          grossSats: 1_113,
+          creditedSats: 1_111,
+          observedAt: NOW + 1,
+        }
+      ),
+      input.target.intent
+    )
+    const database = new ConduitDB(`buyer-receiver-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    try {
+      let repository = new DexieCheckoutSparkSettledRepository(database)
+      await repository.importRecoveryState(state, input.assertCurrent)
+      let settled = false
+      let reads = 0
+      const observe = () =>
+        verifyBuyerCheckoutSparkRecipientSettlement({
+          plan: input.plan,
+          target: input.target,
+          repository,
+          now: () => NOW + 3,
+          assertCurrent: input.assertCurrent,
+          verifyInvoice: (request) =>
+            verifyCheckoutSparkInvoiceRecipient(request, {
+              contracts: input.provider.contracts,
+              fetchMetadata: async () => input.provider.metadata,
+              fetchVerify: async () => {
+                reads += 1
+                return input.provider.verifier(settled)
+              },
+            }),
+        })
+      expect(await observe()).toBe(false)
+      expect(
+        await repository.hasInvoiceRecipient(input.plan, input.target)
+      ).toBe(true)
+      expect(
+        await repository.hasInvoiceRecipientSettlement(input.plan, input.target)
+      ).toBe(false)
+      repository = new DexieCheckoutSparkSettledRepository(database)
+      settled = true
+      expect(await observe()).toBe(true)
+      expect(reads).toBe(2)
+      expect(await observe()).toBe(true)
+      expect(reads).toBe(2)
+      // Receiver proof alone does not manufacture a native Spark payout ledger.
+      expect(
+        (await repository.loadMerchantSettlement(
+          input.plan.merchantPubkey,
+          input.plan.checkoutId,
+          input.plan.planDigest
+        )) === null
+      ).toBe(true)
+    } finally {
+      await database.delete()
+    }
+  })
+
+  it("persists opaque exact origin and settled facts without creating a Spark payment claim", async () => {
+    const input = fixture()
+    let reads = 0
     const result = await verifyCheckoutSparkInvoiceRecipient(input, {
-      fetchInvoiceRecord: async (url, options) => {
-        requested = url
-        expect(options.signal.aborted).toBe(false)
-        return input.canonical
+      contracts: input.provider.contracts,
+      fetchMetadata: async () => input.provider.metadata,
+      fetchVerify: async (url) => {
+        reads += 1
+        expect(url === input.provider.receiverBinding.verifyUrl).toBe(true)
+        return input.provider.verifier()
       },
     })
-    expect(requested).toBe(
-      `https://coinos.io/api/invoice/${encodeURIComponent(input.target.intent.paymentRequest)}`
-    )
     expect(result.status).toBe("verified")
     if (result.status !== "verified") throw new Error("Expected verification")
-    expect(Object.keys(result.proof)).toEqual([])
     const record = createCheckoutSparkInvoiceRecipientRecord(
       input.plan,
       input.target,
       result.proof
     )
-    expect(Object.keys(record).sort()).toEqual([
-      "intentDigest",
-      "legId",
-      "schemaVersion",
-      "source",
-      "verifiedAt",
-    ])
-    expect(record.source).toBe("coinos_account_lookup_v1")
-    expect(record.verifiedAt).toBe(input.now)
+    expect(Object.keys(result.proof).length).toBe(0)
+    expect(Object.keys(record).sort().join(",")).toBe(
+      "intentDigest,legId,providerSettled,schemaVersion,source,verifiedAt"
+    )
+    expect(record.source).toBe("qualified_receiver_v1")
+    expect(record.providerSettled).toBe(true)
     expect(
-      hasCheckoutSparkInvoiceRecipient(
-        structuredClone(record),
+      hasCheckoutSparkInvoiceRecipient(record, input.plan, input.target)
+    ).toBe(true)
+    expect(
+      hasCheckoutSparkInvoiceRecipientSettlement(
+        record,
         input.plan,
         input.target
       )
     ).toBe(true)
-    // Completing a different leg does not invalidate this exact intent's proof.
+    expect(reads).toBe(1)
+  })
+
+  it("allows exact origin-only observation but never upgrades it to settled proof", async () => {
+    const input = fixture()
+    const result = await verifyCheckoutSparkInvoiceRecipient(input, {
+      contracts: input.provider.contracts,
+      fetchMetadata: async () => input.provider.metadata,
+      fetchVerify: async () => input.provider.verifier(false),
+    })
+    if (result.status !== "verified") throw new Error("Expected verification")
+    const record = createCheckoutSparkInvoiceRecipientRecord(
+      input.plan,
+      input.target,
+      result.proof
+    )
+    expect(result.settled).toBe(false)
     expect(
-      hasCheckoutSparkInvoiceRecipient(record, input.plan, {
-        ...input.target,
-        unpaidAllocationSats: 1_000,
-      })
+      hasCheckoutSparkInvoiceRecipient(record, input.plan, input.target)
     ).toBe(true)
-    const another = fixture("merchant@coinos.io", "checkout-2")
     expect(
-      hasCheckoutSparkInvoiceRecipient(record, another.plan, another.target)
+      hasCheckoutSparkInvoiceRecipientSettlement(
+        record,
+        input.plan,
+        input.target
+      )
     ).toBe(false)
   })
 
-  it("can verify an expired, previously issued invoice without creating another", async () => {
+  it("attributes the original paid invoice after expiry without refreshing or replacing it", async () => {
     const input = fixture()
     const result = await verifyCheckoutSparkInvoiceRecipient(
       { ...input, now: NOW + 7_200_000 },
       {
-        fetchInvoiceRecord: async () => input.canonical,
+        contracts: input.provider.contracts,
+        fetchMetadata: async () => input.provider.metadata,
+        fetchVerify: async () => input.provider.verifier(),
       }
     )
-    expect(result.status).toBe("verified")
+    expect(result.status === "verified" && result.settled).toBe(true)
   })
 
-  it("keeps invoice attribution distinct from settlement", async () => {
+  it("keeps unbound historical invoices unsupported with zero provider reads", async () => {
     const input = fixture()
-    // This helper does not turn a provider invoice record into paid-leg evidence.
-    const result = await verifyCheckoutSparkInvoiceRecipient(input, {
-      fetchInvoiceRecord: async () => ({
-        ...input.canonical,
-        received: 0,
-        settled: null,
-      }),
-    })
-    expect(result.status).toBe("verified")
-    expect("paid" in result).toBe(false)
-  })
-
-  it("does not query providers outside the explicit compatibility adapter", async () => {
-    let calls = 0
+    const historic = { ...input.target.intent }
+    delete historic.receiverBinding
+    let reads = 0
     const result = await verifyCheckoutSparkInvoiceRecipient(
-      fixture("merchant@example.test"),
+      { ...input, target: { ...input.target, intent: historic } },
       {
-        fetchInvoiceRecord: async () => {
-          calls += 1
-          return {}
+        contracts: input.provider.contracts,
+        fetchMetadata: async () => {
+          reads += 1
+          return input.provider.metadata
+        },
+        fetchVerify: async () => {
+          reads += 1
+          return input.provider.verifier()
         },
       }
     )
-    expect(result).toEqual({ status: "unsupported" })
-    expect(calls).toBe(0)
+    expect(result.status).toBe("unsupported")
+    expect(reads).toBe(0)
   })
 
-  it("returns conflicting for a provider's different canonical account", async () => {
+  it("leaves a normal provider outage unavailable without minting a record", async () => {
     const input = fixture()
-    expect(
-      await verifyCheckoutSparkInvoiceRecipient(input, {
-        fetchInvoiceRecord: async () => ({
-          ...input.canonical,
-          user: { id: "provider-user-2", username: "another" },
-        }),
-      })
-    ).toEqual({ status: "conflicting" })
-  })
-
-  it("returns conflicting if a regenerated provider record no longer matches", async () => {
-    const input = fixture()
-    expect(
-      await verifyCheckoutSparkInvoiceRecipient(input, {
-        fetchInvoiceRecord: async () => ({
-          ...input.canonical,
-          text: invoice(996, 5),
-          hash: invoice(996, 5),
-          paymentHash: "05".repeat(32),
-          amount: 996,
-        }),
-      })
-    ).toEqual({ status: "conflicting" })
-  })
-
-  it("treats a transport timeout as unavailable without retaining error contents", async () => {
-    const input = fixture()
-    expect(
-      await verifyCheckoutSparkInvoiceRecipient(input, {
-        fetchInvoiceRecord: async () => {
-          throw new DOMException("request timeout", "TimeoutError")
-        },
-      })
-    ).toEqual({ status: "unavailable" })
-  })
-
-  it("bounds an unresponsive transport and aborts its request", async () => {
-    let signal: AbortSignal | undefined
-    const result = await verifyCheckoutSparkInvoiceRecipient(fixture(), {
-      fetchInvoiceRecord: async (_, options) => {
-        signal = options.signal
-        return new Promise(() => undefined)
+    const result = await verifyCheckoutSparkInvoiceRecipient(input, {
+      contracts: input.provider.contracts,
+      fetchMetadata: async () => input.provider.metadata,
+      fetchVerify: async () => {
+        throw new Error("Unavailable")
       },
     })
-    expect(result).toEqual({ status: "unavailable" })
-    expect(signal?.aborted).toBe(true)
-  }, 10_000)
-
-  it("uses credentialless non-redirecting GET for the default transport", async () => {
-    const input = fixture()
-    const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(
-      Response.json(input.canonical)
-    )
-    try {
-      expect((await verifyCheckoutSparkInvoiceRecipient(input)).status).toBe(
-        "verified"
-      )
-      const [url, options] = fetchMock.mock.calls[0]!
-      expect(url).toBe(
-        `https://coinos.io/api/invoice/${encodeURIComponent(input.target.intent.paymentRequest)}`
-      )
-      expect(options).toMatchObject({
-        method: "GET",
-        credentials: "omit",
-        redirect: "error",
-        cache: "no-store",
-        referrerPolicy: "no-referrer",
-      })
-      expect(options?.headers).toEqual({ Accept: "application/json" })
-    } finally {
-      fetchMock.mockRestore()
-    }
+    expect(result.status).toBe("unavailable")
   })
 
-  it("treats ordinary non-JSON provider outages as unavailable", async () => {
-    const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("Service unavailable", { status: 503 })
-    )
-    try {
-      expect(await verifyCheckoutSparkInvoiceRecipient(fixture())).toEqual({
-        status: "unavailable",
-      })
-    } finally {
-      fetchMock.mockRestore()
-    }
-  })
-
-  it("does not release a proof after the current account changes", async () => {
+  it("rejects a late provider observation after the exact checkout session stops", async () => {
     const input = fixture()
     let current = true
-    let complete: (record: unknown) => void = () => undefined
-    const pending = verifyCheckoutSparkInvoiceRecipient(
-      {
-        ...input,
-        assertCurrent: () => {
-          if (!current) throw new Error("Account changed")
+    await expect(
+      verifyCheckoutSparkInvoiceRecipient(
+        {
+          ...input,
+          assertCurrent: () => {
+            if (!current) throw new Error("Session changed")
+          },
         },
-      },
+        {
+          contracts: input.provider.contracts,
+          fetchMetadata: async () => input.provider.metadata,
+          fetchVerify: async () => {
+            current = false
+            return input.provider.verifier()
+          },
+        }
+      )
+    ).rejects.toThrow("Session changed")
+  })
+
+  it("reopens exact portable recovery, rechecks unpaid origin, and monotonically records receiver settlement", async () => {
+    const input = fixture()
+    const credited = recordCheckoutSparkSettledCredit(
+      createCheckoutSparkSettledReconciliation(input.plan),
       {
-        fetchInvoiceRecord: () =>
-          new Promise((resolve) => {
-            complete = resolve
-          }),
+        requestId: input.plan.funding.requestId,
+        paymentHash: input.plan.funding.paymentHash,
+        transferId: "synthetic-credit",
+        receiverIdentityPublicKey: input.plan.funding.receiverIdentityPublicKey,
+        grossSats: 1_113,
+        creditedSats: 1_111,
+        observedAt: NOW + 1,
       }
     )
-    current = false
-    complete(input.canonical)
-    await expect(pending).rejects.toThrow("Account changed")
+    const state = prepareCheckoutSparkSettledLeg(credited, input.target.intent)
+    const database = new ConduitDB(
+      `qualified-receiver-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    try {
+      let repository = new DexieCheckoutSparkSettledRepository(database)
+      await repository.importRecoveryState(state, input.assertCurrent)
+      expect(await repository.hasInvoiceOrigin(input.plan, input.target)).toBe(
+        false
+      )
+      expect(
+        await repository.hasInvoiceRecipient(input.plan, input.target)
+      ).toBe(false)
+      let settled = false
+      let reads = 0
+      const verifyInvoice = (
+        request: Parameters<typeof verifyCheckoutSparkInvoiceRecipient>[0]
+      ) =>
+        verifyCheckoutSparkInvoiceRecipient(request, {
+          contracts: input.provider.contracts,
+          fetchMetadata: async () => input.provider.metadata,
+          fetchVerify: async () => {
+            reads += 1
+            return input.provider.verifier(settled)
+          },
+        })
+      const observe = () =>
+        verifySavedMerchantCheckoutSparkRecipients({
+          state,
+          repository,
+          assertCurrent: input.assertCurrent,
+          now: () => NOW + 3,
+          verifyInvoice,
+        })
+      expect(await observe()).toBe("complete")
+      expect(
+        await repository.hasInvoiceRecipient(input.plan, input.target)
+      ).toBe(true)
+      expect(
+        await repository.hasInvoiceRecipientSettlement(input.plan, input.target)
+      ).toBe(false)
+      repository = new DexieCheckoutSparkSettledRepository(database)
+      settled = true
+      expect(await observe()).toBe("complete")
+      expect(reads).toBe(2)
+      expect(
+        await repository.hasInvoiceRecipientSettlement(input.plan, input.target)
+      ).toBe(true)
+      expect(await observe()).toBe("complete")
+      expect(reads).toBe(2)
+      const unpaid = await verifyCheckoutSparkInvoiceRecipient(input, {
+        contracts: input.provider.contracts,
+        fetchMetadata: async () => input.provider.metadata,
+        fetchVerify: async () => input.provider.verifier(false),
+      })
+      if (unpaid.status !== "verified") throw new Error("Expected verification")
+      await repository.recordInvoiceRecipientVerification(
+        input.plan,
+        input.target,
+        unpaid.proof
+      )
+      expect(
+        await repository.hasInvoiceRecipientSettlement(input.plan, input.target)
+      ).toBe(true)
+      const saved = await repository.load(
+        input.plan.checkoutId,
+        input.plan.planDigest
+      )
+      expect(
+        saved.status === "active" && saved.state.legs[0]!.status === "prepared"
+      ).toBe(true)
+      expect(
+        (await repository.loadMerchantSettlement(
+          input.plan.merchantPubkey,
+          input.plan.checkoutId,
+          input.plan.planDigest
+        )) === null
+      ).toBe(true)
+    } finally {
+      await database.delete()
+    }
   })
 })

@@ -24,6 +24,7 @@ import {
   getMerchantStorefront,
   getProfileName,
   getTelemetryCountBucket,
+  isQuantumRouterEnabled,
   normalizePublicMediaUrl,
   normalizePubkey,
   pubkeyToNpub,
@@ -796,7 +797,9 @@ function MerchantCartCard({
     wallets,
   })
   const canZapOut =
-    capability.outcome === "zap_candidate" && !mixedFulfillmentMessage
+    !isQuantumRouterEnabled() &&
+    capability.outcome === "zap_candidate" &&
+    !mixedFulfillmentMessage
   // Only the initial no-evidence read blocks the card; a background refresh
   // keeps the prepared state actionable.
   const availabilityChecking = readiness?.isChecking === true

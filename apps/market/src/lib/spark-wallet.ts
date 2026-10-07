@@ -142,6 +142,9 @@ export interface SparkCheckoutReceiveRequest {
   expirySecs: number
   createdAt: number
   expiresAt: number
+  /** RAM-only native provider timestamps, never restored from checkout storage. */
+  readonly providerCreatedAtMs?: number
+  readonly providerExpiresAtMs?: number
   /** Only a receive created from a same-wallet, exact feeless NET quote has this. */
   receiveQuotePolicy?: "same-wallet-feeless-net-v1"
   /** Ordinary receive; executable only in an opted-in local rehearsal. */

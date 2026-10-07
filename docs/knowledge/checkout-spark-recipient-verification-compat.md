@@ -1,119 +1,92 @@
-# Checkout Spark recipient verification compatibility
+# Checkout Spark receiver qualification
 
-## Scope and canonical target
+## Scope and trust
 
-- **Name:** `coinos_account_lookup_v1`
-- **Status:** proposed; implemented only behind local development recovery gates
-- **Canonical target:** independently attribute the exact frozen payout invoice
-  to its recipient, separately from proving that Spark paid it
-- **Owner:** payment-boundary maintainers
-- **Started:** 2026-10-01
-- **Next review:** 2026-11-01
-- **Rollout control:** local deployment profile plus development, loopback, rehearsal and router-canary
-  gates; no production activation or provider-domain configuration
-- **Activation state:** disabled outside the local rehearsal
+The router independently associates each exact Lightning payout with its frozen
+recipient, separately from proving that Spark paid it. A shopper's recovery
+message, invoice signature, preimage or balance cannot supply all these facts.
+This is a provider-neutral capability contract, not a Coinos adapter, a permanent
+wallet-brand allowlist, an invoice witness or a new Nostr receipt standard.
 
-This is a named provider adapter, not a Nostr extension or a generic LNURL
-receipt. LUD-06/LUD-16 resolution does not provide a portable receiving-account
-attestation. The buyer's authenticated recovery message preserves intent but
-cannot independently prove which account owns its invoice. Strict device-local
-origin checks therefore leave some otherwise paid cold recoveries unattributed.
+Trusted deployment policy qualifies exact pay-request, callback and verifier
+origins, verifier path and historical private-invoice binding semantics. V1
+uses ordinary private payments; public mode is deferred, not a receiving-service
+API or release dependency. A descriptor
+marked `pending` cannot admit a receiver. Advertising LUD-21 alone is not
+qualification. All required Merchant and supplier receivers must be supported
+before wallet creation or funding disclosure; unsupported endpoints do not
+enable direct-payment fallback. The reference implementation is the
+`@conduit.cash` receiving integration, but reference status does not implicitly
+activate it. Other endpoints can qualify through the same contract.
 
-The shared public Quantum Router capability does not activate this adapter.
-Hosted routing and local receiving-provider compatibility have separate runtime
-admission checks; see [deployment capability](quantum-router-deployment.md).
+## Independent evidence
 
-On the source baseline below, Coinos exposes a canonical invoice record with
-the BOLT11, payment hash, amount, receiving user identifier and user name. Source
-inspection and offline fixtures are not a guarantee about the deployed API.
+- Fresh canonical Lightning-address metadata must identify the frozen address
+  and match the qualified pay-request/callback policy.
+- A private invoice's description hash must bind the exact provider metadata.
+  The qualified provider must preserve the account association and historical
+  verification semantics, including account/name reassignment behavior.
+- Retained historical public invoices still need independent account proof.
+  They are never converted into private payments or treated as unpaid because
+  a receipt is missing. New V1 preparation requests no public invoice.
+- The prepared intent retains the exact mode-qualified receiver binding as a
+  portable lookup hint. Imported hints do not create trusted verification.
+- Both clients check the qualified verifier's exact invoice, network, amount
+  and payment hash. Its settled result must include the matching preimage.
+- Exact native Spark transfer/debit/amount/preimage proof remains a separate
+  requirement. Neither provider's evidence replaces the other.
 
-## Evidence and behavior
+An unpaid issuance check permits only the same exact unpaid intent under the
+existing send guards. It does not mark its recipient settled. For bound intents,
+local origin alone cannot unlock commerce readiness or final treasury collection.
+Proof-derived local records bind the plan, wallet, recipient, allocation and
+intent digest; receiver-settled observations upgrade monotonically. Exact
+Spark-paid facts remain terminal for duplicate prevention while receiver history
+is delayed. Retry refreshes verification and reconciles that same possible send,
+never fabricates another invoice or transfer identifier.
 
-Recipient identity, exact invoice parameters, allocation, Spark payment evidence
-and strict Merchant recovery authority remain hard gates. A receiving-service
-outage may degrade attribution, not erase stronger payment observations.
+## Transport, recovery and compatibility
 
-| Observation                                         | Action and result                                                                                                |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Existing matching local origin                      | Reuse it; no additional provider lookup.                                                                         |
-| Canonical Coinos invoice/account match              | Persist an opaque-proof-derived local digest record; verify Spark payment separately.                            |
-| Temporary transport failure                         | Keep saved attempts and exact Spark observations; retry attribution without dispatching an unattributed payment. |
-| Conflicting invoice/account or unsupported provider | Keep recipient unverified and expose an exception; never substitute an invoice.                                  |
-| Exact Spark payment observed without attribution    | Preserve terminal paid facts; do not send again or call the recipient verified.                                  |
-| Retired wallet                                      | Keep retained settlement truth; do not reopen it to reconstruct missing evidence.                                |
+Verification uses a qualified HTTPS endpoint with no redirects, credentials,
+cookies or referrer; its response is bounded to 64 KiB and eight seconds.
+Session/order guards bracket transport and persistence. Invoice/account/provider
+contents remain private and do not enter logs, telemetry or diagnostics.
 
-## Bounds and prohibitions
+Supported cold partial recovery must verify previously paid recipients, complete
+only remaining obligations, confirm native collection and independently establish
+safe retirement. Historical imported attempts without usable recipient binding
+remain unverified rather than inferred from a balance or buyer label. Legacy
+matching device-local origin remains readable under its original contract; it
+does not retroactively add portable receiver settlement to a historical plan.
 
-- Mainnet, frozen Lightning addresses ending in `@coinos.io` only.
-- One fixed HTTPS GET per saved invoice lacking trusted local evidence; no
-  caller-supplied endpoint, redirects, cookies, credentials or referral header.
-- Eight-second deadline and 64-KiB response budget. Account/page guards bracket
-  transport and persistence. Sequential checks run inside the existing bounded
-  Merchant worker, not a second payment runner.
-- Full plan/recipient/wallet/allocation/intent digest binding and runtime-only
-  proof branding. Only minimal verification records survive ordinary reload;
-  imported messages cannot create them.
-- No invoice replacement, new transfer identity, fee borrowing or receipt
-  inferred from balance, node key, preimage alone or buyer progress.
-- Provider records and invoice contents never enter logs, diagnostics,
-  notifications or telemetry. Existing encrypted recovery remains separate.
-- This adapter's amount check covers ordinary untipped Coinos LNURL invoices.
-  Its upstream route limits the parameter to 500 characters; longer valid
-  invoices and changed provider schemas may be unavailable. A shorter lookup
-  identifier is not guessed or fabricated.
+Closed-attempt renewal remains a distinct
+[wallet contract](../specs/wallets.md#lightning-closed-attempt-invoice-renewal).
+Only positive terminal unpaid closure, complete spendable return and zero
+historical net debit authorize its bounded successor for the same frozen
+recipient. Missing qualification, absent origin, expiry, an outage or a paid
+attempt does not authorize replacement. Retirement remains separately gated
+by exact terminal history and zero owned/available/pending funds.
 
-## Repair, rollout and removal
+## Qualification and acceptance
 
-Merchant Orders owns the exception UI. It keeps verified commerce usable and
-distinguishes a fee-only attribution issue from an unpaid order. Operators must
-not request another buyer payment to repair missing evidence. Unsupported
-providers require a separate reviewed recipient-bound proof path, not relaxed
-identity checks or a mandatory receiving wallet introduced by this adapter.
+Managed policy defaults to no accepted live receivers. Before adding an accepted
+descriptor, maintainers must establish deployed issuance/account retention,
+exact verification/CORS behavior for ordinary private receiving. Preserve
+necessary historical verification policy during endpoint changes; rotation must
+not redirect a frozen attempt or invent evidence for an unsupported old one.
 
-The separately reviewed closed-attempt renewal path is not Coinos attribution
-and does not relax this adapter. After positively verified complete unpaid
-return under the [wallet renewal contract](../specs/wallets.md#lightning-closed-attempt-invoice-renewal),
-Merchant may request the successor directly from the same frozen Lightning
-address using the existing provider-generic LNURL origin path. This creates
-origin evidence for the new invoice only, never retroactive attribution for
-the old one. Unsupported-provider or missing-origin observations alone cannot
-authorize renewal; pending, uncertain, partial-return and paid attempts remain
-protected from replacement.
-
-Rollback removes the verifier invocation behind the same local gate, preserving
-saved payments, recovery material and provider-paid facts. Exact history remains
-inspectable; no stored digest becomes authority for a new recipient or invoice.
-
-No production measurements or enablement are included. Before production use,
-maintainers must validate deployed canonical response/CORS behavior and funded
-cold/interrupted recovery. Aggregate adapter-attempt, outcome and retry counts
-need a tested observation window and denominator without identifiers or payment
-content. Provider-specific failure classes may be counted; destination domains,
-addresses, invoices, hashes and user/order identifiers must not be collected.
-
-Removal requires a reviewed canonical recipient-proof replacement covering both
-unpaid and already-paid restored invoices, including currently unsupported
-providers and existing-record compatibility. Widening the provider list, changing
-its trust boundary or production activation requires an explicit reviewed change.
-This note does not promise universal recovery or authorize cleanup from a zero
-balance; expired/uncertain-intent resolution and terminal wallet cleanup remain
-separate boundaries.
-
-## Regression evidence
-
-Focused fixtures cover opaque proof persistence, account/page cancellation,
-transport outages, canonical account matching, fresh repository reload,
-unpaid/paid cold Merchant intents, no replay, and advisory supplier eligibility
-only after independent payment plus recipient evidence. UI fixtures retain
-commerce Paid status while exposing fee-only attribution exceptions. Isolated
-or synthetic tests do not replace real-provider concurrency, mobile suspension
-or funded recovery checks.
+Normal provider-owned fixtures cover issuance, fresh-reader verification,
+delayed settlement, proof persistence, supported partial recovery and no replay.
+They do not prove deployment qualification. Real acceptance must include fresh
+funded checkout, receiving-side confirmation, concurrent buyer/Merchant and
+in-flight/delayed history, and external mobile payment followed by Safari
+termination while Merchant is offline, then cold Merchant restore and completion.
+No synthetic test or source inspection waives this gate.
 
 ## Public references
 
 - [LUD-06 LNURL-pay](https://github.com/lnurl/luds/blob/luds/06.md)
 - [LUD-16 Lightning addresses](https://github.com/lnurl/luds/blob/luds/16.md)
-- [Coinos canonical invoice lookup](https://github.com/coinos/coinos-server/blob/b1e175c1faa46ed67cf0575f8d8808f1ae10892c/routes/invoices.ts)
-- [Coinos invoice generation](https://github.com/coinos/coinos-server/blob/b1e175c1faa46ed67cf0575f8d8808f1ae10892c/lib/invoices.ts)
-- [Coinos transport configuration](https://github.com/coinos/coinos-server/blob/b1e175c1faa46ed67cf0575f8d8808f1ae10892c/lib/app.ts)
+- [LUD-21 invoice verification](https://github.com/lnurl/luds/blob/luds/21.md)
+- [NIP-57 public zaps](https://github.com/nostr-protocol/nips/blob/master/57.md)
 - [Merchant reconciliation boundary](merchant-checkout-reconciliation.md)

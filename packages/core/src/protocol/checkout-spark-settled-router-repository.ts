@@ -69,6 +69,7 @@ import {
 import {
   createCheckoutSparkInvoiceRecipientRecord,
   hasCheckoutSparkInvoiceRecipient,
+  hasCheckoutSparkInvoiceRecipientSettlement,
   type CheckoutSparkInvoiceRecipientProof,
 } from "./checkout-spark-invoice-recipient"
 import {
@@ -148,7 +149,11 @@ function matchesSavedInvoiceTarget(
     leg.intent.paymentHash === target.intent.paymentHash &&
     leg.intent.invoiceAmountSats === target.intent.invoiceAmountSats &&
     leg.intent.maxFeeSats === target.intent.maxFeeSats &&
-    leg.intent.preparedAt === target.intent.preparedAt
+    leg.intent.preparedAt === target.intent.preparedAt &&
+    JSON.stringify(leg.intent.publicZap ?? null) ===
+      JSON.stringify(target.intent.publicZap ?? null) &&
+    JSON.stringify(leg.intent.receiverBinding ?? null) ===
+      JSON.stringify(target.intent.receiverBinding ?? null)
   )
 }
 
@@ -1384,7 +1389,11 @@ export class DexieCheckoutSparkSettledRepository {
           leg.intent.paymentHash !== target.intent.paymentHash ||
           leg.intent.invoiceAmountSats !== target.intent.invoiceAmountSats ||
           leg.intent.maxFeeSats !== target.intent.maxFeeSats ||
-          leg.intent.preparedAt !== target.intent.preparedAt
+          leg.intent.preparedAt !== target.intent.preparedAt ||
+          JSON.stringify(leg.intent.publicZap ?? null) !==
+            JSON.stringify(target.intent.publicZap ?? null) ||
+          JSON.stringify(leg.intent.receiverBinding ?? null) !==
+            JSON.stringify(target.intent.receiverBinding ?? null)
         )
           return false
         return (
@@ -1454,6 +1463,46 @@ export class DexieCheckoutSparkSettledRepository {
     assertCurrent?.()
   }
 
+  /** A qualified receiver's settlement proof never substitutes for Spark debit. */
+  async hasInvoiceRecipientSettlement(
+    plan: CheckoutSparkSettledPlan,
+    target: CheckoutSparkSettledOutgoingTarget,
+    assertCurrent?: () => void
+  ): Promise<boolean> {
+    if (!target.intent.receiverBinding)
+      return this.hasInvoiceRecipient(plan, target, assertCurrent)
+    assertCurrent?.()
+    const canonical = restoreCheckoutSparkSettledPlan(plan)
+    return this.database.transaction(
+      "r",
+      this.database.checkoutSparkPlanBindings,
+      this.database.checkoutSparkReconciliations,
+      this.database.checkoutSparkRetirements,
+      async () => {
+        const snapshot = await this.readInTransaction(canonical.checkoutId)
+        const binding = await this.database.checkoutSparkPlanBindings.get(
+          canonical.checkoutId
+        )
+        assertCurrent?.()
+        if (
+          snapshot.status !== "active" ||
+          snapshot.state.plan.planDigest !== canonical.planDigest ||
+          !matchesSavedInvoiceTarget(snapshot.state, target)
+        )
+          return false
+        return (
+          binding?.invoiceRecipients?.some((recipient) =>
+            hasCheckoutSparkInvoiceRecipientSettlement(
+              recipient,
+              canonical,
+              target
+            )
+          ) ?? false
+        )
+      }
+    )
+  }
+
   /**
    * Persist only opaque evidence freshly obtained from the receiving provider.
    * This never changes the invoice, transfer ID, payment outcome or local origin.
@@ -1513,6 +1562,7 @@ export class DexieCheckoutSparkSettledRepository {
           ? {
               ...settlement,
               paidLegs: settlement.paidLegs.map((paid) =>
+                record.providerSettled &&
                 paid.legId === target.legId &&
                 paid.transferId === target.intent.transferId &&
                 paid.allocationSats === target.allocationSats
@@ -1524,7 +1574,13 @@ export class DexieCheckoutSparkSettledRepository {
         const next = {
           ...binding,
           invoiceRecipients: previous
-            ? binding.invoiceRecipients
+            ? binding.invoiceRecipients!.map((recipient) =>
+                recipient.intentDigest === record.intentDigest &&
+                record.providerSettled &&
+                !recipient.providerSettled
+                  ? record
+                  : recipient
+              )
             : [...(binding.invoiceRecipients ?? []), record],
           ...(attributed
             ? {

@@ -6,6 +6,7 @@ import {
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRepositorySnapshot,
   type CheckoutSparkBuyerPrice,
+  type CheckoutSparkSettledReconciliation,
   type OrderLifecycle,
 } from "@conduit/core"
 
@@ -87,6 +88,33 @@ export type CheckoutSparkSettledOrderControlState =
       externalFundingAvailable?: boolean
       sendWindowEndsAt: number | null
     }
+
+/** A saved possible send may be inspected, never admitted again. */
+export function canInspectCheckoutSparkSettledSubmittedAttempt(
+  state: CheckoutSparkSettledReconciliation,
+  legId: string | null
+): boolean {
+  const leg = state.legs.find((candidate) => candidate.status !== "paid")
+  if (
+    !state.credit ||
+    !leg ||
+    leg.legId !== legId ||
+    (leg.status !== "submitted" &&
+      leg.status !== "ambiguous" &&
+      leg.status !== "lookup_unavailable")
+  )
+    return false
+  const native =
+    state.plan.schemaVersion === 4 &&
+    state.plan.recipients.find((recipient) => recipient.legId === legId)
+      ?.kind === "conduit"
+  return native
+    ? Boolean(
+        state.treasuryFinalization?.intent &&
+        state.treasuryFinalization.status === leg.status
+      )
+    : Boolean(leg.intent)
+}
 
 /** Read-only presentation; the click handler must reload every authority. */
 export function assessCheckoutSparkSettledOrderControl(input: {
@@ -268,7 +296,12 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   ) {
     return blocked("This order no longer has an active buyer checkout session.")
   }
-  if (state.credit && now >= plan.takeoverAt) {
+  const nextLegId =
+    state.legs.find((leg) => leg.status !== "paid")?.legId ?? null
+  const inspectAfterTakeover =
+    now >= plan.takeoverAt &&
+    canInspectCheckoutSparkSettledSubmittedAttempt(state, nextLegId)
+  if (state.credit && now >= plan.takeoverAt && !inspectAfterTakeover) {
     return blocked(
       "Shopper routing authority moved to the merchant. Do not pay again."
     )
@@ -393,8 +426,9 @@ export function assessCheckoutSparkSettledOrderControl(input: {
         sibling.status === "lookup_unavailable" ||
         sibling.status === "conflicting_evidence")
   )
-  const status =
-    leg.status === "unprepared"
+  const status = inspectAfterTakeover
+    ? "check_payout"
+    : leg.status === "unprepared"
       ? "prepare_payout"
       : leg.status === "prepared"
         ? siblingPossibleSend

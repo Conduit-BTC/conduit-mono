@@ -15,8 +15,12 @@ or physical products with supported fixed or shipping-table fulfillment,
 including supported fiat prices and selected variation children. The frozen
 quote preserves exact signed source revisions, source amounts/currencies,
 conversion snapshots, selected child facts and whole-line shipping allocations.
-Conversion snapshots are buyer-retained quote evidence, not authenticated
-Merchant-signed exchange-rate oracles.
+Fiat admission additionally requires a dedicated signed live-rate snapshot,
+trusted public verification keys and independently confirmed native funding
+creation time. Merchant recovery verifies that original historical rate, not a
+current conversion or buyer timestamp. This supports instant checkout without
+per-order Merchant approval once the separate rate service is activated. See
+[signed live pricing](../specs/universal-checkout-router.md#signed-live-fiat-pricing).
 Historical event-pickup plans remain recoverable, but retired pickup snapshots
 are not admitted as new checkouts after the Event Market model cutover.
 Current Event Market pickup requires a separate signed admission extension.
@@ -28,14 +32,14 @@ routing; supplier allocations require an explicitly published signed product
 revision.
 
 New routed checkout still requires exact signed commerce and recipient
-authority, reachable recipient payment metadata, a valid declared Merchant
+authority, accepted mode-qualified recipient capabilities, a valid declared Merchant
 inbox, and relay acknowledgement of the private recovery package before
 disclosing funding. Failure of these prerequisites cannot downgrade an admitted
 router checkout into another buyer payment.
 
-Buyer foreground routing does not require an online Merchant client. After
-abandonment, eligible recovery runs when the Merchant opens its client after
-the frozen handoff. This capability does not add an always-on executor.
+Buyer foreground routing does not require an online Merchant client. At or
+after the frozen handoff, eligible recovery runs when the Merchant opens its
+client; this does not require inferred abandonment or add an always-on executor.
 Funding is not commerce settlement, and commerce settlement is separate from
 the platform fee. Missing receiving-origin evidence and uncertain attempts
 retain an attention state without replay.
@@ -43,7 +47,7 @@ retain an attention state without replay.
 ## Local exceptions remain separate
 
 Local rehearsal fee destinations, unquoted SDK receive compatibility,
-accelerated timing and the experimental Coinos attribution adapter still
+accelerated timing still
 require the local deployment profile, development mode and their explicit
 loopback opt-ins. A public-profile bundle cannot acquire those exceptions from
 dashboard flags or an imported plan. Legacy Lightning dispatch requires the
@@ -51,6 +55,52 @@ canonical mainnet production fee recipient; native final collection additionally
 requires its frozen Spark destination to remain explicitly approved.
 Historical local-canary records remain
 readable but are not silently rewritten or dispatched.
+
+## Pricing and receiver deployment trust
+
+Receiver qualification and pricing verification are code-owned managed policy,
+not claims supplied by metadata, recovery or a wallet brand. The
+`quantumRouterTrust.preview` and `quantumRouterTrust.production` policies are
+explicit and independent. Market and Merchant must compile the same receiver
+descriptors, pricing URL and public key ring for their selected profile; the
+public configuration digest and artifact verification cover that selection.
+Configuring a preview endpoint, key or receiver does not configure production.
+Managed profiles cannot acquire different trust from dashboard Vite overrides.
+Signet staging clears these settings. Local explicit Vite configuration remains
+separate and does not qualify a live deployment.
+
+Receiver descriptors default empty. An `accepted` descriptor requires deployed
+ordinary private receiving, exact issuance/account retention and verifier
+behavior to be independently qualified; a `pending` descriptor or LUD-21 advertisement is
+insufficient. Every required Merchant/supplier address is checked before
+funding. See [receiver qualification](checkout-spark-recipient-verification-compat.md).
+
+The pricing URL and verification-key ring also default inactive. The standalone
+`apps/anon-zap-signer/wrangler.checkout-pricing.jsonc` uses a distinct rate-only
+runtime-secret key, approved HTTPS origin list and mandatory native limiter.
+Its source configuration has no active route or preview deployment. Provisioning
+the key, enabling the service and publishing its public trust policy require
+explicit maintainer authorization; merging source does none of those actions.
+Retain prior public verification keys for historical frozen quotes even when
+new quote issuance is disabled. Never reuse the anonymous-zap or account key.
+
+Use a distinct preview Worker and pricing secret during qualification. Provision
+the private key directly into that environment's runtime secret storage; it must
+not enter a client bundle, command-line argument, local file or diagnostic. Only
+the public verification key belongs in reviewed profile policy. Production
+activation requires its own explicit service, origin and trust configuration;
+neither a preview deployment nor a source merge performs that step. Retaining a
+historical public key is deliberate policy, not an automatic cross-profile copy.
+
+The mandatory native limiter uses one shared service key without tracking users.
+Its counters are approximate and local to each Cloudflare location, not a strict
+worldwide request quota. Do not treat its configured rate as a billing ceiling.
+See the [Cloudflare rate-limit semantics](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+
+Deterministic SAT, MSAT and BTC quotes do not need the pricing service, but still
+require qualified receiving endpoints. Unconfigured trust fails before funding;
+no localhost flag or direct-pay fallback should bypass that result. Synthetic
+qualification does not imply the reference `@conduit.cash` endpoint is accepted.
 
 ## Native final fee collection
 
@@ -108,7 +158,8 @@ for the distinct expiry, renewal and attribution boundaries.
 
 Build manifests expose `quantumRouterEnabled` alongside the resolved profile
 and public configuration digest, which covers the selected network and resolved
-current/retired treasury policy. Raw treasury destinations are not included in
+current/retired treasury policy and shared receiver/pricing trust. Raw treasury
+destinations, receiver descriptors and rate keys/URLs are not included in
 manifests or diagnostics. Build parsing bounds static-address syntax; offline
 tests and pre-wallet preparation use the pinned SDK to validate checksum,
 identity, canonical encoding and network. Artifact verification checks the
@@ -121,4 +172,6 @@ current-session guards and public dispatch policy checks.
 
 Automated capability and synthetic payment fixtures do not establish live
 provider settlement, signer/device behavior or recovery liveness. Those remain
-maintainer-owned funded validation before release sign-off.
+maintainer-owned funded validation before release sign-off. Current source-only
+pricing and receiver defaults are inactive; real qualification and service
+activation are separate prerequisites for their acceptance tests.

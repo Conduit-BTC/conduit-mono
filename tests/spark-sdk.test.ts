@@ -893,6 +893,12 @@ describe("first-party Spark SDK adapter", () => {
       expiresAt: 1_800_000_300_000,
       receiveQuotePolicy: "same-wallet-feeless-net-v1",
     })
+    expect(request?.providerCreatedAtMs).toBe(1_800_000_000_000)
+    expect(request?.providerExpiresAtMs).toBe(1_800_000_300_000)
+    expect(
+      Object.keys(request ?? {}).includes("providerCreatedAtMs") ||
+        Object.keys(request ?? {}).includes("providerExpiresAtMs")
+    ).toBe(false)
     await expect(client.getFundsState?.()).resolves.toEqual({
       availableSats: 1_000,
       ownedSats: 1_250,
@@ -1269,17 +1275,20 @@ describe("first-party Spark SDK adapter", () => {
       expirySecs: 300,
     })
 
-    expect(request).toMatchObject({
-      createdAt: 1_800_000_000_000,
-      expiresAt: 1_800_000_300_000,
-    })
-    await expect(
-      client.reconcileCheckoutReceive?.(request!)
-    ).resolves.toMatchObject({
-      state: "spendable",
-      providerStatus: "TRANSFER_COMPLETED",
-      failureReason: null,
-    })
+    expect(request?.createdAt).toBe(1_800_000_000_000)
+    expect(request?.expiresAt).toBe(1_800_000_300_000)
+    expect(request?.providerCreatedAtMs).toBe(1_800_000_000_375)
+    expect(request?.providerExpiresAtMs).toBe(1_800_000_300_375)
+    expect(
+      Object.keys(request ?? {}).some(
+        (key) => key === "providerCreatedAtMs" || key === "providerExpiresAtMs"
+      )
+    ).toBe(false)
+    expect(JSON.stringify(request).includes("providerCreatedAtMs")).toBe(false)
+    const reconciled = await client.reconcileCheckoutReceive?.(request!)
+    expect(reconciled?.state).toBe("spendable")
+    expect(reconciled?.providerStatus).toBe("TRANSFER_COMPLETED")
+    expect(reconciled?.failureReason === null).toBe(true)
   })
 
   it("reconciles every receive status without treating unrelated balance as proof", async () => {

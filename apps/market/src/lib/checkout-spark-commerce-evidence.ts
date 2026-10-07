@@ -83,6 +83,11 @@ export function buildCheckoutSparkCommerceEvidence(
   return {
     commerceTotalSats: authority.pricing.totalSats,
     lines,
+    ...(authority.pricingAuthority
+      ? {
+          pricingAuthority: structuredClone(authority.pricingAuthority),
+        }
+      : {}),
     ...(authority.pricing.quote
       ? {
           pricing: {

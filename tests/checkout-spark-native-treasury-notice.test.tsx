@@ -54,6 +54,16 @@ describe("checkout payment approval disclosure", () => {
     expect(route).toMatch(/fixedCheckoutTotalSats=\{routerPrice\.totalSats\}/)
   })
 
+  it("keeps the approval without duplicate gray fee commentary", async () => {
+    const route = await Bun.file("apps/market/src/routes/checkout.tsx").text()
+
+    expect(route.includes("<CheckoutSparkNativeTreasuryNotice")).toBe(true)
+    expect(
+      route.includes("The coordination fee includes the network estimate.")
+    ).toBe(false)
+    expect(route.includes("Shipping is not included until quoted")).toBe(true)
+  })
+
   it("does not turn prepared payment data into another detail panel or completion claim", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkNativeTreasuryNotice

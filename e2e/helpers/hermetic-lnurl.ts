@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto"
+import { verifyEvent, type Event } from "nostr-tools/pure"
 import {
+  encodeLnurl,
   isValidLud16Address,
   normalizeSafeLnurlPayRequestUrl,
 } from "../../packages/core/src/protocol/lightning"
@@ -18,6 +20,8 @@ export interface HermeticLnurlIssuedInvoice {
   preimage: string
   amountSats: number
   feeSats: number
+  /** Runner-memory-only request; never serialize this into test artifacts. */
+  publicZap?: { requestJson: string; request: Event }
 }
 
 export interface HermeticLnurlResponse {
@@ -53,6 +57,12 @@ function jsonResponse(value: unknown): HermeticLnurlResponse {
 export function createHermeticLnurlFixture(input: {
   recipients: readonly {
     lud16: string
+    /** Only explicitly opted-in recipients advertise the synthetic provider. */
+    publicZap?: {
+      recipientPubkey: string
+      receiptPubkey: string
+      content?: string
+    }
     /** Inclusive millisatoshi bounds; requests must still be whole sats. */
     minSendable?: number
     maxSendable?: number
@@ -64,9 +74,14 @@ export function createHermeticLnurlFixture(input: {
   onInvoiceIssued?: (
     invoice: HermeticLnurlIssuedInvoice
   ) => void | Promise<void>
+  /** Provider-owned issuance/settlement registry; caller supplies only its native oracle read. */
+  verification?: {
+    isInvoiceSettled: (paymentRequest: string) => boolean
+  }
 }) {
   const nowSeconds = input.nowSeconds
   const onInvoiceIssued = input.onInvoiceIssued
+  const isInvoiceSettled = input.verification?.isInvoiceSettled
   const expirySeconds = input.expirySeconds ?? 900
   const feeSats = input.feeSats ?? 1
   if (
@@ -104,7 +119,24 @@ export function createHermeticLnurlFixture(input: {
       ["text/plain", "Offline checkout payout"],
       ["text/identifier", lud16],
     ])
-    return { lud16, endpoint, callback, minSendable, maxSendable, metadata }
+    const publicZap = recipient.publicZap
+      ? { ...recipient.publicZap }
+      : undefined
+    if (
+      publicZap &&
+      (!/^[0-9a-f]{64}$/.test(publicZap.recipientPubkey) ||
+        !/^[0-9a-f]{64}$/.test(publicZap.receiptPubkey))
+    )
+      invalid()
+    return {
+      lud16,
+      endpoint,
+      callback,
+      minSendable,
+      maxSendable,
+      metadata,
+      publicZap,
+    }
   })
   if (
     new Set(recipients.map(({ endpoint }) => endpoint)).size !==
@@ -113,6 +145,11 @@ export function createHermeticLnurlFixture(input: {
     invalid()
   let metadataRequests = 0
   let invoicesIssued = 0
+  let verificationRequests = 0
+  const issued = new Map<
+    string,
+    { lud16: string; paymentRequest: string; preimage: string }
+  >()
   const respond: HermeticLnurlResponder = async ({ url: rawUrl, method }) => {
     if (method !== "GET") return null
     let url: URL
@@ -123,6 +160,25 @@ export function createHermeticLnurlFixture(input: {
     }
     if (url.username || url.password || url.hash || url.href !== rawUrl)
       return null
+    const invoiceRecord = issued.get(rawUrl)
+    if (invoiceRecord && isInvoiceSettled) {
+      let settled: boolean
+      try {
+        settled = isInvoiceSettled(invoiceRecord.paymentRequest)
+        if (typeof settled !== "boolean") throw new Error()
+      } catch {
+        throw new Error("Offline LNURL settlement observation unavailable")
+      }
+      verificationRequests += 1
+      return jsonResponse({
+        status: "OK",
+        pr: invoiceRecord.paymentRequest,
+        settled,
+        preimage: settled ? invoiceRecord.preimage : null,
+        // This is the provider's historical account at issuance, not a query claim.
+        recipient: invoiceRecord.lud16,
+      })
+    }
     const metadataRecipient = recipients.find(
       ({ endpoint }) => endpoint === rawUrl
     )
@@ -135,7 +191,10 @@ export function createHermeticLnurlFixture(input: {
         maxSendable,
         metadata,
         tag: "payRequest",
-        allowsNostr: false,
+        allowsNostr: metadataRecipient.publicZap !== undefined,
+        ...(metadataRecipient.publicZap
+          ? { nostrPubkey: metadataRecipient.publicZap.receiptPubkey }
+          : {}),
       })
     }
     const callback = `${url.origin}${url.pathname}`
@@ -143,14 +202,22 @@ export function createHermeticLnurlFixture(input: {
       (candidate) => candidate.callback === callback
     )
     const entries = [...url.searchParams.entries()]
+    const amount = url.searchParams.get("amount")
+    const publicRequest = url.searchParams.get("nostr")
+    const plain = entries.length === 1 && entries[0]![0] === "amount"
+    const publicCandidate =
+      recipient?.publicZap &&
+      entries.length === 3 &&
+      new Set(entries.map(([key]) => key)).size === 3 &&
+      entries.every(([key]) => ["amount", "nostr", "lnurl"].includes(key))
     if (
       !recipient ||
-      entries.length !== 1 ||
-      entries[0]![0] !== "amount" ||
-      !/^[1-9][0-9]*$/.test(entries[0]![1])
+      !amount ||
+      !/^[1-9][0-9]*$/.test(amount) ||
+      (!plain && !publicCandidate)
     )
       return null
-    const amountMsats = Number(entries[0]![1])
+    const amountMsats = Number(amount)
     if (
       !Number.isSafeInteger(amountMsats) ||
       amountMsats % 1_000 !== 0 ||
@@ -158,6 +225,34 @@ export function createHermeticLnurlFixture(input: {
       amountMsats > recipient.maxSendable
     )
       return null
+    let publicZap: HermeticLnurlIssuedInvoice["publicZap"]
+    if (!plain) {
+      if (
+        !publicRequest ||
+        publicRequest.length > 16_384 ||
+        url.searchParams.get("lnurl") !== encodeLnurl(recipient.endpoint)
+      )
+        return null
+      let request: Event
+      try {
+        request = JSON.parse(publicRequest) as Event
+      } catch {
+        return null
+      }
+      if (
+        !verifyEvent(request) ||
+        request.kind !== 9734 ||
+        request.content !== (recipient.publicZap!.content ?? "") ||
+        JSON.stringify(request.tags.filter(([tag]) => tag === "p")) !==
+          JSON.stringify([["p", recipient.publicZap!.recipientPubkey]]) ||
+        JSON.stringify(request.tags.filter(([tag]) => tag === "amount")) !==
+          JSON.stringify([["amount", amount]]) ||
+        JSON.stringify(request.tags.filter(([tag]) => tag === "lnurl")) !==
+          JSON.stringify([["lnurl", encodeLnurl(recipient.endpoint)]])
+      )
+        return null
+      publicZap = { requestJson: publicRequest, request }
+    }
     const createdAt = nowSeconds()
     // BOLT11 timestamps are 35 bits; bound expiry too, rather than wrapping it.
     if (
@@ -180,7 +275,9 @@ export function createHermeticLnurlFixture(input: {
       fields: [
         bolt11PaymentHashField(paymentHash),
         bolt11PaymentSecretField(),
-        bolt11DescriptionHashField(recipient.metadata),
+        bolt11DescriptionHashField(
+          publicZap?.requestJson ?? recipient.metadata
+        ),
         { tag: "x", words: expiryWords },
       ],
     })
@@ -191,15 +288,22 @@ export function createHermeticLnurlFixture(input: {
         preimage,
         amountSats,
         feeSats,
+        ...(publicZap ? { publicZap } : {}),
       })
     } catch {
       throw new Error("Offline LNURL invoice registration failed")
     }
+    const verify = isInvoiceSettled
+      ? `${url.origin}/__hermetic_lnurl/verify/${paymentHash.toString("hex")}`
+      : undefined
+    if (verify)
+      issued.set(verify, { lud16: recipient.lud16, paymentRequest, preimage })
     invoicesIssued += 1
-    return jsonResponse({ pr: paymentRequest })
+    return jsonResponse({ pr: paymentRequest, ...(verify ? { verify } : {}) })
   }
   return {
     respond,
     snapshot: () => ({ metadataRequests, invoicesIssued }),
+    verificationSnapshot: () => ({ verificationRequests }),
   }
 }

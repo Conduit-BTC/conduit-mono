@@ -13,10 +13,14 @@ Price currency and a selected product variation do not justify a direct-pay
 fallback. Resolve the validated final SAT quote and bind the exact signed
 listing revisions, selected variation, quantity and agreed fulfillment and
 shipping. Preserve source price/currency, conversion evidence and selected
-specifications needed to independently validate that quote. A conversion is
-not a merchant-signed exchange-rate oracle. Shipping-table allocations must
-retain their exact signed policy and per-line allocation, not an invented
-unit fee.
+specifications needed to recompute the final SAT amounts and verify exact
+signed source/selection binding. Deterministic SAT, MSAT and BTC prices need no
+fiat service. Fiat conversion requires the separately authenticated live-rate
+snapshot described below; conversion consistency or a buyer-supplied rate alone
+is not economic authority. No per-order online Merchant quote approval is
+required for this supported signed-rate policy.
+Shipping-table allocations must retain their exact signed policy and per-line
+allocation, not an invented unit fee.
 
 Valid existing listings do not require republishing or a router opt-in marker.
 Unmarked listings retain their ordinary merchant allocation; marked supplier
@@ -24,9 +28,12 @@ terms require the exact signed revision. Missing or unsupported authority
 blocks coordinated upfront payment before funding rather than enabling a
 direct recipient payment. Free orders need no funding. Shipping or payment
 that genuinely requires Merchant negotiation remains an order/DM flow outside
-upfront coordination. Event-Market-specific admission, organizer commissions
-and optional public payout activity have separate contracts; this contract
-does not invent their missing authority.
+upfront coordination. Event-Market-specific admission and organizer commissions
+have separate contracts; this contract does not invent their missing authority.
+V1 uses only ordinary private Lightning payments for Merchant and supplier
+payouts. Public routed zaps, identified and anonymous, are deferred. Signed-in
+and guest shoppers use the ordinary funding/routing flow; this does not disable
+non-routed zaps or a provider's global zap capability.
 
 Historical direct-payment orders and funded router plans retain their original
 payment and fulfillment semantics. Hosted activation, implementation coverage,
@@ -39,6 +46,10 @@ facts; this contract is not a release sign-off.
    evidence. Freeze checkout/order identities, exact revisions, quantity,
    pricing and shipping snapshots, ordered obligations, destinations, stable
    outgoing identifiers and fee responsibility.
+   Every required Merchant and supplier Lightning endpoint must satisfy an
+   accepted, mode-qualified receiving contract before wallet creation or
+   funding disclosure. Unsupported endpoints block checkout, not fall back to
+   an uncoordinated direct payment.
 2. Obtain approval of the fixed funding total, best-effort coordination fee
    estimate, payment reserves, recipient fee deductions and Conduit-last
    collection. The coordination allocation is added on top of the authorized
@@ -67,9 +78,62 @@ facts; this contract is not a release sign-off.
    remains bound to that invoice/source and cannot switch rails or pay again.
 
 Funding is credit to the isolated wallet, not proof of any recipient payment.
-Router funding and required settlement do not emit or claim a public NIP-57
-request, receipt or checkout message. A public zap on an actual Merchant
-payout is separate work under [NIP-57](https://github.com/nostr-protocol/nips/blob/master/57.md).
+The funding invoice, supplier payouts and Conduit collection remain private;
+they never become public NIP-57 checkout payments.
+
+## Signed live fiat pricing
+
+Market requests only required currency codes from the dedicated rate service,
+which obtains the existing live price feeds and signs a bounded versioned rate
+snapshot. The service receives no cart, account, order, recipient or invoice.
+Its key is pricing-only, distinct from account and anonymous-zap keys. Market
+authenticates the snapshot against the deployment's public verification ring
+and reauthorizes exact signed products, selected variations and shipping at
+that rate before freezing the quote. Refreshing rate provenance is not a
+material price change; changed SAT amounts or fulfillment terms require a
+new shopper review and cannot silently raise an approved total.
+
+Retain the exact attestation with the immutable quote and private order/recovery
+evidence. Before exposing funding, validate its validity against the fresh
+provider-confirmed funding request creation time, including native timestamp
+precision. Merchant recovery independently anchors the original quote to that
+same exact provider receive, not a shopper timestamp or the recovery clock.
+Expiry of the rate snapshot today does not invalidate a correctly authenticated
+historical quote. Retain old verification keys for saved plans; changing the
+service, key or current rate cannot reprice a funded plan. Missing authority or
+time evidence pauses fiat financial admission without changing its obligations.
+The standalone service and trusted deployment policy require explicit
+activation; dormant code and synthetic tests do not establish live readiness.
+
+## Qualified receiving endpoints
+
+Receiver support is a verified capability contract, not a wallet-brand
+allowlist or the presence of a LUD-21 advertisement. Trusted deployment policy
+qualifies exact pay-request, callback and verifier origins, verifier path and
+historical private-invoice account binding. Fresh metadata identifies the frozen
+Lightning address; invoices bind their description hash to that exact metadata.
+Public receiving capability is not a V1 admission or release dependency.
+
+Retain a portable receiver binding with each exact prepared intent. It is an
+untrusted lookup hint, not a buyer-issued proof. Both clients independently
+read the qualified verifier for the exact invoice, network, amount and hash.
+Receiver settlement additionally requires its settled result and matching
+preimage, separately from exact native Spark debit/transfer proof. An unpaid
+issuance check or matching local origin alone cannot mark a bound leg settled.
+Delayed verification preserves and reconciles the same possible send; it never
+requests a replacement invoice or pays again. Historical attempts lacking
+independent recipient evidence remain paused. See
+[receiver qualification](../knowledge/checkout-spark-recipient-verification-compat.md)
+for qualification, provider retention and live acceptance requirements.
+
+## Deferred public routed zaps
+
+New V1 plans do not authorize public Merchant-payout zaps. Historical public
+plan policies and exact intents retain their original digests and identifiers;
+they are never stripped or rewritten into private payments. Reconcile possible
+sends against exact evidence. Missing public recipient proof, signing authority
+or unsupported renewal stays paused, without another invoice or payment.
+Optional public receipt absence is not proof that a payout was unpaid.
 
 ## Preparation failure and exact continuation
 
@@ -201,7 +265,10 @@ and historical direct/public-zap payments retain their original authority.
 ## Acceptance and remaining validation
 
 - Exact signed SAT/converted-price/variation and shipping evidence produces
-  one approved plan; missing or changed evidence fails before wallet work.
+  one buyer-approved plan; missing or changed evidence fails before wallet work.
+  Fiat evidence includes an authenticated bounded live-rate snapshot and the
+  original provider funding-time anchor; converted-price consistency alone is
+  insufficient.
 - Existing valid unmarked listings work without republishing. Unsupported
   upfront preflight never exposes a direct-recipient fallback.
 - Durable recovery, required relay ACK and current disclosure guards precede
@@ -215,6 +282,10 @@ and historical direct/public-zap payments retain their original authority.
 - Funding adapters, bounded foreground checks, pause/reload, uncertainty,
   closed-attempt renewal, native final proof and retirement retain their
   independent guards and historical compatibility.
+- Every required endpoint is qualified before funding. Supported cold partial
+  recovery independently verifies already-paid recipients, completes remaining
+  obligations and retires only on fresh terminal zero-funds evidence; historical
+  unbound attempts remain unverified rather than inferred from balance.
 - Privacy and guest-scope negatives reject generic, cross-order, wrong-recipient,
   stale and malformed recovery without leaking payment or recovery material.
 
@@ -222,8 +293,10 @@ Tests must distinguish deterministic provider fixtures from deployed-provider
 enforcement, real signer/relay cryptography, physical mobile wallet handoff and
 funded receiving-side confirmation. Fresh uninterrupted funded checkout,
 genuine Merchant fallback/device/inbox QA and cold-hosted attribution of
-already-paid buyer-issued invoices remain explicit acceptance work; no
-provider-specific workaround or imported buyer claim closes that gap. Terms
+already-paid buyer-issued invoices remain explicit acceptance work. Qualification
+must include external mobile payment, Safari termination with the Merchant
+offline during funding, and later Merchant restoration. No synthetic contract
+or imported buyer claim closes that live acceptance gate. Terms
 wording remains subject to a maintainer-owned new legal version and effective
 date. This contract does not edit archived legal releases, merge, deploy or
 waive final human review.

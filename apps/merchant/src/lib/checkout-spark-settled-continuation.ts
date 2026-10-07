@@ -39,6 +39,7 @@ import {
   proveMerchantCheckoutSparkReturnedPayout,
 } from "./checkout-spark-settled-recovery"
 import { assertMerchantCheckoutSparkDispatchPlan } from "./checkout-spark-recovery-policy"
+import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 
 type Store = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -698,6 +699,8 @@ export async function continueMerchantCheckoutSparkSettledPayout(
         receive,
         transfer,
       })
+      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+      assertEligible()
       recordCheckoutSparkSettledCredit(expectedState, {
         requestId: proof.requestId,
         paymentHash: plan.funding.paymentHash,

@@ -695,8 +695,8 @@ export function adaptFirstPartySparkWallet(input: {
       } catch {
         throw new Error("Spark checkout funding invoice is unavailable.")
       }
-      return {
-        ...mapNativeCheckoutReceive({
+      return Object.assign(
+        mapNativeCheckoutReceive({
           native: result,
           walletId: input.walletId,
           network: input.network,
@@ -704,8 +704,8 @@ export function adaptFirstPartySparkWallet(input: {
           grossFundingSats: request.grossFundingSats,
           expirySecs: request.expirySecs,
         }),
-        receiveCanaryPolicy: CHECKOUT_SPARK_LOCAL_UNQUOTED_RECEIVE_POLICY,
-      }
+        { receiveCanaryPolicy: CHECKOUT_SPARK_LOCAL_UNQUOTED_RECEIVE_POLICY }
+      )
     }
     if (request.receiveMode === "ordinary_settled_v3") {
       const receiverIdentityPublicKey = (
@@ -732,8 +732,8 @@ export function adaptFirstPartySparkWallet(input: {
       ) {
         throw new Error("Spark settled checkout wallet identity changed.")
       }
-      return {
-        ...mapNativeCheckoutReceive({
+      return Object.assign(
+        mapNativeCheckoutReceive({
           native: result,
           walletId: input.walletId,
           network: input.network,
@@ -741,9 +741,11 @@ export function adaptFirstPartySparkWallet(input: {
           grossFundingSats: request.grossFundingSats,
           expirySecs: request.expirySecs,
         }),
-        receiveSettledPolicy: "ordinary-exact-credit-v3",
-        receiverIdentityPublicKey,
-      }
+        {
+          receiveSettledPolicy: "ordinary-exact-credit-v3" as const,
+          receiverIdentityPublicKey,
+        }
+      )
     }
     // Query and attest on the same open wallet that creates the invoice.
     // Never estimate a receive fee by opening a second ephemeral wallet.
@@ -814,10 +816,9 @@ export function adaptFirstPartySparkWallet(input: {
       grossFundingSats: request.grossFundingSats,
       expirySecs: request.expirySecs,
     })
-    return {
-      ...received,
-      receiveQuotePolicy: "same-wallet-feeless-net-v1",
-    }
+    return Object.assign(received, {
+      receiveQuotePolicy: "same-wallet-feeless-net-v1" as const,
+    })
   }
 
   const reconcileCheckoutReceive = async (
@@ -1870,7 +1871,7 @@ function mapNativeCheckoutReceive(input: {
   if (network !== "mainnet" && network !== "regtest") {
     throw new Error("Spark returned an unsupported checkout network.")
   }
-  return {
+  const request: SparkCheckoutReceiveRequest = {
     walletId: input.walletId,
     network,
     id,
@@ -1883,6 +1884,13 @@ function mapNativeCheckoutReceive(input: {
     createdAt,
     expiresAt,
   }
+  // Preserve the validated provider precision in RAM without widening any
+  // serialized receive snapshot or restoring a buyer-supplied acceptance time.
+  Object.defineProperties(request, {
+    providerCreatedAtMs: { value: providerCreatedAt },
+    providerExpiresAtMs: { value: providerExpiresAt },
+  })
+  return request
 }
 
 function assertSameCheckoutReceiveRequest(

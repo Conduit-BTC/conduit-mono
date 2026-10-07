@@ -25,6 +25,9 @@ export interface SparkCheckoutReceiveCreditNativeReceive {
     bitcoinNetwork: string
     paymentHash: string
     amount: SparkCheckoutReceiveCreditCurrencyAmount
+    /** Provider-owned invoice times; absent on historical adapter snapshots. */
+    createdAt?: string
+    expiresAt?: string
   }
   transfer?: {
     sparkId?: string
@@ -77,6 +80,27 @@ export interface SparkCheckoutReceiveCreditProof {
   readonly creditedSats: number
 }
 
+export interface SparkCheckoutReceiveFundingTimeAnchor {
+  readonly requestId: string
+  readonly createdAtMs: number
+  readonly expiresAtMs: number
+  readonly invoiceCreatedAtMs: number
+  readonly invoiceExpiresAtMs: number
+}
+
+// A serialized buyer record cannot restore this provider-observed capability.
+const fundingTimeAnchors = new WeakMap<
+  SparkCheckoutReceiveCreditProof,
+  SparkCheckoutReceiveFundingTimeAnchor
+>()
+
+/** Available only on an exact receive proof from fresh native provider evidence. */
+export function getSparkCheckoutReceiveFundingTimeAnchor(
+  proof: SparkCheckoutReceiveCreditProof
+): SparkCheckoutReceiveFundingTimeAnchor | null {
+  return fundingTimeAnchors.get(proof) ?? null
+}
+
 export function proveSparkCheckoutReceiveCredit(
   input: SparkCheckoutReceiveCreditProofInput
 ): SparkCheckoutReceiveCreditProof {
@@ -104,8 +128,8 @@ export function proveSparkCheckoutReceiveCredit(
     }
     return null
   }
-  const proof = (creditedSats: number): SparkCheckoutReceiveCreditProof =>
-    Object.freeze({
+  const proof = (creditedSats: number): SparkCheckoutReceiveCreditProof => {
+    const result = Object.freeze({
       mode: input.expectedReceive.mode,
       requestId: input.expectedRequest.id,
       transferId: input.transfer.id,
@@ -113,6 +137,9 @@ export function proveSparkCheckoutReceiveCredit(
       grossSats: input.expectedRequest.grossFundingSats,
       creditedSats,
     })
+    if (timeAnchor) fundingTimeAnchors.set(result, timeAnchor)
+    return result
+  }
 
   const expectedNetwork = input.expectedRequest.network.toUpperCase()
   const expectedInvoice = normalizeLightningInvoice(
@@ -130,6 +157,7 @@ export function proveSparkCheckoutReceiveCredit(
   const receiveInvoiceSats = parseSats(input.receive.invoice.amount)
   const settlingTransfer = input.receive.transfer
   const settlingTransferSats = parseSats(settlingTransfer?.totalAmount)
+  let timeAnchor: SparkCheckoutReceiveFundingTimeAnchor | null = null
   if (
     !input.expectedRequest.id ||
     input.expectedRequest.id.trim() !== input.expectedRequest.id ||
@@ -168,6 +196,37 @@ export function proveSparkCheckoutReceiveCredit(
     input.transfer.totalValue > expectedGrossSats
   ) {
     return invalidProof()
+  }
+
+  const providerCreatedAt = input.receive.invoice.createdAt
+  const providerExpiresAt = input.receive.invoice.expiresAt
+  if (providerCreatedAt !== undefined || providerExpiresAt !== undefined) {
+    const createdAtMs = Date.parse(providerCreatedAt ?? "")
+    const expiresAtMs = Date.parse(providerExpiresAt ?? "")
+    const invoiceCreatedAtMs =
+      (observedInvoiceMetadata.createdAt ?? NaN) * 1_000
+    const invoiceExpiresAtMs =
+      (observedInvoiceMetadata.expiresAt ?? NaN) * 1_000
+    if (
+      typeof providerCreatedAt !== "string" ||
+      typeof providerExpiresAt !== "string" ||
+      !Number.isSafeInteger(createdAtMs) ||
+      !Number.isSafeInteger(expiresAtMs) ||
+      createdAtMs < 0 ||
+      expiresAtMs <= createdAtMs ||
+      !Number.isSafeInteger(invoiceCreatedAtMs) ||
+      !Number.isSafeInteger(invoiceExpiresAtMs) ||
+      Math.floor(createdAtMs / 1_000) * 1_000 !== invoiceCreatedAtMs ||
+      Math.floor(expiresAtMs / 1_000) * 1_000 !== invoiceExpiresAtMs
+    )
+      return invalidProof()
+    timeAnchor = Object.freeze({
+      requestId: input.expectedRequest.id,
+      createdAtMs,
+      expiresAtMs,
+      invoiceCreatedAtMs,
+      invoiceExpiresAtMs,
+    })
   }
 
   if (input.expectedReceive.mode === "ordinary_v3") {

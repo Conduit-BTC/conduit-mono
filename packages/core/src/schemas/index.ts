@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { checkoutSparkCommercePricingSchema } from "../protocol/checkout-spark-commerce-pricing"
+import { checkoutSparkPricingRateAttestationSchema } from "../protocol/checkout-spark-pricing-authority"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -1058,6 +1059,8 @@ export type OrderItemSchema = z.infer<typeof orderItemSchema>
 export const orderSchema = z
   .object({
     checkoutSparkPricing: checkoutSparkCommercePricingSchema.optional(),
+    checkoutSparkPricingAuthority:
+      checkoutSparkPricingRateAttestationSchema.optional(),
     id: z.string(),
     merchantPubkey: z.string(),
     buyerPubkey: z.string(),

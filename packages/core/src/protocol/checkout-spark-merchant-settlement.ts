@@ -23,6 +23,7 @@ import {
 } from "./checkout-spark-invoice-origin"
 import {
   hasCheckoutSparkInvoiceRecipient,
+  hasCheckoutSparkInvoiceRecipientSettlement,
   type CheckoutSparkInvoiceRecipientRecord,
 } from "./checkout-spark-invoice-recipient"
 
@@ -388,8 +389,16 @@ export function recordCheckoutSparkMerchantPayout(
     finalDebitSats: observation.finalDebitSats,
     finalFeeSats: observation.finalFeeSats,
     observedAt,
-    ...(hasCheckoutSparkInvoiceOrigin(invoiceOrigin, plan, target) ||
-    hasCheckoutSparkInvoiceRecipient(invoiceRecipient, plan, target)
+    ...((
+      target.intent.receiverBinding
+        ? hasCheckoutSparkInvoiceRecipientSettlement(
+            invoiceRecipient,
+            plan,
+            target
+          )
+        : hasCheckoutSparkInvoiceOrigin(invoiceOrigin, plan, target) ||
+          hasCheckoutSparkInvoiceRecipient(invoiceRecipient, plan, target)
+    )
       ? { recipientVerified: true as const }
       : {}),
   }

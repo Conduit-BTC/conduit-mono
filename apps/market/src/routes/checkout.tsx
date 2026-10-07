@@ -31,6 +31,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  BTC_USD_RATE_QUERY_KEY,
   config,
   isQuantumRouterEnabled,
   fetchLnurlPayMetadata,
@@ -254,6 +255,9 @@ import {
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import { buildCheckoutSparkQuoteAuthority } from "../lib/checkout-spark-quote-authority"
+import { buildCheckoutSparkCommerceEvidence } from "../lib/checkout-spark-commerce-evidence"
+import { fetchCheckoutSparkAuthorizedPricing } from "../lib/checkout-spark-authorized-pricing"
+import { getCheckoutSparkRequiredFiatCurrencies } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
 import {
   createCheckoutSparkPurchaseClaimDigest,
@@ -1103,14 +1107,11 @@ function OrderSummary({
                 </span>
               </p>
             )}
-            <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
-              The coordination fee includes the network estimate. Your wallet
-              may charge its own fee. The exact total is saved with your order
-              before payment.
-              {shippingCost.status === "manual"
-                ? " Shipping is not included until quoted by the merchant."
-                : ""}
-            </p>
+            {shippingCost.status === "manual" && (
+              <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+                Shipping is not included until quoted by the merchant.
+              </p>
+            )}
           </>
         ) : (
           <>
@@ -2433,7 +2434,8 @@ function CheckoutPage() {
 
   async function assertCheckoutItemsAvailable(
     checkoutMode: CheckoutTelemetryMode,
-    rateInput: PricingRateInput = btcUsdRateQuery.data ?? null
+    rateInput: PricingRateInput = btcUsdRateQuery.data ?? null,
+    rateEvidenceRefresh?: { reviewedRateInput: PricingRateInput }
   ): Promise<Extract<CheckoutAuthorizationResult, { status: "ok" }>> {
     const refreshResult = await checkoutAvailability.refresh()
     if (refreshResult.decision.status === "unverified") {
@@ -2481,6 +2483,12 @@ function CheckoutPage() {
             shouldContinue: shouldContinueBuyerSession,
           }),
         rateInput,
+        ...(rateEvidenceRefresh
+          ? {
+              allowPricingRateEvidenceRefresh: true,
+              reviewedRateInput: rateEvidenceRefresh.reviewedRateInput,
+            }
+          : {}),
         destination: {
           country: shipping.country,
           subdivision: shipping.state,
@@ -2499,6 +2507,11 @@ function CheckoutPage() {
       throw error
     }
     if (authorization.status === "changed") {
+      if (rateEvidenceRefresh && rateInput && typeof rateInput === "object") {
+        // Show the authenticated price that needs review on the next render.
+        // This display refresh does not authorize a payment or save a quote.
+        queryClient.setQueryData(BTC_USD_RATE_QUERY_KEY, rateInput)
+      }
       void queryClient.invalidateQueries({
         queryKey: ["canonicalShippingOptions"],
       })
@@ -3045,8 +3058,9 @@ function CheckoutPage() {
           if (!isQuantumRouterEnabled()) {
             throw new Error("Quantum Router is unavailable in this deployment.")
           }
-          const rateInput = await getFreshPricingRateInput(checkoutItems)
-          const authorization = await assertCheckoutItemsAvailable(
+          const reviewedRateInput = btcUsdRateQuery.data ?? null
+          let rateInput = await getFreshPricingRateInput(checkoutItems)
+          let authorization = await assertCheckoutItemsAvailable(
             "private_checkout",
             rateInput
           )
@@ -3055,10 +3069,32 @@ function CheckoutPage() {
               "Buyer session or router availability changed before preparation."
             )
           }
-          const quoteAuthority = buildCheckoutSparkQuoteAuthority({
+          let quoteAuthority = buildCheckoutSparkQuoteAuthority({
             authorization,
             rateInput,
           })
+          const fiatCurrencies = getCheckoutSparkRequiredFiatCurrencies(
+            buildCheckoutSparkCommerceEvidence(quoteAuthority)
+          )
+          if (fiatCurrencies.length) {
+            const authorizedPricing = await fetchCheckoutSparkAuthorizedPricing(
+              {
+                currencies: fiatCurrencies,
+                shouldContinue: canContinueSettledPreparation,
+              }
+            )
+            rateInput = authorizedPricing.pricing.rate
+            authorization = await assertCheckoutItemsAvailable(
+              "private_checkout",
+              rateInput,
+              { reviewedRateInput }
+            )
+            quoteAuthority = buildCheckoutSparkQuoteAuthority({
+              authorization,
+              rateInput,
+              pricingAuthority: authorizedPricing.pricingAuthority,
+            })
+          }
           const purchaseClaim = await cart.capturePurchase(
             selectedPurchase.id,
             rawCheckoutItems
@@ -4342,9 +4378,27 @@ function CheckoutPage() {
       return
     }
     if (routerBranchTargetCheckout) {
+      // The HUD authorized the commerce estimate, not this route's final gross
+      // funding total. Consume it as review intent only; never auto-fund.
+      const generationChanged =
+        autoZapAuthorizationGenerationRef.current !== authGeneration
+      const rejection = getHudZapAuthorizationRejection(autoZapAuthorization, {
+        merchantPubkey: selectedMerchant,
+        purchaseId: selectedPurchase?.id,
+        buyerPubkey: signedBuyerPubkey,
+        items: checkoutItems,
+        totalMsats:
+          pricingPreview.status === "ok" ? pricingPreview.totalMsats : null,
+      })
       autoZapAuthorizationGenerationRef.current = null
       setAutoZapAuthorization(null)
-      setError("Direct zap out is disabled for this routed purchase.")
+      autoZapStartedRef.current = true
+      if (!signerConnected || generationChanged || rejection) {
+        setError("Zap out details changed. Review checkout before paying.")
+      } else {
+        setError(null)
+      }
+      setStep("payment")
       return
     }
     if (!signerConnected) {
@@ -5274,13 +5328,11 @@ function CheckoutPage() {
                     className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm"
                   >
                     <div className="font-medium text-[var(--text-primary)]">
-                      Private checkout
+                      Payment
                     </div>
                     <p className="mt-1 leading-6 text-[var(--text-secondary)]">
-                      Create one private order for this purchase, then review
-                      and approve payment in Orders. Once funding is verified,
-                      the saved split payments run automatically. Nothing is
-                      charged here and no public zap is created.
+                      Review and approve the full order total next. Your order
+                      details stay private.
                     </p>
                   </div>
                 ) : (

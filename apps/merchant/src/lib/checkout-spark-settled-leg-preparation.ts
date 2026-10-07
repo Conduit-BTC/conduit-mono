@@ -18,6 +18,7 @@ import {
   recordCheckoutSparkSettledLegStatus,
   restoreCheckoutSparkMerchantOrderWitness,
   restoreCheckoutSparkSettledReconciliation,
+  resolveCheckoutSparkLnurlInvoice,
   retryMerchantCheckoutSparkProgress,
   runWithCheckoutSparkMerchantRecoveryLock,
   withMerchantCheckoutSparkRecovery,
@@ -41,6 +42,7 @@ import {
   proveMerchantCheckoutSparkReturnedPayout,
 } from "./checkout-spark-settled-recovery"
 import { assertMerchantCheckoutSparkDispatchPlan } from "./checkout-spark-recovery-policy"
+import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 
 type Store = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -410,6 +412,8 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
         receive,
         transfer,
       })
+      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+      assertEligible()
       current = await load()
       const credited = recordCheckoutSparkSettledCredit(current.state, {
         requestId: proof.requestId,
@@ -596,7 +600,21 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
         },
         {
           repository,
-          resolveInvoice: dependencies.resolveInvoice,
+          async resolveInvoice(request, context) {
+            if (
+              context.state.plan.merchantPublicZapPolicy &&
+              context.recipient.kind === "merchant"
+            ) {
+              // Retain/reconcile an existing public intent above, but never
+              // silently replace its frozen authority with a new private one.
+              throw new Error(
+                "Historical public routed payments require exact-attempt recovery."
+              )
+            }
+            return dependencies.resolveInvoice
+              ? dependencies.resolveInvoice(request, context)
+              : resolveCheckoutSparkLnurlInvoice(request)
+          },
           estimateFee: ({ paymentRequest }) =>
             wallet.estimateLightningFee!({ paymentRequest }),
           assertAuthority: assertPreparedState,

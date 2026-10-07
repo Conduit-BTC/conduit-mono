@@ -1,6 +1,16 @@
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
+import {
+  checkoutSparkPublicTrustDigest,
+  type CheckoutSparkPublicTrustConfiguration,
+} from "../../packages/core/src/checkout-spark-deployment-trust"
+import {
+  parseCheckoutSparkReceiverContracts,
+  type CheckoutSparkReceiverContract,
+} from "../../packages/core/src/protocol/checkout-spark-receiver-capability"
+import { parseCheckoutSparkPricingConfiguration } from "../../packages/core/src/protocol/checkout-spark-pricing-config"
+import { parseCheckoutSparkPricingAuthorityPublicKeys } from "../../packages/core/src/protocol/checkout-spark-pricing-authority"
 
 export type DeploymentProfileName = "preview" | "production" | "staging"
 
@@ -22,12 +32,19 @@ export interface PublicDeploymentTreasury {
   retiredAddresses: string[]
 }
 
+interface ManagedRouterTrustPolicy {
+  receiverContracts: CheckoutSparkReceiverContract[]
+  pricingUrl: string | null
+  pricingPublicKeys: Array<{ keyId: string; publicKey: string }>
+}
+
 interface PagesProfilesFile {
   schemaVersion: number
   quantumRouterTreasury: {
     mainnetAddress: string | null
     retiredMainnetAddresses: string[]
   }
+  quantumRouterTrust: Record<"preview" | "production", ManagedRouterTrustPolicy>
   apps: Record<
     string,
     {
@@ -46,6 +63,8 @@ export interface ResolvedDeploymentProfile {
   lightningNetwork: string
   publicFeatures: PublicDeploymentFeatures
   quantumRouterTreasury: PublicDeploymentTreasury
+  quantumRouterTrust: CheckoutSparkPublicTrustConfiguration
+  quantumRouterTrustDigest: string
   configDigest: string
 }
 
@@ -147,6 +166,61 @@ function assertProfile(
   }
 }
 
+function assertRouterTrustConfiguration(
+  value: unknown
+): asserts value is ManagedRouterTrustPolicy {
+  const invalid = (): never => {
+    throw new Error("Pages deployment router trust configuration is invalid.")
+  }
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 3 ||
+    !Array.isArray(value.receiverContracts) ||
+    (value.pricingUrl !== null && typeof value.pricingUrl !== "string") ||
+    !Array.isArray(value.pricingPublicKeys) ||
+    value.pricingPublicKeys.length > 16
+  )
+    invalid()
+  try {
+    parseCheckoutSparkReceiverContracts(value.receiverContracts)
+    const ring = value.pricingPublicKeys
+      .map((entry: unknown) => {
+        if (
+          !isRecord(entry) ||
+          Object.keys(entry).length !== 2 ||
+          typeof entry.keyId !== "string" ||
+          typeof entry.publicKey !== "string"
+        )
+          return invalid()
+        return `${entry.keyId}:${entry.publicKey}`
+      })
+      .join(",")
+    if (ring && !parseCheckoutSparkPricingAuthorityPublicKeys(ring)) invalid()
+    if (
+      value.pricingUrl !== null &&
+      !parseCheckoutSparkPricingConfiguration({
+        url: value.pricingUrl as string,
+        publicKeys: ring,
+      })
+    )
+      invalid()
+  } catch {
+    invalid()
+  }
+}
+
+function assertRouterTrustProfiles(
+  value: unknown
+): asserts value is PagesProfilesFile["quantumRouterTrust"] {
+  if (!isRecord(value) || Object.keys(value).length !== 2) {
+    throw new Error("Pages deployment router trust profiles are invalid.")
+  }
+  // Each release boundary is explicit. There is no shared-policy fallback.
+  for (const name of ["preview", "production"] as const) {
+    assertRouterTrustConfiguration(value[name])
+  }
+}
+
 export function parsePagesProfiles(value: unknown): PagesProfilesFile {
   if (!isRecord(value) || value.schemaVersion !== 1) {
     throw new Error("Unsupported Pages deployment profile schema.")
@@ -155,6 +229,7 @@ export function parsePagesProfiles(value: unknown): PagesProfilesFile {
     throw new Error("Pages deployment profiles must define apps and profiles.")
   }
   assertTreasuryConfiguration(value.quantumRouterTreasury)
+  assertRouterTrustProfiles(value.quantumRouterTrust)
   for (const [name, app] of Object.entries(value.apps)) {
     if (
       !isRecord(app) ||
@@ -264,12 +339,43 @@ export function resolveDeploymentProfile(
             .map((address) => address.trim())
             .filter(Boolean) ?? [],
       },
+      quantumRouterTrust: {
+        receiverContracts:
+          env.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS?.trim() || "",
+        pricingUrl: env.VITE_CHECKOUT_SPARK_PRICING_URL?.trim() || "",
+        pricingPublicKeys:
+          env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?.trim() || "",
+      },
     }
-    return { name, ...local, configDigest: digestPublicConfig(local) }
+    return {
+      name,
+      ...local,
+      quantumRouterTrustDigest: checkoutSparkPublicTrustDigest(
+        local.quantumRouterTrust
+      ),
+      configDigest: digestPublicConfig(local),
+    }
   }
 
   const configuration = parsePagesProfiles(pagesProfiles)
   const profile = configuration.profiles[name]
+  // Staging never imports mainnet trust, even if its network changes later.
+  const routerTrust =
+    name !== "staging" && profile.lightningNetwork === "mainnet"
+      ? configuration.quantumRouterTrust[name]
+      : null
+  const pricingPublicKeys = routerTrust
+    ? [...routerTrust.pricingPublicKeys]
+        .sort((a, b) => a.keyId.localeCompare(b.keyId))
+        .map(({ keyId, publicKey }) => `${keyId}:${publicKey}`)
+        .join(",")
+    : ""
+  const pricingUrl = routerTrust
+    ? (parseCheckoutSparkPricingConfiguration({
+        url: routerTrust.pricingUrl ?? undefined,
+        publicKeys: pricingPublicKeys,
+      })?.url ?? "")
+    : ""
   const publicConfig = {
     releaseChannel: profile.releaseChannel,
     lightningNetwork: profile.lightningNetwork,
@@ -285,10 +391,22 @@ export function resolveDeploymentProfile(
           ? [...configuration.quantumRouterTreasury.retiredMainnetAddresses]
           : [],
     },
+    quantumRouterTrust: {
+      receiverContracts: routerTrust?.receiverContracts.length
+        ? JSON.stringify(
+            parseCheckoutSparkReceiverContracts(routerTrust.receiverContracts)
+          )
+        : "",
+      pricingUrl,
+      pricingPublicKeys,
+    },
   }
   return {
     name,
     ...publicConfig,
+    quantumRouterTrustDigest: checkoutSparkPublicTrustDigest(
+      publicConfig.quantumRouterTrust
+    ),
     configDigest: digestPublicConfig(publicConfig),
   }
 }

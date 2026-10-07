@@ -11,6 +11,8 @@ import {
 import { createFileRoute } from "@tanstack/react-router"
 import {
   fetchLnurlPayMetadata,
+  isQuantumRouterEnabled,
+  observeCheckoutSparkReceiverCapability,
   isValidLud16Address,
   parseNwcUri,
   useAuth,
@@ -70,12 +72,15 @@ function PaymentsPage() {
   const [lud16Draft, setLud16Draft] = useState("")
   const [lud16Error, setLud16Error] = useState<string | null>(null)
   const [lud16SaveSucceeded, setLud16SaveSucceeded] = useState(false)
+  const [isCheckingLud16, setIsCheckingLud16] = useState(false)
   const [addressCheck, setAddressCheck] = useState<
     | { status: "idle" }
     | { status: "checking" }
     | { status: "invalid" }
     | { status: "lnurl_ready" }
     | { status: "zap_supported" }
+    | { status: "router_ready" }
+    | { status: "router_unsupported" }
     | { status: "unverified"; message: string }
   >({ status: "idle" })
 
@@ -94,8 +99,29 @@ function PaymentsPage() {
     setAddressCheck({ status: "checking" })
 
     fetchLnurlPayMetadata(lud16)
-      .then((metadata) => {
+      .then(async (metadata) => {
         if (cancelled) return
+        if (isQuantumRouterEnabled()) {
+          const result = await observeCheckoutSparkReceiverCapability(
+            {
+              lud16,
+              mode: "private",
+              assertCurrent: () => {
+                if (cancelled || authGenerationRef.current !== authGeneration)
+                  throw new Error("Payment settings changed.")
+              },
+            },
+            { fetchMetadata: async () => metadata }
+          )
+          if (cancelled) return
+          setAddressCheck({
+            status:
+              result.status === "supported"
+                ? "router_ready"
+                : "router_unsupported",
+          })
+          return
+        }
         setAddressCheck({
           status: metadata.allowsNostr ? "zap_supported" : "lnurl_ready",
         })
@@ -114,7 +140,7 @@ function PaymentsPage() {
     return () => {
       cancelled = true
     }
-  }, [lud16])
+  }, [lud16, authGeneration])
 
   const hasLud16Changes = lud16Draft.trim() !== lud16
   const lud16SaveStatus = isSavingLud16
@@ -135,7 +161,7 @@ function PaymentsPage() {
 
   async function saveLud16(e: React.FormEvent) {
     e.preventDefault()
-    if (!profile || isSavingLud16) return
+    if (!profile || isSavingLud16 || isCheckingLud16) return
     const nextLud16 = lud16Draft.trim()
     if (nextLud16 && !isValidLud16Address(nextLud16)) {
       setLud16Error("Enter a Lightning Address like you@example.com.")
@@ -144,7 +170,24 @@ function PaymentsPage() {
     setLud16Error(null)
     if (!hasLud16Changes) return
     setLud16SaveSucceeded(false)
+    setIsCheckingLud16(true)
     try {
+      if (nextLud16 && isQuantumRouterEnabled()) {
+        const result = await observeCheckoutSparkReceiverCapability({
+          lud16: nextLud16,
+          mode: "private",
+          assertCurrent: () => {
+            if (authGenerationRef.current !== authGeneration)
+              throw new Error("Payment settings changed.")
+          },
+        })
+        if (result.status !== "supported") {
+          setLud16Error(
+            "This address is not ready for checkout routing. Use a compatible receiving wallet."
+          )
+          return
+        }
+      }
       await updateMutation.mutateAsync(
         profileFormToUpdatePayload(
           {
@@ -159,11 +202,14 @@ function PaymentsPage() {
       void profileQuery.refetch()
     } catch {
       // The mutation error is rendered below the input.
+      setLud16Error("Could not confirm and save this address. Try again.")
+    } finally {
+      setIsCheckingLud16(false)
     }
   }
 
   function cancelEditLud16() {
-    if (isSavingLud16) return
+    if (isSavingLud16 || isCheckingLud16) return
     setEditingLud16(false)
     setLud16Draft(profile?.lud16 ?? "")
     setLud16Error(null)
@@ -171,6 +217,12 @@ function PaymentsPage() {
   }
 
   function getBusyStatus() {
+    if (isCheckingLud16 && !isSavingLud16) {
+      return {
+        title: "Checking compatibility",
+        message: "Confirming this wallet supports checkout routing.",
+      }
+    }
     if (isSavingLud16) {
       return {
         title: "Waiting for signer",
@@ -269,7 +321,7 @@ function PaymentsPage() {
                           variant="outline"
                           size="sm"
                           onClick={startEditLud16}
-                          disabled={isSavingLud16}
+                          disabled={isSavingLud16 || isCheckingLud16}
                         >
                           {profile?.lud16 ? "Change" : "Add"}
                         </Button>
@@ -305,16 +357,24 @@ function PaymentsPage() {
                               value={lud16Draft}
                               onChange={(e) => setLud16Draft(e.target.value)}
                               placeholder="you@wallet-provider.com"
-                              disabled={isSavingLud16}
+                              disabled={isSavingLud16 || isCheckingLud16}
                               autoFocus
                             />
                             <p className="text-xs text-[var(--text-muted)]">
-                              e.g.{" "}
-                              <span className="font-mono">
-                                satoshi@strike.me
-                              </span>{" "}
-                              or{" "}
-                              <span className="font-mono">you@getalby.com</span>
+                              {isQuantumRouterEnabled() ? (
+                                "Use a wallet compatible with checkout routing."
+                              ) : (
+                                <>
+                                  e.g.{" "}
+                                  <span className="font-mono">
+                                    satoshi@strike.me
+                                  </span>{" "}
+                                  or{" "}
+                                  <span className="font-mono">
+                                    you@getalby.com
+                                  </span>
+                                </>
+                              )}
                             </p>
                           </div>
                           {updateMutation.error && (
@@ -331,12 +391,18 @@ function PaymentsPage() {
                             <Button
                               type="submit"
                               size="sm"
-                              disabled={isSavingLud16 || !hasLud16Changes}
+                              disabled={
+                                isSavingLud16 ||
+                                isCheckingLud16 ||
+                                !hasLud16Changes
+                              }
                             >
-                              {isSavingLud16 ? (
+                              {isSavingLud16 || isCheckingLud16 ? (
                                 <span className="inline-flex items-center gap-2">
                                   <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                                  Waiting for signer
+                                  {isCheckingLud16 && !isSavingLud16
+                                    ? "Checking compatibility"
+                                    : "Waiting for signer"}
                                 </span>
                               ) : (
                                 "Save changes"
@@ -347,7 +413,7 @@ function PaymentsPage() {
                               variant="ghost"
                               size="sm"
                               onClick={cancelEditLud16}
-                              disabled={isSavingLud16}
+                              disabled={isSavingLud16 || isCheckingLud16}
                             >
                               Cancel
                             </Button>
@@ -674,6 +740,8 @@ function LightningAddressStatus({
     | { status: "invalid" }
     | { status: "lnurl_ready" }
     | { status: "zap_supported" }
+    | { status: "router_ready" }
+    | { status: "router_unsupported" }
     | { status: "unverified"; message: string }
 }) {
   if (check.status === "idle") return null
@@ -698,6 +766,27 @@ function LightningAddressStatus({
         </div>
         <p className="mt-1 text-[var(--text-secondary)]">
           Use a valid Lightning Address such as you@example.com.
+        </p>
+      </div>
+    )
+  }
+
+  if (
+    check.status === "router_ready" ||
+    check.status === "router_unsupported"
+  ) {
+    const ready = check.status === "router_ready"
+    return (
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6">
+        <div className="font-semibold text-[var(--text-primary)]">
+          {ready
+            ? "Checkout routing ready"
+            : "Checkout compatibility unavailable"}
+        </div>
+        <p className="mt-1 text-[var(--text-secondary)]">
+          {ready
+            ? "This receiving wallet supports checkout payment verification and recovery."
+            : "Use a compatible receiving wallet before accepting routed checkout payments."}
         </p>
       </div>
     )

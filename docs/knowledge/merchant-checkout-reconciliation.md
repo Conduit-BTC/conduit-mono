@@ -212,21 +212,23 @@ retains the minimal attribution result with settlement facts; it does not
 invent missing evidence from a zero balance or imported paid status.
 
 Local origin is device-local assurance, not portable recipient attestation.
-Merchant has a named, local-rehearsal-only mainnet Coinos compatibility adapter: a bounded
-credentialless request to Coinos's fixed canonical invoice endpoint must match
-the exact BOLT11, payment hash, amount and receiving user for the frozen address.
-An opaque runtime proof permits digest-only local persistence. Imported recovery
-messages cannot supply this proof. The record can attribute an already observed
-payment or authorize its preserved unpaid invoice, but never establish Spark
-settlement or replace an attempt. See [the adapter's scope and rollout limits](checkout-spark-recipient-verification-compat.md).
+New qualified intents retain a portable receiver binding and require fresh
+independent verification against deployment-qualified endpoints. Private
+metadata-hash and public provider-recipient modes have separate account-proof
+requirements. Exact invoice association and receiver settlement are independent
+of native Spark debit proof. An opaque runtime proof permits digest-only local
+persistence; imported recovery hints cannot manufacture it. An unpaid issuance
+result or local origin alone cannot mark a bound recipient settled. See
+[receiver qualification and acceptance](checkout-spark-recipient-verification-compat.md).
 
 Transient attribution outages retry while exact funding/history observations
 continue. A verified required commerce payment remains terminal even if the
 optional fee's recipient is unverified; that fee-only exception remains visible
 without offering repayment. Unsupported receiving services still require an
 independently authenticated recipient/provider binding. Expired or uncertain
-intents are not silently replaced. No new public zap, application ACK, wallet
-requirement or generic portable receipt protocol is introduced.
+intents are not silently replaced. Required receiver compatibility is checked
+before funding; historical unbound imported invoices remain unverified. This
+does not introduce an application ACK or generic portable receipt protocol.
 
 Sources: [LUD-16 Lightning addresses](https://github.com/lnurl/luds/blob/luds/16.md),
 [LUD-06 LNURL-pay](https://github.com/lnurl/luds/blob/luds/06.md), and
@@ -352,9 +354,13 @@ history still block retirement.
 
 Merchant recovery independently verifies the exact signed listing and payout
 profile revisions referenced by the frozen plan before handing recovery data to
-a wallet adapter. The shared validator re-derives the supported SAT digital
-commerce allocations and matches each merchant or supplier destination to its
-original signed profile. A newer profile or listing must not redirect an older
+a wallet adapter. The shared validator reconstructs the supported deterministic
+or signed-rate pricing, selected variations and fulfillment terms, re-derives
+the commerce allocations, and matches each merchant or supplier destination to
+its original signed profile. Fiat financial acceptance additionally verifies
+the frozen rate attestation against the original native provider funding
+creation time and retained verification keys, not the recovery clock. A newer
+profile or listing must not redirect an older
 order. New initial settled recovery packages include a canonical copy of these
 original signed events inside the existing merchant-only encrypted handoff.
 Products come from the frozen verified quote; payout profiles come from the

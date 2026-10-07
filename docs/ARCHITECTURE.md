@@ -105,11 +105,14 @@ Market and Merchant durable account authentication is external-signer-only. The
 repo policy allows NIP-07 and NIP-46 external signers. Guest checkout may create
 a temporary order-scoped browser key, and an NIP-46 connection may use an
 encrypted browser-local client key; neither is a Conduit-custodied user account
-key. The only approved server-side private-key exception is the Anon Conduit
-Shopper public zap signer described in `docs/specs/protocol.md`; it is limited
-to authenticated, merchant-authorized checkout zap requests and fixed-scope
-Conduit.Market project tip zap requests created by the trusted server boundary.
-It does not authorize user key custody or general-purpose event signing.
+key. The approved server-side signing exceptions in `docs/specs/protocol.md`
+are the Anon Conduit Shopper public zap signer and a separate pricing-only
+live-rate attestation signer. The former is limited to authenticated,
+merchant-authorized checkout zap requests and fixed-scope Conduit.Market
+project tip zap requests created by the trusted server boundary. The latter
+signs currency-rate snapshots only; it cannot sign Nostr events or authorize
+payments. Neither permits user key custody or general-purpose signing, and
+the pricing exception does not itself authorize key creation or deployment.
 
 ### Product Discovery
 
