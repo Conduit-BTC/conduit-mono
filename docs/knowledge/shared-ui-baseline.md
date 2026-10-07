@@ -224,3 +224,13 @@ status containment and select viewport limits. Enlarged dialogs and sheets scrol
 vertically without horizontal overflow. Escape restores focus; empty form submission
 still focuses the invalid required field. These checks do not establish physical-device,
 screen-reader or native browser-zoom conformance.
+
+## Scoped app composition evidence
+
+The integrated foundation is also exercised on the real Merchant Events directory
+and Market Portable Wallet setup/restore dialog. The [desktop Events reference](images/shared-ui/events-desktop-night.png)
+and [phone wallet restore reference](images/shared-ui/wallet-restore-phone-day.png)
+show the shared page and field recipes. Account identifiers and wallet fields are
+masked. Merchant authentication is synthetic; these images do not establish live
+signer recovery, cryptographic delivery or funded wallet behavior. Physical-device,
+screen-reader, native zoom and reduced-motion validation remains separate.
