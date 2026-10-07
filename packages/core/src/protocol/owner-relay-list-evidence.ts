@@ -840,6 +840,13 @@ function applyRepositoryReconciliation(
   }
 }
 
+class OwnerRelayListEvidenceUnavailableError extends Error {
+  constructor() {
+    super("Retained owner relay-list verification is unavailable")
+    this.name = "OwnerRelayListEvidenceUnavailableError"
+  }
+}
+
 async function admitOwnerRecord(
   record: OwnerRelayListEvidenceRecord | undefined
 ): Promise<OwnerRelayListEvidenceRecord | undefined> {
@@ -847,6 +854,9 @@ async function admitOwnerRecord(
   const admitted = cloneRecord(record)
   const admit = async (event: SignedPublicNostrEvent) => {
     const result = await admitPublicEvent(event)
+    if (result.status === "unavailable" || result.status === "cancelled") {
+      throw new OwnerRelayListEvidenceUnavailableError()
+    }
     if (result.status !== "verified") {
       throw new Error("Retained owner relay-list evidence is not verified")
     }
@@ -874,7 +884,8 @@ function createDexieRepository(): OwnerRelayListEvidenceRepository {
       const record = await db.ownerRelayListEvidence.get(pubkey)
       try {
         return await admitOwnerRecord(record)
-      } catch {
+      } catch (error) {
+        if (error instanceof OwnerRelayListEvidenceUnavailableError) throw error
         return undefined
       }
     },
@@ -887,7 +898,8 @@ function createDexieRepository(): OwnerRelayListEvidenceRepository {
       let admittedBefore: OwnerRelayListEvidenceRecord | undefined
       try {
         admittedBefore = await admitOwnerRecord(before)
-      } catch {
+      } catch (error) {
+        if (error instanceof OwnerRelayListEvidenceUnavailableError) throw error
         admittedBefore = undefined
       }
       return await db.transaction("rw", db.ownerRelayListEvidence, async () => {
@@ -920,7 +932,8 @@ export function createInMemoryOwnerRelayListEvidenceRepository(
       const record = records.get(pubkey)
       try {
         return await admitOwnerRecord(record)
-      } catch {
+      } catch (error) {
+        if (error instanceof OwnerRelayListEvidenceUnavailableError) throw error
         return undefined
       }
     },
@@ -932,7 +945,8 @@ export function createInMemoryOwnerRelayListEvidenceRepository(
       let admittedBefore: OwnerRelayListEvidenceRecord | undefined
       try {
         admittedBefore = await admitOwnerRecord(records.get(pubkey))
-      } catch {
+      } catch (error) {
+        if (error instanceof OwnerRelayListEvidenceUnavailableError) throw error
         admittedBefore = undefined
       }
       const record = applyRepositoryReconciliation(admittedBefore, input)
@@ -1081,7 +1095,8 @@ export async function reconcileOwnerRelayListEvidence(
     try {
       const durable = await repository.reconcile(durableInput)
       record = baseline ? mergeEvidenceRecords(baseline, durable) : durable
-    } catch {
+    } catch (error) {
+      if (error instanceof OwnerRelayListEvidenceUnavailableError) throw error
       record = applyOwnerRelayListEvidenceReconciliation(baseline, input)
     }
     processEvidence.set(normalized, cloneRecord(record))
@@ -1408,20 +1423,43 @@ export async function resolveOwnerRelayList(
           : undefined,
     })
   )
-  const record = await reconcileOwnerRelayListEvidence(
-    {
-      pubkey: normalized,
-      observations,
-      lookup: {
-        observedAt,
-        coverage,
-        hadEvent: Boolean(newest),
-        eventId: newest?.id,
+  let record: OwnerRelayListEvidenceRecord
+  try {
+    record = await reconcileOwnerRelayListEvidence(
+      {
+        pubkey: normalized,
+        observations,
+        lookup: {
+          observedAt,
+          coverage,
+          hadEvent: Boolean(newest),
+          eventId: newest?.id,
+        },
+        cachedAt: observedAt,
       },
-      cachedAt: observedAt,
-    },
-    options.evidenceRepository
-  )
+      options.evidenceRepository
+    )
+  } catch (error) {
+    if (!(error instanceof OwnerRelayListEvidenceUnavailableError)) throw error
+    if (options.signal?.aborted || options.shouldContinue?.() === false)
+      throw error
+    // Inconclusive admission cannot authorize replacing the durable checkpoint.
+    return resolutionFromRecord(
+      {
+        pubkey: normalized,
+        latestLookup: { observedAt, coverage: "unavailable", hadEvent: false },
+        cachedAt: observedAt,
+      },
+      {
+        coverage: "unavailable",
+        attemptedRelayUrls: [...result.attemptedRelayUrls],
+        successfulRelayUrls: [...result.successfulRelayUrls],
+        failedRelayUrls: [...result.failedRelayUrls],
+        cappedRelayUrls: [...(result.cappedRelayUrls ?? [])],
+        eventSourceRelayUrls: [],
+      }
+    )
+  }
   const observation: OwnerRelayListObservation = {
     coverage,
     attemptedRelayUrls: [...result.attemptedRelayUrls],

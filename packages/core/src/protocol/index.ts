@@ -185,3 +185,12 @@ export {
   type VerifiedNostrEvent,
   type PublicEventAdmission,
 } from "./verified-public-event"
+export * from "./commerce-inbox"
+export * from "./commerce-message-codec"
+export * from "./private-file-message"
+export * from "./protected-inbox-history"
+export * from "./private-message-delivery"
+export * from "./commerce-wire"
+export * from "./inbox-send"
+export * from "./private-file-upload"
+export * from "./private-message-capabilities"

@@ -21,7 +21,6 @@ import {
   EVENT_KINDS,
   formatNpub,
   formatPubkey,
-  getNdk,
   getAccountSigner,
   getOrderLifecycle,
   getProductImageCandidates,
@@ -38,8 +37,9 @@ import {
   replaceOrderPaymentTarget,
   retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
-  selectProtectedReadRows,
   useAuth,
+  useCommerceInbox,
+  type PrivateMessageEvent,
   useProfile,
   useProfiles,
   type CommercePriceLike,
@@ -49,8 +49,8 @@ import {
   type ShopperPriceDisplayOptions,
 } from "@conduit/core"
 import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  CommerceInboxRecovery,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -103,11 +103,7 @@ import {
   SparkFeeApprovalDialog,
   useSparkFeeApproval,
 } from "../components/SparkFeeApprovalDialog"
-import {
-  fetchBuyerConversations,
-  fetchCachedBuyerConversations,
-  type BuyerConversation,
-} from "../lib/orderConversations"
+import { type BuyerConversation } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets } from "../hooks/useWallets"
@@ -182,7 +178,10 @@ import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
-import { publishBuyerOrderMessage } from "../lib/order-publish"
+import {
+  getDeliveryNotice,
+  publishBuyerOrderMessage,
+} from "../lib/order-publish"
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
@@ -676,6 +675,7 @@ function OrderDetail({
   authenticatedPubkey,
   paymentFocused = false,
   signerReady,
+  historyIncomplete,
 }: {
   row: OrderRow
   buyerPubkey: string
@@ -684,6 +684,7 @@ function OrderDetail({
   authenticatedPubkey?: string | null
   paymentFocused?: boolean
   signerReady: boolean
+  historyIncomplete: boolean
 }) {
   const { vm, headerStatus } = row
   const currentViewRef = useRef(vm)
@@ -763,6 +764,12 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
+  const [replyNotice, setReplyNotice] = useState<{
+    buyerPubkey: string
+    merchantPubkey: string
+    orderId: string
+    text: string | null
+  } | null>(null)
   const persistedRetryTarget = row.lifecycle?.paymentTarget ?? null
   const persistedRetryTargetType = persistedRetryTarget?.type ?? null
   const persistedRetryWalletId =
@@ -1616,10 +1623,15 @@ function OrderDetail({
       if (guestIdentity) throw new Error("Guest orders cannot send messages")
       if (!signerReady) throw new Error("Reconnect your signer to send.")
       if (!replyText.trim()) throw new Error("Message is required")
-      const ndk = getNdk()
       if (!getAccountSigner()) throw new Error("Signer not connected")
 
-      const rumor = new NDKEvent(ndk)
+      const rumor: PrivateMessageEvent = {
+        id: "",
+        pubkey: buyerPubkey,
+        kind: 16,
+        tags: [],
+        content: "",
+      }
       rumor.kind = EVENT_KINDS.ORDER
       rumor.created_at = Math.floor(Date.now() / 1000)
       rumor.tags = appendConduitClientTag(
@@ -1637,9 +1649,8 @@ function OrderDetail({
         buyerPubkey,
         createdAt: Date.now(),
       })
-      await publishBuyerOrderMessage(
+      const delivery = await publishBuyerOrderMessage(
         rumor,
-        ndk,
         row.merchantPubkey,
         buyerPubkey,
         {
@@ -1648,17 +1659,38 @@ function OrderDetail({
           shouldContinue: shouldContinueBuyerSession,
         }
       )
+      return {
+        delivery,
+        buyerPubkey,
+        merchantPubkey: row.merchantPubkey,
+        orderId: vm.orderId,
+        draft: replyText,
+        isCurrent: shouldContinueBuyerSession,
+      }
     },
-    onSuccess: async () => {
-      setReplyText("")
-      await Promise.all([
+    onSuccess: (sent) => {
+      setReplyNotice({
+        buyerPubkey: sent.buyerPubkey,
+        merchantPubkey: sent.merchantPubkey,
+        orderId: sent.orderId,
+        text: getDeliveryNotice(sent.delivery, "Message"),
+      })
+      if (
+        !sent.isCurrent() ||
+        !viewMountedRef.current ||
+        currentViewRef.current.orderId !== sent.orderId ||
+        currentViewRef.current.merchantPubkey !== sent.merchantPubkey
+      )
+        return
+      setReplyText((draft) => (draft === sent.draft ? "" : draft))
+      void Promise.all([
         queryClient.invalidateQueries({
           queryKey: ["buyer-messages", buyerPubkey],
         }),
         queryClient.invalidateQueries({
           queryKey: ["buyer-messages-live", buyerPubkey],
         }),
-      ])
+      ]).catch(() => console.warn("Could not refresh accepted order reply"))
     },
   })
 
@@ -2479,6 +2511,17 @@ function OrderDetail({
           onReplyChange={setReplyText}
           onSend={() => replyMutation.mutate()}
           sending={replyMutation.isPending}
+          historyIncomplete={historyIncomplete}
+          notice={
+            replyNotice?.buyerPubkey === buyerPubkey &&
+            replyNotice.merchantPubkey === row.merchantPubkey &&
+            replyNotice.orderId === vm.orderId &&
+            replyNotice.text ? (
+              <p role="status" className="text-sm text-warning">
+                {replyNotice.text}
+              </p>
+            ) : null
+          }
           readOnly={!signerReady}
           error={
             replyMutation.error instanceof Error
@@ -2614,19 +2657,8 @@ function OrdersPage() {
     },
     refetchInterval: 30_000,
   })
-  const messagesQuery = useQuery({
-    queryKey: ["buyer-messages-live", activeBuyerPubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => fetchBuyerConversations(activeBuyerPubkey!),
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
-  })
-  const cachedMessagesQuery = useQuery({
-    queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
-    enabled: hasAccount,
-    queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
-    staleTime: 5_000,
-  })
+  const inbox = useCommerceInbox(activeBuyerPubkey, signerConnected)
+  const messagesQuery = inbox.buyer
 
   const refetchAll = useCallback(async () => {
     const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
@@ -2663,12 +2695,8 @@ function OrdersPage() {
   }, [refetchAll])
 
   const conversations = useMemo(
-    () =>
-      selectProtectedReadRows(
-        messagesQuery.data?.data,
-        cachedMessagesQuery.data?.data
-      ),
-    [cachedMessagesQuery.data, messagesQuery.data]
+    () => messagesQuery.data?.data ?? [],
+    [messagesQuery.data]
   )
   const messagesMeta = messagesQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
@@ -2966,6 +2994,7 @@ function OrdersPage() {
 
   return (
     <div className="space-y-6">
+      <CommerceInboxRecovery {...inbox} />
       <LightningStrikeOverlay
         open={lightningPlaying}
         onComplete={() => setLightningPlaying(false)}
@@ -3169,7 +3198,7 @@ function OrdersPage() {
           <section className="min-w-0">
             {selectedRow ? (
               <OrderDetail
-                key={`${activeBuyerPubkey}:${selectedRow.orderId}`}
+                key={`${activeBuyerPubkey}:${selectedRow.merchantPubkey}:${selectedRow.orderId}`}
                 row={selectedRow}
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
@@ -3177,6 +3206,7 @@ function OrdersPage() {
                 authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
                 paymentFocused={paymentFocused}
                 signerReady={signerConnected}
+                historyIncomplete={protectedOrdersReadState !== "complete"}
               />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">

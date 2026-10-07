@@ -4,8 +4,13 @@ import {
   type ShouldBlockFn,
   useBlocker,
 } from "@tanstack/react-router"
-import { useAccountNetworkSettings, useAuth } from "@conduit/core"
 import {
+  useAccountNetworkSettings,
+  useAuth,
+  useCommerceInbox,
+} from "@conduit/core"
+import {
+  CommerceInboxRecovery,
   RelaySettingsPanel,
   SignerRecoveryNotice,
   UnpublishedRelayChangesDialog,
@@ -28,6 +33,11 @@ function SettingsPage() {
     signerReadiness,
     status,
   } = useAuth()
+  const inbox = useCommerceInbox(
+    accountPubkey,
+    signerReadiness === "ready",
+    false
+  )
   const networkSettings = useAccountNetworkSettings({ telemetryApp: "market" })
   const [reconnecting, setReconnecting] = useState(false)
   const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
@@ -63,6 +73,11 @@ function SettingsPage() {
 
   return (
     <>
+      <CommerceInboxRecovery
+        snapshot={inbox.snapshot}
+        retry={inbox.retry}
+        retrySends={inbox.retrySends}
+      />
       <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
         <div className="mx-auto max-w-[50rem]">
           {remoteSignerRecovery ? (

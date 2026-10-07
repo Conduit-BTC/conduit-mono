@@ -119,6 +119,43 @@ function controller(
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("keeps roles and review available with five confirmations and two unresolved targets", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [relayRow("wss://relay.example")],
+          pendingExactDeliveries: [
+            {
+              kind: 10002,
+              label: "Read and Publish",
+              eventId: "f".repeat(64),
+              confirmationState: "readback_pending",
+              eligibleTargetCount: 7,
+              exactReadbackCount: 5,
+              unresolvedCount: 2,
+              excludedTargetCount: 0,
+              retryAvailable: true,
+            },
+          ],
+        })}
+      />
+    )
+    for (const role of ["Read", "Publish", "Private inbox"]) {
+      const button = markup.match(
+        new RegExp(
+          `<button[^>]*aria-label="Disable ${role} for wss://relay.example"[^>]*>`
+        )
+      )?.[0]
+      expect(button).toBeDefined()
+      expect(button).not.toContain('disabled=""')
+    }
+    const index = markup.indexOf("Review and publish")
+    expect(
+      markup.slice(markup.lastIndexOf("<button", index), index)
+    ).not.toContain('disabled=""')
+    expect(markup).toContain("You can keep editing")
+  })
+
   it("keeps explicit review available while background discovery is degraded", () => {
     for (const status of ["reconciling", "error"] as const) {
       const markup = renderToStaticMarkup(

@@ -1,3 +1,4 @@
+import { encodeBlossomAuthorizationHeader } from "./blossom-auth"
 import type { EventTemplate } from "nostr-tools"
 import {
   computeBlobSha256,
@@ -160,21 +161,6 @@ function uploadError(
 
 function normalizedMimeType(value: string | null | undefined): string {
   return (value ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? ""
-}
-
-function encodeBlossomAuthorizationHeader(
-  event: SignedNostrEvent,
-  encoding: "bud11" | "legacy" = "bud11"
-): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(event))
-  let binary = ""
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  const base64 = btoa(binary)
-  const token =
-    encoding === "legacy"
-      ? base64
-      : base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "")
-  return `Nostr ${token}`
 }
 
 export function getProductImageUploadErrorMessage(
@@ -601,7 +587,7 @@ async function decodeAndEncodeProductImage(
   let source: CanvasImageSource
   let sourceWidth: number
   let sourceHeight: number
-  let cleanup = (): void => {}
+  let cleanup: () => void
   if (typeof createImageBitmap === "function") {
     try {
       const bitmap = await createImageBitmap(file, {

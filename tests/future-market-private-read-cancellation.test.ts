@@ -48,6 +48,9 @@ describe("future market private read cancellation", () => {
     let declarationReads = 0
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
+      // Cancellation occurs during declaration lookup, before ciphertext work.
+      getCommerceInbox: () =>
+        ({ initialize: async () => {}, authorization: null }) as never,
       getAccountSigner: () => ({}) as never,
       resolveInboxRelayUrls: async () => {
         declarationReads += 1

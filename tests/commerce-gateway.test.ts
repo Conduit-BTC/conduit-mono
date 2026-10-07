@@ -2,9 +2,12 @@ import { createHash } from "node:crypto"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, NDKUser, nip19, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { matchFilter } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import { v2 } from "nostr-tools/nip44"
+import { wrapEvent } from "nostr-tools/nip59"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
@@ -21,7 +24,6 @@ import {
   cacheSignedProductListingEvent,
   decodeProductReference,
   encodeProductNaddr,
-  getConversationDetail,
   getFollowPubkeys,
   getAtomicProductDetail,
   getMarketplaceProducts,
@@ -59,6 +61,27 @@ import {
   attachEventSourceRelayUrl,
   __resetPublicReaderTestState,
 } from "@conduit/core/protocol/relay-reader"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import type {
+  NostrKeySigner,
+  SignedNostrEvent,
+} from "../packages/core/src/protocol/nostr-event-signer"
+import {
+  getProtectedReadAuthorization,
+  installProtectedReadSigner,
+  __resetProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
+import {
+  activateAccountSigner,
+  retireAccountSigner,
+  SessionSigner,
+} from "../packages/core/src/protocol/session-signer"
+import type {
+  ReadProtectedInboxOptions,
+  ProtectedInboxReadResult,
+} from "../packages/core/src/protocol/protected-inbox-read"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
@@ -96,7 +119,189 @@ let cachedProducts: CachedProduct[] = []
 let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
+const orderInboxDatabases: ConduitDB[] = []
+const orderInboxOwners: CommerceInbox[] = []
+const orderInboxSigners: SessionSigner[] = []
 const originalConfig = structuredClone(config)
+
+function signedOrderWrap(input: {
+  senderSecret: Uint8Array
+  principalPubkey: string
+  kind?: number
+  tags: string[][]
+  content: string
+  createdAt?: number
+}): SignedNostrEvent {
+  return wrapEvent(
+    {
+      kind: input.kind ?? 16,
+      pubkey: getPublicKey(input.senderSecret),
+      created_at: input.createdAt ?? Math.floor(FIXED_NOW / 1_000),
+      tags: input.tags,
+      content: input.content,
+    },
+    input.senderSecret,
+    input.principalPubkey
+  )
+}
+
+function orderPayload(
+  orderId: string,
+  buyer: string,
+  merchant: string,
+  amount = 1
+) {
+  return {
+    id: orderId,
+    merchantPubkey: merchant,
+    buyerPubkey: buyer,
+    items: [
+      {
+        productId: `30402:${merchant}:synthetic`,
+        format: "physical",
+        quantity: 1,
+        priceAtPurchase: amount,
+        currency: "SATS",
+      },
+    ],
+    subtotal: amount,
+    currency: "SATS",
+    shippingCostSats: 0,
+    shippingCostStatus: "not_required",
+    createdAt: FIXED_NOW,
+  }
+}
+
+function setupOrderInbox(principalSecret: Uint8Array) {
+  const principalPubkey = getPublicKey(principalSecret)
+  let active = true
+  let decrypts = 0
+  let failDecrypt = false
+  const provider: NostrKeySigner = {
+    pubkey: principalPubkey,
+    authMethod: "nip07",
+    getPublicKey: async () => principalPubkey,
+    signEvent: async (event) => finalizeEvent(event, principalSecret),
+    encryptNip44: async (peer, value) =>
+      v2.encrypt(value, v2.utils.getConversationKey(principalSecret, peer)),
+    decryptNip44: async (peer, value) => {
+      decrypts += 1
+      if (failDecrypt) throw new Error("synthetic provider failure")
+      return v2.decrypt(
+        value,
+        v2.utils.getConversationKey(principalSecret, peer)
+      )
+    },
+    decryptLegacy: async () => {
+      throw new Error("legacy not used")
+    },
+  }
+  const signer = new SessionSigner(provider, {
+    expectedPubkey: principalPubkey,
+    revision: crypto.randomUUID(),
+    authMethod: "nip07",
+    getCapabilities: () => ({
+      signEvent: true,
+      nip44: true,
+      nip04Decrypt: true,
+    }),
+    hasAuthority: () => active,
+  })
+  activateAccountSigner(signer)
+  orderInboxSigners.push(signer)
+  installProtectedReadSigner(signer, principalPubkey, () => active)
+  const authorization = getProtectedReadAuthorization(principalPubkey)!
+  const database = new ConduitDB(`order-gateway-${crypto.randomUUID()}`, {
+    indexedDB: new IDBFactory(),
+    IDBKeyRange,
+  })
+  orderInboxDatabases.push(database)
+  const owner = new CommerceInbox(
+    authorization,
+    signer,
+    new CommerceInboxStore(authorization, database)
+  )
+  orderInboxOwners.push(owner)
+  const events: SignedNostrEvent[] = []
+  const readCalls: Array<{
+    relayUrls: string[]
+    transport: ReadProtectedInboxOptions["transport"]
+  }> = []
+  const read = async (
+    options: ReadProtectedInboxOptions
+  ): Promise<ProtectedInboxReadResult> => {
+    readCalls.push({
+      relayUrls: options.relayUrls,
+      transport: options.transport,
+    })
+    const selected =
+      options.transport === "nip17"
+        ? events.filter(
+            (event) =>
+              event.kind === 1059 &&
+              event.tags.some(
+                (tag) => tag[0] === "p" && tag[1] === principalPubkey
+              )
+          )
+        : []
+    return {
+      events: selected,
+      coverage: "complete",
+      auth: {
+        state: "not_challenged",
+        challengedCount: 0,
+        succeededCount: 0,
+        failedCount: 0,
+      },
+      relayResult: {
+        status: "success",
+        observations: [],
+        attemptedCount: 1,
+        completedCount: 1,
+        failedCount: 0,
+        authoritativeEmpty: selected.length === 0,
+        relays: [
+          {
+            relayIndex: 0,
+            status: "success",
+            auth: "not_challenged",
+            eventCount: selected.length,
+            duplicateCount: 0,
+            malformedCount: 0,
+            unusableCount: 0,
+          },
+        ],
+      },
+    }
+  }
+  __setCommerceTestOverrides({
+    getCommerceInbox: (pubkey) => {
+      if (pubkey !== principalPubkey) throw new Error("Wrong account inbox")
+      return owner
+    },
+    getAccountSigner: () => signer,
+    getCachedOrderMessages: undefined,
+    putCachedOrderMessages: undefined,
+    resolveInboxRelayUrls: async () => ["wss://inbox.example"],
+    readProtectedInbox: read,
+  })
+  return {
+    principalPubkey,
+    owner,
+    database,
+    signer,
+    events,
+    readCalls,
+    decrypts: () => decrypts,
+    setDecryptFailure: (enabled: boolean) => {
+      failDecrypt = enabled
+    },
+    retire: () => {
+      active = false
+      retireAccountSigner(signer)
+    },
+  }
+}
 
 async function durableMerchantRelayListRepository(tags: string[][]) {
   const repository = createInMemoryOwnerRelayListEvidenceRepository()
@@ -518,6 +723,10 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  for (const owner of orderInboxOwners.splice(0)) owner.stop()
+  __resetProtectedReadSigner()
+  for (const signer of orderInboxSigners.splice(0)) retireAccountSigner(signer)
+  for (const database of orderInboxDatabases.splice(0)) await database.delete()
   Object.assign(config, structuredClone(originalConfig))
   __resetCommerceTestOverrides()
   __resetRelayHealth()
@@ -5337,22 +5546,16 @@ describe("commerce gateway", () => {
       getAccountSigner: () => plainTestSigner(undefined as never),
     })
 
-    const listResult = await getBuyerConversationList({
+    const listResult = await getCachedBuyerConversationList({
       principalPubkey: "buyer",
       limit: 50,
-    })
-    const detailResult = await getConversationDetail({
-      principalPubkey: "buyer",
-      orderId: "order-1",
-      role: "buyer",
     })
 
     expect(listResult.meta.source).toBe("local_cache")
     expect(listResult.data).toHaveLength(1)
     expect(listResult.data[0]?.status).toBe("paid")
     expect(listResult.data[0]?.totalSummary).toBe("25 USD")
-    expect(detailResult.meta.source).toBe("local_cache")
-    expect(detailResult.data?.messages).toHaveLength(2)
+    expect(listResult.data[0]?.messages).toHaveLength(2)
   })
 
   it("separates buyer-placed and merchant-received orders by role", async () => {
@@ -5527,144 +5730,82 @@ describe("commerce gateway", () => {
   })
 
   it("persists buyer-originated order messages into the conversation cache", async () => {
-    await cacheParsedOrderMessage({
-      id: "local-order-msg",
-      orderId: "order-2",
-      type: "order",
-      createdAt: FIXED_NOW - 1_000,
-      senderPubkey: "buyer",
-      recipientPubkey: "merchant",
-      rawContent: JSON.stringify({
-        id: "order-2",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 1250,
-            currency: "SATS",
-          },
-        ],
-        subtotal: 1250,
-        currency: "SATS",
+    const h = setupOrderInbox(MERCHANT_B_SECRET)
+    const merchant = MERCHANT_A_PUBKEY
+    const payload = orderPayload("order-2", h.principalPubkey, merchant, 1_250)
+    await cacheParsedOrderMessage(
+      {
+        id: "local-order-msg",
+        orderId: "order-2",
+        type: "order",
         createdAt: FIXED_NOW - 1_000,
-      }),
-      payload: {
-        id: "order-2",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 1250,
-            currency: "SATS",
-          },
-        ],
-        subtotal: 1250,
-        currency: "SATS",
-        createdAt: FIXED_NOW - 1_000,
+        senderPubkey: h.principalPubkey,
+        recipientPubkey: merchant,
+        rawContent: JSON.stringify(payload),
+        payload: payload as never,
       },
-    })
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(undefined as never),
-    })
+      h.owner
+    )
 
     const result = await getBuyerConversationList({
-      principalPubkey: "buyer",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
-    expect(result.meta.source).toBe("local_cache")
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-2")
-    expect(result.data[0]?.merchantPubkey).toBe("merchant")
+    expect(result.data[0]?.merchantPubkey).toBe(merchant)
+    expect(await h.database.orderMessages.count()).toBe(0)
+    expect(
+      JSON.stringify(await h.database.commerceInboxRecords.toArray())
+    ).not.toContain("order-2")
   })
 
   it("retries wrapped order messages that failed to unwrap before marking them seen", async () => {
-    let unwrapCalls = 0
-    const wrappedEvent = {
-      id: "wrap-1",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "merchant",
-      created_at: 100,
-      content: "wrapped",
-      tags: [["p", "buyer"]],
-    }
-    const orderRumor = {
-      id: "order-rumor-1",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: "buyer",
-      created_at: 101,
-      content: JSON.stringify({
-        id: "order-3",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 2100,
-            currency: "SATS",
-          },
+    const h = setupOrderInbox(MERCHANT_B_SECRET)
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_B_SECRET,
+        principalPubkey: h.principalPubkey,
+        content: JSON.stringify(
+          orderPayload("order-3", h.principalPubkey, MERCHANT_A_PUBKEY, 2_100)
+        ),
+        tags: [
+          ["p", MERCHANT_A_PUBKEY],
+          ["type", "order"],
+          ["order", "order-3"],
+          ["amount", "2100"],
         ],
-        subtotal: 2100,
-        currency: "SATS",
-        createdAt: FIXED_NOW,
-      }),
-      tags: [
-        ["p", "merchant"],
-        ["type", "order"],
-        ["order", "order-3"],
-        ["amount", "2100"],
-        ["currency", "SATS"],
-      ],
-    }
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return unwrapCalls === 1 ? null : (orderRumor as never)
-      },
-    })
+      })
+    )
+    h.setDecryptFailure(true)
 
     const first = await getBuyerConversationList({
-      principalPubkey: "buyer",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
+    expect(first.data).toHaveLength(0)
+    expect(h.owner.getSnapshot().diagnostics.states.provider_unavailable).toBe(
+      1
+    )
+    h.setDecryptFailure(false)
+    await h.owner.retryDecode()
     const second = await getBuyerConversationList({
-      principalPubkey: "buyer",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
-    expect(first.data).toHaveLength(0)
-    expect(unwrapCalls).toBe(2)
     expect(second.data).toHaveLength(1)
     expect(second.data[0]?.orderId).toBe("order-3")
+    expect(h.decrypts()).toBe(3)
+    expect((await h.owner.store.wrappers())[0]?.state).toBe("opened")
   })
 
   it("keeps organizer handoff rumors out of the generic order cache", async () => {
-    let unwrapCalls = 0
-    const merchantPubkey = fixturePubkey("event-merchant")
-    const organizerPubkey = fixturePubkey("event-organizer")
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
+    const organizerPubkey = "b".repeat(64)
     const claimRef = "c".repeat(64)
-    const wrappedEvent = {
-      id: "handoff-wrap",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "wrapper",
-      created_at: 100,
-      content: "wrapped",
-      tags: [["p", merchantPubkey]],
-    }
     const handoffRumor = {
       id: "d".repeat(64),
       kind: EVENT_KINDS.ORDER,
@@ -5710,42 +5851,41 @@ describe("commerce gateway", () => {
       ],
     }
 
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return handoffRumor as never
-      },
-    })
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_A_SECRET,
+        principalPubkey: h.principalPubkey,
+        tags: handoffRumor.tags,
+        content: handoffRumor.content,
+      })
+    )
 
     const first = await getMerchantConversationList({
-      principalPubkey: merchantPubkey,
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
     const second = await getMerchantConversationList({
-      principalPubkey: merchantPubkey,
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
     expect(first.data).toHaveLength(0)
     expect(second.data).toHaveLength(0)
-    expect(unwrapCalls).toBe(1)
-    expect(cachedOrderMessages).toHaveLength(0)
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(0)
+    expect(h.owner.getSnapshot().diagnostics.states.machine).toBe(1)
+    expect(await h.database.orderMessages.count()).toBe(0)
 
-    const strictHandoffRead =
-      await getEventMarketPrivateMessageList(merchantPubkey)
+    const strictHandoffRead = await getEventMarketPrivateMessageList(
+      h.principalPubkey
+    )
     expect(strictHandoffRead.messages.map((message) => message.type)).toEqual([
       "future_market_ready",
     ])
-    expect(unwrapCalls).toBe(2)
+    expect(h.decrypts()).toBe(2)
   })
 
   it("leaves checkout Spark recovery wraps for the dedicated reader without treating them as order failures", async () => {
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
     const plan = freezeCheckoutSparkPlan({
       checkoutId: "checkout-recovery-cache-isolation",
       orderId: "order-recovery-cache-isolation",
@@ -5802,32 +5942,14 @@ describe("commerce gateway", () => {
         preparedAt: FIXED_NOW + 1_000,
       })
     )
-    const wrappedEvent = finalizeEvent(
-      {
-        kind: EVENT_KINDS.GIFT_WRAP,
-        created_at: Math.floor(FIXED_NOW / 1_000),
-        content: "opaque ciphertext",
-        tags: [["p", MERCHANT_A_PUBKEY]],
-      },
-      new Uint8Array(32).fill(3)
-    )
-    let unwrapCalls = 0
-    let cachedDirectCount = 0
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return rumor
-      },
-      putCachedDirectMessages: async (rows) => {
-        cachedDirectCount += rows.length
-      },
+    const wrappedEvent = signedOrderWrap({
+      senderSecret: MERCHANT_B_SECRET,
+      principalPubkey: MERCHANT_A_PUBKEY,
+      tags: rumor.tags,
+      content: rumor.content,
+      createdAt: rumor.created_at,
     })
+    h.events.push(wrappedEvent)
 
     const first = await getMerchantConversationList({
       principalPubkey: MERCHANT_A_PUBKEY,
@@ -5840,114 +5962,85 @@ describe("commerce gateway", () => {
     expect(second.data).toEqual([])
     expect(first.meta.decryptFailures).toBeUndefined()
     expect(second.meta.decryptFailures).toBeUndefined()
-    expect(cachedOrderMessages).toEqual([])
-    expect(cachedDirectCount).toBe(0)
+    expect(h.owner.getSnapshot().orderMessages).toEqual([])
+    expect(h.owner.getSnapshot().directMessages).toEqual([])
+    expect(h.owner.getSnapshot().diagnostics.states.machine).toBe(1)
+    expect(
+      JSON.stringify(await h.database.commerceInboxRecords.toArray())
+    ).not.toContain("mnemonic")
     // Generic reads classify the wrap once; Merchant's dedicated recovery
     // reader must still discover the same exact relay ciphertext.
-    expect(unwrapCalls).toBe(1)
+    expect(h.decrypts()).toBe(2)
     const recovery = await openCheckoutSparkRecoveryWrap({
       signedRecipientWrap: wrappedEvent,
-      signer: {
-        getPublicKey: async () => MERCHANT_A_PUBKEY,
-      } as NDKSigner,
-      giftUnwrap: async () => rumor,
+      signer: h.signer,
     })
     expect(recovery.wrapId).toBe(wrappedEvent.id)
     expect(recovery.payload.plan.orderId).toBe(plan.orderId)
-    expect(unwrapCalls).toBe(1)
+    expect(h.decrypts()).toBe(4)
   })
 
   it("keeps malformed recovery claims retryable in the generic inbox", async () => {
-    const wrappedEvent = {
-      id: "malformed-checkout-recovery-wrap",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "wrapper",
-      created_at: Math.floor(FIXED_NOW / 1_000),
-      content: "opaque ciphertext",
-      tags: [["p", MERCHANT_A_PUBKEY]],
-    }
-    let unwrapCalls = 0
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return {
-          kind: EVENT_KINDS.ORDER,
-          tags: [
-            ["p", MERCHANT_A_PUBKEY],
-            ["type", "checkout_spark_recovery"],
-          ],
-          content: "{}",
-        } as never
-      },
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const wrappedEvent = signedOrderWrap({
+      senderSecret: MERCHANT_B_SECRET,
+      principalPubkey: h.principalPubkey,
+      tags: [
+        ["p", h.principalPubkey],
+        ["type", "checkout_spark_recovery"],
+      ],
+      content: "{}",
     })
+    h.events.push(wrappedEvent)
 
     const first = await getMerchantConversationList({
-      principalPubkey: MERCHANT_A_PUBKEY,
+      principalPubkey: h.principalPubkey,
     })
+    await h.owner.retryDecode()
     const second = await getMerchantConversationList({
-      principalPubkey: MERCHANT_A_PUBKEY,
+      principalPubkey: h.principalPubkey,
     })
 
     expect(first.data).toEqual([])
     expect(second.data).toEqual([])
-    expect(first.meta.decryptFailures).toEqual([
-      { wrapId: wrappedEvent.id, reason: "malformed" },
-    ])
-    expect(second.meta.decryptFailures).toEqual(first.meta.decryptFailures)
-    expect(unwrapCalls).toBe(2)
+    expect(h.owner.getSnapshot().orderMessages).toEqual([])
+    expect(h.owner.getSnapshot().directMessages).toEqual([])
+    expect(h.owner.getSnapshot().diagnostics.states.malformed).toBe(1)
+    expect(
+      h.owner.getSnapshot().diagnostics.states.provider_unavailable ?? 0
+    ).toBe(0)
+    expect(h.decrypts()).toBe(4)
+    expect((await h.owner.store.wrappers())[0]?.event.id).toBe(wrappedEvent.id)
   })
 
   it("keeps payment-proof-only merchant conversations visible without marking them paid", async () => {
-    const merchantPubkey = "merchant"
-    const buyerPubkey = "buyer"
-    const wrappedEvent = {
-      id: "wrap-proof-1",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: buyerPubkey,
-      created_at: 100,
-      content: "wrapped-proof",
-      tags: [["p", merchantPubkey]],
-    }
-    const proofRumor = {
-      id: "proof-rumor-1",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: buyerPubkey,
-      created_at: 101,
-      content: JSON.stringify({
-        orderId: "order-proof-1",
-        rail: "lightning",
-        action: "private_checkout",
-        amount: 2100,
-        currency: "SATS",
-        invoice: "lnbc2100n1proof",
-        preimage: "paid-preimage",
-        paymentHash: "paid-hash",
-        proofDeliveryStatus: "pending",
-      }),
-      tags: [
-        ["p", merchantPubkey],
-        ["type", "payment_proof"],
-        ["order", "order-proof-1"],
-        ["amount", "2100"],
-        ["currency", "SATS"],
-      ],
-    }
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => proofRumor as never,
-    })
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
+    const buyerPubkey = getPublicKey(MERCHANT_B_SECRET)
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_B_SECRET,
+        principalPubkey: merchantPubkey,
+        content: JSON.stringify({
+          orderId: "order-proof-1",
+          rail: "lightning",
+          action: "private_checkout",
+          amount: 2100,
+          currency: "SATS",
+          invoice: "lnbc2100n1proof",
+          preimage: "paid-preimage",
+          paymentHash: "paid-hash",
+          proofDeliveryStatus: "pending",
+        }),
+        tags: [
+          ["p", merchantPubkey],
+          ["type", "payment_proof"],
+          ["order", "order-proof-1"],
+          ["amount", "2100"],
+          ["currency", "SATS"],
+        ],
+      })
+    )
 
     const result = await getMerchantConversationList({
       principalPubkey: merchantPubkey,
@@ -5960,41 +6053,25 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.merchantPubkey).toBe(merchantPubkey)
     expect(result.data[0]?.latestType).toBe("payment_proof")
     expect(result.data[0]?.status).toBeNull()
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(1)
+    expect(await h.database.orderMessages.count()).toBe(0)
   })
 
   it("keeps malformed payment-proof-only buckets visible but unpaid", async () => {
-    const merchantPubkey = "merchant"
-    const buyerPubkey = "buyer"
-    const wrappedEvent = {
-      id: "wrap-proof-malformed",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: buyerPubkey,
-      created_at: 100,
-      content: "wrapped-proof",
-      tags: [["p", merchantPubkey]],
-    }
-    const proofRumor = {
-      id: "proof-rumor-malformed",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: buyerPubkey,
-      created_at: 101,
-      content: JSON.stringify({}),
-      tags: [
-        ["p", merchantPubkey],
-        ["type", "payment_proof"],
-        ["order", "order-proof-malformed"],
-      ],
-    }
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => proofRumor as never,
-    })
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_B_SECRET,
+        principalPubkey: merchantPubkey,
+        content: JSON.stringify({}),
+        tags: [
+          ["p", merchantPubkey],
+          ["type", "payment_proof"],
+          ["order", "order-proof-malformed"],
+        ],
+      })
+    )
 
     const result = await getMerchantConversationList({
       principalPubkey: merchantPubkey,
@@ -6004,39 +6081,18 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-proof-malformed")
     expect(result.data[0]?.status).toBeNull()
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(1)
   })
 
   it("reads gift wraps from declared inbox plus compatibility relays", async () => {
-    const merchantPubkey = "merchant"
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
     const merchantReadRelays = Array.from(
       { length: 8 },
       (_, index) => `wss://merchant-read-${index}.example`
     )
-    let seenRelayUrls: string[] | undefined
-
-    __setRelayListTestOverrides({
-      now: () => FIXED_NOW,
-      loadCached: async (pubkey) =>
-        pubkey === merchantPubkey
-          ? {
-              pubkey,
-              readRelayUrls: merchantReadRelays,
-              writeRelayUrls: [],
-              eventCreatedAt: 1,
-              cachedAt: FIXED_NOW,
-            }
-          : undefined,
-    })
     __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => merchantReadRelays,
-      fetchPublicEvents: async (filter, options) => {
-        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
-          seenRelayUrls = options?.relayUrls
-        }
-        return []
-      },
     })
 
     await getMerchantConversationList({
@@ -6046,7 +6102,10 @@ describe("commerce gateway", () => {
 
     // Permissive reads (CND-208): declared inbox relays lead the plan and the
     // bounded compatibility read set stays present even with local settings.
-    expect(seenRelayUrls?.slice(0, merchantReadRelays.length)).toEqual(
+    const seenRelayUrls = h.readCalls
+      .filter((call) => call.transport === "nip17")
+      .flatMap((call) => call.relayUrls)
+    expect(seenRelayUrls.slice(0, merchantReadRelays.length)).toEqual(
       merchantReadRelays
     )
     for (const compatibilityRelayUrl of config.commerceDmFallbackRelayUrls) {
@@ -6055,84 +6114,59 @@ describe("commerce gateway", () => {
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {
-    let unwrapCalls = 0
-    let putCalls = 0
-    const wrappedEvent = {
-      id: "wrap-cache-fail-1",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "buyer",
-      created_at: 100,
-      content: "wrapped",
-      tags: [["p", "merchant"]],
-    }
-    const orderRumor = {
-      id: "order-rumor-cache-fail-1",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: "buyer",
-      created_at: 101,
-      content: JSON.stringify({
-        id: "order-cache-fail-1",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 2100,
-            currency: "SATS",
-          },
-        ],
-        subtotal: 2100,
-        currency: "SATS",
-        createdAt: FIXED_NOW,
-      }),
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const buyerPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const wrappedEvent = signedOrderWrap({
+      senderSecret: MERCHANT_B_SECRET,
+      principalPubkey: h.principalPubkey,
+      content: JSON.stringify(
+        orderPayload(
+          "order-cache-fail-1",
+          buyerPubkey,
+          h.principalPubkey,
+          2_100
+        )
+      ),
       tags: [
-        ["p", "merchant"],
+        ["p", h.principalPubkey],
         ["type", "order"],
         ["order", "order-cache-fail-1"],
         ["amount", "2100"],
         ["currency", "SATS"],
       ],
+    })
+    h.events.push(wrappedEvent)
+    const originalCommit = h.owner.store.commit.bind(h.owner.store)
+    let projectionCommits = 0
+    h.owner.store.commit = async (...args) => {
+      if (args[3]?.kind === "order" && projectionCommits++ === 0) {
+        throw new Error("synthetic storage failure")
+      }
+      await originalCommit(...args)
     }
 
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return orderRumor as never
-      },
-      putCachedOrderMessages: async (rows) => {
-        putCalls += 1
-        if (putCalls === 1) {
-          throw new Error("cache unavailable")
-        }
-        for (const row of rows) {
-          cachedOrderMessages = [
-            ...cachedOrderMessages.filter((existing) => existing.id !== row.id),
-            row,
-          ]
-        }
-      },
-    })
-
     const first = await getMerchantConversationList({
-      principalPubkey: "merchant",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
+    expect(first.data).toHaveLength(0)
+    expect(h.owner.getSnapshot().diagnostics.states.retryable_failure).toBe(1)
+    expect(h.owner.getSnapshot().diagnostics.storageUnavailable).toBe(true)
+    expect(
+      h.owner.getSnapshot().diagnostics.states.provider_unavailable ?? 0
+    ).toBe(0)
+    await h.owner.retryDecode()
     const second = await getMerchantConversationList({
-      principalPubkey: "merchant",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
-    expect(first.data).toHaveLength(1)
     expect(second.data).toHaveLength(1)
-    expect(unwrapCalls).toBe(2)
-    expect(cachedOrderMessages).toHaveLength(1)
+    expect(second.data[0]?.orderId).toBe("order-cache-fail-1")
+    expect(projectionCommits).toBe(2)
+    expect(h.decrypts()).toBe(4)
+    expect((await h.owner.store.wrappers())[0]?.state).toBe("opened")
+    expect(await h.database.commerceInboxRecords.count()).toBe(1)
   })
 
   it("marks follow discovery stale when relay coverage is incomplete", async () => {

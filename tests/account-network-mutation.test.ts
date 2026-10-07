@@ -471,14 +471,14 @@ function createExecutionHarness(
       if (behavior === "throw") throw new Error("publish unavailable")
       return behavior
     },
-    fetchEvents: async (filter, readOptions) => {
-      if (!readOptions?.relayUrls?.length || Array.isArray(filter)) {
-        throw new Error("readback harness requires one relay and filter")
-      }
-      const relayUrl = readOptions.relayUrls[0]!
-      const eventId = filter.ids?.[0]
-      const kind = filter.kinds?.[0]
-      if (!eventId || kind === undefined) {
+    fetchEvents: async (filterOrFilters, readOptions = {}) => {
+      const filter = Array.isArray(filterOrFilters)
+        ? filterOrFilters[0]
+        : filterOrFilters
+      const relayUrl = readOptions.relayUrls?.[0]
+      const eventId = filter?.ids?.[0]
+      const kind = filter?.kinds?.[0]
+      if (!relayUrl || !eventId || kind === undefined) {
         throw new Error("readback harness requires one event id and kind")
       }
       const key = `${kind}:${relayUrl}`
@@ -1629,8 +1629,7 @@ describe("account network mutation", () => {
         relayUrls,
         _ownerSelectedRelayUrls,
         _authenticatedPubkey,
-        appRelayUrls,
-        _personalRelayUrls
+        appRelayUrls
       ) => relayUrls.filter((relayUrl) => appRelayUrls.includes(relayUrl)),
     })
     const signer = createSignerHarness({ log: execution.log })
@@ -1969,6 +1968,80 @@ describe("account network mutation", () => {
       (await execution.baseRepository.get(ACCOUNT)).inboxDeclaration
         ?.pendingDistribution
     ).toBeUndefined()
+  })
+
+  it("replaces a pending inbox without changing the other kind's exact retry checkpoint", async () => {
+    const fixture = await createFixture()
+    const first = createExecutionHarness(fixture, {
+      planForKind: () => [PLAN_A, PLAN_B],
+      readbackBehavior: ({ relayUrl }) =>
+        relayUrl === PLAN_A ? "observed" : "timed_out",
+    })
+    const firstSigner = createSignerHarness({ log: first.log })
+    await publishAccountNetworkMutation({
+      reviewed: reviewAccountNetworkMutation(
+        fixture.reconciliation,
+        action(bothKindsChangedRoles())
+      ),
+      signer: firstSigner.signer,
+      dependencies: first.dependencies,
+    })
+    const staged = await first.baseRepository.get(ACCOUNT)
+    const owner = staged.ownerRelayList!
+    const inbox = staged.inboxDeclaration!.pendingDistribution!
+    expect(owner.pendingDistribution).toBeDefined()
+    expect(inbox).toBeDefined()
+    const ownerCheckpoint = structuredClone(owner.pendingDistribution)
+    const nextFixture = {
+      ...fixture,
+      snapshot: staged,
+      reconciliation: {
+        ...structuredClone(fixture.reconciliation),
+        ownerRelayList: {
+          ...fixture.reconciliation.ownerRelayList,
+          current: owner.current,
+          preferences: owner.current!.preferences,
+          pendingDistribution: owner.pendingDistribution,
+        },
+        inboxDeclaration: {
+          ...fixture.reconciliation.inboxDeclaration,
+          state: "distribution_pending" as const,
+          eventId: inbox.signedEvent.id,
+          eventCreatedAt: inbox.signedEvent.created_at,
+          relayUrls: [],
+          pendingRelayUrls: [INBOX_B],
+          pendingPublishRelayUrls: inbox.publishRelayUrls,
+          pendingRelayOutcomes: inbox.relayOutcomes,
+        },
+      },
+    }
+    const nextRoles = bothKindsChangedRoles().map((relay) =>
+      relay.url === INBOX_B ? { ...relay, url: INBOX_C } : relay
+    )
+    const review = reviewAccountNetworkMutation(
+      nextFixture.reconciliation,
+      action(nextRoles)
+    )
+    expect(review.changedKinds).toEqual([EVENT_KINDS.PRIVATE_MESSAGE_RELAYS])
+    const second = createExecutionHarness(nextFixture)
+    const signer = createSignerHarness({ log: second.log })
+    const result = await publishAccountNetworkMutation({
+      reviewed: review,
+      signer: signer.signer,
+      dependencies: second.dependencies,
+    })
+    const final = await second.baseRepository.get(ACCOUNT)
+    expect(signer.signedEvents).toHaveLength(1)
+    expect(result.checkpoints[0]!.signedEvent.created_at).toBeGreaterThan(
+      inbox.signedEvent.created_at
+    )
+    expect(final.ownerRelayList!.pendingDistribution).toEqual(ownerCheckpoint)
+    expect(final.inboxDeclaration!.current.secureRelayUrls).toEqual([INBOX_C])
+    expect(
+      final
+        .inboxDeclaration!.cutoverRecoveries!.map((batch) => batch.relayUrls)
+        .sort()
+    ).toEqual([[INBOX_A], [INBOX_B]].sort())
   })
 
   it("does not copy an earlier pending recovery into a later cutover clock", async () => {

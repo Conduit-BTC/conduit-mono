@@ -18,12 +18,10 @@ import {
   formatNpub,
   formatEventMarketPickupDate,
   getAccountSigner,
-  getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getCurrencyAmountStep,
   getEventMarketOrderCorrelationRef,
   getLightningNetworkMismatchMessage,
-  getMerchantConversationList,
   getMerchantOrderActions,
   getMerchantOrderReopenTransition,
   getProductImageCandidates,
@@ -37,17 +35,18 @@ import {
   publishMerchantOrderMessage,
   pubkeyToNpub,
   prepareProtectedReadRefreshState,
-  selectProtectedReadRows,
   type MerchantConversationSummary,
   type MerchantOrderDelivery,
   type MerchantOrderAction,
   type MerchantOrderReopenTransition,
   type MerchantOrderState,
+  type PublishMerchantOrderMessageResult,
   type KnownOrderStatus,
   type Profile,
   type OrderSummary,
   type SignedPublicNostrEvent,
   useAuth,
+  useCommerceInbox,
   useConduitSession,
   useInboxDeclaration,
   useNip05Verification,
@@ -60,6 +59,7 @@ import {
   reportCommerceGmvEstimate,
 } from "@conduit/core/commerce-gmv"
 import {
+  CommerceInboxRecovery,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -207,6 +207,48 @@ type StockDeliveryState = {
   adjustment: OrderStockAdjustment
   notice: ProductDeliveryNotice
   signedEvent: SignedPublicNostrEvent
+}
+
+type AcceptedOrderNotice = {
+  merchantPubkey: string
+  buyerPubkey: string
+  orderId: string
+  label: string
+  delivery: PublishMerchantOrderMessageResult
+}
+
+function MerchantOrderSendNotice({ notice }: { notice: AcceptedOrderNotice }) {
+  const { delivery, label } = notice
+  if (delivery.localHistory === "unavailable")
+    return (
+      <p
+        role="alert"
+        className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+      >
+        {label} was accepted by a relay, but it could not be saved on this
+        device. Do not send it again.
+      </p>
+    )
+  if (delivery.checkpointFailure)
+    return (
+      <p
+        role="alert"
+        className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+      >
+        {label} was accepted and saved on this device, but its delivery status
+        could not be saved. Do not send it again.
+      </p>
+    )
+  if (delivery.selfCopy === "complete") return null
+  return (
+    <p
+      role="status"
+      className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+    >
+      {label} was accepted and saved on this device. Sync to your other devices
+      is incomplete.
+    </p>
+  )
 }
 
 type OrderActionAuthority = {
@@ -626,6 +668,8 @@ function OrdersWorkspace() {
   const [shippingNote, setShippingNote] = useState("")
   const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
+  const [acceptedOrderNotice, setAcceptedOrderNotice] =
+    useState<AcceptedOrderNotice | null>(null)
   const [sessionStockDecisionKeys, setSessionStockDecisionKeys] = useState(
     () => new Set<string>()
   )
@@ -728,21 +772,8 @@ function OrdersWorkspace() {
     inboxReadiness.status
   )
 
-  const ordersQuery = useQuery({
-    queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
-  })
-  const cachedOrdersQuery = useQuery({
-    queryKey: ["merchant-order-messages", pubkey ?? "none"],
-    enabled: hasAccount,
-    queryFn: () =>
-      getCachedMerchantConversationList({ principalPubkey: pubkey! }),
-    staleTime: 5_000,
-  })
+  const inbox = useCommerceInbox(pubkey, signerConnected)
+  const ordersQuery = inbox.merchant
   const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
 
@@ -753,12 +784,8 @@ function OrdersWorkspace() {
   }, [pubkey, refetchOrders, signerConnected])
 
   const conversations = useMemo(
-    () =>
-      selectProtectedReadRows(
-        ordersQuery.data?.data,
-        cachedOrdersQuery.data?.data
-      ),
-    [cachedOrdersQuery.data, ordersQuery.data]
+    () => ordersQuery.data?.data ?? [],
+    [ordersQuery.data]
   )
 
   useEffect(() => {
@@ -1013,6 +1040,36 @@ function OrdersWorkspace() {
     filteredConversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
+  const selectedOrderContextRef = useRef({
+    merchantPubkey: pubkey,
+    buyerPubkey: selected?.buyerPubkey,
+    orderId: selected?.orderId,
+  })
+  useLayoutEffect(() => {
+    selectedOrderContextRef.current = {
+      merchantPubkey: pubkey,
+      buyerPubkey: selected?.buyerPubkey,
+      orderId: selected?.orderId,
+    }
+  }, [pubkey, selected?.buyerPubkey, selected?.orderId])
+  const isCurrentSelectedOrder = (
+    merchantPubkey: string,
+    buyerPubkey: string,
+    orderId: string
+  ) => {
+    const current = selectedOrderContextRef.current
+    return (
+      current.merchantPubkey === merchantPubkey &&
+      current.buyerPubkey === buyerPubkey &&
+      current.orderId === orderId
+    )
+  }
+  const acceptedInvoiceCheckpointFailure =
+    acceptedOrderNotice?.label === "Invoice" &&
+    acceptedOrderNotice.delivery.checkpointFailure === true &&
+    acceptedOrderNotice.merchantPubkey === pubkey &&
+    acceptedOrderNotice.buyerPubkey === selected?.buyerPubkey &&
+    acceptedOrderNotice.orderId === selected?.orderId
   const pendingInvoiceQueryToken = useMemo(
     () => getPendingInvoiceQueryToken(selected),
     [selected]
@@ -1972,7 +2029,8 @@ function OrdersWorkspace() {
           if (amountSats <= 0) {
             throw new Error("Amount must be greater than 0")
           }
-          await merchantInvoiceModule.createAndDeliver({
+          const invoiceScope = selectedInvoiceScope
+          const delivery = await merchantInvoiceModule.createAndDeliver({
             ...selectedInvoiceScope,
             amountSats,
             note: invoiceNote.trim() || undefined,
@@ -1981,7 +2039,7 @@ function OrdersWorkspace() {
             authenticatedPubkey,
             shouldContinue: () => isCurrentOrderAction(authority),
           })
-          return authority
+          return { authority, invoiceScope, delivery }
         } catch {
           // Provider errors can contain invoices, addresses, relay responses,
           // or wallet credentials. React Query retains errors, so only expose
@@ -1989,17 +2047,39 @@ function OrdersWorkspace() {
           throw safeInvoiceActionError(source)
         }
       }),
-    onSuccess: async (authority) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({ authority, invoiceScope, delivery }) => {
+      if (delivery)
+        setAcceptedOrderNotice({
+          merchantPubkey: invoiceScope.merchantPubkey,
+          buyerPubkey: invoiceScope.buyerPubkey,
+          orderId: invoiceScope.orderId,
+          label: "Invoice",
+          delivery,
+        })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          invoiceScope.merchantPubkey,
+          invoiceScope.buyerPubkey,
+          invoiceScope.orderId
+        )
+      )
+        return
       setInvoice("")
       setInvoiceNote("")
       flash("Invoice generated and sent to the buyer's relay")
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted invoice history")
+      )
     },
     onSettled: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-pending-invoice"],
-      })
+      try {
+        await queryClient.invalidateQueries({
+          queryKey: ["merchant-pending-invoice"],
+        })
+      } catch {
+        console.warn("Could not refresh saved invoice status")
+      }
     },
   })
 
@@ -2011,27 +2091,50 @@ function OrdersWorkspace() {
           if (!selectedInvoiceScope) {
             throw new Error("No conversation selected")
           }
-          await merchantInvoiceModule.retryDelivery({
+          const invoiceScope = selectedInvoiceScope
+          const delivery = await merchantInvoiceModule.retryDelivery({
             ...selectedInvoiceScope,
             authenticatedPubkey,
             shouldContinue: () => isCurrentOrderAction(authority),
           })
-          return authority
+          return { authority, invoiceScope, delivery }
         } catch {
           throw new Error(
             "Could not redeliver the saved invoice. Refresh and try again."
           )
         }
       }),
-    onSuccess: async (authority) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({ authority, invoiceScope, delivery }) => {
+      if (delivery)
+        setAcceptedOrderNotice({
+          merchantPubkey: invoiceScope.merchantPubkey,
+          buyerPubkey: invoiceScope.buyerPubkey,
+          orderId: invoiceScope.orderId,
+          label: "Invoice",
+          delivery,
+        })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          invoiceScope.merchantPubkey,
+          invoiceScope.buyerPubkey,
+          invoiceScope.orderId
+        )
+      )
+        return
       flash("Saved invoice sent to the buyer's relay")
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted invoice history")
+      )
     },
     onSettled: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-pending-invoice"],
-      })
+      try {
+        await queryClient.invalidateQueries({
+          queryKey: ["merchant-pending-invoice"],
+        })
+      } catch {
+        console.warn("Could not refresh saved invoice status")
+      }
     },
   })
 
@@ -2219,8 +2322,24 @@ function OrdersWorkspace() {
         })
         return { authority, result }
       }),
-    onSuccess: async ({ authority }, input) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({ authority, result }, input) => {
+      if (result.delivery)
+        setAcceptedOrderNotice({
+          merchantPubkey: input.merchantPubkey,
+          buyerPubkey: input.buyerPubkey,
+          orderId: input.orderId,
+          label: "Payment confirmation",
+          delivery: result.delivery,
+        })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          input.merchantPubkey,
+          input.buyerPubkey,
+          input.orderId
+        )
+      )
+        return
       const estimate = input.order
         ? getCommerceGmvEstimateFromOrder({
             orderId: input.orderId,
@@ -2231,7 +2350,9 @@ function OrdersWorkspace() {
         : null
       if (estimate) void reportCommerceGmvEstimate(estimate)
       if (selected?.orderId === input.orderId) flash("Payment confirmed.")
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted payment confirmation")
+      )
     },
   })
 
@@ -2315,7 +2436,7 @@ function OrdersWorkspace() {
               )
           }
         }
-        await publishMerchantOrderMessage({
+        const delivery = await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
           buyerPubkey: actionConversation.buyerPubkey,
           orderId: actionConversation.orderId,
@@ -2327,15 +2448,29 @@ function OrdersWorkspace() {
           authenticatedPubkey,
           shouldContinue: () => isCurrentOrderAction(authority),
         })
-        if (!isCurrentOrderAction(authority)) {
-          throw new Error("Merchant signer session changed")
-        }
-        return { authority, actionCorrelationRef }
+        return { authority, actionConversation, delivery, actionCorrelationRef }
       }),
-    onSuccess: async ({ authority }) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({ authority, actionConversation, delivery }) => {
+      setAcceptedOrderNotice({
+        merchantPubkey: authority.accountPubkey,
+        buyerPubkey: actionConversation.buyerPubkey,
+        orderId: actionConversation.orderId,
+        label: "Status update",
+        delivery,
+      })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          authority.accountPubkey,
+          actionConversation.buyerPubkey,
+          actionConversation.orderId
+        )
+      )
+        return
       flash(buyerInboxKnown ? "Status update sent to buyer" : "Status recorded")
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted status update")
+      )
     },
   })
 
@@ -2346,7 +2481,7 @@ function OrdersWorkspace() {
         if (authority.accountPubkey !== input.merchantPubkey) {
           throw new Error("Merchant signer is not connected")
         }
-        await publishMerchantOrderMessage({
+        const delivery = await publishMerchantOrderMessage({
           merchantPubkey: input.merchantPubkey,
           buyerPubkey: input.buyerPubkey,
           orderId: input.orderId,
@@ -2358,10 +2493,25 @@ function OrdersWorkspace() {
           authenticatedPubkey,
           shouldContinue: () => isCurrentOrderAction(authority),
         })
-        return authority
+        return { authority, delivery }
       }),
-    onSuccess: async (authority, input) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({ authority, delivery }, input) => {
+      setAcceptedOrderNotice({
+        merchantPubkey: input.merchantPubkey,
+        buyerPubkey: input.buyerPubkey,
+        orderId: input.orderId,
+        label: "Reopen update",
+        delivery,
+      })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          input.merchantPubkey,
+          input.buyerPubkey,
+          input.orderId
+        )
+      )
+        return
       setReopenConfirmation(null)
       setReopenConfirmationError(null)
       flash(
@@ -2369,7 +2519,9 @@ function OrdersWorkspace() {
           ? "Reopen update submitted for buyer delivery"
           : "Reopen update recorded in your encrypted order history"
       )
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted reopen update")
+      )
     },
   })
 
@@ -2397,7 +2549,7 @@ function OrdersWorkspace() {
           trackingUrl,
           note: shippingNote,
         })
-        await publishMerchantOrderMessage({
+        const delivery = await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
           buyerPubkey: actionConversation.buyerPubkey,
           orderId: actionConversation.orderId,
@@ -2419,6 +2571,8 @@ function OrdersWorkspace() {
         })
         return {
           authority,
+          actionConversation,
+          delivery,
           buyerInboxKnown,
           draft: {
             trackingNumber,
@@ -2428,8 +2582,29 @@ function OrdersWorkspace() {
           },
         }
       }),
-    onSuccess: async ({ authority, buyerInboxKnown, draft }) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({
+      authority,
+      actionConversation,
+      delivery,
+      buyerInboxKnown,
+      draft,
+    }) => {
+      setAcceptedOrderNotice({
+        merchantPubkey: authority.accountPubkey,
+        buyerPubkey: actionConversation.buyerPubkey,
+        orderId: actionConversation.orderId,
+        label: "Shipping update",
+        delivery,
+      })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          authority.accountPubkey,
+          actionConversation.buyerPubkey,
+          actionConversation.orderId
+        )
+      )
+        return
       setCarrier((current) => (current === draft.carrier ? "" : current))
       setTrackingNumber((current) =>
         current === draft.trackingNumber ? "" : current
@@ -2445,7 +2620,9 @@ function OrdersWorkspace() {
           ? "Shipping update sent to buyer"
           : "Shipping update recorded"
       )
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted shipping update")
+      )
     },
   })
 
@@ -2463,7 +2640,7 @@ function OrdersWorkspace() {
       assertBuyerHasNostrInbox()
       const preparedContent = content.trim()
       if (!preparedContent) throw new Error("Message is required")
-      await publishMerchantOrderMessage({
+      const delivery = await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: actionConversation.buyerPubkey,
         orderId: actionConversation.orderId,
@@ -2476,13 +2653,30 @@ function OrdersWorkspace() {
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
       })
-      return { authority, content }
+      return { authority, actionConversation, content, delivery }
     },
-    onSuccess: async ({ authority, content }) => {
-      if (!isCurrentOrderAction(authority)) return
+    onSuccess: ({ authority, actionConversation, content, delivery }) => {
+      setAcceptedOrderNotice({
+        merchantPubkey: authority.accountPubkey,
+        buyerPubkey: actionConversation.buyerPubkey,
+        orderId: actionConversation.orderId,
+        label: "Message",
+        delivery,
+      })
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          authority.accountPubkey,
+          actionConversation.buyerPubkey,
+          actionConversation.orderId
+        )
+      )
+        return
       setReplyNote((current) => (current === content ? "" : current))
       flash("Message sent to buyer")
-      await invalidateOrderQueries()
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh accepted reply history")
+      )
     },
   })
 
@@ -2579,6 +2773,7 @@ function OrdersWorkspace() {
 
   return (
     <div className="space-y-6">
+      <CommerceInboxRecovery {...inbox} />
       <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
         <div>
           <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -2672,7 +2867,7 @@ function OrdersWorkspace() {
       )}
 
       {hasAccount &&
-        !cachedOrdersQuery.isLoading &&
+        !ordersQuery.isLoading &&
         conversations.length === 0 &&
         protectedOrdersReadState === "complete" && (
           <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
@@ -2778,6 +2973,11 @@ function OrdersWorkspace() {
           <section className="min-w-0">
             {selected && orderSummary ? (
               <div className="space-y-4">
+                {acceptedOrderNotice?.merchantPubkey === pubkey &&
+                  acceptedOrderNotice.buyerPubkey === selected.buyerPubkey &&
+                  acceptedOrderNotice.orderId === selected.orderId && (
+                    <MerchantOrderSendNotice notice={acceptedOrderNotice} />
+                  )}
                 <div className="xl:hidden">
                   <OrderItemsCard
                     items={orderSummary.items}
@@ -2999,30 +3199,31 @@ function OrdersWorkspace() {
                                   )}
 
                                   {pendingInvoiceQuery.data?.state ===
-                                    "pending" && (
-                                    <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
-                                      <p className="text-sm font-medium text-[var(--text-primary)]">
-                                        A saved invoice still needs delivery.
-                                      </p>
-                                      <p className="text-xs text-[var(--text-secondary)]">
-                                        Retry sends the exact same invoice; it
-                                        does not create another one.
-                                      </p>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        className="w-full"
-                                        disabled={orderActionPending}
-                                        onClick={() =>
-                                          retryInvoiceMutation.mutate()
-                                        }
-                                      >
-                                        {retryInvoiceMutation.isPending
-                                          ? "Retrying…"
-                                          : "Retry saved invoice"}
-                                      </Button>
-                                    </div>
-                                  )}
+                                    "pending" &&
+                                    !acceptedInvoiceCheckpointFailure && (
+                                      <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
+                                        <p className="text-sm font-medium text-[var(--text-primary)]">
+                                          A saved invoice still needs delivery.
+                                        </p>
+                                        <p className="text-xs text-[var(--text-secondary)]">
+                                          Retry sends the exact same invoice; it
+                                          does not create another one.
+                                        </p>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          className="w-full"
+                                          disabled={orderActionPending}
+                                          onClick={() =>
+                                            retryInvoiceMutation.mutate()
+                                          }
+                                        >
+                                          {retryInvoiceMutation.isPending
+                                            ? "Retrying…"
+                                            : "Retry saved invoice"}
+                                        </Button>
+                                      </div>
+                                    )}
 
                                   {pendingInvoiceQuery.data?.state ===
                                     "sent" && (
@@ -3045,6 +3246,33 @@ function OrdersWorkspace() {
                                           ? "Resending…"
                                           : "Resend same invoice"}
                                       </Button>
+                                    </div>
+                                  )}
+
+                                  {(pendingInvoiceQuery.data?.state ===
+                                    "accepted_unrecorded" ||
+                                    pendingInvoiceQuery.data?.state ===
+                                      "delivery_unknown") && (
+                                    <div className="space-y-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+                                      <p role="status">
+                                        {pendingInvoiceQuery.data.state ===
+                                        "accepted_unrecorded"
+                                          ? "This invoice was accepted by a relay, but its sent status could not be saved. Do not send it again."
+                                          : "This invoice has an unresolved delivery attempt. Use saved exact-delivery recovery; do not send a new invoice message."}
+                                      </p>
+                                      {pendingInvoiceQuery.data.state ===
+                                        "delivery_unknown" && (
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() =>
+                                            void navigate({ to: "/network" })
+                                          }
+                                        >
+                                          Open Network recovery
+                                        </Button>
+                                      )}
                                     </div>
                                   )}
 
@@ -3878,6 +4106,15 @@ function OrdersWorkspace() {
                     selectedBuyerName ?? formatNpub(selected.buyerPubkey, 8)
                   }
                   messages={selected.messages ?? []}
+                  historyIncomplete={protectedOrdersReadState !== "complete"}
+                  notice={
+                    acceptedOrderNotice?.label === "Message" &&
+                    acceptedOrderNotice.merchantPubkey === pubkey &&
+                    acceptedOrderNotice.buyerPubkey === selected.buyerPubkey &&
+                    acceptedOrderNotice.orderId === selected.orderId ? (
+                      <MerchantOrderSendNotice notice={acceptedOrderNotice} />
+                    ) : null
+                  }
                   selfPubkey={pubkey}
                   replyValue={replyNote}
                   onReplyChange={setReplyNote}

@@ -152,3 +152,22 @@ compiler contract enforces opaque parser inputs and immutable fields directly.
 React Doctor reports four deliberate sequential/bounded admission loops and the
 existing large organizer claim component; those warnings are retained rather
 than replacing bounded verification with unbounded concurrency or widening UI scope.
+
+## Durable evidence during verification outages
+
+An unavailable or cancelled admission is inconclusive. Owner relay-list
+reconciliation and media-preference restoration preserve the exact stored
+signed records, pending retry plans and delivery outcomes without writing a
+replacement checkpoint. A cold read reports verification unavailability;
+media display data is separately sanitized and supplies no signed frontier or
+action authority until admission recovers. Conclusively invalid signed bytes
+remain eligible for removal or repair through the existing reconciliation rules.
+
+Account Network transactions use the latest delivery and source metadata read
+inside the transaction. Only the separately admitted event objects are reused,
+after comparing every retained signed event's exact bytes, including the
+last-usable frontier. Concurrent acknowledgements and staging therefore retain
+all prior outcomes and source observations without performing crypto inside an
+IndexedDB transaction. `tests/public-evidence-storage-regression.test.ts`
+exercises these paths with real signatures, cold worker outages and concurrent
+IndexedDB writes.

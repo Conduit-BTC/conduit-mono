@@ -137,7 +137,15 @@ None of these records may outrank a newer validated signed frontier. An unsigned
 draft does not change runtime behavior. Once every requested event is signed
 and its exact bytes and immutable target plan are durably staged, the runtime
 may honor the pending projection immediately while network confirmation remains
-visible. Signed membership converges through Nostr. Local ordering is shared
+visible. Pending confirmation is delivery evidence, not an editor-wide mutation veto.
+A later explicit review may replace a pending frontier of the changed kind;
+its signed event receives a newer timestamp and stages atomically before I/O.
+Pending checkpoints of unchanged kinds retain their exact bytes and target
+plans. Inbox replacements preserve independent recovery batches. Retrying a
+retained exact event does not consume or discard the editor's unsigned draft.
+Signing and active publication remain serialized.
+
+Signed membership converges through Nostr. Local ordering is shared
 only where Conduit storage is already shared; isolated devices do not gain a
 second synchronized ordering authority.
 

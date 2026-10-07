@@ -46,7 +46,7 @@ export interface PlainNostrFilter {
 export interface RelayRequest {
   relayUrls: string[]
   filters: PlainNostrFilter[]
-  operation: "public_read" | "private_inbox_read"
+  operation: "public_read" | "private_inbox_read" | "legacy_inbox_read"
 }
 
 export type RelayQuery = RelayRequest
@@ -54,6 +54,8 @@ export type RelayQuery = RelayRequest
 export interface RelayExecutionOptions {
   signal?: AbortSignal
   authorization?: ProtectedReadAuthorization
+  /** Validated protected events; early only after this socket has authenticated. */
+  onProtectedEvent?: (event: SignedNostrEvent) => void
   connectTimeoutMs?: number
   queryTimeoutMs?: number
   authTimeoutMs?: number
@@ -97,6 +99,7 @@ export type RelayFailureCode =
   | "challenge_superseded"
   | "protocol_invalid"
   | "protocol_limit_exceeded"
+  | "consumer_failed"
   | "query_timed_out"
   | "aborted"
 
@@ -471,7 +474,9 @@ function assertRequest(
     throw new Error("Private inbox read requires active authorization")
   }
   assertProtectedReadAuthorization(authorization, authorization.expectedPubkey)
+  const legacy = request.operation === "legacy_inbox_read"
   const allowedPrivateFilterKeys = new Set([
+    ...(legacy ? ["authors"] : []),
     "ids",
     "kinds",
     "#p",
@@ -490,10 +495,14 @@ function assertRequest(
         (filter.ids.length !== 1 ||
           !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||
       filter.kinds?.length !== 1 ||
-      filter.kinds[0] !== 1_059 ||
-      filter["#p"]?.length !== 1 ||
-      filter["#p"]?.[0]?.trim().toLowerCase() !==
-        authorization.expectedPubkey ||
+      filter.kinds[0] !== (legacy ? 4 : 1_059) ||
+      (legacy && filter.authors !== undefined
+        ? filter.authors.length !== 1 ||
+          filter.authors[0] !== authorization.expectedPubkey ||
+          filter["#p"] !== undefined
+        : filter["#p"]?.length !== 1 ||
+          filter["#p"]?.[0]?.trim().toLowerCase() !==
+            authorization.expectedPubkey) ||
       (limit !== undefined &&
         (!Number.isSafeInteger(limit) ||
           limit < 1 ||
@@ -1001,6 +1010,7 @@ function promptSuppressionForTerminalFailure(
   switch (failure) {
     case "aborted":
     case "authority_changed":
+    case "consumer_failed":
     case "authentication_timed_out":
     case "signer_authorization_denied":
     case "signer_unavailable":
@@ -1589,6 +1599,30 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
       let eventFrameCount = 0
       let wireBytes = 0
       const protectedEvents = new Map<string, SignedNostrEvent>()
+      const emittedProtectedEventIds = new Set<string>()
+
+      const emitProtectedEvent = (event: SignedNostrEvent): boolean => {
+        if (emittedProtectedEventIds.has(event.id)) return true
+        if (authorization && !hasProtectedReadAuthority(authorization)) {
+          auth = "authority_changed"
+          return false
+        }
+        try {
+          options.onProtectedEvent?.({
+            ...event,
+            tags: event.tags.map((tag) => [...tag]),
+          })
+        } catch {
+          finish("consumer_failed")
+          return false
+        }
+        if (authorization && !hasProtectedReadAuthority(authorization)) {
+          auth = "authority_changed"
+          return false
+        }
+        emittedProtectedEventIds.add(event.id)
+        return true
+      }
 
       const retireSubscription = (): void => {
         if (!subscriptionId) return
@@ -1609,6 +1643,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             observe({ type: "duplicate", relayIndex })
             continue
           }
+          if (!emitProtectedEvent(event)) return false
           seenEventIds.add(event.id)
           events.push(event)
           eventCount += 1
@@ -1873,6 +1908,14 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
               observe({ type: "unusable", relayIndex })
               break
             }
+            if (
+              authorization &&
+              event.tags.filter((tag) => tag[0] === "p").length !== 1
+            ) {
+              unusableCount += 1
+              observe({ type: "unusable", relayIndex })
+              break
+            }
             if (authorization && !hasProtectedReadAuthority(authorization)) {
               auth = "authority_changed"
               finish("authority_changed")
@@ -1884,6 +1927,9 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
                 observe({ type: "duplicate", relayIndex })
               } else {
                 protectedEvents.set(event.id, event)
+                if (auth === "succeeded" && !emitProtectedEvent(event)) {
+                  finish("authority_changed")
+                }
               }
               break
             }

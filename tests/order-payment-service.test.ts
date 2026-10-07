@@ -1,5 +1,6 @@
 import { plainTestSigner } from "./helpers/plain-signer"
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
+import * as buyerOrderPublish from "../apps/market/src/lib/order-publish"
 import { type NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
@@ -29,6 +30,7 @@ import {
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
   submitExternalPaymentProof,
+  resendOrderProof,
   validateMerchantInvoicePaymentAction,
   type OrderPaymentDependencies,
   type OrderPaymentContext,
@@ -360,6 +362,60 @@ function mockImmediateOrderLifecycleTransaction(): () => void {
     database.transaction = originalTransaction
   }
 }
+
+it.each(["external report", "proof resend"] as const)(
+  "retains accepted %s status and local-history notice through the domain caller",
+  async (action: "external report" | "proof resend") => {
+    const orderId = `accepted-proof-notice-${action}`
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice: privateInvoice(),
+      paymentStatus: action === "proof resend" ? "paid" : "manual_required",
+      proofDeliveryStatus:
+        action === "proof resend" ? "retry_needed" : "not_started",
+    })
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    const originalPut = table.put
+    const originalTransaction = db.transaction
+    db.transaction = ((...args: unknown[]) =>
+      (args.at(-1) as () => Promise<unknown>)()) as typeof db.transaction
+    const restoreTransaction = () => {
+      db.transaction = originalTransaction
+    }
+    table.get = (async () => stored) as unknown as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+    const publish = spyOn(
+      buyerOrderPublish,
+      "publishBuyerOrderMessage"
+    ).mockImplementation(async () => ({
+      buyerSelfCopyError: null,
+      localCacheError: "Local history unavailable",
+      deliveryRoute: "declared_inbox",
+      companionNotification: Promise.resolve("skipped_non_order" as const),
+    }))
+    try {
+      if (action === "external report")
+        await submitExternalPaymentProof(orderId)
+      else await resendOrderProof(orderId)
+      expect(publish).toHaveBeenCalledTimes(1)
+      expect(stored.proofDeliveryStatus).toBe("sent")
+      expect(stored.deliveryNotice).toBe(
+        "Payment proof was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync."
+      )
+    } finally {
+      publish.mockRestore()
+      table.get = originalGet
+      table.put = originalPut
+      restoreTransaction()
+    }
+  }
+)
 
 describe("runOrderPayment", () => {
   it("preserves the prior invoice when payment authority changes during LNURL metadata lookup", async () => {

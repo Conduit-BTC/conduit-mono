@@ -349,6 +349,11 @@ async function admitMutationSnapshot(
       admitted.inboxDeclaration.current.signedEvent
     )
   }
+  if (admitted.inboxDeclaration?.lastUsable) {
+    admitted.inboxDeclaration.lastUsable.signedEvent = await admit(
+      admitted.inboxDeclaration.lastUsable.signedEvent
+    )
+  }
   if (admitted.inboxDeclaration?.pendingDistribution) {
     admitted.inboxDeclaration.pendingDistribution.signedEvent = await admit(
       admitted.inboxDeclaration.pendingDistribution.signedEvent
@@ -379,6 +384,10 @@ function exactMutationSnapshotEvents(
       right.inboxDeclaration?.current.signedEvent,
     ],
     [
+      left.inboxDeclaration?.lastUsable?.signedEvent,
+      right.inboxDeclaration?.lastUsable?.signedEvent,
+    ],
+    [
       left.inboxDeclaration?.pendingDistribution?.signedEvent,
       right.inboxDeclaration?.pendingDistribution?.signedEvent,
     ],
@@ -386,6 +395,32 @@ function exactMutationSnapshotEvents(
   return pairs.every(([a, b]) =>
     a === undefined || b === undefined ? a === b : sameSignedPublicEvent(a, b)
   )
+}
+
+/** Retain transaction-current metadata; restore proof only for equal signed bytes. */
+function admitCurrentMutationSnapshot(
+  current: AccountNetworkMutationSnapshot,
+  admittedBefore: AccountNetworkMutationSnapshot
+): AccountNetworkMutationSnapshot {
+  if (!exactMutationSnapshotEvents(current, admittedBefore)) {
+    throw new AccountNetworkMutationError(
+      "evidence_changed",
+      "Durable Network evidence changed while it was being verified."
+    )
+  }
+  const result = cloneSnapshot(current)
+  for (const kind of ["ownerRelayList", "inboxDeclaration"] as const) {
+    for (const field of [
+      "current",
+      "lastUsable",
+      "pendingDistribution",
+    ] as const) {
+      const target = result[kind]?.[field]
+      const source = admittedBefore[kind]?.[field]
+      if (target && source) target.signedEvent = source.signedEvent
+    }
+  }
+  return result
 }
 
 function sameStrings(
@@ -1049,16 +1084,10 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
               local ?? emptyAccountNetworkLocalState(normalized)
             ),
           }
-          if (
-            !exactMutationSnapshotEvents(rawCurrent, admittedBeforeTransaction)
-          ) {
-            throw new AccountNetworkMutationError(
-              "evidence_changed",
-              "Durable Network evidence changed while it was being verified."
-            )
-          }
-          const current = cloneSnapshot(admittedBeforeTransaction)
-          current.localState = rawCurrent.localState
+          const current = admitCurrentMutationSnapshot(
+            rawCurrent,
+            admittedBeforeTransaction
+          )
           const next = applyStageToSnapshot(current, {
             ...input,
             pubkey: normalized,
@@ -1100,29 +1129,24 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
               "The retained inbox declaration changed before redistribution."
             )
           }
-          if (
-            !exactMutationSnapshotEvents(
-              {
-                inboxDeclaration: existing,
-                localState: admittedBeforeTransaction.localState,
-              },
-              {
-                inboxDeclaration: admittedBeforeTransaction.inboxDeclaration,
-                localState: admittedBeforeTransaction.localState,
-              }
-            )
-          ) {
-            throw new AccountNetworkMutationError(
-              "evidence_changed",
-              "The retained inbox declaration changed while it was being verified."
-            )
-          }
+          const current = admitCurrentMutationSnapshot(
+            {
+              inboxDeclaration: existing,
+              localState: normalizeAccountNetworkLocalState(
+                storedLocalState ?? emptyAccountNetworkLocalState(normalized)
+              ),
+            },
+            {
+              inboxDeclaration: admittedBeforeTransaction.inboxDeclaration,
+              localState: admittedBeforeTransaction.localState,
+            }
+          )
           const publishRelayUrls = inboxRestageRelayUrls(
             storedLocalState ?? emptyAccountNetworkLocalState(normalized),
             input.publishRelayUrls
           )
           const next = applyInboxDeclarationDistributionRestage(
-            admittedBeforeTransaction.inboxDeclaration!,
+            current.inboxDeclaration!,
             {
               ...input,
               pubkey: normalized,
@@ -1161,16 +1185,10 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
               local ?? emptyAccountNetworkLocalState(normalized)
             ),
           }
-          if (
-            !exactMutationSnapshotEvents(rawCurrent, admittedBeforeTransaction)
-          ) {
-            throw new AccountNetworkMutationError(
-              "evidence_changed",
-              "Durable Network evidence changed while it was being verified."
-            )
-          }
-          const current = cloneSnapshot(admittedBeforeTransaction)
-          current.localState = rawCurrent.localState
+          const current = admitCurrentMutationSnapshot(
+            rawCurrent,
+            admittedBeforeTransaction
+          )
           if (input.kind === EVENT_KINDS.RELAY_LIST) {
             const pending = current.ownerRelayList?.pendingDistribution
             if (pending?.signedEvent.id === input.signedEventId) {
