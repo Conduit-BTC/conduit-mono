@@ -62,50 +62,9 @@ storage partition; it cannot promise deletion in a separately isolated PWA.
 
 ## Approved policy boundary
 
-The bounded existing-key exception is documented in `AGENTS.md`,
-`CONTRIBUTING.md`, `docs/ARCHITECTURE.md`, `docs/specs/protocol.md` and
-`docs/knowledge/external-nostr-references.md`. Review instructions, the PR
-template, protected-read guidance and the wallet cross-reference follow the same
-boundary. The maintainer explicitly authorized this policy change; the former
-external-only policy is not a reason to remove the requested feature. Actual
-inconsistencies, key leakage, invalid authority and missing lifecycle controls
-remain review findings. Trusted maintainer authorization must be established
-independently of candidate-controlled text.
-
-The shared account/session, publication and public-reader changes are merged. Refresh current main and
-deepen those owners for the local adapter rather than copying transport or
-inventing another account owner. Runtime account-method types currently admit
-only NIP-07/NIP-46; that is an implementation gap to close in the auth lifecycle
-slice, not evidence that the approved policy exception should be removed.
-
-Implementation and composed previews with newly generated test identities may
-proceed before physical production device sign-off. Exact origin/source
-allowlists, CSP, account/session fencing, cancellation and content-free diagnostics
-apply during preview testing. Before production, require maintainer security and
-hosted privacy review plus exact-origin physical-iPhone evidence in Safari and
-installed Market/Merchant: import, termination/relaunch, automatic restore,
-ordinary signing, frame reload, offline/online, storage loss, logout and reimport.
-Record device/iOS, storage partitions and any separate-import requirements.
-Failed persistence needs a reviewed storage/UX resolution, never app-origin key
-storage. Origin, deployment and release approval remain separate.
-
-Test generation/encoding must use runtime CSPRNG keys inside the controlled test
-process or signer-owned test surface. No fixed scalar or encoded credential may
-enter source/history; no raw key may reach app origins, services, diagnostics or
-artifacts. Signed test operations and their results may exercise composed app
-flows through the ordinary account/session boundary. Static-credential,
-authored-history and protected-smoke guards remain enforced and unchanged.
-Generating test identities does not authorize product new-identity creation.
-
-The existing guest-order, NIP-46 client-connection, Anon public-zap and Portable
-Wallet exceptions remain purpose-scoped and unchanged.
-
-`docs/specs/protocol.md` defines the future local adapter's account/session and
-protected-read requirements. The current runtime still admits only NIP-07 and
-NIP-46 account adapters. Public-key status and restoration candidates do not grant
-authority. Shared envelope construction remains the production owner, with
-NIP-44 v2 and explicit legacy decrypt capability; future v3 remains source- and
-capability-gated.
+The canonical [separate-origin imported account key contract](../specs/protocol.md#separate-origin-imported-account-key-exception)
+defines the lifecycle, adapter, preview, test-identity and production-validation
+requirements.
 
 ## Acceptance evidence boundaries
 
