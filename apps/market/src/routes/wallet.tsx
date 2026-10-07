@@ -41,6 +41,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  Field,
   Input,
   Label,
   Select,
@@ -1064,30 +1065,31 @@ function PortableWalletDialog({
                   </p>
                 </TabsContent>
                 <TabsContent value="restore" className="mt-0 grid gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="portable-mnemonic">Recovery phrase</Label>
-                    <Textarea
-                      id="portable-mnemonic"
-                      value={mnemonic}
-                      onChange={(event) => {
-                        setMnemonic(event.target.value)
-                        setError(null)
-                      }}
-                      placeholder="Enter the BIP39 recovery phrase"
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      required
-                      disabled={pending}
-                      aria-invalid={error === "Enter the recovery phrase."}
-                      aria-describedby={
-                        error === "Enter the recovery phrase."
-                          ? "portable-wallet-form-error"
-                          : undefined
-                      }
-                    />
-                  </div>
+                  <Field id="portable-mnemonic" label="Recovery phrase">
+                    {(props) => (
+                      <Textarea
+                        {...props}
+                        value={mnemonic}
+                        onChange={(event) => {
+                          setMnemonic(event.target.value)
+                          setError(null)
+                        }}
+                        placeholder="Enter the BIP39 recovery phrase"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
+                        required
+                        disabled={pending}
+                        aria-invalid={error === "Enter the recovery phrase."}
+                        aria-describedby={
+                          error === "Enter the recovery phrase."
+                            ? "portable-wallet-form-error"
+                            : undefined
+                        }
+                      />
+                    )}
+                  </Field>
                   <details className="rounded-xl border border-[var(--border)] px-4 py-3">
                     <summary className="cursor-pointer rounded-sm text-sm font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
                       Advanced recovery settings
@@ -1137,31 +1139,25 @@ function PortableWalletDialog({
                   <legend className="px-1 text-sm font-medium text-[var(--text-primary)]">
                     On this device
                   </legend>
-                  <div className="grid gap-2">
-                    <Label htmlFor="portable-label">
-                      Wallet nickname (optional)
-                    </Label>
-                    <Input
-                      id="portable-label"
-                      value={label}
-                      onChange={(event) => {
-                        setLabel(event.target.value)
-                        setError(null)
-                      }}
-                      placeholder="Personal"
-                      autoComplete="off"
-                      disabled={pending}
-                      aria-describedby="portable-label-help"
-                    />
-                    <p
-                      id="portable-label-help"
-                      className="text-xs leading-5 text-[var(--text-muted)]"
-                    >
-                      Use this nickname to identify the wallet in Conduit. It is
-                      stored only in this browser, is not included in the wallet
-                      backup, and is not restored on another device.
-                    </p>
-                  </div>
+                  <Field
+                    id="portable-label"
+                    label="Wallet nickname (optional)"
+                    description="Use this nickname to identify the wallet in Conduit. It is stored only in this browser, is not included in the wallet backup, and is not restored on another device."
+                  >
+                    {(props) => (
+                      <Input
+                        {...props}
+                        value={label}
+                        onChange={(event) => {
+                          setLabel(event.target.value)
+                          setError(null)
+                        }}
+                        placeholder="Personal"
+                        autoComplete="off"
+                        disabled={pending}
+                      />
+                    )}
+                  </Field>
 
                   <div className="grid gap-2">
                     <Label htmlFor="portable-password">
@@ -2007,7 +2003,7 @@ function SendWalletDialog({
                         {quote.feeSats.toLocaleString()} sats
                       </dd>
                     </div>
-                    <div className="flex items-start justify-between gap-4 border-t border-[var(--border-subtle)] pt-2">
+                    <div className="flex items-start justify-between gap-4 border-t border-[var(--border)] pt-2">
                       <dt>
                         {quote.method === "lightning"
                           ? "Maximum total"
@@ -2028,7 +2024,7 @@ function SendWalletDialog({
                       </dd>
                     </div>
                   </dl>
-                  <div className="mt-3 border-t border-[var(--border-subtle)] pt-3">
+                  <div className="mt-3 border-t border-[var(--border)] pt-3">
                     <p className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
                       Payment request
                     </p>

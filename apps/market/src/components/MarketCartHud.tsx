@@ -497,7 +497,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         aria-label="Cart inventory"
         aria-hidden={!shouldShow}
         inert={!shouldShow}
-        className="market-cart-hud-surface pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] shadow-[0_12px_34px_color-mix(in_srgb,var(--shadow)_22%,transparent)] backdrop-blur"
+        className="market-cart-hud-surface pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] shadow-[var(--shadow-md)] backdrop-blur"
       >
         <div className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
           <span

@@ -1,8 +1,8 @@
-# Shared UI baseline and review candidate
+# Shared UI baseline and approved foundation
 
 The primary artifact is the [executable workbench](../../packages/ui/workbench/README.md),
-run with `bun run dev:ui`. This report records a candidate direction; it does
-not designate all existing Conduit UI as approved. No route-wide restyling is
+run with `bun run dev:ui`. This report records the foundation approved on October 7, 2026; it does
+not designate all existing Conduit UI as validated. No route-wide restyling is
 part of this slice.
 
 ## Evidence inspected
@@ -34,20 +34,20 @@ no Ditto code or dependency was imported.
 
 ## Retain and deepen
 
-| Conduit pattern                                              | Why retain it                                                                                       | Gap exposed by the inventory                                              |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| ProductCard used by Market and Merchant                      | Shared media, identity, options, price and action slots already separate presentation from behavior | Day Market price contrast and compact action sizes need correction/review |
-| EventMarketCard, EventPageHeader and EventTimeline           | Schedule, organizer and availability have an established hierarchy                                  | Route-specific containers and state treatments still vary                 |
-| PreferenceSectionCard body/divider/footer                    | Clear settings grouping and explanatory copy; existing network settings reuse is strong             | Row geometry and ordinary-card radius differ                              |
-| Radix overlays, Select, Tabs; cmdk Combobox; native Checkbox | Existing focus, keyboard and selection foundations                                                  | Labels, field errors and density are assembled repeatedly                 |
-| Shared typography roles, Night/Day tokens and theme runtime  | Shared identity and signer-independent startup already exist                                        | Three byte-identical Tailwind maps invite drift                           |
+| Conduit pattern                                              | Why retain it                                                                                       | Gap exposed by the inventory                                                   |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| ProductCard used by Market and Merchant                      | Shared media, identity, options, price and action slots already separate presentation from behavior | Price contrast and compact phone controls corrected in the approved foundation |
+| EventMarketCard, EventPageHeader and EventTimeline           | Schedule, organizer and availability have an established hierarchy                                  | Route-specific containers and state treatments still vary                      |
+| PreferenceSectionCard body/divider/footer                    | Clear settings grouping and explanatory copy; existing network settings reuse is strong             | Row geometry and ordinary-card radius differ                                   |
+| Radix overlays, Select, Tabs; cmdk Combobox; native Checkbox | Existing focus, keyboard and selection foundations                                                  | Labels, field errors and density are assembled repeatedly                      |
+| Shared typography roles, Night/Day tokens and theme runtime  | Shared identity and signer-independent startup already exist                                        | Three byte-identical Tailwind maps invite drift                                |
 
 Market order rows and Merchant OrderListItem repeat similar geometry without a
 shared table/row contract. Merchant ProductCombinationMatrix owns a native table.
 Page headings, totals, empty/error panels and field label/help/error groups are
 repeated across routes. These are the useful abstraction gaps. Existing card
 radii vary between standard Card, ProductCard and PreferenceSectionCard; this
-report preserves the distinction for review instead of treating it as approval.
+approved foundation now defines the contained product card and restrained settings treatment.
 
 ## Prior art translated into Conduit
 
@@ -91,8 +91,9 @@ code supplies data, authorization, validation, selection and safe actions.
 
 The workbench contains product cards, checkout, orders, a validated form,
 dialogs/sheets/menus, settings/status and Event Market/inventory examples with
-loading, empty, error, disabled, selected and pending states. The new preset
-extracts the identical app token maps without changing their values.
+loading, empty, error, disabled, selected and pending states. The shared preset
+replaces the three copied app token maps; approved palette and typography changes
+remain in the shared CSS owners.
 
 ## Deliberate exclusions
 
@@ -100,7 +101,7 @@ No Ditto codec, theme event interoperability, private appearance synchronization
 theme catalog migration, app redesign, domain data engine, generic data grid,
 schema-driven form generator, editor/chart kit, new icon/font library or state
 management dependency. No shared component owns signer, payment, inventory or
-relay authority. Other existing components remain available; this candidate
+relay authority. Other existing components remain available; this foundation
 does not deprecate them merely because they lack a story in the initial reference.
 
 ## Visual research applied to the candidate
@@ -138,9 +139,9 @@ theme interoperability or theme-runtime migration was added in this visual pass.
 
 ## Review disposition
 
-**Targeted human QA.** Review the flatter commerce/settings compositions, neutral
-price hierarchy, 4/8/12 px shape scale and compact/comfortable density before
-broad route adoption. Browser contrast/geometry and focus checks are evidence,
+**Targeted human QA.** The representative workbench visual checkpoint is approved
+(October 7, 2026). Verify the consuming workflow, phone, native zoom and assistive
+technology behavior as features adopt it. Browser contrast/geometry and focus checks are evidence,
 not a full accessibility certification. Physical-device and screen-reader checks
 remain distinct from a desktop browser resized to phone dimensions.
 

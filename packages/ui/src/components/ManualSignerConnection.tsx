@@ -6,8 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./Tabs"
 import { Textarea } from "./Textarea"
 
 const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
-const tabClassName =
-  "min-h-11 min-w-0 gap-1 rounded-lg px-1 text-xs whitespace-normal data-[state=active]:bg-primary-500 data-[state=active]:text-white sm:text-sm"
+const tabClassName = "min-h-11 min-w-0 gap-1 px-1 text-sm whitespace-normal"
 
 export function BunkerSignerConnection({
   bunkerUri,

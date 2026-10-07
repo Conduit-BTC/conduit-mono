@@ -9,17 +9,20 @@ export interface FieldControlProps {
 
 /** Presentation only: validation and values stay with the consuming form. */
 export function Field({
+  id: controlId,
   label,
   description,
   error,
   children,
 }: {
+  id?: string
   label: ReactNode
   description?: ReactNode
   error?: ReactNode
   children: (props: FieldControlProps) => ReactNode
 }) {
-  const id = useId()
+  const generatedId = useId()
+  const id = controlId ?? generatedId
   const descriptionId = `${id}-description`
   const errorId = `${id}-error`
   const describedBy = [description && descriptionId, error && errorId]

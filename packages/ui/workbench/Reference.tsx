@@ -141,7 +141,7 @@ export function Foundations() {
               Spacing, density and shape
             </h2>
             <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
-              Proposed composition rules using existing Tailwind spacing and
+              Shared composition rules using existing Tailwind spacing and
               radius tokens.
             </p>
           </header>
@@ -240,16 +240,16 @@ export function Baseline() {
       <section className="space-y-5 border-t border-[var(--border)] pt-6">
         <header className="space-y-1.5">
           <h2 className="text-lg font-semibold">
-            Baseline and proposed inventory
+            Baseline and shared inventory
           </h2>
           <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
-            Review candidate from Conduit main dacdd946 and Ditto source
-            359e76f8. Current implementation is evidence, not automatic design
-            approval.
+            Baseline researched from Conduit main dacdd946 and Ditto source
+            359e76f8. The representative foundation was approved on October 7,
+            2026. Each consuming workflow still needs validation.
           </p>
         </header>
         <div className="space-y-4">
-          <Badge variant="warning">Visual checkpoint pending</Badge>
+          <Badge variant="warning">Visual foundation approved</Badge>
           <p className="text-pretty text-base leading-6 text-[var(--text-secondary)]">
             Conduit already has a substantial shared system: 77 component source
             files, tokenized Night/Day themes, a signer-independent theme
@@ -258,7 +258,7 @@ export function Baseline() {
           </p>
         </div>
       </section>
-      <Table scrollLabel="Proposed component inventory">
+      <Table scrollLabel="Shared component inventory">
         <TableCaption>
           Retain the existing primitives; add only the composition gaps
           exercised here.
@@ -357,8 +357,8 @@ export function Baseline() {
                 theme catalog.
               </li>
               <li>
-                A copied Ditto feed shell, ornamental arcs, extra animations, a
-                new icon library or font.
+                A copied Ditto feed shell, ornamental arcs, extra animations or
+                a new icon library. Poppins is bundled as the approved UI font.
               </li>
               <li>
                 Generic data grids, sorting engines, schema-driven forms, chart
@@ -377,26 +377,25 @@ export function Baseline() {
         </section>
         <section className="space-y-5 border-t border-[var(--border)] pt-6">
           <header className="space-y-1.5">
-            <h2 className="text-lg font-semibold">Review choices</h2>
+            <h2 className="text-lg font-semibold">Approved foundation</h2>
           </header>
           <div>
             <ol className="list-decimal space-y-3 pl-5 text-sm leading-6">
               <li>
-                Review the flatter product and settings compositions, 4/8/12 px
-                shape scale and reduced container framing.
+                Contained product cards, ruled settings, a 4/8/12 px shape scale
+                and restrained framing.
               </li>
               <li>
-                Approve 16/24 px page gutters, 24 px section gaps and
-                compact/comfortable table density?
+                Use 16/24 px page gutters, 24 px section gaps and
+                compact/comfortable table density.
               </li>
               <li>
-                Approve a neutral checkout hierarchy with purple for the next
-                action and readable neutral prices?
+                Use a neutral checkout hierarchy with purple for the next action
+                and readable neutral prices.
               </li>
               <li>
-                Inspect the corrected status/price contrast, full product names
-                and 44 px phone controls before promoting the reference as
-                approved.
+                Preserve corrected status/price contrast, full product names and
+                44 px phone controls in consuming workflows.
               </li>
             </ol>
           </div>

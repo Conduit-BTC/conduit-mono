@@ -70,7 +70,8 @@
     "dev:ui": "bun run --filter @conduit/market dev:ui",
     "build:ui": "bun run --filter @conduit/market build:ui",
     "preview:ui": "bun run --filter @conduit/market preview:ui",
-    "typecheck:ui": "tsc -p packages/ui/workbench/tsconfig.json --noEmit"
+    "typecheck:ui": "tsc -p packages/ui/workbench/tsconfig.json --noEmit",
+    "ui:check": "bun test tests/no-hardcoded-colors.test.ts tests/ui-foundation-policy.test.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

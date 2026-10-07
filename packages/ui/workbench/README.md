@@ -1,8 +1,9 @@
 # Conduit UI workbench
 
 This is the executable review reference for `@conduit/ui`. It imports the same
-components as Market and Merchant. It is currently a **review candidate**, not
-an approved replacement for every existing screen. See the
+components as Market and Merchant. Its representative visual foundation was approved on October 7, 2026. New and
+materially changed UI uses this reference; existing untouched screens adopt it
+as they change. Approval does not certify every route or device. See the
 [baseline report](../../../docs/knowledge/shared-ui-baseline.md) and
 [current design guidance](../../../docs/DESIGN.md).
 
@@ -33,7 +34,7 @@ It binds to loopback. No deployment workflow publishes it.
 | Orders            | Semantic status table, row selection, compact/comfortable density and named horizontal scroll region                      |
 | Event / inventory | Existing EventMarketCard, prepared assignment rows and loading/empty/error/pending states                                 |
 | Settings / status | Existing PreferenceSectionCard, settings rows, switch, unavailable connection and restore progress                        |
-| Baseline report   | Retained patterns, prior art, proposed component families, exclusions and review choices                                  |
+| Baseline report   | Retained patterns, prior art, shared component families, exclusions and review choices                                    |
 
 Expand Preview controls to change themes, show long content or choose a state. State
 selection applies to Commerce and Event / inventory; density applies to tables.
@@ -49,7 +50,7 @@ not use a signer or account settings. Fictional fixtures carry no customer data.
 Product media uses the existing public Conduit placeholder; unavailable media
 is an intentional second example. Do not add credentials or live mutations here.
 
-## Authoring with the candidate recipes
+## Authoring with shared recipes
 
 1. Find the closest composition here before styling a route. Keep routing,
    validation, authorization and data fetching with the consuming feature.
@@ -58,6 +59,8 @@ is an intentional second example. Do not add credentials or live mutations here.
 3. Use `Field` around one input, textarea or select trigger. Spread its supplied
    control props to preserve the visible label and help/error relationships.
    Use the feature's existing validation library; Field does not own validation.
+   Supply `id` when an existing workflow needs a stable control ID. Retain
+   external error associations when an alert belongs to the complete operation.
 4. Use headings, spacing and rules for ordinary sections. Use Card only when a
    contained object is useful (for example, checkout or a focused form).
    PreferenceSectionCard provides ruled settings groups; SummaryList/SummaryRow
@@ -107,13 +110,64 @@ should explain its concrete constraint and add a reviewable example here.
 ## Validation before adoption
 
 Run the repository typecheck, lint, build and color/telemetry policies, plus the
-workbench typecheck/build. Inspect both themes at desktop and phone widths with
+workbench typecheck/build and `bun run ui:check`. Inspect both themes at desktop and phone widths with
 long content and all relevant states. Check keyboard-only use, focus return,
 error recovery, contrast and scroll containment. Physical-device, screen-reader,
 zoom and reduced-motion checks remain separate evidence from a desktop browser
 resized to phone dimensions. The research pass corrects the recorded price/status contrast, clipped names
-and small phone controls. Broader app adoption and visual acceptance still
-require review; the workbench is not a claim that all existing routes conform.
+and small phone controls. The visual checkpoint is complete. Review the consuming workflow on its target
+devices; the workbench is not a claim that all existing routes conform.
 
 Workbench examples are composition evidence, not cryptographic, payment,
 signer, relay-delivery or authenticated workflow tests.
+
+## Real feature compositions
+
+| Consumer                             | Shared choices                                                                             | Feature-owned behavior                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Merchant Events directory            | PageLayout, PageHeader, Button; existing EventTimeline and SegmentedControl                | Discovery, relationship filters and navigation                                      |
+| Market Portable Wallet setup/restore | Field with Input/Textarea, Tabs, Dialog, Button                                            | Credential handling, validation, create/restore, dismissal cleanup and focus return |
+| Signer connection and recovery       | Shared Tabs, Textarea, Button and ActionRow in ManualSignerConnection/SignerRecoveryNotice | Connection, restoration, safe retry and announcement state                          |
+| All three app shells                 | Shared Tailwind preset, site styles, synchronous theme bootstrap and runtime               | App-specific content scanning and navigation; Store Builder remains a placeholder   |
+
+These replace the Events directory's local heading/page frame, repeated wallet
+nickname/help and recovery-label wrappers, and the recovery action layout. The
+manual signer tabs inherit the shared underline treatment instead of overriding
+it with filled selections and 12 px phone labels. Product cards, statuses and
+controls are the same exports used by real apps. Demo checkout/order examples
+remain fixtures; authenticated or funded success requires separate evidence.
+
+## Guardrails and exceptions
+
+`bun run ui:check` reuses the existing CI color-policy gate. It checks raw
+hex/RGB literals, Tailwind palette shortcuts, unresolved CSS variable references,
+copied theme tokens/app presets, and native or ARIA replacements of shared
+controls throughout app source. JSX inspection includes multiline controls.
+The policy is static: computed class construction and custom interaction logic
+still need code review. CSS variables supplied by Radix are named explicitly;
+local geometry variables must have a declaration or runtime setter.
+
+The exact legacy inventory is in
+[`ui-foundation-exceptions.json`](../../../scripts/ci/ui-foundation-exceptions.json).
+It records path, rule, control signature/color, occurrence count and reason.
+All initial entries were verified against main. They cover existing controls
+and colors in untouched routes, domain tag entry and development harnesses;
+they do not approve new uses. No wildcard path or open-ended color exception
+is allowed. Added occurrences fail; removed or changed controls require removing
+or narrowing the old entry. When a surface materially changes, adopt shared
+controls/tokens instead of refreshing its legacy exception. A genuinely needed
+content/data/status exception requires a concrete reason and reviewer approval.
+Black/white contrast utilities remain available for foregrounds and QR media.
+
+The policy audit repaired undefined wallet borders and a cart HUD shadow using
+existing shared tokens. There is no new theme catalog, state library, form
+framework, Ditto dependency or appearance synchronization.
+
+## Remaining human checks
+
+Physical phones, screen readers, native browser zoom and OS reduced-motion
+behavior remain targeted human QA. Root-text enlargement and desktop browser
+emulation establish specific reflow observations only. Preview deployment,
+live signer restoration, relay delivery and funded wallet operations are
+separate validation boundaries. Visual approval authorizes the foundation;
+it does not grant merge, release or deployment authority.
