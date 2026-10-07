@@ -11,6 +11,7 @@ import {
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   MessageComposer,
+  PrivateSendNotice,
   matchesConversationSearch,
   SearchInput,
   SignerRecoveryNotice,
@@ -35,7 +36,6 @@ import {
   appendConduitClientTag,
   createParticipantMessageRumor,
   sendAccountInboxRumor,
-  cacheParsedDirectMessage,
   cacheOrderMessageRumor,
   clearProtectedReadAuthenticationSuppression,
   createValidatedOrderRouteScope,
@@ -43,15 +43,16 @@ import {
   formatNpub,
   getAccountSigner,
   formatPubkey,
+  getCommerceInbox,
   markDirectMessageConversationRead,
   normalizePubkey,
-  parseDirectMessageRumor,
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
   pubkeyToNpub,
   useAuth,
   useCommerceInbox,
   type PrivateMessageEvent,
+  type AccountInboxSendResult,
   type ParsedDirectMessage,
   createPrivateMessageRumor,
   useConduitSession,
@@ -330,6 +331,11 @@ function MessagesWorkspace() {
   const [merchantSearchSheetOpen, setMerchantSearchSheetOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
   const [dmText, setDmText] = useState("")
+  const [directSendOutcome, setDirectSendOutcome] = useState<{
+    accountPubkey: string
+    counterpartyPubkey: string
+    result: AccountInboxSendResult
+  } | null>(null)
   const [dmSearch, setDmSearch] = useState("")
   const [dmSearchSheetOpen, setDmSearchSheetOpen] = useState(false)
   const [selectedDmId, setSelectedDmId] = useState<string | null>(null)
@@ -489,7 +495,24 @@ function MessagesWorkspace() {
 
   useEffect(() => {
     setReplyText("")
-  }, [selectedConversation?.id])
+  }, [accountPubkey, selectedConversation?.id])
+
+  const orderReplyContextRef = useRef({
+    accountPubkey,
+    conversationId: selectedConversation?.id,
+    merchantPubkey: selectedConversation?.merchantPubkey,
+  })
+  useLayoutEffect(() => {
+    orderReplyContextRef.current = {
+      accountPubkey,
+      conversationId: selectedConversation?.id,
+      merchantPubkey: selectedConversation?.merchantPubkey,
+    }
+  }, [
+    accountPubkey,
+    selectedConversation?.id,
+    selectedConversation?.merchantPubkey,
+  ])
 
   const replyMutation = useMutation({
     mutationFn: async (input: BuyerOrderReplySend) => {
@@ -501,6 +524,12 @@ function MessagesWorkspace() {
 
       const signer = getAccountSigner()
       if (!signer) throw new Error("Signer not connected")
+      let accountOwner: ReturnType<typeof getCommerceInbox> | null = null
+      try {
+        accountOwner = getCommerceInbox(input.accountPubkey)
+      } catch {
+        // The recipient send can proceed; report missing local history after ACK.
+      }
 
       const rumor = createPrivateMessageRumor({
         pubkey: input.accountPubkey,
@@ -526,7 +555,7 @@ function MessagesWorkspace() {
       // Reply inside an existing validated order thread: order identity and
       // counterparty match the parsed conversation, so the compatibility lane
       // may carry it when the merchant has no usable declaration.
-      const { selfCopyError } = await publishPrivateMessage({
+      const sent = await publishPrivateMessage({
         rumor,
         senderPubkey: input.accountPubkey,
         accountPubkey: input.accountPubkey,
@@ -548,22 +577,40 @@ function MessagesWorkspace() {
         }),
         telemetryApp: "market",
       })
-      if (selfCopyError) {
+      if (sent.selfCopyError) {
         console.warn("Buyer message self-copy publish failed")
       }
 
+      let localHistory: AccountInboxSendResult["localHistory"] = "saved"
       try {
-        await cacheOrderMessageRumor(rumor)
+        if (!accountOwner) throw new Error("Local order history unavailable")
+        await cacheOrderMessageRumor(rumor, accountOwner)
       } catch {
         console.warn("Failed to cache buyer message")
+        localHistory = "unavailable"
       }
+      return {
+        recipient: "accepted",
+        selfCopy:
+          sent.selfDeliveryStatus === "partial_success"
+            ? "partial"
+            : sent.selfDeliveryStatus === "full_success" && !sent.selfCopyError
+              ? "complete"
+              : "pending",
+        localHistory,
+        ...(sent.checkpointFailure || localHistory === "unavailable"
+          ? { checkpointFailure: true as const }
+          : {}),
+      } satisfies AccountInboxSendResult
     },
     onSuccess: async (_, input) => {
+      const current = orderReplyContextRef.current
       if (
-        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
-      ) {
+        current.accountPubkey !== input.accountPubkey ||
+        current.conversationId !== input.orderId ||
+        current.merchantPubkey !== input.merchantPubkey
+      )
         return
-      }
       setReplyText((current) =>
         current.trim() === input.content ? "" : current
       )
@@ -752,46 +799,55 @@ function MessagesWorkspace() {
       const recipients = input.rumor.tags
         .filter((tag) => tag[0] === "p")
         .map((tag) => tag[1]!)
-      let selfCopyError: string | null = null
-      if (recipients.length > 1) {
-        await sendAccountInboxRumor({
+      const markAccepted = () => {
+        optimisticDmQueue.markPublished(
+          input.messageScope,
+          input.message.localId
+        )
+        const current = messagingAuthorityRef.current
+        if (current.accountPubkey === input.accountPubkey) {
+          const currentScope = {
+            ownerKey: current.accountPubkey,
+            authorityKey: `${current.authGeneration}:${current.signerReadiness}`,
+          }
+          if (currentScope.authorityKey !== input.messageScope.authorityKey)
+            optimisticDmQueue.markPublished(currentScope, input.message.localId)
+        }
+      }
+      const outcome = await sendAccountInboxRumor(
+        {
           principal: input.accountPubkey,
           recipients,
           content: input.rumor.content,
           rumor: input.rumor,
-        })
-      } else {
-        const sent = await publishPrivateMessage({
-          rumor: input.rumor,
-          senderPubkey: input.accountPubkey,
-          accountPubkey: input.accountPubkey,
-          authenticatedPubkey: input.accountPubkey,
-          recipientPubkey: input.counterpartyPubkey,
-          signer,
-          rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-          signerInteraction: "external",
-          shouldContinue: () =>
-            isCurrentMessagingAuthority(
-              input.accountPubkey,
-              input.authGeneration
-            ),
-        })
-        selfCopyError = sent.selfCopyError
-      }
-      if (
-        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
-      ) {
-        return
-      }
-      optimisticDmQueue.markPublished(input.messageScope, input.message.localId)
-      if (selfCopyError) {
-        console.warn("DM self-copy publish failed")
-      }
-      try {
-        await cacheParsedDirectMessage(parseDirectMessageRumor(input.rumor))
-      } catch {
-        console.warn("Failed to cache published direct message")
-      }
+        },
+        {
+          getSigner: () => signer,
+          send: async (prepared) =>
+            await publishPrivateMessage({
+              ...prepared,
+              signerInteraction: "external",
+              relayAuthMethod: signer.authMethod,
+              shouldContinue: () => {
+                if (prepared.shouldContinue?.() === false) return false
+                return isCurrentMessagingAuthority(
+                  input.accountPubkey,
+                  input.authGeneration
+                )
+              },
+              onRecipientAccepted: async (delivery) => {
+                markAccepted()
+                await prepared.onRecipientAccepted?.(delivery)
+              },
+            }),
+        }
+      )
+      markAccepted()
+      setDirectSendOutcome({
+        accountPubkey: input.accountPubkey,
+        counterpartyPubkey: input.counterpartyPubkey,
+        result: outcome,
+      })
     },
     onSuccess: async (_, input) => {
       if (
@@ -824,6 +880,7 @@ function MessagesWorkspace() {
       return
 
     const createdAt = Date.now()
+    setDirectSendOutcome(null)
     const rumor = createParticipantMessageRumor({
       senderPubkey: accountPubkey,
       recipientPubkeys: [selectedDmPubkey],
@@ -863,6 +920,7 @@ function MessagesWorkspace() {
         createdAt: Math.floor(message.createdAt / 1000),
       })
     const messageScope = optimisticDmScope
+    setDirectSendOutcome(null)
     optimisticDmQueue.markPending(messageScope, message.localId)
     sendDmMutation.mutate({
       accountPubkey,
@@ -874,15 +932,26 @@ function MessagesWorkspace() {
     })
   }
 
-  const previousMessageAuthorityKeyRef = useRef(optimisticDmScope.authorityKey)
+  const previousMessageAuthorityRef = useRef({
+    key: optimisticDmScope.authorityKey,
+    accountPubkey,
+  })
   useLayoutEffect(() => {
-    const previousAuthorityKey = previousMessageAuthorityKeyRef.current
-    previousMessageAuthorityKeyRef.current = optimisticDmScope.authorityKey
-    if (previousAuthorityKey === optimisticDmScope.authorityKey) return
+    const previous = previousMessageAuthorityRef.current
+    previousMessageAuthorityRef.current = {
+      key: optimisticDmScope.authorityKey,
+      accountPubkey,
+    }
+    if (previous.key === optimisticDmScope.authorityKey) return
     preparedDmRumors.current.clear()
-    replyMutation.reset()
+    if (previous.accountPubkey !== accountPubkey) replyMutation.reset()
     sendDmMutation.reset()
-  }, [optimisticDmScope.authorityKey, replyMutation, sendDmMutation])
+  }, [
+    accountPubkey,
+    optimisticDmScope.authorityKey,
+    replyMutation,
+    sendDmMutation,
+  ])
 
   return (
     <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
@@ -1278,6 +1347,17 @@ function MessagesWorkspace() {
                               sending={sendDmMutation.isPending}
                               placeholder="Send a direct message"
                             />
+                            <PrivateSendNotice
+                              outcome={
+                                directSendOutcome?.accountPubkey ===
+                                  accountPubkey &&
+                                directSendOutcome.counterpartyPubkey ===
+                                  selectedDmPubkey
+                                  ? directSendOutcome.result
+                                  : null
+                              }
+                              label="Reply"
+                            />
                             {sendDmMutation.error && (
                               <div
                                 className="mt-2 text-xs text-error"
@@ -1617,6 +1697,18 @@ function MessagesWorkspace() {
                             : "Failed to send message"}
                         </div>
                       )}
+                      {replyMutation.data &&
+                        replyMutation.variables?.accountPubkey ===
+                          accountPubkey &&
+                        replyMutation.variables.orderId ===
+                          selectedConversation.orderId &&
+                        replyMutation.variables.merchantPubkey ===
+                          selectedConversation.merchantPubkey && (
+                          <PrivateSendNotice
+                            outcome={replyMutation.data}
+                            label="Reply"
+                          />
+                        )}
                     </div>
                   </>
                 ) : (

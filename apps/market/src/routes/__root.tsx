@@ -105,8 +105,13 @@ function RootShell({
       className={`flex min-w-0 flex-col overflow-x-clip ${isNotFound ? "min-h-dvh" : "min-h-screen"}`}
       style={
         {
+          "--market-footer-hidden-shift": mobileChromeHidden
+            ? `${footerHeight}px`
+            : "0px",
           "--order-messages-bottom-offset":
             "var(--market-fixed-footer-height, 0px)",
+          "--order-messages-hidden-shift":
+            "var(--market-footer-hidden-shift, 0px)",
           paddingBottom: isNotFound
             ? "var(--market-fixed-footer-height, 0px)"
             : "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",

@@ -3,11 +3,13 @@ import {
   commerceMessageSearchText,
   type CommerceInboxSnapshot,
   type DecodedCommerceMessage,
+  type AccountInboxSendResult,
 } from "@conduit/core"
 import { Button } from "./Button"
 import { SearchInput } from "./SearchInput"
 import { Input } from "./Input"
 import { MessageComposer } from "./MessageComposer"
+import { PrivateSendNotice } from "./PrivateSendNotice"
 
 const transportLabel = (
   transport: "nip17" | "nip04_incoming" | "nip04_outgoing"
@@ -23,7 +25,10 @@ export interface CommerceInboxRecoveryProps {
   loadOlder?: () => Promise<unknown>
   retry?: () => Promise<unknown>
   retrySends?: () => Promise<unknown>
-  reply?: (record: DecodedCommerceMessage, content: string) => Promise<void>
+  reply?: (
+    record: DecodedCommerceMessage,
+    content: string
+  ) => Promise<void | AccountInboxSendResult>
   associate?: (record: DecodedCommerceMessage, orderId: string) => Promise<void>
 }
 /** Account-local evidence only. Associations never authorize commerce actions. */
@@ -41,6 +46,8 @@ export function CommerceInboxRecovery({
   const [orderId, setOrderId] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
+  const [replyOutcome, setReplyOutcome] =
+    useState<AccountInboxSendResult | null>(null)
   if (!snapshot) return null
   const records = snapshot.externalRecords.filter((record) =>
     commerceMessageSearchText(record)
@@ -228,6 +235,7 @@ export function CommerceInboxRecovery({
                             : record.provenance.rumorId
                         )
                         setText("")
+                        setReplyOutcome(null)
                         setOrderId(record.association ?? "")
                       }}
                     >
@@ -273,11 +281,21 @@ export function CommerceInboxRecovery({
                           <MessageComposer
                             value={text}
                             onChange={setText}
-                            onSend={() => void act(() => reply(record, text))}
+                            onSend={() => {
+                              setReplyOutcome(null)
+                              void act(async () => {
+                                const outcome = await reply(record, text)
+                                setReplyOutcome(outcome ?? null)
+                              })
+                            }}
                             sending={busy}
                             placeholder="Reply to the authenticated author"
                           />
                         ) : null}
+                        <PrivateSendNotice
+                          outcome={replyOutcome}
+                          label="Reply"
+                        />
                       </div>
                     ) : null}
                   </article>

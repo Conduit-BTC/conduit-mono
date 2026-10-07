@@ -1,15 +1,17 @@
 import { useRef, useState, type KeyboardEvent } from "react"
 import { Paperclip, Send } from "lucide-react"
+import type { AccountInboxSendResult } from "@conduit/core"
 import { cn } from "../utils"
 import { Button } from "./Button"
 import { Input } from "./Input"
 import { Textarea } from "./Textarea"
+import { PrivateSendNotice } from "./PrivateSendNotice"
 
 export interface MessageComposerProps {
   value: string
   onChange: (value: string) => void
   onSend: () => void
-  onAttach?: (file: File) => Promise<void>
+  onAttach?: (file: File) => Promise<void | AccountInboxSendResult>
   sending?: boolean
   disabled?: boolean
   placeholder?: string
@@ -33,6 +35,8 @@ export function MessageComposer({
   const inputRef = useRef<HTMLInputElement>(null)
   const [attaching, setAttaching] = useState(false)
   const [attachmentFailed, setAttachmentFailed] = useState(false)
+  const [attachmentOutcome, setAttachmentOutcome] =
+    useState<AccountInboxSendResult | null>(null)
   const canSend = !disabled && !sending && !attaching && value.trim().length > 0
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -61,9 +65,17 @@ export function MessageComposer({
               if (!file) return
               setAttaching(true)
               setAttachmentFailed(false)
-              void onAttach(file)
-                .catch(() => setAttachmentFailed(true))
-                .finally(() => setAttaching(false))
+              setAttachmentOutcome(null)
+              void (async () => {
+                try {
+                  const outcome = await onAttach(file)
+                  setAttachmentOutcome(outcome ?? null)
+                } catch {
+                  setAttachmentFailed(true)
+                } finally {
+                  setAttaching(false)
+                }
+              })()
             }}
           />
           <Button
@@ -111,6 +123,7 @@ export function MessageComposer({
             : "Encrypting and sending attachment…"}
         </p>
       ) : null}
+      <PrivateSendNotice outcome={attachmentOutcome} label="Attachment" />
     </div>
   )
 }

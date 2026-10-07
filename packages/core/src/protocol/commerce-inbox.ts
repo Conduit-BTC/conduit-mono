@@ -7,6 +7,7 @@ import {
 } from "./checkout-spark-recovery"
 import { sendPrivateAttachment } from "./private-file-upload"
 import { sendAccountInboxRumor } from "./inbox-send"
+import type { AccountInboxSendResult } from "./inbox-send"
 import { retryPrivateDeliveries } from "./private-message-delivery"
 import { liveQuery } from "dexie"
 import {
@@ -18,6 +19,7 @@ import {
 import {
   CommerceInboxStore,
   INBOX_DECODE_RULES_VERSION,
+  projectDirectOrFileRumor,
   readRetainedInboxProjections,
   type InboxProjectionRow,
   type InboxDecodeState,
@@ -26,7 +28,6 @@ import {
 } from "./commerce-inbox-store"
 import {
   unwrapPrivateMessageEnvelope,
-  getOrderCompanionNotificationIdentity,
   type ParsedDirectMessage,
   type DecryptFailure,
   type LegacyDmDecryptFailure,
@@ -143,6 +144,7 @@ export interface CommerceInboxDiagnostic {
     status: InboxRangeRow["status"]
     observedAt: number
     observedCount: number
+    admissionRejected?: true
   }>
   received: number
   observedAt: number | null
@@ -423,6 +425,7 @@ export class CommerceInbox {
       status: range.status,
       observedAt: range.observedAt,
       observedCount: range.observedCount,
+      admissionRejected: range.admissionRejected,
     }))
     this.snapshot = {
       ...this.snapshot,
@@ -602,28 +605,11 @@ export class CommerceInbox {
                   record.status === "malformed" ? "malformed" : "unsupported"
               }
             } else {
-              const participants = record.participants
-              const counterparties = participants.filter(
-                (p) => p !== this.store.principal
-              )
-              const message: ParsedDirectMessage = {
-                id: rumor.id,
-                senderPubkey: rumor.pubkey,
-                recipientPubkey:
-                  rumor.pubkey === this.store.principal
-                    ? (counterparties[0] ?? this.store.principal)
-                    : this.store.principal,
-                createdAt: (rumor.created_at ?? 0) * 1000,
-                content:
-                  record.category === "direct" ? record.text : "Encrypted file",
-                transport: "nip17",
-                participants,
-                conversationId: `nip17:${participants.join(":")}`,
-                replyTo: record.replyTo,
-                file: record.category === "file" ? record : undefined,
-              }
-              const companion = getOrderCompanionNotificationIdentity(rumor)
-              if (companion) message.orderCompanionIdentity = companion
+              const message = projectDirectOrFileRumor(
+                rumor,
+                this.store.principal,
+                record
+              ).message
               projection = { kind: "direct", message }
             }
             phase = "persisting"
@@ -961,6 +947,7 @@ export class CommerceInbox {
         this.assertCurrent()
         const id = this.store.key(`${relayUrl}:${transport}`)
         const stored = await this.store.database.commerceInboxRanges.get(id)
+        let rejected = false
         const page = await visitProtectedInboxHistoryPage({
           principalPubkey: this.store.principal,
           transport,
@@ -984,11 +971,26 @@ export class CommerceInbox {
                   this.authorization
                 ),
           visit: async (event) => {
-            await this.ingest(event, [relayUrl])
+            try {
+              await this.ingest(event, [relayUrl])
+            } catch (error) {
+              if (
+                !(error instanceof NostrSignerError) ||
+                error.code !== "invalid_response"
+              )
+                throw error
+              rejected = true
+              return
+            }
             await this.waitForDecode()
           },
         })
         this.assertCurrent()
+        const completedPage =
+          page.status === "advanced" || page.status === "source_eose"
+        const admissionRejected = stored?.admissionRejected || rejected
+        const pageStatus =
+          admissionRejected && completedPage ? "partial" : page.status
         const ranges = this.store.database.commerceInboxRanges
         await this.store.database.transaction("rw", ranges, async () => {
           this.assertCurrent()
@@ -1008,11 +1010,9 @@ export class CommerceInbox {
             pageCount:
               stored?.status === "source_eose"
                 ? 1
-                : (stored?.pageCount ?? 0) +
-                  (page.status === "advanced" || page.status === "source_eose"
-                    ? 1
-                    : 0),
-            status: page.status,
+                : (stored?.pageCount ?? 0) + (completedPage ? 1 : 0),
+            status: pageStatus,
+            admissionRejected: admissionRejected ? true : undefined,
             observedAt: Date.now(),
             observedCount: page.range.observedCount,
             revision: (stored?.revision ?? 0) + 1,
@@ -1079,10 +1079,13 @@ export class CommerceInbox {
       commerceMessageSearchText(r).toLocaleLowerCase().includes(term)
     )
   }
-  async reply(record: DecodedCommerceMessage, content: string): Promise<void> {
+  async reply(
+    record: DecodedCommerceMessage,
+    content: string
+  ): Promise<AccountInboxSendResult> {
     if (record.category !== "commerce")
       throw new Error("Only authenticated commerce records can be replied to")
-    await sendAccountInboxRumor({
+    const result = await sendAccountInboxRumor({
       principal: this.store.principal,
       recipients: [
         commerceReplyCounterparty(this.store.principal, record.provenance),
@@ -1094,7 +1097,13 @@ export class CommerceInbox {
         ...(record.fields.orderId ? [["order", record.fields.orderId]] : []),
       ],
     })
-    await this.waitForDecode()
+    if (result.localHistory === "unavailable") this.storageFailed()
+    try {
+      await this.refresh()
+    } catch {
+      this.storageFailed()
+    }
+    return result
   }
   async associate(
     record: DecodedCommerceMessage,
@@ -1112,12 +1121,52 @@ export class CommerceInbox {
     })
     await this.refresh()
   }
-  async attach(recipients: string[], file: File): Promise<void> {
-    await sendPrivateAttachment(this.store.principal, recipients, file)
-    await this.waitForDecode()
+  async attach(
+    recipients: string[],
+    file: File
+  ): Promise<AccountInboxSendResult> {
+    const result = await sendPrivateAttachment(
+      this.store.principal,
+      recipients,
+      file
+    )
+    if (result.localHistory === "unavailable") this.storageFailed()
+    try {
+      await this.refresh()
+    } catch {
+      this.storageFailed()
+    }
+    return result
   }
   async retrySends(): Promise<void> {
-    await retryPrivateDeliveries(this.store.principal)
+    this.assertCurrent()
+    const signer = getAccountSigner()
+    if (
+      !signer ||
+      signer !== this.signer ||
+      signer !== this.authorization.signer ||
+      signer.pubkey !== this.store.principal
+    )
+      throw new Error("Reconnect the intended account to retry saved sends")
+    await retryPrivateDeliveries(
+      this.store.principal,
+      undefined,
+      undefined,
+      this.store,
+      undefined,
+      {
+        shouldContinue: () => {
+          this.assertCurrent()
+          if (getAccountSigner() !== signer)
+            throw new Error("Inbox signer session changed")
+          return true
+        },
+        foregroundRelayAuthentication: {
+          signer,
+          method: signer.authMethod,
+        },
+      }
+    )
     await this.waitForDecode()
     await this.refresh()
   }
