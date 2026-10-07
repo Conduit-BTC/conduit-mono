@@ -120,7 +120,11 @@ delivery failures separately from code findings. Do not expose internal terms su
 - A bounded `guest_ephemeral` browser key is limited to one guest order and
   merchant. Store it only in same-tab session storage for recovery of up to 24
   hours. Expose it only to signing the initial private order and same-order
-  payment reports. It must never become an account key or nsec.
+  payment reports, plus the separately constrained merchant-only router
+  recovery sealing capability in `docs/specs/protocol.md`. That capability
+  binds the same order, merchant, canonical recovery payload and guest deadline;
+  it rejects generic messages, direct rumor signatures and other recipients.
+  It must never become an account key or nsec.
 - A revocable NIP-46 client connection key must use encrypted browser-local
   storage and must be deleted on logout. Store a CI client key only as a
   protected Actions environment secret. Use it only in a post-merge, main-only,

@@ -1,11 +1,28 @@
 import {
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+  normalizeCurrencyCode,
   isSatsLikeCurrency,
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   parseShippingOptionAddress,
 } from "@conduit/core"
 import { getMixedFulfillmentBlockingMessage, type CartItem } from "./cart-model"
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/
+
+function hasSupportedPrice(item: {
+  currency: string
+  sourcePrice?: { currency: string }
+}): boolean {
+  const currency = normalizeCurrencyCode(
+    item.sourcePrice?.currency ?? item.currency
+  )
+  return (
+    isSatsLikeCurrency(currency) ||
+    SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
+      (supported) => supported === currency
+    )
+  )
+}
 
 /** UI routing only; preparation independently validates every signed term. */
 export function isCheckoutSparkSettledDigitalCart(
@@ -22,9 +39,7 @@ export function isCheckoutSparkSettledDigitalCart(
       (item) =>
         item.merchantPubkey === merchantPubkey &&
         item.format === "digital" &&
-        item.currency === "SATS" &&
-        (item.sourcePrice === undefined ||
-          isSatsLikeCurrency(item.sourcePrice.normalizedCurrency)) &&
+        hasSupportedPrice(item) &&
         (item.fulfillment === undefined || item.fulfillment.type === "digital")
     )
   )
@@ -53,11 +68,10 @@ export function isCheckoutSparkSettledCart(
     items.every((item) => {
       if (
         item.merchantPubkey !== merchantPubkey ||
-        item.currency !== "SATS" ||
-        item.familyProductId !== undefined ||
-        item.selectedSpecifications !== undefined ||
-        (item.sourcePrice !== undefined &&
-          !isSatsLikeCurrency(item.sourcePrice.normalizedCurrency))
+        !hasSupportedPrice(item) ||
+        (item.familyProductId !== undefined &&
+          (!item.familyProductId.startsWith(`30402:${merchantPubkey}:`) ||
+            !/^30402:[0-9a-f]{64}:.+$/.test(item.familyProductId)))
       )
         return false
       if (item.format === "digital")

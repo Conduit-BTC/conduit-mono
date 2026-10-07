@@ -39,15 +39,15 @@ export function CheckoutSparkExternalFunding({
   const [revokedInvoice, setRevokedInvoice] =
     useState<CheckoutSparkExternalFundingInvoice | null>(null)
   const exposedAt = externalInvoice?.exposedAt ?? Number.NaN
-  const cutoff = Math.min(
-    externalInvoice?.expiresAt ?? Number.NaN,
-    externalInvoice?.takeoverAt ?? Number.NaN
-  )
+  // Merchant handoff ends buyer payout authority, not this exact funding
+  // invoice's lifetime. Parent guards still own session/order disclosure.
+  const cutoff = externalInvoice?.expiresAt ?? Number.NaN
   const validWindow =
     Number.isSafeInteger(exposedAt) &&
     exposedAt > 0 &&
     Number.isSafeInteger(externalInvoice?.expiresAt) &&
     Number.isSafeInteger(externalInvoice?.takeoverAt) &&
+    (externalInvoice?.takeoverAt ?? 0) > 0 &&
     exposedAt < cutoff
 
   useEffect(() => {
@@ -122,7 +122,7 @@ export function CheckoutSparkExternalFunding({
       }}
     >
       <p className="text-sm leading-6 text-[var(--text-secondary)]">
-        Pay once, then return here to finish; if paused, choose Resume payment.
+        Pay once, then return here to check progress.
       </p>
       <InvoicePayment
         key={externalInvoice.invoice}

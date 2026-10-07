@@ -6,19 +6,36 @@ import {
   orderSchema,
   type OrderSchema,
 } from "../schemas"
-import { canonicalizeShippingCost, isSatsLikeCurrency } from "../pricing"
+import {
+  canonicalizeShippingCost,
+  isSatsLikeCurrency,
+  type SourcePriceQuote,
+} from "../pricing"
+import {
+  assertCheckoutSparkCommerceProductPrice,
+  hasSameCheckoutSparkSourcePrice,
+  canonicalCheckoutSparkCommerceEvidence,
+  type CheckoutSparkCommercePricing,
+  type CheckoutSparkCommerceVariation,
+} from "./checkout-spark-commerce-pricing"
+import { parseProductEvent } from "./products"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { validateAddressConsistency } from "./address-validation"
 import {
   getShippingDestinationEligibility,
   type ParsedShippingOption,
 } from "./shipping"
-import { resolveCheckoutSparkSignedShipping } from "./checkout-spark-shipping-evidence"
+import {
+  assertCheckoutSparkCommerceShippingPolicies,
+  resolveCheckoutSparkSignedShipping,
+} from "./checkout-spark-shipping-evidence"
 import {
   resolveCheckoutSparkSignedPickup,
   type CheckoutSparkSignedPickup,
 } from "./checkout-spark-pickup-evidence"
 import type { SignedPublicNostrEvent } from "./signed-event"
+import { isValidSignedPublicNostrEvent } from "./signed-event"
+import type { CheckoutSparkCommerceQuoteLine } from "./checkout-spark-reconciliation"
 import {
   restoreCheckoutSparkSettledPlan,
   type CheckoutSparkSettledPlan,
@@ -45,6 +62,8 @@ type OrderShippingSnapshot = Pick<
   | "shippingOptionDTag"
   | "shippingCountries"
   | "shippingCountryRules"
+  | "shippingPolicyQuote"
+  | "shippingAllocatedCostSats"
 >
 
 type OrderPickupSnapshot = OrderShippingSnapshot &
@@ -77,11 +96,30 @@ export function matchesCheckoutSparkOrderPickupSnapshot(
 /** Compare only public fulfillment terms with an independently verified revision. */
 export function matchesCheckoutSparkOrderShippingSnapshot(
   item: OrderShippingSnapshot,
-  option: ParsedShippingOption
+  option: ParsedShippingOption,
+  line?: CheckoutSparkCommerceQuoteLine
 ): boolean {
+  if (line?.shippingPolicy)
+    return (
+      item.shippingOptionId === option.id &&
+      item.shippingOptionDTag === option.dTag &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.sourceShippingCost === undefined &&
+      item.shippingAllocatedCostSats ===
+        line.shippingPolicy.allocatedCostSats &&
+      JSON.stringify(
+        canonicalCheckoutSparkCommerceEvidence(item.shippingPolicyQuote)
+      ) ===
+        JSON.stringify(
+          canonicalCheckoutSparkCommerceEvidence(line.shippingPolicy.quote)
+        ) &&
+      item.shippingCountries === undefined &&
+      item.shippingCountryRules === undefined
+    )
   const expected = canonicalizeShippingCost(option.price, option.currency)
   return (
-    item.shippingCostSats === expected.shippingCostSats &&
+    item.shippingCostSats ===
+      (line?.unitShippingSats ?? expected.shippingCostSats) &&
     item.shippingOptionId === option.id &&
     item.shippingOptionDTag === option.dTag &&
     item.sourceShippingCost?.amount === expected.sourceShippingCost?.amount &&
@@ -104,6 +142,7 @@ export interface CheckoutSparkMerchantOrderEvidence {
   readonly contentHash: string
   readonly orderCreatedAt: number
   readonly commerceTotalSats: number
+  readonly pricing?: CheckoutSparkCommercePricing
   readonly lines: readonly {
     readonly productCoordinate: string
     readonly quantity: number
@@ -111,6 +150,8 @@ export interface CheckoutSparkMerchantOrderEvidence {
     readonly unitShippingSats: number
     readonly sourcePriceAmount?: number
     readonly sourcePriceCurrency?: string
+    readonly sourcePrice?: SourcePriceQuote
+    readonly variation?: CheckoutSparkCommerceVariation
     readonly shipping?: OrderShippingSnapshot
     readonly pickup?: OrderPickupSnapshot
   }[]
@@ -156,13 +197,11 @@ export function readCheckoutSparkMerchantOrderEvidence(
       !isHex64(message.recipientPubkey) ||
       message.payload.items.some(
         (item) =>
-          item.familyProductId !== undefined ||
-          item.selectedSpecifications !== undefined ||
-          (item.format === "digital" &&
-            (item.sourceShippingCost !== undefined ||
-              item.shippingOptionDTag !== undefined ||
-              item.shippingCountries !== undefined ||
-              item.shippingCountryRules !== undefined))
+          item.format === "digital" &&
+          (item.sourceShippingCost !== undefined ||
+            item.shippingOptionDTag !== undefined ||
+            item.shippingCountries !== undefined ||
+            item.shippingCountryRules !== undefined)
       )
     ) {
       return null
@@ -182,12 +221,13 @@ export function readCheckoutSparkMerchantOrderEvidence(
             item.fulfillment?.type !== "shipping" ||
             !item.shippingOptionId ||
             !item.shippingOptionDTag ||
-            !item.sourceShippingCost ||
-            !item.shippingCountries ||
-            !item.shippingCountryRules ||
-            getShippingDestinationEligibility(address, [
-              { countryRules: item.shippingCountryRules },
-            ]).eligible !== true
+            (!item.shippingPolicyQuote &&
+              (!item.sourceShippingCost ||
+                !item.shippingCountries ||
+                !item.shippingCountryRules ||
+                getShippingDestinationEligibility(address, [
+                  { countryRules: item.shippingCountryRules },
+                ]).eligible !== true))
         )
       )
         return null
@@ -200,11 +240,25 @@ export function readCheckoutSparkMerchantOrderEvidence(
       contentHash: contentHash(rumor.content),
       orderCreatedAt: message.payload.createdAt,
       commerceTotalSats: message.payload.subtotal,
+      ...(message.payload.checkoutSparkPricing
+        ? { pricing: message.payload.checkoutSparkPricing }
+        : {}),
       lines: message.payload.items.map((item) => ({
         productCoordinate: item.productId,
         quantity: item.quantity,
         unitMerchandiseSats: item.priceAtPurchase,
         unitShippingSats: item.shippingCostSats ?? 0,
+        ...(item.familyProductId !== undefined ||
+        item.selectedSpecifications !== undefined
+          ? {
+              variation: {
+                ...(item.familyProductId
+                  ? { familyCoordinate: item.familyProductId }
+                  : {}),
+                specifications: item.selectedSpecifications ?? [],
+              },
+            }
+          : {}),
         ...(item.fulfillment?.type === "shipping"
           ? {
               shipping: {
@@ -214,6 +268,8 @@ export function readCheckoutSparkMerchantOrderEvidence(
                 shippingOptionDTag: item.shippingOptionDTag,
                 shippingCountries: item.shippingCountries,
                 shippingCountryRules: item.shippingCountryRules,
+                shippingPolicyQuote: item.shippingPolicyQuote,
+                shippingAllocatedCostSats: item.shippingAllocatedCostSats,
               },
             }
           : {}),
@@ -234,6 +290,7 @@ export function readCheckoutSparkMerchantOrderEvidence(
           ? {
               sourcePriceAmount: item.sourcePrice.amount,
               sourcePriceCurrency: item.sourcePrice.normalizedCurrency,
+              sourcePrice: item.sourcePrice,
             }
           : {}),
       })),
@@ -253,6 +310,7 @@ export function createCheckoutSparkMerchantOrderWitness(
   try {
     const frozen = restoreCheckoutSparkSettledPlan(plan)
     const quote = frozen.commerceQuote
+    assertCheckoutSparkCommerceShippingPolicies(quote, frozen.createdAt)
     const lines = new Map(
       quote.lines.map((line) => [line.productCoordinate, line])
     )
@@ -266,12 +324,34 @@ export function createCheckoutSparkMerchantOrderWitness(
       !Number.isSafeInteger(evidence.orderCreatedAt) ||
       evidence.orderCreatedAt < frozen.createdAt ||
       evidence.commerceTotalSats !== quote.commerceTotalSats ||
+      JSON.stringify(
+        canonicalCheckoutSparkCommerceEvidence(evidence.pricing)
+      ) !==
+        JSON.stringify(canonicalCheckoutSparkCommerceEvidence(quote.pricing)) ||
       evidence.lines.length !== quote.lines.length ||
       lines.size !== quote.lines.length ||
       new Set(evidence.lines.map((line) => line.productCoordinate)).size !==
         evidence.lines.length ||
       evidence.lines.some((item) => {
         const line = lines.get(item.productCoordinate)
+        if (line?.sourcePrice || line?.variation) {
+          const productEvent = sourceEvents?.find(
+            (event) => event.id === line.productEventId
+          )
+          if (
+            !productEvent ||
+            !isValidSignedPublicNostrEvent(productEvent) ||
+            productEvent.kind !== 30_402 ||
+            productEvent.pubkey !== line.merchantPubkey
+          )
+            return true
+          assertCheckoutSparkCommerceProductPrice({
+            product: parseProductEvent(productEvent),
+            line,
+            pricing: quote.pricing,
+            acceptedAtMs: frozen.createdAt,
+          })
+        }
         let fulfillmentMatches =
           !line?.shippingOption &&
           !line?.pickup &&
@@ -305,10 +385,16 @@ export function createCheckoutSparkMerchantOrderWitness(
             productEvent,
             line,
             shippingEvents: sourceEvents,
+            pricing: quote.pricing,
+            acceptedAtMs: frozen.createdAt,
           })
           fulfillmentMatches =
             option !== undefined &&
-            matchesCheckoutSparkOrderShippingSnapshot(item.shipping, option)
+            matchesCheckoutSparkOrderShippingSnapshot(
+              item.shipping,
+              option,
+              line
+            )
         }
         return (
           !line ||
@@ -316,10 +402,23 @@ export function createCheckoutSparkMerchantOrderWitness(
           line.quantity !== item.quantity ||
           line.unitMerchandiseSats !== item.unitMerchandiseSats ||
           line.unitShippingSats !== item.unitShippingSats ||
+          JSON.stringify(
+            canonicalCheckoutSparkCommerceEvidence(item.variation)
+          ) !==
+            JSON.stringify(
+              canonicalCheckoutSparkCommerceEvidence(line.variation)
+            ) ||
           !fulfillmentMatches ||
-          (item.sourcePriceAmount !== undefined &&
-            (item.sourcePriceAmount !== line.unitMerchandiseSats ||
-              !isSatsLikeCurrency(item.sourcePriceCurrency ?? "")))
+          (line.sourcePrice !== undefined
+            ? !hasSameCheckoutSparkSourcePrice(
+                item.sourcePrice,
+                line.sourcePrice
+              ) ||
+              item.sourcePriceAmount !== line.sourcePrice.amount ||
+              item.sourcePriceCurrency !== line.sourcePrice.normalizedCurrency
+            : item.sourcePriceAmount !== undefined &&
+              (item.sourcePriceAmount !== line.unitMerchandiseSats ||
+                !isSatsLikeCurrency(item.sourcePriceCurrency ?? "")))
         )
       })
     ) {

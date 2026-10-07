@@ -11,6 +11,7 @@ import {
   deriveCheckoutSparkSettledTransferId,
   fingerprintCheckoutSparkSettledLegIntent,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
   prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
   recordCheckoutSparkSettledLegStatus,
@@ -26,6 +27,7 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { nativeTreasuryFixture } from "./support/checkout-spark-native-treasury-fixture"
 
 const CREATED_SECONDS = 1_800_000_000
 const CREATED_AT = CREATED_SECONDS * 1_000
@@ -123,6 +125,63 @@ function plan(): CheckoutSparkSettledPlan {
     ],
   })
 }
+
+it("retains and digest-binds a frozen fiat source and rate without changing legacy plans", () => {
+  const legacy = plan()
+  const input = structuredClone(legacy)
+  input.commerceQuote.pricing = {
+    version: 1,
+    rate: { rate: 100_000, fetchedAt: CREATED_AT, source: "mempool" },
+  }
+  input.commerceQuote.lines[0]!.sourcePrice = {
+    amount: 100,
+    currency: "USD",
+    normalizedCurrency: "USD",
+  }
+  const frozen = freezeCheckoutSparkSettledPlan(input)
+  expect(frozen.commerceQuote.pricing).toEqual(input.commerceQuote.pricing)
+  expect(frozen.commerceQuote.lines[0]!.sourcePrice).toEqual(
+    input.commerceQuote.lines[0]!.sourcePrice
+  )
+  expect(frozen.planDigest).not.toBe(legacy.planDigest)
+  expect(restoreCheckoutSparkSettledPlan(frozen)).toEqual(frozen)
+  const altered = structuredClone(frozen)
+  altered.commerceQuote.pricing!.rate.rate += 1
+  expect(() => restoreCheckoutSparkSettledPlan(altered)).toThrow()
+  expect(plan().planDigest).toBe(legacy.planDigest)
+})
+
+it("retains frozen conversion evidence through v4 native treasury restoration", () => {
+  const original = nativeTreasuryFixture().plan
+  const quote = {
+    ...original.commerceQuote,
+    pricing: {
+      version: 1 as const,
+      rate: {
+        rate: 100_000,
+        fetchedAt: original.createdAt,
+        source: "mempool" as const,
+      },
+    },
+    lines: original.commerceQuote.lines.map((line) => ({
+      ...line,
+      sourcePrice: { amount: 1, currency: "USD", normalizedCurrency: "USD" },
+    })),
+  }
+  const frozen = freezeCheckoutSparkSettledTreasuryPlan({
+    ...original,
+    commerceQuote: quote,
+  })
+  expect(frozen.schemaVersion).toBe(4)
+  expect(frozen.planDigest).not.toBe(original.planDigest)
+  expect(restoreCheckoutSparkSettledPlan(frozen).commerceQuote).toEqual(quote)
+  const changed = structuredClone(frozen)
+  changed.commerceQuote.lines[0]!.sourcePrice!.amount = 2
+  expect(() => restoreCheckoutSparkSettledPlan(changed)).toThrow()
+  expect(restoreCheckoutSparkSettledPlan(original).planDigest).toBe(
+    original.planDigest
+  )
+})
 
 /** A synthetic plan frozen by the pre-allowance v3 writer. */
 function preAllowancePlan(): CheckoutSparkSettledPlan {

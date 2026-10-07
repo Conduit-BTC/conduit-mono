@@ -1282,10 +1282,10 @@ function OrderDetail({
         Number.isSafeInteger(invoice.exposedAt) &&
         Number.isSafeInteger(invoice.expiresAt) &&
         Number.isSafeInteger(invoice.takeoverAt) &&
+        invoice.takeoverAt > 0 &&
         invoice.exposedAt > 0 &&
         invoice.exposedAt <= now &&
-        now < invoice.expiresAt &&
-        now < invoice.takeoverAt
+        now < invoice.expiresAt
       )
     } catch {
       return false

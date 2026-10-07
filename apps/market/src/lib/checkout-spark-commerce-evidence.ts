@@ -1,4 +1,7 @@
-import type { CheckoutSparkCommerceQuote } from "@conduit/core"
+import {
+  isSatsLikeCurrency,
+  type CheckoutSparkCommerceQuote,
+} from "@conduit/core"
 import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
 
 /**
@@ -46,10 +49,47 @@ export function buildCheckoutSparkCommerceEvidence(
       ...line,
       unitMerchandiseSats: priced.priceAtPurchase,
       unitShippingSats: priced.shippingCostSats ?? 0,
+      ...(priced.sourcePrice &&
+      !isSatsLikeCurrency(priced.sourcePrice.normalizedCurrency)
+        ? { sourcePrice: structuredClone(priced.sourcePrice) }
+        : {}),
+      ...(priced.sourceShippingCost &&
+      !isSatsLikeCurrency(priced.sourceShippingCost.normalizedCurrency)
+        ? { sourceShippingCost: structuredClone(priced.sourceShippingCost) }
+        : {}),
+      ...(priced.shippingPolicyQuote
+        ? {
+            shippingPolicy: {
+              quote: structuredClone(priced.shippingPolicyQuote),
+              allocatedCostSats: priced.shippingAllocatedCostSats!,
+            },
+          }
+        : {}),
+      ...(priced.familyProductId !== undefined ||
+      priced.selectedSpecifications !== undefined
+        ? {
+            variation: {
+              ...(priced.familyProductId
+                ? { familyCoordinate: priced.familyProductId }
+                : {}),
+              specifications: structuredClone(
+                priced.selectedSpecifications ?? []
+              ),
+            },
+          }
+        : {}),
     }
   })
   return {
     commerceTotalSats: authority.pricing.totalSats,
     lines,
+    ...(authority.pricing.quote
+      ? {
+          pricing: {
+            version: 1,
+            rate: structuredClone(authority.pricing.quote),
+          },
+        }
+      : {}),
   }
 }

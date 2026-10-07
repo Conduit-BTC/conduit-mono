@@ -268,7 +268,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   ) {
     return blocked("This order no longer has an active buyer checkout session.")
   }
-  if (now >= plan.takeoverAt) {
+  if (state.credit && now >= plan.takeoverAt) {
     return blocked(
       "Shopper routing authority moved to the merchant. Do not pay again."
     )

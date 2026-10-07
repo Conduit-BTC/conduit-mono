@@ -65,7 +65,11 @@ class MemoryStorage {
   }
 }
 
-function fixture(kind: IdentityKind, fixedShippingSats?: number) {
+function fixture(
+  kind: IdentityKind,
+  fixedShippingSats?: number,
+  takeoverAfterMs = 45 * 60_000
+) {
   const createdAt = Math.floor(Date.now() / 1_000) * 1_000
   const merchantSecret = generateSecretKey()
   const merchant = plainTestSigner(
@@ -179,7 +183,7 @@ function fixture(kind: IdentityKind, fixedShippingSats?: number) {
     walletId: `multi-item-${kind}-wallet`,
     network: "mainnet",
     createdAt,
-    takeoverAt: createdAt + 45 * 60_000,
+    takeoverAt: createdAt + takeoverAfterMs,
     commerceQuote: {
       commerceTotalSats,
       lines: items.map((item, index) => ({
@@ -343,6 +347,14 @@ function fixture(kind: IdentityKind, fixedShippingSats?: number) {
   }
   return { input, dependencies, buyer, merchant, plan, calls, shippingEvent }
 }
+
+it("publishes the first approved order after the buyer dispatch cutoff while its funding invoice remains valid", async () => {
+  const f = fixture("signed_in", undefined, 120_000)
+  f.dependencies.now = () => f.plan.createdAt + 130_000
+  await publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)
+  expect(f.calls.published).toHaveLength(1)
+  expect(f.calls.binds).toBe(1)
+})
 
 describe.each(["signed_in", "guest_ephemeral"] as const)(
   "%s fixed-shipping bound order",

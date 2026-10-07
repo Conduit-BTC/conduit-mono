@@ -10,14 +10,22 @@ the current settled Spark plan supports mainnet and regtest, not Signet.
 ## Scope and prerequisites
 
 Hosted activation is not a promise that every historical checkout or product
-shape is routable. Current admission covers one merchant's SAT-priced simple
-products with supported digital or fixed-shipping fulfillment.
+shape is routable. Current admission covers one merchant's final-quoted digital
+or physical products with supported fixed or shipping-table fulfillment,
+including supported fiat prices and selected variation children. The frozen
+quote preserves exact signed source revisions, source amounts/currencies,
+conversion snapshots, selected child facts and whole-line shipping allocations.
+Conversion snapshots are buyer-retained quote evidence, not authenticated
+Merchant-signed exchange-rate oracles.
 Historical event-pickup plans remain recoverable, but retired pickup snapshots
 are not admitted as new checkouts after the Event Market model cutover.
-Fiat-priced products, variations, current Event Market pickup and unresolved
-shipping continue to use their existing paths. Existing supported listings do
-not need republication merely to activate routing; supplier allocations require
-an explicitly published signed product revision.
+Current Event Market pickup requires a separate signed admission extension.
+Unsupported or unresolved upfront evidence blocks payment rather than selecting
+a direct-payment fallback. Positively resolved coordinate-after-order shipping
+retains its negotiated order-first flow, and verified free orders remain free.
+Existing supported listings do not need republication merely to activate
+routing; supplier allocations require an explicitly published signed product
+revision.
 
 New routed checkout still requires exact signed commerce and recipient
 authority, reachable recipient payment metadata, a valid declared Merchant

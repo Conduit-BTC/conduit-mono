@@ -35,6 +35,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
+  frozen payment authority, isolated-wallet Merchant recovery and historical
+  order compatibility
 - `docs/knowledge/signed-event-publication.md`: plain signed-event writer,
   fixed relay targets, retry ownership, and per-relay delivery evidence
 - `docs/specs/event-markets.md`: organizer-authored Event Market and NIP-52

@@ -111,6 +111,55 @@ function request(
 }
 
 describe("same-merchant multi-item settled entry", () => {
+  it("prepares a buyer-approved fiat final quote without republishing the unmarked listing", async () => {
+    const listing = product("fiat-entry", 2.5, [], "USD")
+    const input = request()
+    const pricing = buildCheckoutPricingIntent(
+      [{ ...createCartItemFromProduct(listing), quantity: 2 }],
+      { rate: 100_000, fetchedAt: NOW, source: "mempool" },
+      NOW
+    )
+    if (pricing.status !== "ok") throw new Error("Expected fiat pricing")
+    input.quoteAuthority = {
+      products: [listing],
+      pricing,
+      lines: [
+        {
+          productCoordinate: listing.id,
+          productEventId: listing.sourceEventId!,
+          merchantPubkey: MERCHANT,
+          quantity: 2,
+        },
+      ],
+    }
+    let publications = 0
+    await prepareCheckoutSparkSettledDigitalOrder(input, {
+      now: () => NOW,
+      ndk: getNdk(),
+      readRecipientPayout: async () => ({
+        state: "ready",
+        recipientPubkey: MERCHANT,
+        lud16: "merchant@example.test",
+        profileEventId: MERCHANT_PROFILE.id,
+        profileEventCreatedAt: NOW / 1_000,
+        signedEvent: MERCHANT_PROFILE,
+      }),
+      prepareFunding: async (terms) => {
+        expect(terms.recipients[0]?.weightSats).toBe(5_000)
+        return {
+          plan: { createdAt: NOW },
+        } as PreparedCheckoutSparkSettledFunding
+      },
+      publishOrder: async (publish) => {
+        publications++
+        expect(publish.order.checkoutSparkPricing?.rate.rate).toBe(100_000)
+        expect(publish.order.items[0]?.sourcePrice).toEqual(listing.sourcePrice)
+        return { orderId: input.orderId } as PublishedCheckoutSparkBoundOrder
+      },
+    })
+    expect(publications).toBe(1)
+  })
+
   it.each([false, true])(
     "prepares one combined order and funding plan with guest=%s",
     async (guest) => {
@@ -296,8 +345,16 @@ describe("same-merchant multi-item settled entry", () => {
         }
       if (mode === "variant")
         priced[1]!.familyProductId = `30402:${MERCHANT}:family`
-      if (mode === "specifications") priced[1]!.selectedSpecifications = []
-      if (mode === "approximate") quote.pricing.approximate = true
+      if (mode === "specifications")
+        priced[1]!.selectedSpecifications = [{ key: "Size", value: "Changed" }]
+      if (mode === "approximate") {
+        quote.pricing.approximate = true
+        priced[1]!.sourcePrice = {
+          amount: 1,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        }
+      }
       if (mode === "subtotal") quote.pricing.itemSubtotalSats--
       if (mode === "msats") quote.pricing.totalMsats--
       if (mode === "overflow") quote.pricing.totalSats = Number.MAX_SAFE_INTEGER
@@ -682,13 +739,16 @@ describe("settled router cart target", () => {
       expect(isCheckoutSparkSettledDigitalCart([item, cartItem])).toBe(eligible)
     }
   )
-  it("keeps empty, physical, fiat, event and multi-merchant carts out", () => {
+  it("keeps empty, physical, unsupported currency, event and multi-merchant carts out while admitting fiat", () => {
     expect(isCheckoutSparkSettledDigitalCart([])).toBe(false)
     expect(
       isCheckoutSparkSettledDigitalCart([item, { ...item, format: "physical" }])
     ).toBe(false)
     expect(
       isCheckoutSparkSettledDigitalCart([item, { ...item, currency: "USD" }])
+    ).toBe(true)
+    expect(
+      isCheckoutSparkSettledDigitalCart([{ ...item, currency: "UNKNOWN" }])
     ).toBe(false)
     expect(
       isCheckoutSparkSettledDigitalCart([

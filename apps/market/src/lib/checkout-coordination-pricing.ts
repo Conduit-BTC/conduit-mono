@@ -1,7 +1,9 @@
 import {
   calculateCheckoutSparkBuyerPrice,
   isQuantumRouterEnabled,
+  normalizeCurrencyCode,
   isSatsLikeCurrency,
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   getShopperPriceDisplay,
   getShopperSatsDisplay,
   type BtcUsdRateQuote,
@@ -36,11 +38,16 @@ export function canEstimateCheckoutCoordinationListing(
   price: RouterListingPrice
 ): boolean {
   return (
-    price.currency === "SATS" &&
+    (isSatsLikeCurrency(price.sourcePrice?.currency ?? price.currency) ||
+      SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
+        (currency) =>
+          currency ===
+          normalizeCurrencyCode(price.sourcePrice?.currency ?? price.currency)
+      )) &&
     price.format === "digital" &&
-    (price.type === undefined || price.type === "simple") &&
-    (price.sourcePrice === undefined ||
-      isSatsLikeCurrency(price.sourcePrice.normalizedCurrency))
+    (price.type === undefined ||
+      price.type === "simple" ||
+      price.type === "variation")
   )
 }
 

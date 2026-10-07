@@ -1,3 +1,4 @@
+import Dexie from "dexie"
 import {
   ConduitDB,
   db,
@@ -1063,6 +1064,68 @@ export class DexieCheckoutSparkSettledRepository {
           state,
         })
         return { status: "active" as const, revision: 1, state }
+      }
+    )
+  }
+
+  /**
+   * Abandon only the untouched initial local plan. The application must also
+   * positively prove that no recovery wrap/transport or funding exposure
+   * occurred; this transaction does not infer those facts from missing rows.
+   */
+  async abandonPristine(
+    plan: CheckoutSparkSettledPlan,
+    expectedRevision: number,
+    assertCurrent: () => void,
+    closeUnexposedWallet: () => Promise<void>
+  ): Promise<void> {
+    const initial = projectState(createCheckoutSparkSettledReconciliation(plan))
+    assertCurrent()
+    if (expectedRevision !== 1) {
+      throw new CheckoutSparkSettledRepositoryConflictError()
+    }
+    await this.database.transaction(
+      "rw",
+      this.database.checkoutSparkPlanBindings,
+      this.database.checkoutSparkReconciliations,
+      this.database.checkoutSparkRetirements,
+      this.database.orderLifecycles,
+      async () => {
+        assertCurrent()
+        const snapshot = await this.readInTransaction(plan.checkoutId)
+        const binding = await this.database.checkoutSparkPlanBindings.get(
+          plan.checkoutId
+        )
+        const order = await this.database.orderLifecycles.get(plan.orderId)
+        assertCurrent()
+        if (
+          order ||
+          (snapshot.status !== "absent" &&
+            (snapshot.status !== "active" ||
+              snapshot.revision !== expectedRevision ||
+              !binding ||
+              Object.keys(binding).sort().join(",") !==
+                "checkoutId,planDigest" ||
+              JSON.stringify(projectState(snapshot.state)) !==
+                JSON.stringify(initial)))
+        ) {
+          throw new CheckoutSparkSettledRepositoryConflictError()
+        }
+        if (snapshot.status === "absent") {
+          assertCurrent()
+          await Dexie.waitFor(closeUnexposedWallet(), 10_000)
+          return
+        }
+        assertCurrent()
+        // Hold the exact revision against competing writers while closure
+        // drains. Once this pristine, pre-transport cleanup is admitted, a
+        // later session revocation must not strand a claim with a closed RAM
+        // wallet. No payment or identity authority is granted by cleanup.
+        // A timeout cannot cancel the external close. Keep the local claim
+        // on failure/timeout for manual recovery, never authorize a new wallet.
+        await Dexie.waitFor(closeUnexposedWallet(), 10_000)
+        await this.database.checkoutSparkReconciliations.delete(plan.checkoutId)
+        await this.database.checkoutSparkPlanBindings.delete(plan.checkoutId)
       }
     )
   }

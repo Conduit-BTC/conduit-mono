@@ -156,7 +156,7 @@ export async function advanceCheckoutSparkSettledShopper(
     throw new Error("Checkout Spark shopper plan changed.")
   }
 
-  async function assertAuthority(): Promise<void> {
+  async function assertAuthority(fundingAdmission = false): Promise<void> {
     assertSession()
     const lifecycle = await readOrder(input.orderId)
     assertSession()
@@ -197,7 +197,10 @@ export async function advanceCheckoutSparkSettledShopper(
       !manager.isOpen(plan.walletId) ||
       !Number.isSafeInteger(now()) ||
       now() < plan.createdAt ||
-      now() >= plan.takeoverAt
+      // Funding is a separate inbound invoice; a null leg cannot admit a
+      // payout. The bridge independently enforces its exact invoice expiry.
+      (input.legId !== null && now() >= plan.takeoverAt) ||
+      (fundingAdmission && now() >= plan.funding.expiresAt)
     ) {
       throw new Error("Checkout Spark shopper order authority changed.")
     }
@@ -231,12 +234,12 @@ export async function advanceCheckoutSparkSettledShopper(
       ...input.fundingPayment,
       shouldContinue: () => currentSessionMatches() && originalShouldContinue(),
       beforeSend: async () => {
-        await assertAuthority()
+        await assertAuthority(true)
         await originalBeforeSend?.()
-        await assertAuthority()
+        await assertAuthority(true)
       },
     })
-    await assertAuthority()
+    await assertAuthority(funding.status === "external_ready")
     if (funding.reconciliation.plan.planDigest !== plan.planDigest) {
       throw new Error("Checkout Spark funding observation changed plans.")
     }

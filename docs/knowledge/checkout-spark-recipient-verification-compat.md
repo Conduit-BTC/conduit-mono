@@ -72,7 +72,7 @@ identity checks or a mandatory receiving wallet introduced by this adapter.
 
 The separately reviewed closed-attempt renewal path is not Coinos attribution
 and does not relax this adapter. After positively verified complete unpaid
-return under the [wallet renewal contract](../specs/wallets.md#closed-attempt-invoice-renewal),
+return under the [wallet renewal contract](../specs/wallets.md#lightning-closed-attempt-invoice-renewal),
 Merchant may request the successor directly from the same frozen Lightning
 address using the existing provider-generic LNURL origin path. This creates
 origin evidence for the new invoice only, never retroactive attribution for

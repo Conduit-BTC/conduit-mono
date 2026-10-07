@@ -850,7 +850,9 @@ describe("settled Spark preparation", () => {
       expect(calls.open).toBe(stage === "before" ? 0 : 1)
       expect(calls.invoice).toBe(stage === "before" || stage === "open" ? 0 : 1)
       expect(calls.publish).toBe(stage === "ack" ? 1 : 0)
-      expect(calls.close).toBe(stage === "before" || stage === "ack" ? 0 : 1)
+      // Revocation before the positively guarded close preserves the only
+      // RAM credential; it cannot authorize destructive pristine cleanup.
+      expect(calls.close).toBe(0)
       const stored = getCheckoutSparkSettledPreparation(
         base.checkoutId,
         storage
@@ -858,6 +860,10 @@ describe("settled Spark preparation", () => {
       if (stage === "ack") {
         expect(stored?.recoveryHandoffId).toBe("handoff-1")
         expect(stored?.fundingInvoiceExposedAt).toBeNull()
+      } else if (stage === "persist") {
+        expect(stored?.recoveryHandoffId).toBeNull()
+        expect(stored?.fundingInvoiceExposedAt).toBeNull()
+        expect(stored?.fundingSubmissionState).toBe("not_started")
       } else expect(stored).toBeNull()
     }
   )

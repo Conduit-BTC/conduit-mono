@@ -107,6 +107,252 @@ function admit(
 }
 
 describe("signed checkout Spark supplier allocation", () => {
+  it("rejects irrelevant digital shipping evidence and fabricated selection facts", () => {
+    const product = signedProduct("irrelevant", 1_000)
+    const quote = quoteFor([{ product, quantity: 1, unitSats: 1_000 }])
+    for (const extra of [
+      {
+        sourceShippingCost: {
+          amount: 0,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+      },
+      { variation: { specifications: [{ key: "Size", value: "Large" }] } },
+    ]) {
+      const altered = structuredClone(quote)
+      Object.assign(altered.lines[0]!, extra)
+      expect(() =>
+        deriveCheckoutSparkSignedCommerceObligations({
+          quote: altered,
+          products: [product],
+          merchantPubkey: MERCHANT,
+        })
+      ).toThrow()
+    }
+  })
+  it.each([0, 0.5])(
+    "recomputes signed fiat fixed shipping with the same frozen conversion as merchandise (%s)",
+    (shippingUsd) => {
+      const coordinate = `30406:${MERCHANT}:fiat-shipping`
+      const shipping = finalizeEvent(
+        {
+          kind: 30_406,
+          created_at: CREATED_AT - 1,
+          tags: [
+            ["d", "fiat-shipping"],
+            ["price", String(shippingUsd), "USD"],
+            ["title", "Shipping"],
+            ["country", "US"],
+            ["service", "standard"],
+          ],
+          content: "",
+        },
+        MERCHANT_SECRET
+      )
+      const event = finalizeEvent(
+        {
+          kind: 30_402,
+          created_at: CREATED_AT,
+          tags: [
+            ["d", "fiat-physical"],
+            ["title", "Physical"],
+            ["price", "1", "USD"],
+            ["type", "simple", "physical"],
+            ["shipping_option", coordinate],
+          ],
+          content: "",
+        },
+        MERCHANT_SECRET
+      )
+      const product = { ...parseProductEvent(event), sourceEventId: event.id }
+      const shippingSats = shippingUsd * 1_000
+      const total = 3 * (1_000 + shippingSats)
+      const quote: CheckoutSparkCommerceQuote = {
+        commerceTotalSats: total,
+        pricing: {
+          version: 1,
+          rate: {
+            rate: 100_000,
+            fetchedAt: CREATED_AT * 1_000,
+            source: "mempool",
+          },
+        },
+        lines: [
+          {
+            productCoordinate: product.id,
+            productEventId: event.id,
+            merchantPubkey: MERCHANT,
+            quantity: 3,
+            unitMerchandiseSats: 1_000,
+            unitShippingSats: shippingSats,
+            sourcePrice: product.sourcePrice,
+            shippingOption: { coordinate, eventId: shipping.id },
+          },
+        ],
+      }
+      Object.assign(quote.lines[0]!, {
+        sourceShippingCost: {
+          amount: shippingUsd,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      })
+      expect(
+        deriveCheckoutSparkSignedCommerceObligations({
+          quote,
+          products: [product],
+          shippingEvents: [shipping],
+          merchantPubkey: MERCHANT,
+          acceptedAtMs: CREATED_AT * 1_000,
+        })
+      ).toEqual([
+        { kind: "merchant", recipientId: MERCHANT, amountSats: total },
+      ])
+    }
+  )
+
+  it("binds a selected variation to the exact signed child parent and specifications", () => {
+    const event = finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: CREATED_AT,
+        tags: [
+          ["d", "variation"],
+          ["title", "Variation"],
+          ["price", "1000", "SAT"],
+          ["type", "variation", "digital"],
+          ["a", `30402:${MERCHANT}:family`],
+          ["spec", "Size", "Large"],
+        ],
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+    const product = { ...parseProductEvent(event), sourceEventId: event.id }
+    const quote = quoteFor([{ product, quantity: 1, unitSats: 1_000 }])
+    Object.assign(quote.lines[0]!, {
+      variation: {
+        familyCoordinate: product.parentProductId,
+        specifications: product.specifications,
+      },
+    })
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote,
+        products: [product],
+        merchantPubkey: MERCHANT,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: MERCHANT, amountSats: 1_000 }])
+    const wrong = structuredClone(quote)
+    Object.assign(wrong.lines[0]!, {
+      variation: {
+        familyCoordinate: `30402:${MERCHANT}:other`,
+        specifications: product.specifications,
+      },
+    })
+    expect(() =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: wrong,
+        products: [product],
+        merchantPubkey: MERCHANT,
+      })
+    ).toThrow()
+    const wrongSpec = structuredClone(quote)
+    wrongSpec.lines[0]!.variation!.specifications = [
+      { key: "Size", value: "Small" },
+    ]
+    expect(() =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: wrongSpec,
+        products: [product],
+        merchantPubkey: MERCHANT,
+      })
+    ).toThrow()
+    expect(() =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: quoteFor([{ product, quantity: 1, unitSats: 1_000 }]),
+        products: [product],
+        merchantPubkey: MERCHANT,
+      })
+    ).toThrow()
+  })
+
+  it("allocates the frozen SAT conversion of an unmarked signed fiat listing", () => {
+    const event = finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: CREATED_AT,
+        tags: [
+          ["d", "fiat-digital"],
+          ["title", "Fiat digital"],
+          ["price", "2.50", "USD"],
+          ["type", "simple", "digital"],
+        ],
+        content: "Signed external-style fiat listing",
+      },
+      MERCHANT_SECRET
+    )
+    const product = { ...parseProductEvent(event), sourceEventId: event.id }
+    const quote = quoteFor([{ product, quantity: 2, unitSats: 2_500 }])
+    Object.assign(quote, {
+      pricing: {
+        version: 1,
+        rate: {
+          rate: 100_000,
+          fetchedAt: CREATED_AT * 1_000,
+          source: "mempool",
+        },
+      },
+    })
+    Object.assign(quote.lines[0]!, { sourcePrice: product.sourcePrice })
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote,
+        products: [product],
+        merchantPubkey: MERCHANT,
+        acceptedAtMs: CREATED_AT * 1_000,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: MERCHANT, amountSats: 5_000 }])
+    const stale = structuredClone(quote)
+    stale.pricing!.rate.fetchedAt -= 300_001
+    expect(() =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: stale,
+        products: [product],
+        merchantPubkey: MERCHANT,
+        acceptedAtMs: CREATED_AT * 1_000,
+      })
+    ).toThrow()
+    const changedSource = structuredClone(quote)
+    changedSource.lines[0]!.sourcePrice!.amount = 2
+    expect(() =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: changedSource,
+        products: [product],
+        merchantPubkey: MERCHANT,
+        acceptedAtMs: CREATED_AT * 1_000,
+      })
+    ).toThrow()
+    for (const rateChange of [
+      { source: "unknown" },
+      { fetchedAt: CREATED_AT * 1_000 + 0.5 },
+      { fiatUsdRates: { usd: 1 } },
+      { fiatUsdRates: { XXX: 1 } },
+    ]) {
+      const malformed = structuredClone(quote)
+      Object.assign(malformed.pricing!.rate, rateChange)
+      expect(() =>
+        deriveCheckoutSparkSignedCommerceObligations({
+          quote: malformed,
+          products: [product],
+          merchantPubkey: MERCHANT,
+          acceptedAtMs: CREATED_AT * 1_000,
+        })
+      ).toThrow()
+    }
+  })
+
   it("splits quantity-adjusted merchandise and gives all signed fixed shipping to the merchant", () => {
     const shipping = finalizeEvent(
       {

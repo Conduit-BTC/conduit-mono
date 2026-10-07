@@ -1,4 +1,13 @@
 import { describe, expect, it } from "bun:test"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import {
+  parseProductEvent,
+  deriveCheckoutSparkSignedCommerceObligations,
+} from "@conduit/core"
 import type { ParsedShippingOption, Product } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
@@ -92,6 +101,53 @@ async function authorize(
 }
 
 describe("checkout Spark quote authority", () => {
+  it("carries a fresh fiat variation quote from authorization into exact signed allocation", async () => {
+    const key = generateSecretKey()
+    const merchant = getPublicKey(key)
+    const event = finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: NOW / 1_000,
+        tags: [
+          ["d", "child"],
+          ["title", "Child"],
+          ["price", "2.5", "USD"],
+          ["type", "variation", "digital"],
+          ["a", `30402:${merchant}:family`],
+          ["spec", "Size", "Large"],
+        ],
+        content: "",
+      },
+      key
+    )
+    const listing = { ...parseProductEvent(event), sourceEventId: event.id }
+    const item = {
+      ...createCartItemFromProduct(listing),
+      familyProductId: listing.parentProductId,
+      quantity: 2,
+    }
+    const authorization = await authorize(listing, { item })
+    if (authorization.status !== "ok") throw new Error("Expected checkout")
+    const authority = buildCheckoutSparkQuoteAuthority({
+      authorization,
+      rateInput: { rate: 100_000, fetchedAt: NOW, source: "mempool" },
+      nowMs: NOW,
+    })
+    const evidence = buildCheckoutSparkCommerceEvidence(authority)
+    expect(evidence.pricing?.rate.rate).toBe(100_000)
+    expect(evidence.lines[0]?.variation?.familyCoordinate).toBe(
+      listing.parentProductId
+    )
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: evidence,
+        products: authority.products,
+        merchantPubkey: merchant,
+        acceptedAtMs: NOW,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: merchant, amountSats: 5_000 }])
+  })
+
   it("binds cart-order quote lines when signed listing reads arrive reversed", async () => {
     const first = product()
     const second = product({

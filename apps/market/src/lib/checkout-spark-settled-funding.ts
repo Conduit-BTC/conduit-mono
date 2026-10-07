@@ -293,8 +293,7 @@ export function createCheckoutSparkSettledFundingBridge(
     if (
       !Number.isSafeInteger(currentTime) ||
       currentTime < plan.createdAt ||
-      currentTime >= plan.funding.expiresAt ||
-      currentTime >= plan.takeoverAt
+      currentTime >= plan.funding.expiresAt
     ) {
       return {
         status: "manual_required",
@@ -314,8 +313,7 @@ export function createCheckoutSparkSettledFundingBridge(
         if (
           !Number.isSafeInteger(time) ||
           time < plan.createdAt ||
-          time >= plan.funding.expiresAt ||
-          time >= plan.takeoverAt
+          time >= plan.funding.expiresAt
         ) {
           throw new Error("The external funding invoice is no longer payable.")
         }
@@ -442,8 +440,7 @@ export function createCheckoutSparkSettledFundingBridge(
           if (
             !Number.isSafeInteger(sendTime) ||
             sendTime < plan.createdAt ||
-            sendTime >= plan.funding.expiresAt ||
-            sendTime >= plan.takeoverAt
+            sendTime >= plan.funding.expiresAt
           ) {
             throw new Error(
               "The funding invoice expired before wallet payment. Check the original order for a late payment."

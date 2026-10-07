@@ -250,6 +250,29 @@ function nativeFixture(takeoverAt = NOW + 60_000) {
   }
 }
 
+describe("funding availability is independent of buyer payout takeover", () => {
+  it("keeps exact funding available after takeover only while the original wallet remains open", () => {
+    const { input } = fixture(NOW + 120_000)
+    const late = { ...input, now: NOW + 180_000 }
+    expect(assessCheckoutSparkSettledOrderControl(late)).toMatchObject({
+      status: "pay_funding",
+      externalFundingAvailable: true,
+    })
+    expect(
+      assessCheckoutSparkSettledOrderControl({
+        ...late,
+        routerWalletOpen: false,
+      }).status
+    ).toBe("blocked")
+    expect(
+      assessCheckoutSparkSettledOrderControl({
+        ...late,
+        initialRecoveryAcked: false,
+      }).status
+    ).toBe("blocked")
+  })
+})
+
 function preparedNativeFixture() {
   const { plan, input } = nativeFixture()
   let state = recordCheckoutSparkSettledCredit(input.snapshot.state, {
@@ -1111,7 +1134,7 @@ describe("settled Spark buyer order control", () => {
     ).toBe(true)
   })
 
-  it("removes external funding at invoice expiry, takeover, or exact receive credit", () => {
+  it("removes external funding at invoice expiry or exact receive credit, independently of takeover", () => {
     const { plan, input } = fixture(NOW + 3_600_001)
     const preparation = {
       ...input.preparation,
@@ -1133,8 +1156,11 @@ describe("settled Spark buyer order control", () => {
       preparation,
       now: plan.takeoverAt,
     })
-    expect(takeover.status).toBe("blocked")
-    expect("externalFundingAvailable" in takeover).toBe(false)
+    expect(takeover.status).toBe("check_funding")
+    expect(
+      "externalFundingAvailable" in takeover &&
+        takeover.externalFundingAvailable
+    ).toBe(false)
     const credited = recordCheckoutSparkSettledCredit(input.snapshot.state, {
       requestId: plan.funding.requestId,
       paymentHash: plan.funding.paymentHash,
@@ -1451,7 +1477,7 @@ describe("settled Spark buyer action", () => {
     "cancelled",
     "binding",
     "recovery_ack",
-    "takeover",
+    "funding_expiry",
   ] as const)(
     "rejects external disclosure after %s across either bridge await",
     async (change) => {
@@ -1485,7 +1511,7 @@ describe("settled Spark buyer action", () => {
           }
         } else if (change === "recovery_ack") {
           harness.authority.acknowledged = false
-        } else harness.authority.now = harness.plan.takeoverAt
+        } else harness.authority.now = harness.plan.funding.expiresAt
         release.resolve()
         await expect(advancing).rejects.toThrow(
           change === "signout" || change === "generation"

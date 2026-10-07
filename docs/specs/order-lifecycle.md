@@ -60,6 +60,18 @@ fixed cost.
 
 ## State flow
 
+For new supported upfront routed orders, preparation first retains the original
+order draft and exact isolated-checkout binding, then obtains acknowledgement
+for its Merchant recovery envelope before order publication and funding
+disclosure. Interrupted preparation continues that original order and exact
+ciphertext; a newer cart is not recovery authority. See
+[`universal-checkout-router.md`](universal-checkout-router.md) and
+[`wallets.md`](wallets.md#checkout-preparation-and-credential-trust).
+Funding credit alone is not a paid commerce receipt. Merchant/supplier settlement
+and final Conduit collection remain independently recorded, and delivery
+confirmation remains separate from all payment state. The historical direct and
+public-zap flows below keep their own checkpoint and retry semantics.
+
 1. Every checkout mode publishes the encrypted order first, then calls
    `createOrderLifecycle(...)` with `orderDeliveryStatus: "sent"` and navigates
    to `/orders?order=<orderId>`. Anonymous public-zap preparation begins only

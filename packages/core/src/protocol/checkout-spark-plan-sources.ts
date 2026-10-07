@@ -1,4 +1,3 @@
-import { isSatsLikeCurrency } from "../pricing"
 import { assertCheckoutSparkSignedCommerceAllocations } from "./checkout-spark-signed-allocation"
 import {
   restoreCheckoutSparkSettledPlan,
@@ -265,12 +264,6 @@ export function validateCheckoutSparkPlanSources(
     const products = frozen.commerceQuote.lines.map((line) => {
       const event = sources.get(line.productEventId)!
       const product = { ...parseProductEvent(event), sourceEventId: event.id }
-      if (
-        product.sourcePrice !== undefined &&
-        !isSatsLikeCurrency(product.sourcePrice.normalizedCurrency)
-      ) {
-        unavailable()
-      }
       return product
     })
     assertCheckoutSparkSignedCommerceAllocations({

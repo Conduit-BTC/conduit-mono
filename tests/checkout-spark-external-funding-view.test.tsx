@@ -80,6 +80,52 @@ function expectNoInvoice(markup: string) {
 }
 
 describe("checkout Spark external funding presentation", () => {
+  it("keeps the exact reserved invoice usable after Merchant handoff until funding expiry", () => {
+    const externalInvoice = {
+      ...RESERVED,
+      expiresAt: NOW + 15 * 60_000,
+      takeoverAt: NOW + 2 * 60_000,
+    }
+    for (const currentTime of [
+      externalInvoice.takeoverAt,
+      externalInvoice.takeoverAt + 1,
+      externalInvoice.expiresAt - 1,
+    ]) {
+      const markup = renderFunding({ externalInvoice, now: () => currentTime })
+      expect(markup.includes(`href="lightning:${INVOICE}"`)).toBe(true)
+      expect(markup).toContain("Pay with Cash App")
+      expect(markup).toContain("Copy invoice")
+      expect(markup).toContain("Show QR code")
+      expect(markup.includes("choose Resume payment")).toBe(false)
+    }
+    expectNoInvoice(
+      renderFunding({
+        externalInvoice,
+        now: () => externalInvoice.expiresAt,
+      })
+    )
+  })
+
+  it("allows first exact invoice disclosure after handoff without reviving a withdrawn approval", () => {
+    const externalInvoice = {
+      ...RESERVED,
+      exposedAt: NOW + 3 * 60_000,
+      expiresAt: NOW + 15 * 60_000,
+      takeoverAt: NOW + 2 * 60_000,
+    }
+    const now = () => externalInvoice.exposedAt
+    const markup = renderFunding({ externalInvoice, now })
+    expect(markup.includes(`href="lightning:${INVOICE}"`)).toBe(true)
+    expect(markup).toContain("Pay with Cash App")
+    expectNoInvoice(renderFunding({ externalInvoice, now, enabled: false }))
+    expectNoInvoice(
+      renderFunding({
+        externalInvoice,
+        now: () => externalInvoice.exposedAt - 1,
+      })
+    )
+  })
+
   it("shows the requested QR only for an already-authorized ready invoice without a mount action", () => {
     let guardCalls = 0
     const markup = renderFunding({
@@ -485,9 +531,9 @@ describe("checkout Spark external funding presentation", () => {
     expect(markup).toContain("Copy invoice")
     expect(markup).toContain("Show QR code")
     expect(markup).toContain("Payment details")
-    expect(markup).toContain(
-      "Pay once, then return here to finish; if paused, choose Resume payment."
-    )
+    expect(
+      markup.includes("Pay once, then return here to check progress.")
+    ).toBe(true)
     expect(markup).not.toContain(
       "Opening a wallet is not payment confirmation."
     )
@@ -523,32 +569,30 @@ describe("checkout Spark external funding presentation", () => {
     }
   )
 
-  it.each(["expiresAt", "takeoverAt"] as const)(
-    "hides the whole subtree at and after %s, even if the other cutoff is later",
-    (boundary) => {
-      const externalInvoice = { ...RESERVED, [boundary]: NOW + 30_000 }
-      expect(
-        renderFunding({ externalInvoice, now: () => NOW + 29_999 })
-      ).toContain(`href="lightning:${INVOICE}"`)
-      expectNoInvoice(
-        renderFunding({ externalInvoice, now: () => NOW + 30_000 })
-      )
-      expectNoInvoice(
-        renderFunding({ externalInvoice, now: () => NOW + 30_001 })
-      )
-    }
-  )
+  it("hides the whole subtree at and after funding expiry", () => {
+    const externalInvoice = { ...RESERVED, expiresAt: NOW + 30_000 }
+    expect(
+      renderFunding({ externalInvoice, now: () => NOW + 29_999 })
+    ).toContain(`href="lightning:${INVOICE}"`)
+    expectNoInvoice(renderFunding({ externalInvoice, now: () => NOW + 30_000 }))
+    expectNoInvoice(renderFunding({ externalInvoice, now: () => NOW + 30_001 }))
+  })
 
-  it.each(["expiresAt", "takeoverAt"] as const)(
-    "hides invalid or already-closed %s windows",
-    (boundary) => {
-      for (const value of [Number.NaN, Infinity, NOW + 0.5, NOW, NOW - 1]) {
-        expectNoInvoice(
-          renderFunding({ externalInvoice: { ...RESERVED, [boundary]: value } })
-        )
-      }
+  it("hides invalid or already-closed funding windows", () => {
+    for (const value of [Number.NaN, Infinity, NOW + 0.5, NOW, NOW - 1]) {
+      expectNoInvoice(
+        renderFunding({ externalInvoice: { ...RESERVED, expiresAt: value } })
+      )
     }
-  )
+  })
+
+  it("requires a valid saved handoff even though it does not shorten funding", () => {
+    for (const takeoverAt of [Number.NaN, Infinity, NOW + 0.5, 0, -1]) {
+      expectNoInvoice(
+        renderFunding({ externalInvoice: { ...RESERVED, takeoverAt } })
+      )
+    }
+  })
 
   it("uses boundary-driven unmounting and guards disclosure clicks before child actions", async () => {
     const source = await Bun.file(

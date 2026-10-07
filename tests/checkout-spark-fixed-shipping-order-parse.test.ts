@@ -183,7 +183,7 @@ describe("fixed-shipping checkout router order parsing", () => {
     )
   })
 
-  it("keeps fiat and variation orders outside this bounded router shape", () => {
+  it("rejects missing fiat conversion and cross-merchant variation shape", () => {
     const fiat = order()
     fiat.items[0]!.sourcePrice = {
       amount: 1,
@@ -194,7 +194,7 @@ describe("fixed-shipping checkout router order parsing", () => {
       "Invalid private checkout payment marker"
     )
     const variation = order()
-    variation.items[0]!.familyProductId = `30402:${MERCHANT}:print-family`
+    variation.items[0]!.familyProductId = `30402:${"f".repeat(64)}:print-family`
     variation.items[0]!.selectedSpecifications = [
       { key: "size", value: "small" },
     ]

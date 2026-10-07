@@ -1,5 +1,19 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import type { SourcePriceQuote } from "../pricing"
+import {
+  shippingPolicyQuoteSchema,
+  type ShippingPolicyQuote,
+} from "./shipping-policy"
+import {
+  freezeCheckoutSparkCommercePricing,
+  checkoutSparkCommerceQuoteDigestValue,
+  checkoutSparkSourcePriceSchema,
+  checkoutSparkCommerceVariationSchema,
+  freezeCheckoutSparkCommerceEvidence,
+  type CheckoutSparkCommercePricing,
+  type CheckoutSparkCommerceVariation,
+} from "./checkout-spark-commerce-pricing"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const PLAN_DIGEST_DOMAIN_V1 = "conduit:checkout-spark-plan:v1"
@@ -81,6 +95,10 @@ export interface CheckoutSparkCommerceQuoteLine {
   quantity: number
   unitMerchandiseSats: number
   unitShippingSats: number
+  sourcePrice?: SourcePriceQuote
+  sourceShippingCost?: SourcePriceQuote
+  variation?: CheckoutSparkCommerceVariation
+  shippingPolicy?: { quote: ShippingPolicyQuote; allocatedCostSats: number }
   shippingOption?: {
     coordinate: string
     eventId: string
@@ -95,6 +113,7 @@ export interface CheckoutSparkCommerceQuoteLine {
 export interface CheckoutSparkCommerceQuote {
   commerceTotalSats: number
   lines: readonly CheckoutSparkCommerceQuoteLine[]
+  pricing?: CheckoutSparkCommercePricing
 }
 
 export interface FreezeCheckoutSparkPlanInput {
@@ -429,6 +448,16 @@ function normalizeCommerceQuote(
         throw new Error("Checkout Spark pickup graph authority is invalid.")
       }
     }
+    if (
+      candidate.shippingPolicy !== undefined &&
+      (!candidate.shippingPolicy ||
+        typeof candidate.shippingPolicy !== "object" ||
+        Object.keys(candidate.shippingPolicy).length !== 2 ||
+        Object.keys(candidate.shippingPolicy).some(
+          (key) => key !== "quote" && key !== "allocatedCostSats"
+        ))
+    )
+      throw new Error("Checkout Spark shipping policy evidence is invalid.")
     return Object.freeze({
       productCoordinate,
       productEventId: normalizeHex64(
@@ -445,6 +474,48 @@ function normalizeCommerceQuote(
       unitShippingSats,
       ...(shippingOption ? { shippingOption } : {}),
       ...(pickup ? { pickup } : {}),
+      ...(candidate.sourcePrice !== undefined
+        ? {
+            sourcePrice: Object.freeze(
+              checkoutSparkSourcePriceSchema.parse(candidate.sourcePrice)
+            ),
+          }
+        : {}),
+      ...(candidate.sourceShippingCost !== undefined
+        ? {
+            sourceShippingCost: Object.freeze(
+              checkoutSparkSourcePriceSchema.parse(candidate.sourceShippingCost)
+            ),
+          }
+        : {}),
+      ...(candidate.variation !== undefined
+        ? {
+            variation: Object.freeze({
+              ...checkoutSparkCommerceVariationSchema.parse(
+                candidate.variation
+              ),
+              specifications: Object.freeze(
+                checkoutSparkCommerceVariationSchema
+                  .parse(candidate.variation)
+                  .specifications.map((spec) => Object.freeze(spec))
+              ),
+            }),
+          }
+        : {}),
+      ...(candidate.shippingPolicy !== undefined
+        ? {
+            shippingPolicy: Object.freeze({
+              quote: freezeCheckoutSparkCommerceEvidence(
+                shippingPolicyQuoteSchema.parse(candidate.shippingPolicy.quote)
+              ),
+              allocatedCostSats: normalizeSats(
+                candidate.shippingPolicy.allocatedCostSats,
+                "Commerce allocated shipping",
+                { allowZero: true }
+              ),
+            }),
+          }
+        : {}),
     })
   })
   if (
@@ -455,8 +526,10 @@ function normalizeCommerceQuote(
   const total = lines.reduce(
     (sum, line) =>
       sum +
-      BigInt(line.quantity) *
-        (BigInt(line.unitMerchandiseSats) + BigInt(line.unitShippingSats)),
+      BigInt(line.quantity) * BigInt(line.unitMerchandiseSats) +
+      (line.shippingPolicy
+        ? BigInt(line.shippingPolicy.allocatedCostSats)
+        : BigInt(line.quantity) * BigInt(line.unitShippingSats)),
     0n
   )
   if (total !== BigInt(commerceTotalSats)) {
@@ -465,6 +538,9 @@ function normalizeCommerceQuote(
   return Object.freeze({
     commerceTotalSats,
     lines: Object.freeze(lines),
+    ...(input.pricing !== undefined
+      ? { pricing: freezeCheckoutSparkCommercePricing(input.pricing) }
+      : {}),
   })
 }
 
@@ -562,33 +638,7 @@ function canonicalPlanValue(
       obligation.maxFeeSats,
     ]),
     ...(plan.schemaVersion === 2
-      ? [
-          [
-            plan.commerceQuote!.commerceTotalSats,
-            plan.commerceQuote!.lines.map((line) => [
-              line.productCoordinate,
-              line.productEventId,
-              line.merchantPubkey,
-              line.quantity,
-              line.unitMerchandiseSats,
-              line.unitShippingSats,
-              line.shippingOption
-                ? [line.shippingOption.coordinate, line.shippingOption.eventId]
-                : null,
-              ...(line.pickup
-                ? [
-                    [
-                      "pickup",
-                      line.pickup.calendar.coordinate,
-                      line.pickup.calendar.eventId,
-                      line.pickup.collection.coordinate,
-                      line.pickup.collection.eventId,
-                    ],
-                  ]
-                : []),
-            ]),
-          ],
-        ]
+      ? [checkoutSparkCommerceQuoteDigestValue(plan.commerceQuote!)]
       : []),
   ]
 }
@@ -607,6 +657,9 @@ function refreezePlan(plan: CheckoutSparkPlan): CheckoutSparkPlan {
       ? {
           commerceQuote: {
             commerceTotalSats: plan.commerceQuote.commerceTotalSats,
+            ...(plan.commerceQuote.pricing
+              ? { pricing: plan.commerceQuote.pricing }
+              : {}),
             lines: plan.commerceQuote.lines.map((line) => ({
               ...line,
               ...(line.shippingOption

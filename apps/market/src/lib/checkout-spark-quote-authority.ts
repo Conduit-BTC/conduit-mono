@@ -84,6 +84,11 @@ function requireMatchingProduct(
       JSON.stringify(listing.sourcePrice) ||
     resolved.type !== listing.type ||
     listing.type === "variable" ||
+    (listing.type === "variation" &&
+      item.familyProductId !== listing.parentProductId) ||
+    (listing.type !== "variation" && item.familyProductId !== undefined) ||
+    JSON.stringify(item.selectedSpecifications ?? []) !==
+      JSON.stringify(listing.specifications ?? []) ||
     resolved.parentProductId !== listing.parentProductId ||
     JSON.stringify(resolved.specifications) !==
       JSON.stringify(listing.specifications) ||
@@ -98,6 +103,7 @@ function requireMatchingProduct(
     resolved.shippingOptionLaunchUnsupported !==
       listing.shippingOptionLaunchUnsupported ||
     (item.fulfillment?.type !== "event_market_pickup" &&
+      !item.shippingPolicyQuote &&
       item.shippingOptionLaunchUnsupported !==
         listing.shippingOptionLaunchUnsupported) ||
     JSON.stringify(resolved.shippingOptionRefs) !==
@@ -257,7 +263,10 @@ export function buildCheckoutSparkQuoteAuthority(input: {
     getCartCommerceFingerprint(
       prepareCartFulfillment(
         authorization.items,
-        authorization.shippingOptionEvidence.options
+        authorization.shippingOptionEvidence.options,
+        authorization.items.find((item) => item.shippingPolicyQuote)
+          ?.shippingPolicyQuote?.destination,
+        input.rateInput
       ).items
     ) !== getCartCommerceFingerprint(authorization.items)
   ) {
@@ -292,7 +301,11 @@ export function buildCheckoutSparkQuoteAuthority(input: {
       ? {
           shippingSourceEvents: structuredClone(
             [...selectedShipping.values()].flatMap((option) =>
-              option.sourceEvent ? [option.sourceEvent] : []
+              option.sourceEvent
+                ? [option.sourceEvent]
+                : option.signedEvent
+                  ? [option.signedEvent]
+                  : []
             )
           ),
         }

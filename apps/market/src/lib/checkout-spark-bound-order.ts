@@ -5,7 +5,12 @@ import {
   DexieCheckoutSparkSettledRepository,
   appendConduitClientTag,
   getNdk,
-  isSatsLikeCurrency,
+  matchesCheckoutSparkCommerceOrderLine,
+  canonicalCheckoutSparkCommerceEvidence,
+  assertCheckoutSparkCommerceProductPrice,
+  assertCheckoutSparkCommerceShippingPolicies,
+  isValidSignedPublicNostrEvent,
+  parseProductEvent,
   getShippingDestinationEligibility,
   matchesCheckoutSparkOrderShippingSnapshot,
   matchesCheckoutSparkOrderPickupSnapshot,
@@ -43,7 +48,7 @@ type RouterOrderIdentity =
 
 export interface PublishCheckoutSparkBoundOrderInput {
   checkoutId: string
-  /** A fresh, signed-source-priced order. No private router terms enter its payload. */
+  /** Buyer-approved SAT terms; wallet credentials never enter the order payload. */
   order: OrderSchema
   /** Exact signed product/shipping revisions already bound by the frozen plan. */
   sourceEvents?: readonly SignedPublicNostrEvent[]
@@ -139,8 +144,7 @@ export async function publishCheckoutSparkSettledBoundOrder(
     stored.planDigest !== plan.planDigest ||
     !Number.isSafeInteger(now) ||
     now < plan.createdAt ||
-    now >= plan.funding.expiresAt ||
-    now >= plan.takeoverAt
+    now >= plan.funding.expiresAt
   ) {
     throw new Error("Settled checkout order is not durably prepared.")
   }
@@ -200,6 +204,12 @@ async function publishBoundOrderFromFrozenPlan(
     order.createdAt > now ||
     (!guest && order.guestContact !== undefined) ||
     order.subtotal !== plan.commerceQuote.commerceTotalSats ||
+    JSON.stringify(
+      canonicalCheckoutSparkCommerceEvidence(order.checkoutSparkPricing)
+    ) !==
+      JSON.stringify(
+        canonicalCheckoutSparkCommerceEvidence(plan.commerceQuote.pricing)
+      ) ||
     order.items.length !== plan.commerceQuote.lines.length ||
     mixedHistoricalFulfillment ||
     getMixedFulfillmentBlockingMessage(currentFulfillmentItems) !== null
@@ -207,6 +217,10 @@ async function publishBoundOrderFromFrozenPlan(
     throw new Error("Checkout Spark order does not match its frozen plan.")
   }
 
+  assertCheckoutSparkCommerceShippingPolicies(
+    plan.commerceQuote,
+    plan.createdAt
+  )
   const quoteLines = new Map(
     plan.commerceQuote.lines.map((line) => [line.productCoordinate, line])
   )
@@ -215,7 +229,10 @@ async function publishBoundOrderFromFrozenPlan(
     0
   )
   const shippingCostSats = order.items.reduce(
-    (sum, item) => sum + (item.shippingCostSats ?? 0) * item.quantity,
+    (sum, item) =>
+      sum +
+      (item.shippingAllocatedCostSats ??
+        (item.shippingCostSats ?? 0) * item.quantity),
     0
   )
   const shippingOptions: ParsedShippingOption[] = []
@@ -230,6 +247,24 @@ async function publishBoundOrderFromFrozenPlan(
       quoteLines.size ||
     order.items.some((item) => {
       const line = quoteLines.get(item.productId)
+      if (line?.sourcePrice || line?.variation) {
+        const event = input.sourceEvents?.find(
+          (source) => source.id === line.productEventId
+        )
+        if (
+          !event ||
+          !isValidSignedPublicNostrEvent(event) ||
+          event.kind !== 30_402 ||
+          event.pubkey !== line.merchantPubkey
+        )
+          return true
+        assertCheckoutSparkCommerceProductPrice({
+          product: parseProductEvent(event),
+          line,
+          pricing: plan.commerceQuote.pricing,
+          acceptedAtMs: plan.createdAt,
+        })
+      }
       if (line?.pickup) {
         const productEvent = input.sourceEvents?.find(
           (event) => event.id === line.productEventId
@@ -266,12 +301,14 @@ async function publishBoundOrderFromFrozenPlan(
           productEvent,
           line,
           shippingEvents: input.sourceEvents,
+          pricing: plan.commerceQuote.pricing,
+          acceptedAtMs: plan.createdAt,
         })
         if (
           !option ||
           item.format !== "physical" ||
           item.fulfillment?.type !== "shipping" ||
-          !matchesCheckoutSparkOrderShippingSnapshot(item, option)
+          !matchesCheckoutSparkOrderShippingSnapshot(item, option, line)
         )
           return true
         shippingOptions.push(option)
@@ -289,11 +326,7 @@ async function publishBoundOrderFromFrozenPlan(
         return true
       return (
         !line ||
-        item.familyProductId !== undefined ||
-        item.selectedSpecifications !== undefined ||
-        (item.sourcePrice !== undefined &&
-          (item.sourcePrice.amount !== line.unitMerchandiseSats ||
-            !isSatsLikeCurrency(item.sourcePrice.normalizedCurrency))) ||
+        !matchesCheckoutSparkCommerceOrderLine(item, line) ||
         item.currency !== "SATS" ||
         line.merchantPubkey !== merchantPubkey ||
         line.quantity !== item.quantity ||
@@ -357,6 +390,8 @@ async function publishBoundOrderFromFrozenPlan(
       priceAtPurchase: item.priceAtPurchase,
       currency: item.currency,
       shippingCostSats: item.shippingCostSats,
+      shippingPolicyQuote: item.shippingPolicyQuote,
+      shippingAllocatedCostSats: item.shippingAllocatedCostSats,
       sourceShippingCost: item.sourceShippingCost,
       shippingOptionId: item.shippingOptionId,
       shippingOptionDTag: item.shippingOptionDTag,
@@ -405,6 +440,12 @@ async function publishBoundOrderFromFrozenPlan(
     if (deliveryAccepted) return true
     try {
       const currentTime = (dependencies.now ?? Date.now)()
+      if (
+        !Number.isSafeInteger(currentTime) ||
+        currentTime < plan.createdAt ||
+        currentTime >= plan.funding.expiresAt
+      )
+        return false
       for (const line of plan.commerceQuote.lines) {
         if (!line.pickup) continue
         resolveCheckoutSparkSignedPickup({

@@ -214,11 +214,61 @@ polling cannot extend either or infer abandonment from a missing heartbeat.
 
 Normal new plans freeze Merchant takeover two minutes after preparation while
 requesting a fifteen-minute funding invoice. Existing plans keep their original
-deadlines. Buyer admission ends at that boundary; already admitted operations
-remain queryable and must drain or reconcile under their exact saved identifiers.
+deadlines. New buyer outgoing admission ends at that boundary; already admitted
+operations remain queryable and must drain or reconcile under their exact saved identifiers.
 Merchant eligibility is not proof of an unattempted payment and must not bypass
 those records, recipient attribution, or provider idempotency. The five-minute
 checking budget does not extend buyer dispatch beyond the frozen handoff.
+
+The same exact funding invoice may first be presented, paid, or reopened until
+its own signed expiry, including after Merchant takeover. This requires the
+original buyer, order, checkout, immutable plan, active approval and acknowledged
+recovery handoff. A durable possible-funding marker must precede exposure or
+payment; an uncertain automatic attempt remains check-only unless that exact
+invoice was already reserved for external disclosure. Changing the account,
+order or approval revokes the controls. Handoff never creates a replacement
+funding invoice, another funding attempt, or renewed buyer payout authority.
+Merchant recovery independently inspects and routes exact late funding.
+The invoice lifetime is not a promise that a reload can recreate a lost
+in-memory checkout wallet. If exact credit inspection is unavailable, new
+funding admission stays paused rather than inferring an unpaid receive.
+Retained ciphertext and the original order remain usable for Merchant recovery;
+they do not supply the buyer with a plaintext credential or waive funding guards.
+
+### Checkout preparation and credential trust
+
+A failed preparation must distinguish recoverable state from proven absence.
+Persist the original order draft and exact checkout binding before publishing
+its encrypted recovery wrap. If the exact wrap survives an interrupted write,
+readback, or callback, retain its wallet and invoice, repair only an unambiguous
+matching binding, and retry that same ciphertext. A reload continues the
+original order, not a newer cart. Funding exposure still requires recipient
+relay acknowledgement; acknowledgement is not payment or recipient receipt.
+First publication of that original order remains bounded by the saved funding
+invoice expiry. Retention after expiry supports Merchant/manual recovery, not
+a replacement invoice or an automatic cart unlock.
+Unreadable or conflicting local state remains recoverable and must not be
+discarded. Only positively verified pristine state with no saved wrap, exposure,
+funding or payment attempt permits revision-checked local abandonment and a
+fresh preparation. A failed callback alone cannot establish that state.
+Verify the exact pristine revision before closing its RAM wallet, and serialize
+closure with removal of that claim. A failed or timed-out close retains the claim
+for manual recovery; a local transaction cannot roll back or cancel an external
+wallet close, so it must not promise an immediately reusable RAM credential. Session
+revocation before closure blocks cleanup; revocation during an already admitted,
+definitely unexposed close must not leave a claim whose sole credential was
+discarded. Completing that exact cleanup grants no new payment authority.
+
+The encrypted Merchant recovery envelope intentionally grants the Merchant the
+raw credential for this isolated checkout wallet. It grants no access to the
+buyer's funding wallet or Nostr account. The handoff timer, recipient allocations
+and Conduit-last policy constrain conforming clients, not the extractable wallet
+credential: a holder of that credential can spend outside those client rules.
+Preventing deliberate fee evasion by such a holder is not this router's trust
+model. Accidental replay, wrong-recipient payments, premature dispatch and
+loss of recoverable credentials remain correctness defects. Recovery guidance
+must state this bounded trust assumption without suggesting guaranteed recovery
+or cryptographic enforcement of the client timer.
 
 ### Native final treasury allocation
 
@@ -384,6 +434,12 @@ Required coverage includes:
 - signed-out `/wallet`, dialog-state reset, and in-flight dismissal behavior;
 - password-encrypted device storage plus phrase/account/network recovery;
 - phrase-first Mainnet/account-`1` restore with an account-`0` negative control;
+- exact-wrap continuation after interrupted preparation and pristine-only
+  revision-checked abandonment before cart retry;
+- exact fifteen-minute funding presentation/payment versus two-minute outgoing
+  admission, late credit and cross-actor reconciliation;
+- original signed fiat/variation and shipping evidence with legacy digest
+  preservation, without claiming an independently signed exchange-rate oracle;
 - recovery and reopen behavior; and
 - content-free logs and telemetry.
 

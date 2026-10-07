@@ -40,6 +40,16 @@ const SNAPSHOT_RETRY_LOCK_NAME =
 const MAX_STORED_RECOVERY_DELIVERIES = 64
 const HEX_64 = /^[0-9a-f]{64}$/
 
+// Only the actual persist-before-transport composition can establish this
+// phase. A caller-supplied error or an empty outbox is not absence proof.
+const prePersistenceFailures = new WeakSet<Error>()
+
+export function isCheckoutSparkRecoveryPrePersistenceFailure(
+  cause: unknown
+): boolean {
+  return cause instanceof Error && prePersistenceFailures.has(cause)
+}
+
 type RecoveryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
 
 function readSnapshotRetryRegistry(
@@ -767,27 +777,39 @@ async function persistAndPublishRecoveryHandoff(input: {
   const persisted = {
     record: null as CheckoutSparkRecoveryDeliveryRecord | null,
   }
-  const result = await publishCheckoutSparkRecovery({
-    payload: input.payload,
-    signer,
-    signerInteraction:
-      identity.kind === "guest_ephemeral" ? "application_owned" : "external",
-    transport,
-    persistExactWrap: async (preparedRecord, progress) => {
-      assertGuestCurrent()
-      persisted.record = preparedRecord
-      await saveCheckoutSparkRecoveryDelivery(
-        preparedRecord,
-        progress,
-        storage,
-        input.now()
-      )
-      // A persisted wrap must retain its local recovery/retry link even if the
-      // guest session changed during storage. This grants no send authority.
-      await input.onPersisted?.(preparedRecord.handoffId)
-      assertGuestCurrent()
-    },
-  })
+  let persistenceAttempted = false
+  let result: Awaited<ReturnType<typeof publishCheckoutSparkRecovery>>
+  try {
+    result = await publishCheckoutSparkRecovery({
+      payload: input.payload,
+      signer,
+      signerInteraction:
+        identity.kind === "guest_ephemeral" ? "application_owned" : "external",
+      transport,
+      persistExactWrap: async (preparedRecord, progress) => {
+        persistenceAttempted = true
+        assertGuestCurrent()
+        persisted.record = preparedRecord
+        await saveCheckoutSparkRecoveryDelivery(
+          preparedRecord,
+          progress,
+          storage,
+          input.now()
+        )
+        // A persisted wrap must retain its local recovery/retry link even if the
+        // guest session changed during storage. This grants no send authority.
+        await input.onPersisted?.(preparedRecord.handoffId)
+        assertGuestCurrent()
+      },
+    })
+  } catch (cause) {
+    if (!persistenceAttempted && cause instanceof Error) {
+      prePersistenceFailures.add(cause)
+    } else if (cause instanceof Error) {
+      prePersistenceFailures.delete(cause)
+    }
+    throw cause
+  }
   const record = persisted.record
   if (!record) {
     throw new Error("Checkout Spark recovery wrapper was not persisted.")

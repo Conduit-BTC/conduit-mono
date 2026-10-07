@@ -135,7 +135,7 @@ describe("fee-inclusive listing estimates", () => {
     })
   })
 
-  it("does not add router fees to unsupported fiat-priced listings", () => {
+  it("estimates fees from the fresh final conversion of a fiat digital variation", () => {
     const nowMs = 1_800_000_000_000
     const quote: BtcUsdRateQuote = {
       rate: 100_000,
@@ -143,16 +143,16 @@ describe("fee-inclusive listing estimates", () => {
       source: "env",
     }
     const display = getFeeInclusiveListingPriceDisplay(
-      { price: 1, currency: "USD" },
+      { price: 1, currency: "USD", type: "variation", format: "digital" },
       { currency: "USD", bitcoinUnit: "sats" },
       quote,
       true,
       { nowMs }
     )
-    expect(display.sats).toBe(1_000)
-    expect(display.primary).toBe("$1.00")
-    expect(display.secondary).toBe("1,000 sats")
-    expect(display.feeEstimateIncluded).toBe(false)
+    expect(display.sats).toBe(1_113)
+    expect(display.primary).toBe("~ $1.11")
+    expect(display.secondary).toBe("1,113 sats")
+    expect(display.feeEstimateIncluded).toBe(true)
   })
 
   it("does not invent a fiat fee estimate when conversion is unavailable", () => {
@@ -199,6 +199,50 @@ describe("combined cart estimates", () => {
     currency: "SATS",
     quantity: 1,
     format: "digital",
+  })
+  it("preserves native SAT source aliases in router admission", () => {
+    expect(
+      isCheckoutSparkSettledCart([
+        {
+          ...item(),
+          sourcePrice: {
+            amount: 1_000,
+            currency: "SAT",
+            normalizedCurrency: "SAT",
+          },
+        },
+      ])
+    ).toBe(true)
+  })
+  it("keeps supported fiat variations on the router admission path before a rate is available", () => {
+    const selected = {
+      ...item(),
+      currency: "USD",
+      price: 1,
+      sourcePrice: { amount: 1, currency: "USD", normalizedCurrency: "USD" },
+      familyProductId: `30402:${"a".repeat(64)}:parent`,
+      selectedSpecifications: [{ key: "Size", value: "Large" }],
+    }
+    expect(isCheckoutSparkSettledCart([selected])).toBe(true)
+    expect(getCartCoordinationEstimate([selected], null)).toBeNull()
+    expect(
+      isCheckoutSparkSettledCart([
+        {
+          ...selected,
+          currency: "UNKNOWN",
+          sourcePrice: {
+            amount: 1,
+            currency: "UNKNOWN",
+            normalizedCurrency: "UNKNOWN",
+          },
+        },
+      ])
+    ).toBe(false)
+    expect(
+      isCheckoutSparkSettledCart([
+        { ...selected, familyProductId: `30402:${"b".repeat(64)}:parent` },
+      ])
+    ).toBe(false)
   })
   it("adds one minimum per compatible purchase and never changes cart line prices", () => {
     const first = Object.freeze(item())

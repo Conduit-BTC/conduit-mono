@@ -1,11 +1,18 @@
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  EVENT_KINDS,
+  CHECKOUT_SPARK_ROUTER_ORDER_TAG,
+  DexieCheckoutSparkSettledRepository,
+  getOrderLifecycle,
+  retryOrderRelayDelivery,
   deriveCheckoutSparkSignedCommerceObligations,
   calculateConduitCheckoutFeeSats,
   calculateCheckoutSparkSettledGrossFundingSats,
   checkoutSparkConduitFeeRecipient,
   getNdk,
   getShippingDestinationEligibility,
-  isSatsLikeCurrency,
+  matchesCheckoutSparkOrderPrice,
+  matchesCheckoutSparkCommerceOrderLine,
   matchesCheckoutSparkOrderShippingSnapshot,
   orderSchema,
   resolveCheckoutSparkSignedShipping,
@@ -31,13 +38,26 @@ import {
 import { readCheckoutSparkRecipientPayoutAddress } from "./checkout-spark-recipient-profile"
 import {
   CheckoutSparkSettledFundingMetadataPreflightError,
+  CheckoutSparkSettledPreparationAbandonedError,
   prepareCheckoutSparkSettledFunding,
+  resumeCheckoutSparkSettledFunding,
   type PreparedCheckoutSparkSettledFunding,
 } from "./checkout-spark-settled-preparation"
 import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
 import type { CheckoutSparkRecoverySigningIdentity } from "./checkout-spark-recovery-handoff"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
 import { getMixedFulfillmentBlockingMessage } from "./cart-model"
+import { getSparkWalletManager } from "./spark-sdk"
+import {
+  assertStagedOrderLifecycleMatchesRumor,
+  prepareBuyerRumor,
+} from "./order-publish"
+import {
+  clearCheckoutSparkSettledContinuation,
+  listCheckoutSparkSettledContinuations,
+  saveCheckoutSparkSettledContinuation,
+  type CheckoutSparkSettledContinuationStorage,
+} from "./checkout-spark-settled-continuation"
 
 export {
   isCheckoutSparkSettledCart,
@@ -94,7 +114,7 @@ export function canRetryCheckoutSparkSettledPayoutPreflight(input: {
   )
 }
 
-/** A failed admission is retryable only before the wallet preparation starts. */
+/** Retry only a preflight or positively abandoned, unexposed preparation. */
 export function canRetryCheckoutSparkSettledPreparation(input: {
   cause: unknown
   recoveryState: "absent" | "present" | "unreadable"
@@ -103,7 +123,8 @@ export function canRetryCheckoutSparkSettledPreparation(input: {
   return (
     input.recoveryState === "absent" &&
     (!input.preparationStarted ||
-      canRetryCheckoutSparkSettledPayoutPreflight(input))
+      canRetryCheckoutSparkSettledPayoutPreflight(input) ||
+      input.cause instanceof CheckoutSparkSettledPreparationAbandonedError)
   )
 }
 
@@ -113,6 +134,7 @@ type Dependencies = {
   publishOrder?: typeof publishCheckoutSparkSettledBoundOrder
   ndk?: ReturnType<typeof getNdk>
   now?: () => number
+  continuationStorage?: CheckoutSparkSettledContinuationStorage | null
 }
 
 /**
@@ -163,31 +185,25 @@ export async function prepareCheckoutSparkSettledOrder(
     quote.pricing.itemSubtotalSats + quote.pricing.shippingCost.totalSats !==
       quote.pricing.totalSats ||
     quote.pricing.totalMsats !== quote.pricing.totalSats * 1_000 ||
-    quote.pricing.approximate ||
     quote.lines.some((line) => line.merchantPubkey !== merchantPubkey) ||
     quote.products.some(
       (product) =>
         product.pubkey !== merchantPubkey ||
         (product.format !== "digital" && product.format !== "physical") ||
-        product.type !== "simple" ||
-        product.currency !== "SATS"
+        product.type === "variable"
     ) ||
     quote.pricing.items.some(
       (priced) =>
         (priced.format !== "digital" && priced.format !== "physical") ||
         priced.currency !== "SATS" ||
-        priced.familyProductId !== undefined ||
-        priced.selectedSpecifications !== undefined ||
-        (priced.sourcePrice !== undefined &&
-          (priced.sourcePrice.amount !== priced.priceAtPurchase ||
-            !isSatsLikeCurrency(priced.sourcePrice.normalizedCurrency)))
+        !matchesCheckoutSparkOrderPrice(priced, commerceQuote.pricing)
     ) ||
     !Number.isSafeInteger(input.nowMs) ||
     input.nowMs <= 0 ||
     !Number.isSafeInteger(quote.pricing.totalSats * 1_000)
   ) {
     throw new Error(
-      "Quantum Router supports current SAT-priced simple items from one merchant only."
+      "Quantum Router requires a current final quote from one merchant."
     )
   }
 
@@ -226,6 +242,8 @@ export async function prepareCheckoutSparkSettledOrder(
       productEvent: event,
       line,
       shippingEvents: quote.shippingSourceEvents,
+      pricing: commerceQuote.pricing,
+      acceptedAtMs: input.nowMs,
     })
     if (
       priced.format !== product.format ||
@@ -251,7 +269,7 @@ export async function prepareCheckoutSparkSettledOrder(
     }
     requiresShipping = true
     hasPhysicalFulfillment = true
-    if (!matchesCheckoutSparkOrderShippingSnapshot(priced, option)) {
+    if (!matchesCheckoutSparkOrderShippingSnapshot(priced, option, line)) {
       throw new Error(
         "Checkout Spark shipping snapshot changed after validation."
       )
@@ -268,7 +286,9 @@ export async function prepareCheckoutSparkSettledOrder(
       throw new Error("Checkout Spark shipping destination is not eligible.")
     }
     shippingZoneEligibility = "eligible"
-    shippingTotalSats += line.unitShippingSats * line.quantity
+    shippingTotalSats +=
+      line.shippingPolicy?.allocatedCostSats ??
+      line.unitShippingSats * line.quantity
   }
   const shippingStatus = hasPhysicalFulfillment
     ? shippingTotalSats === 0
@@ -298,6 +318,9 @@ export async function prepareCheckoutSparkSettledOrder(
 
   // Validate and snapshot private guest contact before any wallet or network work.
   const orderDraft = orderSchema.parse({
+    ...(commerceQuote.pricing
+      ? { checkoutSparkPricing: commerceQuote.pricing }
+      : {}),
     id: input.orderId,
     merchantPubkey,
     buyerPubkey: buyer.pubkey,
@@ -398,23 +421,65 @@ export async function prepareCheckoutSparkSettledOrder(
   })
   assertCurrent()
 
-  const prepared = await (
-    dependencies.prepareFunding ?? prepareCheckoutSparkSettledFunding
-  )({
-    checkoutId: input.checkoutId,
-    orderId: input.orderId,
-    purchaseClaimDigest: input.purchaseClaimDigest,
-    merchantPubkey,
-    network: input.network,
-    takeoverAt,
-    grossFundingSats,
-    fundingExpirySecs: timing.fundingExpirySecs,
-    identity: buyer,
-    shouldContinue,
-    quoteAuthority: quote,
-    sourceEvents,
-    recipients,
-  })
+  let continuationPlanDigest: string | null = null
+  let prepared: PreparedCheckoutSparkSettledFunding
+  try {
+    prepared = await (
+      dependencies.prepareFunding ?? prepareCheckoutSparkSettledFunding
+    )({
+      checkoutId: input.checkoutId,
+      orderId: input.orderId,
+      purchaseClaimDigest: input.purchaseClaimDigest,
+      merchantPubkey,
+      network: input.network,
+      takeoverAt,
+      grossFundingSats,
+      fundingExpirySecs: timing.fundingExpirySecs,
+      identity: buyer,
+      shouldContinue,
+      quoteAuthority: quote,
+      sourceEvents,
+      recipients,
+      onPlanPrepared: ({ plan, sourceEvents: canonicalSources }) => {
+        continuationPlanDigest = plan.planDigest
+        saveCheckoutSparkSettledContinuation(
+          {
+            schemaVersion: 1,
+            checkoutId: plan.checkoutId,
+            planDigest: plan.planDigest,
+            purchaseClaimDigest: input.purchaseClaimDigest,
+            buyerPubkey: buyer.pubkey,
+            identityKind: buyer.kind,
+            createdAt: plan.createdAt,
+            expiresAt:
+              buyer.kind === "guest_ephemeral"
+                ? buyer.expiresAt
+                : plan.createdAt + 24 * 60 * 60_000,
+            order: orderSchema.parse({
+              ...orderDraft,
+              createdAt: Math.max(input.nowMs, plan.createdAt),
+            }),
+            sourceEvents: canonicalSources,
+            addressValidity,
+            shippingZoneEligibility,
+          },
+          dependencies.continuationStorage
+        )
+      },
+    })
+  } catch (cause) {
+    if (
+      cause instanceof CheckoutSparkSettledPreparationAbandonedError &&
+      continuationPlanDigest
+    ) {
+      clearCheckoutSparkSettledContinuation(
+        input.checkoutId,
+        continuationPlanDigest,
+        dependencies.continuationStorage
+      )
+    }
+    throw cause
+  }
   assertCurrent()
   const order = orderSchema.parse({
     ...orderDraft,
@@ -434,7 +499,216 @@ export async function prepareCheckoutSparkSettledOrder(
     shippingZoneEligibility,
     relayAuthMethod: input.relayAuthMethod,
   })
+  if (continuationPlanDigest) {
+    clearCheckoutSparkSettledContinuation(
+      input.checkoutId,
+      continuationPlanDigest,
+      dependencies.continuationStorage
+    )
+  }
   return { prepared, published }
+}
+
+export interface ContinuedCheckoutSparkSettledOrder {
+  readonly prepared: PreparedCheckoutSparkSettledFunding
+  readonly orderId: string
+  /** Continuation never restores a missing RAM wallet or outgoing approval. */
+  readonly buyerWalletAvailable: boolean
+  readonly nextStep: "review_existing_order" | "merchant_recovery"
+}
+
+export class CheckoutSparkSettledContinuationManualRecoveryError extends Error {
+  constructor() {
+    super(
+      "The exact original order needs manual merchant recovery; do not rebuild or pay it again."
+    )
+    this.name = "CheckoutSparkSettledContinuationManualRecoveryError"
+  }
+}
+
+/** Continue the original same-tab draft, independently of the current cart. */
+export async function resumeCheckoutSparkSettledOrder(
+  input: {
+    checkoutId: string
+    buyer: CheckoutSparkRecoverySigningIdentity
+    shouldContinue: () => boolean
+    relayAuthMethod?: "nip07" | "nip46"
+  },
+  dependencies: {
+    now?: () => number
+    continuationStorage?: CheckoutSparkSettledContinuationStorage | null
+    resumeFunding?: typeof resumeCheckoutSparkSettledFunding
+    publishOrder?: typeof publishCheckoutSparkSettledBoundOrder
+    readOrder?: typeof getOrderLifecycle
+    retryOrder?: typeof retryOrderRelayDelivery
+    bindBuyerOrder?: DexieCheckoutSparkSettledRepository["bindBuyerOrder"]
+    isWalletOpen?: (walletId: string) => boolean
+  } = {}
+): Promise<ContinuedCheckoutSparkSettledOrder> {
+  const buyer = { ...input.buyer }
+  const now = dependencies.now ?? Date.now
+  const continuation = listCheckoutSparkSettledContinuations(
+    buyer.pubkey,
+    now(),
+    dependencies.continuationStorage
+  ).find((row) => row.checkoutId === input.checkoutId)
+  if (!continuation || continuation.identityKind !== buyer.kind) {
+    throw new Error(
+      "The original checkout draft is unavailable for this buyer session."
+    )
+  }
+  const order = continuation.order
+  const shouldContinue = () =>
+    input.shouldContinue() &&
+    (buyer.kind !== "guest_ephemeral" ||
+      (buyer.expiresAt === continuation.expiresAt &&
+        isCurrentGuestOrderSigningIdentity(
+          buyer,
+          { orderId: order.id, merchantPubkey: order.merchantPubkey },
+          now()
+        )))
+  const assertCurrent = () => {
+    if (!shouldContinue())
+      throw new Error("Checkout Spark buyer session changed.")
+  }
+  assertCurrent()
+  const prepared = await (
+    dependencies.resumeFunding ?? resumeCheckoutSparkSettledFunding
+  )({
+    checkoutId: continuation.checkoutId,
+    planDigest: continuation.planDigest,
+    orderId: order.id,
+    merchantPubkey: order.merchantPubkey,
+    buyerPubkey: buyer.pubkey,
+    shouldContinue,
+  })
+  assertCurrent()
+  if (
+    order.id !== prepared.plan.orderId ||
+    order.merchantPubkey !== prepared.plan.merchantPubkey ||
+    order.items.length !== prepared.plan.commerceQuote.lines.length ||
+    order.items.some(
+      (item, index) =>
+        !matchesCheckoutSparkCommerceOrderLine(
+          item,
+          prepared.plan.commerceQuote.lines[index]!
+        )
+    ) ||
+    JSON.stringify(order.checkoutSparkPricing) !==
+      JSON.stringify(prepared.plan.commerceQuote.pricing)
+  ) {
+    throw new CheckoutSparkSettledContinuationManualRecoveryError()
+  }
+  const readOrder = dependencies.readOrder ?? getOrderLifecycle
+  const existing = await readOrder(order.id)
+  assertCurrent()
+  const assertOriginalOrder = (lifecycle: OrderLifecycle) => {
+    const binding = lifecycle.checkoutSparkRouterBinding
+    if (
+      lifecycle.orderId !== order.id ||
+      lifecycle.buyerPubkey !== buyer.pubkey ||
+      lifecycle.merchantPubkey !== order.merchantPubkey ||
+      lifecycle.buyerIdentityKind !== buyer.kind ||
+      binding?.checkoutId !== prepared.plan.checkoutId ||
+      binding.planDigest !== prepared.plan.planDigest ||
+      binding.walletId !== prepared.plan.walletId ||
+      (buyer.kind === "guest_ephemeral" &&
+        lifecycle.guestSessionExpiresAt !== buyer.expiresAt) ||
+      lifecycle.phase === "cancelled" ||
+      !lifecycle.orderRelayDelivery
+    ) {
+      throw new CheckoutSparkSettledContinuationManualRecoveryError()
+    }
+    // Validate the retained original plaintext against the already-staged
+    // lifecycle. This local rumor is never signed, wrapped or published.
+    const original = new NDKEvent(getNdk())
+    original.kind = EVENT_KINDS.ORDER
+    original.pubkey = buyer.pubkey
+    original.created_at = Math.floor(
+      lifecycle.orderRelayDelivery.createdAt / 1_000
+    )
+    original.tags = [
+      ["p", order.merchantPubkey],
+      ["type", "order"],
+      ["order", order.id],
+      ["amount", String(order.subtotal)],
+      ["currency", "SATS"],
+      [...CHECKOUT_SPARK_ROUTER_ORDER_TAG],
+      ...order.items.flatMap((item) => [
+        ["item", item.productId, String(item.quantity)],
+        ...(item.shippingOptionId ? [["shipping", item.shippingOptionId]] : []),
+      ]),
+    ]
+    original.content = JSON.stringify(order)
+    prepareBuyerRumor(original, buyer.pubkey)
+    try {
+      assertStagedOrderLifecycleMatchesRumor(
+        lifecycle,
+        original,
+        buyer.pubkey,
+        order.merchantPubkey
+      )
+    } catch {
+      throw new CheckoutSparkSettledContinuationManualRecoveryError()
+    }
+  }
+  if (existing) {
+    assertOriginalOrder(existing)
+    if (existing.orderDeliveryStatus !== "sent") {
+      await (dependencies.retryOrder ?? retryOrderRelayDelivery)(
+        order.id,
+        buyer.pubkey,
+        { shouldContinue, allowGuest: buyer.kind === "guest_ephemeral", now }
+      )
+      assertCurrent()
+    }
+    const accepted = await readOrder(order.id)
+    assertCurrent()
+    if (
+      !accepted ||
+      accepted.orderDeliveryStatus !== "sent" ||
+      accepted.checkoutSparkRouterBinding?.planDigest !==
+        prepared.plan.planDigest
+    ) {
+      throw new Error(
+        "The exact original order has not been acknowledged. Keep this checkout for recovery."
+      )
+    }
+    assertOriginalOrder(accepted)
+    const repository = new DexieCheckoutSparkSettledRepository()
+    await (
+      dependencies.bindBuyerOrder ?? repository.bindBuyerOrder.bind(repository)
+    )(prepared.plan, buyer.pubkey, assertCurrent)
+  } else {
+    await (dependencies.publishOrder ?? publishCheckoutSparkSettledBoundOrder)({
+      checkoutId: continuation.checkoutId,
+      order,
+      buyer,
+      authenticatedPubkey: buyer.kind === "signed_in" ? buyer.pubkey : null,
+      ndk: getNdk(),
+      shouldContinue,
+      sourceEvents: continuation.sourceEvents,
+      addressValidity: continuation.addressValidity,
+      shippingZoneEligibility: continuation.shippingZoneEligibility,
+      relayAuthMethod: input.relayAuthMethod,
+    })
+  }
+  assertCurrent()
+  clearCheckoutSparkSettledContinuation(
+    continuation.checkoutId,
+    continuation.planDigest,
+    dependencies.continuationStorage
+  )
+  const walletOpen = (
+    dependencies.isWalletOpen ??
+    ((walletId) => getSparkWalletManager()?.isOpen(walletId) ?? false)
+  )(prepared.plan.walletId)
+  return {
+    prepared,
+    orderId: order.id,
+    buyerWalletAvailable: walletOpen,
+    nextStep: walletOpen ? "review_existing_order" : "merchant_recovery",
+  }
 }
 
 /** Backward-compatible entry name for existing digital callers. */

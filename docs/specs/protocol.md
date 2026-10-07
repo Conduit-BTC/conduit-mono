@@ -141,6 +141,11 @@ The exception is constrained as follows:
   Imported plans retain their saved deadline. Handoff does not invalidate an
   admitted attempt or authorize replay; both actors reconcile the exact saved
   invoice and transfer identity before any continuation.
+  It ends new buyer outgoing admission, not the original funding invoice's
+  presentation or payment lifetime. That exact invoice remains usable until
+  signed expiry under the same active buyer/order approval, acknowledged
+  recovery handoff and durable funding reservation. Merchant recovery handles
+  exact late credit; this never renews buyer outgoing authority.
 - Conduit clients must not project canonical advisory rumors carrying the exact
   versioned `["conduit", "order-companion", "1", "<kind-16-id>"]` marker, the
   `subject=conduit-order-notification` marker, and one non-empty `order` and `p`
@@ -173,6 +178,19 @@ The exception is constrained as follows:
   not broaden the Anon Conduit Shopper public zap signer exception.
 - Converting, claiming, or recovering a guest order into a durable identity is
   outside this exception and outside the current client flow.
+
+### Settled Router Recovery and Credential Trust
+
+The initial recovery envelope conveys the raw credential of an isolated
+checkout wallet to the Merchant. Client handoff and allocation guards are not
+cryptographic spending restrictions on that credential. It does not convey the
+buyer's source-wallet credential or Nostr account key. Conforming clients must
+still enforce exact attribution, dispatch boundaries and replay protection;
+deliberate spending outside them by a credential holder is outside this trust
+model. Preparation failures retain a surviving exact encrypted envelope and its
+original order draft for same-wrap repair and retry, rather than replacing its
+wallet or invoice. Only positively verified pristine, unexposed state permits
+revision-checked abandonment. See the wallet contract for these recovery gates.
 
 ### Settled Router Closed-Attempt Renewal
 

@@ -34,8 +34,15 @@ For normal new plans, the existing sixty-second buyer preparation buffer means
 new payout preparation ends after the first minute; saved prepared attempts can
 still dispatch before the two-minute handoff. A payment admitted before handoff
 must settle or reconcile under its same identifier, even if completion is late.
-Merchant can inspect late funding throughout the original fifteen-minute invoice
-lifetime; handoff is neither invoice cancellation nor settlement evidence.
+The buyer may still present and fund the same exact invoice until its signed
+expiry, including first presentation after handoff, under the original active
+buyer/order approval and acknowledged recovery binding. Merchant can inspect and
+route exact late funding; handoff is neither invoice cancellation nor settlement
+evidence and does not restore buyer outgoing authority.
+If a reload loses the in-memory wallet and exact funding inspection is
+unavailable, new payment or disclosure remains paused. Retrying the saved
+Merchant recovery wrap and original order does not fabricate an unpaid receive
+or recreate a wallet; Merchant continuation is the recovery path in that case.
 
 ### External-wallet disclosure
 
@@ -48,7 +55,7 @@ an earlier ambiguous automatic attempt without this marker stays check-only.
 
 Once disclosed, closing the panel or failing to open a wallet does not prove
 nonpayment and cannot re-enable another funding rail. Invoice controls disappear
-at expiry or shopper handoff and when the buyer/order authority changes. Opening
+at signed expiry or when the buyer/order approval changes, not at shopper handoff. Opening
 an external wallet or copying an invoice is not settlement evidence. Exact late
 credit still belongs to the original checkout, and no disclosure action creates
 a replacement invoice or records a merchant payment proof.
@@ -84,7 +91,7 @@ created merely because they expired. Positive paid evidence can still complete
 the original leg after expiry.
 
 The narrowly bounded closed-attempt renewal contract in
-[`wallets.md`](../specs/wallets.md#closed-attempt-invoice-renewal) permits one
+[`wallets.md`](../specs/wallets.md#lightning-closed-attempt-invoice-renewal) permits one
 Merchant-only successor after exact positive unpaid closure and complete,
 spendable return with zero historical net debit. The old attempt remains in an
 append-only history; the successor gets a fresh recipient-origin invoice and

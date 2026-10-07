@@ -10,8 +10,12 @@ import {
 } from "./product-supplier-allocation"
 import { parseProductEvent } from "./products"
 import { resolveCheckoutSparkSignedPickup } from "./checkout-spark-pickup-evidence"
-import { resolveCheckoutSparkSignedShipping } from "./checkout-spark-shipping-evidence"
+import {
+  assertCheckoutSparkCommerceShippingPolicies,
+  resolveCheckoutSparkSignedShipping,
+} from "./checkout-spark-shipping-evidence"
 import type { SignedPublicNostrEvent } from "./signed-event"
+import { assertCheckoutSparkCommerceProductPrice } from "./checkout-spark-commerce-pricing"
 
 const EVENT_ID = /^[0-9a-f]{64}$/
 const MAX_SAFE_SATS = BigInt(Number.MAX_SAFE_INTEGER)
@@ -64,6 +68,7 @@ export function deriveCheckoutSparkSignedCommerceObligations(
 
   const byCoordinate = new Map(products.map((product) => [product.id, product]))
   if (byCoordinate.size !== quote.lines.length) unavailable()
+  assertCheckoutSparkCommerceShippingPolicies(quote, input.acceptedAtMs)
 
   const expected = new Map<string, bigint>()
   const seenCoordinates = new Set<string>()
@@ -141,25 +146,34 @@ export function deriveCheckoutSparkSignedCommerceObligations(
     }
 
     // Reparse the exact signed event rather than trusting a mutable Product
-    // projection or quote line for the economic amount. Fiat conversion and
-    // organizer fees require separate signed bindings.
+    // projection or quote line for the source economic amount. A retained
+    // buyer-approved conversion fixes final sats, not exchange-rate authenticity.
+    // Organizer fees still require separate signed admission.
     const signedProduct = parseProductEvent(event)
     if (
       signedProduct.id !== product.id ||
       signedProduct.priceEvidenceMalformed ||
       product.priceEvidenceMalformed ||
-      signedProduct.currency !== "SATS" ||
       product.currency !== signedProduct.currency ||
       signedProduct.price !== product.price ||
       signedProduct.priceSats !== product.priceSats ||
       JSON.stringify(signedProduct.sourcePrice) !==
         JSON.stringify(product.sourcePrice) ||
       product.format !== signedProduct.format ||
-      line.unitMerchandiseSats !== signedProduct.priceSats
+      product.type !== signedProduct.type ||
+      product.parentProductId !== signedProduct.parentProductId ||
+      JSON.stringify(product.specifications) !==
+        JSON.stringify(signedProduct.specifications)
     ) {
       unavailable()
     }
     try {
+      assertCheckoutSparkCommerceProductPrice({
+        product: signedProduct,
+        line,
+        pricing: quote.pricing,
+        acceptedAtMs: input.acceptedAtMs,
+      })
       if (line.pickup !== undefined) {
         if (input.acceptedAtMs === undefined) unavailable()
         resolveCheckoutSparkSignedPickup({
@@ -173,6 +187,8 @@ export function deriveCheckoutSparkSignedCommerceObligations(
           productEvent: event,
           line,
           shippingEvents: input.shippingEvents,
+          pricing: quote.pricing,
+          acceptedAtMs: input.acceptedAtMs,
         })
       }
     } catch {
@@ -180,7 +196,9 @@ export function deriveCheckoutSparkSignedCommerceObligations(
     }
 
     const lineSats = BigInt(line.quantity) * BigInt(line.unitMerchandiseSats)
-    const shippingSats = BigInt(line.quantity) * BigInt(line.unitShippingSats)
+    const shippingSats = line.shippingPolicy
+      ? BigInt(line.shippingPolicy.allocatedCostSats)
+      : BigInt(line.quantity) * BigInt(line.unitShippingSats)
     if (lineSats <= 0n || lineSats > MAX_SAFE_SATS) unavailable()
     total += lineSats + shippingSats
     if (total > MAX_SAFE_SATS) unavailable()

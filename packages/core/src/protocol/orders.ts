@@ -1,6 +1,7 @@
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { z } from "zod"
 import { isSatsLikeCurrency } from "../pricing"
+import { matchesCheckoutSparkOrderPrice } from "./checkout-spark-commerce-pricing"
 import { EVENT_KINDS } from "./kinds"
 import {
   hasSameShippingPolicyQuote,
@@ -378,7 +379,8 @@ function messageBase<TType extends OrderMessageTypeSchema>(
 /** Shape admission only; signed product/fulfillment authority is checked separately. */
 function hasCheckoutRouterFulfillmentShape(
   item: OrderSchema["items"][number],
-  merchantPubkey: string
+  merchantPubkey: string,
+  pricing?: OrderSchema["checkoutSparkPricing"]
 ): boolean {
   if (item.format === "digital") {
     return (
@@ -401,6 +403,16 @@ function hasCheckoutRouterFulfillmentShape(
       item.shippingCountryRules?.length === 0
     )
   }
+  if (item.shippingPolicyQuote)
+    return (
+      item.fulfillment?.type === "shipping" &&
+      item.shippingOptionId === item.shippingPolicyQuote.policyCoordinate &&
+      item.shippingPolicyQuote.merchantPubkey === merchantPubkey &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.sourceShippingCost === undefined &&
+      Number.isSafeInteger(item.shippingAllocatedCostSats) &&
+      item.shippingAllocatedCostSats! >= 0
+    )
   return (
     item.fulfillment?.type === "shipping" &&
     item.shippingCostSats !== undefined &&
@@ -410,9 +422,14 @@ function hasCheckoutRouterFulfillmentShape(
     item.shippingOptionId ===
       `30406:${merchantPubkey}:${item.shippingOptionDTag}` &&
     item.sourceShippingCost !== undefined &&
-    item.sourceShippingCost.amount === item.shippingCostSats &&
-    isSatsLikeCurrency(item.sourceShippingCost.currency) &&
-    isSatsLikeCurrency(item.sourceShippingCost.normalizedCurrency)
+    matchesCheckoutSparkOrderPrice(
+      {
+        sourcePrice: item.sourceShippingCost,
+        priceAtPurchase: item.shippingCostSats,
+      },
+      pricing,
+      true
+    )
   )
 }
 
@@ -437,7 +454,10 @@ function parseCheckoutOrderPaymentRoute(
     0
   )
   const shippingTotal = payload.items.reduce(
-    (sum, item) => sum + (item.shippingCostSats ?? 0) * item.quantity,
+    (sum, item) =>
+      sum +
+      (item.shippingAllocatedCostSats ??
+        (item.shippingCostSats ?? 0) * item.quantity),
     0
   )
   const hasPhysical = payload.items.some((item) => item.format === "physical")
@@ -485,13 +505,14 @@ function parseCheckoutOrderPaymentRoute(
       payload.guestContact !== undefined) ||
     payload.items.some(
       (item, index) =>
-        !hasCheckoutRouterFulfillmentShape(item, merchant) ||
-        item.familyProductId !== undefined ||
-        item.selectedSpecifications !== undefined ||
-        (item.sourcePrice !== undefined &&
-          (item.sourcePrice.amount !== item.priceAtPurchase ||
-            !isSatsLikeCurrency(item.sourcePrice.currency) ||
-            !isSatsLikeCurrency(item.sourcePrice.normalizedCurrency))) ||
+        !hasCheckoutRouterFulfillmentShape(
+          item,
+          merchant,
+          payload.checkoutSparkPricing
+        ) ||
+        (item.familyProductId !== undefined &&
+          !item.familyProductId.startsWith(`30402:${merchant}:`)) ||
+        !matchesCheckoutSparkOrderPrice(item, payload.checkoutSparkPricing) ||
         item.currency !== "SATS" ||
         !Number.isSafeInteger(item.quantity) ||
         !Number.isSafeInteger(item.priceAtPurchase) ||

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { ConduitDB } from "@conduit/core/db"
+import { canonicalizeShippingCost } from "@conduit/core"
 import {
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
   DexieCheckoutSparkSettledRepository,
@@ -15,6 +21,11 @@ import {
   recordCheckoutSparkSettledCredit,
   restoreCheckoutSparkMerchantOrderWitness,
   type OrderSchema,
+  parseProductEvent,
+  deriveCheckoutSparkSignedCommerceObligations,
+  calculateCheckoutSparkSettledGrossFundingSats,
+  calculateCheckoutSparkAllocationWeights,
+  parseShippingOptionEvent,
 } from "@conduit/core/protocol"
 import {
   bolt11PaymentHashField,
@@ -163,6 +174,253 @@ function witness() {
 }
 
 describe("authenticated Merchant router-order witness", () => {
+  it.each([false, true])(
+    "pairs signed fiat source and selected child shipping through the shared parser (%s)",
+    (withVariationShipping) => {
+      const merchantSecret = generateSecretKey()
+      const merchant = getPublicKey(merchantSecret)
+      const shippingEvent = withVariationShipping
+        ? finalizeEvent(
+            {
+              kind: 30_406,
+              created_at: CREATED_AT / 1_000 - 1,
+              tags: [
+                ["d", "fiat-shipping"],
+                ["price", "0.50", "USD"],
+                ["title", "Shipping"],
+                ["country", "US"],
+                ["service", "standard"],
+              ],
+              content: "",
+            },
+            merchantSecret
+          )
+        : undefined
+      const shipping = shippingEvent
+        ? parseShippingOptionEvent(shippingEvent)!
+        : undefined
+      const source = finalizeEvent(
+        {
+          kind: 30_402,
+          created_at: CREATED_AT / 1_000,
+          tags: [
+            ["d", "fiat"],
+            ["title", "Fiat"],
+            ["price", "1", "USD"],
+            [
+              "type",
+              withVariationShipping ? "variation" : "simple",
+              withVariationShipping ? "physical" : "digital",
+            ],
+            ...(shipping
+              ? [
+                  ["shipping_option", shipping.id],
+                  ["a", `30402:${merchant}:family`],
+                  ["spec", "Size", "Large"],
+                ]
+              : []),
+          ],
+          content: "",
+        },
+        merchantSecret
+      )
+      const product = { ...parseProductEvent(source), sourceEventId: source.id }
+      const sourcePrice = product.sourcePrice!
+      const pricing = {
+        version: 1 as const,
+        rate: {
+          rate: 100_000,
+          fetchedAt: CREATED_AT,
+          source: "mempool" as const,
+        },
+      }
+      const original = plan()
+      const commerceTotalSats = shipping ? 1_500 : 1_000
+      const gross =
+        calculateCheckoutSparkSettledGrossFundingSats(commerceTotalSats)
+      const frozen = freezeCheckoutSparkSettledPlan({
+        ...original,
+        merchantPubkey: merchant,
+        funding: {
+          ...original.funding,
+          grossFundingSats: gross,
+          paymentRequest: makeSignedBolt11Fixture({
+            hrp: `lnbc${gross * 10}n`,
+            createdAt: CREATED_AT / 1_000,
+            fields: [
+              bolt11PaymentHashField(new Uint8Array(32).fill(1)),
+              bolt11PaymentSecretField(),
+              bolt11PlainDescriptionField(),
+            ],
+          }),
+        },
+        commerceQuote: {
+          commerceTotalSats,
+          pricing,
+          lines: [
+            {
+              ...original.commerceQuote.lines[0]!,
+              productCoordinate: product.id,
+              productEventId: source.id,
+              merchantPubkey: merchant,
+              sourcePrice,
+              ...(shipping
+                ? {
+                    unitShippingSats: 500,
+                    sourceShippingCost: {
+                      amount: 0.5,
+                      currency: "USD",
+                      normalizedCurrency: "USD",
+                    },
+                    shippingOption: {
+                      coordinate: shipping.id,
+                      eventId: shipping.eventId,
+                    },
+                    variation: {
+                      familyCoordinate: product.parentProductId,
+                      specifications: product.specifications ?? [],
+                    },
+                  }
+                : {}),
+            },
+          ],
+        },
+        recipients: original.recipients.map((recipient) =>
+          recipient.kind === "merchant"
+            ? {
+                ...recipient,
+                recipientId: merchant,
+                weightSats: commerceTotalSats,
+              }
+            : {
+                ...recipient,
+                weightSats:
+                  calculateCheckoutSparkAllocationWeights(commerceTotalSats)
+                    .conduitWeightSats,
+              }
+        ),
+      })
+      expect(
+        deriveCheckoutSparkSignedCommerceObligations({
+          quote: frozen.commerceQuote,
+          products: [product],
+          merchantPubkey: merchant,
+          shippingEvents: shippingEvent ? [shippingEvent] : undefined,
+          acceptedAtMs: CREATED_AT,
+        })
+      ).toEqual([
+        {
+          kind: "merchant",
+          recipientId: merchant,
+          amountSats: commerceTotalSats,
+        },
+      ])
+      const payload = {
+        ...order(),
+        merchantPubkey: merchant,
+        checkoutSparkPricing: pricing,
+        subtotal: commerceTotalSats,
+        shippingCostSats: shipping ? 500 : 0,
+        shippingCostStatus: shipping
+          ? ("priced" as const)
+          : ("not_required" as const),
+        ...(shipping
+          ? {
+              shippingAddress: {
+                name: "Synthetic Buyer",
+                street: "123 Main Street",
+                city: "New York",
+                state: "NY",
+                postalCode: "10001",
+                country: "US",
+              },
+            }
+          : {}),
+        items: [
+          {
+            ...order().items[0]!,
+            productId: product.id,
+            sourcePrice,
+            ...(shipping
+              ? {
+                  format: "physical" as const,
+                  fulfillment: { type: "shipping" as const },
+                  familyProductId: product.parentProductId,
+                  selectedSpecifications: product.specifications,
+                  ...canonicalizeShippingCost(
+                    shipping.price,
+                    shipping.currency
+                  ),
+                  shippingCostSats: 500,
+                  shippingOptionId: shipping.id,
+                  shippingOptionDTag: shipping.dTag,
+                  shippingCountries: shipping.countries,
+                  shippingCountryRules: shipping.countryRules,
+                }
+              : {}),
+          },
+        ],
+      }
+      const event = rumor(payload)
+      event.tags = event.tags.map((tag) =>
+        tag[0] === "p"
+          ? ["p", merchant]
+          : tag[0] === "item"
+            ? ["item", product.id, "1"]
+            : tag[0] === "amount"
+              ? ["amount", String(commerceTotalSats)]
+              : tag
+      )
+      if (shipping) event.tags.push(["shipping", shipping.id])
+      event.id = event.getEventHash()
+      const evidence = readCheckoutSparkMerchantOrderEvidence(event)
+      expect(evidence).not.toBeNull()
+      const sources = [source, ...(shippingEvent ? [shippingEvent] : [])]
+      expect(
+        createCheckoutSparkMerchantOrderWitness(
+          frozen,
+          evidence!,
+          BUYER,
+          sources
+        )
+      ).not.toBeNull()
+      expect(
+        createCheckoutSparkMerchantOrderWitness(frozen, evidence!, BUYER)
+      ).toBeNull()
+      expect(
+        createCheckoutSparkMerchantOrderWitness(
+          frozen,
+          {
+            ...evidence!,
+            pricing: { ...pricing, rate: { ...pricing.rate, rate: 200_000 } },
+          },
+          BUYER,
+          sources
+        )
+      ).toBeNull()
+      if (shipping)
+        expect(
+          createCheckoutSparkMerchantOrderWitness(
+            frozen,
+            {
+              ...evidence!,
+              lines: [
+                {
+                  ...evidence!.lines[0]!,
+                  variation: {
+                    familyCoordinate: product.parentProductId,
+                    specifications: [{ key: "Size", value: "Small" }],
+                  },
+                },
+              ],
+            },
+            BUYER,
+            sources
+          )
+        ).toBeNull()
+    }
+  )
+
   it.each([
     "source_cost",
     "option_dtag",

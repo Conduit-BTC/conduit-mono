@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import { checkoutSparkCommerceQuoteDigestValue } from "./checkout-spark-commerce-pricing"
 import {
   assertCheckoutSparkSettledReturnedProof,
   restoreCheckoutSparkSettledReturnClosure,
@@ -306,31 +307,7 @@ function canonicalPlanValue(
     plan.network,
     plan.createdAt,
     plan.takeoverAt,
-    [
-      plan.commerceQuote.commerceTotalSats,
-      plan.commerceQuote.lines.map((line) => [
-        line.productCoordinate,
-        line.productEventId,
-        line.merchantPubkey,
-        line.quantity,
-        line.unitMerchandiseSats,
-        line.unitShippingSats,
-        line.shippingOption
-          ? [line.shippingOption.coordinate, line.shippingOption.eventId]
-          : null,
-        ...(line.pickup
-          ? [
-              [
-                "pickup",
-                line.pickup.calendar.coordinate,
-                line.pickup.calendar.eventId,
-                line.pickup.collection.coordinate,
-                line.pickup.collection.eventId,
-              ],
-            ]
-          : []),
-      ]),
-    ],
+    checkoutSparkCommerceQuoteDigestValue(plan.commerceQuote),
     [
       plan.funding.requestId,
       plan.funding.paymentRequest,

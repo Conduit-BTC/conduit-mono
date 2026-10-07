@@ -262,13 +262,22 @@ import {
 import {
   canRetryCheckoutSparkSettledPreparation,
   prepareCheckoutSparkSettledOrder,
-  isCheckoutSparkSettledCart,
+  resumeCheckoutSparkSettledOrder,
+  CheckoutSparkSettledContinuationManualRecoveryError,
 } from "../lib/checkout-spark-settled-entry"
 import {
+  listCheckoutSparkSettledContinuations,
+  pruneExpiredCheckoutSparkSettledContinuations,
+  type CheckoutSparkSettledContinuation,
+} from "../lib/checkout-spark-settled-continuation"
+import {
   getCheckoutSparkSettledPreparation,
+  CheckoutSparkSettledFundingExpiredError,
+  CheckoutSparkSettledPreparationAbandonedError,
   listCheckoutSparkSettledPreparations,
 } from "../lib/checkout-spark-settled-preparation"
 import { getSparkConfiguration } from "../lib/spark-sdk"
+import { assessCheckoutSparkCheckoutAdmission } from "../lib/checkout-spark-checkout-admission"
 import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
 import {
@@ -1296,6 +1305,15 @@ function CheckoutPage() {
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
   const routerPreparedOrderRef = useRef<string | null>(null)
+  const [routerContinuations, setRouterContinuations] = useState<
+    CheckoutSparkSettledContinuation[]
+  >([])
+  const [routerContinuationError, setRouterContinuationError] = useState<
+    string | null
+  >(null)
+  const [routerContinuedOrder, setRouterContinuedOrder] = useState<
+    string | null
+  >(null)
   const autoZapStartedRef = useRef(false)
   const autoZapAuthorizationGenerationRef = useRef<number | null>(null)
   const payNowRef = useRef<
@@ -1328,8 +1346,59 @@ function CheckoutPage() {
     signedBuyerPubkey
       ? isAuthGenerationCurrent(authGeneration)
       : isGuestGenerationCurrent(authGeneration)
-  async function resolveCheckoutOrderAttempt(orderId: string): Promise<void> {
-    if (!shouldContinueBuyerSession()) {
+  const refreshRouterContinuations = useCallback(() => {
+    if (
+      signedBuyerPubkey
+        ? !isAuthGenerationCurrent(authGeneration)
+        : !isGuestCheckout || !isGuestGenerationCurrent(authGeneration)
+    )
+      return
+    try {
+      const now = Date.now()
+      pruneExpiredCheckoutSparkSettledContinuations(now)
+      const rows = signedBuyerPubkey
+        ? listCheckoutSparkSettledContinuations(signedBuyerPubkey, now)
+        : isGuestCheckout
+          ? listSessionGuestOrderIds(undefined, now).flatMap((orderId) => {
+              const identity = getSessionGuestOrderSigningIdentity(
+                orderId,
+                undefined,
+                now
+              )
+              return identity
+                ? listCheckoutSparkSettledContinuations(
+                    identity.pubkey,
+                    now
+                  ).filter((row) => row.order.id === orderId)
+                : []
+            })
+          : []
+      setRouterContinuations(rows)
+    } catch {
+      setRouterContinuations([])
+      setRouterContinuationError(
+        "Saved checkout recovery is unreadable. Do not create another invoice for the original purchase."
+      )
+    }
+  }, [
+    signedBuyerPubkey,
+    isGuestCheckout,
+    authGeneration,
+    isAuthGenerationCurrent,
+    isGuestGenerationCurrent,
+  ])
+  useEffect(() => {
+    setRouterContinuationError(null)
+    setRouterContinuedOrder(null)
+    if (isQuantumRouterEnabled() && !authPending) refreshRouterContinuations()
+    else setRouterContinuations([])
+    // Restored continuations are buyer-scoped, not derived from the new cart.
+  }, [authGeneration, authPending, refreshRouterContinuations])
+  async function resolveCheckoutOrderAttempt(
+    orderId: string,
+    isCurrent: () => boolean = shouldContinueBuyerSession
+  ): Promise<void> {
+    if (!isCurrent()) {
       throw new Error(
         "The accepted order remains recoverable because the buyer session changed."
       )
@@ -1340,7 +1409,7 @@ function CheckoutPage() {
     if (!resolved) {
       throw new Error("The accepted order recovery state could not be saved.")
     }
-    if (!shouldContinueBuyerSession()) {
+    if (!isCurrent()) {
       await patchOrderLifecycle(orderId, { checkoutRecoveryPending: true })
       throw new Error(
         "The accepted order remains recoverable because the buyer session changed."
@@ -1833,10 +1902,17 @@ function CheckoutPage() {
   )
   const verifiedZeroCostPickup =
     pricingPreview.status === "ok" && !pricingPreview.paymentRequired
-  const routerBranchTargetCheckout =
-    isQuantumRouterEnabled() &&
-    !verifiedZeroCostPickup &&
-    isCheckoutSparkSettledCart(rawCheckoutItems)
+  const routerAdmission = assessCheckoutSparkCheckoutAdmission({
+    enabled: isQuantumRouterEnabled(),
+    freeOrderVerified: verifiedZeroCostPickup,
+    items: rawCheckoutItems,
+    fulfillment: preparedFulfillment.resolutions,
+  })
+  const routerBranchTargetCheckout = routerAdmission.mode === "router"
+  const routerPreparationUnavailableMessage =
+    routerAdmission.mode === "router" && !routerAdmission.ready
+      ? "This checkout’s fulfillment is not supported by the router yet."
+      : null
   const nativeTreasuryConfigured = (() => {
     if (!routerBranchTargetCheckout) return false
     const configuration = getSparkConfiguration()
@@ -2741,8 +2817,131 @@ function CheckoutPage() {
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
+  /** Exact original-order continuation; this action never submits payment. */
+  async function continueSavedRouterOrder(
+    saved: CheckoutSparkSettledContinuation
+  ): Promise<void> {
+    const generationCurrent = () =>
+      saved.identityKind === "guest_ephemeral"
+        ? isGuestCheckout && isGuestGenerationCurrent(authGeneration)
+        : signedBuyerPubkey === saved.buyerPubkey &&
+          isAuthGenerationCurrent(authGeneration)
+    if (
+      paymentInFlightRef.current ||
+      !isQuantumRouterEnabled() ||
+      !generationCurrent()
+    )
+      return
+    const guest =
+      saved.identityKind === "guest_ephemeral"
+        ? getSessionGuestOrderSigningIdentity(saved.order.id)
+        : null
+    const connectedBuyer = guest ? null : getCheckoutBuyerIdentity()
+    const buyer =
+      guest ??
+      (connectedBuyer?.signer && signedBuyerPubkey === saved.buyerPubkey
+        ? {
+            kind: "signed_in" as const,
+            pubkey: signedBuyerPubkey,
+            signer: connectedBuyer.signer,
+          }
+        : null)
+    if (
+      !buyer ||
+      buyer.pubkey !== saved.buyerPubkey ||
+      buyer.kind !== saved.identityKind
+    ) {
+      setRouterContinuationError(
+        "Reconnect the original buyer session to continue this checkout."
+      )
+      return
+    }
+    const shouldContinue = () =>
+      generationCurrent() &&
+      isQuantumRouterEnabled() &&
+      (buyer.kind === "signed_in"
+        ? (() => {
+            const current = getCheckoutBuyerIdentity()
+            return (
+              current?.pubkey === buyer.pubkey &&
+              current.signer === buyer.signer
+            )
+          })()
+        : (() => {
+            const current = getSessionGuestOrderSigningIdentity(saved.order.id)
+            return (
+              current?.pubkey === buyer.pubkey &&
+              current.createdAt === buyer.createdAt &&
+              current.expiresAt === buyer.expiresAt
+            )
+          })())
+    paymentInFlightRef.current = true
+    setRouterContinuationError(null)
+    setStep("sending")
+    let deliveredOrderId: string | null = null
+    try {
+      const result = await withCheckoutSparkRouterPreparationLock(
+        () => {
+          if (!shouldContinue())
+            throw new Error("Checkout Spark buyer session changed.")
+        },
+        () =>
+          resumeCheckoutSparkSettledOrder({
+            checkoutId: saved.checkoutId,
+            buyer,
+            shouldContinue,
+            relayAuthMethod: guest ? undefined : (authMethod ?? undefined),
+          })
+      )
+      if (!shouldContinue()) return
+      deliveredOrderId = result.orderId
+      await resolveCheckoutOrderAttempt(result.orderId, shouldContinue)
+      if (!shouldContinue()) return
+      routerPreparedOrderRef.current = result.orderId
+      refreshRouterContinuations()
+      if (result.nextStep === "merchant_recovery") {
+        setRouterContinuedOrder(result.orderId)
+        setRouterContinuationError(
+          "The original private order was delivered. This browser no longer has its temporary wallet; coordinate recovery with the merchant. No new wallet, invoice, or payment was created."
+        )
+      } else {
+        void navigate({
+          to: "/orders",
+          search: { order: result.orderId },
+          replace: true,
+        })
+      }
+    } catch (cause) {
+      if (!shouldContinue()) return
+      if (
+        cause instanceof CheckoutSparkSettledContinuationManualRecoveryError
+      ) {
+        setRouterContinuedOrder(saved.order.id)
+      }
+      if (deliveredOrderId) setRouterContinuedOrder(deliveredOrderId)
+      setRouterContinuationError(
+        deliveredOrderId
+          ? "The original private order was delivered, but its local recovery marker could not be finished. Open the original order to check it; do not create or pay another invoice."
+          : cause instanceof CheckoutSparkSettledFundingExpiredError
+            ? "The saved funding invoice expired. Keep the original checkout and coordinate recovery with the merchant; do not create or pay another invoice."
+            : cause instanceof
+                CheckoutSparkSettledContinuationManualRecoveryError
+              ? "The saved original order needs manual merchant recovery. Open the original order; do not rebuild it or create or pay another invoice."
+              : "The original checkout still needs recovery. Retry its exact saved delivery here; do not prepare or pay another invoice."
+      )
+      refreshRouterContinuations()
+    } finally {
+      paymentInFlightRef.current = false
+      if (shouldContinue()) setStep("payment")
+    }
+  }
+
   /** Explicit checkout preparation; this action never submits payment. */
   async function prepareSettledRouterOrder(): Promise<void> {
+    if (routerPreparationUnavailableMessage) {
+      setError(routerPreparationUnavailableMessage)
+      return
+    }
     if (
       !isQuantumRouterEnabled() ||
       !routerBranchTargetCheckout ||
@@ -2946,10 +3145,12 @@ function CheckoutPage() {
           // to retry. Once preparation starts, all other failures stay closed.
           if (guestIdentity) clearSessionGuestOrderSigningIdentity(orderId)
           setError(
-            preparationStarted
-              ? "A required recipient's payout setup could not be verified. No checkout wallet or order was created; retry after their profile, payment endpoint, or network is ready. " +
+            cause instanceof CheckoutSparkSettledPreparationAbandonedError
+              ? "The unfunded preparation was safely closed before any recovery publication or funding exposure. You can retry this purchase."
+              : preparationStarted
+                ? "A required recipient's payout setup could not be verified. No checkout wallet or order was created; retry after their profile, payment endpoint, or network is ready. " +
                   message
-              : message
+                : message
           )
         } else {
           routerPreparedOrderRef.current = orderId
@@ -2962,6 +3163,7 @@ function CheckoutPage() {
       setStep("payment")
     } finally {
       paymentInFlightRef.current = false
+      if (canContinueSettledPreparation()) refreshRouterContinuations()
     }
   }
 
@@ -4231,6 +4433,55 @@ function CheckoutPage() {
 
   // ─── Empty / multi-merchant guards ──────────────────────────────────────
 
+  const pendingPreparationPanel =
+    routerContinuations.length > 0 ||
+    routerContinuationError ||
+    routerContinuedOrder ? (
+      <section
+        aria-label="Saved checkout recovery"
+        className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"
+      >
+        <h2 className="font-semibold text-[var(--text-primary)]">
+          Continue the original checkout
+        </h2>
+        <p className="mt-2 text-sm text-[var(--text-secondary)]">
+          This uses the saved order and its exact delivery, not the current
+          cart. It creates no new funding invoice and sends no payment.
+        </p>
+        {routerContinuationError && (
+          <p role="alert" className="mt-2 text-sm text-[var(--text-secondary)]">
+            {routerContinuationError}
+          </p>
+        )}
+        <div className="mt-3 flex flex-wrap gap-3">
+          {routerContinuations.map((saved, index) => (
+            <Button
+              key={saved.checkoutId}
+              type="button"
+              disabled={
+                step === "sending" ||
+                step === "signing" ||
+                authPending ||
+                !!signerBlockedMessage
+              }
+              onClick={() => void continueSavedRouterOrder(saved)}
+            >
+              {routerContinuations.length > 1
+                ? `Continue saved checkout ${index + 1}`
+                : "Continue saved checkout"}
+            </Button>
+          ))}
+          {routerContinuedOrder && (
+            <Button asChild variant="outline">
+              <Link to="/orders" search={{ order: routerContinuedOrder }}>
+                Open original order
+              </Link>
+            </Button>
+          )}
+        </div>
+      </section>
+    ) : null
+
   if (!cart.hydrated) {
     return (
       <div
@@ -4247,6 +4498,7 @@ function CheckoutPage() {
     return (
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
+        {pendingPreparationPanel}
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-balance text-4xl font-semibold text-[var(--text-primary)]">
             Choose a purchase before ordering
@@ -4319,6 +4571,7 @@ function CheckoutPage() {
     return (
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
+        {pendingPreparationPanel}
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Cart is empty
@@ -4366,6 +4619,7 @@ function CheckoutPage() {
   return (
     <div className="space-y-6">
       <CheckoutBreadcrumb current="order" includesShippingStep={false} />
+      {pendingPreparationPanel}
 
       <h1 className="text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
         Checkout
@@ -5245,6 +5499,7 @@ function CheckoutPage() {
                           checkoutEvidenceIsChecking ||
                           hasUnavailableCheckoutItems ||
                           fulfillmentBlockingMessage !== null ||
+                          routerPreparationUnavailableMessage !== null ||
                           authPending ||
                           !!signerBlockedMessage ||
                           !!routerPreparedOrderRef.current
@@ -5253,6 +5508,14 @@ function CheckoutPage() {
                       >
                         Continue to payment
                       </Button>
+                      {routerPreparationUnavailableMessage && (
+                        <p
+                          role="status"
+                          className="mt-2 text-sm text-[var(--text-secondary)]"
+                        >
+                          {routerPreparationUnavailableMessage}
+                        </p>
+                      )}
                     </div>
                   )}
                   {!routerBranchTargetCheckout &&
