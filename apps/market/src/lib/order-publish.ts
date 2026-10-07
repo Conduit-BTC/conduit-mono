@@ -1,15 +1,18 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { getEventHash } from "nostr-tools"
 import {
   EVENT_KINDS,
+  type PrivateMessageEvent,
   appendConduitClientTag,
   beginOrderRelayDeliveryAttempt,
-  cacheParsedOrderMessage,
+  cacheOrderMessageRumor,
+  createAcceptedInboxSendCheckpoint,
   createOrderCompanionNotificationRumor,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
-  getNdk,
   getRelayPublishTargetStatus,
   getAccountSigner,
+  getCommerceInbox,
+  type CommerceInbox,
   type NostrKeySigner,
   parseOrderMessageRumorEvent,
   patchOrderLifecycle,
@@ -43,6 +46,7 @@ import { inferMerchantOrigin } from "./merchant-links"
 export type BuyerMessageDeliveryResult = {
   buyerSelfCopyError: string | null
   localCacheError: string | null
+  checkpointFailure?: true
   /** Write lane that delivered the merchant leg (CND-208). */
   deliveryRoute: OrderDeliveryRoute
   /** Exact encrypted recipient wrap + per-relay outcomes for bounded retry. */
@@ -56,6 +60,7 @@ export type BuyerMessageDeliveryResult = {
 export type BuyerPostAcceptanceResult = {
   buyerSelfCopyError: string | null
   localCacheError: string | null
+  checkpointFailure?: true
   companionNotification: OrderCompanionNotificationStatus
 }
 
@@ -148,7 +153,7 @@ function sameOrderSnapshot(left: unknown, right: unknown): boolean {
 /** Bind the local payment/recovery snapshot to the exact plaintext order. */
 export function assertStagedOrderLifecycleMatchesRumor(
   lifecycle: StagedOrderLifecycleInput,
-  rumor: NDKEvent,
+  rumor: PrivateMessageEvent,
   buyerPubkey: string,
   merchantPubkey: string
 ): void {
@@ -171,7 +176,7 @@ export function assertStagedOrderLifecycleMatchesRumor(
     typeTags.length !== 1 ||
     amountTags.length !== 1 ||
     currencyTags.length !== 1 ||
-    typeTags[0]?.[1] !== "order"
+    !["order", "1"].includes(typeTags[0]?.[1] ?? "")
   ) {
     throw new Error("Order rumor tags do not match the staged order.")
   }
@@ -256,7 +261,6 @@ export function assertStagedOrderLifecycleMatchesRumor(
 }
 
 function resolveBuyerOrderSigningIdentity(
-  _ndk: ReturnType<typeof getNdk>,
   buyer: BuyerOrderIdentityInput
 ): BuyerOrderSigningIdentity & { signer: NostrKeySigner } {
   const identity =
@@ -273,7 +277,7 @@ function resolveBuyerOrderSigningIdentity(
 }
 
 function assertBuyerOrderScope(
-  rumor: NDKEvent,
+  rumor: PrivateMessageEvent,
   merchantPubkey: string,
   identity: BuyerOrderSigningIdentity
 ): void {
@@ -284,7 +288,7 @@ function assertBuyerOrderScope(
   const rumorType = tags.find((tag) => tag[0] === "type")?.[1]
   if (
     rumor.kind !== EVENT_KINDS.ORDER ||
-    (rumorType !== "order" && rumorType !== "payment_proof") ||
+    !["order", "1", "payment_proof"].includes(rumorType ?? "") ||
     rumorOrderId !== identity.orderId ||
     rumorRecipient !== merchantPubkey ||
     merchantPubkey !== identity.merchantPubkey
@@ -294,30 +298,40 @@ function assertBuyerOrderScope(
 }
 
 /** Stamp the buyer pubkey + derive the rumor id (so it can be cached/wrapped). */
-export function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
+export function prepareBuyerRumor(
+  rumor: PrivateMessageEvent,
+  buyerPubkey: string
+): void {
+  // Preserve the deployed named grammar and freeze its exact retry identity.
+  if (rumor.pubkey && rumor.pubkey !== buyerPubkey)
+    throw new Error("Buyer order rumor author does not match the account.")
   rumor.pubkey = buyerPubkey
-  let derivedId: string
   try {
-    derivedId = rumor.getEventHash()
-  } catch {
-    throw new Error("Failed to derive buyer order rumor id.")
+    if (
+      rumor.id &&
+      rumor.id !== getEventHash({ ...rumor, created_at: rumor.created_at! })
+    ) {
+      throw new Error("Buyer order rumor id does not match its content.")
+    }
+    rumor.id = getEventHash({ ...rumor, created_at: rumor.created_at! })
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("does not match"))
+      throw error
+    throw new Error("Failed to derive buyer order rumor id.", { cause: error })
   }
-  if (rumor.id && rumor.id !== derivedId) {
-    throw new Error("Buyer order rumor id does not match its content.")
-  }
-  rumor.id = derivedId
 }
 
-function clonePreparedBuyerRumor(rumor: NDKEvent): NDKEvent {
-  return new NDKEvent(rumor.ndk, {
+function clonePreparedBuyerRumor(
+  rumor: PrivateMessageEvent
+): PrivateMessageEvent {
+  return {
     kind: rumor.kind,
     id: rumor.id,
     pubkey: rumor.pubkey,
     created_at: rumor.created_at,
     tags: rumor.tags.map((tag) => [...tag]),
     content: rumor.content,
-    sig: "",
-  })
+  }
 }
 
 /**
@@ -326,11 +340,11 @@ function clonePreparedBuyerRumor(rumor: NDKEvent): NDKEvent {
  * legitimately reconstructs it, while NIP-59 still randomizes each outer wrap.
  */
 export function buildOrderCompanionNotificationRumor(
-  authoritativeOrder: NDKEvent,
+  authoritativeOrder: PrivateMessageEvent,
   buyerPubkey: string,
   merchantPubkey: string,
   merchantOrigin = inferMerchantOrigin()
-): NDKEvent {
+): PrivateMessageEvent {
   return createOrderCompanionNotificationRumor({
     authoritativeOrder,
     senderPubkey: buyerPubkey,
@@ -341,7 +355,7 @@ export function buildOrderCompanionNotificationRumor(
 }
 
 async function publishOrderCompanionNotification(input: {
-  authoritativeOrder: NDKEvent
+  authoritativeOrder: PrivateMessageEvent
   buyerIdentity: BuyerOrderSigningIdentity & { signer: NostrKeySigner }
   merchantPubkey: string
   deliveryRoute: OrderDeliveryRoute
@@ -408,14 +422,17 @@ async function publishOrderCompanionNotification(input: {
   }
 }
 
-async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
+async function cacheBuyerOrderRumor(
+  rumor: PrivateMessageEvent,
+  accountOwner: CommerceInbox | null
+): Promise<string | null> {
   try {
     if (!rumor.id) throw new Error("Missing buyer order rumor id")
-    const parsed = parseOrderMessageRumorEvent(rumor)
-    await cacheParsedOrderMessage(parsed)
+    if (!accountOwner) throw new Error("Local order history unavailable")
+    await cacheOrderMessageRumor(rumor, accountOwner)
     return null
   } catch (error) {
-    console.warn("Failed to cache buyer order message", error)
+    console.warn("Failed to cache buyer order message")
     return getErrorMessage(error, "Failed to cache buyer order message")
   }
 }
@@ -427,7 +444,10 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
  * delivery relay accepted the merchant leg for pickup.
  */
 export function getDeliveryNotice(
-  delivery: BuyerMessageDeliveryResult,
+  delivery: Pick<
+    BuyerMessageDeliveryResult,
+    "localCacheError" | "buyerSelfCopyError" | "checkpointFailure"
+  >,
   label: string
 ): string | null {
   if (delivery.localCacheError && delivery.buyerSelfCopyError) {
@@ -436,6 +456,9 @@ export function getDeliveryNotice(
   if (delivery.localCacheError) {
     return `${label} was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync.`
   }
+  if (delivery.checkpointFailure) {
+    return `${label} was accepted by Nostr delivery relays for merchant pickup and saved locally, but its delivery status could not be saved. Do not send it again.`
+  }
   if (delivery.buyerSelfCopyError) {
     return `${label} was accepted by Nostr delivery relays for merchant pickup and saved locally. Buyer relay backup needs retry.`
   }
@@ -443,13 +466,12 @@ export function getDeliveryNotice(
 }
 
 export async function publishBuyerOrderMessage(
-  rumor: NDKEvent,
-  ndk: ReturnType<typeof getNdk>,
+  rumor: PrivateMessageEvent,
   merchantPubkey: string,
   buyer: BuyerOrderIdentityInput,
   dependencies: BuyerOrderPublishDependencies = {}
 ): Promise<BuyerMessageDeliveryResult> {
-  const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
+  const buyerIdentity = resolveBuyerOrderSigningIdentity(buyer)
   assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
   if (dependencies.orderLifecycle) {
@@ -470,6 +492,34 @@ export async function publishBuyerOrderMessage(
       : () =>
           (dependencies.shouldContinue?.() ?? true) &&
           getAccountSigner() === buyerIdentity.signer
+
+  // Pin the signed-in projection to the initiating session before relay work.
+  // The checkout remains sendable if local history is unavailable.
+  let accountOwner: CommerceInbox | null = null
+  if (buyerIdentity.kind !== "guest_ephemeral") {
+    try {
+      accountOwner = getCommerceInbox(buyerIdentity.pubkey)
+    } catch {
+      // Report a local-cache failure after recipient acceptance.
+    }
+  }
+
+  let localCacheError: string | null = null
+  const historyCheckpoint = createAcceptedInboxSendCheckpoint(async () => {
+    if (buyerIdentity.kind === "guest_ephemeral") return
+    try {
+      localCacheError = await (
+        dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor
+      )(clonePreparedBuyerRumor(rumor), accountOwner)
+      if (localCacheError) throw new Error(localCacheError)
+    } catch (error) {
+      localCacheError = getErrorMessage(
+        error,
+        "Failed to cache buyer order message"
+      )
+      throw error
+    }
+  })
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
   const orderRelayDeliveryOptions = dependencies.orderRelayDeliveryRepository
@@ -578,6 +628,9 @@ export async function publishBuyerOrderMessage(
         recipientPubkey: merchantPubkey,
       }),
       telemetryApp: "market",
+      ...(buyerIdentity.kind !== "guest_ephemeral"
+        ? { onRecipientAccepted: historyCheckpoint.onRecipientAccepted }
+        : {}),
       ...(dependencies.orderLifecycle
         ? {
             recipientDeliveryBoundary: "accepted" as const,
@@ -590,7 +643,7 @@ export async function publishBuyerOrderMessage(
                   prepared: {
                     rumorId: prepared.rumorId,
                     signedRecipientWrap:
-                      prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
+                      prepared.wrappedToRecipient as SignedPublicNostrEvent,
                     route: prepared.deliveryRoute,
                     ...(prepared.routingAuthority
                       ? { routingAuthority: prepared.routingAuthority }
@@ -654,6 +707,7 @@ export async function publishBuyerOrderMessage(
   }
   const {
     selfCopyError: buyerSelfCopyError,
+    checkpointFailure,
     deliveryRoute,
     orderRelayDelivery,
     startPostAcceptanceWork: startPrivateMessagePostAcceptanceWork,
@@ -667,6 +721,24 @@ export async function publishBuyerOrderMessage(
         publishPhase,
         null
       )
+    }
+    await historyCheckpoint.onRecipientAccepted()
+    const initialNotice = getDeliveryNotice(
+      {
+        localCacheError,
+        buyerSelfCopyError: null,
+        ...(checkpointFailure ? { checkpointFailure: true } : {}),
+      },
+      "Order"
+    )
+    if (initialNotice && (shouldContinue?.() ?? true)) {
+      try {
+        await patchLifecycle(committedLifecycle.orderId, {
+          deliveryNotice: initialNotice,
+        })
+      } catch {
+        console.warn("Failed to persist accepted order history notice")
+      }
     }
 
     const stableRumor = clonePreparedBuyerRumor(rumor)
@@ -700,23 +772,6 @@ export async function publishBuyerOrderMessage(
           }
         }
 
-        let localCacheError: string | null = null
-        if (
-          buyerIdentity.kind !== "guest_ephemeral" &&
-          (shouldContinue?.() ?? true)
-        ) {
-          try {
-            localCacheError = await (
-              dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor
-            )(stableRumor)
-          } catch (error) {
-            localCacheError = getErrorMessage(
-              error,
-              "Failed to cache buyer order message"
-            )
-          }
-        }
-
         const companionStatus = await publishOrderCompanionNotification({
           authoritativeOrder: stableRumor,
           buyerIdentity,
@@ -735,16 +790,10 @@ export async function publishBuyerOrderMessage(
         const backgroundResult: BuyerPostAcceptanceResult = {
           buyerSelfCopyError: selfResult.selfCopyError,
           localCacheError,
+          ...(checkpointFailure ? { checkpointFailure: true } : {}),
           companionNotification: companionStatus,
         }
-        const deliveryNotice = getDeliveryNotice(
-          {
-            ...backgroundResult,
-            deliveryRoute,
-            companionNotification: Promise.resolve(companionStatus),
-          },
-          "Order"
-        )
+        const deliveryNotice = getDeliveryNotice(backgroundResult, "Order")
         if (deliveryNotice && (shouldContinue?.() ?? true)) {
           try {
             await patchLifecycle(committedLifecycle.orderId, {
@@ -761,7 +810,8 @@ export async function publishBuyerOrderMessage(
 
     return {
       buyerSelfCopyError: null,
-      localCacheError: null,
+      localCacheError,
+      ...(checkpointFailure ? { checkpointFailure: true } : {}),
       deliveryRoute,
       companionNotification,
       startPostAcceptanceWork,
@@ -773,12 +823,7 @@ export async function publishBuyerOrderMessage(
     }
   }
 
-  const localCacheError =
-    buyerIdentity.kind === "guest_ephemeral"
-      ? null
-      : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
-          rumor
-        )
+  await historyCheckpoint.onRecipientAccepted()
   // Start the advisory attempt only after the authoritative order has a relay
   // ACK and any signed-in local recovery copy is committed. Do not await it:
   // a slow or unavailable notification path must never keep checkout in a
@@ -799,6 +844,7 @@ export async function publishBuyerOrderMessage(
   return {
     buyerSelfCopyError,
     localCacheError,
+    ...(checkpointFailure ? { checkpointFailure: true } : {}),
     deliveryRoute,
     companionNotification,
     ...(orderRelayDelivery ? { orderRelayDelivery } : {}),
@@ -813,9 +859,14 @@ export function buildPaymentProofRumor(params: {
   currency: string
   content: string
   createdAt?: number
-}): NDKEvent {
-  const ndk = getNdk()
-  const rumor = new NDKEvent(ndk)
+}): PrivateMessageEvent {
+  const rumor: PrivateMessageEvent = {
+    id: "",
+    pubkey: "",
+    kind: 16,
+    tags: [],
+    content: "",
+  }
   rumor.kind = EVENT_KINDS.ORDER
   rumor.created_at = params.createdAt ?? Math.floor(Date.now() / 1000)
   rumor.tags = appendConduitClientTag(

@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from "bun:test"
+import { RelayPublishDiagnosticsError } from "@conduit/core"
 
 import {
   createMerchantInvoiceModule,
@@ -354,6 +355,69 @@ describe("merchant invoice source routing", () => {
 })
 
 describe("merchant invoice validation and durability", () => {
+  it("marks an accepted invoice sent while reporting unavailable conversation history", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    const accepted = {
+      recipient: "accepted" as const,
+      selfCopy: "pending" as const,
+      localHistory: "unavailable" as const,
+      checkpointFailure: true as const,
+      deliveryRoute: "declared_inbox" as const,
+    }
+    const module = createMerchantInvoiceModule(
+      createDependencies(store, { publish: mock(async () => accepted) })
+    )
+    const result = await module.createAndDeliver({
+      ...createInput(),
+      source: { type: "manual", invoice: INVOICE },
+    })
+    expect(result).toEqual(accepted)
+    expect(
+      store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)?.deliveryState
+    ).toBe("sent")
+  })
+
+  it("keeps an accepted invoice result when the post-ACK sent-state write fails", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    store.failOnPutNumber = 2
+    let encryptedHistoryHasAcceptedInvoice = false
+    const accepted = {
+      recipient: "accepted" as const,
+      selfCopy: "complete" as const,
+      localHistory: "saved" as const,
+      deliveryRoute: "declared_inbox" as const,
+    }
+    const publish = mock(async () => {
+      encryptedHistoryHasAcceptedInvoice = true
+      return accepted
+    })
+    const dependencies = createDependencies(store, {
+      publish,
+      hasAcceptedInvoice: async (saved) =>
+        encryptedHistoryHasAcceptedInvoice && saved.invoice === INVOICE,
+    })
+    const module = createMerchantInvoiceModule(dependencies)
+
+    expect(
+      await module.createAndDeliver({
+        ...createInput(),
+        source: { type: "manual", invoice: INVOICE },
+      })
+    ).toEqual({ ...accepted, checkpointFailure: true })
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(
+      store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)?.deliveryState
+    ).toBe("pending")
+    const reloaded = createMerchantInvoiceModule(dependencies)
+    expect(await reloaded.getStatus(createInput())).toEqual({
+      state: "accepted_unrecorded",
+    })
+    await expect(reloaded.retryDelivery(createInput())).rejects.toThrow(
+      /already accepted/i
+    )
+    expect(publish).toHaveBeenCalledTimes(1)
+  })
+
   it("fails closed when a durable checkpoint is malformed", async () => {
     const store = new DexieMerchantPendingInvoiceStore({
       get: async () =>
@@ -431,6 +495,7 @@ describe("merchant invoice validation and durability", () => {
       orderId: ORDER_ID,
       type: "payment_request",
       signerInteraction: "external",
+      onRecipientDeliveryStarting: expect.any(Function),
       tags: [
         ["amount", "50"],
         ["currency", "SATS"],
@@ -456,7 +521,7 @@ describe("merchant invoice validation and durability", () => {
 
   it("preserves live account authority across initial and retry delivery", async () => {
     const store = new MemoryPendingInvoiceStore()
-    const shouldContinue = mock(() => false)
+    const shouldContinue = mock(() => true)
     const observedAuthority: Array<(() => boolean) | undefined> = []
     const publish: MerchantInvoiceDependencies["publish"] = mock(
       async (input) => {
@@ -480,9 +545,42 @@ describe("merchant invoice validation and durability", () => {
     })
 
     expect(observedAuthority).toEqual([shouldContinue, shouldContinue])
+    expect(observedAuthority.every((predicate) => predicate?.() === true)).toBe(
+      true
+    )
+  })
+
+  it("does not write invoice status under a replaced session after recipient acceptance", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    let current = true
+    const accepted = {
+      recipient: "accepted" as const,
+      selfCopy: "pending" as const,
+      localHistory: "unavailable" as const,
+      deliveryRoute: "declared_inbox" as const,
+    }
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        await input.onRecipientDeliveryStarting?.()
+        current = false
+        return accepted
+      }
+    )
+    const module = createMerchantInvoiceModule(
+      createDependencies(store, { publish })
+    )
     expect(
-      observedAuthority.every((predicate) => predicate?.() === false)
-    ).toBe(true)
+      await module.createAndDeliver({
+        ...createInput(),
+        source: { type: "manual", invoice: INVOICE },
+        shouldContinue: () => current,
+      })
+    ).toEqual({ ...accepted, checkpointFailure: true })
+    expect(store.putCount).toBe(2)
+    expect(await module.getStatus(createInput())).toEqual({
+      state: "delivery_unknown",
+    })
+    expect(publish).toHaveBeenCalledTimes(1)
   })
 
   it("does not publish when the durable checkpoint cannot be written", async () => {
@@ -499,15 +597,48 @@ describe("merchant invoice validation and durability", () => {
     expect(dependencies.publish).toHaveBeenCalledTimes(0)
   })
 
-  it("retains and retries the same invoice without asking the issuer again", async () => {
+  it("leaves the saved invoice retryable when its attempt fence cannot be written", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    store.failOnPutNumber = 2
+    let publications = 0
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        await input.onRecipientDeliveryStarting?.()
+        publications++
+      }
+    )
+    const dependencies = createDependencies(store, { publish })
+    await expect(
+      createMerchantInvoiceModule(dependencies).createAndDeliver({
+        ...createInput(),
+        source: { type: "manual", invoice: INVOICE },
+      })
+    ).rejects.toThrow(/storage failure/i)
+    expect(publications).toBe(0)
+    const reloaded = createMerchantInvoiceModule(dependencies)
+    expect(await reloaded.getStatus(createInput())).toEqual({
+      state: "pending",
+    })
+    store.failOnPutNumber = null
+    await reloaded.retryDelivery(createInput())
+    expect(publications).toBe(1)
+    expect(store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)?.invoice).toBe(
+      INVOICE
+    )
+  })
+
+  it("retains an ambiguous publish attempt without issuing or sending another invoice", async () => {
     const store = new MemoryPendingInvoiceStore()
     let failDelivery = true
     const fetchLnurlInvoice = mock(async () => ({ invoice: INVOICE }))
     const publishedInvoices: string[] = []
-    const publish = mock(async (input: { payload: { invoice?: string } }) => {
-      publishedInvoices.push(input.payload.invoice ?? "")
-      if (failDelivery) throw new Error("relay delivery failed")
-    })
+    const publish: MerchantInvoiceDependencies["publish"] = mock(
+      async (input) => {
+        await input.onRecipientDeliveryStarting?.()
+        publishedInvoices.push(input.payload.invoice ?? "")
+        if (failDelivery) throw new Error("relay delivery failed")
+      }
+    )
     const dependencies = createDependencies(store, {
       fetchLnurlInvoice,
       publish,
@@ -521,14 +652,84 @@ describe("merchant invoice validation and durability", () => {
       })
     ).rejects.toThrow("relay delivery failed")
     expect(await module.getStatus(createInput())).toEqual({
-      state: "pending",
+      state: "delivery_unknown",
     })
 
     failDelivery = false
     const reloaded = createMerchantInvoiceModule(dependencies)
-    await expect(reloaded.retryDelivery(createInput())).resolves.toBeUndefined()
+    await expect(reloaded.retryDelivery(createInput())).rejects.toThrow(
+      /unresolved delivery attempt/i
+    )
     expect(fetchLnurlInvoice).toHaveBeenCalledTimes(1)
-    expect(publishedInvoices).toEqual([INVOICE, INVOICE])
+    expect(publishedInvoices).toEqual([INVOICE])
+  })
+
+  it.each(["readiness", "signer refusal", "session change", "wrapping"])(
+    "keeps the same saved invoice retryable after a pre-stage %s failure",
+    async (failure) => {
+      const store = new MemoryPendingInvoiceStore()
+      const fetchLnurlInvoice = mock(async () => ({ invoice: INVOICE }))
+      let failBeforeStage = true
+      const publish: MerchantInvoiceDependencies["publish"] = mock(
+        async (input) => {
+          if (failBeforeStage) throw new Error(`Pre-stage ${failure}`)
+          await input.onRecipientDeliveryStarting?.()
+        }
+      )
+      const dependencies = createDependencies(store, {
+        fetchLnurlInvoice,
+        publish,
+      })
+      await expect(
+        createMerchantInvoiceModule(dependencies).createAndDeliver({
+          ...createInput(),
+          source: { type: "profile_lud16" },
+        })
+      ).rejects.toThrow(`Pre-stage ${failure}`)
+      const reloaded = createMerchantInvoiceModule(dependencies)
+      expect(await reloaded.getStatus(createInput())).toEqual({
+        state: "pending",
+      })
+      expect(
+        store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)?.deliveryAttempted
+      ).not.toBe(true)
+      failBeforeStage = false
+      await reloaded.retryDelivery(createInput())
+      expect(fetchLnurlInvoice).toHaveBeenCalledTimes(1)
+      expect(publish).toHaveBeenCalledTimes(2)
+      expect(
+        (publish as ReturnType<typeof mock>).mock.calls.map(
+          ([input]) => input.payload.invoice
+        )
+      ).toEqual([INVOICE, INVOICE])
+      expect(await reloaded.getStatus(createInput())).toEqual({ state: "sent" })
+    }
+  )
+
+  it("allows the saved invoice to retry only after a proven zero-ACK outcome is checkpointed", async () => {
+    const store = new MemoryPendingInvoiceStore()
+    const zeroAck = new RelayPublishDiagnosticsError(
+      "No relay accepted the event",
+      { successfulRelayUrls: [] } as never,
+      null
+    )
+    const publish = mock(async () => {
+      throw zeroAck
+    })
+    const dependencies = createDependencies(store, { publish })
+    await expect(
+      createMerchantInvoiceModule(dependencies).createAndDeliver({
+        ...createInput(),
+        source: { type: "manual", invoice: INVOICE },
+      })
+    ).rejects.toBe(zeroAck)
+    expect(store.rows.get(`${MERCHANT_PUBKEY}:${ORDER_ID}`)).toMatchObject({
+      deliveryState: "pending",
+      deliveryAttempted: false,
+    })
+    expect(
+      await createMerchantInvoiceModule(dependencies).getStatus(createInput())
+    ).toEqual({ state: "pending" })
   })
 
   it("keeps saved invoices scoped to the original buyer", async () => {
@@ -623,14 +824,15 @@ describe("merchant invoice validation and durability", () => {
     })
   })
 
-  it("retries the same invoice after delivery succeeds but final persistence fails", async () => {
+  it("does not resend after a final status-write failure without an accepted receipt", async () => {
     const store = new MemoryPendingInvoiceStore()
-    store.failOnPutNumber = 2
+    store.failOnPutNumber = 3
     const fetchLnurlInvoice = mock(async () => ({ invoice: INVOICE }))
     const publishedInvoices: string[] = []
     const dependencies = createDependencies(store, {
       fetchLnurlInvoice,
-      publish: mock(async (input: { payload: { invoice?: string } }) => {
+      publish: mock(async (input) => {
+        await input.onRecipientDeliveryStarting?.()
         publishedInvoices.push(input.payload.invoice ?? "")
       }),
     })
@@ -644,13 +846,13 @@ describe("merchant invoice validation and durability", () => {
     expect(
       await createMerchantInvoiceModule(dependencies).getStatus(createInput())
     ).toEqual({
-      state: "pending",
+      state: "delivery_unknown",
     })
 
     await expect(
       createMerchantInvoiceModule(dependencies).retryDelivery(createInput())
-    ).resolves.toBeUndefined()
+    ).rejects.toThrow(/unresolved delivery attempt/i)
     expect(fetchLnurlInvoice).toHaveBeenCalledTimes(1)
-    expect(publishedInvoices).toEqual([INVOICE, INVOICE])
+    expect(publishedInvoices).toEqual([INVOICE])
   })
 })

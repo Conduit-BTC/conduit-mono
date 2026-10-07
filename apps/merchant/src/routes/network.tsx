@@ -11,8 +11,13 @@ import {
   useBlocker,
   useNavigate,
 } from "@tanstack/react-router"
-import { useAccountNetworkSettings, useAuth } from "@conduit/core"
 import {
+  useAccountNetworkSettings,
+  useAuth,
+  useCommerceInbox,
+} from "@conduit/core"
+import {
+  CommerceInboxRecovery,
   Button,
   RelaySettingsPanel,
   SignerRecoveryNotice,
@@ -42,6 +47,11 @@ function NetworkPage() {
     signerReadiness,
     status,
   } = useAuth()
+  const inbox = useCommerceInbox(
+    accountPubkey,
+    signerReadiness === "ready",
+    false
+  )
   const networkSettings = useAccountNetworkSettings({
     telemetryApp: "merchant",
   })
@@ -140,6 +150,11 @@ function NetworkPage() {
 
   return (
     <>
+      <CommerceInboxRecovery
+        snapshot={inbox.snapshot}
+        retry={inbox.retry}
+        retrySends={inbox.retrySends}
+      />
       <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
         <div className="mx-auto max-w-[50rem]">
           {hasProductDraftReturn && (
