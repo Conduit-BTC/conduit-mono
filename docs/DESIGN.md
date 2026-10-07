@@ -97,14 +97,21 @@ Typography is defined in `packages/ui/src/styles/typography.css`.
 
 ### Font Roles
 
-- `--font-display`: `Bricolage Grotesque` for strong brand moments and large headlines
-- `--font-heading`: `Bricolage Grotesque` for section titles and structured headings
-- `--font-body`: `Bricolage Grotesque` for paragraphs, forms, tables, and general UI copy
+- `--font-display`: `Poppins` for strong brand moments and large headlines
+- `--font-heading`: `Poppins` for section titles and structured headings
+- `--font-body`: `Poppins` for paragraphs, forms, tables, and general UI copy
 - `--font-mono`: system monospace stack for ids, pubkeys, technical metadata, and dense utility labels
+
+Poppins follows the primary type specimen in Conduit Design’s Brand Identity
+board (node `1153:44953`). The shared package bundles the same normal-style
+Latin WOFF2 files used by the landing site in weights 400, 500, 600 and 700, with
+the SIL Open Font License in `src/assets/fonts/Poppins-OFL.txt`. Fonts load from
+the app’s own assets with `font-display: swap`; no font service request or
+proprietary font is required. Other scripts use the system fallback stack.
 
 ### When To Use Each Font
 
-- Use `display` for hero titles, logo-adjacent lockups, and standout marketing moments.
+- Use `display` for large headlines and standout marketing moments. Use existing image/vector artwork for the logo; do not reproduce the wordmark with a runtime font.
 - Use `heading` for dashboards, section headings, card titles, and interface labels that need clarity.
 - Use `body` for all general reading and control text.
 - Use `mono` only for technical strings such as pubkeys, IDs, invoice references, and relay-like metadata.

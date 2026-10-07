@@ -79,7 +79,8 @@ is an intentional second example. Do not add credentials or live mutations here.
 - Product and merchant names wrap. An accessible name alone does not reveal clipped content to sighted readers.
 - Phone and coarse-pointer actions, selectors, switch targets and cart quantity controls use 44 px hit areas. Desktop compact variants remain available.
 - Quantity controls remain visible after adding an item, with focus preserved as Add becomes Remove and back.
-- Use 4/8/12 px radii intentionally. Do not add glass highlights, passive hover shadows, decorative ticket shapes or a new font.
+- Poppins is the shared UI font. Keep logo artwork as an asset and use system monospace for identifiers and technical references. Fonts and their OFL license are bundled in `src/assets/fonts`.
+- Use 4/8/12 px radii intentionally. Do not add glass highlights, passive hover shadows or decorative ticket shapes.
 
 ### Owners
 

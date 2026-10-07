@@ -40,7 +40,7 @@ no Ditto code or dependency was imported.
 | EventMarketCard, EventPageHeader and EventTimeline           | Schedule, organizer and availability have an established hierarchy                                  | Route-specific containers and state treatments still vary                 |
 | PreferenceSectionCard body/divider/footer                    | Clear settings grouping and explanatory copy; existing network settings reuse is strong             | Row geometry and ordinary-card radius differ                              |
 | Radix overlays, Select, Tabs; cmdk Combobox; native Checkbox | Existing focus, keyboard and selection foundations                                                  | Labels, field errors and density are assembled repeatedly                 |
-| Bricolage typography, Night/Day tokens and theme runtime     | Shared identity and signer-independent startup already exist                                        | Three byte-identical Tailwind maps invite drift                           |
+| Shared typography roles, Night/Day tokens and theme runtime  | Shared identity and signer-independent startup already exist                                        | Three byte-identical Tailwind maps invite drift                           |
 
 Market order rows and Merchant OrderListItem repeat similar geometry without a
 shared table/row contract. Merchant ProductCombinationMatrix owns a native table.
@@ -122,7 +122,7 @@ Applied changes:
 - Passive status is icon plus text; attention tags are small rectangles and counts are plain text.
 - Tabs use an underline, segmented choices use flat rectangles, and settings use headings and rules.
 - Product cards keep one restrained bordered surface with padded content and contained media. Event compositions remain flat; both avoid hover shadows and passive glow.
-- Bricolage, purple primary actions, product imagery, merchant identity and event time/place remain.
+- The shared type scale, purple primary actions, product imagery, merchant identity and event time/place remain. Poppins now supplies the type roles after brand review.
 - Checkout uses aligned receipt-like totals without a nested pickup card.
 - The default shape vocabulary is 4/8/12 px, with round avatars and switches retained.
 - Product/merchant names wrap. Cart quantity controls stay visible and preserve the focused first action.
@@ -133,7 +133,7 @@ Applied changes:
   around its compact track. Existing desktop density remains available.
 - Preview controls collapse, reducing phone chrome while keeping all nine sections discoverable.
 
-No new primitive family, font, icon library, animation, decorative ticket motif,
+No new primitive family, icon library, animation, decorative ticket motif,
 theme interoperability or theme-runtime migration was added in this visual pass.
 
 ## Review disposition
@@ -183,3 +183,20 @@ Browser measurements on Day/Night controls found action text contrast of 4.61:1
 The sampled status labels and attention tags all exceeded 4.5:1 in both themes.
 The palette and controls fit a 390 px viewport; keyboard focus retained a visible
 ring. These checks cover the workbench examples, not a whole-app accessibility audit.
+
+### Poppins typography correction
+
+Poppins replaces Bricolage in the shared display, heading and body roles, matching
+the Brand Identity primary type specimen (`1153:44953`). Local WOFF2 weights
+400/500/600/700 and their OFL license are the same files used by the landing site.
+Market font preloads reference those shared files. Bricolage assets are removed.
+Logo artwork and the system monospace reference style remain unchanged. The
+existing type sizes, line heights and 4 px field-label gap remain for comparison.
+
+Typography validation: workspace build/typecheck, UI lint/typecheck and workbench
+build passed. All nine sections fit 320 px and 390 px viewports with long-content
+mode enabled. Browser checks confirmed Poppins on headings/body/selects, retained
+monospace on the reference sample, and the 4 px label-to-control gap. Form error
+submission still focuses the required input. Day and Night screenshots cover the
+form, typography reference and commerce composition. This is local browser
+validation, not physical-device or whole-app layout sign-off.

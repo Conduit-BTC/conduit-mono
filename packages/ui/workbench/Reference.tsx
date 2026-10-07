@@ -118,7 +118,8 @@ export function Foundations() {
           <header className="space-y-1.5">
             <h2 className="text-lg font-semibold">Typography</h2>
             <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-              Existing Bricolage Grotesque roles; no new font or theme branch.
+              Poppins for headings, body copy and controls. System monospace for
+              identifiers and technical references; logo artwork stays separate.
             </p>
           </header>
           <div className="space-y-4">
@@ -287,7 +288,7 @@ export function Baseline() {
           <div>
             <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
               <li>
-                Bricolage typography, named themes, semantic surfaces, existing
+                Shared type scale, named themes, semantic surfaces, existing
                 purple action color and token radii.
               </li>
               <li>
