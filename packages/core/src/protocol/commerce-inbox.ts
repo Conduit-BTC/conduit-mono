@@ -1123,7 +1123,34 @@ export class CommerceInbox {
     return result
   }
   async retrySends(): Promise<void> {
-    await retryPrivateDeliveries(this.store.principal)
+    this.assertCurrent()
+    const signer = getAccountSigner()
+    if (
+      !signer ||
+      signer !== this.signer ||
+      signer !== this.authorization.signer ||
+      signer.pubkey !== this.store.principal
+    )
+      throw new Error("Reconnect the intended account to retry saved sends")
+    await retryPrivateDeliveries(
+      this.store.principal,
+      undefined,
+      undefined,
+      this.store,
+      undefined,
+      {
+        shouldContinue: () => {
+          this.assertCurrent()
+          if (getAccountSigner() !== signer)
+            throw new Error("Inbox signer session changed")
+          return true
+        },
+        foregroundRelayAuthentication: {
+          signer,
+          method: signer.authMethod,
+        },
+      }
+    )
     await this.waitForDecode()
     await this.refresh()
   }

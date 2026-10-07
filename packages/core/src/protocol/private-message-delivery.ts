@@ -22,7 +22,7 @@ import {
 import { CommerceInboxStore } from "./commerce-inbox-store"
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
-import { type NostrKeySigner } from "./nostr-event-signer"
+import { type AccountSigner, type NostrKeySigner } from "./nostr-event-signer"
 import {
   assertPrivateMessageFitsTransport,
   completePrivateMessageEvent,
@@ -48,7 +48,10 @@ import {
   type InboxDeclarationResolution,
   type PrivateMessageDeliveryRoute,
 } from "./private-message-routing"
-import { getProtectedReadAuthorization } from "./protected-read-authorization"
+import {
+  assertProtectedReadAuthorization,
+  getProtectedReadAuthorization,
+} from "./protected-read-authorization"
 import { getRelayLists } from "./relay-list"
 import {
   getRelayPublishTargetStatus,
@@ -259,14 +262,24 @@ export async function holdPrivateDeliveryClaim(
   }
 }
 
-/** Explicit retry uses only saved signed bytes and saved targets; never signs. */
+/** Retry preserves saved wrap bytes and targets. Foreground relay AUTH may sign
+ * a separate NIP-42 event, but never signs or replaces the message wrap.
+ */
 export async function retryPrivateDeliveries(
   principal: string,
   publisher = publishWithPlanner,
   onlyId?: string,
   suppliedStore?: CommerceInboxStore,
   resolveDeclaration = resolveInboxDeclaration,
-  options: { replayAcknowledged?: boolean; shouldContinue?: () => boolean } = {}
+  options: {
+    replayAcknowledged?: boolean
+    shouldContinue?: () => boolean
+    foregroundRelayAuthentication?: {
+      signer: AccountSigner
+      method: "nip07" | "nip46"
+      waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
+    }
+  } = {}
 ): Promise<Map<string, PublishWithPlannerResult>> {
   if (options.replayAcknowledged && !onlyId)
     throw new Error("Exact replay requires one selected delivery")
@@ -274,6 +287,36 @@ export async function retryPrivateDeliveries(
   const authorization = getProtectedReadAuthorization(principal)
   if (!authorization)
     throw new Error("Reconnect the intended account to retry delivery")
+  const foregroundAuth = options.foregroundRelayAuthentication
+  const assertForegroundAuthority = () => {
+    if (!foregroundAuth) return
+    assertProtectedReadAuthorization(authorization, principal)
+    if (
+      foregroundAuth.signer !== authorization.signer ||
+      foregroundAuth.signer.pubkey !== principal ||
+      foregroundAuth.signer.authMethod !== foregroundAuth.method
+    )
+      throw new Error(
+        "Foreground relay auth requires the active account signer"
+      )
+  }
+  assertForegroundAuthority()
+  const relayAuthentication = foregroundAuth
+    ? {
+        expectedPubkey: principal,
+        signer: foregroundAuth.signer,
+        sessionScope: foregroundAuth.signer,
+        waitForSignerVisibility: async (signal?: AbortSignal) => {
+          assertForegroundAuthority()
+          await (
+            foregroundAuth.waitForSignerVisibility ??
+            ((signal?: AbortSignal) =>
+              waitForVisibleDocument(undefined, signal))
+          )(signal)
+          assertForegroundAuthority()
+        },
+      }
+    : undefined
   const store = suppliedStore ?? new CommerceInboxStore(authorization)
   const rows = await store.database.commerceInboxDeliveries
     .where("accountPubkey")
@@ -317,6 +360,7 @@ export async function retryPrivateDeliveries(
           authenticatedPubkey: principal,
           shouldContinue: () => {
             assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
+            assertForegroundAuthority()
             claim.assertCurrent()
             return true
           },
@@ -334,6 +378,7 @@ export async function retryPrivateDeliveries(
             ...context,
             leg: { ...leg, relayUrls: targets },
             publishFn: publisher,
+            relayAuthentication,
             requireAck: false,
             onSettled: async (delivery) => {
               await recordPrivateDelivery(store, id, leg.event.id, delivery, {

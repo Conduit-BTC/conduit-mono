@@ -30,6 +30,10 @@ import {
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
+import {
+  __resetRelayPublishTestOverrides,
+  __setRelayPublishTestOverrides,
+} from "../packages/core/src/protocol/relay-publish"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
 
 const RECIPIENT_RELAY = "wss://recipient.inbox.conduit.market"
@@ -121,6 +125,7 @@ function setup(
 }
 
 afterEach(async () => {
+  __resetRelayPublishTestOverrides()
   __resetProtectedReadSigner()
   for (const { database, signer } of fixtures.splice(0)) {
     signer.invalidateLocal()
@@ -172,6 +177,21 @@ function sendInput(
     }),
     deliveryStore: fixture.store,
   }
+}
+
+async function stageFailedRecipientWrap(fixture: ReturnType<typeof setup>) {
+  const input = sendInput(fixture, 14)
+  input.selfCopy = false
+  input.publishFn = (async () => {
+    throw new Error("recipient relay unavailable")
+  }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+  await expect(publishPrivateMessage(input)).rejects.toThrow(
+    "recipient relay unavailable"
+  )
+  const row = (await fixture.database.commerceInboxDeliveries.toArray())[0]!
+  const id = row.id.slice(fixture.sender.length + 1)
+  const job = await fixture.store.open<PrivateDeliveryJob>(row.value, id)
+  return { id, wrap: job.legs[0]!.event }
 }
 
 function acknowledged(relay: string) {
@@ -413,6 +433,279 @@ describe("private delivery composed contract", () => {
     expect(
       (await fixture.database.commerceInboxDeliveries.get(rows[0]!.id))?.state
     ).toBe("accepted")
+  })
+
+  it("passes foreground NIP-42 capability for the exact saved wrap after visibility", async () => {
+    const fixture = setup()
+    const { id, wrap } = await stageFailedRecipientWrap(fixture)
+    const signsBeforeRetry = fixture.signCalls()
+    let visibilityEntered!: () => void
+    let resumeVisibility!: () => void
+    const entered = new Promise<void>((resolve) => {
+      visibilityEntered = resolve
+    })
+    const visible = new Promise<void>((resolve) => {
+      resumeVisibility = resolve
+    })
+    let publishes = 0
+    const retry = retryPrivateDeliveries(
+      fixture.sender,
+      (async (event, options) => {
+        publishes++
+        expect(event).toEqual(wrap)
+        expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
+        const auth = options.relayAuthentication!
+        expect(auth.expectedPubkey).toBe(fixture.sender)
+        expect(auth.signer).toBe(fixture.signer)
+        expect(auth.sessionScope).toBe(fixture.signer)
+        await auth.waitForSignerVisibility?.()
+        await auth.signer.signEvent({
+          kind: 22242,
+          pubkey: fixture.sender,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [
+            ["relay", RECIPIENT_RELAY],
+            ["challenge", "saved-retry-test"],
+          ],
+          content: "",
+        })
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+      id,
+      fixture.store,
+      async () => ({
+        pubkey: fixture.recipient,
+        state: "declared",
+        relayUrls: [RECIPIENT_RELAY],
+        stale: false,
+        fetchedAt: Date.now(),
+      }),
+      {
+        foregroundRelayAuthentication: {
+          signer: fixture.signer,
+          method: fixture.signer.authMethod,
+          waitForSignerVisibility: async () => {
+            visibilityEntered()
+            await visible
+          },
+        },
+      }
+    )
+    await entered
+    expect(fixture.signCalls()).toBe(signsBeforeRetry)
+    resumeVisibility()
+    await retry
+    expect(publishes).toBe(1)
+    expect(fixture.signCalls()).toBe(signsBeforeRetry + 1)
+    expect(
+      (
+        await fixture.database.commerceInboxDeliveries.get(
+          fixture.store.key(id)
+        )
+      )?.state
+    ).toBe("accepted")
+  })
+
+  it("answers a relay NIP-42 challenge on foreground retry of the saved wrap", async () => {
+    const fixture = setup()
+    const { id, wrap } = await stageFailedRecipientWrap(fixture)
+    __setRelayPublishTestOverrides({
+      accountNetworkLocalStateRepository:
+        fixture.accountNetworkLocalStateRepository,
+    })
+    const signsBeforeRetry = fixture.signCalls()
+    const originalSocket = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "WebSocket"
+    )
+    const frames: unknown[][] = []
+    let authEventId: string | null = null
+    let sockets = 0
+    class ChallengingSocket {
+      readyState = 0
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      constructor(readonly url: string) {
+        sockets++
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send(payload: string): void {
+        const frame = JSON.parse(payload) as unknown[]
+        frames.push(frame)
+        if (frame[0] === "AUTH") {
+          const event = frame[1] as { id: string }
+          authEventId = event.id
+          queueMicrotask(() => {
+            this.onmessage?.({
+              data: JSON.stringify(["OK", event.id, true, ""]),
+            } as MessageEvent<string>)
+          })
+          return
+        }
+        const event = frame[1] as { id: string }
+        queueMicrotask(() => {
+          if (!authEventId) {
+            this.onmessage?.({
+              data: JSON.stringify([
+                "OK",
+                event.id,
+                false,
+                "auth-required: sign in",
+              ]),
+            } as MessageEvent<string>)
+            this.onmessage?.({
+              data: JSON.stringify(["AUTH", "saved-retry-challenge"]),
+            } as MessageEvent<string>)
+          } else {
+            this.onmessage?.({
+              data: JSON.stringify(["OK", event.id, true, ""]),
+            } as MessageEvent<string>)
+          }
+        })
+      }
+      close(): void {
+        this.readyState = 3
+        this.onclose?.(new Event("close"))
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: ChallengingSocket,
+    })
+    try {
+      const attempts = await retryPrivateDeliveries(
+        fixture.sender,
+        undefined,
+        id,
+        fixture.store,
+        async () => ({
+          pubkey: fixture.recipient,
+          state: "declared",
+          relayUrls: [RECIPIENT_RELAY],
+          stale: false,
+          fetchedAt: Date.now(),
+        }),
+        {
+          foregroundRelayAuthentication: {
+            signer: fixture.signer,
+            method: fixture.signer.authMethod,
+            waitForSignerVisibility: async () => {},
+          },
+        }
+      )
+      expect(sockets).toBe(1)
+      expect(frames.map((frame) => frame[0])).toEqual([
+        "EVENT",
+        "AUTH",
+        "EVENT",
+      ])
+      expect(frames[0]?.[1]).toEqual(wrap)
+      expect(frames[2]?.[1]).toEqual(wrap)
+      expect(frames[1]?.[1]).toMatchObject({
+        kind: 22242,
+        pubkey: fixture.sender,
+        tags: [
+          ["relay", RECIPIENT_RELAY],
+          ["challenge", "saved-retry-challenge"],
+        ],
+      })
+      expect(fixture.signCalls()).toBe(signsBeforeRetry + 1)
+      expect(attempts.get(wrap.id)?.successfulRelayUrls).toEqual([
+        RECIPIENT_RELAY,
+      ])
+    } finally {
+      if (originalSocket)
+        Object.defineProperty(globalThis, "WebSocket", originalSocket)
+      else Reflect.deleteProperty(globalThis, "WebSocket")
+    }
+  })
+
+  it("rejects mismatched foreground methods before replay and background retry stays prompt-free", async () => {
+    const fixture = setup()
+    const { id, wrap } = await stageFailedRecipientWrap(fixture)
+    const signsBeforeRetry = fixture.signCalls()
+    let publishes = 0
+    const publisher = (async (event, options) => {
+      publishes++
+      expect(event).toEqual(wrap)
+      expect(options.relayAuthentication).toBeUndefined()
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    const declaration = async () => ({
+      pubkey: fixture.recipient,
+      state: "declared" as const,
+      relayUrls: [RECIPIENT_RELAY],
+      stale: false,
+      fetchedAt: Date.now(),
+    })
+    await expect(
+      retryPrivateDeliveries(
+        fixture.sender,
+        publisher,
+        id,
+        fixture.store,
+        declaration,
+        {
+          foregroundRelayAuthentication: {
+            signer: fixture.signer,
+            method: fixture.signer.authMethod === "nip07" ? "nip46" : "nip07",
+          },
+        }
+      )
+    ).rejects.toThrow(/active account signer/)
+    expect(publishes).toBe(0)
+    await retryPrivateDeliveries(
+      fixture.sender,
+      publisher,
+      id,
+      fixture.store,
+      declaration
+    )
+    expect(publishes).toBe(1)
+    expect(fixture.signCalls()).toBe(signsBeforeRetry)
+  })
+
+  it("drops foreground AUTH when the account session revokes during visibility", async () => {
+    const fixture = setup()
+    const { id } = await stageFailedRecipientWrap(fixture)
+    const signsBeforeRetry = fixture.signCalls()
+    let publishes = 0
+    await expect(
+      retryPrivateDeliveries(
+        fixture.sender,
+        (async (_event, options) => {
+          publishes++
+          await options.relayAuthentication?.waitForSignerVisibility?.()
+          throw new Error("AUTH signer must not run after revocation")
+        }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+        id,
+        fixture.store,
+        async () => ({
+          pubkey: fixture.recipient,
+          state: "declared",
+          relayUrls: [RECIPIENT_RELAY],
+          stale: false,
+          fetchedAt: Date.now(),
+        }),
+        {
+          foregroundRelayAuthentication: {
+            signer: fixture.signer,
+            method: fixture.signer.authMethod,
+            waitForSignerVisibility: async () => {
+              __resetProtectedReadSigner()
+            },
+          },
+        }
+      )
+    ).rejects.toThrow()
+    expect(publishes).toBe(1)
+    expect(fixture.signCalls()).toBe(signsBeforeRetry)
   })
 
   for (const kind of [16, 14, 15] as const) {
