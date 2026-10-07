@@ -618,7 +618,7 @@ async function rehearseRouter(
     await page.setViewportSize({ width: 1280, height: 720 })
     const beforeConsent = control().snapshot()
     await expect(
-      page.getByText(/Pay once, then return here to finish/)
+      page.getByText(/Pay once, then return here to check progress/)
     ).toHaveCount(0)
     expect(control().snapshot()).toEqual(beforeConsent)
     expect(lnurl.snapshot().invoicesIssued).toBe(0)
@@ -631,7 +631,7 @@ async function rehearseRouter(
     control().setNativeCompletion(false)
     await expect(confirmation).toBeHidden()
     await expect(
-      page.getByText(/Pay once, then return here to finish/)
+      page.getByText(/Pay once, then return here to check progress/)
     ).toBeVisible({ timeout: 30_000 })
     if (continuation !== "buyer") {
       const partialRecovery = continuation === "partial-cold-merchant"
