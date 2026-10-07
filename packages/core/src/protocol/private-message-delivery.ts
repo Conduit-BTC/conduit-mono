@@ -265,8 +265,12 @@ export async function retryPrivateDeliveries(
   publisher = publishWithPlanner,
   onlyId?: string,
   suppliedStore?: CommerceInboxStore,
-  resolveDeclaration = resolveInboxDeclaration
-): Promise<void> {
+  resolveDeclaration = resolveInboxDeclaration,
+  options: { replayAcknowledged?: boolean; shouldContinue?: () => boolean } = {}
+): Promise<Map<string, PublishWithPlannerResult>> {
+  if (options.replayAcknowledged && !onlyId)
+    throw new Error("Exact replay requires one selected delivery")
+  const attempts = new Map<string, PublishWithPlannerResult>()
   const authorization = getProtectedReadAuthorization(principal)
   if (!authorization)
     throw new Error("Reconnect the intended account to retry delivery")
@@ -276,7 +280,8 @@ export async function retryPrivateDeliveries(
     .equals(principal)
     .filter(
       (row) =>
-        row.state !== "accepted" && (!onlyId || row.id === store.key(onlyId))
+        (options.replayAcknowledged || row.state !== "accepted") &&
+        (!onlyId || row.id === store.key(onlyId))
     )
     .toArray()
   for (const row of rows) {
@@ -291,7 +296,7 @@ export async function retryPrivateDeliveries(
         const current = await store.database.commerceInboxDeliveries.get(row.id)
         if (
           !current ||
-          current.state === "accepted" ||
+          (!options.replayAcknowledged && current.state === "accepted") ||
           (current.claim && current.claim.expiresAt > Date.now())
         )
           return null
@@ -311,6 +316,7 @@ export async function retryPrivateDeliveries(
           accountPubkey: principal,
           authenticatedPubkey: principal,
           shouldContinue: () => {
+            assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
             claim.assertCurrent()
             return true
           },
@@ -318,7 +324,9 @@ export async function retryPrivateDeliveries(
         try {
           const targets = await privateDeliveryRetryTargets({
             ...context,
-            leg,
+            leg: options.replayAcknowledged
+              ? { ...leg, acknowledged: [] }
+              : leg,
             resolveDeclaration,
           })
           if (!targets.length) continue
@@ -327,10 +335,12 @@ export async function retryPrivateDeliveries(
             leg: { ...leg, relayUrls: targets },
             publishFn: publisher,
             requireAck: false,
-            onSettled: async (delivery) =>
-              recordPrivateDelivery(store, id, leg.event.id, delivery, {
+            onSettled: async (delivery) => {
+              await recordPrivateDelivery(store, id, leg.event.id, delivery, {
                 holdClaim: true,
-              }),
+              })
+              if (delivery) attempts.set(leg.event.id, delivery)
+            },
           })
           if (leg.recipientPubkey === principal) await store.receive(leg.event)
         } catch (error) {
@@ -346,6 +356,7 @@ export async function retryPrivateDeliveries(
       await claim.release()
     }
   }
+  return attempts
 }
 
 export async function resumePrivateDelivery(
@@ -1705,6 +1716,7 @@ export async function retryPrivateMessageWraps(
     resolveInboxRelays?: (pubkey: string) => Promise<string[]>
     inboxDeclarationOptions?: ResolveInboxDeclarationOptions
     acknowledged?: (url: string) => boolean
+    deliveryStore?: CommerceInboxStore
   }
 ): Promise<{
   recipientDelivery: PublishWithPlannerResult | null
@@ -1716,7 +1728,11 @@ export async function retryPrivateMessageWraps(
     input.authenticatedPubkey === input.senderPubkey
       ? getProtectedReadAuthorization(input.senderPubkey)
       : null
-  const store = authorization ? new CommerceInboxStore(authorization) : null
+  const store =
+    input.deliveryStore ??
+    (authorization ? new CommerceInboxStore(authorization) : null)
+  if (store && store.principal !== input.senderPubkey)
+    throw new Error("Private delivery belongs to another account")
   const replay = async (
     recipient: string,
     event: SignedPublicNostrEvent,
@@ -1732,7 +1748,33 @@ export async function retryPrivateMessageWraps(
         (leg) => leg.event.id === event.id && leg.recipientPubkey === recipient
       )
       if (!leg) throw new Error("Saved private delivery bytes changed")
-      await retryPrivateDeliveries(store.principal, input.publishFn, id, store)
+      // A user-requested domain replay resends the same receipt even after an
+      // earlier ACK. Generic resume still sends only unfinished targets.
+      const replayAcknowledged = !input.acknowledged
+      const attempts = await retryPrivateDeliveries(
+        store.principal,
+        input.publishFn,
+        id,
+        store,
+        (pubkey, options) =>
+          input.resolveInboxRelays
+            ? resolveDeclarationViaSeam(
+                pubkey,
+                input.resolveInboxRelays,
+                pubkey === input.senderPubkey
+              )
+            : resolveInboxDeclaration(pubkey, {
+                ...input.inboxDeclarationOptions,
+                ...options,
+              }),
+        { replayAcknowledged, shouldContinue: input.shouldContinue }
+      )
+      if (replayAcknowledged) {
+        const delivery = attempts.get(event.id)
+        if (!delivery?.successfulRelayUrls.length)
+          throw new Error("Exact message replay did not obtain a relay ACK")
+        return delivery
+      }
       const current = await store.database.commerceInboxDeliveries.get(row.id)
       store.assertCurrent()
       const job =

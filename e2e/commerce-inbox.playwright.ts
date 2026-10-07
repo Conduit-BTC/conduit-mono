@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test"
 import { getEventHash } from "nostr-tools/pure"
 import { createWrap } from "nostr-tools/nip59"
+import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { publishTestRelayEvents } from "./helpers/auth"
 import {
   createRuntimeSignerIdentity,
@@ -401,6 +402,15 @@ test("extra authenticated recipients cannot expand buyer or merchant replies @co
                   }) => job.legs
                 )
                 return {
+                  // Reload tests the encrypted projection, not an optimistic bubble.
+                  retainedReply: (await owner.store.projections()).some(
+                    ({ projection }: { projection: InboxProjection }) =>
+                      projection.kind === "direct" &&
+                      projection.message.senderPubkey ===
+                        owner.store.principal &&
+                      projection.message.recipientPubkey === peer &&
+                      projection.message.content === "synthetic two-party reply"
+                  ),
                   acceptedByPeer: legs.some(
                     (leg: {
                       recipientPubkey: string
@@ -423,7 +433,11 @@ test("extra authenticated recipients cannot expand buyer or merchant replies @co
             ),
           { timeout: 30_000 }
         )
-        .toEqual({ acceptedByPeer: true, unapprovedRecipients: 0 })
+        .toEqual({
+          retainedReply: true,
+          acceptedByPeer: true,
+          unapprovedRecipients: 0,
+        })
       const conversation = page
         .locator("main span")
         .filter({ hasText: /^synthetic extra recipient input$/ })

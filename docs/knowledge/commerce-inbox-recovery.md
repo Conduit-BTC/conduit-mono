@@ -98,6 +98,8 @@ replays those bytes against saved targets and stronger current refusal evidence.
 Legacy domain records that predate a saved relay plan use their current declared
 inbox; account-owned replay retains that first plan before publication.
 Concurrent acknowledgements merge atomically and claims cover an entire attempt.
+Resume skips acknowledged targets. Explicit domain receipt replay can resend the
+selected saved wraps, requiring a fresh ACK while preserving earlier ACK history.
 A relay ACK describes delivery; it does not prove reading, payment or fulfillment.
 Order lifecycle transactions retain their generations, leases and first-ACK
 acceptance checkpoint. Guest retries remain explicitly authorized and bounded.

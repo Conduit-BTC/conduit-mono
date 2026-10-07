@@ -14,6 +14,7 @@ import { sendAccountInboxRumor } from "../packages/core/src/protocol/inbox-send"
 import {
   publishPrivateMessage,
   retryPrivateDeliveries,
+  retryPrivateMessageWraps,
   type PublishPrivateMessageInput,
   type PrivateDeliveryJob,
 } from "../packages/core/src/protocol/private-message-delivery"
@@ -402,6 +403,74 @@ describe("private delivery composed contract", () => {
     expect(
       (await fixture.database.commerceInboxDeliveries.get(rows[0]!.id))?.state
     ).toBe("accepted")
+  })
+
+  it("explicit domain replay republishes accepted exact wraps while resume skips them", async () => {
+    const fixture = setup()
+    const input = sendInput(fixture, 14)
+    input.publishFn = (async (_event, options) =>
+      acknowledged(options.exclusiveRelayUrls![0]!)) as NonNullable<
+      PublishPrivateMessageInput["publishFn"]
+    >
+    const published = await publishPrivateMessage(input)
+    const signs = fixture.signCalls()
+    const publications: string[] = []
+    const publisher = (async (event, options) => {
+      publications.push(JSON.stringify(event))
+      const self = event.id === published.wrappedToSelf?.id
+      expect(options.exclusiveRelayUrls).toEqual([
+        self ? SELF_RELAY : RECIPIENT_RELAY,
+      ])
+      return acknowledged(self ? SELF_RELAY : RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await retryPrivateDeliveries(
+      fixture.sender,
+      publisher,
+      undefined,
+      fixture.store
+    )
+    expect(publications).toHaveLength(0)
+    const replay = {
+      rumorId: input.rumor.id,
+      senderPubkey: fixture.sender,
+      recipientPubkey: fixture.recipient,
+      accountPubkey: fixture.sender,
+      authenticatedPubkey: fixture.sender,
+      wrappedToRecipient: published.wrappedToRecipient,
+      wrappedToSelf: published.wrappedToSelf!,
+      deliveryStore: fixture.store,
+      publishFn: publisher,
+      resolveInboxRelays: async (pubkey: string) => [
+        pubkey === fixture.sender ? SELF_RELAY : RECIPIENT_RELAY,
+      ],
+    }
+    await retryPrivateMessageWraps(replay)
+    expect(publications).toEqual([
+      JSON.stringify(published.wrappedToRecipient),
+      JSON.stringify(published.wrappedToSelf),
+    ])
+    expect(fixture.signCalls()).toBe(signs)
+    await expect(
+      retryPrivateMessageWraps({
+        ...replay,
+        resolveInboxRelays: async () => [
+          "wss://replacement.inbox.conduit.market",
+        ],
+      })
+    ).rejects.toThrow("Exact message replay did not obtain a relay ACK")
+    expect(publications).toHaveLength(2)
+    await expect(
+      retryPrivateMessageWraps({
+        ...replay,
+        publishFn: (async () => ({
+          ...acknowledged(RECIPIENT_RELAY),
+          successfulRelayUrls: [],
+          failedRelayUrls: [RECIPIENT_RELAY],
+        })) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+      })
+    ).rejects.toThrow("Exact message replay did not obtain a relay ACK")
+    for (const row of await fixture.database.commerceInboxDeliveries.toArray())
+      expect(row.state).toBe("accepted")
   })
 
   it("uses the conversation adapter for an ordinary reply and kind-15 file", async () => {
