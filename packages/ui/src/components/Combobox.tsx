@@ -209,7 +209,9 @@ export function Combobox({
                   {option.meta}
                 </span>
               ) : null}
-              <span className="min-w-0 truncate">{option.label}</span>
+              <span className="min-w-0 break-words text-left">
+                {option.label}
+              </span>
             </CommandItem>
           ))}
         </CommandGroup>
@@ -299,7 +301,7 @@ export function Combobox({
           aria-invalid={invalid || undefined}
           disabled={disabled}
           className={cn(
-            "w-full justify-between bg-[var(--surface)] px-3 font-normal text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+            "w-full justify-between bg-[var(--surface)] px-3 text-base font-normal text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
             !label && "text-[var(--text-muted)]",
             invalid &&
               "border-error/50 focus-visible:ring-error/30 data-[state=open]:border-error",
@@ -307,7 +309,9 @@ export function Combobox({
             triggerClassName
           )}
         >
-          <span className="min-w-0 truncate">{label ?? placeholder}</span>
+          <span className="min-w-0 break-words text-left">
+            {label ?? placeholder}
+          </span>
           <ChevronsUpDown
             className="h-4 w-4 shrink-0 opacity-50"
             aria-hidden="true"

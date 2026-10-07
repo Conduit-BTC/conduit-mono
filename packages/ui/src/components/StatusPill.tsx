@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../utils"
 
 const statusPillVariants = cva(
-  "inline-flex w-fit max-w-full items-start gap-1.5 text-xs font-medium leading-5",
+  "inline-flex w-fit max-w-full items-start gap-1.5 text-sm font-medium leading-5",
   {
     variants: {
       variant: {

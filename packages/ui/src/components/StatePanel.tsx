@@ -29,7 +29,7 @@ export function StatePanel({
       />
       <div className="space-y-1">
         <h3 className="text-balance text-base font-semibold">{title}</h3>
-        <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+        <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
           {description}
         </p>
       </div>

@@ -94,7 +94,7 @@ export function EventMarketCard({
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-secondary)]">
             <ImageOff className="h-6 w-6" aria-hidden="true" />
-            <span className="text-xs">Event image unavailable</span>
+            <span className="text-sm">Event image unavailable</span>
           </div>
         )}
       </div>
@@ -104,11 +104,11 @@ export function EventMarketCard({
           <StatusPill variant={STATUS_VARIANTS[statusTone]}>
             {statusLabel}
           </StatusPill>
-          <h2 className="text-balance font-display text-xl font-semibold leading-tight tracking-tight">
+          <h2 className="text-balance font-display text-xl font-semibold leading-snug">
             {title}
           </h2>
           {summary ? (
-            <p className="break-words text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            <p className="break-words text-pretty text-base leading-6 text-[var(--text-secondary)]">
               {summary}
             </p>
           ) : null}
@@ -135,7 +135,7 @@ export function EventMarketCard({
 
         {topics.length > 0 ? (
           <ul
-            className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]"
+            className="flex flex-wrap gap-x-3 gap-y-1 text-sm text-[var(--text-secondary)]"
             aria-label="Event topics"
           >
             {topics.slice(0, 4).map((topic) => (

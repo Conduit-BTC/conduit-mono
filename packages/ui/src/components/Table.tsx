@@ -22,7 +22,7 @@ export const Table = forwardRef<
       <table
         ref={ref}
         className={cn(
-          "w-full text-left text-sm [&_td]:px-4 [&_th]:px-4",
+          "w-full text-left text-sm leading-normal [&_td]:px-4 [&_th]:px-4",
           density === "compact"
             ? "[&_td]:py-2 [&_th]:py-2"
             : "[&_td]:py-4 [&_th]:py-3",

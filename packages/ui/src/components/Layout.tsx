@@ -36,7 +36,7 @@ export function PageHeader({
       )}
     >
       <div className="min-w-0 space-y-2">
-        <h1 className="text-balance font-heading text-3xl font-semibold">
+        <h1 className="break-words text-balance font-heading text-3xl font-semibold">
           {title}
         </h1>
         {description ? (
@@ -82,7 +82,12 @@ export function SummaryList({
   className,
   ...props
 }: HTMLAttributes<HTMLDListElement>) {
-  return <dl className={cn("space-y-3 text-sm", className)} {...props} />
+  return (
+    <dl
+      className={cn("space-y-3 text-sm leading-normal", className)}
+      {...props}
+    />
+  )
 }
 
 export function SummaryRow({
@@ -132,11 +137,11 @@ export function SettingsRow({
         ) : (
           <p className="text-sm font-medium">{label}</p>
         )}
-        <p className="text-pretty text-sm text-[var(--text-secondary)]">
+        <p className="text-pretty text-base text-[var(--text-secondary)]">
           {description}
         </p>
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="max-w-full shrink-0">{children}</div>
     </div>
   )
 }

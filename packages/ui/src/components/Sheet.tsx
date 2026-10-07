@@ -132,7 +132,10 @@ const SheetDescription = forwardRef<
 >(({ className, ...props }, ref) => (
   <SheetPrimitive.Description
     ref={ref}
-    className={cn("text-sm text-[var(--text-secondary)]", className)}
+    className={cn(
+      "text-pretty text-base text-[var(--text-secondary)]",
+      className
+    )}
     {...props}
   />
 ))

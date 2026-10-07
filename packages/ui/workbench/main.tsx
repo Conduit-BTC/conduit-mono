@@ -48,13 +48,19 @@ function Workbench() {
   const [state, setState] = useState<ExampleState>("ready")
   const [long, setLong] = useState(false)
   const [compact, setCompact] = useState(false)
+  const [largeText, setLargeText] = useState(false)
+  const [expandedSpacing, setExpandedSpacing] = useState(false)
   const theme = useSyncExternalStore(
     subscribeToTheme,
     getThemeSnapshot,
     getServerThemeSnapshot
   )
   return (
-    <PageLayout className="space-y-4 sm:space-y-6">
+    <PageLayout
+      className="ui-workbench space-y-4 sm:space-y-6"
+      data-large-text={largeText}
+      data-expanded-spacing={expandedSpacing}
+    >
       <a href="#examples" className="sr-only focus:not-sr-only focus:underline">
         Skip to examples
       </a>
@@ -70,7 +76,7 @@ function Workbench() {
           {theme.resolvedTheme === "day-market" ? "Day" : "Night"} · {state}
         </summary>
         <div className="flex flex-wrap items-end gap-5 border-t border-[var(--border)] p-4">
-          <div className="min-w-40">
+          <div className="w-full min-w-0 sm:w-auto sm:min-w-40">
             <Field label="Theme">
               {(props) => (
                 <Select
@@ -96,7 +102,7 @@ function Workbench() {
               )}
             </Field>
           </div>
-          <div className="min-w-36">
+          <div className="w-full min-w-0 sm:w-auto sm:min-w-36">
             <Field label="Example state">
               {(props) => (
                 <Select
@@ -150,7 +156,32 @@ function Workbench() {
               Compact tables
             </label>
           </ActionRow>
-          <p className="basis-full text-pretty text-xs text-[var(--text-secondary)]">
+          <ActionRow className="min-h-10">
+            <Switch
+              id="large-text"
+              checked={largeText}
+              onCheckedChange={setLargeText}
+            />
+            <label htmlFor="large-text" className="text-sm">
+              200% text
+            </label>
+          </ActionRow>
+          <ActionRow className="min-h-10">
+            <Switch
+              id="expanded-spacing"
+              checked={expandedSpacing}
+              onCheckedChange={setExpandedSpacing}
+            />
+            <label htmlFor="expanded-spacing" className="text-sm">
+              Expanded text spacing
+            </label>
+          </ActionRow>
+          <p className="basis-full text-pretty text-sm leading-normal text-[var(--text-secondary)]">
+            Reading checks enlarge root text or apply the WCAG spacing overrides
+            to the whole preview, including menus and dialogs. They do not
+            change your browser settings.
+          </p>
+          <p className="basis-full text-pretty text-sm leading-normal text-[var(--text-secondary)]">
             State controls apply to Commerce and Event / inventory. All data is
             fictional; no signer, wallet, relay or account action runs. Resize
             the browser to inspect phone and desktop layouts.

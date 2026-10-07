@@ -86,7 +86,7 @@ export function Commerce({
         >
           Product cards
         </h2>
-        <p className="text-pretty text-sm text-[var(--text-secondary)]">
+        <p className="text-pretty text-base text-[var(--text-secondary)]">
           Freshly roasted Colombian coffee in two bag sizes, ready for Saturday
           market pickup.
         </p>
@@ -283,7 +283,7 @@ function CheckoutExample({
             )}
             <p
               role="status"
-              className="text-pretty text-sm text-[var(--text-secondary)]"
+              className="text-pretty text-base text-[var(--text-secondary)]"
             >
               {reviewed
                 ? "Sample order reviewed. No order was placed and no payment was made."
@@ -323,7 +323,7 @@ export function Orders({ compact, long }: { compact: boolean; long: boolean }) {
       <h2 id="orders-heading" className="text-balance text-xl font-semibold">
         Orders and status
       </h2>
-      <p className="text-pretty text-sm text-[var(--text-secondary)]">
+      <p className="text-pretty text-base text-[var(--text-secondary)]">
         Semantic table with a named, keyboard-scrollable region. Select a row
         using its button. Payment evidence remains distinct from confirmation.
       </p>
@@ -513,7 +513,7 @@ function InventoryRows({
           <TableRow data-selected={assigned}>
             <TableCell>
               Colombia coffee
-              <p className="text-xs text-[var(--text-secondary)]">340 g bag</p>
+              <p className="text-sm text-[var(--text-secondary)]">340 g bag</p>
             </TableCell>
             <TableCell>
               <Checkbox
@@ -537,7 +537,7 @@ function InventoryRows({
           </TableRow>
         </TableBody>
       </Table>
-      <p className="text-pretty text-sm text-[var(--text-secondary)]">
+      <p className="text-pretty text-base text-[var(--text-secondary)]">
         Display availability is not checkout authority. Feature code supplies
         verified assignment and stock evidence.
       </p>

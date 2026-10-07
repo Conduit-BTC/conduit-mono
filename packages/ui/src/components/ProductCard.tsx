@@ -132,7 +132,7 @@ export function ProductCard({
           {onMerchantActivate ? (
             <button
               type="button"
-              className="block min-h-11 w-full min-w-0 max-w-full break-words text-left text-sm leading-5 text-[var(--text-secondary)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              className="block min-h-11 w-full min-w-0 max-w-full break-words text-left text-sm font-medium leading-normal text-[var(--text-secondary)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -143,7 +143,7 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="w-full min-w-0 max-w-full break-words text-left text-sm leading-5 text-[var(--text-secondary)]">
+            <div className="w-full min-w-0 max-w-full break-words text-left text-sm font-medium leading-normal text-[var(--text-secondary)]">
               {merchantNameContent}
             </div>
           )}
@@ -163,7 +163,7 @@ export function ProductCard({
             data-slot="product-notice"
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
-            className="mt-3 border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--text-secondary)]"
+            className="mt-3 border-t border-[var(--border)] pt-3 text-sm leading-normal text-[var(--text-secondary)]"
           >
             {notice}
           </div>
@@ -174,11 +174,11 @@ export function ProductCard({
             <div className="min-h-5 break-words text-lg font-semibold text-[var(--text-primary)]">
               {primaryPrice}
             </div>
-            <div className="min-h-[1rem] break-words text-xs text-[var(--text-secondary)]">
+            <div className="min-h-[1rem] break-words text-sm text-[var(--text-secondary)]">
               {secondaryPrice ?? "\u00a0"}
             </div>
             {approximateUsdPrice !== undefined ? (
-              <div className="min-h-[1rem] break-words text-xs text-[var(--text-secondary)]">
+              <div className="min-h-[1rem] break-words text-sm text-[var(--text-secondary)]">
                 {approximateUsdPrice ?? "\u00a0"}
               </div>
             ) : null}
@@ -187,7 +187,7 @@ export function ProductCard({
             <div className="relative shrink-0">{action}</div>
           ) : cartQuantity > 0 ? (
             <div className="relative shrink-0">
-              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
+              <span className="inline-flex items-center gap-1.5 text-sm text-[var(--text-secondary)]">
                 <Check className="size-3.5 shrink-0" aria-hidden="true" />
                 In cart ({cartQuantity})
               </span>

@@ -200,3 +200,26 @@ monospace on the reference sample, and the 4 px label-to-control gap. Form error
 submission still focuses the required input. Day and Night screenshots cover the
 form, typography reference and commerce composition. This is local browser
 validation, not physical-device or whole-app layout sign-off.
+
+### Readability correction
+
+The live workbench review found essential product notes, price references and
+status labels at 12 px, selector values at 14 px, and unstyled paragraphs inheriting
+a 1.0 line height from the legacy reset. The shared foundation now defaults to
+1.5 line height; regular reading and selectors use 16 px, short supporting text,
+status and compact actions use at least 14 px, and wrapping headings use normal
+tracking with a 1.4 line height. Poppins remains 400 for body, 500 for labels/actions
+and merchant identity, and 600 for headings/prices. The 4 px label gap is retained.
+
+The light supporting grey stays unchanged. Muted foregrounds use neutral-400 in
+Night Market and neutral-600 in Day Market. Measured form placeholder contrast is
+6.36:1 on the nested Night Market input surface and 7.04:1 on Day Market white.
+
+The workbench includes opt-in 200% root text and expanded-spacing checks. All nine
+sections stayed within a 320 px viewport with long content and both checks enabled;
+all nine also passed normal-size long-content reflow at 390 px. The checks exposed
+and corrected intrinsic grid sizing, unwrapped tabs, long-word overflow, settings
+status containment and select viewport limits. Enlarged dialogs and sheets scroll
+vertically without horizontal overflow. Escape restores focus; empty form submission
+still focuses the invalid required field. These checks do not establish physical-device,
+screen-reader or native browser-zoom conformance.

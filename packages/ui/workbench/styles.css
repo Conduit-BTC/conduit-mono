@@ -13,3 +13,19 @@
     scroll-behavior: auto;
   }
 }
+
+/* Review-only stress checks. Include portals without changing app typography. */
+html:has(.ui-workbench[data-large-text="true"]) {
+  font-size: 200%;
+}
+
+html:has(.ui-workbench[data-expanded-spacing="true"]) body,
+html:has(.ui-workbench[data-expanded-spacing="true"]) body * {
+  line-height: 1.5 !important;
+  letter-spacing: 0.12em !important;
+  word-spacing: 0.16em !important;
+}
+
+html:has(.ui-workbench[data-expanded-spacing="true"]) p {
+  margin-bottom: 2em !important;
+}

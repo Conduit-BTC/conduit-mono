@@ -27,7 +27,7 @@ export function Field({
     .join(" ")
 
   return (
-    <div className="grid min-w-0 gap-1">
+    <div className="grid min-w-0 grid-cols-1 gap-1">
       <Label htmlFor={id}>{label}</Label>
       {children({
         id,
@@ -37,7 +37,7 @@ export function Field({
       {description ? (
         <p
           id={descriptionId}
-          className="mt-1 text-pretty text-sm text-[var(--text-secondary)]"
+          className="mt-1 text-pretty text-sm leading-normal text-[var(--text-secondary)]"
         >
           {description}
         </p>
@@ -45,7 +45,7 @@ export function Field({
       {error ? (
         <p
           id={errorId}
-          className="mt-1 text-pretty text-sm font-medium text-[var(--error-text)]"
+          className="mt-1 text-pretty text-sm leading-normal font-medium text-[var(--error-text)]"
         >
           {error}
         </p>

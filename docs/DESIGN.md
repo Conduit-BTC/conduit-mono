@@ -120,13 +120,21 @@ proprietary font is required. Other scripts use the system fallback stack.
 
 Use the `voice-*` scale from `packages/ui/src/styles/typography.css` when possible.
 
-- `voice-xs`, `voice-sm`, `voice-base`, `voice-lg` for supporting copy and product UI
+- `voice-base` (16 / 24) for normal reading, inputs and selectors
+- `voice-sm` (14 / 21) for short support text, labels, status and compact data
+- `voice-xs` (12 / 18) only for nonessential annotations, never instructions, prices, status or actions
+- `voice-lg` (18 / 27) for emphasis inside product UI
 - `voice-xl` to `voice-4xl` for headings inside app surfaces
 - `voice-5xl` and `voice-6xl` for landing and brand-heavy display moments
 
 Guidance:
 
-- Prefer a smaller number of clear typographic levels.
+- Prefer a smaller number of clear typographic levels. Keep body copy at weight 400, labels/actions at 500, and headings/prices at 600. Do not make paragraphs bold to compensate for small text.
+- Default line height is 1.5, including text without a size utility. Use 1.4 for compact headings; avoid single-spaced wrapping titles.
+- Poppins UI uses normal letter spacing. Do not inherit tightened display tracking for cards, dialogs or reading text.
+- Keep input/select values at 16 px on every viewport. Compact buttons retain at least 14 px text; density changes padding rather than making the label tiny.
+- Text controls use minimum heights so enlarged or spaced text can grow. Keep intentional horizontal scrolling within the named table region.
+- Workbench Preview controls include 200% root text and the WCAG text-spacing overrides. These are layout stress checks, not a substitute for browser zoom, physical-device or assistive-technology testing.
 - Avoid mixing display font into dense dashboard/table areas.
 - Avoid long blocks of all-caps text; reserve uppercase for tags, overlines, and tiny metadata.
 
@@ -173,7 +181,9 @@ The color authority is Conduit Design, Brand Identity, **Brand elements / Colors
 
 The other palette steps are derived UI shades/tints with the source hue and
 saturation; they are not additional brand-guide swatches. Neutral surfaces remain
-shared theme infrastructure. Use semantic foreground roles for readable copy:
+shared theme infrastructure. Night Market muted text uses neutral-400 and Day
+Market uses neutral-600 so placeholders and lower-emphasis copy remain readable.
+The light supporting-grey token is unchanged. Use semantic foreground roles for readable copy:
 exact orange, purple and rose do not all pass small-text contrast on both base
 surfaces. Orange actions pair the exact orange fill with ink text. Destructive
 actions pair the exact rose fill with white text.
@@ -200,7 +210,7 @@ Use token mapping rather than copying raw asset colors into components.
 
 - Use `text-[var(--text-primary)]` for default foreground text.
 - Use `text-[var(--text-secondary)]` for supporting copy.
-- Use `text-[var(--text-secondary)]` for readable metadata and hints. Reserve `--text-muted` for nonessential decoration or disabled controls; verify contrast before using it for text.
+- Use `text-[var(--text-secondary)]` for readable metadata and hints. Use `--text-muted` for lower-emphasis readable text and placeholders, with contrast verified on the actual surface. Disabled controls have their own explicit disabled treatment; do not use faint text to imply disabled state.
 - Prefer `--text-secondary` over ad hoc opacity on `--text-primary` unless a specific art direction calls for it.
 
 ### Actions And Emphasis

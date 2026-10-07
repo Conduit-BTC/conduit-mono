@@ -70,7 +70,7 @@ export function Controls() {
       <section className="space-y-5 border-t border-[var(--border)] pt-6">
         <header className="space-y-1.5">
           <h2 className="text-lg font-semibold">Action hierarchy</h2>
-          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
             One primary action per decision. Outline for alternatives; ghost for
             supporting actions. Orange and violet are brand variants for
             deliberate emphasis, not additional primary actions.
@@ -128,7 +128,7 @@ export function Controls() {
         <section className="space-y-5 border-t border-[var(--border)] pt-6">
           <header className="space-y-1.5">
             <h2 className="text-lg font-semibold">Fields and choices</h2>
-            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
               Visible labels, local hints and native paste behavior.
             </p>
           </header>
@@ -178,7 +178,7 @@ export function Controls() {
         <section className="space-y-5 border-t border-[var(--border)] pt-6">
           <header className="space-y-1.5">
             <h2 className="text-lg font-semibold">Navigation and status</h2>
-            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
               Tabs change a panel; navigation links change a location. Color
               always has a text label.
             </p>
@@ -345,7 +345,7 @@ export function FormExample() {
             </ActionRow>
             <p
               role="status"
-              className="text-pretty text-sm text-[var(--text-secondary)]"
+              className="text-pretty text-base text-[var(--text-secondary)]"
             >
               {saved
                 ? "Sample saved in this preview only."
@@ -378,7 +378,7 @@ export function Overlays() {
     <section className="space-y-5 border-t border-[var(--border)] pt-6">
       <header className="space-y-1.5">
         <h2 className="text-lg font-semibold">Dialogs, sheets and menus</h2>
-        <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+        <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
           Open each surface, tab through its controls, then press Escape. Focus
           returns to its trigger.
         </p>

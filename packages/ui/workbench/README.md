@@ -37,6 +37,10 @@ It binds to loopback. No deployment workflow publishes it.
 
 Expand Preview controls to change themes, show long content or choose a state. State
 selection applies to Commerce and Event / inventory; density applies to tables.
+Use **200% text** and **Expanded text spacing** separately and together to inspect
+reflow, clipped labels and overlay scrolling. The first doubles the root font size;
+the second applies line height 1.5, paragraph spacing 2em, letter spacing 0.12em
+and word spacing 0.16em. Neither changes browser preferences.
 Check phone and desktop widths. On phones, section selection uses the existing
 Select; desktop uses Tabs. Demo actions only change local React state.
 
@@ -80,6 +84,7 @@ is an intentional second example. Do not add credentials or live mutations here.
 - Phone and coarse-pointer actions, selectors, switch targets and cart quantity controls use 44 px hit areas. Desktop compact variants remain available.
 - Quantity controls remain visible after adding an item, with focus preserved as Add becomes Remove and back.
 - Poppins is the shared UI font. Keep logo artwork as an asset and use system monospace for identifiers and technical references. Fonts and their OFL license are bundled in `src/assets/fonts`.
+- Use 16 / 24 for reading and selector/input values; 14 px for short support, status and compact actions. Reserve 12 px for nonessential annotations. Keep Poppins 400/500/600 for body/actions/headings, normal tracking and wrapping headings.
 - Use 4/8/12 px radii intentionally. Do not add glass highlights, passive hover shadows or decorative ticket shapes.
 
 ### Owners

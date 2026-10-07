@@ -170,7 +170,7 @@
    */
   --text-primary: var(--foreground);
   --text-secondary: var(--muted-foreground);
-  --text-muted: var(--neutral-500);
+  --text-muted: var(--neutral-400);
   --text-inverse: var(--background);
 
   /* Back-compat surfaces */
@@ -269,7 +269,7 @@
 
   --text-primary: var(--foreground);
   --text-secondary: var(--muted-foreground);
-  --text-muted: var(--neutral-500);
+  --text-muted: var(--neutral-600);
   --text-inverse: white;
 
   /* Semantic surface aliases */

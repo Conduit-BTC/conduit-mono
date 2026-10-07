@@ -72,7 +72,7 @@ export function Foundations() {
       <section className="space-y-5 border-t border-[var(--border)] pt-6">
         <header className="space-y-1.5">
           <h2 className="text-lg font-semibold">Brand palette</h2>
-          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
             Exact swatches from Conduit Design’s Brand elements color board.
             Interaction shades and readable text tints derive from these
             anchors.
@@ -106,7 +106,7 @@ export function Foundations() {
           <StatusPill variant="info">Informational</StatusPill>
           <StatusPill variant="neutral">Draft</StatusPill>
         </div>
-        <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+        <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
           Ready uses a neutral checkmark. Orange signals attention, rose signals
           errors, and violet carries information. Words and icons carry meaning
           alongside color. Orange actions use ink text; small Day Market
@@ -117,7 +117,7 @@ export function Foundations() {
         <section className="space-y-5 border-t border-[var(--border)] pt-6">
           <header className="space-y-1.5">
             <h2 className="text-lg font-semibold">Typography</h2>
-            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
               Poppins for headings, body copy and controls. System monospace for
               identifiers and technical references; logo artwork stays separate.
             </p>
@@ -126,10 +126,10 @@ export function Foundations() {
             <p className="voice-3xl text-balance">Page title · 30 / 42</p>
             <p className="voice-xl text-balance">Section heading · 20 / 28</p>
             <p className="voice-base text-pretty">
-              Body and form input · 16 / 24
+              Body, inputs and selectors · 16 / 24
             </p>
             <p className="voice-sm text-pretty">Supporting text · 14 / 21</p>
-            <p className="voice-xs">Metadata · 12 / 18</p>
+            <p className="voice-xs">Nonessential annotation only · 12 / 18</p>
             <p className="font-mono text-sm tabular-nums">
               SAMPLE-1042 · 24,000 sats
             </p>
@@ -140,7 +140,7 @@ export function Foundations() {
             <h2 className="text-lg font-semibold">
               Spacing, density and shape
             </h2>
-            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
               Proposed composition rules using existing Tailwind spacing and
               radius tokens.
             </p>
@@ -168,7 +168,7 @@ export function Foundations() {
       <section className="space-y-5 border-t border-[var(--border)] pt-6">
         <header className="space-y-1.5">
           <h2 className="text-lg font-semibold">Semantic surfaces</h2>
-          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
             Theme values remain in the shared CSS owner. Change themes with the
             control above.
           </p>
@@ -203,7 +203,7 @@ export function Foundations() {
           </h2>
         </header>
         <div>
-          <ul className="list-disc space-y-3 pl-5 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <ul className="list-disc space-y-3 pl-5 text-pretty text-base leading-6 text-[var(--text-secondary)]">
             <li>
               Preserve the same reading order on phone and desktop. Stack
               section grids on phones and scroll genuinely tabular data within a
@@ -242,7 +242,7 @@ export function Baseline() {
           <h2 className="text-lg font-semibold">
             Baseline and proposed inventory
           </h2>
-          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
             Review candidate from Conduit main dacdd946 and Ditto source
             359e76f8. Current implementation is evidence, not automatic design
             approval.
@@ -250,7 +250,7 @@ export function Baseline() {
         </header>
         <div className="space-y-4">
           <Badge variant="warning">Visual checkpoint pending</Badge>
-          <p className="text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="text-pretty text-base leading-6 text-[var(--text-secondary)]">
             Conduit already has a substantial shared system: 77 component source
             files, tokenized Night/Day themes, a signer-independent theme
             runtime and many domain compositions. This slice makes it
@@ -402,7 +402,7 @@ export function Baseline() {
           </div>
         </section>
       </SectionGrid>
-      <p className="text-pretty text-sm text-[var(--text-secondary)]">
+      <p className="text-pretty text-base text-[var(--text-secondary)]">
         Sources:{" "}
         <a
           className="underline"

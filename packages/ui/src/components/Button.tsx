@@ -4,7 +4,7 @@ import { forwardRef, type ButtonHTMLAttributes } from "react"
 import { cn } from "../utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center gap-2 max-w-full whitespace-normal break-words rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
@@ -25,9 +25,9 @@ const buttonVariants = cva(
         link: "text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:ring-primary-500",
       },
       size: {
-        sm: "h-11 px-3 text-xs sm:h-8 [@media(pointer:coarse)]:h-11",
-        md: "h-11 px-4 text-sm sm:h-10 [@media(pointer:coarse)]:h-11",
-        lg: "h-12 px-6 text-base",
+        sm: "min-h-11 px-3 py-1.5 text-sm sm:min-h-8 [@media(pointer:coarse)]:min-h-11",
+        md: "min-h-11 px-4 py-2 text-sm sm:min-h-10 [@media(pointer:coarse)]:min-h-11",
+        lg: "min-h-12 px-6 py-3 text-base",
         icon: "h-11 w-11 sm:h-10 sm:w-10 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11",
       },
     },
