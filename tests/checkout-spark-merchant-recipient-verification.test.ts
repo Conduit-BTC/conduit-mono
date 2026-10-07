@@ -165,7 +165,8 @@ function fixture(address = "merchant@receiver.conduit.cash") {
     return canonical
   }
   const verificationDependencies = {
-    contracts: address === "merchant@example.test" ? [] : receiver.contracts,
+    contracts:
+      address === "merchant@unsupported.conduit.cash" ? [] : receiver.contracts,
     fetchMetadata: async () => receiver.metadata,
     fetchVerify,
   }
@@ -264,7 +265,7 @@ describe("merchant saved invoice recipient verification", () => {
   })
 
   it("keeps unsupported recipients unverified without substituting a provider", async () => {
-    const context = fixture("merchant@example.test")
+    const context = fixture("merchant@unsupported.conduit.cash")
 
     expect(
       await verifySavedMerchantCheckoutSparkRecipients(context.input)

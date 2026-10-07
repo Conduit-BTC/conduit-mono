@@ -75,7 +75,7 @@ function fixture(guest = false) {
       kind: 0,
       created_at: NOW / 1_000 - 5,
       tags: [],
-      content: JSON.stringify({ lud16: "merchant@example.test" }),
+      content: JSON.stringify({ lud16: "merchant@receiver.conduit.cash" }),
     },
     MERCHANT_SECRET
   )
@@ -115,7 +115,7 @@ function fixture(guest = false) {
         recipientId: MERCHANT,
         destination: {
           type: "lightning_address",
-          value: "merchant@example.test",
+          value: "merchant@receiver.conduit.cash",
           source: {
             type: "signed_profile",
             profileEventId: profile.id,
@@ -241,6 +241,27 @@ function merchantPayout(
 }
 
 describe("buyer local invoice-origin settlement", () => {
+  for (const guest of [false, true]) {
+    it(`builds a qualified ordinary ${guest ? "guest" : "buyer"} recipient fixture`, () => {
+      const input = fixture(guest)
+      const destination = input.plan.recipients[0]!.destination
+      if (destination.type !== "lightning_address")
+        throw new Error("Expected the ordinary Merchant Lightning recipient")
+      const receiver = qualifiedReceiverFixture({
+        lud16: destination.value,
+        amountSats: 1_000,
+        nowSeconds: NOW / 1_000,
+        preimageByte: 2,
+      })
+
+      expect(input.lifecycle.buyerIdentityKind).toBe(
+        guest ? "guest_ephemeral" : "signed_in"
+      )
+      expect(receiver.contracts).toHaveLength(1)
+      expect(receiver.paymentRequest.length > 0).toBe(true)
+    })
+  }
+
   it.each([false, true])(
     "preserves locally resolved commerce verification for guest=%s",
     async (guest) => {
