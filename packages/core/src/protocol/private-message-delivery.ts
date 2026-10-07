@@ -1692,12 +1692,8 @@ async function privateDeliveryRetryTargets(
     return []
   if (leg.compatibility && !isApprovedCompatibilityOrderRelayPlan(targets))
     return []
-  if (
-    !leg.compatibility &&
-    declaration.state === "declared" &&
-    targets.some((url) => !declaration.relayUrls.includes(url))
-  )
-    return []
+  if (!leg.compatibility && declaration.state === "declared")
+    return targets.filter((url) => declaration.relayUrls.includes(url))
   return targets
 }
 

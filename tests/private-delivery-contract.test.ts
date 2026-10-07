@@ -405,6 +405,58 @@ describe("private delivery composed contract", () => {
     ).toBe("accepted")
   })
 
+  for (const kind of [16, 14, 15] as const) {
+    it(`retries kind ${kind} only on the unacknowledged overlap after relay rotation`, async () => {
+      const fixture = setup()
+      const removed = "wss://removed.inbox.conduit.market"
+      const alreadyAccepted = "wss://accepted.inbox.conduit.market"
+      const newlyAdded = "wss://added.inbox.conduit.market"
+      const savedTargets = [removed, RECIPIENT_RELAY, alreadyAccepted]
+      const input = sendInput(fixture, kind)
+      input.selfCopy = false
+      input.recipientInboxRelays = savedTargets
+      input.publishFn = (async () => ({
+        ...acknowledged(alreadyAccepted),
+        attemptedRelayUrls: savedTargets,
+        failedRelayUrls: [removed, RECIPIENT_RELAY],
+      })) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      const sent = await publishPrivateMessage(input)
+      const signedBytes = JSON.stringify(sent.wrappedToRecipient)
+      const signs = fixture.signCalls()
+      const id = `delivery:${input.rumor.id}`
+      const targets: string[] = []
+      await retryPrivateDeliveries(
+        fixture.sender,
+        (async (event, options) => {
+          expect(JSON.stringify(event)).toBe(signedBytes)
+          targets.push(...options.exclusiveRelayUrls!)
+          return acknowledged(RECIPIENT_RELAY)
+        }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
+        id,
+        fixture.store,
+        async () => ({
+          pubkey: fixture.recipient,
+          state: "declared",
+          relayUrls: [RECIPIENT_RELAY, alreadyAccepted, newlyAdded],
+          stale: false,
+          fetchedAt: Date.now(),
+        })
+      )
+      expect(targets).toEqual([RECIPIENT_RELAY])
+      expect(fixture.signCalls()).toBe(signs)
+      const row = await fixture.database.commerceInboxDeliveries.get(
+        fixture.store.key(id)
+      )
+      const job = await fixture.store.open<PrivateDeliveryJob>(row!.value, id)
+      expect(JSON.stringify(job.legs[0]!.event)).toBe(signedBytes)
+      expect(job.legs[0]!.relayUrls).toEqual(savedTargets)
+      expect(job.legs[0]!.acknowledged).toEqual([
+        alreadyAccepted,
+        RECIPIENT_RELAY,
+      ])
+    })
+  }
+
   it("explicit domain replay republishes accepted exact wraps while resume skips them", async () => {
     const fixture = setup()
     const input = sendInput(fixture, 14)
