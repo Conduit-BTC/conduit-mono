@@ -26,7 +26,7 @@ It binds to loopback. No deployment workflow publishes it.
 | Section           | Examples and checks                                                                                                       |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Commerce          | Real ProductCard, unavailable media, sold out, option selection, checkout summary and action hierarchy                    |
-| Foundations       | Typography, semantic surfaces, spacing, radii, density and responsive rules                                               |
+| Foundations       | Brand swatches and status mapping, typography, semantic surfaces, spacing, radii, density and responsive rules            |
 | Controls          | Button hierarchy/sizes, native and Radix controls, combobox, breadcrumb, segmented controls, tabs, statuses and skeletons |
 | Forms             | Visible labels, help and error associations, required-field focus recovery, textarea, checkbox, reset and submit feedback |
 | Overlays          | Dialog, safe destructive confirmation, sheet, dropdown; focus trap, Escape, focus return and disabled menu entry          |
@@ -71,6 +71,7 @@ is an intentional second example. Do not add credentials or live mutations here.
 ### Visual grammar
 
 - StatusPill is an icon/text label, despite its historical name. It is not an action.
+- Color anchors come from the Brand elements palette: ink, purple, orange, rose and violet. Information is violet; errors are rose; attention is orange; ready is a neutral checkmark. Use readable foreground roles instead of raw signal colors for small text.
 - Badge is a small rectangular classification/attention tag. Counts are plain text.
 - Use a real pressed button for filters and segmented choices. Tabs have an active underline.
 - Keep primary price neutral, prominent and tabular. Orange is not a readable price role in Day Market.

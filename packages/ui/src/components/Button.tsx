@@ -11,9 +11,9 @@ const buttonVariants = cva(
         primary:
           "bg-primary-500 text-white hover:bg-primary-600 focus-visible:ring-primary-500",
         secondary:
-          "bg-secondary-700 text-white hover:bg-secondary-800 focus-visible:ring-secondary-500",
+          "bg-secondary-500 text-[var(--secondary-foreground)] hover:bg-secondary-400 focus-visible:ring-[var(--ring)]",
         accent:
-          "bg-accent-500 text-white hover:bg-accent-600 focus-visible:ring-accent-500",
+          "bg-accent-500 text-white hover:bg-accent-600 focus-visible:ring-[var(--ring)]",
         outline:
           "border border-[var(--border)] bg-transparent text-[var(--text-primary)] hover:bg-[var(--surface-elevated)] focus-visible:ring-primary-500",
         ghost:

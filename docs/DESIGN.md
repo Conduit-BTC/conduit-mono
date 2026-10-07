@@ -51,7 +51,7 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 
 - Use a dark, high-contrast base with luminous brand accents.
 - Keep structure calm: background, card, and border tones should recede so content and actions stand out.
-- Use purple as the core brand/action color, orange as a warm secondary accent, rose as a decorative highlight, and semantic colors for status.
+- Use the brand palette for actions and status: purple for primary actions, orange for attention, rose for errors, and violet for information. Ready states use a neutral checkmark.
 - Favor deliberate typography hierarchy over extra decoration.
 - Use the shared tokens first; only add a new token when an existing one cannot express the intended role.
 
@@ -131,10 +131,10 @@ Defined in `packages/ui/src/styles/theme.css`:
 
 - `primary-*`: brand purple, main action color
 - `secondary-*`: orange, warm support/action accent
-- `tertiary-*`: rose, decorative glow/highlight accent
-- `accent-*`: indigo, utility accent when purple is already occupied
+- `tertiary-*`: rose, error/destructive and highlight accent
+- `accent-*`: violet, informational and utility accent
 - `neutral-*`: gray scale for structure and type support
-- `success`, `warning`, `error`, `info`: semantic system colors
+- `success`, `warning`, `error`, `info`: semantic aliases to neutral, orange, rose and violet
 
 ### Semantic Tokens
 
@@ -151,15 +151,27 @@ Use these first in app code:
 - `--text-muted`
 - `--ring`
 
-### Figma / Asset Mapping
+### Brand Source And Derived UI Colors
 
-- `#05001D` -> `--background`
-- `#BB00FF` -> `--primary-500`
-- `#D32973` -> `--project-tip-heart` for the shared project-tip heart
-- merchant pink/rose glows -> `--tertiary-500`
-- dark card tones around `#211E31` -> express through `--surface`, `--surface-elevated`, and `--surface-dialog`
-- white text/icons -> `--text-primary` or token foreground equivalents
+The color authority is Conduit Design, Brand Identity, **Brand elements / Colors**
+(node `1153:44774`, the palette in the brand guide). The five source swatches are:
 
+| Swatch | Exact value | Shared anchor / palette role                                     |
+| ------ | ----------- | ---------------------------------------------------------------- |
+| Ink    | `#05001D`   | `--brand-ink`, Night Market background, orange-action foreground |
+| Purple | `#BB00FF`   | `--brand-purple`, `--primary-500`                                |
+| Orange | `#F7771B`   | `--brand-orange`, `--secondary-500`, warning signal              |
+| Rose   | `#D32973`   | `--brand-rose`, `--tertiary-500`, error/destructive signal       |
+| Violet | `#5521C3`   | `--brand-violet`, `--accent-500`, informational signal           |
+
+The other palette steps are derived UI shades/tints with the source hue and
+saturation; they are not additional brand-guide swatches. Neutral surfaces remain
+shared theme infrastructure. Use semantic foreground roles for readable copy:
+exact orange, purple and rose do not all pass small-text contrast on both base
+surfaces. Orange actions pair the exact orange fill with ink text. Destructive
+actions pair the exact rose fill with white text.
+
+The Foundations workbench shows the exact anchors beside live status components.
 Use token mapping rather than copying raw asset colors into components.
 
 ## Color Usage Rules
@@ -188,12 +200,13 @@ Use token mapping rather than copying raw asset colors into components.
 
 - Use `primary` for primary CTAs, active filters, selection, and brand emphasis.
 - Use `secondary` for warm support states, merchant/signer accents, and warm highlights.
-- Use `tertiary` for decorative radial glows and accent lighting, not as the main CTA color.
-- Use `accent` sparingly when a non-purple utility distinction is helpful.
+- Use `tertiary` for errors, destructive actions and rose highlights, not the main CTA.
+- Use `accent` for information and deliberate violet utility emphasis.
 
 ### Status Colors
 
 - Use `success`, `warning`, `error`, and `info` for signal fills. Use the matching `--success-text`, `--warning-text`, `--error-text`, and `--info-text` roles for readable state labels in both themes.
+- Ready/success uses neutral copy and a checkmark, warning uses brand orange, error uses rose, and information uses violet. Small error/information text uses derived shades in Day Market and tints in Night Market. Day Market warning labels use neutral copy with an orange icon, avoiding both low contrast and a brown substitute. Always preserve explicit words and distinct icons.
 - Passive status uses `StatusPill` (historical export name): icon and text, without a capsule. Use a small rectangular `Badge` for attention or classification, plain text for routine counts, and a real pressed/removable control for an active filter.
 - Do not use Tailwind palette shortcuts like `text-emerald-400`, `text-amber-300`, or `bg-fuchsia-500` in app UI.
 

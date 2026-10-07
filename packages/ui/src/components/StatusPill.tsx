@@ -65,7 +65,10 @@ function StatusPill({
         <Icon
           size={iconSize}
           style={{ width: iconSize, height: iconSize }}
-          className="mt-[3px] shrink-0"
+          className={cn(
+            "mt-[3px] shrink-0",
+            variant === "warning" && "text-[var(--warning)]"
+          )}
           aria-hidden="true"
         />
       )}

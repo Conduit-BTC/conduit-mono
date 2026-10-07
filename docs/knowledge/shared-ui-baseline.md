@@ -127,7 +127,7 @@ Applied changes:
 - The default shape vocabulary is 4/8/12 px, with round avatars and switches retained.
 - Product/merchant names wrap. Cart quantity controls stay visible and preserve the focused first action.
 - Shared labels are block-level and Field uses an explicit 4 px label-to-control gap, with 8 px before supporting text. Labels stay close to the controls they describe without touching them.
-- Readable foreground roles correct status/validation colors independently of existing signal fills.
+- Readable foreground roles correct status/validation contrast. Brand review subsequently replaced the inherited generic signals with the Brand elements palette: orange attention, rose errors, violet information and neutral ready states.
   The previous Day price accent (2.29:1 on white) is replaced by the primary text role.
 - Buttons/selectors use 44 px phone and coarse-pointer hit areas; the switch has a 44 px target
   around its compact track. Existing desktop density remains available.
@@ -160,3 +160,26 @@ Keyboard checks covered cart Add/Remove focus retention, form invalid-field
 focus and recovery, dialog focus wrap/Escape/return, safe initial focus in a
 destructive confirmation, menu skipping of disabled items and arrow-key tabs.
 No signer, payment or relay action was performed.
+
+### Brand palette correction
+
+The shared palette now matches the five solid fills inspected in Conduit Design,
+Brand Identity, Brand elements / Colors (`1153:44774`): ink `#05001D`, purple
+`#BB00FF`, orange `#F7771B`, rose `#D32973`, violet `#5521C3`. Prior primitive
+hue/saturation values were approximations; the green/amber/red/blue status tokens
+came from the initial shared theme. The darker orange action was a contrast
+adjustment, not a brand swatch. Workbench “legacy action” wording was removed.
+
+Exact anchors own filled actions and signal hues. Derived foreground roles keep
+small copy readable in both themes. Day warnings retain an orange icon with
+neutral copy; orange actions use ink text. Success uses a neutral checkmark.
+This changes shared color values and the workbench reference, not theme runtime,
+fonts, spacing, page composition or appearance sync.
+
+Color-pass validation: all 27 focused product-card, shared-recipe, theme-runtime
+and color-policy checks passed, alongside UI typecheck, lint and workbench build.
+Browser measurements on Day/Night controls found action text contrast of 4.61:1
+(primary), 7.43:1 (orange), 8.78:1 (violet) and 4.84:1 (destructive rose).
+The sampled status labels and attention tags all exceeded 4.5:1 in both themes.
+The palette and controls fit a 390 px viewport; keyboard focus retained a visible
+ring. These checks cover the workbench examples, not a whole-app accessibility audit.

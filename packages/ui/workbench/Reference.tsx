@@ -1,6 +1,7 @@
 import {
   Badge,
   SectionGrid,
+  StatusPill,
   SummaryList,
   SummaryRow,
   Table,
@@ -16,7 +17,7 @@ const inventory = [
   [
     "Actions",
     "Button, ActionRow",
-    "Primary, outline, ghost, disabled, pending; legacy warm/accent variants retained.",
+    "Primary, outline, ghost, disabled, pending; brand orange/violet and destructive rose variants.",
   ],
   [
     "Forms",
@@ -68,6 +69,50 @@ const inventory = [
 export function Foundations() {
   return (
     <div className="space-y-6">
+      <section className="space-y-5 border-t border-[var(--border)] pt-6">
+        <header className="space-y-1.5">
+          <h2 className="text-lg font-semibold">Brand palette</h2>
+          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            Exact swatches from Conduit Design’s Brand elements color board.
+            Interaction shades and readable text tints derive from these
+            anchors.
+          </p>
+        </header>
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+          {[
+            ["Ink", "--brand-ink"],
+            ["Purple", "--brand-purple"],
+            ["Orange", "--brand-orange"],
+            ["Rose", "--brand-rose"],
+            ["Violet", "--brand-violet"],
+          ].map(([name, token]) => (
+            <div key={name} className="space-y-2">
+              <div
+                aria-hidden="true"
+                className="h-20 rounded-[var(--radius-sm)] border border-[var(--border)]"
+                style={{ backgroundColor: `var(${token})` }}
+              />
+              <dt className="text-sm font-medium">{name}</dt>
+              <dd className="font-mono text-xs text-[var(--text-secondary)]">
+                {token}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <div className="flex flex-wrap gap-x-5 gap-y-3">
+          <StatusPill variant="success">Ready</StatusPill>
+          <StatusPill variant="warning">Needs attention</StatusPill>
+          <StatusPill variant="error">Unavailable</StatusPill>
+          <StatusPill variant="info">Informational</StatusPill>
+          <StatusPill variant="neutral">Draft</StatusPill>
+        </div>
+        <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          Ready uses a neutral checkmark. Orange signals attention, rose signals
+          errors, and violet carries information. Words and icons carry meaning
+          alongside color. Orange actions use ink text; small Day Market
+          warnings pair an orange icon with neutral copy.
+        </p>
+      </section>
       <SectionGrid>
         <section className="space-y-5 border-t border-[var(--border)] pt-6">
           <header className="space-y-1.5">

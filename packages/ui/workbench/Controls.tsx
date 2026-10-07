@@ -72,8 +72,8 @@ export function Controls() {
           <h2 className="text-lg font-semibold">Action hierarchy</h2>
           <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             One primary action per decision. Outline for alternatives; ghost for
-            supporting actions. Warm and accent variants remain available for
-            existing compositions.
+            supporting actions. Orange and violet are brand variants for
+            deliberate emphasis, not additional primary actions.
           </p>
         </header>
         <div className="space-y-5">
@@ -111,8 +111,9 @@ export function Controls() {
             </Button>
           </ActionRow>
           <ActionRow>
-            <Button variant="secondary">Warm legacy action</Button>
-            <Button variant="accent">Accent legacy action</Button>
+            <Button variant="secondary">Orange action</Button>
+            <Button variant="accent">Violet action</Button>
+            <Button variant="destructive">Remove item</Button>
             <Button variant="link">Text action</Button>
             <span className="text-sm text-[var(--text-secondary)]">
               12 products
