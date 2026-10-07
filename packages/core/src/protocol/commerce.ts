@@ -3694,18 +3694,32 @@ async function loadCachedOrderMessages(
 }
 
 async function storeCachedOrderMessages(
-  rows: CachedOrderMessage[]
+  rows: CachedOrderMessage[],
+  accountOwner?: CommerceInbox
 ): Promise<void> {
   if (rows.length === 0) return
 
+  // An account send must retain the owner captured before publication. Looking
+  // up the ambient signer after the relay ACK could write A's order under B.
+  accountOwner?.assertCurrent()
+  if (
+    accountOwner &&
+    rows.some((row) => row.senderPubkey !== accountOwner.store.principal)
+  )
+    throw new Error("Order message does not belong to the active account")
+
   if (testOverrides.putCachedOrderMessages) {
     await testOverrides.putCachedOrderMessages(rows)
+    accountOwner?.assertCurrent()
     return
   }
 
-  const signer = getAccountSigner()
-  if (!signer) return // Guest delivery has its order-scoped lifecycle store.
-  const owner = getCommerceInbox(signer.pubkey)
+  const signer = accountOwner ? undefined : getAccountSigner()
+  if (!accountOwner && !signer)
+    throw new Error("Local order history needs an account signer")
+  const owner = accountOwner ?? getCommerceInbox(signer!.pubkey)
+  if (rows.some((row) => row.senderPubkey !== owner.store.principal))
+    throw new Error("Order message does not belong to the active account")
   await owner.initialize()
   for (const row of rows)
     await owner.store.putProjection(
@@ -3716,6 +3730,7 @@ async function storeCachedOrderMessages(
       1
     )
   await owner.refresh()
+  accountOwner?.assertCurrent()
 }
 
 function cachedOrderMessageRow(
@@ -3741,9 +3756,13 @@ export async function cacheParsedOrderMessage(
 
 /** Normalize authenticated local sends through the shared commerce boundary. */
 export async function cacheOrderMessageRumor(
-  rumor: PrivateMessageEvent
+  rumor: PrivateMessageEvent,
+  accountOwner: CommerceInbox
 ): Promise<void> {
-  await cacheParsedOrderMessage(parseOrderMessageRumorEvent(rumor))
+  await storeCachedOrderMessages(
+    [cachedOrderMessageRow(parseOrderMessageRumorEvent(rumor))],
+    accountOwner
+  )
 }
 
 type DeletionTimestamps = {

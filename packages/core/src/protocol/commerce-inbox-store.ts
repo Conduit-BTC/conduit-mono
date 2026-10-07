@@ -133,6 +133,8 @@ export interface InboxRangeRow {
   accountPubkey: string
   relayUrl: string
   until?: number
+  /** A valid historical wrapper failed local admission on a completed page. */
+  admissionRejected?: true
   /** Content-free fingerprint of the last recent window for this source/transport. */
   recentReadKey?: string
   /** Fences history commits against concurrent page progress or recent-window resets. */

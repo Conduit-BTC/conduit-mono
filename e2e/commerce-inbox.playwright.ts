@@ -322,6 +322,34 @@ test("buyer and seller retain conversations and files through self-copy failure,
           return encrypt(peer, text)
         }
       }, sender.pubkey)
+      const text = `synthetic ${sender === buyer ? "buyer" : "seller"} self-copy text`
+      const savedText = async () =>
+        await page.evaluate(
+          async ({ root, principal, text }) => {
+            const { getCommerceInbox } = await import(
+              `${root}/commerce-inbox.ts`
+            )
+            const owner = getCommerceInbox(principal)
+            return (await owner.store.projections()).filter(
+              ({ projection }: { projection: InboxProjection }) =>
+                projection.kind === "direct" &&
+                projection.message.senderPubkey === principal &&
+                projection.message.content === text
+            ).length
+          },
+          { root, principal: sender.pubkey, text }
+        )
+      await page.getByRole("textbox", { name: "Message" }).fill(text)
+      await page
+        .getByRole("button", { name: "Send message", exact: true })
+        .click()
+      await expect(
+        page.getByRole("status").filter({
+          hasText:
+            "Reply sent and saved on this device. Sync to your other devices is incomplete.",
+        })
+      ).toBeVisible({ timeout: 30_000 })
+      await expect.poll(savedText).toBe(1)
       await page.getByLabel("Choose an encrypted attachment").setInputFiles({
         name: "synthetic.txt",
         mimeType: "text/plain",
@@ -389,7 +417,20 @@ test("buyer and seller retain conversations and files through self-copy failure,
         )
       ).toBeVisible()
       await expect.poll(savedFile).toEqual({ count: 1, decrypts: true })
+      await expect.poll(savedText).toBe(1)
       const wraps = await readAuthenticatedGiftWraps(recipient, relayUrl)
+      expect(
+        wraps.filter(
+          (wrap) =>
+            parseCanonicalRuntimePrivateRumor({
+              inboxOwner: recipient,
+              recipient,
+              sender,
+              rumorKind: 14,
+              wrap,
+            })?.content === text
+        ).length
+      ).toBe(1)
       expect(
         wraps.filter(
           (wrap) =>

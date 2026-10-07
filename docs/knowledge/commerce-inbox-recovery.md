@@ -35,9 +35,13 @@ window. Versioned range writes prevent an in-flight older page or another tab
 from overwriting the restart. Existing cursors without this metadata are repaired
 on their next saturated or incomplete recent read. These checks are scoped to
 the account, relay and transport; they do not establish global relay completeness.
-Partial and capped pages retain valid signed positive observations without
-advancing the cursor. Capped equal-timestamp pages retain unresolved range evidence; an empty or short
-page describes that bounded observation, not global historical absence.
+Transport-partial and capped pages retain valid signed positive observations
+without advancing the cursor. A completed page can advance past a wrapper
+rejected by local admission, retaining valid neighbors and a durable rejection
+marker. That marker keeps the source range partial on subsequent pages; it does
+not prevent reaching valid older records. Capped equal-timestamp pages retain
+unresolved range evidence; an empty or short page describes that bounded
+observation, not global historical absence.
 
 Signer queue waiting is separate from active provider time. Permission refusal
 pauses recovery. Provider timeout holds ownership of unresolved provider work;
@@ -100,14 +104,23 @@ inbox; account-owned replay retains that first plan before publication.
 Concurrent acknowledgements merge atomically and claims cover an entire attempt.
 Resume skips acknowledged targets. Explicit domain receipt replay can resend the
 selected saved wraps, requiring a fresh ACK while preserving earlier ACK history.
+Foreground saved-send retry may use the current external signer for a separate
+challenge-bound NIP-42 AUTH event after visibility and session checks. It never
+replaces the saved message wrap. Background retry remains prompt-free.
 A relay ACK describes delivery; it does not prove reading, payment or fulfillment.
 Order lifecycle transactions retain their generations, leases and first-ACK
 acceptance checkpoint. Guest retries remain explicitly authorized and bounded.
 
 Recipient delivery precedes optional self-copy route resolution, signing, staging
 and publication for orders, ordinary replies and attachments. Self-copy failures
-cannot revoke recipient success. Initial orders return after their first ACK is
-durable; their caller starts the same shared self-copy operation afterward.
+cannot revoke recipient success. Accepted ordinary text and file sends save a
+device-encrypted sender projection before optional self-copy work and report local-history availability
+separately from recipient acceptance and cross-device sync. Initial orders return
+after their first ACK is durable; their caller starts the same shared self-copy
+operation afterward. Signed-in order callers capture the initiating inbox owner
+before publication. Revoked or replaced account authority prevents local writes
+and reports unavailable history without reversing recipient acceptance. Guest
+checkout retains its separate order-scoped history.
 Enrollment and handoff callers explicitly require a self-wrap as authenticated
 local recovery evidence before their persistence checkpoint; optional relay
 publication of that evidence still follows recipient delivery. Their existing

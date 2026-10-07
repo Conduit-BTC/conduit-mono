@@ -144,6 +144,7 @@ export interface CommerceInboxDiagnostic {
     status: InboxRangeRow["status"]
     observedAt: number
     observedCount: number
+    admissionRejected?: true
   }>
   received: number
   observedAt: number | null
@@ -424,6 +425,7 @@ export class CommerceInbox {
       status: range.status,
       observedAt: range.observedAt,
       observedCount: range.observedCount,
+      admissionRejected: range.admissionRejected,
     }))
     this.snapshot = {
       ...this.snapshot,
@@ -945,6 +947,7 @@ export class CommerceInbox {
         this.assertCurrent()
         const id = this.store.key(`${relayUrl}:${transport}`)
         const stored = await this.store.database.commerceInboxRanges.get(id)
+        let rejected = false
         const page = await visitProtectedInboxHistoryPage({
           principalPubkey: this.store.principal,
           transport,
@@ -968,11 +971,26 @@ export class CommerceInbox {
                   this.authorization
                 ),
           visit: async (event) => {
-            await this.ingest(event, [relayUrl])
+            try {
+              await this.ingest(event, [relayUrl])
+            } catch (error) {
+              if (
+                !(error instanceof NostrSignerError) ||
+                error.code !== "invalid_response"
+              )
+                throw error
+              rejected = true
+              return
+            }
             await this.waitForDecode()
           },
         })
         this.assertCurrent()
+        const completedPage =
+          page.status === "advanced" || page.status === "source_eose"
+        const admissionRejected = stored?.admissionRejected || rejected
+        const pageStatus =
+          admissionRejected && completedPage ? "partial" : page.status
         const ranges = this.store.database.commerceInboxRanges
         await this.store.database.transaction("rw", ranges, async () => {
           this.assertCurrent()
@@ -992,11 +1010,9 @@ export class CommerceInbox {
             pageCount:
               stored?.status === "source_eose"
                 ? 1
-                : (stored?.pageCount ?? 0) +
-                  (page.status === "advanced" || page.status === "source_eose"
-                    ? 1
-                    : 0),
-            status: page.status,
+                : (stored?.pageCount ?? 0) + (completedPage ? 1 : 0),
+            status: pageStatus,
+            admissionRejected: admissionRejected ? true : undefined,
             observedAt: Date.now(),
             observedCount: page.range.observedCount,
             revision: (stored?.revision ?? 0) + 1,

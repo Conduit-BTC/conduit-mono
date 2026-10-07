@@ -1,4 +1,7 @@
-import { projectCommerceInbox } from "../packages/core/src/protocol/commerce"
+import {
+  cacheOrderMessageRumor,
+  projectCommerceInbox,
+} from "../packages/core/src/protocol/commerce"
 import { deriveProtectedReadPresentationState } from "@conduit/core"
 import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import { resolveInboxDeclaration } from "../packages/core/src/protocol/private-message-routing"
@@ -10,7 +13,10 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { v2 } from "nostr-tools/nip44"
 import { createRumor, createSeal, wrapEvent } from "nostr-tools/nip59"
 import { ConduitDB } from "../packages/core/src/db"
-import { unwrapPrivateMessageEnvelope } from "../packages/core/src/protocol/messaging"
+import {
+  createPrivateMessageRumor,
+  unwrapPrivateMessageEnvelope,
+} from "../packages/core/src/protocol/messaging"
 import {
   stagePrivateDelivery,
   recordPrivateDelivery,
@@ -99,6 +105,39 @@ afterEach(async () => {
 })
 
 describe("durable account-owned commerce inbox", () => {
+  it("keeps a sent order projection on its captured account session", async () => {
+    const a = setup()
+    const merchantPubkey = getPublicKey(generateSecretKey())
+    const rumor = (index: number) =>
+      createPrivateMessageRumor({
+        pubkey: a.pubkey,
+        kind: 16,
+        created_at: 1_700_000_000 + index,
+        tags: [
+          ["p", merchantPubkey],
+          ["type", "message"],
+          ["order", "order-session-bound"],
+        ],
+        content: JSON.stringify({ note: `reply-${index}` }),
+      })
+
+    await cacheOrderMessageRumor(rumor(0), a.owner)
+    expect(a.owner.getSnapshot().orderMessages).toHaveLength(1)
+    expect(await a.database.commerceInboxRecords.count()).toBe(1)
+
+    const b = setup()
+    await expect(cacheOrderMessageRumor(rumor(1), a.owner)).rejects.toThrow()
+    await expect(cacheOrderMessageRumor(rumor(1), b.owner)).rejects.toThrow(
+      "Order message does not belong to the active account"
+    )
+    expect(await b.database.commerceInboxRecords.count()).toBe(0)
+    expect(await a.database.commerceInboxRecords.count()).toBe(1)
+
+    __resetProtectedReadSigner()
+    await expect(cacheOrderMessageRumor(rumor(2), b.owner)).rejects.toThrow()
+    expect(await b.database.commerceInboxRecords.count()).toBe(0)
+  })
+
   it("opens retained encrypted views after signer loss without restoring write authority", async () => {
     const { owner, database, store, pubkey, wrapper } = setup()
     await owner.ingest(wrapper())
@@ -1558,4 +1597,115 @@ it("retains large gift wraps and valid neighbors while rejecting oversized compl
   ).toBeUndefined()
   const retained = await readRetainedCommerceInbox(pubkey, () => true, database)
   expect(retained.directMessages).toHaveLength(2)
+})
+
+it.each([
+  ["complete", "partial", 1],
+  ["unavailable", "unavailable", 0],
+] as const)(
+  "retains valid history neighbors without advancing past a rejected wrapper with %s coverage",
+  async (coverage, status, pageCount) => {
+    const { owner, store, database, pubkey, wrapper } = setup()
+    const sender = generateSecretKey()
+    const oversized = finalizeEvent(
+      {
+        ...wrapper(4),
+        tags: [
+          ["p", pubkey],
+          ["metadata", "x".repeat(MAX_RELAY_MESSAGE_CHARS)],
+        ],
+      },
+      sender
+    )
+    const neighbors = [wrapper(2), wrapper(3)]
+    const relayUrl = "wss://history-oversized.synthetic.example"
+    const snapshot = await owner.loadOlder({
+      includeLegacy: false,
+      declaration: {
+        pubkey,
+        state: "declared",
+        relayUrls: [relayUrl],
+        stale: false,
+        fetchedAt: Date.now(),
+      },
+      read: async () => {
+        const result = completeRead([oversized, ...neighbors])
+        result.coverage = coverage
+        result.relayResult.status =
+          coverage === "complete" ? "success" : "unavailable"
+        result.relayResult.observations =
+          coverage === "complete" ? [{ type: "eose", relayIndex: 0 }] : []
+        result.relayResult.relays = [
+          {
+            relayIndex: 0,
+            status: coverage === "complete" ? "success" : "failed",
+            auth: "not_challenged",
+            eventCount: 3,
+            duplicateCount: 0,
+            malformedCount: 0,
+            unusableCount: 0,
+          },
+        ]
+        result.relayResult.completedCount = coverage === "complete" ? 1 : 0
+        result.relayResult.failedCount = coverage === "complete" ? 0 : 1
+        return result
+      },
+    })
+    expect(
+      snapshot.directMessages.map((message) => message.content).sort()
+    ).toEqual(["private-synthetic-2", "private-synthetic-3"])
+    expect(
+      await database.commerceInboxWrappers.get(store.key(oversized.id))
+    ).toBeUndefined()
+    const range = await database.commerceInboxRanges.get(
+      store.key(`${relayUrl}:nip17`)
+    )
+    expect(range).toMatchObject({
+      status,
+      observedCount: 3,
+      pageCount,
+      admissionRejected: true,
+    })
+    expect(range?.until).toBeUndefined()
+  }
+)
+
+it("pages beyond a rejected historical wrapper while keeping the source partial", async () => {
+  const f = historyRecoveryFixture()
+  f.append(60)
+  const oversized = finalizeEvent(
+    {
+      kind: 1059,
+      created_at: 1_700_000_060,
+      tags: [
+        ["p", f.pubkey],
+        ["metadata", "x".repeat(MAX_RELAY_MESSAGE_CHARS)],
+      ],
+      content: "synthetic historical envelope",
+    },
+    generateSecretKey()
+  )
+  f.events.push(oversized)
+  await f.owner.loadOlder(f.options)
+  const first = await f.database.commerceInboxRanges.get(f.rangeId)
+  expect(first).toMatchObject({
+    until: 1_700_000_010,
+    status: "partial",
+    admissionRejected: true,
+    pageCount: 1,
+  })
+  expect(
+    await f.database.commerceInboxWrappers.get(f.store.key(f.events[0]!.id))
+  ).toBeUndefined()
+
+  const snapshot = await f.owner.loadOlder(f.options)
+  expect(
+    await f.database.commerceInboxWrappers.get(f.store.key(f.events[0]!.id))
+  ).toBeDefined()
+  expect(await f.database.commerceInboxRanges.get(f.rangeId)).toMatchObject({
+    status: "partial",
+    admissionRejected: true,
+    pageCount: 2,
+  })
+  expect(snapshot.diagnostics.historyUnresolved).toBeGreaterThan(0)
 })

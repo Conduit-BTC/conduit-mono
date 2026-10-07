@@ -10,6 +10,8 @@ import {
   createValidatedOrderRouteScope,
   getRelayPublishTargetStatus,
   getAccountSigner,
+  getCommerceInbox,
+  type CommerceInbox,
   type NostrKeySigner,
   parseOrderMessageRumorEvent,
   patchOrderLifecycle,
@@ -418,11 +420,13 @@ async function publishOrderCompanionNotification(input: {
 }
 
 async function cacheBuyerOrderRumor(
-  rumor: PrivateMessageEvent
+  rumor: PrivateMessageEvent,
+  accountOwner: CommerceInbox | null
 ): Promise<string | null> {
   try {
     if (!rumor.id) throw new Error("Missing buyer order rumor id")
-    await cacheOrderMessageRumor(rumor)
+    if (!accountOwner) throw new Error("Local order history unavailable")
+    await cacheOrderMessageRumor(rumor, accountOwner)
     return null
   } catch (error) {
     console.warn("Failed to cache buyer order message")
@@ -479,6 +483,17 @@ export async function publishBuyerOrderMessage(
       : () =>
           (dependencies.shouldContinue?.() ?? true) &&
           getAccountSigner() === buyerIdentity.signer
+
+  // Pin the signed-in projection to the initiating session before relay work.
+  // The checkout remains sendable if local history is unavailable.
+  let accountOwner: CommerceInbox | null = null
+  if (buyerIdentity.kind !== "guest_ephemeral") {
+    try {
+      accountOwner = getCommerceInbox(buyerIdentity.pubkey)
+    } catch {
+      // Report a local-cache failure after recipient acceptance.
+    }
+  }
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
   const orderRelayDeliveryOptions = dependencies.orderRelayDeliveryRepository
@@ -710,14 +725,11 @@ export async function publishBuyerOrderMessage(
         }
 
         let localCacheError: string | null = null
-        if (
-          buyerIdentity.kind !== "guest_ephemeral" &&
-          (shouldContinue?.() ?? true)
-        ) {
+        if (buyerIdentity.kind !== "guest_ephemeral") {
           try {
             localCacheError = await (
               dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor
-            )(stableRumor)
+            )(stableRumor, accountOwner)
           } catch (error) {
             localCacheError = getErrorMessage(
               error,
@@ -786,7 +798,8 @@ export async function publishBuyerOrderMessage(
     buyerIdentity.kind === "guest_ephemeral"
       ? null
       : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
-          rumor
+          rumor,
+          accountOwner
         )
   // Start the advisory attempt only after the authoritative order has a relay
   // ACK and any signed-in local recovery copy is committed. Do not await it:

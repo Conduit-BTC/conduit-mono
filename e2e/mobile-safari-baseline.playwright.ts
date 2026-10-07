@@ -874,6 +874,38 @@ test.describe("CND-162 mobile browser baseline", () => {
     await assertMobileViewport(page)
   })
 
+  test("market cart follows the hidden and returning mobile footer @market", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 700 })
+    await seedMarketCart(page)
+    await page.goto(`${marketUrl}/products`)
+    const cart = page.getByRole("region", { name: "Cart inventory" })
+    const footer = page.locator("footer")
+    await expect(cart).toBeVisible()
+    const bottomDistance = () =>
+      cart.evaluate((element) => {
+        const wrapperBottom =
+          element.parentElement!.getBoundingClientRect().bottom
+        const footerTop = document
+          .querySelector("footer")!
+          .getBoundingClientRect().top
+        return Math.abs(footerTop - wrapperBottom)
+      })
+    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+    // Give the actual scroll-driven chrome a long page without changing controls.
+    await page.locator("main").evaluate((main) => {
+      main.style.minHeight = `${innerHeight * 3}px`
+    })
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    await expect(footer).toHaveAttribute("aria-hidden", "true")
+    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+    await page.evaluate(() => window.scrollBy(0, -64))
+    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
+    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+    await assertMobileViewport(page)
+  })
+
   test("market order messages stay clear of the returning mobile footer @market", async ({
     page,
   }) => {
@@ -920,12 +952,28 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(messagesDialog).toBeVisible()
     await messagesDialog.getByRole("button", { name: "Close" }).tap()
     await expect(messagesDialog).toHaveCount(0)
-
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
     await expect
       .poll(() => page.evaluate(() => window.scrollY))
       .toBeGreaterThan(12)
     await expect(footer).toHaveAttribute("aria-hidden", "true")
+    await expect
+      .poll(() =>
+        messagesTrigger.evaluate((element) => {
+          const bottom = Number.parseFloat(
+            getComputedStyle(element.parentElement!).bottom
+          )
+          const footerTop = document
+            .querySelector("footer")!
+            .getBoundingClientRect().top
+          return Math.abs(
+            footerTop -
+              element.parentElement!.getBoundingClientRect().bottom -
+              bottom
+          )
+        })
+      )
+      .toBeLessThanOrEqual(1)
 
     const transitionOverlapCount = await page.evaluate(async () => {
       const trigger = document.querySelector<HTMLElement>(

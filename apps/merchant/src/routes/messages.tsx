@@ -5,21 +5,19 @@ import { Search } from "lucide-react"
 import {
   createParticipantMessageRumor,
   sendAccountInboxRumor,
-  cacheParsedDirectMessage,
   clearProtectedReadAuthenticationSuppression,
   deriveProtectedReadPresentationState,
-  EVENT_KINDS,
   formatNpub,
   getAccountSigner,
   getProfileName,
   markDirectMessageConversationRead,
-  parseDirectMessageRumor,
   publishPrivateMessage,
   PrivateMessageRelayReadinessError,
   pubkeyToNpub,
   useAuth,
   useCommerceInbox,
   type PrivateMessageEvent,
+  type AccountInboxSendResult,
   type ParsedDirectMessage,
   useConduitSession,
   useInboxDeclaration,
@@ -36,6 +34,7 @@ import {
   matchesConversationSearch,
   MessagingReadinessNotice,
   MessageComposer,
+  PrivateSendNotice,
   ProtectedInboxNotice,
   SearchInput,
   SignerRecoveryNotice,
@@ -126,6 +125,11 @@ function MessagesWorkspace() {
   const inbox = useCommerceInbox(accountPubkey, signerConnected)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [composerText, setComposerText] = useState("")
+  const [directSendOutcome, setDirectSendOutcome] = useState<{
+    accountPubkey: string
+    counterpartyPubkey: string
+    result: AccountInboxSendResult
+  } | null>(null)
   const [conversationSearch, setConversationSearch] = useState("")
   const [conversationSheetOpen, setConversationSheetOpen] = useState(false)
   const optimisticMessageQueue = useOptimisticConversationMessages({
@@ -331,49 +335,58 @@ function MessagesWorkspace() {
       const recipients = input.rumor.tags
         .filter((tag) => tag[0] === "p")
         .map((tag) => tag[1]!)
-      let selfCopyError: string | null = null
-      if (recipients.length > 1) {
-        await sendAccountInboxRumor({
+      const markAccepted = () => {
+        optimisticMessageQueue.markPublished(
+          input.messageScope,
+          input.message.localId
+        )
+        const current = messagingAuthorityRef.current
+        if (current.accountPubkey === input.accountPubkey) {
+          const currentScope = {
+            ownerKey: current.accountPubkey,
+            authorityKey: `${current.authGeneration}:${current.signerReadiness}`,
+          }
+          if (currentScope.authorityKey !== input.messageScope.authorityKey)
+            optimisticMessageQueue.markPublished(
+              currentScope,
+              input.message.localId
+            )
+        }
+      }
+      const outcome = await sendAccountInboxRumor(
+        {
           principal: input.accountPubkey,
           recipients,
           content: input.rumor.content,
           rumor: input.rumor,
-        })
-      } else {
-        const sent = await publishPrivateMessage({
-          rumor: input.rumor,
-          senderPubkey: input.accountPubkey,
-          accountPubkey: input.accountPubkey,
-          authenticatedPubkey: input.accountPubkey,
-          recipientPubkey: input.counterpartyPubkey,
-          signer,
-          rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-          signerInteraction: "external",
-          shouldContinue: () =>
-            isCurrentMessagingAuthority(
-              input.accountPubkey,
-              input.authGeneration
-            ),
-        })
-        selfCopyError = sent.selfCopyError
-      }
-      if (
-        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
-      ) {
-        return
-      }
-      optimisticMessageQueue.markPublished(
-        input.messageScope,
-        input.message.localId
+        },
+        {
+          getSigner: () => signer,
+          send: async (prepared) =>
+            await publishPrivateMessage({
+              ...prepared,
+              signerInteraction: "external",
+              relayAuthMethod: signer.authMethod,
+              shouldContinue: () => {
+                if (prepared.shouldContinue?.() === false) return false
+                return isCurrentMessagingAuthority(
+                  input.accountPubkey,
+                  input.authGeneration
+                )
+              },
+              onRecipientAccepted: async (delivery) => {
+                markAccepted()
+                await prepared.onRecipientAccepted?.(delivery)
+              },
+            }),
+        }
       )
-      if (selfCopyError) {
-        console.warn("DM self-copy publish failed")
-      }
-      try {
-        await cacheParsedDirectMessage(parseDirectMessageRumor(input.rumor))
-      } catch {
-        console.warn("Failed to cache published direct message")
-      }
+      markAccepted()
+      setDirectSendOutcome({
+        accountPubkey: input.accountPubkey,
+        counterpartyPubkey: input.counterpartyPubkey,
+        result: outcome,
+      })
     },
     onSuccess: async (_, input) => {
       if (
@@ -415,6 +428,7 @@ function MessagesWorkspace() {
     }
 
     const createdAt = Date.now()
+    setDirectSendOutcome(null)
     const rumor = createParticipantMessageRumor({
       senderPubkey: accountPubkey,
       recipientPubkeys: [selected.counterpartyPubkey],
@@ -461,6 +475,7 @@ function MessagesWorkspace() {
         createdAt: Math.floor(message.createdAt / 1000),
       })
     const messageScope = optimisticMessageScope
+    setDirectSendOutcome(null)
     optimisticMessageQueue.markPending(messageScope, message.localId)
     sendMutation.mutate({
       accountPubkey,
@@ -858,6 +873,16 @@ function MessagesWorkspace() {
                         onSend={sendDirectMessage}
                         sending={sendMutation.isPending}
                         placeholder="Reply to buyer"
+                      />
+                      <PrivateSendNotice
+                        outcome={
+                          directSendOutcome?.accountPubkey === accountPubkey &&
+                          directSendOutcome.counterpartyPubkey ===
+                            selected.counterpartyPubkey
+                            ? directSendOutcome.result
+                            : null
+                        }
+                        label="Reply"
                       />
                       {sendMutation.error && (
                         <div role="alert" className="text-xs text-error">

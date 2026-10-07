@@ -41,12 +41,13 @@ describe("private-message declaration authority propagation", () => {
       marketMessages.match(
         /shouldContinue:\s*\(\) =>\s*isCurrentMessagingAuthority\(/g
       )
-    ).toHaveLength(2)
-    expect(
-      merchantMessages.match(
-        /shouldContinue:\s*\(\) =>\s*isCurrentMessagingAuthority\(/g
-      )
     ).toHaveLength(1)
+    for (const messages of [marketMessages, merchantMessages]) {
+      // The adapter and route fences must both survive shared send delegation.
+      expect(messages).toMatch(
+        /shouldContinue:\s*\(\) => \{\s*if \(prepared\.shouldContinue\?\.\(\) === false\) return false\s*return isCurrentMessagingAuthority\(\s*input\.accountPubkey,\s*input\.authGeneration\s*\)/
+      )
+    }
   })
 
   it("binds merchant order sends to the live account generation", async () => {

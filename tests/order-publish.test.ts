@@ -883,7 +883,7 @@ describe("buyer order publishing", () => {
     expect(transportAttempts).toBe(0)
   })
 
-  it("commits one signed-in order when the signer session changes after the merchant ACK", async () => {
+  it("keeps accepted order delivery and reports unavailable local history after signer change", async () => {
     const buyerPubkey = "a".repeat(64)
     const merchantPubkey = "b".repeat(64)
     const merchantRelayUrl = "wss://merchant.inbox.conduit.market"
@@ -892,7 +892,6 @@ describe("buyer order publishing", () => {
     let sessionCurrent = true
     const published: string[] = []
     let companionPublishAttempts = 0
-    let cacheAttempts = 0
     let recipientWrapId = ""
     let selfWrapId = ""
     const wrapSigner = NDKPrivateKeySigner.generate()
@@ -915,10 +914,6 @@ describe("buyer order publishing", () => {
       },
       {
         shouldContinue: () => sessionCurrent,
-        cacheBuyerOrderRumorFn: async () => {
-          cacheAttempts += 1
-          return null
-        },
         publishPrivateMessageFn: async (input) => {
           if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
             companionPublishAttempts += 1
@@ -971,12 +966,11 @@ describe("buyer order publishing", () => {
       }
     )
 
-    expect(cacheAttempts).toBe(1)
     expect(result.orderRelayDelivery).toBeUndefined()
     expect(result.buyerSelfCopyError).toBe(
       "Sender self-copy was skipped because the signer session changed after recipient delivery."
     )
-    expect(result.localCacheError).toBeNull()
+    expect(result.localCacheError).toBe("Local order history unavailable")
     expect(await result.companionNotification).toBe("skipped_session_changed")
     expect(companionPublishAttempts).toBe(0)
     expect(published[0]).toBe(recipientWrapId)
