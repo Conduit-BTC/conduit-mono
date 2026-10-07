@@ -759,7 +759,7 @@ describe("settled Spark no-funds vertical flow", () => {
       profileEventId: signedProfileContext(true).frontier?.eventId,
     })
     expect(run.calls).toEqual({
-      metadata: 1,
+      metadata: 2,
       material: 1,
       wallet: 1,
       receive: 1,

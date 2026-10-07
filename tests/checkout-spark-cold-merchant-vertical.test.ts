@@ -869,7 +869,6 @@ describe("offline cold Merchant guest supplier recovery", () => {
         database.close()
         await database.delete()
       }
-    }, // about 35s per case alone; retain bounded headroom under full-suite load. // Multiple full signed recovery, payout, replay and retirement loops take
-    90_000)
+    }, 90_000) // about 35s per case alone; retain bounded headroom under full-suite load. // Multiple full signed recovery, payout, replay and retirement loops take
   }
 })

@@ -112,7 +112,7 @@ function creditedState(
         recipientId: MERCHANT,
         destination: {
           type: "lightning_address",
-          value: "merchant@example.test",
+          value: "merchant@receiver.conduit.cash",
           source: {
             type: "signed_profile",
             profileEventId: "d".repeat(64),

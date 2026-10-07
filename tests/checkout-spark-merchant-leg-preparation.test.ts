@@ -128,7 +128,7 @@ function fixture(
         weightSats: 1_000,
         destination: {
           type: "lightning_address",
-          value: "merchant@example.test",
+          value: "merchant@receiver.conduit.cash",
           source: {
             type: "signed_profile",
             profileEventId: "f".repeat(64),

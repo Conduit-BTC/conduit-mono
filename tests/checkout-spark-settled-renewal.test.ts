@@ -110,7 +110,7 @@ function fixture(kind: "merchant" | "supplier" = "merchant") {
         recipientId: MERCHANT,
         destination: {
           type: "lightning_address",
-          value: "merchant@example.test",
+          value: "merchant@receiver.conduit.cash",
           source: {
             type: "signed_profile",
             profileEventId: "d".repeat(64),
@@ -126,7 +126,7 @@ function fixture(kind: "merchant" | "supplier" = "merchant") {
               recipientId: "e".repeat(64),
               destination: {
                 type: "lightning_address" as const,
-                value: "supplier@example.test",
+                value: "supplier@receiver.conduit.cash",
                 source: {
                   type: "signed_profile" as const,
                   profileEventId: "f".repeat(64),
