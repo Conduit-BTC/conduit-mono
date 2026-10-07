@@ -27,7 +27,9 @@ describe("merchant order action presentation", () => {
 
     expect(view.nextStep).toBe("shipping")
     expect(view.hasNextStep).toBe(true)
-    expect(view.primaryButtonActions).toEqual([])
+    expect(view.primaryButtonActions.map((action) => action.action)).toEqual([
+      "manual_complete",
+    ])
     expect(view.destructiveActions.map((action) => action.label)).toEqual([
       "Cancel order",
     ])

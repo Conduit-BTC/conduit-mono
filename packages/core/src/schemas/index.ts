@@ -1298,12 +1298,35 @@ export type PaymentRequestMessageSchema = z.infer<
   typeof paymentRequestMessageSchema
 >
 
-export const statusUpdateMessageSchema = z.object({
-  status: orderStatusSchema,
-  note: z.string().max(2000).optional(),
-  /** Event id of the merchant cancellation this correction reopens. */
-  reopens: hex64Schema.optional(),
-})
+export const merchantCompletionBasisSchema = z.enum([
+  "delivered_without_tracking",
+  "historical_handoff",
+])
+
+export type MerchantCompletionBasis = z.infer<
+  typeof merchantCompletionBasisSchema
+>
+
+export const statusUpdateMessageSchema = z
+  .object({
+    /** Merchant attestation; never carrier, organizer, or payment evidence. */
+    completionBasis: merchantCompletionBasisSchema.optional(),
+    status: orderStatusSchema,
+    note: z.string().max(2000).optional(),
+    /** Event id of the merchant cancellation this correction reopens. */
+    reopens: hex64Schema.optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.completionBasis &&
+      !["complete", "delivered"].includes(value.status)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["completionBasis"],
+        message: "Completion basis requires a completed status.",
+      })
+  })
 
 export type StatusUpdateMessageSchema = z.infer<
   typeof statusUpdateMessageSchema

@@ -20,6 +20,7 @@ import {
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import { CommerceInboxStore } from "./commerce-inbox-store"
+import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
 import { type AccountSigner, type NostrKeySigner } from "./nostr-event-signer"
@@ -91,7 +92,8 @@ export interface PrivateDeliveryJob {
 export async function stagePrivateDelivery(
   store: CommerceInboxStore,
   job: PrivateDeliveryJob,
-  selfCopy = false
+  selfCopy = false,
+  completion?: Extract<ParsedOrderMessage, { type: "status_update" }>
 ): Promise<string> {
   store.assertCurrent()
   if (
@@ -108,11 +110,41 @@ export async function stagePrivateDelivery(
     )
   )
     throw new Error("Invalid private delivery stage")
-  const logicalId = `delivery:${job.rumorId}${selfCopy ? ":self" : ""}`
+  if (
+    completion &&
+    (completion.id !== job.rumorId ||
+      completion.senderPubkey !== store.principal ||
+      completion.payload.status !== "complete" ||
+      !completion.payload.completionBasis)
+  )
+    throw new Error("Invalid merchant completion stage")
+  // Account-scoped deduplication must not expose order or participant IDs in storage keys.
+  const completionKey = completion
+    ? Array.from(
+        new Uint8Array(
+          await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(
+              JSON.stringify([completion.recipientPubkey, completion.orderId])
+            )
+          )
+        ),
+        (byte) => byte.toString(16).padStart(2, "0")
+      ).join("")
+    : null
+  const logicalId = completion
+    ? `delivery:completion:${completionKey}`
+    : `delivery:${job.rumorId}${selfCopy ? ":self" : ""}`
+  const projectionId = completion?.id
+  const projectionValue = completion
+    ? await store.seal({ kind: "order", message: completion }, projectionId!)
+    : null
   const value = await store.seal(structuredClone(job), logicalId)
   await store.database.transaction(
     "rw",
     store.database.commerceInboxDeliveries,
+    store.database.commerceInboxRecords,
+    store.database.commerceInboxDeletions,
     async () => {
       store.assertCurrent()
       const id = store.key(logicalId)
@@ -120,6 +152,23 @@ export async function stagePrivateDelivery(
         throw new Error(
           "Private message is already staged; retry the saved delivery"
         )
+      if (completion && projectionValue && projectionId) {
+        if (
+          await store.database.commerceInboxDeletions.get(
+            store.key(`${store.principal}:${projectionId}`)
+          )
+        )
+          throw new Error("Deleted completion cannot be staged")
+        await store.database.commerceInboxRecords.put({
+          id: store.key(projectionId),
+          accountPubkey: store.principal,
+          logicalId: projectionId,
+          kind: "order",
+          createdAt: completion.createdAt,
+          read: 1,
+          value: projectionValue,
+        })
+      }
       await store.database.commerceInboxDeliveries.put({
         id,
         accountPubkey: store.principal,
@@ -477,6 +526,8 @@ export async function resumePrivateDelivery(
   }
 }
 export interface PublishPrivateMessageInput {
+  /** Atomically retain a merchant completion with its exact recipient delivery. */
+  localCompletion?: Extract<ParsedOrderMessage, { type: "status_update" }>
   /** Caller-built rumor (pubkey stamped); its kind must equal rumorKind. */
   rumor: PrivateMessageEvent
   senderPubkey: string
@@ -1182,6 +1233,15 @@ export async function publishPrivateMessage(
       : null)
   if (deliveryStore && deliveryStore.principal !== senderPubkey)
     throw new Error("Private delivery belongs to another account")
+  if (
+    input.localCompletion &&
+    (!deliveryStore ||
+      JSON.stringify(parseOrderMessageRumorEvent(stableRumor)) !==
+        JSON.stringify(input.localCompletion))
+  )
+    throw new Error(
+      "Completion must match the authenticated rumor and durable account store"
+    )
   const assertCurrent = () => {
     assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
     deliveryStore?.assertCurrent()
@@ -1261,6 +1321,7 @@ export async function publishPrivateMessage(
       leg: recipientLeg,
       // Accepted-order staging and retry stay in the domain transaction.
       store: progressiveRecipientDelivery ? null : deliveryStore,
+      localCompletion: input.localCompletion,
       ...(progressiveRecipientDelivery
         ? { publishProgressiveFn, onAccepted: input.onRecipientPublishAccepted }
         : {}),
@@ -2061,6 +2122,7 @@ async function stageAndPublishPrivateLeg(
     rumorId: string
     store: CommerceInboxStore | null
     selfCopy?: boolean
+    localCompletion?: Extract<ParsedOrderMessage, { type: "status_update" }>
   }
 ) {
   const { store, leg } = input
@@ -2073,7 +2135,8 @@ async function stageAndPublishPrivateLeg(
           createdAt: Date.now(),
           legs: [leg],
         },
-        input.selfCopy
+        input.selfCopy,
+        input.localCompletion
       )
     : null
   const claim = store && id ? await holdPrivateDeliveryClaim(store, id) : null

@@ -14,7 +14,11 @@
 // structurally so callers can pass the output straight through — without core
 // depending on @conduit/ui.
 
-import { isKnownOrderStatus, type KnownOrderStatus } from "../schemas"
+import {
+  isKnownOrderStatus,
+  type KnownOrderStatus,
+  type MerchantCompletionBasis,
+} from "../schemas"
 import type { ParsedOrderMessage } from "./orders"
 
 export type OrderStatusTone =
@@ -45,6 +49,9 @@ export interface MerchantOrderCancellation {
 
 /** Derived merchant-facing order state, independent of message ordering. */
 export interface MerchantOrderState {
+  completionBasis?: MerchantCompletionBasis
+  /** A pickup claim cannot use a manual shipment/legacy-handoff shortcut. */
+  pickupClaimed?: boolean
   status: string | null | undefined
   /** Present only when the effective cancellation can be safely reopened. */
   cancellation?: MerchantOrderCancellation
@@ -345,7 +352,7 @@ export function isMerchantOrderPaid(state: MerchantOrderState): boolean {
   return (
     !!state.paid ||
     !!state.shippingUpdated ||
-    PAID_STATUSES.has(normalizeStatus(state.status))
+    (!state.completionBasis && PAID_STATUSES.has(normalizeStatus(state.status)))
   )
 }
 
@@ -549,9 +556,17 @@ export function buildOrderStatusTimeline(
     key: "delivered",
     done: DELIVERED_STATUSES.has(status),
     complete: {
-      title: fulfillmentMode === "pickup" ? "Picked up" : "Delivered",
-      subtitle:
-        fulfillmentMode === "pickup" ? "Pickup completed." : "Order completed.",
+      title:
+        state.completionBasis === "historical_handoff"
+          ? "Handoff recorded"
+          : fulfillmentMode === "pickup"
+            ? "Picked up"
+            : "Delivered",
+      subtitle: state.completionBasis
+        ? "Completion confirmed by merchant."
+        : fulfillmentMode === "pickup"
+          ? "Pickup completed."
+          : "Order completed.",
     },
     active: {
       title:
@@ -578,7 +593,8 @@ export function buildOrderStatusTimeline(
   const fulfillmentStages =
     fulfillmentMode === "pickup" ||
     fulfillmentMode === "digital" ||
-    state.requiresShipping === false
+    state.requiresShipping === false ||
+    !!state.completionBasis
       ? []
       : [shipped]
   const ordered = zeroCostPickup
@@ -645,6 +661,7 @@ export interface MerchantOrderAction {
     | "accept"
     | "confirm_payment"
     | "record_shipment"
+    | "manual_complete"
     | "complete"
     | "cancel"
     | "reopen"
@@ -731,6 +748,15 @@ export function getMerchantOrderActions(
         label: "Add shipping details",
         kind: "primary",
       },
+      ...(state.paid === true && !state.pickupClaimed
+        ? [
+            {
+              action: "manual_complete" as const,
+              label: "Complete fulfilled order",
+              kind: "primary" as const,
+            },
+          ]
+        : []),
     ]
   }
 

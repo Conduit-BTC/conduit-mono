@@ -419,6 +419,7 @@ export function parseOrderMessageRumorEvent(
       throw new Error("Conflicting order status correction markers")
     }
     const payload = statusUpdateMessageSchema.parse({
+      completionBasis: json?.completionBasis,
       status:
         getTagValue(event.tags ?? [], "status") ?? getString(json?.status),
       note: getString(json?.note),
