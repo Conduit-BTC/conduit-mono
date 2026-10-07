@@ -315,6 +315,32 @@ function cloneSnapshot(
   return cloned
 }
 
+async function admitStagedCheckpoints(
+  checkpoints: readonly AccountNetworkStagedCheckpoint[]
+): Promise<AccountNetworkStagedCheckpoint[]> {
+  return await Promise.all(
+    checkpoints.map(async (checkpoint) => {
+      const copied = {
+        ...checkpoint,
+        publishRelayUrls: [...checkpoint.publishRelayUrls],
+        confirmationRelayUrls: checkpoint.confirmationRelayUrls
+          ? [...checkpoint.confirmationRelayUrls]
+          : undefined,
+      }
+      const admission = await admitPublicEvent(checkpoint.signedEvent)
+      if (admission.status !== "verified") {
+        throw new AccountNetworkMutationError(
+          admission.status === "invalid"
+            ? "invalid_signature"
+            : "evidence_unavailable",
+          "Signed Network checkpoint could not be verified."
+        )
+      }
+      return { ...copied, signedEvent: admission.event }
+    })
+  )
+}
+
 async function admitMutationSnapshot(
   snapshot: AccountNetworkMutationSnapshot
 ): Promise<AccountNetworkMutationSnapshot> {
@@ -1061,6 +1087,7 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
     },
     async stage(input) {
       const normalized = normalizePubkey(input.pubkey)
+      const checkpoints = await admitStagedCheckpoints(input.checkpoints)
       const admittedBeforeTransaction = await this.get(normalized)
       return await db.transaction(
         "rw",
@@ -1090,6 +1117,7 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
           )
           const next = applyStageToSnapshot(current, {
             ...input,
+            checkpoints,
             pubkey: normalized,
           })
           if (next.ownerRelayList) {
@@ -1246,9 +1274,11 @@ export function createInMemoryAccountNetworkMutationRepository(
     },
     async stage(input) {
       const normalized = normalizePubkey(input.pubkey)
+      const checkpoints = await admitStagedCheckpoints(input.checkpoints)
       const current = await admitMutationSnapshot(getSnapshot(normalized))
       const next = applyStageToSnapshot(current, {
         ...input,
+        checkpoints,
         pubkey: normalized,
       })
       snapshots.set(normalized, cloneSnapshot(next))

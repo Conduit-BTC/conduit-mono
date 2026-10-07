@@ -619,7 +619,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     })
     const result = await getRelayLists([ALICE, BOB, CAROL])
     expect(fetchCalls.length).toBe(1)
-    expect(fetchCalls[0]?.authors.sort()).toEqual([BOB, CAROL])
+    expect(fetchCalls[0]?.authors.sort()).toEqual([BOB, CAROL].sort())
     expect(result.get(ALICE)?.readRelayUrls).toEqual([
       "wss://cached.conduit.market",
     ])

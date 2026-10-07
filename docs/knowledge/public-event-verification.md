@@ -170,7 +170,9 @@ media display data is separately sanitized and supplies no signed frontier or
 action authority until admission recovers. Conclusively invalid signed bytes
 remain eligible for removal or repair through the existing reconciliation rules.
 
-Account Network transactions use the latest delivery and source metadata read
+Account Network staging admits raw signed checkpoints before opening an
+IndexedDB transaction. Invalid or unavailable admission cannot write durable
+state. Account Network transactions use the latest delivery and source metadata read
 inside the transaction. Only the separately admitted event objects are reused,
 after comparing every retained signed event's exact bytes, including the
 last-usable frontier. Concurrent acknowledgements and staging therefore retain

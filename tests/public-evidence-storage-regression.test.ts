@@ -136,6 +136,51 @@ describe("durable public evidence admission", () => {
     `)
   }, 20000)
 
+  it("admits raw staging checkpoints and rejects changed bytes in both repositories", () => {
+    runScenario(`
+      for (const mode of ["dexie", "memory"]) {
+        await db.ownerRelayListEvidence.put(structuredClone(retained));
+        const repository = mode === "dexie" ? mutation.dexieAccountNetworkMutationRepository
+          : mutation.createInMemoryAccountNetworkMutationRepository([{pubkey, snapshot: {
+            ownerRelayList: retained, localState: (await import("./packages/core/src/protocol/account-network-local-state")).emptyAccountNetworkLocalState(pubkey),
+          }}]);
+        const replacement = sign(10002, [["r", relays[0]]], 101);
+        assert(!proof.isVerifiedNostrEvent(replacement), "fixture already carried public proof");
+        const staged = await repository.stage({pubkey, expectedRelayListEventId: event.id,
+          expectedInboxDeclarationEventId: null, expectedExcludedRelayUrls: [],
+          checkpoints: [{kind: 10002, signedEvent: replacement, publishRelayUrls: relays}],
+          previousInboxRelayUrls: [], removedRelayUrls: [], stagedAt: 250000});
+        assert(staged.ownerRelayList.pendingDistribution.signedEvent.id === replacement.id, "raw signed checkpoint was not staged");
+        assert(proof.isVerifiedNostrEvent(staged.ownerRelayList.current.signedEvent), "staging did not admit the checkpoint");
+        const before = JSON.stringify(await repository.get(pubkey));
+        let failure;
+        try { await repository.stage({pubkey, expectedRelayListEventId: replacement.id,
+          expectedInboxDeclarationEventId: null, expectedExcludedRelayUrls: [],
+          checkpoints: [{kind: 10002, signedEvent: {...replacement, content: "changed"}, publishRelayUrls: relays}],
+          previousInboxRelayUrls: [], removedRelayUrls: [], stagedAt: 260000}); }
+        catch (error) { failure = error; }
+        assert(failure?.code === "invalid_signature", "invalid staging bytes were not rejected");
+        assert(JSON.stringify(await repository.get(pubkey)) === before, "invalid staging changed durable evidence");
+      }
+    `)
+  }, 20000)
+
+  it("preserves durable state when a raw staging checkpoint cannot be admitted", () => {
+    runScenario(`
+      const replacement = sign(10002, [["r", relays[0]]], 101);
+      const before = JSON.stringify(await db.ownerRelayListEvidence.get(pubkey));
+      failWorker();
+      let failure;
+      try { await mutation.dexieAccountNetworkMutationRepository.stage({pubkey, expectedRelayListEventId: event.id,
+        expectedInboxDeclarationEventId: null, expectedExcludedRelayUrls: [],
+        checkpoints: [{kind: 10002, signedEvent: replacement, publishRelayUrls: relays}],
+        previousInboxRelayUrls: [], removedRelayUrls: [], stagedAt: 250000}); }
+      catch (error) { failure = error; }
+      assert(failure?.code === "evidence_unavailable", "staging lost verification unavailability");
+      assert(JSON.stringify(await db.ownerRelayListEvidence.get(pubkey)) === before, "unavailable staging changed durable evidence");
+    `)
+  }, 20000)
+
   it("merges concurrent relay acknowledgements, attempt counts and source observations", () => {
     runScenario(`
       const repository = mutation.dexieAccountNetworkMutationRepository;
