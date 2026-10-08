@@ -120,7 +120,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     await buyerPage.goto(`${marketUrl}/${nip19.npubEncode(merchant.pubkey)}`)
     const product = buyerPage.getByRole("listitem").filter({ hasText: title })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    await product.getByRole("button", { name: "Add", exact: true }).click()
+    await product.getByRole("button", { name: /^Add .+ to cart$/ }).click()
     await buyerPage
       .getByRole("region", { name: "Cart inventory" })
       .getByRole("link", { name: "Continue to checkout" })

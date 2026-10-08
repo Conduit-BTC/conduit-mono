@@ -106,6 +106,7 @@ function CategoryFacetButton({
   className?: string
 }) {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onToggle}
@@ -593,6 +594,7 @@ function PublicIdentityPage() {
                         {merchantName}
                       </h1>
                     )}
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       className="inline-flex size-10 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
@@ -771,6 +773,7 @@ function PublicIdentityPage() {
                     Categories
                   </div>
                   {(selectedTags.length > 0 || search.q || search.sort) && (
+                    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                     <button
                       type="button"
                       className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
@@ -816,6 +819,7 @@ function PublicIdentityPage() {
                     Categories
                   </div>
                   {selectedTags.length > 0 && (
+                    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                     <button
                       type="button"
                       className="shrink-0 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
@@ -848,6 +852,7 @@ function PublicIdentityPage() {
                   Search listings
                 </label>
                 <Search className="h-4 w-4 text-[var(--text-muted)]" />
+                {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                 <input
                   id="identity-listing-search"
                   value={localSearch}

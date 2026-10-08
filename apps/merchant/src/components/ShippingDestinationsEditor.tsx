@@ -49,6 +49,7 @@ function PostalTagInput({
             className="flex items-center gap-1 py-0.5 font-mono text-xs"
           >
             {tag}
+            {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
             <button
               type="button"
               className="ml-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
@@ -59,6 +60,7 @@ function PostalTagInput({
             </button>
           </Badge>
         ))}
+        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <input
           id={inputId}
           className="min-w-24 flex-1 bg-transparent text-xs text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"

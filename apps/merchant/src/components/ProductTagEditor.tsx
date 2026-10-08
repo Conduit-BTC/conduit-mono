@@ -244,6 +244,7 @@ export function ProductTagEditor({
                   title={tag}
                 >
                   <span className="max-w-[12rem] truncate">{tag}</span>
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <button
                     type="button"
                     className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--surface)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
@@ -257,6 +258,7 @@ export function ProductTagEditor({
                   </button>
                 </span>
               ))}
+              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
               <input
                 id={id}
                 ref={inputRef}

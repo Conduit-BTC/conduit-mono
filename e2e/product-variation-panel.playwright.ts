@@ -293,18 +293,16 @@ test("market product variation panel preserves grid geometry across desktop mous
       merchantName.evaluate((element) => {
         const style = getComputedStyle(element)
         return {
-          contained: element.scrollWidth > element.clientWidth,
-          overflow: style.overflow,
-          textOverflow: style.textOverflow,
+          contained: element.scrollWidth <= element.clientWidth,
+          clipped: element.scrollHeight > element.clientHeight,
           whiteSpace: style.whiteSpace,
         }
       })
     )
     .toEqual({
       contained: true,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
+      clipped: false,
+      whiteSpace: "normal",
     })
   await expect(chooseSize).toBeAttached()
   await variableCard.scrollIntoViewIfNeeded()
@@ -421,8 +419,10 @@ test("market product variation panel preserves grid geometry across desktop mous
 
   await variableItem.getByRole("button", { name: "Add" }).click()
   await expect(
-    variableItem.getByRole("button", { name: "In cart (1)" })
-  ).toBeDisabled()
+    variableItem.getByRole("button", {
+      name: "Remove one Conduit Shirt from cart",
+    })
+  ).toBeEnabled()
   await variableItem.hover()
   await expect(
     variableItem.getByRole("button", {

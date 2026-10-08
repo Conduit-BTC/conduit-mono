@@ -140,6 +140,7 @@ function MerchantThreadRow({
   const latestMessage = messages[messages.length - 1]
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
@@ -209,6 +210,7 @@ function DmThreadRow({
   const name = getMerchantDisplayName(profile, conversation.counterpartyPubkey)
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
@@ -972,6 +974,7 @@ function MessagesWorkspace() {
               ["merchants", "Merchants"],
             ] as const
           ).map(([tab, label]) => (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               key={tab}
               type="button"
@@ -1116,6 +1119,7 @@ function MessagesWorkspace() {
                         Conversations
                       </div>
                       <SheetTrigger asChild>
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
@@ -1484,6 +1488,7 @@ function MessagesWorkspace() {
                       Conversations
                     </div>
                     <SheetTrigger asChild>
+                      {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                       <button
                         type="button"
                         className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
@@ -1645,6 +1650,7 @@ function MessagesWorkspace() {
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
                       <div className="flex flex-col gap-3 sm:flex-row">
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
                           value={replyText}
                           onChange={(event) => setReplyText(event.target.value)}

@@ -3561,6 +3561,7 @@ function ProductsPage() {
                         )}
                         aria-disabled={productIsDigital}
                       >
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
                           type="checkbox"
                           checked={productCoordinatesShipping}
@@ -3608,6 +3609,7 @@ function ProductsPage() {
                         )}
                         aria-disabled={presetShippingZoneUnavailable}
                       >
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
                           type="checkbox"
                           checked={
@@ -3680,6 +3682,7 @@ function ProductsPage() {
 
               <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
                 <label className="flex items-start gap-3 text-sm">
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <input
                     type="checkbox"
                     checked={form.publicZapEnabled}
@@ -3704,6 +3707,7 @@ function ProductsPage() {
 
                 {form.format === "physical" ? (
                   <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] p-3">
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <input
                       type="checkbox"
                       checked={form.eventGuestContactOptional === true}
@@ -3907,6 +3911,7 @@ function ProductsPage() {
                       {contextName ?? "Selected Event Market"}
                     </p>
                     <label className="flex items-center gap-2 text-sm">
+                      {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                       <input
                         type="checkbox"
                         checked={!!form.futureEventMarketReference}
@@ -3956,6 +3961,7 @@ function ProductsPage() {
                   Product options
                 </legend>
                 <label className="flex items-start gap-3 text-sm">
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <input
                     type="checkbox"
                     checked={form.variations.enabled}
@@ -4309,6 +4315,7 @@ function ProductsPage() {
                                         Stock
                                       </Label>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                                         <input
                                           type="checkbox"
                                           checked={combination.inheritStock}
@@ -4365,6 +4372,7 @@ function ProductsPage() {
                                         Variation images
                                       </span>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                                         <input
                                           type="checkbox"
                                           checked={combination.inheritImages}
@@ -4482,6 +4490,7 @@ function ProductsPage() {
                                           : `Shipping (${form.currency})`}
                                       </Label>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                                         <input
                                           type="checkbox"
                                           checked={combination.inheritShipping}

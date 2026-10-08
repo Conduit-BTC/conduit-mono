@@ -336,6 +336,7 @@ function OrderListCard({
 }) {
   const itemTitle = row.vm.items[0]?.displayTitle ?? "Order"
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
@@ -420,6 +421,7 @@ function MobileOrderFilterPills({
         {options.map((option) => {
           const active = tab === option.value
           return (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               key={option.value}
               type="button"
@@ -486,6 +488,7 @@ function MobileOrdersScroller({
             {rows.map((row) => {
               const active = row.orderId === selectedOrderId
               return (
+                // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                 <button
                   key={row.orderId}
                   type="button"
@@ -2412,6 +2415,7 @@ function OrderDetail({
 
             {/* Order details (technical, collapsed) */}
             <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
               <button
                 type="button"
                 onClick={() => setDetailsOpen((open) => !open)}
@@ -3154,6 +3158,7 @@ function OrdersPage() {
                     <MobileOrderFilterPills tab={tab} onChange={setTab} />
                   </div>
                   <SheetTrigger asChild>
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"

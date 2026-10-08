@@ -42,6 +42,7 @@ export function OrderCardScroller({
         const statusDisplay = getMerchantConversationStatusDisplay(conversation)
         const name = buyerName(conversation.buyerPubkey, conversation)
         return (
+          // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
           <button
             key={conversation.id}
             type="button"

@@ -1,70 +1,4 @@
-import {
-  Badge,
-  SectionGrid,
-  StatusPill,
-  SummaryList,
-  SummaryRow,
-  Table,
-  TableBody,
-  TableCaption,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@conduit/ui"
-
-const inventory = [
-  [
-    "Actions",
-    "Button, ActionRow",
-    "Primary, outline, ghost, disabled, pending; brand orange/violet and destructive rose variants.",
-  ],
-  [
-    "Forms",
-    "Field, Input, Textarea, Label, Checkbox, Switch, Select, Combobox",
-    "Label/help/error associations; validation belongs to feature code.",
-  ],
-  [
-    "Surfaces",
-    "Card, PreferenceSectionCard, SettingsRow",
-    "Standard content, settings body/divider/footer, long copy.",
-  ],
-  [
-    "Layout",
-    "PageLayout, PageHeader, SectionGrid",
-    "Shared gutters and content width; phone reading order.",
-  ],
-  [
-    "Commerce",
-    "ProductCard, ProductCartAction, EventMarketCard, EventTimeline, OrderDetailCard",
-    "Existing domain components; prepared display data and action slots.",
-  ],
-  [
-    "Summaries",
-    "SummaryList, SummaryRow",
-    "Checkout, fees, inventory totals; tabular numbers and wrapping labels.",
-  ],
-  [
-    "Data",
-    "Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableCaption",
-    "Semantic markup, compact/comfortable density, named keyboard scroll region.",
-  ],
-  [
-    "States",
-    "StatusPill, Badge, Skeleton, StatePanel",
-    "Loading, empty, error, pending, selected and unavailable stay distinct.",
-  ],
-  [
-    "Overlays",
-    "Dialog, AlertDialog, Sheet, DropdownMenu, Popover, Command",
-    "Existing Radix focus/keyboard behavior and cmdk search.",
-  ],
-  [
-    "Navigation",
-    "Tabs, SegmentedControl, Breadcrumb, AccountMenu",
-    "Panel selection and page navigation retain different semantics.",
-  ],
-]
+import { SectionGrid, StatusPill, SummaryList, SummaryRow } from "@conduit/ui"
 
 export function Foundations() {
   return (
@@ -236,198 +170,25 @@ export function Foundations() {
 
 export function Baseline() {
   return (
-    <div className="space-y-6">
-      <section className="space-y-5 border-t border-[var(--border)] pt-6">
-        <header className="space-y-1.5">
-          <h2 className="text-lg font-semibold">
-            Baseline and shared inventory
-          </h2>
-          <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
-            Baseline researched from Conduit main dacdd946 and Ditto source
-            359e76f8. The representative foundation was approved on October 7,
-            2026. Each consuming workflow still needs validation.
-          </p>
-        </header>
-        <div className="space-y-4">
-          <Badge variant="warning">Visual foundation approved</Badge>
-          <p className="text-pretty text-base leading-6 text-[var(--text-secondary)]">
-            Conduit already has a substantial shared system: 77 component source
-            files, tokenized Night/Day themes, a signer-independent theme
-            runtime and many domain compositions. This slice makes it
-            discoverable and supplies a small missing composition layer.
-          </p>
-        </div>
-      </section>
-      <Table scrollLabel="Shared component inventory">
-        <TableCaption>
-          Retain the existing primitives; add only the composition gaps
-          exercised here.
-        </TableCaption>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Family</TableHead>
-            <TableHead>Executable owners</TableHead>
-            <TableHead>Coverage / boundary</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {inventory.map(([family, owners, coverage]) => (
-            <TableRow key={family}>
-              <TableCell className="font-medium">{family}</TableCell>
-              <TableCell>{owners}</TableCell>
-              <TableCell>{coverage}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      <SectionGrid>
-        <section className="space-y-5 border-t border-[var(--border)] pt-6">
-          <header className="space-y-1.5">
-            <h2 className="text-lg font-semibold">Retained from Conduit</h2>
-          </header>
-          <div>
-            <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
-              <li>
-                Shared type scale, named themes, semantic surfaces, existing
-                purple action color and token radii.
-              </li>
-              <li>
-                ProductCard media/identity/price/action structure shared by
-                Market and Merchant.
-              </li>
-              <li>
-                EventMarketCard and EventTimeline schedule/organizer hierarchy.
-              </li>
-              <li>
-                PreferenceSectionCard grouping, explanatory copy and action
-                slots.
-              </li>
-              <li>
-                Radix dialogs, sheets, select, menus and tabs; native checkbox
-                and existing cmdk combobox.
-              </li>
-            </ul>
-          </div>
-        </section>
-        <section className="space-y-5 border-t border-[var(--border)] pt-6">
-          <header className="space-y-1.5">
-            <h2 className="text-lg font-semibold">Informed by prior art</h2>
-          </header>
-          <div>
-            <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
-              <li>
-                Ditto’s shared PageHeader, EmbeddedCardShell and RelayListRow
-                demonstrate the useful layer between primitives and entire
-                routes.
-              </li>
-              <li>
-                Its desktop sidebar/content/utility layout becomes a header,
-                drawer and bottom navigation on phones. Adopt the responsive
-                separation of concerns, not the social-feed shell.
-              </li>
-              <li>
-                Its EditProfileForm groups fields with labels, help and errors;
-                its FeedEmptyState carries explicit retry/offline context.
-              </li>
-              <li>
-                MUJI informed product hierarchy and quiet metadata; Conduit
-                retains contained product cards. GOV.UK informed noninteractive
-                status and ruled summaries. Carbon informed the separation of
-                status, classification and selected controls. Impeccable
-                supplied the craft and accessibility critique.
-              </li>
-              <li>
-                shadcn’s composable semantic table and field association
-                patterns inform the new Table and Field. No table engine or new
-                form dependency.
-              </li>
-            </ul>
-          </div>
-        </section>
-      </SectionGrid>
-      <SectionGrid>
-        <section className="space-y-5 border-t border-[var(--border)] pt-6">
-          <header className="space-y-1.5">
-            <h2 className="text-lg font-semibold">Deliberately not added</h2>
-          </header>
-          <div>
-            <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
-              <li>
-                Ditto codecs, theme events, private appearance sync or a new
-                theme catalog.
-              </li>
-              <li>
-                A copied Ditto feed shell, ornamental arcs, extra animations or
-                a new icon library. Poppins is bundled as the approved UI font.
-              </li>
-              <li>
-                Generic data grids, sorting engines, schema-driven forms, chart
-                kits, rich editors or a configuration framework.
-              </li>
-              <li>
-                Wallet, signer, inventory or payment logic in presentation
-                components.
-              </li>
-              <li>
-                A whole-app cosmetic migration. Existing routes adopt shared
-                recipes when materially changed.
-              </li>
-            </ul>
-          </div>
-        </section>
-        <section className="space-y-5 border-t border-[var(--border)] pt-6">
-          <header className="space-y-1.5">
-            <h2 className="text-lg font-semibold">Approved foundation</h2>
-          </header>
-          <div>
-            <ol className="list-decimal space-y-3 pl-5 text-sm leading-6">
-              <li>
-                Contained product cards, ruled settings, a 4/8/12 px shape scale
-                and restrained framing.
-              </li>
-              <li>
-                Use 16/24 px page gutters, 24 px section gaps and
-                compact/comfortable table density.
-              </li>
-              <li>
-                Use a neutral checkout hierarchy with purple for the next action
-                and readable neutral prices.
-              </li>
-              <li>
-                Preserve corrected status/price contrast, full product names and
-                44 px phone controls in consuming workflows.
-              </li>
-            </ol>
-          </div>
-        </section>
-      </SectionGrid>
-      <p className="text-pretty text-base text-[var(--text-secondary)]">
-        Sources:{" "}
+    <section className="space-y-4">
+      <h2 className="text-lg font-semibold">Baseline and shared inventory</h2>
+      <p className="max-w-prose text-base text-[var(--text-secondary)]">
+        Read the{" "}
         <a
           className="underline"
-          href="https://github.com/soapbox-pub/ditto/tree/359e76f84d6415bb7eec87801e28c2af51f765cd/src/components"
+          href="https://github.com/Conduit-BTC/conduit-mono/blob/feat/shared-ui-workbench/docs/knowledge/shared-ui-baseline.md"
         >
-          Ditto component source
+          baseline report
         </a>{" "}
-        ·{" "}
-        <a className="underline" href="https://ditto.pub">
-          Ditto live desktop and phone inspection
-        </a>{" "}
-        ·{" "}
+        for the inventory, prior art and approved foundation, and the{" "}
         <a
           className="underline"
-          href="https://ui.shadcn.com/docs/components/radix/table"
+          href="https://github.com/Conduit-BTC/conduit-mono/blob/feat/shared-ui-workbench/packages/ui/workbench/README.md"
         >
-          shadcn Table
+          workbench guide
         </a>{" "}
-        ·{" "}
-        <a
-          className="underline"
-          href="https://ui.shadcn.com/docs/components/radix/dialog"
-        >
-          shadcn Dialog
-        </a>
+        for composition and validation guidance.
       </p>
-    </div>
+    </section>
   )
 }

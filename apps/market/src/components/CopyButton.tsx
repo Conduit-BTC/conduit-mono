@@ -29,6 +29,7 @@ export function CopyButton({
   }
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       aria-label={copied ? "Copied" : label}

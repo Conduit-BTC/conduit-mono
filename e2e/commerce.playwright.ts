@@ -548,7 +548,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .getByRole("listitem")
       .filter({ hasText: productTitle })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    const add = product.getByRole("button", { name: "Add", exact: true })
+    const add = product.getByRole("button", { name: /^Add .+ to cart$/ })
     await expect(add).toBeEnabled({ timeout: 30_000 })
     await add.click()
 

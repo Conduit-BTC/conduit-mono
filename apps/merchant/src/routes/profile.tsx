@@ -292,6 +292,7 @@ function ProfilePage() {
                     </span>{" "}
                     Add a display name, photo, and bio so buyers can find and
                     trust your store.{" "}
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       className="underline underline-offset-2 hover:opacity-80"
@@ -443,6 +444,7 @@ function ProfilePage() {
                               {storefrontUrl}
                             </a>
                             <div className="flex shrink-0 items-center gap-2">
+                              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                               <button
                                 type="button"
                                 aria-label={
@@ -490,6 +492,7 @@ function ProfilePage() {
                           <p className="break-all font-mono text-xs text-[var(--text-secondary)]">
                             {npub}
                           </p>
+                          {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                           <button
                             type="button"
                             aria-label={copiedPubkey ? "Copied" : "Copy npub"}

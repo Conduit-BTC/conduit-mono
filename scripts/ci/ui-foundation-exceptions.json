@@ -1,13 +1,6 @@
 [
   {
     "path": "apps/market/src/components/CopyButton.tsx",
-    "rule": "local-control",
-    "value": "cf7aeb7cc78edfae",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/components/CopyButton.tsx",
     "rule": "presentation-color",
     "value": "border-green-500",
     "count": 1,
@@ -40,34 +33,6 @@
     "value": "bg-amber-500",
     "count": 2,
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
-  },
-  {
-    "path": "apps/market/src/components/MarketCartHud.tsx",
-    "rule": "local-control",
-    "value": "f676af2c8d72c8f3",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/components/MarketHeader.tsx",
-    "rule": "local-control",
-    "value": "2caaacf0fdc6907b",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/components/MarketHeader.tsx",
-    "rule": "local-control",
-    "value": "e61e24fa7f8fd096",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/components/MarketHeader.tsx",
-    "rule": "local-control",
-    "value": "f8892f6b5c2839e0",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
   },
   {
     "path": "apps/market/src/components/MarketHeader.tsx",
@@ -112,123 +77,11 @@
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
   },
   {
-    "path": "apps/market/src/routes/$identityRef.tsx",
-    "rule": "local-control",
-    "value": "10ef7088ccc682fe",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/$identityRef.tsx",
-    "rule": "local-control",
-    "value": "8d685c07a7286388",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/$identityRef.tsx",
-    "rule": "local-control",
-    "value": "969e6ec78668cafc",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/$identityRef.tsx",
-    "rule": "local-control",
-    "value": "a9e6096409104b5d",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/$identityRef.tsx",
-    "rule": "local-control",
-    "value": "1a8a705bd7c4e976",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/cart.tsx",
-    "rule": "local-control",
-    "value": "984e67608229c6ef",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/cart.tsx",
-    "rule": "local-control",
-    "value": "d06fad5e347b19f7",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/cart.tsx",
-    "rule": "local-control",
-    "value": "83f2047831daa8af",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/cart.tsx",
-    "rule": "local-control",
-    "value": "c249de89647d9836",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/checkout.tsx",
-    "rule": "local-control",
-    "value": "653eae968476faad",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/checkout.tsx",
-    "rule": "local-control",
-    "value": "787a2386ca2c0257",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/checkout.tsx",
-    "rule": "local-control",
-    "value": "6800da111dbeecc5",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/checkout.tsx",
-    "rule": "local-control",
-    "value": "9fd71b5ab09e33b0",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/messages.tsx",
-    "rule": "local-control",
-    "value": "d6a957f4e217d4ec",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/messages.tsx",
-    "rule": "local-control",
-    "value": "61b1f80c4a4aeb91",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
     "path": "apps/market/src/routes/messages.tsx",
     "rule": "presentation-color",
     "value": "bg-fuchsia-500",
     "count": 2,
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
-  },
-  {
-    "path": "apps/market/src/routes/messages.tsx",
-    "rule": "local-control",
-    "value": "8b6c49d2fb2f0301",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
   },
   {
     "path": "apps/market/src/routes/messages.tsx",
@@ -238,27 +91,6 @@
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
   },
   {
-    "path": "apps/market/src/routes/messages.tsx",
-    "rule": "local-control",
-    "value": "77723858061d965a",
-    "count": 2,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/messages.tsx",
-    "rule": "local-control",
-    "value": "3312d3e968c91924",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "84372628e79523fd",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
     "path": "apps/market/src/routes/orders.tsx",
     "rule": "presentation-color",
     "value": "bg-amber-400",
@@ -266,193 +98,11 @@
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
   },
   {
-    "path": "apps/market/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "77029a055e2a2846",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "62fcadf1b4fab361",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "e34e494a719a8034",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "5b18b3ce95d48e46",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/$productId.tsx",
-    "rule": "local-control",
-    "value": "a9fa30c6cb0d228d",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/$productId.tsx",
-    "rule": "local-control",
-    "value": "5ec7fa0fa3095495",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/$productId.tsx",
-    "rule": "local-control",
-    "value": "f0cd114464b7ff36",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/$productId.tsx",
-    "rule": "local-control",
-    "value": "fbc753e139ec7a58",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/$productId.tsx",
-    "rule": "local-control",
-    "value": "d5d08aba9cf02bba",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/$productId.tsx",
-    "rule": "local-control",
-    "value": "54647fa883e3dd6f",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/products/index.tsx",
-    "rule": "local-control",
-    "value": "a682faa84a9480e9",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/market/src/routes/profile.tsx",
-    "rule": "local-control",
-    "value": "4fc85bfe2ce1da58",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
     "path": "apps/market/src/routes/profile.tsx",
     "rule": "presentation-color",
     "value": "text-emerald-400",
     "count": 1,
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
-  },
-  {
-    "path": "apps/market/src/test-fixtures/merchant-trust-harness.tsx",
-    "rule": "local-control",
-    "value": "6f11ff11fa877494",
-    "count": 1,
-    "reason": "Development-only workflow harness action; excluded from product adoption. Keep this exact control bounded."
-  },
-  {
-    "path": "apps/market/src/test-fixtures/product-variation-panel-harness.tsx",
-    "rule": "local-control",
-    "value": "49ff050e86c89a0b",
-    "count": 1,
-    "reason": "Development-only workflow harness action; excluded from product adoption. Keep this exact control bounded."
-  },
-  {
-    "path": "apps/merchant/src/components/DirectConversationListItem.tsx",
-    "rule": "local-control",
-    "value": "4cb9456e2378d51a",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/components/MerchantHeader.tsx",
-    "rule": "local-control",
-    "value": "ea7208eabf0d4a81",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/components/OrderCardScroller.tsx",
-    "rule": "local-control",
-    "value": "4a1e4d06b5c19e38",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/components/OrderListItem.tsx",
-    "rule": "local-control",
-    "value": "0511bc6b09a3de7b",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/components/ProductTagEditor.tsx",
-    "rule": "local-control",
-    "value": "2d19324eeafda6fd",
-    "count": 1,
-    "reason": "Existing domain tag editor owns token entry and multiselect; replace through a reviewed shared recipe when this editor changes."
-  },
-  {
-    "path": "apps/merchant/src/components/ProductTagEditor.tsx",
-    "rule": "local-control",
-    "value": "dd95b1f1adfb8a9a",
-    "count": 1,
-    "reason": "Existing domain tag editor owns token entry and multiselect; replace through a reviewed shared recipe when this editor changes."
-  },
-  {
-    "path": "apps/merchant/src/components/ShippingDestinationsEditor.tsx",
-    "rule": "local-control",
-    "value": "1fe3579f5d638206",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/components/ShippingDestinationsEditor.tsx",
-    "rule": "local-control",
-    "value": "68a2da263eac158a",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/messages.tsx",
-    "rule": "local-control",
-    "value": "77723858061d965a",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "0924e3650de584c1",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "4a0d2ad5e145f3dd",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "77723858061d965a",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
   },
   {
     "path": "apps/merchant/src/routes/orders.tsx",
@@ -474,97 +124,6 @@
     "value": "text-green-400",
     "count": 1,
     "reason": "Existing presentation palette predates the approved foundation; retained outside this slice. Use semantic tokens when this surface changes. This does not approve new uses."
-  },
-  {
-    "path": "apps/merchant/src/routes/orders.tsx",
-    "rule": "local-control",
-    "value": "251cf7b8b5607630",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "70bec53de207342f",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "6d313996539c8e5e",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "6348792621fb1b28",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "d225aa2c74b0aa8f",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "116f79ff4df1f274",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "c35e0537154ca363",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "2a3f447df7632f96",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "6e5f7bc4b9092360",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/products.tsx",
-    "rule": "local-control",
-    "value": "098cb271c67f737e",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/profile.tsx",
-    "rule": "local-control",
-    "value": "372a70dd1ec6d228",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/profile.tsx",
-    "rule": "local-control",
-    "value": "a1d948548c0606c9",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
-  },
-  {
-    "path": "apps/merchant/src/routes/profile.tsx",
-    "rule": "local-control",
-    "value": "cc3973c136ce9e34",
-    "count": 1,
-    "reason": "Existing app control predates the shared recipes; retained to avoid a whole-app rewrite. Adopt the shared primitive when this control is materially changed."
   },
   {
     "path": "packages/ui/src/components/AccountMenu.tsx",

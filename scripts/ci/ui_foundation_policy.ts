@@ -1,15 +1,10 @@
-import { createHash } from "node:crypto"
 import ts from "typescript"
 
 export type UiSource = { path: string; content: string }
 export type UiFinding = {
   path: string
   line: number
-  rule:
-    | "undefined-variable"
-    | "theme-owner"
-    | "presentation-color"
-    | "local-control"
+  rule: "undefined-variable" | "theme-owner" | "presentation-color"
   value: string
 }
 export type UiException = {
@@ -34,25 +29,6 @@ const runtimeVariables = new Set([
 ])
 const paletteColor =
   /\b(?:bg|text|border|ring|shadow|fill|stroke|from|to|via|outline|decoration|divide|placeholder|accent|caret)-(?:slate|gray|zinc|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)(?:-\d+)?\b/g
-const nativeControls = new Set(["button", "input", "select", "textarea"])
-const sharedControlRoles = new Set([
-  "dialog",
-  "alertdialog",
-  "combobox",
-  "listbox",
-  "menu",
-  "menubar",
-  "tab",
-  "tablist",
-])
-
-export function controlSignature(text: string): string {
-  return createHash("sha256")
-    .update(text.replace(/\s+/g, " ").trim())
-    .digest("hex")
-    .slice(0, 16)
-}
-
 export function inspectUiSources(sources: UiSource[]): UiFinding[] {
   const definitions = new Set(runtimeVariables)
   const ownedTokens = new Set<string>()
@@ -105,11 +81,7 @@ export function inspectUiSources(sources: UiSource[]): UiFinding[] {
     paletteColor.lastIndex = 0
     const hasPalette = paletteColor.test(content)
     paletteColor.lastIndex = 0
-    const hasControls =
-      path.startsWith("apps/") &&
-      /<(?:button|input|select|textarea)\b|\brole\s*=/.test(content)
-    if (!hasPalette && !hasControls && !path.endsWith("tailwind.config.js"))
-      continue
+    if (!hasPalette && !path.endsWith("tailwind.config.js")) continue
     const source = ts.createSourceFile(
       path,
       content,
@@ -126,28 +98,6 @@ export function inspectUiSources(sources: UiSource[]): UiFinding[] {
       ) {
         for (const match of node.text.matchAll(paletteColor))
           add("presentation-color", match[0], node.getStart(source))
-      }
-      if (
-        path.startsWith("apps/") &&
-        (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node))
-      ) {
-        const role = node.attributes.properties.find(
-          (attr) =>
-            ts.isJsxAttribute(attr) && attr.name.getText(source) === "role"
-        )
-        const localRole =
-          role &&
-          ts.isJsxAttribute(role) &&
-          role.initializer &&
-          ts.isStringLiteral(role.initializer) &&
-          sharedControlRoles.has(role.initializer.text)
-        if (nativeControls.has(node.tagName.getText(source)) || localRole) {
-          add(
-            "local-control",
-            controlSignature(node.getText(source)),
-            node.getStart(source)
-          )
-        }
       }
       ts.forEachChild(node, visit)
     }

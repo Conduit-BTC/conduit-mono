@@ -125,6 +125,7 @@ function HeaderAction({
   onClick: () => void
 }) {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       aria-label={ariaLabel ?? label}
@@ -248,6 +249,7 @@ function AccountControl({
 
   if (!connected) {
     return (
+      // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
       <button
         type="button"
         className={cn(
@@ -274,6 +276,7 @@ function AccountControl({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
+        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <button
           type="button"
           className="inline-flex size-11 items-center justify-center rounded-[16px] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"

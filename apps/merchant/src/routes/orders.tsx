@@ -340,6 +340,7 @@ const panelCard =
 function CopyInline({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       aria-label={label}
@@ -386,6 +387,7 @@ function SearchBox({
   return (
     <div className="relative mt-3">
       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+      {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
       <input
         aria-label="Search orders"
         value={value}
@@ -2917,6 +2919,7 @@ function OrdersWorkspace() {
                   Orders
                 </div>
                 <SheetTrigger asChild>
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <button
                     type="button"
                     className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
@@ -4036,6 +4039,7 @@ function OrdersWorkspace() {
                       )}
 
                     <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+                      {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                       <button
                         type="button"
                         onClick={() => setOrderDetailsOpen((open) => !open)}

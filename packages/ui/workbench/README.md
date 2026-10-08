@@ -34,7 +34,7 @@ It binds to loopback. No deployment workflow publishes it.
 | Orders            | Semantic status table, row selection, compact/comfortable density and named horizontal scroll region                      |
 | Event / inventory | Existing EventMarketCard, prepared assignment rows and loading/empty/error/pending states                                 |
 | Settings / status | Existing PreferenceSectionCard, settings rows, switch, unavailable connection and restore progress                        |
-| Baseline report   | Retained patterns, prior art, shared component families, exclusions and review choices                                    |
+| Baseline report   | Links to the baseline report and composition guide                                                                        |
 
 Expand Preview controls to change themes, show long content or choose a state. State
 selection applies to Commerce and Event / inventory; density applies to tables.
@@ -110,54 +110,24 @@ should explain its concrete constraint and add a reviewable example here.
 ## Validation before adoption
 
 Run the repository typecheck, lint, build and color/telemetry policies, plus the
-workbench typecheck/build and `bun run ui:check`. Inspect both themes at desktop and phone widths with
-long content and all relevant states. Check keyboard-only use, focus return,
-error recovery, contrast and scroll containment. Physical-device, screen-reader,
-zoom and reduced-motion checks remain separate evidence from a desktop browser
-resized to phone dimensions. The research pass corrects the recorded price/status contrast, clipped names
-and small phone controls. The visual checkpoint is complete. Review the consuming workflow on its target
-devices; the workbench is not a claim that all existing routes conform.
-
-Workbench examples are composition evidence, not cryptographic, payment,
-signer, relay-delivery or authenticated workflow tests.
-
-## Real feature compositions
-
-| Consumer                             | Shared choices                                                                             | Feature-owned behavior                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Merchant Events directory            | PageLayout, PageHeader, Button; existing EventTimeline and SegmentedControl                | Discovery, relationship filters and navigation                                      |
-| Market Portable Wallet setup/restore | Field with Input/Textarea, Tabs, Dialog, Button                                            | Credential handling, validation, create/restore, dismissal cleanup and focus return |
-| Signer connection and recovery       | Shared Tabs, Textarea, Button and ActionRow in ManualSignerConnection/SignerRecoveryNotice | Connection, restoration, safe retry and announcement state                          |
-| All three app shells                 | Shared Tailwind preset, site styles, synchronous theme bootstrap and runtime               | App-specific content scanning and navigation; Store Builder remains a placeholder   |
-
-These replace the Events directory's local heading/page frame, repeated wallet
-nickname/help and recovery-label wrappers, and the recovery action layout. The
-manual signer tabs inherit the shared underline treatment instead of overriding
-it with filled selections and 12 px phone labels. Product cards, statuses and
-controls are the same exports used by real apps. Demo checkout/order examples
-remain fixtures; authenticated or funded success requires separate evidence.
-
-## Guardrails and exceptions
-
-`bun run ui:check` reuses the existing CI color-policy gate. It checks raw
+workbench typecheck/build and `bun run ui:check` reuses the existing CI color-policy gate. It checks raw
 hex/RGB literals, Tailwind palette shortcuts, unresolved CSS variable references,
-copied theme tokens/app presets, and native or ARIA replacements of shared
-controls throughout app source. JSX inspection includes multiline controls.
+and copied theme tokens/app presets. ESLint's `no-restricted-syntax` rejects
+app-local native controls and ARIA replacements of shared keyboard/overlay
+controls, including multiline JSX. Existing controls have reasoned inline
+disables at their source; unused disables fail lint. Adopt shared controls when
+those surfaces change, instead of carrying the disable into new work.
+
 The policy is static: computed class construction and custom interaction logic
 still need code review. CSS variables supplied by Radix are named explicitly;
 local geometry variables must have a declaration or runtime setter.
 
-The exact legacy inventory is in
+The exact legacy color inventory is in
 [`ui-foundation-exceptions.json`](../../../scripts/ci/ui-foundation-exceptions.json).
-It records path, rule, control signature/color, occurrence count and reason.
-All initial entries were verified against main. They cover existing controls
-and colors in untouched routes, domain tag entry and development harnesses;
-they do not approve new uses. No wildcard path or open-ended color exception
-is allowed. Added occurrences fail; removed or changed controls require removing
-or narrowing the old entry. When a surface materially changes, adopt shared
-controls/tokens instead of refreshing its legacy exception. A genuinely needed
-content/data/status exception requires a concrete reason and reviewer approval.
-Black/white contrast utilities remain available for foregrounds and QR media.
+It records path, utility, occurrence count and reason, verified against main.
+Added occurrences and stale entries fail. No wildcard path or open-ended color
+exception is allowed. Use shared tokens when a surface changes. Black/white
+contrast utilities remain available for foregrounds and QR media.
 
 The policy audit repaired undefined wallet borders and a cart HUD shadow using
 existing shared tokens. There is no new theme catalog, state library, form

@@ -108,7 +108,7 @@ function MerchantAvatarFallback() {
 
 export function MerchantBrandLockup() {
   return (
-    <span className="inline-flex min-w-0 items-center gap-3 select-none">
+    <span className="inline-flex min-w-0 items-center gap-2 select-none sm:gap-3">
       <span
         data-merchant-brand-logo=""
         className="h-8 w-6 shrink-0 overflow-hidden min-[420px]:w-[6.75rem]"
@@ -122,7 +122,7 @@ export function MerchantBrandLockup() {
           draggable="false"
         />
       </span>
-      <span className="shrink-0 border-l border-[var(--border)] pl-3 pr-1 font-display text-xl font-medium text-[var(--text-primary)]">
+      <span className="shrink-0 border-l border-[var(--border)] pl-2 pr-1 font-display sm:pl-3 text-xl font-medium text-[var(--text-primary)]">
         merchant
       </span>
     </span>
@@ -334,6 +334,7 @@ export function MerchantAccountMenu() {
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
+        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <button
           type="button"
           aria-label="Open merchant account menu"

@@ -814,6 +814,7 @@ function ProductPage() {
             {hasMultipleImages && (
               <div className="hidden max-h-[calc(100vh-11rem)] self-start overflow-y-auto pr-1 lg:flex lg:flex-col lg:gap-3">
                 {images.map((image, index) => (
+                  // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                   <button
                     key={`${image.url}-${index}`}
                     type="button"
@@ -852,6 +853,7 @@ function ProductPage() {
               {hasMultipleImages && (
                 <div className="flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain border-t border-[var(--border)] p-3 lg:hidden">
                   {images.map((image, index) => (
+                    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                     <button
                       key={`${image.url}-${index}`}
                       type="button"
@@ -1026,6 +1028,7 @@ function ProductPage() {
                       productSoldOut ? "opacity-50" : ""
                     }`}
                   >
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       disabled={productSoldOut || productCartBlocked}
@@ -1040,6 +1043,7 @@ function ProductPage() {
                     <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium text-[var(--text-primary)]">
                       {quantity}
                     </div>
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       disabled={
@@ -1206,6 +1210,7 @@ function ProductPage() {
                   Details
                 </h2>
                 {product.tags.length > 4 && (
+                  // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                   <button
                     type="button"
                     className="text-xs font-medium text-secondary-400 transition-colors hover:text-secondary-300"
@@ -1247,6 +1252,7 @@ function ProductPage() {
                     />
                   </div>
                   {descriptionMetrics.canExpand && (
+                    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                     <button
                       type="button"
                       className="inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-medium text-secondary-400 transition-colors hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"

@@ -348,6 +348,7 @@ function MerchantIdentity({
           ) : null}
         </Link>
         {!nip05 ? (
+          // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
           <button
             type="button"
             className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md text-left font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
@@ -662,6 +663,7 @@ function CartLineItem({
         ) : null}
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
+          {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
           <button
             type="button"
             className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
@@ -672,6 +674,7 @@ function CartLineItem({
           </button>
 
           <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
+            {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
             <button
               type="button"
               className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
@@ -683,6 +686,7 @@ function CartLineItem({
             <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium tabular-nums text-[var(--text-primary)]">
               {item.quantity}
             </div>
+            {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
             <button
               type="button"
               disabled={incrementDisabled}

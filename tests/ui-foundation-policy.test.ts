@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { ESLint } from "eslint"
 import {
   applyUiExceptions,
   inspectUiSources,
@@ -61,17 +62,37 @@ describe("shared UI foundation policy", () => {
       "border-emerald-500",
     ])
   })
-  it("catches native and ARIA control replacements, including multiline JSX, while permitting shared controls", () => {
-    const findings = inspectUiSources([
-      {
-        path: appPath,
-        content:
-          'const view = <><Select /><button\n onClick={act}>Save</button><div role="dialog" /><textarea /></>',
-      },
-    ])
+  it("uses the real ESLint configuration to reject native and ARIA replacements and stale disables", async () => {
+    const eslint = new ESLint()
+    const [result] = await eslint.lintText(
+      'export const view = <><Select /><button\n onClick={act}>Save</button><div role="dialog" /><textarea /></>',
+      { filePath: appPath }
+    )
     expect(
-      findings.filter((finding) => finding.rule === "local-control")
+      result.messages.filter(
+        (message) => message.ruleId === "no-restricted-syntax"
+      )
     ).toHaveLength(3)
+    const [legacy] = await eslint.lintText(
+      "export const view = (\n// eslint-disable-next-line no-restricted-syntax -- Existing control pending adoption.\n<button />\n)",
+      { filePath: appPath }
+    )
+    expect(
+      legacy.messages.filter(
+        (message) => message.ruleId === "no-restricted-syntax"
+      )
+    ).toHaveLength(0)
+    const [stale] = await eslint.lintText(
+      "export const view = (\n// eslint-disable-next-line no-restricted-syntax -- Existing control pending adoption.\n<Button />\n)",
+      { filePath: appPath }
+    )
+    expect(
+      stale.messages.some(
+        (message) =>
+          message.severity === 2 &&
+          message.message.includes("Unused eslint-disable")
+      )
+    ).toBe(true)
   })
   it("requires exact, bounded exceptions with reasons and detects additions and stale entries", () => {
     const finding = {

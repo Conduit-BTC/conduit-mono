@@ -703,6 +703,7 @@ function CheckoutBreadcrumb({
         <>
           <span>/</span>
           {current === "send-order" && onShippingClick ? (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               type="button"
               onClick={onShippingClick}
@@ -4723,6 +4724,7 @@ function CheckoutPage() {
                         Zap visibility
                       </div>
                       <div className="mt-4 grid gap-2 lg:grid-cols-3">
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           aria-pressed={zapMode === "anonymous_public_zap"}
@@ -4750,6 +4752,7 @@ function CheckoutPage() {
                             {anonZapModeDescription}
                           </span>
                         </button>
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           aria-pressed={zapMode === "public_zap_as_shopper"}
@@ -4775,6 +4778,7 @@ function CheckoutPage() {
                             {publicZapModeDescription}
                           </span>
                         </button>
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           aria-pressed={zapMode === "private_checkout"}

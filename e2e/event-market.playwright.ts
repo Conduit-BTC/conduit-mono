@@ -1098,7 +1098,7 @@ test("future Event Market catalog follows signed merchant approval and current p
   )
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
-    page.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toBeEnabled()
   await page.getByRole("heading", { name: "Future Fair soap" }).click()
   await expect(page).toHaveURL(/\/products\/.*[?&]event=/)
@@ -1183,7 +1183,7 @@ test("future Event Market catalog follows signed merchant approval and current p
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toBeVisible()
-  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toHaveCount(0)
@@ -1368,7 +1368,7 @@ test("signed series dates open one market and keep separate buyer choices @marke
         .textContent()) === selectedDateLabel
     ).toBe(true)
     await expect(
-      page.getByRole("button", { name: "Add", exact: true })
+      page.getByRole("button", { name: /^Add .+ to cart$/ })
     ).toBeEnabled()
   }
   await gotoAs(
@@ -1799,9 +1799,9 @@ test("Event Market variable products select a purchasable variation before check
     .getByRole("listitem")
     .filter({ hasText: "Future handoff soap" })
   await expect(
-    card.getByRole("button", { name: "Add", exact: true })
+    card.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toBeEnabled()
-  await card.getByRole("button", { name: "Add", exact: true }).click()
+  await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(page).toHaveURL(/\/products\//)
   expect(new URL(page.url()).searchParams.get("event")).toBe(
     eventCoordinate(market)
@@ -1958,9 +1958,9 @@ test("two future market products form one order and one private organizer releas
     }
     const card = page.getByRole("listitem").filter({ hasText: name })
     await expect(
-      card.getByRole("button", { name: "Add", exact: true })
+      card.getByRole("button", { name: /^Add .+ to cart$/ })
     ).toBeEnabled()
-    await card.getByRole("button", { name: "Add", exact: true }).click()
+    await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
     await expect(
       page.getByRole("button", {
         name: `Cart, ${index + 1} item${index === 0 ? "" : "s"}`,
@@ -3271,16 +3271,16 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
     page.getByText("This Event Market is closed to new purchases.")
   ).toBeVisible()
   await expect(
-    page.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toHaveCount(0)
   await page.getByRole("button", { name: "Ship it", exact: true }).click()
   await expect(
     page.getByRole("button", { name: "Ship it", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
   await expect(
-    page.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toBeEnabled()
-  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
   relay.seed(
     signEvent(ORGANIZER_SECRET, {
@@ -3399,7 +3399,7 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   await expect(
     page.getByRole("heading", { name: "Receipt soap" })
   ).toBeVisible()
-  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
   await page.goto(`${marketUrl}/checkout`)
   await page
@@ -3692,7 +3692,7 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     card.getByRole("heading", { name: MERCHANT_TEMPLATE_TITLE })
   ).toBeVisible()
-  await card.getByRole("button", { name: "Add", exact: true }).click()
+  await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(
     page.getByRole("button", { name: "Cart, 1 item", exact: true })
   ).toBeVisible()
