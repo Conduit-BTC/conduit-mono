@@ -79,11 +79,17 @@ without visitor identity. The dedicated pricing key stays in runtime secret
 storage; public trust and historical keys remain separate from anonymous-zap and
 wallet signing.
 
-Request shape is validated before consuming service capacity. Exact CORS is a
-browser boundary, not caller authentication: a non-browser caller can forge an
-allowed Origin. The shared service ceiling does not provide caller-isolated abuse
-protection. Such protection requires an explicitly reviewed edge/privacy boundary;
-provider failover and cache reuse do not prove it.
+Request shape is validated before protected work. The mandatory native service
+ceiling is consumed once per coalesced upstream refresh, before collection or
+new signing. Valid signed memory/edge cache hits do not consume it. Failed or
+exhausted admission cannot authorize new collection/signing; a previously signed
+snapshot remains usable only within its original freshness. Repeated public
+requests cannot spend refresh capacity while that common snapshot is fresh.
+
+Exact CORS is a browser boundary, not caller authentication: a non-browser caller
+can forge an allowed Origin. This resource ceiling does not claim caller-isolated
+edge abuse protection or DDoS immunity. Adding visitor-based controls requires a
+separately reviewed privacy boundary; no visitor key is introduced here.
 
 ## Source references
 

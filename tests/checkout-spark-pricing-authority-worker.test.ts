@@ -296,6 +296,81 @@ describe("checkout Spark pricing authority standalone Worker", () => {
     expect(calls).toBe(1)
   })
 
+  it.each(["exhausted", "unavailable"] as const)(
+    "keeps another caller's valid cache usable when refresh admission is %s",
+    async (failure) => {
+      const configuration = env()
+      const secondOrigin = "https://merchant.example"
+      configuration.CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS += `,${secondOrigin}`
+      const cache = createCheckoutSparkPricingAuthorityCache()
+      let now = NOW_MS
+      let limits = 0
+      let fetches = 0
+      configuration.CHECKOUT_SPARK_PRICING_RATE_LIMITER = {
+        limit: async () => {
+          limits++
+          if (limits === 1) return { success: true }
+          if (failure === "unavailable")
+            throw new Error("Native limiter unavailable.")
+          return { success: false }
+        },
+      }
+      const overrides = {
+        cache,
+        nowMs: () => now,
+        fetchPricingRate: async () => {
+          fetches++
+          return { rate: 100_000, fetchedAt: now, source: "mempool" as const }
+        },
+      }
+      const original = await handleCheckoutSparkPricingAuthorityRequest(
+        request(),
+        configuration,
+        overrides
+      )
+      const signed = await original.json()
+      for (let count = 0; count < 130; count++) {
+        const repeated = await handleCheckoutSparkPricingAuthorityRequest(
+          request(),
+          configuration,
+          overrides
+        )
+        expect(repeated.status).toBe(200)
+      }
+      expect(limits).toBe(1)
+      const otherCaller = () =>
+        new Request(request(), {
+          headers: { origin: secondOrigin, "content-type": "application/json" },
+        })
+      const other = await handleCheckoutSparkPricingAuthorityRequest(
+        otherCaller(),
+        configuration,
+        overrides
+      )
+      expect(other.status).toBe(200)
+      expect(await other.json()).toEqual(signed)
+      now += 240_001
+      const deniedRefresh = await handleCheckoutSparkPricingAuthorityRequest(
+        otherCaller(),
+        configuration,
+        overrides
+      )
+      expect(deniedRefresh.status).toBe(200)
+      expect(await deniedRefresh.json()).toEqual(signed)
+      expect(limits).toBe(2)
+      expect(fetches).toBe(1)
+      now = NOW_MS + 300_000
+      const expired = await handleCheckoutSparkPricingAuthorityRequest(
+        otherCaller(),
+        configuration,
+        overrides
+      )
+      expect(expired.status).toBe(failure === "exhausted" ? 429 : 503)
+      expect(fetches).toBe(1)
+      expect(limits).toBe(3)
+    }
+  )
+
   it("serves an unexpired cached snapshot through an outage without rejuvenating it", async () => {
     const cache = createCheckoutSparkPricingAuthorityCache()
     const configuration = env()

@@ -5,6 +5,7 @@ import { getCheckoutSparkPricingAuthorityPublicKey } from "@conduit/core/protoco
 import {
   createCheckoutSparkPricingAuthorityCache,
   nativePricingSnapshotStore,
+  PricingRefreshUnavailable,
   type PricingSnapshotStore,
 } from "./checkout-pricing-cache"
 import { previewPricingQualification } from "./checkout-pricing-qualification"
@@ -223,20 +224,10 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
   } catch {
     return response({ error: "Invalid pricing request." }, 400, origin)
   }
-  // Rejected input cannot consume the capacity reserved for valid rate requests.
-  const rateLimit = await applyRateLimit(env)
-  if (rateLimit !== "ok")
-    return response(
-      {
-        error:
-          rateLimit === "limited"
-            ? "Checkout pricing is rate limited."
-            : "Checkout pricing is unavailable.",
-      },
-      rateLimit === "limited" ? 429 : 503,
-      origin,
-      rateLimit === "limited" ? { "retry-after": "60" } : undefined
-    )
+  // The binding is mandatory. Its ceiling protects new upstream/signing work;
+  // serving an already-signed valid cache entry cannot consume that capacity.
+  if (!env.CHECKOUT_SPARK_PRICING_RATE_LIMITER)
+    return response({ error: "Checkout pricing is unavailable." }, 503, origin)
   let qualification: ReturnType<typeof previewPricingQualification>
   try {
     qualification = previewPricingQualification(
@@ -266,6 +257,7 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
       fetchPricingRate: dependencies.fetchPricingRate,
       fetchImpl: qualification?.fetchImpl,
       store: dependencies.store,
+      beforeRefresh: () => applyRateLimit(env),
       waitUntil: execution
         ? (promise) => execution.waitUntil(promise)
         : undefined,
@@ -284,13 +276,20 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
           : {}),
       }
     )
-  } catch {
+  } catch (error) {
+    const limited =
+      error instanceof PricingRefreshUnavailable && error.code === "limited"
     return response(
-      { error: "Checkout pricing is unavailable." },
-      503,
+      {
+        error: limited
+          ? "Checkout pricing is rate limited."
+          : "Checkout pricing is unavailable.",
+      },
+      limited ? 429 : 503,
       origin,
       {
         ...dependencies.cache.diagnostics(),
+        ...(limited ? { "retry-after": "60" } : {}),
         ...(qualification
           ? { "x-pricing-qualification": qualification.phase }
           : {}),

@@ -45,6 +45,12 @@ export interface PricingSnapshotStore {
   ): Promise<void>
 }
 
+export class PricingRefreshUnavailable extends Error {
+  constructor(readonly code: "limited" | "unavailable") {
+    super("Checkout pricing is unavailable.")
+  }
+}
+
 /** Cache only a public signed payload; never cache origin-specific responses. */
 export function nativePricingSnapshotStore(
   origin: string
@@ -90,6 +96,7 @@ type SnapshotInput = {
   fetchImpl?: typeof fetch
   store?: PricingSnapshotStore
   waitUntil?: (promise: Promise<unknown>) => void
+  beforeRefresh?: () => Promise<"ok" | "limited" | "unavailable">
 }
 
 /** One in-flight refresh per isolate. Edge eviction safely becomes a cold lookup. */
@@ -97,6 +104,7 @@ export function createCheckoutSparkPricingAuthorityCache() {
   let snapshot: CheckoutSparkPricingRateAttestation | undefined
   let pending: Promise<CheckoutSparkPricingRateAttestation> | undefined
   let nextAttemptMs = 0
+  let lastFailure: unknown
   let cacheState = "miss"
   let refreshState = "none"
   let storeState = "unused"
@@ -116,6 +124,10 @@ export function createCheckoutSparkPricingAuthorityCache() {
     attempts = []
     const previous = snapshot
     const refresh = (async () => {
+      if (input.beforeRefresh) {
+        const admission = await input.beforeRefresh()
+        if (admission !== "ok") throw new PricingRefreshUnavailable(admission)
+      }
       const fetched = await input.fetchPricingRate({
         preferredFiatCurrencies: COMMON_FIAT_CURRENCIES,
         includeFiatRates: true,
@@ -171,6 +183,7 @@ export function createCheckoutSparkPricingAuthorityCache() {
       snapshot = freezeCheckoutSparkPricingRateAttestation(candidate)
       refreshState = "ok"
       nextAttemptMs = 0
+      lastFailure = undefined
       if (input.store) {
         try {
           await cacheDeadline(input.store.write(key, snapshot, input.nowMs()))
@@ -182,8 +195,10 @@ export function createCheckoutSparkPricingAuthorityCache() {
       }
       return snapshot
     })().catch((error) => {
-      refreshState = "unavailable"
+      refreshState =
+        error instanceof PricingRefreshUnavailable ? error.code : "unavailable"
       nextAttemptMs = input.nowMs() + FAILED_REFRESH_PAUSE_MS
+      lastFailure = error
       throw error
     })
     pending = refresh
@@ -258,7 +273,7 @@ export function createCheckoutSparkPricingAuthorityCache() {
         if (valid(snapshot, input)) return snapshot!
       }
       if (input.nowMs() < nextAttemptMs && !pending)
-        throw new Error("Checkout pricing is unavailable.")
+        throw lastFailure ?? new Error("Checkout pricing is unavailable.")
       await startRefresh(input, key)
       if (!valid(snapshot, input))
         throw new Error("Checkout pricing is unavailable.")
