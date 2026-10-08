@@ -42,6 +42,7 @@ const networkOptions = {
   appUrls: [marketUrl, merchantUrl],
   relayUrl: TEST_RELAY_URL,
   imageUrl,
+  closeLocalConnections: true,
 }
 
 test.use({ screenshot: "off", trace: "off", video: "off" })
@@ -256,7 +257,10 @@ test("supplier percentages and readiness gate publish exact signed terms consume
   browser,
 }, testInfo) => {
   test.setTimeout(120_000)
+  let recordedNetworkFailure = false
   const onLocalFailure = (diagnostic: HermeticNetworkFailureDiagnostic) => {
+    if (recordedNetworkFailure) return
+    recordedNetworkFailure = true
     for (const field of ["operation", "source", "category"] as const) {
       testInfo.annotations.push({
         type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS[field],

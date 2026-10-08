@@ -4,6 +4,7 @@ import {
   fingerprintCheckoutSparkSettledLegIntent,
   hasCheckoutSparkProviderSendWindow,
   hasCheckoutSparkNativePreProviderCancellation,
+  hasCheckoutSparkOutgoingPreProviderCancellation,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRepositorySnapshot,
   type CheckoutSparkBuyerPrice,
@@ -130,6 +131,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   routerWalletOpen: boolean
   /** Opaque process scope is a hint; never reconstruct it from saved progress. */
   nativeAdmissionScope?: object
+  outgoingAdmissionScope?: object
 }): CheckoutSparkSettledOrderControlState {
   const blocked = (reason: string): CheckoutSparkSettledOrderControlState => ({
     status: "blocked",
@@ -367,13 +369,19 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   const nativeTreasuryLeg =
     plan.schemaVersion === 4 && recipient.kind === "conduit"
   const locallyCancelled =
-    nativeTreasuryLeg &&
     snapshot.status === "active" &&
-    hasCheckoutSparkNativePreProviderCancellation(
-      input.nativeAdmissionScope,
-      state,
-      snapshot.revision
-    )
+    (nativeTreasuryLeg
+      ? hasCheckoutSparkNativePreProviderCancellation(
+          input.nativeAdmissionScope,
+          state,
+          snapshot.revision
+        )
+      : hasCheckoutSparkOutgoingPreProviderCancellation(
+          input.outgoingAdmissionScope,
+          state,
+          snapshot.revision,
+          leg.legId
+        ))
   if (
     (leg.status === "terminal_failure" && !locallyCancelled) ||
     leg.status === "conflicting_evidence"
@@ -393,18 +401,20 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     return blocked("The saved native treasury intent is unavailable.")
   }
   const sendWindowAvailable =
-    leg.status === "prepared" &&
+    (leg.status === "prepared" || locallyCancelled) &&
     leg.intent !== null &&
     hasCheckoutSparkProviderSendWindow({
       paymentRequest: leg.intent.paymentRequest,
       nowMs: now,
     })
   const sendWindowEndsAt =
-    leg.status === "prepared" && leg.intent
+    (leg.status === "prepared" || locallyCancelled) && leg.intent
       ? checkoutSparkProviderSendWindowEndsAt(leg.intent.paymentRequest)
       : null
   const payoutReview: CheckoutSparkSettledPayoutReview | null =
-    leg.status === "prepared" && leg.intent && leg.allocationSats !== null
+    (leg.status === "prepared" || locallyCancelled) &&
+    leg.intent &&
+    leg.allocationSats !== null
       ? {
           recipientKind: recipient.kind,
           sourceLabel:
@@ -426,7 +436,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   const intentFingerprint =
     nativeTreasuryLeg && treasuryFinalization?.intent
       ? treasuryFinalization.intent.accountingDigest
-      : leg.status === "prepared" && leg.intent
+      : (leg.status === "prepared" || locallyCancelled) && leg.intent
         ? fingerprintCheckoutSparkSettledLegIntent(leg.intent)
         : null
   const siblingPossibleSend = state.legs.some(

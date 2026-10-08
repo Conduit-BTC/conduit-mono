@@ -523,6 +523,12 @@ const BECH32_CHECKSUM_WORD_COUNT = 6
 const BOLT11_PAYMENT_HASH_WORD_COUNT = 52
 const BOLT11_DESCRIPTION_HASH_WORD_COUNT = 52
 
+// Reuse only positive mathematical verdicts, not invoice or payment authority.
+// Every arrival still passes fresh parsing, checksum, field and digest checks.
+// Keys contain bounded crypto inputs only; no full invoice is retained.
+const MAX_VERIFIED_BOLT11_SIGNATURES = 4_096
+const verifiedBolt11Signatures = new Set<string>()
+
 type Bolt11TaggedField = {
   tag: string
   words: number[]
@@ -760,23 +766,37 @@ export function isValidLightningInvoice(invoice: string): boolean {
     )
     const compact = signature.slice(0, 64)
     const payee = fields("n")[0]
-    if (payee) {
+    const payeePublicKey = payee ? wordsToBytes(payee.words, 33)! : null
+    const signatureKey = `${bytesToHex(digest)}:${bytesToHex(signature)}:${payeePublicKey ? `payee-low-s:${bytesToHex(payeePublicKey)}` : "recover"}`
+    if (verifiedBolt11Signatures.has(signatureKey)) return true
+    let valid: boolean
+    if (payeePublicKey) {
       // With an explicit payee, recovery is forbidden and low-S is mandatory.
-      return secp256k1.verify(compact, digest, wordsToBytes(payee.words, 33)!, {
+      valid = secp256k1.verify(compact, digest, payeePublicKey, {
         prehash: false,
         lowS: true,
       })
+    } else {
+      // Noble's recovered encoding puts the recovery byte first; BOLT11 puts it last.
+      const publicKey = secp256k1.recoverPublicKey(
+        concatBytes(signature.slice(64), compact),
+        digest,
+        { prehash: false }
+      )
+      valid = secp256k1.verify(compact, digest, publicKey, {
+        prehash: false,
+        lowS: false,
+      })
     }
-    // Noble's recovered encoding puts the recovery byte first; BOLT11 puts it last.
-    const publicKey = secp256k1.recoverPublicKey(
-      concatBytes(signature.slice(64), compact),
-      digest,
-      { prehash: false }
-    )
-    return secp256k1.verify(compact, digest, publicKey, {
-      prehash: false,
-      lowS: false,
-    })
+    if (valid) {
+      if (verifiedBolt11Signatures.size >= MAX_VERIFIED_BOLT11_SIGNATURES) {
+        verifiedBolt11Signatures.delete(
+          verifiedBolt11Signatures.values().next().value!
+        )
+      }
+      verifiedBolt11Signatures.add(signatureKey)
+    }
+    return valid
   } catch {
     // Malformed UTF-8, public keys, signatures and impossible recovery all fail closed.
     return false

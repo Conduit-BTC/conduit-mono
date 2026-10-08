@@ -9,6 +9,7 @@ import {
 } from "./checkout-spark-settled-router"
 import {
   runCheckoutSparkSettledOutgoingStep,
+  hasCheckoutSparkOutgoingPreProviderCancellation,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingStateStore,
   type CheckoutSparkSettledOutgoingStepInput,
@@ -192,6 +193,19 @@ export async function runCheckoutSparkFinancialWorkflow(
     return { ...snapshot, state }
   }
   const store: CheckoutSparkSettledOutgoingStateStore = {
+    outgoingAdmissionScope: ports.store.outgoingAdmissionScope,
+    ...(ports.store.saveOutgoingPreProviderRetry
+      ? {
+          saveOutgoingPreProviderRetry: (state, revision, cancellation) =>
+            checked(() =>
+              ports.store.saveOutgoingPreProviderRetry!(
+                state,
+                revision,
+                cancellation
+              )
+            ),
+        }
+      : {}),
     load: (checkoutId, planDigest) =>
       checked(() => ports.store.load(checkoutId, planDigest)),
     save: (state, revision) => checked(() => ports.store.save(state, revision)),
@@ -399,7 +413,17 @@ export async function runCheckoutSparkFinancialWorkflow(
           : {}),
       }
       const observed = await provider.reconcile(target)
-      if (observed.status === "not_found" && original.status === "prepared")
+      if (
+        observed.status === "not_found" &&
+        (original.status === "prepared" ||
+          (!input.inspectionOnly &&
+            hasCheckoutSparkOutgoingPreProviderCancellation(
+              store.outgoingAdmissionScope,
+              current.state,
+              current.revision,
+              original.legId
+            )))
+      )
         continue
       if (observed.status !== "paid") {
         // A permitted renewal still needs fresh full-return proof; absence is
@@ -511,8 +535,17 @@ export async function runCheckoutSparkFinancialWorkflow(
   const nativeFinal = Boolean(
     plan.nativeTreasury && recipient.kind === "conduit"
   )
+  const locallyCancelled =
+    !input.inspectionOnly &&
+    hasCheckoutSparkOutgoingPreProviderCancellation(
+      store.outgoingAdmissionScope,
+      current.state,
+      current.revision,
+      next.legId
+    )
   if (
     !nativeFinal &&
+    !locallyCancelled &&
     (!input.allowRenewal || input.mode !== "prepare") &&
     (next.status === "terminal_failure" ||
       next.status === "conflicting_evidence")
@@ -567,6 +600,10 @@ export async function runCheckoutSparkFinancialWorkflow(
     })
     return { status: "outgoing_step", step }
   }
+  // A live cancellation already owns its exact invoice. Preparation may neither
+  // renew it nor spend it; the next explicit advance rechecks all send guards.
+  if (locallyCancelled && input.mode === "prepare")
+    return { status: "payout_prepared", state: current.state }
   if (!next.intent || input.mode === "prepare") {
     if (input.inspectionOnly || !ports.preparation) {
       return {

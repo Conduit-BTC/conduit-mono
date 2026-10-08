@@ -55,8 +55,10 @@ import {
 import {
   continueMerchantCheckoutSparkSettledPayout,
   reviewMerchantCheckoutSparkSettledPayout,
+  selectMerchantCheckoutSparkSignedNextPayout,
   type MerchantCheckoutSparkContinuationDependencies,
 } from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
+import { advanceMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -3384,7 +3386,104 @@ describe("Merchant checkout Spark payout history inspection", () => {
     }
   })
 
-  it("never sends when the submitted Merchant snapshot loses its relay ACK and never clears possible-send on retry", async () => {
+  it("automatically continues the same live Merchant Lightning intent after a positively cancelled submitted ACK", async () => {
+    await withRecoveryDatabase(async (database, repository) => {
+      const test = await merchantContinuationHarness(database, repository)
+      const transport = test.dependencies.progressTransport!
+      const publish = transport.publishFn!
+      let lostAck = false
+      let rescans = 0
+      let pending = true
+      let cancelledIntent: unknown
+      transport.publishFn = async (...args) => {
+        const result = await publish(...args)
+        const current = await repository.load(
+          test.snapshot.plan.checkoutId,
+          test.snapshot.plan.planDigest
+        )
+        if (
+          !lostAck &&
+          current.status === "active" &&
+          current.state.legs[0]!.status === "submitted"
+        ) {
+          lostAck = true
+          throw new Error("Synthetic submitted relay ACK lost")
+        }
+        return result
+      }
+      const assertActive = () => {
+        expect(getProtectedReadAuthorization(MERCHANT)).not.toBeNull()
+      }
+      const observationOptions = {
+        ...test.dependencies,
+        openWallet: async () => continuationWallet(test, test.provider),
+      }
+      // Exercise the actual serialized automatic adapter and its rescan signal,
+      // not two manual calls to the one-step continuation helper.
+      for (let iteration = 0; pending && iteration < 3; iteration += 1) {
+        pending = false
+        const result = await advanceMerchantCheckoutSparkOrder(
+          MERCHANT,
+          test.selected,
+          assertActive,
+          {
+            repository,
+            now: test.dependencies.now,
+            checkCredit: (principal, selected, options) =>
+              reconcileMerchantCheckoutSparkSettledCredit(principal, selected, {
+                ...options,
+                ...observationOptions,
+              }),
+            inspectPayouts: (principal, selected, options) =>
+              inspectMerchantCheckoutSparkSettledPayoutHistory(
+                principal,
+                selected,
+                { ...options, ...observationOptions }
+              ),
+            selectPayout: selectMerchantCheckoutSparkSignedNextPayout,
+            continuePayout: (principal, selected, review, options) =>
+              continueMerchantCheckoutSparkSettledPayout(
+                principal,
+                selected,
+                review,
+                { ...test.dependencies, ...options }
+              ),
+            notifySuppliers: () => {},
+            requestRescan: () => {
+              rescans += 1
+              pending = true
+            },
+          }
+        )
+        expect(result).toBe("progress_pending")
+        const current = await repository.load(
+          test.snapshot.plan.checkoutId,
+          test.snapshot.plan.planDigest
+        )
+        if (iteration === 0) {
+          expect(current.status).toBe("active")
+          if (current.status !== "active") throw new Error("Fixture missing")
+          expect(current.state.legs[0]!.status).toBe("terminal_failure")
+          cancelledIntent = current.state.legs[0]!.intent
+          expect(test.provider.sends).toBe(0)
+        } else {
+          expect(
+            current.status === "active" && current.state.legs[0]!.status
+          ).toBe("paid")
+          expect(
+            current.status === "active" && current.state.legs[0]!.intent
+          ).toEqual(cancelledIntent)
+          pending = false
+        }
+      }
+      expect(lostAck).toBe(true)
+      expect(rescans).toBe(2)
+      expect(test.provider.sends).toBe(1)
+      expect(test.provider.cleanups).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  it("keeps a cold Merchant submitted-ACK cancellation label query-only and retries only its exact wrapper", async () => {
     await withRecoveryDatabase(async (database, repository) => {
       const test = await merchantContinuationHarness(database, repository)
       const transport = test.dependencies.progressTransport!
@@ -3414,7 +3513,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
         test.snapshot.plan.planDigest
       )
       expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
-        "submitted"
+        "terminal_failure"
       )
       const entries = await test.progressStore.list(
         MERCHANT,
@@ -3426,7 +3525,13 @@ describe("Merchant checkout Spark payout history inspection", () => {
         .signedRecipientWrap
       const wrappedCount = test.snapshots.length
       transport.publishFn = publish
-      const second = await test.run()
+      const reloaded = new ConduitDB(database.name, { indexedDB, IDBKeyRange })
+      const coldRepository = new DexieCheckoutSparkSettledRepository(reloaded)
+      expect(coldRepository.outgoingAdmissionScope).not.toBe(
+        repository.outgoingAdmissionScope
+      )
+      test.dependencies.repository = coldRepository
+      const second = await test.run().finally(() => reloaded.close())
       expect(second.payout?.sendAttempted).toBe(false)
       expect(test.provider.sends).toBe(0)
       expect(test.published.at(-1)).toEqual(pendingWrap)
@@ -3445,10 +3550,74 @@ describe("Merchant checkout Spark payout history inspection", () => {
         test.snapshot.plan.planDigest
       )
       expect(after.status === "active" && after.state.legs[0]!.status).toBe(
-        "submitted"
+        "terminal_failure"
       )
     })
   })
+
+  it.each(["account", "expiry", "retry_cas"] as const)(
+    "does not admit a live Merchant Lightning cancellation after %s revokes authority",
+    async (change) => {
+      await withRecoveryDatabase(async (database, repository) => {
+        const test = await merchantContinuationHarness(database, repository)
+        const transport = test.dependencies.progressTransport!
+        const publish = transport.publishFn!
+        transport.publishFn = async (...args) => {
+          const result = await publish(...args)
+          const current = await repository.load(
+            test.snapshot.plan.checkoutId,
+            test.snapshot.plan.planDigest
+          )
+          if (
+            current.status === "active" &&
+            current.state.legs[0]!.status === "submitted"
+          )
+            throw new Error("Synthetic submitted relay ACK lost")
+          return result
+        }
+        expect((await test.run()).payout?.reason).toBe(
+          "recovery_handoff_unavailable"
+        )
+        const cancelled = await repository.load(
+          test.snapshot.plan.checkoutId,
+          test.snapshot.plan.planDigest
+        )
+        expect(
+          cancelled.status === "active" && cancelled.state.legs[0]!.status
+        ).toBe("terminal_failure")
+        transport.publishFn = publish
+        if (change === "account") {
+          __resetProtectedReadSigner()
+          await expect(test.run()).rejects.toThrow()
+        } else if (change === "expiry") {
+          const endsAt = checkoutSparkProviderSendWindowEndsAt(
+            test.intent.paymentRequest
+          )
+          if (endsAt === null) throw new Error("Fixture invoice expiry missing")
+          test.dependencies.now = () => endsAt
+          expect((await test.run()).payout).toMatchObject({
+            outcome: "wait",
+            reason: "invoice_window_insufficient",
+            sendAttempted: false,
+          })
+        } else {
+          const save = repository.saveOutgoingPreProviderRetry.bind(repository)
+          repository.saveOutgoingPreProviderRetry = async (...args) => {
+            __resetProtectedReadSigner()
+            return save(...args)
+          }
+          await expect(test.run()).rejects.toThrow()
+        }
+        expect(
+          await repository.load(
+            test.snapshot.plan.checkoutId,
+            test.snapshot.plan.planDigest
+          )
+        ).toEqual(cancelled)
+        expect(test.provider.sends).toBe(0)
+      })
+    }
+  )
 
   it("retains verified paid state when publishing the later Merchant paid snapshot loses its ACK", async () => {
     await withRecoveryDatabase(async (database, repository) => {
@@ -3553,7 +3722,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
           test.snapshot.plan.planDigest
         )
         expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
-          lostStatus
+          lostStatus === "submitted" ? "terminal_failure" : "paid"
         )
         const wrappedCount = test.snapshots.length
         const sendCount = test.provider.sends
@@ -3687,9 +3856,9 @@ describe("Merchant checkout Spark payout history inspection", () => {
           }
           return result
         }
-        const pending = test.run()
-        if (interruption === "account") await expect(pending).rejects.toThrow()
-        else expect((await pending).payout?.sendAttempted).toBe(false)
+        // Neither a revoked identity nor a changed CAS snapshot may persist a
+        // cancellation capability for the earlier submitted revision.
+        await expect(test.run()).rejects.toThrow()
         expect(test.provider.sends).toBe(0)
         expect(test.provider.cleanups).toBe(1)
         const current = await repository.load(

@@ -21,6 +21,11 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         scrollY: "number",
         measuredFooterHeight: "number",
         footerHidden: "boolean",
+        widgetMarginBottom: "number",
+        widgetTransformY: "number",
+        footerTransformY: "number",
+        widgetHiddenShift: "number",
+        widgetBottomOffset: "number",
       },
     },
     "product-submit": {

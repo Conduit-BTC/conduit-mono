@@ -17,6 +17,7 @@ import type {
   CheckoutSparkSettledOutgoingStepResult,
 } from "./checkout-spark-settled-outgoing"
 import type { CheckoutSparkSettledRepositorySnapshot } from "./checkout-spark-settled-router-repository"
+import { createCheckoutSparkPreProviderCancellationRegistry } from "./checkout-spark-pre-provider-cancellation"
 
 export interface CheckoutSparkNativeTreasuryPlan {
   readonly schemaVersion: 1
@@ -71,20 +72,8 @@ export interface CheckoutSparkNativePreProviderCancellation {
   readonly [nativeCancellationBrand]: true
 }
 
-interface NativeCancellationAuthority {
-  readonly scope: object
-  readonly state: string
-  readonly revision: number
-  consumed: boolean
-}
-const nativeCancellationAuthorities = new WeakMap<
-  CheckoutSparkNativePreProviderCancellation,
-  NativeCancellationAuthority
->()
-const nativeCancellationsByScope = new WeakMap<
-  object,
-  Map<string, CheckoutSparkNativePreProviderCancellation>
->()
+const nativeCancellations =
+  createCheckoutSparkPreProviderCancellationRegistry<CheckoutSparkNativePreProviderCancellation>()
 const cancellationKey = (state: CheckoutSparkSettledReconciliation) =>
   `${state.plan.checkoutId}:${state.plan.planDigest}`
 
@@ -93,21 +82,7 @@ function rememberPreProviderCancellation(
   state: CheckoutSparkSettledReconciliation,
   revision: number
 ): void {
-  const capability = Object.freeze(
-    {}
-  ) as CheckoutSparkNativePreProviderCancellation
-  nativeCancellationAuthorities.set(capability, {
-    scope,
-    state: JSON.stringify(state),
-    revision,
-    consumed: false,
-  })
-  let cancellations = nativeCancellationsByScope.get(scope)
-  if (!cancellations) {
-    cancellations = new Map()
-    nativeCancellationsByScope.set(scope, cancellations)
-  }
-  cancellations.set(cancellationKey(state), capability)
+  nativeCancellations.remember(scope, state, revision, cancellationKey(state))
 }
 
 function loadPreProviderCancellation(
@@ -115,16 +90,12 @@ function loadPreProviderCancellation(
   state: CheckoutSparkSettledReconciliation,
   revision: number
 ): CheckoutSparkNativePreProviderCancellation | undefined {
-  const capability =
-    scope && nativeCancellationsByScope.get(scope)?.get(cancellationKey(state))
-  if (!capability) return undefined
-  const authority = nativeCancellationAuthorities.get(capability)
-  return authority &&
-    !authority.consumed &&
-    authority.revision === revision &&
-    authority.state === JSON.stringify(state)
-    ? capability
-    : undefined
+  return nativeCancellations.load(
+    scope,
+    state,
+    revision,
+    cancellationKey(state)
+  )
 }
 
 /** Presentation/continuation hint only; the engine and CAS recheck exact proof. */
@@ -147,7 +118,7 @@ export function assertCheckoutSparkNativePreProviderRetry(
   expectedRevision: number,
   capability: CheckoutSparkNativePreProviderCancellation
 ): void {
-  const authority = nativeCancellationAuthorities.get(capability)
+  const authority = nativeCancellations.authority(capability)
   if (
     !authority ||
     authority.consumed ||
@@ -172,7 +143,7 @@ export function isCheckoutSparkNativePreProviderRetry(
   target: CheckoutSparkNativeTreasuryTarget
 ): boolean {
   if (!capability) return false
-  const authority = nativeCancellationAuthorities.get(capability)
+  const authority = nativeCancellations.authority(capability)
   if (!authority || authority.consumed) return false
   const state = JSON.parse(
     authority.state
@@ -754,9 +725,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
   if (!state.credit) return result("funding_wait")
   if (state.treasuryFinalization!.status === "paid") {
     if (input.store.nativeAdmissionScope)
-      nativeCancellationsByScope
-        .get(input.store.nativeAdmissionScope)
-        ?.delete(cancellationKey(state))
+      nativeCancellations.forget(
+        input.store.nativeAdmissionScope,
+        cancellationKey(state)
+      )
     return result("already_paid")
   }
   if (
@@ -832,9 +804,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
       })
     )
     if (observation.status === "paid" && input.store.nativeAdmissionScope)
-      nativeCancellationsByScope
-        .get(input.store.nativeAdmissionScope)
-        ?.delete(cancellationKey(state))
+      nativeCancellations.forget(
+        input.store.nativeAdmissionScope,
+        cancellationKey(state)
+      )
     return observation.status === "paid"
       ? result("paid", undefined, attempted)
       : result(
@@ -918,8 +891,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
     undefined,
     cancellation
   )
-  if (cancellation)
-    nativeCancellationAuthorities.get(cancellation)!.consumed = true
+  if (cancellation) nativeCancellations.consume(cancellation)
   try {
     await input.acknowledgeRecoverySnapshot(state)
   } catch {

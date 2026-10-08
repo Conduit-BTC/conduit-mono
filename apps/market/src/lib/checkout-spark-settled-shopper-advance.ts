@@ -92,6 +92,8 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
         | "hasInvoiceRecipientSettlement"
         | "nativeTreasuryAdmissionScope"
         | "saveTreasuryPreProviderRetry"
+        | "outgoingAdmissionScope"
+        | "saveOutgoingPreProviderRetry"
       >
     >
   sparkConfiguration?: typeof getSparkConfiguration
@@ -399,6 +401,29 @@ export async function advanceCheckoutSparkSettledShopper(
   const nextId = input.legId
   if (nextId === null)
     throw new Error("Checkout Spark funding already settled.")
+  const outgoingStore = {
+    outgoingAdmissionScope: repository.outgoingAdmissionScope,
+    ...(repository.saveOutgoingPreProviderRetry
+      ? {
+          saveOutgoingPreProviderRetry: (
+            state: CheckoutSparkSettledReconciliation,
+            revision: number,
+            cancellation: Parameters<
+              NonNullable<typeof repository.saveOutgoingPreProviderRetry>
+            >[2]
+          ) =>
+            repository.saveOutgoingPreProviderRetry!(
+              state,
+              revision,
+              cancellation,
+              assertSession
+            ),
+        }
+      : {}),
+    load: repository.load.bind(repository),
+    save: (state: CheckoutSparkSettledReconciliation, revision: number) =>
+      repository.save(state, revision, assertSession),
+  }
   const result = await runCheckoutSparkFinancialWorkflow(
     {
       checkoutId: plan.checkoutId,
@@ -409,7 +434,7 @@ export async function advanceCheckoutSparkSettledShopper(
       inspectionOnly: input.inspectionOnly,
     },
     {
-      store: repository,
+      store: outgoingStore,
       assertCurrent: assertAuthority,
       now,
       outgoing: guardedProvider,

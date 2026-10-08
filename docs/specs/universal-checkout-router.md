@@ -253,13 +253,15 @@ eventual settlement. After possible submission, query the same attempt; a
 timeout or absent lookup cannot authorize another send. Native completion
 requires exact claimed-transfer evidence, not only invoice finalization.
 
-An exact native intent may retry only after durable, positive pre-provider
-cancellation evidence. The current adapter retains that terminal cancellation
-and requires a process-local, exact-revision capability issued by the executor
-that positively prevented provider submission. A restored or imported failure
-label cannot recreate the capability. Any actual or potentially actual provider
-invocation remains query-only until independently reconciled; missing history
-does not establish cancellation.
+An exact Lightning or native intent may retry only after durable, positive
+pre-provider cancellation evidence. The executor retains that terminal
+cancellation and requires a process-local capability bound to the exact
+repository, committed revision and unchanged intent, issued only after durable
+readback of a positively prevented provider submission. A restored or imported
+failure label cannot recreate the capability. Fresh authority, invoice-window,
+recipient and recovery-checkpoint checks still precede dispatch. Any actual or
+potentially actual provider invocation remains query-only until independently
+reconciled; missing history does not establish cancellation.
 
 The bounded Merchant-only Lightning renewal in
 [wallets.md](wallets.md#lightning-closed-attempt-invoice-renewal) requires positive

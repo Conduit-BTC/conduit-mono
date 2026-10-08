@@ -14,9 +14,92 @@ import {
   type CheckoutSparkSettledReturnedProof,
 } from "./checkout-spark-settled-returned"
 import type { CheckoutSparkSettledRepositorySnapshot } from "./checkout-spark-settled-router-repository"
+import { createCheckoutSparkPreProviderCancellationRegistry } from "./checkout-spark-pre-provider-cancellation"
 
 type Leg = CheckoutSparkSettledReconciliation["legs"][number]
 type Intent = NonNullable<Leg["intent"]>
+
+declare const outgoingCancellationBrand: unique symbol
+/** Live Core evidence only; never serialized or recreated from a failed label. */
+export interface CheckoutSparkOutgoingPreProviderCancellation {
+  readonly [outgoingCancellationBrand]: true
+}
+const outgoingCancellations =
+  createCheckoutSparkPreProviderCancellationRegistry<CheckoutSparkOutgoingPreProviderCancellation>()
+const cancellationKey = (
+  state: CheckoutSparkSettledReconciliation,
+  legId: string
+) => `${state.plan.checkoutId}:${state.plan.planDigest}:${legId}`
+
+/** Continuation hint only; the engine and repository independently recheck it. */
+export function hasCheckoutSparkOutgoingPreProviderCancellation(
+  scope: object | undefined,
+  state: CheckoutSparkSettledReconciliation,
+  revision: number,
+  legId: string
+): boolean {
+  return (
+    state.legs.some(
+      (leg) => leg.legId === legId && leg.status === "terminal_failure"
+    ) &&
+    Boolean(
+      outgoingCancellations.load(
+        scope,
+        state,
+        revision,
+        cancellationKey(state, legId)
+      )
+    )
+  )
+}
+
+/** Only the cancelled leg may cross this narrow exact-intent CAS exception. */
+export function assertCheckoutSparkOutgoingPreProviderRetry(
+  scope: object,
+  previous: CheckoutSparkSettledReconciliation,
+  next: CheckoutSparkSettledReconciliation,
+  expectedRevision: number,
+  cancellation: CheckoutSparkOutgoingPreProviderCancellation
+): string {
+  const authority = outgoingCancellations.authority(cancellation)
+  const position = previous.legs.findIndex(
+    (leg, index) =>
+      leg.status === "terminal_failure" &&
+      next.legs[index]?.status === "submitted"
+  )
+  const before = previous.legs[position]
+  const after = next.legs[position]
+  if (
+    !authority ||
+    authority.consumed ||
+    authority.scope !== scope ||
+    authority.revision !== expectedRevision ||
+    authority.state !== JSON.stringify(previous) ||
+    !before?.intent ||
+    !after ||
+    before.legId !== after.legId ||
+    JSON.stringify(before.intent) !== JSON.stringify(after.intent) ||
+    getCheckoutSparkSettledLegGeneration(before) !==
+      getCheckoutSparkSettledLegGeneration(after) ||
+    JSON.stringify(before.closedGenerations ?? []) !==
+      JSON.stringify(after.closedGenerations ?? []) ||
+    previous.legs.some(
+      (leg, index) =>
+        index !== position &&
+        JSON.stringify(leg) !== JSON.stringify(next.legs[index])
+    ) ||
+    outgoingCancellations.load(
+      scope,
+      previous,
+      expectedRevision,
+      cancellationKey(previous, before.legId)
+    ) !== cancellation
+  )
+    throw new Error(
+      "Checkout Spark outgoing cancellation authority is invalid."
+    )
+  return before.legId
+}
 
 export interface CheckoutSparkSettledOutgoingTarget {
   readonly generation?: 0 | 1
@@ -149,7 +232,7 @@ export async function classifyCheckoutSparkSettledPayment(
     : paymentObservation(target, "conflicting_evidence")
 }
 
-/** A certified not-sent result is terminal for this frozen invoice in v3. */
+/** A not-sent label is terminal, never process-local cancellation proof. */
 export type CheckoutSparkSettledOutgoingSendResult =
   CheckoutSparkSettledOutgoingObservation | { readonly status: "not_sent" }
 
@@ -175,6 +258,13 @@ export interface CheckoutSparkSettledOutgoingProvider {
 }
 
 export interface CheckoutSparkSettledOutgoingStateStore {
+  /** Stable only for this repository process; never persisted or imported. */
+  readonly outgoingAdmissionScope?: object
+  saveOutgoingPreProviderRetry?(
+    state: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    cancellation: CheckoutSparkOutgoingPreProviderCancellation
+  ): Promise<CheckoutSparkSettledRepositorySnapshot>
   load(
     checkoutId: string,
     planDigest: string
@@ -335,23 +425,68 @@ export async function runCheckoutSparkSettledOutgoingStep(
   if (position < 0 || !recipient || recipient.legId !== input.legId) {
     throw new Error("Checkout Spark settled leg is not in the plan.")
   }
-  async function persist(next: CheckoutSparkSettledReconciliation) {
-    const saved = await input.store.save(next, revision)
+  async function persist(
+    next: CheckoutSparkSettledReconciliation,
+    cancellation?: CheckoutSparkOutgoingPreProviderCancellation
+  ) {
+    const saved = cancellation
+      ? await input.store.saveOutgoingPreProviderRetry!(
+          next,
+          revision,
+          cancellation
+        )
+      : await input.store.save(next, revision)
     if (
       saved.status !== "active" ||
       saved.revision !== revision + 1 ||
-      saved.state.plan.planDigest !== state.plan.planDigest ||
-      saved.state.legs[position]?.status !== next.legs[position]?.status ||
-      saved.state.updatedAt !== next.updatedAt
+      JSON.stringify(saved.state) !== JSON.stringify(next)
     ) {
       throw new Error("Checkout Spark settled state changed during payout.")
     }
     revision = saved.revision
     state = restoreCheckoutSparkSettledReconciliation(saved.state)
   }
+  async function cancelPreProviderAdmission(): Promise<void> {
+    // Core has not invoked provider.send. A send result/throw never reaches here.
+    if (state.legs[position]?.status !== "submitted")
+      throw new Error("Checkout Spark outgoing cancellation is invalid.")
+    await persist(
+      recordCheckoutSparkSettledLegStatus(
+        state,
+        evidence(target, "terminal_failure", observedAt(state, input.now()))
+      )
+    )
+    const durable = await input.store.load(input.checkoutId, input.planDigest)
+    if (
+      durable.status !== "active" ||
+      durable.revision !== revision ||
+      JSON.stringify(durable.state) !== JSON.stringify(state)
+    )
+      throw new Error("Checkout Spark outgoing cancellation readback changed.")
+    if (
+      input.store.outgoingAdmissionScope &&
+      input.store.saveOutgoingPreProviderRetry
+    )
+      outgoingCancellations.remember(
+        input.store.outgoingAdmissionScope,
+        state,
+        revision,
+        cancellationKey(state, target.legId)
+      )
+  }
   if (!state.credit) return result(state, "funding_wait")
   let leg = state.legs[position]!
-  if (leg.status === "paid") return result(state, "already_paid")
+  const forgetCancellation = () => {
+    if (input.store.outgoingAdmissionScope)
+      outgoingCancellations.forget(
+        input.store.outgoingAdmissionScope,
+        cancellationKey(state, input.legId)
+      )
+  }
+  if (leg.status === "paid") {
+    forgetCancellation()
+    return result(state, "already_paid")
+  }
   if (
     !input.inspectionOnly &&
     recipient.kind === "conduit" &&
@@ -410,7 +545,16 @@ export async function runCheckoutSparkSettledOutgoingStep(
   // Merchant must have the exact invoice and stable transfer ID before either
   // actor may cross an irreversible provider boundary. An exact-history read
   // is not such a boundary and must remain available during relay failure.
-  if (!input.inspectionOnly) {
+  const cancellation =
+    !input.inspectionOnly && leg.status === "terminal_failure"
+      ? outgoingCancellations.load(
+          input.store.outgoingAdmissionScope,
+          state,
+          revision,
+          cancellationKey(state, leg.legId)
+        )
+      : undefined
+  if (!input.inspectionOnly && !cancellation) {
     try {
       await input.acknowledgeRecoverySnapshot(state)
     } catch {
@@ -427,6 +571,11 @@ export async function runCheckoutSparkSettledOutgoingStep(
     return result(state, "wait", "provider_evidence_unavailable")
   }
   assertObservation(observation, target)
+  if (
+    observation.status !== "not_found" &&
+    observation.status !== "lookup_unavailable"
+  )
+    forgetCancellation()
   if (observation.status === "paid") {
     await persist(
       recordCheckoutSparkSettledLegStatus(
@@ -469,7 +618,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
     )
     return result(state, "wait", "prior_possible_send")
   }
-  if (leg.status !== "prepared") {
+  if (leg.status !== "prepared" && !cancellation) {
     return result(state, "wait", "prior_possible_send")
   }
   if (observation.status !== "not_found") {
@@ -504,25 +653,35 @@ export async function runCheckoutSparkSettledOutgoingStep(
   ) {
     return result(state, "wait", "invoice_window_insufficient")
   }
-  const proveParentReturn = async () => {
+  let parentReturnProof: CheckoutSparkSettledReturnedProof | undefined
+  const assertParentReturn = () => {
     if (target.generation !== 1) return
     const closed = getCheckoutSparkSettledClosedGeneration(
       state.legs[position]!
     )
-    if (input.actor !== "merchant" || !closed || !input.proveRenewalReturn)
+    if (input.actor !== "merchant" || !closed || !parentReturnProof)
       throw new Error("Checkout Spark renewal return is unavailable.")
-    const proof = await input.proveRenewalReturn(state, target.legId)
-    const verified = assertCheckoutSparkSettledReturnedProof(proof, {
-      plan: state.plan,
-      target: { ...target, generation: 0, intent: closed.intent },
-      nowMs: input.now(),
-    })
+    const verified = assertCheckoutSparkSettledReturnedProof(
+      parentReturnProof,
+      {
+        plan: state.plan,
+        target: { ...target, generation: 0, intent: closed.intent },
+        nowMs: input.now(),
+      }
+    )
     if (
       verified.requestId !== closed.closure.requestId ||
       verified.debitedSats !== closed.closure.debitedSats ||
       verified.returnedSats !== closed.closure.returnedSats
     )
       throw new Error("Checkout Spark renewal return changed.")
+  }
+  const proveParentReturn = async () => {
+    if (target.generation !== 1) return
+    if (!input.proveRenewalReturn)
+      throw new Error("Checkout Spark renewal return is unavailable.")
+    parentReturnProof = await input.proveRenewalReturn(state, target.legId)
+    assertParentReturn()
   }
   try {
     await proveParentReturn()
@@ -560,12 +719,22 @@ export async function runCheckoutSparkSettledOutgoingStep(
   ) {
     return result(state, "wait", "invoice_window_insufficient")
   }
+  const retryPredecessor = cancellation
+    ? restoreCheckoutSparkSettledReconciliation({
+        ...state,
+        legs: state.legs.map((item, index) =>
+          index === position ? { ...item, status: "prepared" } : item
+        ),
+      })
+    : state
   await persist(
     recordCheckoutSparkSettledLegStatus(
-      state,
+      retryPredecessor,
       evidence(target, "submitted", observedAt(state, beforeSend))
-    )
+    ),
+    cancellation
   )
+  if (cancellation) outgoingCancellations.consume(cancellation)
   leg = state.legs[position]!
   if (leg.status !== "submitted") {
     throw new Error("Checkout Spark payout intent was not persisted.")
@@ -573,6 +742,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
   try {
     await input.acknowledgeRecoverySnapshot(state)
   } catch {
+    await cancelPreProviderAdmission()
     return result(state, "wait", "recovery_handoff_unavailable")
   }
   // A tab dying at this point leaves a conservative possible-send marker.
@@ -580,17 +750,40 @@ export async function runCheckoutSparkSettledOutgoingStep(
   try {
     await proveParentReturn()
   } catch {
+    await cancelPreProviderAdmission()
     return result(state, "wait", "renewal_return_unavailable")
   }
-  const afterWriteAt = input.now()
+  const durableBeforeSend = await input.store.load(
+    input.checkoutId,
+    input.planDigest
+  )
   if (
-    !hasAuthority(state.plan, input.actor, afterWriteAt) ||
+    durableBeforeSend.status !== "active" ||
+    durableBeforeSend.revision !== revision ||
+    JSON.stringify(durableBeforeSend.state) !== JSON.stringify(state)
+  )
+    throw new Error("Checkout Spark payout state changed before send.")
+  const afterWriteAt = input.now()
+  if (!hasAuthority(state.plan, input.actor, afterWriteAt)) {
+    await cancelPreProviderAdmission()
+    return result(state, "wait", "authority_transferred")
+  }
+  if (
     !hasCheckoutSparkProviderSendWindow({
       paymentRequest: target.intent.paymentRequest,
       nowMs: afterWriteAt,
     })
   ) {
-    return result(state, "send_ambiguous", "prior_possible_send")
+    await cancelPreProviderAdmission()
+    return result(state, "wait", "invoice_window_insufficient")
+  }
+  // The final durable read is another await; never carry an expired return
+  // proof across it. This synchronous check adds no new provider operation.
+  try {
+    assertParentReturn()
+  } catch {
+    await cancelPreProviderAdmission()
+    return result(state, "wait", "renewal_return_unavailable")
   }
   let sent: CheckoutSparkSettledOutgoingSendResult
   try {
@@ -627,7 +820,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
         evidence(target, "terminal_failure", observedAt(state, input.now()))
       )
     )
-    return result(state, "wait", "terminal_failure", sent.status !== "not_sent")
+    return result(state, "wait", "terminal_failure", true)
   }
   return result(state, "send_ambiguous", undefined, true)
 }

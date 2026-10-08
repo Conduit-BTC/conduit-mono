@@ -650,6 +650,11 @@ describe("bounded smoke failure diagnostics", () => {
         layout: "clipped",
         triggerY: 612.345,
         footerHidden: true,
+        widgetMarginBottom: 114.345,
+        widgetTransformY: -8.765,
+        footerTransformY: 12.345,
+        widgetHiddenShift: 114,
+        widgetBottomOffset: 114,
         footerX: "private-value",
         footerY: 1000000,
         viewportWidth: null,
@@ -669,6 +674,11 @@ describe("bounded smoke failure diagnostics", () => {
         layout: "clipped",
         triggerY: 612.3,
         footerHidden: true,
+        widgetMarginBottom: 114.3,
+        widgetTransformY: -8.8,
+        footerTransformY: 12.3,
+        widgetHiddenShift: 114,
+        widgetBottomOffset: 114,
       },
     ])
     expect(
@@ -686,6 +696,44 @@ describe("bounded smoke failure diagnostics", () => {
           { ...annotation, description },
         ])
       ).toEqual([])
+    }
+  })
+
+  it("drops unbounded or nonnumeric footer styles and never exports raw CSS", () => {
+    for (const field of [
+      "widgetMarginBottom",
+      "widgetTransformY",
+      "footerTransformY",
+      "widgetHiddenShift",
+      "widgetBottomOffset",
+    ]) {
+      for (const value of [
+        "private-value",
+        "matrix(1, 0, 0, 1, 0, 114)",
+        "114px",
+        null,
+        true,
+        {},
+        [114],
+        32768.1,
+        -32768.1,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+      ]) {
+        expect(
+          safeSmokeDiagnostics("e2e/mobile-safari-baseline.playwright.ts", [
+            {
+              type: "smoke:footer-layout",
+              description: JSON.stringify({
+                phase: "initial",
+                [field]: value,
+                rawStyle: "private-value",
+                transform: "private-value",
+              }),
+            },
+          ])
+        ).toEqual([{ kind: "footer-layout", phase: "initial" }])
+      }
     }
   })
 

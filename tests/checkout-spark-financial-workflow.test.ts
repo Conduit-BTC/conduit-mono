@@ -17,9 +17,10 @@ import {
   CheckoutSparkSettledRepositoryConflictError,
   type CheckoutSparkSettledRepositorySnapshot,
 } from "../packages/core/src/protocol/checkout-spark-settled-router-repository"
-import type {
-  CheckoutSparkSettledOutgoingObservation,
-  CheckoutSparkSettledOutgoingTarget,
+import {
+  assertCheckoutSparkOutgoingPreProviderRetry,
+  type CheckoutSparkSettledOutgoingObservation,
+  type CheckoutSparkSettledOutgoingTarget,
 } from "../packages/core/src/protocol/checkout-spark-settled-outgoing"
 import { requireCheckoutSparkSettledExactOutgoingRequest } from "../packages/core/src/protocol/checkout-spark-settled-outgoing-history"
 import { allocateCheckoutSparkSettledSats } from "../packages/core/src/protocol/checkout-spark-settled-allocation"
@@ -206,6 +207,17 @@ function harness(
     assertCurrent,
     now,
     store: {
+      outgoingAdmissionScope: Object.freeze({}),
+      async saveOutgoingPreProviderRetry(next, expected, capability) {
+        assertCheckoutSparkOutgoingPreProviderRetry(
+          this.outgoingAdmissionScope!,
+          state,
+          next,
+          expected,
+          capability
+        )
+        return this.save(next, expected)
+      },
       load: async () => snapshot(),
       save: async (next, expected) => {
         assertCurrent()
@@ -308,6 +320,42 @@ function harness(
 
 describe("shared checkout financial workflow", () => {
   for (const actor of ["shopper", "merchant"] as const) {
+    it(`${actor} resumes only a live exact cancellation after submitted recovery ACK loss`, async () => {
+      const source = fixture()
+      const h = harness(source.state, actor)
+      const ack = h.ports.acknowledgeRecoverySnapshot
+      let failSubmitted = true
+      h.ports.acknowledgeRecoverySnapshot = async (state) => {
+        if (failSubmitted && state.legs[0]!.status === "submitted") {
+          failSubmitted = false
+          throw new Error("Relay unavailable")
+        }
+        await ack(state)
+      }
+      const blocked = await h.run()
+      expect(blocked.status).toBe("outgoing_step")
+      expect(blocked.status === "outgoing_step" && blocked.step.reason).toBe(
+        "recovery_handoff_unavailable"
+      )
+      expect(h.sent).toHaveLength(0)
+      expect(h.state().legs[0]!.status).toBe("terminal_failure")
+      const prepared = await h.run("prepare")
+      expect(prepared.status).toBe("payout_prepared")
+      expect(h.sent).toHaveLength(0)
+      expect(h.state().legs[0]!.intent).toEqual(source.state.legs[0]!.intent)
+      const resumed = await h.run()
+      expect(resumed.status === "outgoing_step" && resumed.step.outcome).toBe(
+        "paid"
+      )
+      expect(h.sent).toEqual([source.state.legs[0]!.intent!.transferId])
+      expect(h.state().legs[0]!.intent).toEqual(source.state.legs[0]!.intent)
+      expect(
+        h
+          .state()
+          .legs.slice(1)
+          .every((leg) => leg.status === "prepared")
+      ).toBe(true)
+    })
     it(`${actor} advances the same obligations, checkpoints and Conduit-last executor`, async () => {
       const source = fixture(true)
       const h = harness(source.state, actor)

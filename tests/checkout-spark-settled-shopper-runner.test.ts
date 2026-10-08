@@ -642,6 +642,63 @@ describe("foreground settled shopper routing", () => {
     }
   }, 20_000)
 
+  it("automatically retries the exact live Lightning intent after a positively cancelled submitted ACK", async () => {
+    const f = await fixture()
+    try {
+      let interrupted = false
+      let waits = 0
+      let intent: unknown
+      f.hooks.beforeAck = async () => {
+        if (f.calls.acknowledgments === 2 && !interrupted) {
+          const saved = await f.repository.load(
+            f.plan.checkoutId,
+            f.plan.planDigest
+          )
+          expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
+            "submitted"
+          )
+          interrupted = true
+          throw new Error("Synthetic recovery transport unavailable")
+        }
+      }
+      f.hooks.beforeWait = async (milliseconds) => {
+        waits += 1
+        f.authority.now += milliseconds
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(saved.status).toBe("active")
+        if (saved.status !== "active") throw new Error("Expected active state")
+        expect(saved.state.legs[0]!.status).toBe("terminal_failure")
+        intent = saved.state.legs[0]!.intent
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(0)
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(
+        await runner.run({
+          ...f.input,
+          fundingPoll: { attempts: 3, intervalMs: 1 },
+        })
+      ).toEqual({ status: "complete" })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.legs[0]!.intent).toEqual(
+        intent
+      )
+      expect(interrupted).toBe(true)
+      expect(waits).toBe(1)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(3)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
   it("automatically rechecks fee availability without replacing the prepared invoice or funding payer", async () => {
     const f = await fixture()
     try {
@@ -685,6 +742,137 @@ describe("foreground settled shopper routing", () => {
       expect(f.calls.payer).toBe(1)
       expect(f.calls.invoices).toHaveLength(3)
       expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("does not reconstruct live Lightning cancellation authority after a database reload", async () => {
+    const f = await fixture()
+    const reloaded = new ConduitDB(f.database.name, { indexedDB, IDBKeyRange })
+    try {
+      f.hooks.beforeAck = async () => {
+        if (f.calls.acknowledgments === 2)
+          throw new Error("Synthetic recovery transport unavailable")
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect((await runner.run(f.input)).status).toBe("paused")
+      const cancelled = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(
+        cancelled.status === "active" && cancelled.state.legs[0]!.status
+      ).toBe("terminal_failure")
+      f.hooks.beforeAck = undefined
+      const coldRepository = new DexieCheckoutSparkSettledRepository(reloaded)
+      expect(coldRepository.outgoingAdmissionScope).not.toBe(
+        f.repository.outgoingAdmissionScope
+      )
+      const cold = createCheckoutSparkSettledShopperRunner({
+        ...f.dependencies,
+        repository: coldRepository,
+      })
+      expect(await cold.run({ ...f.input, fundingMode: "inspect" })).toEqual({
+        status: "paused",
+        reason: "authorization_changed",
+      })
+      expect(
+        await coldRepository.load(f.plan.checkoutId, f.plan.planDigest)
+      ).toEqual(cancelled)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      reloaded.close()
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it.each(["visibility", "takeover", "retry_cas"] as const)(
+    "does not admit the positively cancelled Lightning retry after %s revokes authority",
+    async (change) => {
+      const f = await fixture(120_000)
+      try {
+        let interrupted = false
+        f.hooks.beforeAck = async () => {
+          if (f.calls.acknowledgments === 2 && !interrupted) {
+            interrupted = true
+            throw new Error("Synthetic recovery transport unavailable")
+          }
+        }
+        if (change === "retry_cas") {
+          const save = f.repository.saveOutgoingPreProviderRetry.bind(
+            f.repository
+          )
+          f.repository.saveOutgoingPreProviderRetry = async (...args) => {
+            f.authority.active = false
+            return save(...args)
+          }
+        }
+        f.hooks.beforeWait = async () => {
+          if (change === "visibility") f.authority.active = false
+          if (change === "takeover") f.authority.now = f.plan.takeoverAt
+        }
+        const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+        expect(
+          (
+            await runner.run({
+              ...f.input,
+              fundingPoll: { attempts: 3, intervalMs: 1 },
+            })
+          ).status
+        ).toBe("paused")
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
+          "terminal_failure"
+        )
+        expect(interrupted).toBe(true)
+        expect(f.calls.payer).toBe(1)
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(0)
+      } finally {
+        await f.cleanup()
+      }
+    },
+    20_000
+  )
+
+  it("keeps an invoked Lightning provider's not_sent label query-only", async () => {
+    const f = await fixture()
+    try {
+      const createProvider = f.dependencies.outgoingProvider!
+      let providerInvocations = 0
+      f.dependencies.outgoingProvider = (input) => {
+        const provider = createProvider(input)
+        return {
+          ...provider,
+          send: async () => {
+            providerInvocations += 1
+            return { status: "not_sent" as const }
+          },
+        }
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect((await runner.run(f.input)).status).toBe("paused")
+      const afterInvocation = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(await runner.run({ ...f.input, fundingMode: "inspect" })).toEqual({
+        status: "paused",
+        reason: "authorization_changed",
+      })
+      expect(
+        await f.repository.load(f.plan.checkoutId, f.plan.planDigest)
+      ).toEqual(afterInvocation)
+      expect(providerInvocations).toBe(1)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
     } finally {
       await f.cleanup()
     }

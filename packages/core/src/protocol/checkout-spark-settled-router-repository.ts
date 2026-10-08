@@ -54,9 +54,11 @@ import {
 } from "./checkout-spark-retired-settlement"
 import type { SparkCheckoutReceiveCreditProof } from "./checkout-spark-receive-credit"
 import { getCheckoutSparkSupplierNotifications } from "./checkout-spark-supplier-notification"
-import type {
-  CheckoutSparkSettledOutgoingObservation,
-  CheckoutSparkSettledOutgoingTarget,
+import {
+  assertCheckoutSparkOutgoingPreProviderRetry,
+  type CheckoutSparkOutgoingPreProviderCancellation,
+  type CheckoutSparkSettledOutgoingObservation,
+  type CheckoutSparkSettledOutgoingTarget,
 } from "./checkout-spark-settled-outgoing"
 import { isGuestOrderDataExpired } from "./order-lifecycle"
 import {
@@ -374,6 +376,7 @@ export function assertCheckoutSparkSettledRecoveryProgression(
 export class DexieCheckoutSparkSettledRepository {
   /** This opaque process lifetime is deliberately never persisted or imported. */
   readonly nativeTreasuryAdmissionScope: object
+  readonly outgoingAdmissionScope: object
   constructor(private readonly database: ConduitDB = db) {
     let scope = nativeAdmissionScopes.get(database)
     if (!scope) {
@@ -381,6 +384,7 @@ export class DexieCheckoutSparkSettledRepository {
       nativeAdmissionScopes.set(database, scope)
     }
     this.nativeTreasuryAdmissionScope = scope
+    this.outgoingAdmissionScope = scope
   }
 
   /** Historical source cache only; every returned signed event is revalidated. */
@@ -1383,6 +1387,24 @@ export class DexieCheckoutSparkSettledRepository {
     return this.saveState(state, expectedRevision, assertCurrent)
   }
 
+  /** Live positively cancelled Lightning intent only; imports use normal save. */
+  async saveOutgoingPreProviderRetry(
+    state: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    cancellation: CheckoutSparkOutgoingPreProviderCancellation,
+    assertCurrent?: () => void
+  ): Promise<CheckoutSparkSettledRepositorySnapshot> {
+    return this.saveState(
+      state,
+      expectedRevision,
+      assertCurrent,
+      undefined,
+      undefined,
+      undefined,
+      cancellation
+    )
+  }
+
   /** Native intent creation additionally requires the independent local ledger. */
   async saveTreasuryPrepared(
     state: CheckoutSparkSettledReconciliation,
@@ -1718,7 +1740,8 @@ export class DexieCheckoutSparkSettledRepository {
       now?: () => number
     },
     treasurySettlement?: CheckoutSparkMerchantSettlementRecord,
-    cancellation?: CheckoutSparkNativePreProviderCancellation
+    cancellation?: CheckoutSparkNativePreProviderCancellation,
+    outgoingCancellation?: CheckoutSparkOutgoingPreProviderCancellation
   ): Promise<CheckoutSparkSettledRepositorySnapshot> {
     assertCurrent?.()
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
@@ -1759,6 +1782,25 @@ export class DexieCheckoutSparkSettledRepository {
             }),
             next
           )
+        } else if (outgoingCancellation) {
+          const legId = assertCheckoutSparkOutgoingPreProviderRetry(
+            this.outgoingAdmissionScope,
+            current.state,
+            next,
+            expectedRevision,
+            outgoingCancellation
+          )
+          const leg = current.state.legs.find((item) => item.legId === legId)!
+          const predecessor = restoreCheckoutSparkSettledReconciliation({
+            ...current.state,
+            legs: current.state.legs.map((item) =>
+              item.legId === legId ? { ...item, status: "submitted" } : item
+            ),
+          })
+          assertCheckoutSparkSettledRecoveryProgression(predecessor, next)
+          // Keep the exception confined to the unchanged active attempt.
+          if (!leg.intent || treasurySettlement || evidence)
+            throw new CheckoutSparkSettledRepositoryConflictError()
         } else
           assertCheckoutSparkSettledRecoveryProgression(current.state, next)
         if (

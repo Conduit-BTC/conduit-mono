@@ -759,6 +759,74 @@ describe("bounded settled payout renewal", () => {
     }
   })
 
+  it("cancels live admission if final durable readback outlives the fresh parent-return proof", async () => {
+    const { plan, state, target, evidence, intent } = fixture()
+    let current = renewCheckoutSparkSettledLeg(state, {
+      legId: target.legId,
+      intent,
+      proof: proveCheckoutSparkSettledReturnedTransfer({
+        plan,
+        target,
+        evidence,
+      }),
+      nowMs: NOW,
+    })
+    let revision = 1
+    let clock = NOW
+    let sends = 0
+    let slowSubmittedRead = true
+    const result = await runCheckoutSparkSettledOutgoingStep({
+      checkoutId: plan.checkoutId,
+      planDigest: plan.planDigest,
+      legId: target.legId,
+      actor: "merchant",
+      now: () => clock,
+      store: {
+        load: async () => {
+          if (slowSubmittedRead && current.legs[0]!.status === "submitted") {
+            slowSubmittedRead = false
+            clock += 6_001
+          }
+          return { status: "active", revision, state: current }
+        },
+        save: async (next) => ({
+          status: "active",
+          revision: ++revision,
+          state: (current = next),
+        }),
+      },
+      acknowledgeRecoverySnapshot: async () => {},
+      proveRenewalReturn: async () =>
+        proveCheckoutSparkSettledReturnedTransfer({
+          plan,
+          target,
+          evidence: { ...evidence, observedAt: clock },
+        }),
+      provider: {
+        reconcile: async (active) => ({
+          ...active.intent,
+          status: "not_found",
+        }),
+        preflight: async () => "ready",
+        send: async (active) => {
+          sends++
+          return {
+            ...active.intent,
+            status: "paid",
+            finalFeeSats: 5,
+            finalDebitSats: 995,
+          }
+        },
+      },
+    })
+    expect(result.reason).toBe("renewal_return_unavailable")
+    expect(result.sendAttempted).toBe(false)
+    expect(sends).toBe(0)
+    expect(current.legs[0]!.status).toBe("terminal_failure")
+    expect(current.legs[0]!.intent).toEqual(intent)
+    expect(current.legs[0]!.closedGenerations).toHaveLength(1)
+  })
+
   it("reconciles a paid successor without requiring its already-consumed old returned leaves", async () => {
     const { plan, state, target, evidence, intent } = fixture()
     let current = renewCheckoutSparkSettledLeg(state, {

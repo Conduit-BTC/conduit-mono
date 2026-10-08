@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test"
+import { indexedDB, IDBKeyRange } from "fake-indexeddb"
+import { ConduitDB } from "../packages/core/src/db"
+import { DexieCheckoutSparkSettledRepository } from "../packages/core/src/protocol/checkout-spark-settled-router-repository"
 
 import {
   createCheckoutSparkSettledReconciliation,
@@ -12,6 +15,8 @@ import {
 import { CONDUIT_CHECKOUT_FEE_RECIPIENT } from "../packages/core/src/protocol/checkout-spark-router-obligations"
 import {
   runCheckoutSparkSettledOutgoingStep,
+  assertCheckoutSparkOutgoingPreProviderRetry,
+  hasCheckoutSparkOutgoingPreProviderCancellation,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingProvider,
   type CheckoutSparkSettledOutgoingStateStore,
@@ -203,6 +208,17 @@ function harness(
   const sends: CheckoutSparkSettledOutgoingTarget[] = []
   const statusAtSend: string[] = []
   const store: CheckoutSparkSettledOutgoingStateStore = {
+    outgoingAdmissionScope: Object.freeze({}),
+    async saveOutgoingPreProviderRetry(next, expectedRevision, cancellation) {
+      assertCheckoutSparkOutgoingPreProviderRetry(
+        this.outgoingAdmissionScope!,
+        state,
+        next,
+        expectedRevision,
+        cancellation
+      )
+      return this.save(next, expectedRevision)
+    },
     async load() {
       return { status: "active", revision, state: structuredClone(state) }
     },
@@ -259,6 +275,8 @@ function harness(
     })
   return {
     step,
+    store,
+    provider,
     sends,
     lookups,
     preflights,
@@ -396,7 +414,7 @@ describe("settled Spark outgoing step", () => {
     "save",
     "submitted_delivery",
   ] as const) {
-    it(`never sends when the short invoice expires during ${seam}, retaining any possible-send marker`, async () => {
+    it(`never sends when the short invoice expires during ${seam}, durably cancelling live admission`, async () => {
       const deadline = CREATED_AT + 59_000
       let now = CREATED_AT + 3
       const initial = preparedState(invoice(995, 4, deadline / 1_000 - 3_600))
@@ -416,13 +434,13 @@ describe("settled Spark outgoing step", () => {
       })
       const marked = seam === "save" || seam === "submitted_delivery"
       const result = await run.step("shopper", () => now)
-      expect(result.reason).toBe(
-        marked ? "prior_possible_send" : "invoice_window_insufficient"
-      )
+      expect(result.reason).toBe("invoice_window_insufficient")
       expect(result.sendAttempted).toBe(false)
       expect(run.sends).toHaveLength(0)
       expect(run.state.legs[0]!.intent).toEqual(initial.legs[0]!.intent)
-      expect(run.state.legs[0]!.status).toBe(marked ? "submitted" : "prepared")
+      expect(run.state.legs[0]!.status).toBe(
+        marked ? "terminal_failure" : "prepared"
+      )
       await run.step("shopper", () => now)
       expect(run.sends).toHaveLength(0)
     })
@@ -458,8 +476,278 @@ describe("settled Spark outgoing step", () => {
     const outcome = await run.step()
     expect(outcome.reason).toBe("recovery_handoff_unavailable")
     expect(outcome.sendAttempted).toBe(false)
-    expect(run.state.legs[0]!.status).toBe("submitted")
+    expect(run.state.legs[0]!.status).toBe("terminal_failure")
     expect(run.sends).toHaveLength(0)
+  })
+
+  it("durably cancels a live submitted ACK failure before provider invocation", async () => {
+    const initial = preparedState()
+    const run = harness(initial)
+    run.failHandoffAt = 2
+    const blocked = await run.step()
+    expect(blocked.reason).toBe("recovery_handoff_unavailable")
+    expect(blocked.sendAttempted).toBe(false)
+    expect(run.sends).toHaveLength(0)
+    expect(run.state.legs[0]!.intent).toEqual(initial.legs[0]!.intent)
+    expect(run.state.legs[0]!.status).toBe("terminal_failure")
+    const originalIntent = run.state.legs[0]!.intent
+    const resumed = await run.step()
+    expect(resumed.outcome).toBe("paid")
+    expect(run.sends).toHaveLength(1)
+    expect(run.sends[0]!.intent).toEqual(originalIntent)
+    expect(run.statusAtSend).toEqual(["submitted"])
+    expect(run.handoffs).toEqual(["prepared", "submitted", "submitted", "paid"])
+  })
+
+  it("never recreates retry authority from cold or imported cancellation labels", async () => {
+    const live = harness()
+    live.failHandoffAt = 2
+    await live.step()
+    const cold = harness(structuredClone(live.state))
+    expect((await cold.step()).reason).toBe("prior_possible_send")
+    expect(cold.sends).toHaveLength(0)
+    const initial = preparedState()
+    const forged = harness(
+      recordCheckoutSparkSettledLegStatus(initial, {
+        legId: initial.legs[0]!.legId,
+        transferId: initial.legs[0]!.intent!.transferId,
+        paymentHash: initial.legs[0]!.intent!.paymentHash,
+        status: "terminal_failure",
+        observedAt: CREATED_AT + 3,
+      })
+    )
+    expect((await forged.step()).reason).toBe("prior_possible_send")
+    expect(forged.sends).toHaveLength(0)
+  })
+
+  it("inspects a live cancellation without preflight/send and preserves exact retry authority", async () => {
+    const run = harness()
+    run.failHandoffAt = 2
+    await run.step()
+    const preflights = run.preflights.length
+    const handoffs = run.handoffs.length
+    const inspected = await run.step("shopper", CREATED_AT + 4, undefined, true)
+    expect(inspected.reason).toBe("prior_possible_send")
+    expect(run.preflights).toHaveLength(preflights)
+    expect(run.handoffs).toHaveLength(handoffs)
+    expect(run.sends).toHaveLength(0)
+    expect((await run.step()).outcome).toBe("paid")
+    expect(run.sends).toHaveLength(1)
+  })
+
+  it.each(["before", "after", "readback"] as const)(
+    "mints no authority after interrupted cancellation %s",
+    async (seam) => {
+      const run = harness()
+      const save = run.store.save.bind(run.store)
+      const load = run.store.load.bind(run.store)
+      let interrupted = false
+      run.store.save = async (next, revision) => {
+        if (
+          !interrupted &&
+          next.legs[0]!.status === "terminal_failure" &&
+          seam !== "readback"
+        ) {
+          interrupted = true
+          if (seam === "after") await save(next, revision)
+          throw new Error("Cancellation write interrupted")
+        }
+        return save(next, revision)
+      }
+      run.store.load = async (...args) => {
+        const current = await load(...args)
+        if (
+          !interrupted &&
+          seam === "readback" &&
+          current.status === "active" &&
+          current.state.legs[0]!.status === "terminal_failure"
+        ) {
+          interrupted = true
+          throw new Error("Cancellation readback interrupted")
+        }
+        return current
+      }
+      run.failHandoffAt = 2
+      await expect(run.step()).rejects.toThrow("interrupted")
+      expect((await run.step()).reason).toBe("prior_possible_send")
+      expect(run.sends).toHaveLength(0)
+    }
+  )
+
+  it.each(["before", "after"] as const)(
+    "never sends across an interrupted retry CAS %s",
+    async (seam) => {
+      const run = harness()
+      run.failHandoffAt = 2
+      await run.step()
+      const retry = run.store.saveOutgoingPreProviderRetry!.bind(run.store)
+      let interrupted = false
+      run.store.saveOutgoingPreProviderRetry = async (...args) => {
+        if (!interrupted) {
+          interrupted = true
+          if (seam === "after") await retry(...args)
+          throw new Error("Retry admission interrupted")
+        }
+        return retry(...args)
+      }
+      await expect(run.step()).rejects.toThrow("interrupted")
+      expect(run.sends).toHaveLength(0)
+      const next = await run.step()
+      expect(next.outcome).toBe(seam === "before" ? "paid" : "wait")
+      expect(run.sends).toHaveLength(seam === "before" ? 1 : 0)
+    }
+  )
+
+  it("invalidates live cancellation after a concurrent repository revision", async () => {
+    const run = harness()
+    run.failHandoffAt = 2
+    await run.step()
+    const current = await run.store.load(
+      run.state.plan.checkoutId,
+      run.state.plan.planDigest
+    )
+    if (current.status !== "active") throw new Error("Fixture is not active")
+    await run.store.save(
+      { ...current.state, updatedAt: current.state.updatedAt + 1 },
+      current.revision
+    )
+    expect((await run.step()).reason).toBe("prior_possible_send")
+    expect(run.sends).toHaveLength(0)
+  })
+
+  it("does not mint cancellation from an unreadable final submitted state", async () => {
+    const run = harness()
+    const load = run.store.load.bind(run.store)
+    let unreadable = true
+    run.store.load = async (...args) => {
+      const current = await load(...args)
+      if (
+        unreadable &&
+        current.status === "active" &&
+        current.state.legs[0]!.status === "submitted"
+      ) {
+        unreadable = false
+        throw new Error("Final state unavailable")
+      }
+      return current
+    }
+    await expect(run.step()).rejects.toThrow("unavailable")
+    expect(run.state.legs[0]!.status).toBe("submitted")
+    expect((await run.step()).reason).toBe("prior_possible_send")
+    expect(run.sends).toHaveLength(0)
+  })
+
+  it("durably binds exact cancellation/retry to the real repository CAS", async () => {
+    const initial = preparedState()
+    const database = new ConduitDB(
+      `outgoing-cancellation-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    try {
+      await database.checkoutSparkPlanBindings.add({
+        checkoutId: initial.plan.checkoutId,
+        planDigest: initial.plan.planDigest,
+      })
+      await database.checkoutSparkReconciliations.add({
+        checkoutId: initial.plan.checkoutId,
+        revision: 1,
+        state: initial,
+      })
+      const repository = new DexieCheckoutSparkSettledRepository(database)
+      const run = harness(initial)
+      let acknowledgements = 0
+      const step = (
+        store: CheckoutSparkSettledOutgoingStateStore = repository
+      ) =>
+        runCheckoutSparkSettledOutgoingStep({
+          checkoutId: initial.plan.checkoutId,
+          planDigest: initial.plan.planDigest,
+          legId: initial.legs[0]!.legId,
+          actor: "shopper",
+          now: () => CREATED_AT + 3,
+          store,
+          provider: run.provider,
+          acknowledgeRecoverySnapshot: async () => {
+            if (++acknowledgements === 2) throw new Error("Relay unavailable")
+          },
+        })
+      expect((await step()).reason).toBe("recovery_handoff_unavailable")
+      const cancelled = await repository.load(
+        initial.plan.checkoutId,
+        initial.plan.planDigest
+      )
+      if (cancelled.status !== "active")
+        throw new Error("Fixture is not active")
+      expect(cancelled.state.legs[0]!.status).toBe("terminal_failure")
+      expect(
+        hasCheckoutSparkOutgoingPreProviderCancellation(
+          repository.outgoingAdmissionScope,
+          cancelled.state,
+          cancelled.revision,
+          initial.legs[0]!.legId
+        )
+      ).toBe(true)
+      const replay = {
+        ...cancelled.state,
+        legs: cancelled.state.legs.map((leg, index) =>
+          index === 0
+            ? {
+                ...leg,
+                status: "submitted" as const,
+                observedAt: cancelled.state.updatedAt + 1,
+              }
+            : leg
+        ),
+        updatedAt: cancelled.state.updatedAt + 1,
+      }
+      await expect(
+        repository.save(replay, cancelled.revision)
+      ).rejects.toThrow()
+      await expect(
+        repository.saveOutgoingPreProviderRetry(
+          replay,
+          cancelled.revision,
+          {} as never
+        )
+      ).rejects.toThrow()
+      const store: CheckoutSparkSettledOutgoingStateStore = {
+        outgoingAdmissionScope: repository.outgoingAdmissionScope,
+        load: repository.load.bind(repository),
+        save: repository.save.bind(repository),
+        saveOutgoingPreProviderRetry: async (next, revision, capability) => {
+          for (const [scope, state, expected] of [
+            [{}, cancelled.state, revision],
+            [repository.outgoingAdmissionScope, cancelled.state, revision + 1],
+            [
+              repository.outgoingAdmissionScope,
+              { ...cancelled.state, updatedAt: cancelled.state.updatedAt + 1 },
+              revision,
+            ],
+          ] as const)
+            expect(() =>
+              assertCheckoutSparkOutgoingPreProviderRetry(
+                scope,
+                state,
+                next,
+                expected,
+                capability
+              )
+            ).toThrow()
+          return repository.saveOutgoingPreProviderRetry(
+            next,
+            revision,
+            capability
+          )
+        },
+      }
+      expect((await step(store)).outcome).toBe("paid")
+      expect(run.sends).toHaveLength(1)
+      expect(run.sends[0]!.intent).toEqual(initial.legs[0]!.intent)
+      expect((await step()).outcome).toBe("already_paid")
+      expect(run.sends).toHaveLength(1)
+    } finally {
+      await database.delete()
+    }
   })
 
   it("keeps a possible send after a lost response and an empty later read", async () => {
@@ -501,12 +789,12 @@ describe("settled Spark outgoing step", () => {
     expect(run.sends).toHaveLength(0)
   })
 
-  it("keeps a final certified not-sent result terminal for its frozen invoice", async () => {
+  it("keeps an invoked provider's not-sent label query-only for its frozen invoice", async () => {
     const run = harness()
     run.send = "not_sent"
     const first = await run.step()
     expect(first.reason).toBe("terminal_failure")
-    expect(first.sendAttempted).toBe(false)
+    expect(first.sendAttempted).toBe(true)
     expect(run.state.legs[0]!.status).toBe("terminal_failure")
     expect(run.statusAtSend).toEqual(["submitted"])
 

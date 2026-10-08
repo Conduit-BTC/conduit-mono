@@ -48,7 +48,14 @@ type Store = Pick<
   | "recordMerchantPayout"
   | "assertLocalInvoiceOrigin"
 > &
-  Partial<Pick<DexieCheckoutSparkSettledRepository, "assertInvoiceRecipient">>
+  Partial<
+    Pick<
+      DexieCheckoutSparkSettledRepository,
+      | "assertInvoiceRecipient"
+      | "outgoingAdmissionScope"
+      | "saveOutgoingPreProviderRetry"
+    >
+  >
 type Leg = CheckoutSparkSettledReconciliation["legs"][number]
 
 /** Private display data, never diagnostics; no recovery material is included. */
@@ -700,6 +707,30 @@ export async function continueMerchantCheckoutSparkSettledPayout(
       assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
       assertEligible()
       const store = {
+        ...(repository.outgoingAdmissionScope &&
+        repository.saveOutgoingPreProviderRetry
+          ? {
+              outgoingAdmissionScope: repository.outgoingAdmissionScope,
+              async saveOutgoingPreProviderRetry(
+                next: CheckoutSparkSettledReconciliation,
+                revision: number,
+                cancellation: Parameters<
+                  NonNullable<typeof repository.saveOutgoingPreProviderRetry>
+                >[2]
+              ) {
+                assertEligible()
+                const saved = await repository.saveOutgoingPreProviderRetry!(
+                  next,
+                  revision,
+                  cancellation,
+                  assertEligible
+                )
+                assertEligible()
+                expectedState = next
+                return saved
+              },
+            }
+          : {}),
         async load() {
           const current = await load()
           if (JSON.stringify(current.state) !== JSON.stringify(expectedState)) {

@@ -398,13 +398,15 @@ Funding below the frozen commerce-plus-Conduit weights requires reconciliation,
 not proportional commerce haircuts. Existing historical short-funded evidence
 remains inspectable, without new preparation or dispatch authority.
 
-A positively prevented native provider submission may retain a durable terminal
-cancellation and retry the exact intent through an opaque, process-local
-capability bound to the committed revision. Durable readback precedes retry.
-Imported or reloaded labels, absent lookups and uncertain SDK errors cannot
-mint that capability. Actual or potentially actual provider invocation remains
-non-replayable until independently reconciled. The pinned provider supplies no
-general cross-device proof of non-submission.
+A positively prevented Lightning or native provider submission may retain a
+durable terminal cancellation and retry the exact unchanged intent through an
+opaque, process-local capability bound to the repository and committed
+revision. Durable readback precedes capability issuance and retry; all fresh
+authority, invoice-window, recipient and recovery-checkpoint guards still
+apply. Imported or reloaded labels, absent lookups and uncertain SDK errors
+cannot mint that capability. Actual or potentially actual provider invocation
+remains non-replayable until independently reconciled. The pinned provider
+supplies no general cross-device proof of non-submission.
 
 ### Lightning closed-attempt invoice renewal
 

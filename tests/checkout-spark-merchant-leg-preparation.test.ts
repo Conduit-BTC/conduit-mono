@@ -1177,6 +1177,7 @@ describe("Merchant renewed signed-progress continuation", () => {
   it("does not dispatch a successor whose submitted private progress has no relay acknowledgement", async () => {
     await withHarness(async (test) => {
       const context = await renewedContinuation(test)
+      const invoicesBefore = test.calls.invoices.length
       context.dependencies.progressTransport = {
         ...test.dependencies.progressTransport!,
         publishFn: async () => ({
@@ -1194,8 +1195,18 @@ describe("Merchant renewed signed-progress continuation", () => {
         test.plan.planDigest
       )
       expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
-        "submitted"
+        "terminal_failure"
       )
+      if (saved.status !== "active") throw new Error("Fixture missing")
+      // Only Core's live pre-provider cancellation changes this status. The
+      // successor and its positively closed parent are not replaced or replayed.
+      expect(saved.state.legs[0]!.intent).toEqual(context.review.intent)
+      expect(saved.state.legs[0]!.generation).toBe(1)
+      expect(saved.state.legs[0]!.closedGenerations).toHaveLength(1)
+      expect(saved.state.legs[0]!.closedGenerations![0]!.intent).toEqual(
+        context.original
+      )
+      expect(test.calls.invoices).toHaveLength(invoicesBefore)
     })
   }, 15_000)
 
