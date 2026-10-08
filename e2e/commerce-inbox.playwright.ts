@@ -642,7 +642,21 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
   const sender = createRuntimeSignerIdentity()
   const peer = createRuntimeSignerIdentity()
   const relayUrl = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const senderDeclaration = signRuntimeTestEvent(sender, {
+    kind: 10050,
+    created_at: createdAt,
+    tags: [["relay", relayUrl]],
+    content: "",
+  })
+  const recipientDeclaration = signRuntimeTestEvent(peer, {
+    kind: 10050,
+    created_at: createdAt,
+    tags: [["relay", relayUrl]],
+    content: "",
+  })
   try {
+    await publishTestRelayEvents([senderDeclaration, recipientDeclaration])
     await installRealTestSigner(page, sender, relayUrl)
     await page.goto(
       `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}/messages?tab=dms`
@@ -651,7 +665,14 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
       timeout: 15_000,
     })
     const evidence = await page.evaluate(
-      async ({ root, principal, recipient, relay }) => {
+      async ({
+        root,
+        principal,
+        recipient,
+        relay,
+        senderDeclaration,
+        recipientDeclaration,
+      }) => {
         const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
         const { getAccountSigner } = await import(`${root}/session-signer.ts`)
         const { createParticipantMessageRumor, publishPrivateMessage } =
@@ -659,8 +680,32 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
         const { retryPrivateDeliveries, resumePrivateDelivery } = await import(
           `${root}/private-message-delivery.ts`
         )
+        const { createInMemoryInboxDeclarationEvidenceRepository } =
+          await import(`${root}/inbox-declaration-evidence.ts`)
+        const { resolveInboxDeclaration } = await import(
+          `${root}/private-message-routing.ts`
+        )
         const owner = getCommerceInbox(principal)
         await owner.initialize()
+        const inboxDeclarationEvidenceRepository =
+          createInMemoryInboxDeclarationEvidenceRepository()
+        const resolveDeclaration = async (pubkey: string) => {
+          const declaration = await resolveInboxDeclaration(pubkey, {
+            relayUrls: [relay],
+            evidenceRepository: inboxDeclarationEvidenceRepository,
+            allowLocalRelayUrlsForPubkey:
+              pubkey === principal ? principal : null,
+            requestingAccountPubkey: principal,
+            authenticatedPubkey: principal,
+          })
+          if (declaration.state !== "declared" || !declaration.eventId)
+            throw new Error(
+              `Signed inbox declaration evidence is unavailable (${declaration.state}; ${declaration.relayUrls.join(",")})`
+            )
+          return declaration
+        }
+        await resolveDeclaration(principal)
+        await resolveDeclaration(recipient)
         const rumor = createParticipantMessageRumor({
           senderPubkey: principal,
           recipientPubkeys: [recipient],
@@ -672,6 +717,11 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           _event: unknown,
           options: { exclusiveRelayUrls: string[] }
         ) => {
+          if (
+            options.exclusiveRelayUrls.length !== 1 ||
+            options.exclusiveRelayUrls[0] !== relay
+          )
+            throw new Error("Unexpected private delivery relay target")
           publishes++
           return {
             plan: {},
@@ -690,15 +740,7 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           signer: getAccountSigner(),
           rumorKind: 14,
           selfCopy: true,
-          recipientInboxRelays: [relay],
-          senderInboxRelays: [relay],
-          inspectOwnInboxReadiness: async () => ({
-            state: "ready",
-            eventId: "synthetic",
-            relayUrls: [relay],
-            stale: false,
-            distributionRepairable: false,
-          }),
+          inboxDeclarationEvidenceRepository,
           publishFn: publisher,
         }
         let rejected = false
@@ -719,24 +761,18 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
         }
         const rows =
           await owner.store.database.commerceInboxDeliveries.toArray()
-        // Make any abandoned job eligible immediately instead of waiting for its lease.
+        // Make any abandoned job eligible without waiting for its lease.
         for (const row of rows)
           await owner.store.database.commerceInboxDeliveries.update(row.id, {
             claim: undefined,
           })
-        const resolve = async (pubkey: string) => ({
-          pubkey,
-          state: "declared",
-          relayUrls: [relay],
-          stale: false,
-          fetchedAt: Date.now(),
-        })
         await retryPrivateDeliveries(
           principal,
           publisher,
           undefined,
           owner.store,
-          resolve
+          resolveDeclaration,
+          { inboxDeclarationEvidenceRepository }
         )
         const resumedRejected = await resumePrivateDelivery(
           owner.store,
@@ -797,7 +833,8 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           },
           undefined,
           owner.store,
-          resolve
+          resolveDeclaration,
+          { inboxDeclarationEvidenceRepository }
         )
         const resumed = await resumePrivateDelivery(
           owner.store,
@@ -816,6 +853,8 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
         principal: sender.pubkey,
         recipient: peer.pubkey,
         relay: relayUrl,
+        senderDeclaration,
+        recipientDeclaration,
       }
     )
     expect(evidence).toEqual({

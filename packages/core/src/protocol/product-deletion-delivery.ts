@@ -21,9 +21,14 @@ import {
 } from "./relay-settings"
 import { config } from "../config"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
@@ -72,8 +77,13 @@ export type ProductDeletionRelayPublisher = (input: {
   appRelayUrls: string[]
   personalRelayUrls: string[]
   independentRelayUrls: string[]
+  relayTarget: RelayTarget | null
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: Pick<
+    import("./owner-relay-list-evidence").OwnerRelayListEvidenceRepository,
     "get"
   >
 }) => Promise<ProductDeletionPublisherResult>
@@ -101,6 +111,10 @@ export interface ProductDeletionDeliveryOptions {
   isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: Pick<
+    import("./owner-relay-list-evidence").OwnerRelayListEvidenceRepository,
     "get"
   >
   now?: () => number
@@ -131,9 +145,9 @@ function cloneRelayPlan(
   return plan.map((target) => ({
     relayUrl: target.relayUrl,
     roles: [...target.roles],
-    // Legacy jobs did not persist layer flags. Delivery retains both plausible
-    // authorities for ambiguous App/personal `author_write` overlap; retain the
-    // old shape here for compatibility.
+    // Layer flags record positive provenance at staging time. Preserve them for
+    // diagnostics; retry derives current candidates from author_write and lets
+    // the shared admission gate prove which authority remains available.
     ...(target.appRelay === true ? { appRelay: true } : {}),
     ...(target.personalRelay === true ? { personalRelay: true } : {}),
   }))
@@ -146,12 +160,14 @@ function cloneRelayDelivery(
 }
 
 function persistedTargetRelaySources(
-  target: ProductDeletionRelayTarget | undefined
+  target: ProductDeletionRelayTarget | undefined,
+  accountPubkey: string
 ): {
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
   independentRelayUrls: string[]
+  relayTarget: RelayTarget | null
 } {
   if (!target) {
     return {
@@ -159,32 +175,61 @@ function persistedTargetRelaySources(
       appRelayUrls: [],
       personalRelayUrls: [],
       independentRelayUrls: [],
+      relayTarget: null,
     }
   }
 
   const relayUrl = target.relayUrl
-  const hasPersistedLayerProvenance =
-    target.appRelay === true || target.personalRelay === true
-  const legacyAuthorWrite =
-    target.roles.includes("author_write") && !hasPersistedLayerProvenance
-  const configuredAppWriteRelayUrls = new Set(
-    [...config.appWriteRelayUrls, ...config.appBackplaneRelayUrls].flatMap(
-      (rawRelayUrl) => {
-        const normalized = tryNormalizeRelayUrl(rawRelayUrl)
-        return normalized.ok ? [normalized.url] : []
-      }
-    )
-  )
-  // An unflagged author_write URL in the App registry may also have been the
-  // owner's signed NIP-65 choice. Preserve both possibilities; only the
-  // explicit `conduit` role is unambiguously App-owned in legacy jobs.
-  const appRelay =
-    target.appRelay === true ||
-    target.roles.includes("conduit") ||
-    (legacyAuthorWrite && configuredAppWriteRelayUrls.has(relayUrl))
-  const personalRelay =
-    target.personalRelay === true ||
-    (legacyAuthorWrite && !target.roles.includes("conduit"))
+  const authorWrite = target.roles.includes("author_write")
+  // Persisted layer flags describe how this target was sourced when staged.
+  // They cannot veto an independent App bucket or current signed owner grant
+  // during retry; author_write only bounds which URL may be reconsidered.
+  const appRelay = target.appRelay === true || target.roles.includes("conduit")
+  const personalRelay = target.personalRelay === true
+  const relayTarget =
+    mergeRelayTargets(
+      ...(target.appRelay === true || authorWrite
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "write",
+              bucket: "commerce_write",
+            }),
+            relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "write",
+              bucket: "general_write",
+            }),
+          ]
+        : []),
+      ...(target.roles.includes("conduit")
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "write",
+              bucket: "general_write",
+            }),
+          ]
+        : []),
+      ...(authorWrite
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "owner_nip65",
+              operation: "write",
+              ownerPubkey: accountPubkey,
+              selection: "write",
+            }),
+          ]
+        : []),
+      ...(target.roles.includes("source")
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "source_delivery",
+              operation: "write",
+            }),
+          ]
+        : [])
+    )[0] ?? null
 
   return {
     ownerSelectedRelayUrls:
@@ -192,6 +237,7 @@ function persistedTargetRelaySources(
     appRelayUrls: appRelay ? [relayUrl] : [],
     personalRelayUrls: personalRelay ? [relayUrl] : [],
     independentRelayUrls: target.roles.includes("source") ? [relayUrl] : [],
+    relayTarget,
   }
 }
 
@@ -257,7 +303,16 @@ export function planProductDeletionRelays(
   input: ProductDeletionRelayPlanInput
 ): ProductDeletionRelayTarget[] {
   const appRelayUrls = new Set(
-    (input.currentAppRelayUrls ?? []).flatMap((relayUrl) => {
+    [
+      ...(input.currentAppRelayUrls ?? []),
+      ...(config.e2eRelayIsolationEnabled
+        ? []
+        : input.currentWriteRelayUrls.filter((relayUrl) =>
+            [...config.appWriteRelayUrls, ...config.commerceRelayUrls].includes(
+              relayUrl
+            )
+          )),
+    ].flatMap((relayUrl) => {
       const normalized = tryNormalizeRelayUrl(relayUrl)
       return normalized.ok ? [normalized.url] : []
     })
@@ -801,15 +856,20 @@ async function deliverProductDeletionJobUnlocked(
       const claimedTarget = claimed.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const claimedSources = persistedTargetRelaySources(claimedTarget)
-      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+      const claimedSources = persistedTargetRelaySources(
+        claimedTarget,
+        accountPubkey
+      )
+      const eligibleTargets = await filterEligibleAccountRelayTargets({
         accountPubkey,
         authenticatedPubkey,
-        candidateRelayUrls: [relayUrl],
-        ...claimedSources,
+        targets: claimedSources.relayTarget ? [claimedSources.relayTarget] : [],
+        operation: "write",
         repository: options.accountNetworkLocalStateRepository,
+        ownerRelayListEvidenceRepository:
+          options.ownerRelayListEvidenceRepository,
       })
-      if (eligibleRelayUrls.length === 0) {
+      if (eligibleTargets.length === 0) {
         // Whole-relay removal is an admission cutoff, not delivery evidence.
         // Keep the immutable target and its prior outcome/attempt count so an
         // authoritative later re-add can resume the exact staged event.
@@ -855,7 +915,10 @@ async function deliverProductDeletionJobUnlocked(
       const currentTarget = current.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const currentSources = persistedTargetRelaySources(currentTarget)
+      const currentSources = persistedTargetRelaySources(
+        currentTarget,
+        accountPubkey
+      )
 
       let outcome: ProductDeletionPublisherResult
       if (!isApprovedPersistedRelayTarget(currentTarget)) {
@@ -875,14 +938,20 @@ async function deliverProductDeletionJobUnlocked(
             ...currentSources,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
           })
         } catch {
-          const stillEligible = await filterEligibleAccountRelayUrls({
+          const stillEligible = await filterEligibleAccountRelayTargets({
             accountPubkey,
             authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
-            candidateRelayUrls: [relayUrl],
-            ...currentSources,
+            targets: currentSources.relayTarget
+              ? [currentSources.relayTarget]
+              : [],
+            operation: "write",
             repository: options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
           })
           if (stillEligible.length === 0) {
             // The target became ineligible after this run admitted it but

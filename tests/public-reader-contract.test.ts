@@ -28,7 +28,9 @@ import {
 import {
   __resetInboxDeclarationCache,
   resolveInboxDeclaration,
+  sharedInboxDiscoveryRelayUrls,
 } from "../packages/core/src/protocol/private-message-routing"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 import {
   __resetFollowListTestState,
   readLatestFollowLists,
@@ -198,6 +200,31 @@ for (const injected of [[B], B, 42, { relay: B }]) {
     ])
   })
 }
+
+it("account grants authorize candidates without widening the requested read scope", async () => {
+  install((socket, id) => socket.emit(["EOSE", id]))
+  const accountOptions = {
+    ...options(),
+    accountPubkey: "a".repeat(64),
+    relayTargets: relayTargetsFromUrls([A, B], {
+      kind: "public_hint",
+      operation: "read",
+    }),
+    accountNetworkLocalStateRepository: { get: async () => undefined },
+  }
+  const none = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    { ...accountOptions, relayUrls: [] }
+  )
+  expect(none.attemptedRelayUrls).toEqual([])
+  expect(sockets).toHaveLength(0)
+  const bounded = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    { ...accountOptions, relayUrls: [B] }
+  )
+  expect(bounded.attemptedRelayUrls).toEqual([B])
+  expect(sockets.map((socket) => socket.url)).toEqual([B])
+})
 
 it("CON-02 duplicate/cache deliveries never borrow forged or previous-read provenance", async () => {
   install((socket, id) => {
@@ -408,39 +435,43 @@ if (!reference) {
   })
 
   it("CON-08 declaration owners cannot confirm an event on an empty successful source", async () => {
-    let declaration = sign(220, 10002, [["r", A]])
+    const [sharedA, sharedB] = sharedInboxDiscoveryRelayUrls()
+    expect(sharedA).toBeDefined()
+    expect(sharedB).toBeDefined()
+    let declaration = sign(220, 10002, [["r", sharedA!]])
     install((socket, id) => {
-      if (socket.url === A)
+      if (socket.url === sharedA)
         for (let index = 0; index < 3; index++)
           socket.emit([
             "EVENT",
             id,
             {
               ...declaration,
-              __conduitSourceRelayUrls: [B],
+              __conduitSourceRelayUrls: [sharedB],
               rawEvent: "hostile",
             },
           ])
       socket.emit(["EOSE", id])
     })
     const owner = await resolveOwnerRelayList(declaration.pubkey, {
-      relayUrls: [A, B],
+      relayUrls: [sharedA!, sharedB!],
       evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
     })
     expect(owner.observation.coverage).toBe("complete")
-    expect(owner.observation.eventSourceRelayUrls).toEqual([A])
-    expect(owner.current?.sourceRelayUrls).toEqual([A])
-    declaration = sign(230, 10050, [["relay", A]])
+    expect(owner.observation.eventSourceRelayUrls).toEqual([sharedA])
+    expect(owner.current?.sourceRelayUrls).toEqual([sharedA])
+    declaration = sign(230, 10050, [["relay", sharedA!]])
     const inbox = await resolveInboxDeclaration(declaration.pubkey, {
-      relayUrls: [A, B],
-      sharedConfirmationRelayUrls: [A, B],
+      relayUrls: [sharedA!, sharedB!],
+      sharedConfirmationRelayUrls: [sharedA!, sharedB!],
       evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
     })
-    expect(inbox.observation?.coverage).toBe("complete")
-    expect(inbox.observation?.eventSourceRelayUrls).toEqual([A])
-    expect(inbox.sourceRelayUrls).toEqual([A])
-    // These fixture sources are outside the canonical shared-confirmation set.
-    expect(inbox.sharedSourceRelayUrls).toEqual([])
+    // Three duplicate deliveries hit the kind-10050 limit on the observed
+    // source; the empty sibling is complete but cannot confirm that event.
+    expect(inbox.observation?.coverage).toBe("partial")
+    expect(inbox.observation?.eventSourceRelayUrls).toEqual([sharedA])
+    expect(inbox.sourceRelayUrls).toEqual([sharedA])
+    expect(inbox.sharedSourceRelayUrls).toEqual([sharedA])
   })
 
   it("CON-08 canonical delivery reaches product/deletion cache consumers with only observed provenance", async () => {
@@ -1099,6 +1130,10 @@ if (!reference) {
         { kinds: [0] },
         {
           ...options(urls),
+          relayTargets: relayTargetsFromUrls(urls, {
+            kind: "public_hint",
+            operation: "read",
+          }),
           socketScope: scope,
           accountPubkey: first.pubkey,
           accountNetworkLocalStateRepository: {

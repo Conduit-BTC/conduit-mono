@@ -188,15 +188,24 @@ describe("resolveInboxDeclaration", () => {
     )
     const relayPlans: Array<{
       relayUrls: string[]
-      ownerSelectedRelayUrls: string[]
+      relayTargets: Array<{
+        url: string
+        grants: Array<{ kind: string; operation: string }>
+      }>
     }> = []
     const fetch = async (
       _filter: unknown,
-      options: { relayUrls: string[]; ownerSelectedRelayUrls?: string[] }
+      options: {
+        relayUrls: string[]
+        relayTargets?: Array<{
+          url: string
+          grants: Array<{ kind: string; operation: string }>
+        }>
+      }
     ) => {
       relayPlans.push({
         relayUrls: [...options.relayUrls],
-        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        relayTargets: [...(options.relayTargets ?? [])],
       })
       return {
         events: [] as never,
@@ -211,7 +220,13 @@ describe("resolveInboxDeclaration", () => {
       fetchEventsWithDiagnostics: fetch as never,
     })
     expect(relayPlans[0]!.relayUrls).not.toContain(signedReadRelay)
-    expect(relayPlans[0]!.ownerSelectedRelayUrls).toEqual([])
+    expect(
+      relayPlans[0]!.relayTargets.some(
+        (target) =>
+          target.url === signedReadRelay &&
+          target.grants.some((grant) => grant.kind === "owner_nip65")
+      )
+    ).toBe(false)
 
     __resetInboxDeclarationCache()
     evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
@@ -222,7 +237,13 @@ describe("resolveInboxDeclaration", () => {
       fetchEventsWithDiagnostics: fetch as never,
     })
     expect(relayPlans[1]!.relayUrls).not.toContain(signedReadRelay)
-    expect(relayPlans[1]!.ownerSelectedRelayUrls).toEqual([])
+    expect(
+      relayPlans[1]!.relayTargets.some(
+        (target) =>
+          target.url === signedReadRelay &&
+          target.grants.some((grant) => grant.kind === "owner_nip65")
+      )
+    ).toBe(false)
 
     __resetInboxDeclarationCache()
     evidenceRepository = createInMemoryInboxDeclarationEvidenceRepository()
@@ -233,21 +254,34 @@ describe("resolveInboxDeclaration", () => {
       fetchEventsWithDiagnostics: fetch as never,
     })
     expect(relayPlans[2]!.relayUrls).toContain(signedReadRelay)
-    expect(relayPlans[2]!.ownerSelectedRelayUrls).toContain(signedReadRelay)
+    expect(relayPlans[2]!.relayTargets).toContainEqual({
+      url: signedReadRelay,
+      grants: expect.arrayContaining([
+        {
+          kind: "owner_nip65",
+          operation: "read",
+          ownerPubkey: OWNER,
+          selection: "read",
+        },
+      ]),
+    })
   })
 
   it("does not treat a remotely supplied ws discovery target as owner-selected", async () => {
     const plans: Array<{
       relayUrls: string[]
-      ownerSelectedRelayUrls: string[]
+      relayTargets: Array<{ url: string; grants: Array<{ kind: string }> }>
     }> = []
     const fetch = async (
       _filter: unknown,
-      options: { relayUrls: string[]; ownerSelectedRelayUrls?: string[] }
+      options: {
+        relayUrls: string[]
+        relayTargets?: Array<{ url: string; grants: Array<{ kind: string }> }>
+      }
     ) => {
       plans.push({
         relayUrls: [...options.relayUrls],
-        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        relayTargets: [...(options.relayTargets ?? [])],
       })
       return {
         events: [] as never,
@@ -264,19 +298,27 @@ describe("resolveInboxDeclaration", () => {
       fetchEventsWithDiagnostics: fetch as never,
     })
 
-    expect(plans).toEqual([
-      {
-        relayUrls: ["wss://relay.damus.io"],
-        ownerSelectedRelayUrls: [],
-      },
-    ])
+    expect(plans).toHaveLength(1)
+    expect(plans[0]!.relayUrls).toEqual(["wss://relay.damus.io"])
+    expect(
+      plans[0]!.relayTargets.some((target) =>
+        target.grants.some((grant) => grant.kind === "owner_nip65")
+      )
+    ).toBe(false)
   })
 
   it("carries only an exact owner-selected ws subset to discovery I/O", async () => {
     const ownerRelay = "ws://owner-selected.example"
     const remoteRelay = "ws://remote-hint.example"
     let observed:
-      { relayUrls: string[]; ownerSelectedRelayUrls: string[] } | undefined
+      | {
+          relayUrls: string[]
+          relayTargets: Array<{
+            url: string
+            grants: Array<{ kind: string; operation: string }>
+          }>
+        }
+      | undefined
     await resolveForTest({
       requestingAccountPubkey: OWNER,
       authenticatedPubkey: OWNER,
@@ -286,12 +328,15 @@ describe("resolveInboxDeclaration", () => {
         _filter: unknown,
         options: {
           relayUrls: string[]
-          ownerSelectedRelayUrls?: readonly string[]
+          relayTargets?: Array<{
+            url: string
+            grants: Array<{ kind: string; operation: string }>
+          }>
         }
       ) => {
         observed = {
           relayUrls: [...options.relayUrls],
-          ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+          relayTargets: [...(options.relayTargets ?? [])],
         }
         return {
           events: [],
@@ -302,9 +347,17 @@ describe("resolveInboxDeclaration", () => {
       }) as never,
     })
 
-    expect(observed).toEqual({
-      relayUrls: [ownerRelay, "wss://relay.damus.io"],
-      ownerSelectedRelayUrls: [ownerRelay],
+    expect(observed?.relayUrls).toEqual([ownerRelay, "wss://relay.damus.io"])
+    expect(observed?.relayTargets).toContainEqual({
+      url: ownerRelay,
+      grants: expect.arrayContaining([
+        {
+          kind: "owner_nip65",
+          operation: "read",
+          ownerPubkey: OWNER,
+          selection: "read",
+        },
+      ]),
     })
   })
 
@@ -1031,7 +1084,10 @@ describe("resolveInboxDeclaration", () => {
       relayUrls: string[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
-      ownerSelectedRelayUrls: string[]
+      relayTargets: Array<{
+        url: string
+        grants: Array<{ kind: string; operation: string }>
+      }>
     }> = []
     const fetch = async (
       filter: { ids?: string[] },
@@ -1039,7 +1095,10 @@ describe("resolveInboxDeclaration", () => {
         relayUrls: string[]
         accountPubkey?: string | null
         authenticatedPubkey?: string | null
-        ownerSelectedRelayUrls?: readonly string[]
+        relayTargets?: Array<{
+          url: string
+          grants: Array<{ kind: string; operation: string }>
+        }>
       }
     ) => {
       calls.push({
@@ -1047,7 +1106,7 @@ describe("resolveInboxDeclaration", () => {
         relayUrls: [...options.relayUrls],
         accountPubkey: options.accountPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
-        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        relayTargets: [...(options.relayTargets ?? [])],
       })
       if (filter.ids) {
         return {
@@ -1082,13 +1141,20 @@ describe("resolveInboxDeclaration", () => {
       relayUrls: [sharedPlan[2]!],
       accountPubkey: OWNER,
       authenticatedPubkey: OWNER,
-      ownerSelectedRelayUrls: [sharedPlan[2]!],
+      relayTargets: expect.arrayContaining([
+        expect.objectContaining({
+          url: sharedPlan[2],
+          grants: expect.arrayContaining([
+            expect.objectContaining({ operation: "read" }),
+          ]),
+        }),
+      ]),
     })
     expect(calls[1]).toEqual({
       relayUrls: ["wss://relay.primal.net"],
       accountPubkey: OWNER,
       authenticatedPubkey: OWNER,
-      ownerSelectedRelayUrls: [sharedPlan[2]!],
+      relayTargets: expect.any(Array),
     })
     expect(result.eventId).toBe(stronger.id)
     expect(persisted?.cutoverRecoveries?.[0]).toMatchObject({
@@ -1552,16 +1618,27 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
-  it("uses the cached declared relays when discovery degraded", async () => {
+  it("uses only prepared retained evidence when discovery degraded", async () => {
     primeInboxDeclarationCache(
       OWNER,
       ["wss://cached-inbox.conduit.market"],
       () => 0
     )
+    const unavailable = resolution({
+      state: "lookup_unavailable",
+      relayUrls: [],
+    })
+    expect(
+      planInboxReadRelays({
+        declaration: unavailable,
+        compatibilityRelayUrls: [],
+      }).relayUrls
+    ).toEqual([])
     const plan = planInboxReadRelays({
       declaration: resolution({
         state: "lookup_unavailable",
         relayUrls: [],
+        retainedReadRelayUrls: ["wss://cached-inbox.conduit.market"],
       }),
       compatibilityRelayUrls: ["wss://compat.conduit.market"],
     })
@@ -1573,13 +1650,13 @@ describe("planInboxReadRelays", () => {
     expect(plan.relaySources["wss://cached-inbox.conduit.market"]).toBe("cache")
   })
 
-  it("does not restore a private cached declaration outside the exact owner context", async () => {
+  it("limits prepared private retained routes to the exact owner context", async () => {
     const localRelay = "wss://127.0.0.1:7447"
     const publicRelay = "wss://cached-inbox.conduit.market"
-    primeInboxDeclarationCache(OWNER, [localRelay, publicRelay], () => 0)
     const declaration = resolution({
       state: "lookup_unavailable",
       relayUrls: [],
+      retainedReadRelayUrls: [localRelay, publicRelay],
     })
 
     const thirdPartyPlan = planInboxReadRelays({
@@ -1891,22 +1968,23 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("declaration_signed_empty")
   })
 
-  it("never lets a locally staged declaration authorize writes or compatibility", async () => {
+  it("routes a signed current declaration while distribution is pending without widening to compatibility", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({
-        state: "distribution_pending",
-        relayUrls: [],
-        pendingRelayUrls: ["wss://pending-inbox.example"],
+        state: "declared",
+        eventId: "a".repeat(64),
+        relayUrls: ["wss://pending-inbox.example"],
+        pendingPublishRelayUrls: ["wss://distribution.example"],
       }),
       validatedOrder: true,
       compatibilityEnabled: true,
       compatibilityRelayUrls: ["wss://compatibility.example"],
     })
 
-    expect(selection.route).toBe("blocked")
-    expect(selection.relayUrls).toEqual([])
-    expect(selection.blockedReason).toBe("declaration_distribution_pending")
+    expect(selection.route).toBe("declared_inbox")
+    expect(selection.relayUrls).toEqual(["wss://pending-inbox.example"])
+    expect(selection.blockedReason).toBeUndefined()
   })
 
   it("maps lookup failure to recipient_lookup_failed when compatibility is off", async () => {

@@ -25,9 +25,11 @@ const RUMOR_ID = "c".repeat(64)
 const RELAY = "wss://orders.conduit.market"
 const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
 const originalInboxFallbacks = config.commerceDmFallbackRelayUrls
+const originalCompatibilityEnabled = config.dmCompatibilityOrderRoutingEnabled
 afterEach(() => {
   config.dmCompatibilityOrderRelayUrls = originalCompatibilityRelays
   config.commerceDmFallbackRelayUrls = originalInboxFallbacks
+  config.dmCompatibilityOrderRoutingEnabled = originalCompatibilityEnabled
 })
 const DECLARATION = finalizeEvent(
   {
@@ -319,6 +321,7 @@ describe("durable order delivery staging", () => {
   })
 
   it("stages only the approved bounded compatibility plan", async () => {
+    config.dmCompatibilityOrderRoutingEnabled = true
     const relayUrls = [...config.dmCompatibilityOrderRelayUrls]
     config.dmCompatibilityOrderRelayUrls = relayUrls
     config.commerceDmFallbackRelayUrls = relayUrls
@@ -394,20 +397,32 @@ describe("durable order delivery staging", () => {
     const retryTargets: Array<{
       relayUrl: string
       signedEvent: SignedPublicNostrEvent
-      appRelayUrls?: readonly string[]
+      relayTarget?: unknown
     }> = []
     await resumePendingOrderRelayDeliveries(BUYER, {
       repository: store.repository,
       accountNetworkLocalStateRepository: { get: async () => undefined },
       leaseOwner: "worker",
       now: () => 15_121,
-      publisher: async ({ relayUrl, signedEvent, appRelayUrls }) => {
-        retryTargets.push({ relayUrl, signedEvent, appRelayUrls })
+      publisher: async ({ relayUrl, signedEvent, relayTarget }) => {
+        retryTargets.push({ relayUrl, signedEvent, relayTarget })
         return "acked"
       },
     })
     expect(retryTargets).toMatchObject([
-      { relayUrl: relayUrls[1], appRelayUrls: [relayUrls[1]] },
+      {
+        relayUrl: relayUrls[1],
+        relayTarget: {
+          url: relayUrls[1],
+          grants: [
+            {
+              kind: "compatibility",
+              operation: "write",
+              policy: "order_delivery",
+            },
+          ],
+        },
+      },
     ])
     expect(JSON.stringify(retryTargets[0]?.signedEvent)).toBe(
       JSON.stringify(WRAP)

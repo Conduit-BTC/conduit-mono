@@ -15,6 +15,8 @@ import {
   normalizeMediaServerPreferenceOwner,
   parseBlossomServerListTags,
   readMediaServerPreferences,
+  loadMediaServerPreferenceRecord,
+  selectMediaServerPreferenceUse,
   removeMediaServerPreference,
   selectLatestValidBlossomServerListEvent,
   serializeBlossomServerListTags,
@@ -272,9 +274,11 @@ describe("kind 10063 replacement selection and evidence", () => {
     }> = []
     const finalReadCalls: Array<{
       relayUrls: readonly string[]
+      relayTargets:
+        | readonly import("../packages/core/src/protocol/relay-authority").RelayTarget[]
+        | undefined
       accountPubkey: string | null | undefined
       authenticatedPubkey: string | null | undefined
-      ownerSelectedRelayUrls: readonly string[] | undefined
     }> = []
 
     await readMediaServerPreferences(OWNER, {
@@ -335,12 +339,9 @@ describe("kind 10063 replacement selection and evidence", () => {
       fetchEvents: async (_filter, options) => {
         finalReadCalls.push({
           relayUrls: options.relayUrls,
+          relayTargets: options.relayTargets,
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
-          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-          appRelayUrls: options.appRelayUrls,
-          personalRelayUrls: options.personalRelayUrls,
-          maxRelayAttempts: options.maxRelayAttempts,
         })
         return relayRead(
           [],
@@ -384,17 +385,26 @@ describe("kind 10063 replacement selection and evidence", () => {
         signedRelayListAuthoritative: true,
       },
     ])
-    expect(finalReadCalls).toEqual([
-      {
-        relayUrls: [ownerWsRelay, ownerWssRelay, ...generalAppRelayUrls],
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
-        appRelayUrls: generalAppRelayUrls,
-        personalRelayUrls: [ownerWsRelay, ownerWssRelay],
-        maxRelayAttempts: 6,
-      },
+    expect(finalReadCalls).toHaveLength(1)
+    expect(finalReadCalls[0]?.relayUrls).toEqual([
+      ownerWsRelay,
+      ownerWssRelay,
+      ...generalAppRelayUrls,
     ])
+    expect(finalReadCalls[0]?.accountPubkey).toBe(OWNER)
+    expect(finalReadCalls[0]?.authenticatedPubkey).toBe(OWNER)
+    for (const relayUrl of [ownerWsRelay, ownerWssRelay]) {
+      expect(
+        finalReadCalls[0]?.relayTargets?.find(
+          (target) => target.url === relayUrl
+        )?.grants
+      ).toContainEqual({
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: OWNER,
+        selection: "read",
+      })
+    }
   })
 
   it("does not grant remote ws authority without the matching authenticated owner", async () => {
@@ -411,9 +421,11 @@ describe("kind 10063 replacement selection and evidence", () => {
       }> = []
       const finalReadCalls: Array<{
         relayUrls: readonly string[]
+        relayTargets:
+          | readonly import("../packages/core/src/protocol/relay-authority").RelayTarget[]
+          | undefined
         accountPubkey: string | null | undefined
         authenticatedPubkey: string | null | undefined
-        ownerSelectedRelayUrls: readonly string[] | undefined
       }> = []
 
       await readMediaServerPreferences(OWNER, {
@@ -456,9 +468,9 @@ describe("kind 10063 replacement selection and evidence", () => {
         fetchEvents: async (_filter, options) => {
           finalReadCalls.push({
             relayUrls: options.relayUrls,
+            relayTargets: options.relayTargets,
             accountPubkey: options.accountPubkey,
             authenticatedPubkey: options.authenticatedPubkey,
-            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
           })
           return relayRead(
             [],
@@ -484,7 +496,11 @@ describe("kind 10063 replacement selection and evidence", () => {
       expect(finalReadCalls[0]?.authenticatedPubkey).toBe(
         authenticatedPubkey ?? null
       )
-      expect(finalReadCalls[0]?.ownerSelectedRelayUrls).toEqual([])
+      expect(
+        finalReadCalls[0]?.relayTargets?.find(
+          (target) => target.url === remoteWssRelay
+        )?.grants
+      ).not.toContainEqual(expect.objectContaining({ kind: "owner_nip65" }))
       expect(finalReadCalls[0]?.relayUrls).toContain(remoteWssRelay)
       expect(finalReadCalls[0]?.relayUrls).not.toContain(remoteWsRelay)
     }
@@ -657,6 +673,99 @@ describe("kind 10063 replacement selection and evidence", () => {
         createdAt: malformed.created_at,
         state: "malformed",
       },
+    })
+  })
+
+  it("retains media authority and distinguishable auth evidence across refresh and restart", async () => {
+    const storage = new MemoryStorage()
+    const relayUrl = "wss://media-preferences.synthetic.example"
+    const signed = event([["server", "https://retained.conduit.market"]])
+    await readMediaServerPreferences(OWNER, {
+      storage,
+      now: () => 100_000,
+      readRelayUrls: [relayUrl],
+      fetchEvents: async () =>
+        relayRead([signed], [{ relayUrl, status: "success" }], {
+          [signed.id]: [relayUrl],
+        }),
+    })
+    const unavailableRead = async () => ({
+      events: [],
+      eventSourceRelayUrls: {},
+      admittedRelayUrls: [relayUrl],
+      relays: [
+        {
+          relayUrl,
+          status: "failed" as const,
+          outcome: "auth_required" as const,
+          eventCount: 0,
+        },
+      ],
+    })
+    const degraded = await readMediaServerPreferences(OWNER, {
+      storage,
+      now: () => 101_000,
+      readRelayUrls: [relayUrl],
+      fetchEvents: unavailableRead,
+    })
+    expect(selectMediaServerPreferenceUse(degraded)).toEqual({
+      kind: "configured",
+      serverUrls: ["https://retained.conduit.market"],
+    })
+    expect(degraded.lookup.sources).toEqual([
+      { relayUrl, availability: "auth_required" },
+    ])
+    expect(
+      loadMediaServerPreferenceRecord(OWNER, storage).latestLookup?.sources
+    ).toEqual(degraded.lookup.sources)
+    __resetMediaServerPreferencesForTests()
+    const restored = await readMediaServerPreferences(OWNER, {
+      storage,
+      now: () => 102_000,
+      readRelayUrls: [relayUrl],
+      fetchEvents: unavailableRead,
+    })
+    expect(restored.publishedRevision).toEqual(degraded.publishedRevision)
+    expect(selectMediaServerPreferenceUse(restored)).toEqual(
+      selectMediaServerPreferenceUse(degraded)
+    )
+  })
+
+  it("keeps a signed-empty replacement ahead of an older server after restart and outage", async () => {
+    const storage = new MemoryStorage()
+    const relayUrl = "wss://media-frontier.synthetic.example"
+    const published = event([["server", "https://old.conduit.market"]], {
+      createdAt: 100,
+    })
+    const empty = event([], { createdAt: 101 })
+    await readMediaServerPreferences(OWNER, {
+      storage,
+      readRelayUrls: [relayUrl],
+      fetchEvents: async () =>
+        relayRead([published], [{ relayUrl, status: "success" }]),
+    })
+    const replacement = await readMediaServerPreferences(OWNER, {
+      storage,
+      readRelayUrls: [relayUrl],
+      fetchEvents: async () =>
+        relayRead([empty], [{ relayUrl, status: "success" }]),
+    })
+    expect(replacement.status).toBe("empty")
+    expect(selectMediaServerPreferenceUse(replacement).kind).toBe("fallback")
+    expect(
+      loadMediaServerPreferenceRecord(OWNER, storage).frontierEvent?.id
+    ).toBe(empty.id)
+
+    __resetMediaServerPreferencesForTests()
+    const unavailable = await readMediaServerPreferences(OWNER, {
+      storage,
+      readRelayUrls: [relayUrl],
+      fetchEvents: async () => relayRead([], [{ relayUrl, status: "failed" }]),
+    })
+    expect(unavailable.frontier?.eventId).toBe(empty.id)
+    expect(unavailable.coverage).toBe("unavailable")
+    expect(selectMediaServerPreferenceUse(unavailable)).toEqual({
+      kind: "incomplete",
     })
   })
 

@@ -4,8 +4,10 @@ import {
   applyE2eRelayIsolation,
   config,
   normalizeRelaySettingsState,
+  planPublicEventReadbackTargets,
   planRelayReads,
   planRelayWrites,
+  relayTargetsFromUrls,
   recordRelayFailure,
   type RelayList,
   type RelaySettingsEntry,
@@ -549,6 +551,56 @@ describe("planRelayReads", () => {
   })
 })
 
+describe("planPublicEventReadbackTargets", () => {
+  it("maps acknowledged public write grants to matching readback authority", () => {
+    const owner = "a".repeat(64)
+    const targets = [
+      ...relayTargetsFromUrls(["wss://owner.example"], {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: owner,
+        selection: "write",
+      }),
+      ...relayTargetsFromUrls(["wss://app.example"], {
+        kind: "app",
+        operation: "write",
+        bucket: "general_write",
+      }),
+      ...relayTargetsFromUrls(["wss://source.example"], {
+        kind: "source_delivery",
+        operation: "write",
+      }),
+      ...relayTargetsFromUrls(["wss://recipient.example"], {
+        kind: "recipient_nip17",
+        operation: "write",
+        recipientPubkey: "b".repeat(64),
+      }),
+    ]
+
+    expect(planPublicEventReadbackTargets(targets)).toEqual([
+      {
+        url: "wss://owner.example",
+        grants: [
+          {
+            kind: "owner_nip65",
+            operation: "read",
+            ownerPubkey: owner,
+            selection: "write",
+          },
+        ],
+      },
+      {
+        url: "wss://app.example",
+        grants: [{ kind: "app", operation: "read", bucket: "author_readback" }],
+      },
+      {
+        url: "wss://source.example",
+        grants: [{ kind: "public_hint", operation: "read" }],
+      },
+    ])
+  })
+})
+
 describe("planRelayWrites", () => {
   beforeEach(() => {
     __resetRelayHealth()
@@ -584,6 +636,12 @@ describe("planRelayWrites", () => {
       })
     ).toEqual({
       intent: "author_products",
+      relayTargets: [
+        {
+          url: isolatedRelayUrl,
+          grants: [{ kind: "app", operation: "read", bucket: "general_read" }],
+        },
+      ],
       relayUrls: [isolatedRelayUrl],
       candidateRelayUrls: [isolatedRelayUrl],
       maxRelayAttempts: 1,
@@ -604,6 +662,15 @@ describe("planRelayWrites", () => {
       })
     ).toEqual({
       intent: "author_event",
+      primaryRelayTargets: [
+        {
+          url: isolatedRelayUrl,
+          grants: [
+            { kind: "app", operation: "write", bucket: "general_write" },
+          ],
+        },
+      ],
+      broadcastRelayTargets: [],
       primaryRelayUrls: [isolatedRelayUrl],
       primaryCandidateRelayUrls: [isolatedRelayUrl],
       maxPrimaryRelayAttempts: 1,

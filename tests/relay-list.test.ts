@@ -19,6 +19,12 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+import { config } from "@conduit/core/config"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "@conduit/core/protocol/relay-authority"
 
 const ALICE_SECRET = generateSecretKey()
 const BOB_SECRET = generateSecretKey()
@@ -270,12 +276,22 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(list?.readRelayUrls).toEqual(["wss://relay-alice.conduit.market"])
   })
 
-  it("carries app and personal provenance to relay-list discovery I/O", async () => {
-    const relayUrls = ["wss://app.conduit.market", "wss://personal.example"]
+  it("carries explicit relay grants to relay-list discovery I/O", async () => {
+    const relayUrls = [config.appReadRelayUrls[0]!, "wss://public-hint.example"]
+    const relayTargets = mergeRelayTargets(
+      relayTargetsFromUrls([relayUrls[0]!], {
+        kind: "app",
+        operation: "read",
+        bucket: "general_read",
+      }),
+      relayTargetsFromUrls([relayUrls[1]!], {
+        kind: "public_hint",
+        operation: "read",
+      })
+    )
     let capturedOptions:
       | {
-          appRelayUrls?: readonly string[]
-          personalRelayUrls?: readonly string[]
+          relayTargets?: readonly RelayTarget[]
         }
       | undefined
     __setRelayListTestOverrides({
@@ -294,13 +310,11 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
     await getRelayListsDetailed([ALICE], {
       relayUrls,
-      appRelayUrls: [relayUrls[0]!],
-      personalRelayUrls: [relayUrls[1]!],
+      relayTargets,
       skipCache: true,
     })
 
-    expect(capturedOptions?.appRelayUrls).toEqual([relayUrls[0]])
-    expect(capturedOptions?.personalRelayUrls).toEqual([relayUrls[1]])
+    expect(capturedOptions?.relayTargets).toEqual(relayTargets)
   })
 
   it("does not regress a newer cached replaceable event on a narrower refresh", async () => {

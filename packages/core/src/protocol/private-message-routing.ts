@@ -1,3 +1,16 @@
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
+  interpretAccountNetworkPreference,
+  classifyAccountNetworkReadback,
+  interpretAccountNetworkInboxRecovery,
+  interpretAccountNetworkRead,
+  compareAccountNetworkRevisions,
+  reconcileAccountNetworkReadDiagnostics,
+} from "./account-network-evidence"
 import { config } from "../config"
 import {
   applyInboxDeclarationEvidenceMerge,
@@ -49,7 +62,6 @@ export { normalizeSecureRelayUrls as secureRelayUrls } from "./relay-settings"
 /** Typed result of a kind-10050 declaration lookup. */
 export type InboxDeclarationState =
   | "declared"
-  | "distribution_pending"
   | "signed_empty"
   | "not_observed"
   | "lookup_partial"
@@ -110,6 +122,7 @@ export function parsePrivateMessageRelays(event: {
 }
 
 export interface InboxDeclarationResolution {
+  evidence?: import("./account-network-evidence").AccountNetworkPreferenceFacts
   pubkey: string
   state: InboxDeclarationState
   /** Context-eligible declared inbox relays; empty unless state is "declared". */
@@ -118,6 +131,7 @@ export interface InboxDeclarationResolution {
   retainedReadRelayUrls?: string[]
   /** Previous inboxes retained read-only during a confirmed cutover grace. */
   cutoverRecoveryRelayUrls?: string[]
+  recovery?: import("./account-network-evidence").AccountNetworkInboxRecovery[]
   /** True when served from cache past its freshness window. */
   stale: boolean
   fetchedAt: number
@@ -145,6 +159,7 @@ export interface InboxDeclarationResolution {
 }
 
 export interface InboxDeclarationObservation {
+  sources?: import("./account-network-evidence").AccountNetworkReadEvidence["sources"]
   coverage: InboxReadCoverage
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
@@ -159,6 +174,7 @@ export interface ResolveInboxDeclarationOptions {
   fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   /** Discovery relays; defaults to local reads + compatibility reads. */
   relayUrls?: readonly string[]
+  relayTargets?: readonly RelayTarget[]
   now?: () => number
   /** Freshness window override in ms (tests). */
   freshnessMs?: number
@@ -203,16 +219,15 @@ const invalidatedDeclarationKeys = new Set<string>()
 function hasCurrentCompleteLookup(
   record: InboxDeclarationEvidenceRecord
 ): boolean {
-  const completeObservedAt = record.current.completeObservedAt
-  if (completeObservedAt === undefined) return false
-  const latestLookup = record.latestLookup
-  if (!latestLookup) return true
-  if (latestLookup.observedAt < completeObservedAt) return true
-  return (
-    latestLookup.coverage === "complete" &&
-    latestLookup.hadEvent &&
-    latestLookup.eventId === record.current.signedEvent.id
-  )
+  const facts = interpretAccountNetworkPreference({
+    current: {
+      eventId: record.current.signedEvent.id,
+      state: record.current.state,
+      completeObservedAt: record.current.completeObservedAt,
+    },
+    lookup: record.latestLookup,
+  })
+  return facts.currentObserved && facts.coverage === "complete"
 }
 
 /** Reset the kind-10050 declaration cache (tests). */
@@ -281,6 +296,7 @@ export function getCachedInboxDeclarationEvidence(
 export interface ReadRetainedInboxDeclarationOptions {
   /** Durable evidence seam (tests/non-browser adapters). */
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  durableEvidenceRepository?: Pick<InboxDeclarationEvidenceRepository, "get">
   now?: () => number
 }
 
@@ -298,10 +314,27 @@ export async function readRetainedInboxDeclarationEvidence(
   const key = cacheKey(pubkey)
   if (!normalizeInboxDeclarationEvidencePubkey(key)) return null
 
-  const persisted = await getInboxDeclarationEvidence(
-    key,
-    options.evidenceRepository
-  )
+  let persisted: InboxDeclarationEvidenceRecord | null | undefined
+  try {
+    persisted = options.durableEvidenceRepository
+      ? await options.durableEvidenceRepository.get(
+          normalizeInboxDeclarationEvidencePubkey(key)!
+        )
+      : await getInboxDeclarationEvidence(key, options.evidenceRepository)
+  } catch (error) {
+    // Keep an already-admitted process frontier usable during a storage or
+    // verification outage. A readable durable frontier always wins below.
+    const process = declarationEvidenceCache.get(key)
+    if (!process) throw error
+    try {
+      return canonicalizeRetainedInboxDeclarationEvidence(
+        cloneInboxDeclarationEvidenceRecord(process),
+        options.now
+      )
+    } catch {
+      throw error
+    }
+  }
   if (!persisted) return null
 
   const durable = canonicalizeRetainedInboxDeclarationEvidence(
@@ -784,12 +817,7 @@ function declarationEventsNewestFirst(
         event.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS &&
         event.pubkey?.trim().toLowerCase() === pubkey
     )
-    .sort((left, right) => {
-      const createdAt = (right.created_at ?? 0) - (left.created_at ?? 0)
-      return createdAt !== 0
-        ? createdAt
-        : (left.id ?? "").localeCompare(right.id ?? "")
-    })
+    .sort((left, right) => -compareAccountNetworkRevisions(left, right))
 }
 
 function toSignedDeclarationEvent(
@@ -825,22 +853,24 @@ function resolutionFromEvidence(
     record.pendingDistribution?.signedEvent.id === current.signedEvent.id
       ? record.pendingDistribution
       : undefined
-  const state: InboxDeclarationState = pendingDistribution
-    ? "distribution_pending"
-    : current.state
-  const declaredRelayUrls =
-    state === "declared" ? retainedRelayUrls(current.secureRelayUrls) : []
-  const pendingRelayUrls =
-    state === "distribution_pending" && current.state === "declared"
-      ? retainedRelayUrls(current.secureRelayUrls)
-      : []
-  const retainedReadRelayUrls =
-    state === "declared"
-      ? []
-      : retainedRelayUrls([
-          ...pendingRelayUrls,
-          ...(record.lastUsable?.secureRelayUrls ?? []),
-        ])
+  const facts = interpretAccountNetworkPreference({
+    current: {
+      eventId: current.signedEvent.id,
+      state: current.state,
+      completeObservedAt: current.completeObservedAt,
+    },
+    lastUsableEventId: record.lastUsable?.signedEvent.id,
+    pendingEventId: pendingDistribution?.signedEvent.id,
+    lookup: record.latestLookup,
+  })
+  const state = facts.state
+  const declaredRelayUrls = facts.currentUsable
+    ? retainedRelayUrls(current.secureRelayUrls)
+    : []
+  const pendingRelayUrls = facts.distributionPending ? declaredRelayUrls : []
+  const retainedReadRelayUrls = !facts.currentUsable
+    ? retainedRelayUrls(record.lastUsable?.secureRelayUrls ?? [])
+    : []
   const currentOrPendingRelayUrls = new Set([
     ...declaredRelayUrls,
     ...pendingRelayUrls,
@@ -874,11 +904,16 @@ function resolutionFromEvidence(
   )
   return {
     pubkey: record.pubkey,
+    evidence: facts,
     state,
     relayUrls: declaredRelayUrls,
     retainedReadRelayUrls,
     cutoverRecoveryRelayUrls,
-    stale: input.stale,
+    recovery: interpretAccountNetworkInboxRecovery(
+      record.cutoverRecoveries ?? [],
+      input.fetchedAt
+    ).filter((route) => !currentOrPendingRelayUrls.has(route.relayUrl)),
+    stale: facts.stale,
     fetchedAt: input.fetchedAt,
     eventId: current.signedEvent.id,
     eventCreatedAt: current.signedEvent.created_at,
@@ -952,6 +987,7 @@ async function persistCachedLookupOutcome(
           lookup: {
             observedAt: fetchedAt,
             coverage: observation.coverage,
+            sources: observation.sources,
             hadEvent,
             eventId: validEventId,
           },
@@ -993,41 +1029,6 @@ function declarationEventSourceRelayUrls(
   // Completion diagnostics alone do not prove which relay returned an event.
   // Native fanout attaches per-event source provenance before aggregation.
   return []
-}
-
-function reconcileInboxReadDiagnostics(
-  result: Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>,
-  relayUrls: readonly string[]
-): Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>> {
-  const planned = retainedRelayUrls(relayUrls)
-  const plannedSet = new Set(planned)
-  const successfulSet = new Set(
-    retainedRelayUrls(result.successfulRelayUrls).filter((url) =>
-      plannedSet.has(url)
-    )
-  )
-  const reportedFailedSet = new Set(
-    retainedRelayUrls(result.failedRelayUrls).filter((url) =>
-      plannedSet.has(url)
-    )
-  )
-  const attemptedSet = new Set(
-    retainedRelayUrls([
-      ...result.attemptedRelayUrls,
-      ...result.successfulRelayUrls,
-      ...result.failedRelayUrls,
-    ]).filter((url) => plannedSet.has(url))
-  )
-  const failedSet = new Set(reportedFailedSet)
-  for (const relayUrl of planned) {
-    if (!attemptedSet.has(relayUrl)) failedSet.add(relayUrl)
-  }
-  return {
-    events: result.events,
-    attemptedRelayUrls: planned.filter((url) => attemptedSet.has(url)),
-    successfulRelayUrls: planned.filter((url) => successfulSet.has(url)),
-    failedRelayUrls: planned.filter((url) => failedSet.has(url)),
-  }
 }
 
 async function reconcilePendingInboxCutoverReadbacks(input: {
@@ -1103,9 +1104,13 @@ async function reconcilePendingInboxCutoverReadbacks(input: {
         },
         {
           relayUrls,
+          relayTargets: relayTargetsFromUrls(relayUrls, {
+            kind: "discovery",
+            operation: "read",
+            registry: "inbox_10050",
+          }),
           accountPubkey: input.requestingAccountPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           signal: input.signal,
@@ -1121,27 +1126,18 @@ async function reconcilePendingInboxCutoverReadbacks(input: {
       }
       continue
     }
-    result = reconcileInboxReadDiagnostics(result, relayUrls)
+    result = reconcileAccountNetworkReadDiagnostics(result, relayUrls)
     if (result.successfulRelayUrls.length === 0) continue
-    const exactSourceRelayUrls = ownerAuthorizedDiscoveryRelayTargets(
-      result.events.flatMap((event) => {
-        const signedEvent = toSignedDeclarationEvent(event, input.pubkey)
-        return signedEvent?.id === recovery.replacementEventId &&
-          signedEvent.sig === recovery.replacementEventSig
-          ? declarationEventSourceRelayUrls(event, result.successfulRelayUrls)
-          : []
-      }),
-      ownerSelectedRelayUrls
-    )
-    const exactSourceRelayUrlSet = new Set(exactSourceRelayUrls)
-    const successfulRelayUrlSet = new Set(result.successfulRelayUrls)
     const readback = relayUrls.map((relayUrl) => ({
       relayUrl,
-      status: exactSourceRelayUrlSet.has(relayUrl)
-        ? ("observed" as const)
-        : successfulRelayUrlSet.has(relayUrl)
-          ? ("absent" as const)
-          : ("timed_out" as const),
+      status: classifyAccountNetworkReadback({
+        relayUrl,
+        signedEvent: {
+          id: recovery.replacementEventId,
+          sig: recovery.replacementEventSig!,
+        },
+        result,
+      }),
     }))
     try {
       const persisted = await recordInboxDeclarationCutoverRecoveryReadback(
@@ -1244,6 +1240,31 @@ export async function resolveInboxDeclaration(
       }
     } catch (error) {
       if (error instanceof InboxDeclarationEvidenceUnavailableError) {
+        const retained = declarationEvidenceCache.get(key)
+        if (retained) {
+          const lookup = {
+            observedAt: fetchedAt,
+            coverage: "unavailable" as const,
+            hadEvent: false,
+          }
+          return declarationForContext(
+            resolutionFromEvidence(
+              { ...retained, latestLookup: lookup },
+              {
+                stale: true,
+                fetchedAt,
+                observation: {
+                  coverage: "unavailable",
+                  attemptedRelayUrls: [],
+                  successfulRelayUrls: [],
+                  failedRelayUrls: [],
+                  eventSourceRelayUrls: [],
+                },
+              }
+            ),
+            allowLocal
+          )
+        }
         return {
           pubkey: key,
           state: "lookup_unavailable",
@@ -1354,9 +1375,26 @@ export async function resolveInboxDeclaration(
       },
       {
         relayUrls,
+        relayTargets:
+          options.relayTargets ??
+          mergeRelayTargets(
+            relayTargetsFromUrls(relayUrls, {
+              kind: "discovery",
+              operation: "read",
+              registry: "inbox_10050",
+            }),
+            relayTargetsFromUrls(
+              ownerSelectedRelayUrls.filter((url) => relayUrls.includes(url)),
+              {
+                kind: "owner_nip65",
+                operation: "read",
+                ownerPubkey: authenticatedOwnerPubkey ?? "",
+                selection: "read",
+              }
+            )
+          ),
         accountPubkey: requestingAccountPubkey,
         authenticatedPubkey,
-        ownerSelectedRelayUrls,
         accountNetworkLocalStateRepository:
           options.accountNetworkLocalStateRepository,
         signal: options.signal,
@@ -1377,62 +1415,20 @@ export async function resolveInboxDeclaration(
       failedRelayUrls: [...relayUrls],
     }
   }
-  result = reconcileInboxReadDiagnostics(result, relayUrls)
+  result = reconcileAccountNetworkReadDiagnostics(result, relayUrls)
 
   const observationBase: InboxDeclarationObservation = {
-    coverage: deriveInboxReadCoverage(result),
+    coverage: interpretAccountNetworkRead(relayUrls, result).coverage,
+    sources: interpretAccountNetworkRead(relayUrls, result).sources,
     attemptedRelayUrls: retainedRelayUrls(result.attemptedRelayUrls),
     successfulRelayUrls: retainedRelayUrls(result.successfulRelayUrls),
     failedRelayUrls: retainedRelayUrls(result.failedRelayUrls),
     eventSourceRelayUrls: [],
   }
 
-  if (result.successfulRelayUrls.length === 0) {
-    const fallback = await persistCachedLookupOutcome(
-      key,
-      cached,
-      observationBase,
-      fetchedAt,
-      false,
-      undefined,
-      repository,
-      now
-    )
-    if (fallback) return declarationForContext(fallback, allowLocal)
-    return {
-      pubkey: key,
-      state: "lookup_unavailable",
-      relayUrls: [],
-      stale: false,
-      fetchedAt,
-      observation: observationBase,
-    }
-  }
-
   const declarations = declarationEventsNewestFirst(result.events, key)
   const newest = declarations[0] ?? null
   if (!newest) {
-    if (result.failedRelayUrls.length > 0) {
-      const fallback = await persistCachedLookupOutcome(
-        key,
-        cached,
-        observationBase,
-        fetchedAt,
-        false,
-        undefined,
-        repository,
-        now
-      )
-      if (fallback) return declarationForContext(fallback, allowLocal)
-      return {
-        pubkey: key,
-        state: "lookup_partial",
-        relayUrls: [],
-        stale: false,
-        fetchedAt,
-        observation: observationBase,
-      }
-    }
     const fallback = await persistCachedLookupOutcome(
       key,
       cached,
@@ -1444,11 +1440,19 @@ export async function resolveInboxDeclaration(
       now
     )
     if (fallback) return declarationForContext(fallback, allowLocal)
+    const facts = interpretAccountNetworkPreference({
+      lookup: {
+        observedAt: fetchedAt,
+        coverage: observationBase.coverage,
+        hadEvent: false,
+      },
+    })
     return {
       pubkey: key,
-      state: "not_observed",
+      state: facts.state,
       relayUrls: [],
-      stale: false,
+      stale: facts.stale,
+      evidence: facts,
       fetchedAt,
       observation: observationBase,
     }
@@ -1519,6 +1523,7 @@ export async function resolveInboxDeclaration(
         lookup: {
           observedAt: fetchedAt,
           coverage: observation.coverage,
+          sources: observation.sources,
           hadEvent: true,
           eventId: signedEvent.id,
         },
@@ -1545,10 +1550,11 @@ export async function resolveInboxDeclaration(
 }
 
 export interface InboxReadPlan {
+  relayTargets: RelayTarget[]
   relayUrls: string[]
   /**
-   * Exact targets carrying authenticated owner authority at the final I/O
-   * seam. This subset may include ws://; other plan sources never may.
+   * Derived owner-selected subset for diagnostics. Executable authority is
+   * carried by relayTargets and revalidated at final I/O.
    */
   ownerSelectedRelayUrls: string[]
   /** Per-relay provenance for diagnostics (content-free). */
@@ -1577,8 +1583,8 @@ export interface PlanInboxReadRelaysInput {
 }
 
 /**
- * Permissive inbox read plan: union of declared/cached inbox relays,
- * permanent cutover recovery, and the
+ * Permissive inbox read plan: union of prepared current/retained inbox relays,
+ * active cutover recovery, and the
  * bounded compatibility read set. NIP-65 general reads are not inbox routes.
  * Recovery is read-only; writes use selectPrivateMessageDeliveryRoute. This
  * pure planner reads no process state.
@@ -1596,13 +1602,9 @@ export function planInboxReadRelays(
   const declared = projectOwnerRelayUrls(
     input.declaration.state === "declared" ? input.declaration.relayUrls : []
   )
-  const cachedFallback = projectOwnerRelayUrls([
-    ...(input.declaration.retainedReadRelayUrls ?? []),
-    ...(input.declaration.state === "lookup_partial" ||
-    input.declaration.state === "lookup_unavailable"
-      ? (getCachedInboxDeclaration(input.declaration.pubkey)?.relayUrls ?? [])
-      : []),
-  ])
+  const cachedFallback = projectOwnerRelayUrls(
+    input.declaration.retainedReadRelayUrls ?? []
+  )
   const cutoverRecovery = projectOwnerRelayUrls(
     input.declaration.cutoverRecoveryRelayUrls ?? []
   )
@@ -1665,7 +1667,35 @@ export function planInboxReadRelays(
     ownerSelectedRelayUrlSet.has(relayUrl)
   )
 
-  return { relayUrls, ownerSelectedRelayUrls, relaySources, source }
+  const eligibleUrls = new Set(relayUrls)
+  const relayTargets = mergeRelayTargets(
+    relayTargetsFromUrls(declared, {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey: input.declaration.pubkey,
+    }),
+    relayTargetsFromUrls(cutoverRecovery, {
+      kind: "recovery",
+      operation: "read",
+      ownerPubkey: input.declaration.pubkey,
+    }),
+    relayTargetsFromUrls(cachedFallback, {
+      kind: "retained_inbox",
+      operation: "read",
+      ownerPubkey: input.declaration.pubkey,
+    }),
+    relayTargetsFromUrls(
+      [...requiredCompatibility, ...remainingCompatibility],
+      { kind: "compatibility", operation: "read", policy: "inbox_read" }
+    )
+  ).filter((target) => eligibleUrls.has(target.url))
+  return {
+    relayUrls,
+    relayTargets,
+    ownerSelectedRelayUrls,
+    relaySources,
+    source,
+  }
 }
 
 /** Derive read coverage from fanout diagnostics. */
@@ -1674,21 +1704,27 @@ export function deriveInboxReadCoverage(diagnostics: {
   failedRelayUrls: readonly string[]
   cappedRelayUrls?: readonly string[]
 }): InboxReadCoverage {
-  if (diagnostics.successfulRelayUrls.length === 0) return "unavailable"
-  if (
-    diagnostics.failedRelayUrls.length > 0 ||
-    (diagnostics.cappedRelayUrls?.length ?? 0) > 0
-  ) {
-    return "partial"
-  }
-  return "complete"
+  return interpretAccountNetworkRead(
+    [
+      ...diagnostics.successfulRelayUrls,
+      ...diagnostics.failedRelayUrls,
+      ...(diagnostics.cappedRelayUrls ?? []),
+    ],
+    {
+      events: [],
+      successfulRelayUrls: [...diagnostics.successfulRelayUrls],
+      failedRelayUrls: [...diagnostics.failedRelayUrls],
+      cappedRelayUrls: [...(diagnostics.cappedRelayUrls ?? [])],
+    }
+  ).coverage
 }
 
 export interface DeliveryRouteSelection {
+  relayTargets: RelayTarget[]
   route: PrivateMessageDeliveryRoute
   /** Exclusive write targets for the selected route; empty when blocked. */
   relayUrls: string[]
-  /** Exact owner-authorized subset to carry into the final publish seam. */
+  /** Derived diagnostic subset; relayTargets carries executable authority. */
   ownerSelectedRelayUrls: string[]
   /** Content-free per-target routing evidence. */
   relaySources: Record<string, "declared" | CompatibilityOrderRelaySource>
@@ -1697,7 +1733,6 @@ export interface DeliveryRouteSelection {
   blockedReason?:
     | "recipient_not_ready"
     | "recipient_lookup_failed"
-    | "declaration_distribution_pending"
     | "declaration_signed_empty"
     | "declaration_malformed"
 }
@@ -1819,6 +1854,7 @@ export function selectPrivateMessageDeliveryRoute(
     )
     if (declaredRelayUrls.length === 0) {
       return {
+        relayTargets: [],
         route: "blocked",
         relayUrls: [],
         ownerSelectedRelayUrls: [],
@@ -1835,6 +1871,21 @@ export function selectPrivateMessageDeliveryRoute(
       exactOwnerRelayUrlSet.has(relayUrl)
     )
     return {
+      relayTargets: relayTargetsFromUrls(
+        relayUrls,
+        ownerContext
+          ? {
+              kind: "owner_nip17",
+              operation: "write",
+              ownerPubkey: declaration.pubkey,
+            }
+          : {
+              kind: "recipient_nip17",
+              operation: "write",
+              recipientPubkey: declaration.pubkey,
+              eventId: declaration.eventId,
+            }
+      ),
       route: "declared_inbox",
       relayUrls,
       ownerSelectedRelayUrls,
@@ -1846,6 +1897,7 @@ export function selectPrivateMessageDeliveryRoute(
   }
   if (declaration.state === "signed_empty") {
     return {
+      relayTargets: [],
       route: "blocked",
       relayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -1854,18 +1906,9 @@ export function selectPrivateMessageDeliveryRoute(
       blockedReason: "declaration_signed_empty",
     }
   }
-  if (declaration.state === "distribution_pending") {
-    return {
-      route: "blocked",
-      relayUrls: [],
-      ownerSelectedRelayUrls: [],
-      relaySources: {},
-      truncated: false,
-      blockedReason: "declaration_distribution_pending",
-    }
-  }
   if (declaration.state === "malformed") {
     return {
+      relayTargets: [],
       route: "blocked",
       relayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -1885,6 +1928,7 @@ export function selectPrivateMessageDeliveryRoute(
   // private inbox declaration, so it must never authorize fallback writes.
   if (declaration.state !== "not_observed") {
     return {
+      relayTargets: [],
       route: "blocked",
       relayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -1897,6 +1941,7 @@ export function selectPrivateMessageDeliveryRoute(
   const isOrderMessage = input.rumorKind === EVENT_KINDS.ORDER
   if (!isOrderMessage || !input.validatedOrder) {
     return {
+      relayTargets: [],
       route: "blocked",
       relayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -1916,6 +1961,7 @@ export function selectPrivateMessageDeliveryRoute(
   })
   if (!compatibilityEnabled || compatibilityPlan.relayUrls.length === 0) {
     return {
+      relayTargets: [],
       route: "blocked",
       relayUrls: [],
       ownerSelectedRelayUrls: [],
@@ -1926,6 +1972,11 @@ export function selectPrivateMessageDeliveryRoute(
   }
 
   return {
+    relayTargets: relayTargetsFromUrls(compatibilityPlan.relayUrls, {
+      kind: "compatibility",
+      operation: "write",
+      policy: "order_delivery",
+    }),
     route: "compatibility_order",
     relayUrls: compatibilityPlan.relayUrls,
     ownerSelectedRelayUrls: [],

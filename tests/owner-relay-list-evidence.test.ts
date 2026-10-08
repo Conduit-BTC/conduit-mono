@@ -82,7 +82,7 @@ describe("owner kind-10002 evidence", () => {
       relayUrls: string[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
-      ownerSelectedRelayUrls: string[]
+      ownerLocalReadTarget: boolean
     }> = []
     const fetchEventsWithDiagnostics = async (
       _filter: unknown,
@@ -90,14 +90,26 @@ describe("owner kind-10002 evidence", () => {
         relayUrls: string[]
         accountPubkey?: string | null
         authenticatedPubkey?: string | null
-        ownerSelectedRelayUrls?: readonly string[]
+        relayTargets?: readonly {
+          url: string
+          grants: readonly { kind: string; operation: string }[]
+        }[]
       }
     ) => {
       calls.push({
         relayUrls: [...options.relayUrls],
         accountPubkey: options.accountPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
-        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        ownerLocalReadTarget: Boolean(
+          options.relayTargets?.some(
+            (target) =>
+              target.url === ownerWsRelay &&
+              target.grants.some(
+                (grant) =>
+                  grant.kind === "owner_nip65" && grant.operation === "read"
+              )
+          )
+        ),
       })
       return {
         events: [] as never,
@@ -129,13 +141,13 @@ describe("owner kind-10002 evidence", () => {
         relayUrls: [ownerWsRelay, secureRelay],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
-        ownerSelectedRelayUrls: [ownerWsRelay],
+        ownerLocalReadTarget: true,
       },
       {
         relayUrls: [secureRelay],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
-        ownerSelectedRelayUrls: [],
+        ownerLocalReadTarget: false,
       },
     ])
   })
@@ -730,7 +742,7 @@ describe("owner kind-10002 evidence", () => {
     expect(unavailable.lookup.coverage).toBe("unavailable")
   })
 
-  it("ignores invalid forged candidates without downgrading complete coverage", async () => {
+  it("ignores unadmitted candidates while preserving verification uncertainty", async () => {
     const signedEvent = await relayEvent({ createdAt: 100 })
     const relays = ["wss://nos.lol", "wss://relay.ditto.pub"]
     const current = signedEvent as never
@@ -764,13 +776,13 @@ describe("owner kind-10002 evidence", () => {
       }),
     })
     expect(confirmed.current?.signedEvent.id).toBe(signedEvent.id)
-    expect(confirmed.current?.completeObservedAt).toBe(2_000)
+    expect(confirmed.current?.completeObservedAt).toBe(1_000)
     expect(confirmed.lookup).toMatchObject({
-      coverage: "complete",
+      coverage: "unavailable",
       hadEvent: true,
       eventId: signedEvent.id,
     })
-    expect(confirmed.stale).toBe(false)
+    expect(confirmed.stale).toBe(true)
 
     __resetOwnerRelayListEvidenceForTests()
     repository = createInMemoryOwnerRelayListEvidenceRepository()
@@ -785,9 +797,9 @@ describe("owner kind-10002 evidence", () => {
         failedRelayUrls: [],
       }),
     })
-    expect(forgedOnly.state).toBe("not_observed")
+    expect(forgedOnly.state).toBe("lookup_unavailable")
     expect(forgedOnly.lookup).toMatchObject({
-      coverage: "complete",
+      coverage: "unavailable",
       hadEvent: false,
     })
     expect(forgedOnly.current).toBeUndefined()

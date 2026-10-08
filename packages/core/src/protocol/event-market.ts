@@ -11,6 +11,11 @@ import {
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -811,6 +816,7 @@ export interface EventMarketReadPlan {
   relayUrls: string[]
   /** Full ordered candidates passed to final source-policy admission. */
   candidateRelayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
@@ -872,6 +878,7 @@ export async function getEventMarketReadPlan(input: {
   const lookupOptions = {
     signal: input.signal,
     relayUrls: relayListLookupPlan.candidateRelayUrls,
+    relayTargets: relayListLookupPlan.relayTargets,
     maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
@@ -984,6 +991,13 @@ export async function getEventMarketReadPlan(input: {
   return {
     relayUrls: selectedRelayUrls,
     candidateRelayUrls: relayUrls,
+    relayTargets: mergeRelayTargets(
+      plan.relayTargets,
+      relayTargetsFromUrls(portableRelayHints, {
+        kind: "public_hint",
+        operation: "read",
+      })
+    ).filter((target) => relayUrls.includes(target.url)),
     maxRelayAttempts: plan.maxRelayAttempts ?? EVENT_MARKET_MAX_RELAY_HINTS,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],

@@ -21,6 +21,7 @@ import {
 
 const EMPTY_FRONTIER = {
   state: "not_observed",
+  currentUsable: false,
   stale: false,
   retained: false,
   coverage: "complete" as const,
@@ -65,6 +66,7 @@ function controller(
     relayList?: AccountNetworkSettingsController["view"]["relayList"]
     inbox?: AccountNetworkSettingsController["view"]["inbox"]
     status?: AccountNetworkSettingsController["status"]
+    operationPhase?: AccountNetworkSettingsController["operation"]["phase"]
     relayInformationRefreshing?: boolean
     appRelays?: AccountNetworkSettingsController["view"]["appRelays"]
     personalRelaysEnabled?: boolean
@@ -88,7 +90,11 @@ function controller(
     status: input.status ?? "ready",
     error: null,
     revision: "test-revision",
-    operation: { kind: null, phase: "idle", message: null },
+    operation: {
+      kind: null,
+      phase: input.operationPhase ?? "idle",
+      message: null,
+    },
     relayInformationRefreshing: input.relayInformationRefreshing ?? false,
     exactInboxRedistributionAvailable:
       input.exactInboxRedistributionAvailable ?? false,
@@ -134,6 +140,7 @@ describe("RelaySettingsPanel account Network review", () => {
               exactReadbackCount: 5,
               unresolvedCount: 2,
               excludedTargetCount: 0,
+              authRequiredCount: 2,
               retryAvailable: true,
             },
           ],
@@ -154,6 +161,36 @@ describe("RelaySettingsPanel account Network review", () => {
       markup.slice(markup.lastIndexOf("<button", index), index)
     ).not.toContain('disabled=""')
     expect(markup).toContain("You can keep editing")
+    expect(markup).toContain("Readback authorization required")
+    expect(markup).toContain("2 readback targets require authorization")
+    expect(markup).toContain("7 distribution targets")
+    expect(markup).not.toContain("7 eligible targets")
+  })
+
+  it("labels pending signed rows by the current operation phase", () => {
+    const pendingRow = relayRow("wss://pending.example", {
+      readState: "pending",
+      publishState: "pending",
+      privateInboxState: null,
+      privateInboxEnabled: false,
+    })
+    const waitingMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel controller={controller({ rows: [pendingRow] })} />
+    )
+    expect(waitingMarkup).toContain("Awaiting confirmation")
+    expect(waitingMarkup).not.toContain(">Publishing<")
+
+    const publishingMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [pendingRow],
+          operationPhase: "publishing",
+        })}
+      />
+    )
+    expect(publishingMarkup).toContain(">Publishing<")
+    expect(publishingMarkup).not.toContain("Awaiting confirmation")
+    expect(publishingMarkup).not.toContain("Recovery read-only")
   })
 
   it("keeps explicit review available while background discovery is degraded", () => {
@@ -346,11 +383,67 @@ describe("RelaySettingsPanel account Network review", () => {
     )
 
     expect(markup).toContain("Recovery read-only")
-    expect(markup).toContain("7-day recovery window")
+    expect(markup).toContain(
+      "The previous inbox is retained while confirmation is pending."
+    )
+    expect(markup).toContain(
+      "seven-day recovery window starts after confirmation"
+    )
     expect(markup).toContain(
       'aria-label="Remove wss://previous-inbox.example from my whole setup"'
     )
     expect(markup).toContain("ends recovery for this relay immediately")
+  })
+
+  it("shows a seven-day recovery expiry only for the active grace phase", () => {
+    const graceMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [
+            relayRow("wss://grace-inbox.example", {
+              readEnabled: false,
+              publishEnabled: false,
+              privateInboxEnabled: false,
+              readState: null,
+              publishState: null,
+              privateInboxState: null,
+              recoveryReadOnly: true,
+              recoveryPhase: "grace",
+              recoveryExpiresAt: 1_800_000_000,
+            }),
+          ],
+        })}
+      />
+    )
+    expect(graceMarkup).toContain(
+      "Conduit reads this previous inbox during the seven-day recovery"
+    )
+    expect(graceMarkup).toContain("through")
+    expect(graceMarkup).not.toContain("confirmation pending")
+  })
+
+  it("presents retained read evidence without implying an active recovery window", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [
+            relayRow("wss://retained.example", {
+              readEnabled: false,
+              publishEnabled: false,
+              privateInboxEnabled: false,
+              readState: null,
+              publishState: null,
+              privateInboxState: null,
+              retainedReadOnly: true,
+            }),
+          ],
+        })}
+      />
+    )
+    expect(markup).toContain("Saved read evidence")
+    expect(markup).toContain("No recovery window is active.")
+    expect(markup).not.toContain("Recovery read-only")
+    expect(markup).not.toContain("seven-day recovery window")
   })
 
   it("blocks a reviewed change that removes the last usable private inbox", () => {
@@ -512,7 +605,7 @@ describe("RelaySettingsPanel account Network review", () => {
 
     expect(markup).toContain("1 exact readback")
     expect(markup).toContain("2 unresolved")
-    expect(markup).toContain("3 eligible targets")
+    expect(markup).toContain("3 distribution targets")
     expect(markup).toContain("1 excluded")
     expect(markup).toContain("Retry exact signed update")
     expect(markup).not.toContain("accepted")

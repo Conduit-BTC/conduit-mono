@@ -1,7 +1,25 @@
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
+  compareAccountNetworkRevisions,
+  interpretAccountNetworkRead,
+  interpretAccountNetworkPreference,
+  mergeAccountNetworkLookup,
+  classifyAccountNetworkReadback,
+  summarizeAccountNetworkReadback,
+  NETWORK_PREFERENCE_READBACK_STATUSES,
+} from "./account-network-evidence"
+import {
+  applyNetworkPreferenceDistributionOutcomes,
+  type NetworkPreferenceReadbackObservation,
+} from "./network-preference-delivery"
 import { kinds, type Filter } from "nostr-tools"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
@@ -18,6 +36,7 @@ import {
 } from "./verified-public-event"
 import {
   DEFAULT_READ_FANOUT,
+  planPublicEventReadbackTargets,
   planRelayReads,
   type RelayReadPlan,
 } from "./relay-planner"
@@ -111,6 +130,7 @@ export interface MediaServerFrontierEvidence {
 }
 
 export interface MediaServerLookupEvidence {
+  sources?: import("./account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: MediaServerLookupCoverage
   plannedRelayCount: number
@@ -126,11 +146,11 @@ export interface PendingMediaServerPublish {
   signedEvent: SignedPublicNostrEvent
   serverUrls: string[]
   publishRelayUrls: string[]
-  /** Exact staged subset authorized by the owner's Network selection. */
-  ownerSelectedRelayUrls: string[]
   acknowledgedRelayUrls: string[]
   rejectedRelayUrls: string[]
   timedOutRelayUrls: string[]
+  /** Exact read observations remain separate from publication ACKs. */
+  readback?: NetworkPreferenceReadbackObservation[]
   stagedAt: number
 }
 
@@ -146,6 +166,8 @@ export interface MediaServerPreferenceEvidenceRecord {
   owner: string
   published?: MediaServerPublishedEvidence
   frontier?: MediaServerFrontierEvidence
+  /** Exact signed frontier, including empty or malformed replacements. */
+  frontierEvent?: SignedPublicNostrEvent
   latestLookup?: MediaServerLookupEvidence
   pending?: PendingMediaServerPublish
   draft?: MediaServerDraftRecord
@@ -183,6 +205,9 @@ export interface ReadMediaServerPreferencesDependencies {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["ownerRelayListEvidenceRepository"]
   /** Live caller authority for final account-scoped relay admission. */
   shouldContinue?: () => boolean
   /** Injectable durable owner-authority reader for deterministic tests. */
@@ -269,6 +294,9 @@ function clone<T>(value: T): T {
     const target = copied as Record<string, unknown>
     if (isVerifiedNostrEvent(source.signedEvent)) {
       target.signedEvent = source.signedEvent
+    }
+    if (isVerifiedNostrEvent(source.frontierEvent)) {
+      target.frontierEvent = source.frontierEvent
     }
     for (const key of ["published", "pending"] as const) {
       const sourcePart = source[key]
@@ -443,10 +471,7 @@ function compareReplaceable(
   left: Pick<MediaServerPreferenceEventLike, "created_at" | "id">,
   right: Pick<MediaServerPreferenceEventLike, "created_at" | "id">
 ): number {
-  if (left.created_at !== right.created_at) {
-    return right.created_at - left.created_at
-  }
-  return left.id.localeCompare(right.id)
+  return -compareAccountNetworkRevisions(left, right)
 }
 
 function matchingOwnerEvents(
@@ -529,11 +554,11 @@ export function getMediaServerPreferencesStorageKey(owner: string): string {
   return `${MEDIA_SERVER_STORAGE_PREFIX}:${normalizeMediaServerPreferenceOwner(owner)}`
 }
 
-function validSignedPreferenceEvent(
+function validSignedFrontierEvent(
   event: SignedPublicNostrEvent,
   owner: string,
   displayOnly = false
-): { event: SignedPublicNostrEvent; serverUrls: string[] } | null {
+): { event: SignedPublicNostrEvent; parsed: ParsedMediaServerTags } | null {
   if (
     (!displayOnly && !isVerifiedNostrEvent(event)) ||
     !event ||
@@ -561,9 +586,17 @@ function validSignedPreferenceEvent(
   ) {
     return null
   }
-  const parsed = parseBlossomServerListTags(event.tags)
-  return parsed.state === "valid"
-    ? { event, serverUrls: parsed.serverUrls }
+  return { event, parsed: parseBlossomServerListTags(event.tags) }
+}
+
+function validSignedPreferenceEvent(
+  event: SignedPublicNostrEvent,
+  owner: string,
+  displayOnly = false
+): { event: SignedPublicNostrEvent; serverUrls: string[] } | null {
+  const frontier = validSignedFrontierEvent(event, owner, displayOnly)
+  return frontier?.parsed.state === "valid"
+    ? { event: frontier.event, serverUrls: frontier.parsed.serverUrls }
     : null
 }
 
@@ -622,6 +655,21 @@ function sanitizeStoredRecord(
       createdAt: candidate.frontier.createdAt,
       state: candidate.frontier.state,
     }
+    if (candidate.frontierEvent) {
+      const signed = validSignedFrontierEvent(
+        candidate.frontierEvent,
+        owner,
+        displayOnly
+      )
+      if (
+        signed &&
+        signed.event.id === record.frontier.eventId &&
+        signed.event.created_at === record.frontier.createdAt &&
+        signed.parsed.state === record.frontier.state
+      ) {
+        record.frontierEvent = signed.event
+      }
+    }
   }
   const lookup = candidate.latestLookup
   if (
@@ -649,6 +697,7 @@ function sanitizeStoredRecord(
       failedRelayCount: lookup.failedRelayCount,
       rejectedEventCount: lookup.rejectedEventCount,
       hadEvent: lookup.hadEvent,
+      ...(lookup.sources ? { sources: clone(lookup.sources) } : {}),
       ...(lookup.eventId ? { eventId: lookup.eventId } : {}),
     }
   }
@@ -673,9 +722,6 @@ function sanitizeStoredRecord(
         signedEvent: valid.event,
         serverUrls: valid.serverUrls,
         publishRelayUrls,
-        ownerSelectedRelayUrls: withinPlan(
-          candidate.pending.ownerSelectedRelayUrls ?? []
-        ),
         acknowledgedRelayUrls: withinPlan(
           candidate.pending.acknowledgedRelayUrls ?? []
         ),
@@ -685,6 +731,19 @@ function sanitizeStoredRecord(
         timedOutRelayUrls: withinPlan(
           candidate.pending.timedOutRelayUrls ?? []
         ),
+        ...(Array.isArray(candidate.pending.readback)
+          ? {
+              readback: candidate.pending.readback
+                .filter(
+                  (observation) =>
+                    targetSet.has(observation.relayUrl) &&
+                    NETWORK_PREFERENCE_READBACK_STATUSES.includes(
+                      observation.status
+                    )
+                )
+                .map((observation) => ({ ...observation })),
+            }
+          : {}),
         stagedAt: candidate.pending.stagedAt,
       }
     }
@@ -741,14 +800,15 @@ async function loadAdmittedMediaServerPreferenceRecord(
     }
   }
   const candidate = clone(raw as MediaServerPreferenceEvidenceRecord)
-  const evidenceFields = ["published", "pending"] as const
+  const signedFields = ["published", "pending"] as const
   const admissions = await Promise.all(
-    evidenceFields.map(async (field) => {
-      const evidence = candidate[field]
-      return evidence ? await admitPublicEvent(evidence.signedEvent) : null
-    })
+    signedFields.map(async (field) =>
+      candidate[field]
+        ? await admitPublicEvent(candidate[field].signedEvent)
+        : null
+    )
   )
-  for (const [index, field] of evidenceFields.entries()) {
+  for (const [index, field] of signedFields.entries()) {
     const evidence = candidate[field]
     if (!evidence) continue
     const admission = admissions[index]
@@ -763,6 +823,17 @@ async function loadAdmittedMediaServerPreferenceRecord(
       )
     }
   }
+  if (candidate.frontierEvent) {
+    const admission = await admitPublicEvent(candidate.frontierEvent)
+    if (admission.status === "verified")
+      candidate.frontierEvent = admission.event
+    else if (admission.status === "invalid") delete candidate.frontierEvent
+    else
+      throw new MediaServerPreferencesError(
+        "evidence_unavailable",
+        "Retained media server evidence cannot currently be verified. Its saved bytes were preserved."
+      )
+  }
   const sanitized = sanitizeStoredRecord(candidate, normalizedOwner)
   if (!sanitized) {
     return {
@@ -773,7 +844,8 @@ async function loadAdmittedMediaServerPreferenceRecord(
   if (
     sanitized.frontier &&
     sanitized.frontier.eventId !== sanitized.published?.signedEvent.id &&
-    sanitized.frontier.eventId !== sanitized.pending?.signedEvent.id
+    sanitized.frontier.eventId !== sanitized.pending?.signedEvent.id &&
+    sanitized.frontier.eventId !== sanitized.frontierEvent?.id
   ) {
     const unverifiedPriorFrontier = sanitized.frontier
     delete sanitized.frontier
@@ -964,48 +1036,32 @@ function readCoverage(
   observedAt: number,
   verificationComplete = true
 ): MediaServerLookupEvidence {
-  const admittedRelayUrls = result?.admittedRelayUrls ?? plannedRelayUrls
-  const admittedRelaySet = new Set(admittedRelayUrls)
-  const relays = (result?.relays ?? []).filter((relay) =>
-    admittedRelaySet.has(relay.relayUrl)
+  const evidence = interpretAccountNetworkRead(
+    plannedRelayUrls,
+    result,
+    verificationComplete
   )
-  const statusByRelay = new Map(
-    relays.map((relay) => [relay.relayUrl, relay.status] as const)
-  )
-  const successfulRelayCount = relays.filter(
-    (relay) => relay.status === "success"
-  ).length
-  const partialRelayCount = relays.filter(
-    (relay) => relay.status === "partial"
-  ).length
-  const failedRelayCount = Math.max(
-    relays.filter((relay) => relay.status === "failed").length,
-    admittedRelayUrls.length - relays.length
-  )
-  const rejectedEventCount = relays.reduce(
-    (count, relay) => count + (relay.rejectedEventCount ?? 0),
-    0
-  )
-  const allComplete =
-    verificationComplete &&
-    admittedRelayUrls.length > 0 &&
-    admittedRelayUrls.every(
-      (relayUrl) => statusByRelay.get(relayUrl) === "success"
-    ) &&
-    rejectedEventCount === 0
-  const usable =
-    verificationComplete &&
-    relays.some(
-      (relay) => relay.status === "success" || relay.status === "partial"
-    )
   return {
     observedAt,
-    coverage: allComplete ? "complete" : usable ? "partial" : "unavailable",
-    plannedRelayCount: admittedRelayUrls.length,
-    successfulRelayCount,
-    partialRelayCount,
-    failedRelayCount,
-    rejectedEventCount,
+    coverage: evidence.coverage,
+    sources: evidence.sources,
+    plannedRelayCount: evidence.scopeRelayUrls.length,
+    successfulRelayCount: evidence.sources.filter(
+      (source) => source.availability === "complete"
+    ).length,
+    partialRelayCount: evidence.sources.filter(
+      (source) => source.availability === "partial"
+    ).length,
+    failedRelayCount: evidence.sources.filter(
+      (source) =>
+        source.availability !== "complete" &&
+        source.availability !== "partial" &&
+        source.availability !== "policy_blocked"
+    ).length,
+    rejectedEventCount: (result?.relays ?? []).reduce(
+      (count, relay) => count + (relay.rejectedEventCount ?? 0),
+      0
+    ),
     hadEvent: (result?.events.length ?? 0) > 0,
   }
 }
@@ -1013,7 +1069,6 @@ function readCoverage(
 interface ResolvedMediaServerReadPlan {
   plan: RelayReadPlan
   authenticatedPubkey: string | null
-  ownerSelectedRelayUrls: string[]
 }
 
 async function readOwnerRelayAuthority(
@@ -1028,7 +1083,9 @@ async function readOwnerRelayAuthority(
     const snapshot = await (
       dependencies.readAccountRelaySettingsPlanningSnapshot ??
       readDurableAccountRelaySettingsPlanningSnapshot
-    )(owner)
+    )(owner, {
+      evidenceRepository: dependencies.ownerRelayListEvidenceRepository,
+    })
     return {
       snapshot,
       readRelayUrls: normalizeOwnerSelectedRelayUrls(
@@ -1071,18 +1128,6 @@ function applyOwnerTransportAuthority(
   )
 }
 
-function activeOwnerSelectedRelayUrls(
-  owner: string,
-  authenticatedPubkey: string | null | undefined,
-  relayUrls: readonly string[]
-): string[] {
-  return normalizeAuthenticatedMediaServerPreferenceOwner(
-    authenticatedPubkey
-  ) === owner
-    ? normalizeOwnerSelectedRelayUrls(relayUrls)
-    : []
-}
-
 async function resolveReadPlan(
   owner: string,
   dependencies: ReadMediaServerPreferencesDependencies
@@ -1108,15 +1153,36 @@ async function resolveReadPlan(
         intent: "general",
         relayUrls,
         candidateRelayUrls: relayUrls,
+        relayTargets: mergeRelayTargets(
+          relayTargetsFromUrls(relayUrls, {
+            kind: "public_hint",
+            operation: "read",
+          }),
+          relayTargetsFromUrls(
+            authority.readRelayUrls.filter((url) => relayUrls.includes(url)),
+            {
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey: owner,
+              selection: "read",
+            }
+          ),
+          relayTargetsFromUrls(
+            authority.writeRelayUrls.filter((url) => relayUrls.includes(url)),
+            {
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey: owner,
+              selection: "write",
+            }
+          )
+        ),
         maxRelayAttempts: MAX_MEDIA_SERVER_READ_RELAYS,
         parkedRelayUrls: [],
         hintRelayUrls: [],
         independentRelayUrls: [],
       },
       authenticatedPubkey,
-      ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
-        relayUrls.includes(relayUrl)
-      ),
     }
   }
   const relayListReadPlan = (dependencies.planReads ?? planRelayReads)({
@@ -1134,6 +1200,7 @@ async function resolveReadPlan(
     {
       cacheOnly: false,
       relayUrls: relayListReadPlan.candidateRelayUrls,
+      relayTargets: relayListReadPlan.relayTargets,
       maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
       allowInsecureRelayUrlsForPubkey:
         authenticatedPubkey === owner ? owner : undefined,
@@ -1171,9 +1238,6 @@ async function resolveReadPlan(
   return {
     plan: { ...planned, relayUrls, candidateRelayUrls },
     authenticatedPubkey,
-    ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
-      relayUrls.includes(relayUrl)
-    ),
   }
 }
 
@@ -1205,6 +1269,15 @@ function preserveCurrentRecordState(
     )
   ) {
     candidate.frontier = clone(current.frontier)
+    candidate.frontierEvent = current.frontierEvent
+      ? clone(current.frontierEvent)
+      : undefined
+  } else if (
+    current.frontierEvent &&
+    current.frontier?.eventId === candidate.frontier?.eventId &&
+    !candidate.frontierEvent
+  ) {
+    candidate.frontierEvent = clone(current.frontierEvent)
   }
 
   if (
@@ -1235,28 +1308,75 @@ function preserveCurrentRecordState(
     }
   }
 
-  if (
-    current.latestLookup &&
-    (!candidate.latestLookup ||
-      current.latestLookup.observedAt > candidate.latestLookup.observedAt)
-  ) {
-    candidate.latestLookup = clone(current.latestLookup)
-  }
+  if (current.latestLookup)
+    candidate.latestLookup = mergeAccountNetworkLookup(
+      candidate.latestLookup,
+      current.latestLookup,
+      candidate.frontier?.eventId
+    )
 }
 
-function resolutionStatus(
-  coverage: MediaServerLookupCoverage,
-  frontier: MediaServerFrontierEvidence | undefined,
-  networkHadFrontier: boolean
-): MediaServerPreferenceStatus {
-  if (coverage === "unavailable") return "lookup_unavailable"
-  if (coverage === "partial") return "lookup_partial"
-  if (!networkHadFrontier || !frontier) return "not_observed"
-  return frontier.state === "valid"
-    ? "published"
-    : frontier.state === "empty"
-      ? "empty"
-      : "malformed"
+/** BUD-03 maps its tag states onto the same Account Network evidence contract. */
+export function mediaServerPreferenceEvidenceFacts(
+  resolution: MediaServerPreferenceResolution
+) {
+  const candidates = [
+    resolution.frontier,
+    resolution.publishedRevision && {
+      ...resolution.publishedRevision,
+      state: "valid" as const,
+    },
+    resolution.pending && {
+      eventId: resolution.pending.signedEvent.id,
+      createdAt: resolution.pending.signedEvent.created_at,
+      state: "valid" as const,
+    },
+  ].filter((value): value is MediaServerFrontierEvidence => Boolean(value))
+  const frontier = candidates.sort(
+    (left, right) =>
+      -compareAccountNetworkRevisions(
+        { id: left.eventId, created_at: left.createdAt },
+        { id: right.eventId, created_at: right.createdAt }
+      )
+  )[0]
+  return interpretAccountNetworkPreference({
+    current: frontier && {
+      eventId: frontier.eventId,
+      state:
+        frontier.state === "valid"
+          ? "declared"
+          : frontier.state === "empty"
+            ? "signed_empty"
+            : "malformed",
+    },
+    lastUsableEventId: resolution.publishedRevision?.eventId,
+    pendingEventId: resolution.pending?.signedEvent.id,
+    lookup: { ...resolution.lookup, coverage: resolution.coverage },
+  })
+}
+
+/** Prepared preference use; consumers do not infer authority from display status. */
+export function selectMediaServerPreferenceUse(
+  resolution: MediaServerPreferenceResolution
+):
+  | { kind: "configured"; serverUrls: string[] }
+  | { kind: "incomplete" | "malformed" | "fallback" } {
+  const facts = mediaServerPreferenceEvidenceFacts(resolution)
+  const serverUrls =
+    facts.currentUsable &&
+    resolution.pending &&
+    facts.currentEventId === resolution.pending.signedEvent.id
+      ? resolution.pending.serverUrls
+      : resolution.publishedRevision
+        ? resolution.publishedServerUrls
+        : []
+  if (facts.state !== "signed_empty" && serverUrls.length > 0)
+    return { kind: "configured", serverUrls: [...serverUrls] }
+  if (facts.coverage !== "complete") return { kind: "incomplete" }
+  if (facts.state === "malformed") return { kind: "malformed" }
+  return facts.scopedAbsent || facts.state === "signed_empty"
+    ? { kind: "fallback" }
+    : { kind: "incomplete" }
 }
 
 /** A sanitized display projection never supplies signed action authority. */
@@ -1340,15 +1460,14 @@ export async function readMediaServerPreferences(
       } satisfies Filter,
       {
         relayUrls: resolvedPlan.plan.candidateRelayUrls,
+        relayTargets: resolvedPlan.plan.relayTargets,
         maxRelayAttempts: resolvedPlan.plan.maxRelayAttempts,
         accountPubkey: resolvedPlan.authenticatedPubkey,
         authenticatedPubkey: resolvedPlan.authenticatedPubkey,
-        ownerSelectedRelayUrls: resolvedPlan.ownerSelectedRelayUrls,
-        appRelayUrls: resolvedPlan.plan.appRelayUrls,
-        personalRelayUrls: resolvedPlan.plan.personalRelayUrls,
-        independentRelayUrls: resolvedPlan.plan.independentRelayUrls,
         accountNetworkLocalStateRepository:
           dependencies.accountNetworkLocalStateRepository,
+        ownerRelayListEvidenceRepository:
+          dependencies.ownerRelayListEvidenceRepository,
         shouldContinue: dependencies.shouldContinue,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 6_000,
@@ -1376,13 +1495,13 @@ export async function readMediaServerPreferences(
       plan: {
         intent: "general",
         relayUrls: [],
+        relayTargets: [],
         candidateRelayUrls: [],
         parkedRelayUrls: [],
         hintRelayUrls: [],
         independentRelayUrls: [],
       },
       authenticatedPubkey: null,
-      ownerSelectedRelayUrls: [],
     }
   }
 
@@ -1438,6 +1557,7 @@ export async function readMediaServerPreferences(
       )
     ) {
       record.frontier = frontier
+      record.frontierEvent = networkFrontierEvent
     }
     lookup.eventId = networkFrontierEvent.id
   }
@@ -1499,41 +1619,43 @@ export async function readMediaServerPreferences(
   const saved = saveMediaServerPreferenceRecord(record, storage)
   const networkPublishedSelected =
     !!networkValid && saved.published?.signedEvent.id === networkValid.event.id
-  const status = resolutionStatus(
-    lookup.coverage,
-    saved.frontier,
-    !!networkFrontierEvent
-  )
   const publishedRevision = saved.published
     ? {
         eventId: saved.published.signedEvent.id,
         createdAt: saved.published.signedEvent.created_at,
       }
     : null
-  const frontierMatchesPublished =
-    !!saved.frontier &&
-    saved.frontier.state === "valid" &&
-    saved.frontier.eventId === publishedRevision?.eventId
-  const stale =
-    lookup.coverage !== "complete" ||
-    !networkPublishedSelected ||
-    !frontierMatchesPublished
-
-  return {
+  const effectiveLookup = saved.latestLookup ?? lookup
+  const resolution: MediaServerPreferenceResolution = {
     owner: normalizedOwner,
-    status,
-    coverage: lookup.coverage,
+    status: "lookup_unavailable",
+    coverage: effectiveLookup.coverage,
     publishedServerUrls: [...(saved.published?.serverUrls ?? [])],
     publishedRevision,
     frontier: saved.frontier ? clone(saved.frontier) : null,
     sourceRelayUrls: [...(saved.published?.sourceRelayUrls ?? [])],
     observedAt,
     completeObservedAt: saved.published?.completeObservedAt ?? null,
-    stale,
+    stale: true,
     retained: !!saved.published && !networkPublishedSelected,
-    lookup: clone(lookup),
+    lookup: clone(effectiveLookup),
     pending: saved.pending ? clone(saved.pending) : null,
   }
+  const facts = mediaServerPreferenceEvidenceFacts(resolution)
+  resolution.status =
+    facts.coverage === "unavailable"
+      ? "lookup_unavailable"
+      : facts.coverage === "partial"
+        ? "lookup_partial"
+        : facts.state === "declared"
+          ? "published"
+          : facts.state === "signed_empty"
+            ? "empty"
+            : facts.state === "malformed"
+              ? "malformed"
+              : "not_observed"
+  resolution.stale = facts.coverage !== "complete" || facts.stale
+  return resolution
 }
 
 function reviewedEvidenceFromResolution(
@@ -1591,28 +1713,11 @@ async function resolvePublishTargets(
   dependencies: PublishMediaServerPreferencesDependencies
 ): Promise<{
   relayUrls: string[]
-  ownerSelectedRelayUrls: string[]
+  relayTargets: RelayTarget[]
 }> {
   const authenticatedPubkey = normalizeAuthenticatedMediaServerPreferenceOwner(
     dependencies.authenticatedPubkey
   )
-  const authority =
-    authenticatedPubkey === owner
-      ? await readOwnerRelayAuthority(owner, dependencies)
-      : { snapshot: null, readRelayUrls: [], writeRelayUrls: [] }
-  const ownerSelectedRelayUrls = authority.writeRelayUrls
-  if (dependencies.publishRelayUrls) {
-    const relayUrls = applyOwnerTransportAuthority(
-      dependencies.publishRelayUrls,
-      ownerSelectedRelayUrls
-    ).slice(0, MAX_MEDIA_SERVER_PUBLISH_RELAYS)
-    return {
-      relayUrls,
-      ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
-        relayUrls.includes(relayUrl)
-      ),
-    }
-  }
   const input: PublishWithPlannerInput = {
     intent: "author_event",
     authorPubkey: owner,
@@ -1620,20 +1725,29 @@ async function resolvePublishTargets(
     accountPubkey: owner,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository:
+      dependencies.ownerRelayListEvidenceRepository,
     refreshRelayLists: true,
     skipHealthFilter: true,
     shouldContinue: dependencies.shouldContinue,
   }
   const plan = await (dependencies.planPublish ?? planPublishRelays)(input)
-  const relayUrls = applyOwnerTransportAuthority(
-    [...plan.primaryRelayUrls, ...plan.broadcastRelayUrls],
-    ownerSelectedRelayUrls
-  ).slice(0, MAX_MEDIA_SERVER_PUBLISH_RELAYS)
+  const targets = mergeRelayTargets(
+    plan.primaryRelayTargets ?? [],
+    plan.broadcastRelayTargets ?? []
+  )
+  const targetUrls = new Set(targets.map((target) => target.url))
+  const relayUrls = normalizeRetainedRelayUrls(
+    dependencies.publishRelayUrls ?? [
+      ...plan.primaryRelayUrls,
+      ...plan.broadcastRelayUrls,
+    ]
+  )
+    .filter((url) => targetUrls.has(url))
+    .slice(0, MAX_MEDIA_SERVER_PUBLISH_RELAYS)
   return {
     relayUrls,
-    ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
-      relayUrls.includes(relayUrl)
-    ),
+    relayTargets: targets.filter((target) => relayUrls.includes(target.url)),
   }
 }
 
@@ -1678,21 +1792,28 @@ function uniqueWithinPlan(
 async function verifyPreferenceReadBack(input: {
   owner: string
   pending: PendingMediaServerPublish
+  authorizedTargets: readonly RelayTarget[]
   dependencies: PublishMediaServerPreferencesDependencies
 }): Promise<{
   confirmed: boolean
   sourceRelayUrls: string[]
   complete: boolean
+  observations: NetworkPreferenceReadbackObservation[]
 }> {
   const acknowledged = input.pending.acknowledgedRelayUrls
   if (acknowledged.length === 0) {
-    return { confirmed: false, sourceRelayUrls: [], complete: false }
+    return {
+      confirmed: false,
+      sourceRelayUrls: [],
+      complete: false,
+      observations: [],
+    }
   }
   input.dependencies.onPhase?.("confirming")
-  const ownerSelectedRelayUrls = activeOwnerSelectedRelayUrls(
-    input.owner,
-    input.dependencies.authenticatedPubkey,
-    input.pending.ownerSelectedRelayUrls
+  const readbackTargets = planPublicEventReadbackTargets(
+    input.authorizedTargets.filter((target) =>
+      acknowledged.includes(target.url)
+    )
   )
   try {
     const result = await (
@@ -1706,11 +1827,13 @@ async function verifyPreferenceReadBack(input: {
       },
       {
         relayUrls: acknowledged,
+        relayTargets: readbackTargets,
         accountPubkey: input.owner,
         authenticatedPubkey: input.dependencies.authenticatedPubkey,
-        ownerSelectedRelayUrls,
         accountNetworkLocalStateRepository:
           input.dependencies.accountNetworkLocalStateRepository,
+        ownerRelayListEvidenceRepository:
+          input.dependencies.ownerRelayListEvidenceRepository,
         shouldContinue: input.dependencies.shouldContinue,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 6_000,
@@ -1724,30 +1847,47 @@ async function verifyPreferenceReadBack(input: {
       verification.truncated ||
       verification.events.length !== result.events.length
     ) {
-      return { confirmed: false, sourceRelayUrls: [], complete: false }
+      return {
+        confirmed: false,
+        sourceRelayUrls: [],
+        complete: false,
+        observations: acknowledged.map((relayUrl) => ({
+          relayUrl,
+          status: "verification_unavailable",
+        })),
+      }
     }
-    const observed = verification.events.some(
-      (event) =>
-        isVerifiedNostrEvent(event) &&
-        event.id === input.pending.signedEvent.id &&
-        event.sig === input.pending.signedEvent.sig
-    )
-    const sourceRelayUrls = uniqueWithinPlan(
-      result.eventSourceRelayUrls[input.pending.signedEvent.id] ?? [],
-      acknowledged
-    )
-    const complete = acknowledged.every((relayUrl) =>
-      result.relays.some(
-        (relay) => relay.relayUrl === relayUrl && relay.status === "success"
-      )
-    )
+    const outcomes = acknowledged.map((relayUrl) => ({
+      relayUrl,
+      readbackStatus: classifyAccountNetworkReadback({
+        relayUrl,
+        signedEvent: input.pending.signedEvent,
+        result: { ...result, events: verification.events },
+      }),
+    }))
+    const summary = summarizeAccountNetworkReadback(outcomes)
     return {
-      confirmed: observed && sourceRelayUrls.length > 0,
-      sourceRelayUrls,
-      complete,
+      confirmed: summary.confirmed,
+      sourceRelayUrls: outcomes.flatMap((outcome) =>
+        outcome.readbackStatus === "observed" ? [outcome.relayUrl] : []
+      ),
+      complete: summary.unresolvedCount === 0,
+      observations: outcomes.map((outcome) => ({
+        relayUrl: outcome.relayUrl,
+        status:
+          outcome.readbackStatus as NetworkPreferenceReadbackObservation["status"],
+      })),
     }
   } catch {
-    return { confirmed: false, sourceRelayUrls: [], complete: false }
+    return {
+      confirmed: false,
+      sourceRelayUrls: [],
+      complete: false,
+      observations: acknowledged.map((relayUrl) => ({
+        relayUrl,
+        status: "unavailable",
+      })),
+    }
   }
 }
 
@@ -1786,14 +1926,14 @@ async function deliverPendingPreference(input: {
   const unresolved = pending.publishRelayUrls.filter(
     (relayUrl) => !acknowledged.has(relayUrl)
   )
+  const authorizedPlan = await resolvePublishTargets(
+    input.owner,
+    input.dependencies
+  )
+  const authorizedTargets = authorizedPlan.relayTargets
   input.dependencies.onPhase?.("publishing")
   const publishToRelay =
     input.dependencies.publishToRelay ?? publishSignedEventToRelay
-  const ownerSelectedRelayUrls = activeOwnerSelectedRelayUrls(
-    input.owner,
-    input.dependencies.authenticatedPubkey,
-    pending.ownerSelectedRelayUrls
-  )
   const orderedUnresolved = await orderEquivalentAccountRelayOperations({
     accountPubkey: input.owner,
     operations: unresolved.map((relayUrl) => ({
@@ -1806,35 +1946,43 @@ async function deliverPendingPreference(input: {
   const outcomes = await Promise.all(
     orderedUnresolved.map(async ({ value: relayUrl }) => {
       assertContinue(input.dependencies.shouldContinue)
-      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+      const eligibleRelayUrls = await filterEligibleAccountRelayTargets({
         accountPubkey: input.owner,
         authenticatedPubkey: input.dependencies.authenticatedPubkey,
-        candidateRelayUrls: [relayUrl],
-        ownerSelectedRelayUrls,
+        targets: authorizedTargets.filter((target) => target.url === relayUrl),
+        operation: "write",
         repository: input.dependencies.accountNetworkLocalStateRepository,
+        ownerRelayListEvidenceRepository:
+          input.dependencies.ownerRelayListEvidenceRepository,
       })
       if (eligibleRelayUrls.length === 0) return null
       assertContinue(input.dependencies.shouldContinue)
       try {
         const status = await publishToRelay({
           signedEvent: pending.signedEvent,
+          relayTarget: eligibleRelayUrls[0],
           authorPubkey: input.owner,
           relayUrl,
           authenticatedPubkey: input.dependencies.authenticatedPubkey,
-          ownerSelectedRelayUrls,
           accountPubkey: input.owner,
           accountNetworkLocalStateRepository:
             input.dependencies.accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository:
+            input.dependencies.ownerRelayListEvidenceRepository,
           shouldContinue: input.dependencies.shouldContinue,
         })
         return [relayUrl, status] as const
       } catch {
-        const stillEligible = await filterEligibleAccountRelayUrls({
+        const stillEligible = await filterEligibleAccountRelayTargets({
           accountPubkey: input.owner,
           authenticatedPubkey: input.dependencies.authenticatedPubkey,
-          candidateRelayUrls: [relayUrl],
-          ownerSelectedRelayUrls,
+          targets: authorizedTargets.filter(
+            (target) => target.url === relayUrl
+          ),
+          operation: "write",
           repository: input.dependencies.accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository:
+            input.dependencies.ownerRelayListEvidenceRepository,
         })
         if (stillEligible.length === 0) return null
         return [relayUrl, "timed_out" as ExclusiveRelayPublishStatus] as const
@@ -1893,8 +2041,32 @@ async function deliverPendingPreference(input: {
   const readBack = await verifyPreferenceReadBack({
     owner: input.owner,
     pending,
+    authorizedTargets,
     dependencies: input.dependencies,
   })
+  const priorReadback = new Map(
+    pending.readback?.map((observation) => [
+      observation.relayUrl,
+      observation.status,
+    ])
+  )
+  pending.readback = applyNetworkPreferenceDistributionOutcomes(
+    pending.publishRelayUrls.map((relayUrl) => ({
+      relayUrl,
+      publishStatus: "pending",
+      publishAttemptCount: 0,
+      readbackStatus: priorReadback.get(relayUrl) ?? "pending",
+      readbackAttemptCount: 0,
+    })),
+    {
+      readback: readBack.observations,
+      observedAt: (input.dependencies.now ?? Date.now)(),
+    }
+  ).flatMap((outcome) =>
+    outcome.readbackStatus === "pending"
+      ? []
+      : [{ relayUrl: outcome.relayUrl, status: outcome.readbackStatus }]
+  )
   const outcome = publishOutcome({ pending, confirmed: readBack.confirmed })
   const allAccepted =
     pending.acknowledgedRelayUrls.length === pending.publishRelayUrls.length
@@ -2064,7 +2236,6 @@ export async function publishMediaServerPreferences(
       signedEvent: admission.event,
       serverUrls,
       publishRelayUrls: publishPlan.relayUrls,
-      ownerSelectedRelayUrls: publishPlan.ownerSelectedRelayUrls,
       acknowledgedRelayUrls: [],
       rejectedRelayUrls: [],
       timedOutRelayUrls: [],
