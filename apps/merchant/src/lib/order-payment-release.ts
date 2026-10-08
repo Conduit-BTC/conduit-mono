@@ -2,6 +2,7 @@ import {
   publishMerchantOrderMessage,
   type MerchantOrderDelivery,
   type OrderSchema,
+  type PublishMerchantOrderMessageResult,
 } from "@conduit/core"
 
 export interface MerchantPaymentConfirmationInput {
@@ -14,11 +15,13 @@ export interface MerchantPaymentConfirmationInput {
   shouldContinue?: () => boolean
 }
 interface PaymentConfirmationDependencies {
-  publishPaid(input: MerchantPaymentConfirmationInput): Promise<void>
+  publishPaid(
+    input: MerchantPaymentConfirmationInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
 }
 const defaults: PaymentConfirmationDependencies = {
   async publishPaid(input) {
-    await publishMerchantOrderMessage({
+    return await publishMerchantOrderMessage({
       merchantPubkey: input.merchantPubkey,
       buyerPubkey: input.buyerPubkey,
       orderId: input.orderId,
@@ -36,7 +39,10 @@ const defaults: PaymentConfirmationDependencies = {
 export async function confirmMerchantPayment(
   input: MerchantPaymentConfirmationInput,
   dependencies: PaymentConfirmationDependencies = defaults
-): Promise<{ payment: "confirmed" }> {
+): Promise<{
+  payment: "confirmed"
+  delivery?: PublishMerchantOrderMessageResult
+}> {
   const { shouldContinue, ...snapshot } = input
   const captured: MerchantPaymentConfirmationInput = {
     ...structuredClone(snapshot),
@@ -51,6 +57,9 @@ export async function confirmMerchantPayment(
     throw new Error(
       "Payment confirmation must refer to the exact captured order."
     )
-  await dependencies.publishPaid(captured)
-  return { payment: "confirmed" }
+  const delivery = await dependencies.publishPaid(captured)
+  return {
+    payment: "confirmed",
+    ...(delivery ? { delivery } : {}),
+  }
 }

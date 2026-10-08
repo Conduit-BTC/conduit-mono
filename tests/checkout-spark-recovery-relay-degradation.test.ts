@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
-  giftWrap,
+  giftWrap as legacyGiftWrap,
   NDKEvent,
   NDKPrivateKeySigner,
   NDKUser,
@@ -33,9 +33,14 @@ import {
 } from "@conduit/core"
 import {
   __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
 import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
+import type { PrivateMessageEvent } from "../packages/core/src/protocol/messaging"
+import { getNdk } from "../packages/core/src/protocol/ndk"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import {
   bolt11PaymentHashField,
@@ -49,6 +54,32 @@ import {
 const INBOXES = ["wss://ready.example.test", "wss://offline.example.test"]
 const NOW = 1_800_000_000_000
 const databases: ConduitDB[] = []
+const owners: CommerceInbox[] = []
+
+function fixtureOwner(
+  merchant: string,
+  signer: ConstructorParameters<typeof CommerceInbox>[1],
+  database: ConduitDB
+) {
+  const authorization = getProtectedReadAuthorization(merchant)!
+  const owner = new CommerceInbox(
+    authorization,
+    signer,
+    new CommerceInboxStore(authorization, database)
+  )
+  owners.push(owner)
+  return owner
+}
+
+// Keep the independently encrypted legacy NDK wire fixture while production
+// builders now return plain protocol rumors.
+function giftWrap(
+  rumor: PrivateMessageEvent,
+  recipient: NDKUser,
+  signer: NDKPrivateKeySigner
+) {
+  return legacyGiftWrap(new NDKEvent(getNdk(), rumor), recipient, signer)
+}
 
 async function settledFixture(degradedStage: "buyer" | "initial" | "merchant") {
   const buyerSigner = NDKPrivateKeySigner.generate()
@@ -210,11 +241,13 @@ async function settledFixture(degradedStage: "buyer" | "initial" | "merchant") {
   databases.push(database)
   const merchantOwner = setTestAccountSigner(merchantSigner)
   installProtectedReadSigner(merchantOwner, merchant, () => true)
+  const owner = fixtureOwner(merchant, merchantOwner, database)
   const degradedId =
     wraps[degradedStage === "initial" ? 0 : degradedStage === "buyer" ? 1 : 2]!
       .id
   __setCommerceTestOverrides({
     getAccountSigner: () => merchantOwner,
+    getCommerceInbox: () => owner,
     checkoutSparkSettledRepository: new DexieCheckoutSparkSettledRepository(
       database
     ),
@@ -224,7 +257,8 @@ async function settledFixture(degradedStage: "buyer" | "initial" | "merchant") {
         options.eventId
           ? events.filter((event) => event.id === options.eventId)
           : events,
-        options.eventId === degradedId
+        options.eventId === degradedId,
+        options.relayUrls
       ),
   })
   const selected = (await getMerchantCheckoutSparkRecoveryList(merchant))
@@ -304,14 +338,29 @@ async function fixture() {
   const wrap = wrapped.rawEvent() as SignedPublicNostrEvent
   const merchantOwner = setTestAccountSigner(merchantSigner)
   installProtectedReadSigner(merchantOwner, merchant, () => true)
+  const database = new ConduitDB(`degraded-legacy-${crypto.randomUUID()}`, {
+    indexedDB,
+    IDBKeyRange,
+  })
+  databases.push(database)
+  const owner = fixtureOwner(merchant, merchantOwner, database)
   let exactEvents = [wrap]
   __setCommerceTestOverrides({
     getAccountSigner: () => merchantOwner,
+    getCommerceInbox: () => owner,
     resolveInboxRelayUrls: async () => INBOXES,
     readProtectedInbox: async (options) => {
-      expect(options.relayUrls).toEqual(INBOXES)
+      if (options.eventId) expect(options.relayUrls).toEqual(INBOXES)
+      else {
+        expect(options.relayUrls).toHaveLength(1)
+        expect(INBOXES).toContain(options.relayUrls[0]!)
+      }
       expect(options.appRelayUrls).toEqual([])
-      return read(options.eventId ? exactEvents : [wrap], !!options.eventId)
+      return read(
+        options.eventId ? exactEvents : [wrap],
+        !!options.eventId,
+        options.relayUrls
+      )
     },
   })
   const selected = (await getMerchantCheckoutSparkRecoveryList(merchant))
@@ -334,11 +383,21 @@ async function fixture() {
 
 function read(
   events: SignedPublicNostrEvent[],
-  degraded: boolean
+  degraded: boolean,
+  relays: readonly string[] = INBOXES
 ): ProtectedInboxReadResult {
+  const completed = relays.filter(
+    (relay) => !degraded || relay !== INBOXES[1]
+  ).length
+  const received = completed === 0 ? [] : events
   return {
-    events,
-    coverage: degraded ? "partial" : "complete",
+    events: received,
+    coverage:
+      completed === 0
+        ? "unavailable"
+        : completed === relays.length
+          ? "complete"
+          : "partial",
     auth: {
       state: "not_challenged",
       challengedCount: 0,
@@ -346,26 +405,36 @@ function read(
       failedCount: 0,
     },
     relayResult: {
-      status: degraded ? "partial" : "success",
-      observations: [],
-      relays: INBOXES.map((_, index) => ({
+      status:
+        completed === 0
+          ? "failed"
+          : completed === relays.length
+            ? "success"
+            : "partial",
+      observations: relays.flatMap((relay, index) =>
+        degraded && relay === INBOXES[1]
+          ? []
+          : [{ type: "eose" as const, relayIndex: index }]
+      ),
+      relays: relays.map((relay, index) => ({
         relayIndex: index,
-        status: degraded && index === 1 ? "failed" : "success",
+        status: degraded && relay === INBOXES[1] ? "failed" : "success",
         auth: "not_challenged",
-        eventCount: degraded && index === 1 ? 0 : events.length,
+        eventCount: degraded && relay === INBOXES[1] ? 0 : events.length,
         duplicateCount: 0,
         malformedCount: 0,
         unusableCount: 0,
       })),
-      attemptedCount: 2,
-      completedCount: degraded ? 1 : 2,
-      failedCount: degraded ? 1 : 0,
-      authoritativeEmpty: !degraded && events.length === 0,
+      attemptedCount: relays.length,
+      completedCount: completed,
+      failedCount: relays.length - completed,
+      authoritativeEmpty: completed === relays.length && received.length === 0,
     },
   }
 }
 
 afterEach(async () => {
+  for (const owner of owners.splice(0)) owner.stop()
   clearTestAccountSigner()
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()

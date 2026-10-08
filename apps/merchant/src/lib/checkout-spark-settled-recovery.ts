@@ -1656,7 +1656,10 @@ const TERMINAL_LIGHTNING_SEND_FAILURES = new Set([
 export async function inspectExactMerchantPayout(
   plan: CheckoutSparkSettledPlan,
   target: CheckoutSparkSettledOutgoingTarget,
-  wallet: MerchantSparkRecoveryWallet,
+  wallet: Pick<
+    MerchantSparkRecoveryWallet,
+    "getTransferFromSsp" | "getLightningSendRequest"
+  >,
   assertEligible: () => void
 ): Promise<CheckoutSparkSettledOutgoingObservation> {
   const unavailable = () =>

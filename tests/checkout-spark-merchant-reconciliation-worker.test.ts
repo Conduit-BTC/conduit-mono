@@ -74,6 +74,33 @@ function fakeClock() {
 }
 
 describe("bounded merchant Spark reconciliation scheduling", () => {
+  it("opts into immediate read-only observation and still wakes at the fixed takeover", async () => {
+    const clock = fakeClock()
+    const calls: number[] = []
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      observeBeforeTakeover: true,
+      reconcile: async () => {
+        calls.push(clock.now())
+        return "pending"
+      },
+      onUpdate: () => {},
+    })
+    worker.replaceCandidates([candidate("observe", 120_000)])
+    expect(clock.nextDelay()).toBe(0)
+    await clock.advance(0)
+    expect(calls).toEqual([0])
+    await clock.advance(30_000)
+    expect(calls).toEqual([0, 30_000])
+    await clock.advance(60_000)
+    expect(calls).toEqual([0, 30_000, 90_000])
+    expect(clock.nextDelay()).toBe(30_000)
+    await clock.advance(30_000)
+    expect(calls).toEqual([0, 30_000, 90_000, 120_000])
+    worker.dispose()
+  })
+
   it("pauses exact candidates missing local invoice origin without claiming verification", async () => {
     const clock = fakeClock()
     const calls: string[] = []

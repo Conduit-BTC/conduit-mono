@@ -11,6 +11,8 @@ import {
 export interface MerchantOrderSettlementBinding {
   readonly witness: CheckoutSparkMerchantOrderWitness
   readonly settlement: CheckoutSparkMerchantSettlementRecord
+  /** UI-only receiver facts; never used as Spark execution/accounting proof. */
+  readonly receiverSettlement?: CheckoutSparkMerchantSettlementProjection
 }
 
 /**
@@ -63,7 +65,19 @@ export function getCheckoutSparkOrderSettlement(
   bindings: readonly MerchantOrderSettlementBinding[]
 ): CheckoutSparkMerchantSettlementProjection | null {
   const record = getCheckoutSparkOrderSettlementRecord(conversation, bindings)
-  return record ? projectCheckoutSparkMerchantSettlement(record) : null
+  if (!record) return null
+  const provider = projectCheckoutSparkMerchantSettlement(record)
+  const receiver = bindings.find(
+    ({ witness }) => witness.orderId === conversation.orderId
+  )?.receiverSettlement
+  if (!receiver) return provider
+  return {
+    ...provider,
+    // Receiver settlement cannot prove this checkout paid the invoice. A buyer
+    // can replay an old paid invoice in a new plan, even on a fresh device.
+    receiverSettlementObserved: receiver.receiverSettlementObserved,
+    receiverCommerceObserved: receiver.receiverCommerceObserved,
+  }
 }
 
 export function projectCheckoutSparkOrderSettlements(

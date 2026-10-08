@@ -141,7 +141,7 @@ function protectedRead(
     },
     relayResult: {
       status: complete ? "success" : coverage,
-      observations: [],
+      observations: complete ? [{ type: "eose", relayIndex: 0 }] : [],
       relays: [
         {
           relayIndex: 0,

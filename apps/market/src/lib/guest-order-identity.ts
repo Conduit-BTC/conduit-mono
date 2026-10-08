@@ -335,7 +335,7 @@ export function createGuestCheckoutSparkRecoverySigner(
       assertActive(payload.plan.takeoverAt)
       const ciphertext = await signer.encryptNip44(
         merchantPubkey,
-        JSON.stringify(buildCheckoutSparkRecoveryRumor(payload).rawEvent())
+        JSON.stringify(buildCheckoutSparkRecoveryRumor(payload))
       )
       assertActive(payload.plan.takeoverAt)
       pendingSeals.set(ciphertext, payload.plan.takeoverAt)

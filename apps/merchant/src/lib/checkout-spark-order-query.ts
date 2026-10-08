@@ -9,11 +9,28 @@ type ReadBindings = (
   orderIds: readonly string[]
 ) => Promise<readonly MerchantOrderSettlementBinding[]>
 
-const readLocalBindings: ReadBindings = (pubkey, orderIds) =>
-  new DexieCheckoutSparkSettledRepository().loadMerchantOrderSettlements(
-    pubkey,
-    orderIds
+const readLocalBindings: ReadBindings = async (pubkey, orderIds) => {
+  const repository = new DexieCheckoutSparkSettledRepository()
+  const [financial, receivers] = await Promise.all([
+    repository.loadMerchantOrderSettlements(pubkey, orderIds),
+    repository.loadMerchantOrderRecipientSettlements(pubkey, orderIds),
+  ])
+  // Join only the same authenticated witness. Conflicting duplicate order
+  // bindings remain separate so the presentation overlay rejects ambiguity.
+  const byWitness = new Map(
+    financial.map((binding) => [JSON.stringify(binding.witness), binding])
   )
+  for (const binding of receivers) {
+    const key = JSON.stringify(binding.witness)
+    byWitness.set(key, {
+      ...binding,
+      // A receiver read's empty display default cannot replace independently
+      // recorded financial facts from the other local-read transaction.
+      settlement: byWitness.get(key)?.settlement ?? binding.settlement,
+    })
+  }
+  return [...byWitness.values()]
+}
 
 /** Account/session-scoped local reads, never provider or relay work. */
 export function checkoutSparkOrderSettlementQueryOptions(

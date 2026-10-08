@@ -1,6 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
-import type { NostrKeySigner } from "./nostr-event-signer"
-import { getAccountSigner } from "./session-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -13,40 +10,40 @@ import {
   type FutureMarketRevocationSchema,
   type OrderSchema,
 } from "../schemas"
-import { EVENT_KINDS } from "./kinds"
-import {
-  publishPrivateMessage,
-  type PreparedPrivateMessageWraps,
-  type PublishPrivateMessageResult,
-} from "./messaging"
-import { appendConduitClientTag } from "./nip89"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
-import { getFutureMarketReceiptMerchandise } from "./future-market-merchandise"
-import { isVerifiedEventMarketReceiptMerchandiseResolution } from "./event-market-merchandise"
-import { verifyEventMarketOrderEvidence } from "./event-market-order-evidence"
+import { getEventMarketPrivateMessageList } from "./commerce"
 import {
   isEventMarketAddressableRevisionDeleted,
   parseEventMarketCalendarEvent,
 } from "./event-market"
+import { resolveEventMarketAuthorization } from "./event-market-authorization"
+import { getEventMarketOrderCorrelationRef } from "./event-market-handoff"
+import { isVerifiedEventMarketReceiptMerchandiseResolution } from "./event-market-merchandise"
+import { verifyEventMarketOrderEvidence } from "./event-market-order-evidence"
 import { resolveEventMarketRoster } from "./event-market-roster"
 import { parseEventMarketSeriesEvent } from "./event-market-schedule"
-import { resolveEventMarketAuthorization } from "./event-market-authorization"
-import { getEventMarketPrivateMessageList } from "./commerce"
+import { getFutureMarketReceiptMerchandise } from "./future-market-merchandise"
+import { EVENT_KINDS } from "./kinds"
+import {
+  createPrivateMessageRumor,
+  publishPrivateMessage,
+  unwrapGiftWrap,
+  type PreparedPrivateMessageWraps,
+  type PrivateMessageEvent,
+  type PublishPrivateMessageResult,
+} from "./messaging"
+import { appendConduitClientTag } from "./nip89"
+import type { NostrKeySigner } from "./nostr-event-signer"
 import {
   parseOrderMessageRumorEvent,
   type ParsedEventMarketPrivateMessage,
   type ParsedOrderMessage,
 } from "./orders"
+import { retryPrivateMessageWraps } from "./private-message-delivery"
+import { getAccountSigner } from "./session-signer"
 import {
-  getEventMarketOrderCorrelationRef,
-  resolveEventMarketOrganizerInbox,
-} from "./event-market-handoff"
-import { unwrapGiftWrap } from "./messaging"
-import { getNdk } from "./ndk"
-import { publishWithPlanner } from "./relay-publish"
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 export type FutureMarketPrivatePayload =
@@ -172,6 +169,12 @@ function assertFutureMarketReadCurrent(shouldContinue?: () => boolean): void {
   }
 }
 
+function eventMarketPrivateReadIncomplete(
+  read: Awaited<ReturnType<typeof getEventMarketPrivateMessageList>>
+): boolean {
+  return read.inbox?.coverage !== "complete" || read.decryptFailures.length > 0
+}
+
 export async function readFutureMarketReadyReceipts(input: {
   organizerPubkey: string
   marketCoordinate?: string
@@ -200,7 +203,7 @@ export async function readFutureMarketReadyReceipts(input: {
   return {
     claims,
     stale: read.stale,
-    coverageDegraded: read.inbox?.coverage !== "complete",
+    coverageDegraded: eventMarketPrivateReadIncomplete(read),
     inbox: read.inbox,
   }
 }
@@ -277,7 +280,7 @@ export async function readFutureMarketHandoffAcks(input: {
       acks.length > 1 ||
       (revoked && acks.length > 0),
     stale,
-    coverageDegraded: read.inbox?.coverage !== "complete",
+    coverageDegraded: eventMarketPrivateReadIncomplete(read),
   }
 }
 
@@ -557,8 +560,14 @@ function timestamp(payload: FutureMarketPrivatePayload): number {
 
 export function buildFutureMarketPrivateRumor(
   payload: FutureMarketPrivatePayload
-): NDKEvent {
-  const rumor = new NDKEvent()
+): PrivateMessageEvent {
+  const rumor: PrivateMessageEvent = {
+    id: "",
+    kind: EVENT_KINDS.ORDER,
+    pubkey: sender(payload),
+    tags: [],
+    content: "",
+  }
   rumor.kind = EVENT_KINDS.ORDER
   rumor.pubkey = sender(payload)
   rumor.created_at = timestamp(payload)
@@ -574,8 +583,7 @@ export function buildFutureMarketPrivateRumor(
     "merchant"
   )
   rumor.content = JSON.stringify(payload)
-  rumor.id = rumor.getEventHash()
-  return rumor
+  return createPrivateMessageRumor({ ...rumor, created_at: rumor.created_at! })
 }
 
 export interface FutureMarketPrivateDeliveryRecord {
@@ -1197,7 +1205,9 @@ async function retainFutureMessagesLocked(
       throw new Error(
         "The account signer changed during private handoff recovery."
       )
-    const outcome = await unwrapGiftWrap(new NDKEvent(getNdk(), wrap), signer)
+    const outcome = await unwrapGiftWrap(wrap, signer, {
+      machineConsumer: "future_market",
+    })
     assertFutureMarketReadCurrent(shouldContinue)
     if (outcome.status !== "ok" || outcome.category !== "order")
       throw new Error(
@@ -1224,7 +1234,7 @@ async function retainFutureMessagesLocked(
     }
   }
   assertFutureMarketReadCurrent(shouldContinue)
-  const messages = [...retained.values()]
+  let messages = [...retained.values()]
   if (storage) {
     if (
       messages.length > 0 &&
@@ -1275,6 +1285,11 @@ async function retainFutureMessagesLocked(
       )
         retained.delete(id)
     }
+    // Durable inbox history may observe old wraps after terminal compaction.
+    // Preserve the denial ledger without restoring completed exact claims.
+    messages = messages.filter(
+      (message) => !history[message.payload.claimRef]?.compacted
+    )
   }
   retainedFutureMessages.set(owner, retained)
   return messages
@@ -1351,7 +1366,7 @@ export async function readFutureMarketMerchantClaim(input: {
   return {
     claim,
     stale: read.stale,
-    coverageDegraded: read.inbox?.coverage !== "complete",
+    coverageDegraded: eventMarketPrivateReadIncomplete(read),
   }
 }
 
@@ -1382,13 +1397,12 @@ async function publishFutureMarketPrivatePayload(input: {
     signer: input.signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: true,
+    requireSelfWrap: true,
     signerInteraction: "external",
     shouldContinue: input.shouldContinue,
     onWrapped: async (prepared: PreparedPrivateMessageWraps) => {
-      const recipientWrap =
-        prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent
-      const selfWrap = prepared.wrappedToSelf?.rawEvent() as
-        SignedPublicNostrEvent | undefined
+      const recipientWrap = prepared.wrappedToRecipient
+      const selfWrap = prepared.wrappedToSelf ?? undefined
       if (
         !selfWrap ||
         !isValidSignedPublicNostrEvent(recipientWrap) ||
@@ -1592,10 +1606,9 @@ export async function recoverFutureMarketReadyReceipt(input: {
     (await input.signer.getPublicKey()) !== record.senderPubkey
   )
     throw new Error("Merchant ready receipt recovery authority is invalid.")
-  const outcome = await unwrapGiftWrap(
-    new NDKEvent(getNdk(), record.signedSelfWrap),
-    input.signer
-  )
+  const outcome = await unwrapGiftWrap(record.signedSelfWrap, input.signer, {
+    machineConsumer: "future_market",
+  })
   if (
     outcome.status !== "ok" ||
     outcome.category !== "order" ||
@@ -1670,55 +1683,21 @@ export async function retryFutureMarketPrivateDelivery(input: {
   const record = parseFutureMarketPrivateDeliveryRecord(input.record)
   if (record.senderPubkey !== input.authenticatedOwnerPubkey)
     throw new Error("Exact future handoff delivery belongs to another account.")
-  const recipientInbox = await resolveEventMarketOrganizerInbox(
-    record.recipientPubkey,
-    {
-      requestingAccountPubkey: record.senderPubkey,
-      authenticatedPubkey: input.authenticatedOwnerPubkey,
-      shouldContinue: input.shouldContinue,
-    }
-  )
-  assertFutureMarketReadCurrent(input.shouldContinue)
-  const senderInbox = await resolveEventMarketOrganizerInbox(
-    record.senderPubkey,
-    {
-      requestingAccountPubkey: record.senderPubkey,
-      authenticatedPubkey: input.authenticatedOwnerPubkey,
-      shouldContinue: input.shouldContinue,
-    }
-  )
-  assertFutureMarketReadCurrent(input.shouldContinue)
-  if (recipientInbox.state !== "ready" || senderInbox.state !== "ready")
-    throw new Error(
-      "Current private inbox routes are unavailable for exact-wrap retry."
-    )
-  const recipientDelivery = await publishWithPlanner(
-    record.signedRecipientWrap,
-    {
-      intent: "recipient_event",
-      authorPubkey: record.senderPubkey,
-      authenticatedPubkey: input.authenticatedOwnerPubkey,
-      accountPubkey: record.senderPubkey,
-      recipientPubkeys: [record.recipientPubkey],
-      exclusiveRelayUrls: recipientInbox.relayUrls,
-      deliveryMode: "critical",
-      shouldContinue: input.shouldContinue,
-    }
-  )
-  assertFutureMarketReadCurrent(input.shouldContinue)
-  const selfDelivery = await publishWithPlanner(record.signedSelfWrap, {
-    intent: "recipient_event",
-    authorPubkey: record.senderPubkey,
-    authenticatedPubkey: input.authenticatedOwnerPubkey,
+  const result = await retryPrivateMessageWraps({
+    rumorId: record.rumorId,
+    senderPubkey: record.senderPubkey,
+    recipientPubkey: record.recipientPubkey,
     accountPubkey: record.senderPubkey,
-    recipientPubkeys: [record.senderPubkey],
-    exclusiveRelayUrls: senderInbox.relayUrls,
-    deliveryMode: "critical",
+    authenticatedPubkey: input.authenticatedOwnerPubkey,
+    wrappedToRecipient: record.signedRecipientWrap,
+    wrappedToSelf: record.signedSelfWrap,
     shouldContinue: input.shouldContinue,
   })
   assertFutureMarketReadCurrent(input.shouldContinue)
   return {
-    recipientDelivered: recipientDelivery.successfulRelayUrls.length > 0,
-    selfCopyDelivered: selfDelivery.successfulRelayUrls.length > 0,
+    recipientDelivered: Boolean(
+      result.recipientDelivery?.successfulRelayUrls.length
+    ),
+    selfCopyDelivered: Boolean(result.selfDelivery?.successfulRelayUrls.length),
   }
 }

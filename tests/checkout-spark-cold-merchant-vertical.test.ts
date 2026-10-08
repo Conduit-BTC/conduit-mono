@@ -30,8 +30,11 @@ import {
 } from "@conduit/core"
 import {
   __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import { verifyCheckoutSparkInvoiceRecipient } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
 import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
@@ -113,7 +116,7 @@ function protectedRead(
     },
     relayResult: {
       status: "success",
-      observations: [],
+      observations: [{ type: "eose", relayIndex: 0 }],
       relays: [
         {
           relayIndex: 0,
@@ -252,6 +255,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
             ReturnType<typeof createMerchantCheckoutSparkRecoveryDiscovery>
           >
         | undefined
+      let inboxOwner: CommerceInbox | undefined
 
       try {
         const merchantSigner = setTestAccountSigner(fixture.merchantSigner)
@@ -332,10 +336,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
           new NDKUser({ pubkey: plan.merchantPubkey }),
           guest.signer
         )
-        relayEvents.set(
-          orderWrap.id,
-          orderWrap.rawEvent() as SignedPublicNostrEvent
-        )
+        relayEvents.set(orderWrap.id, orderWrap as SignedPublicNostrEvent)
 
         // The external funding is visible only in provider history. No buyer
         // progress, prepared invoice, local origin or browser storage is restored.
@@ -348,15 +349,29 @@ describe("offline cold Merchant guest supplier recovery", () => {
           plan.merchantPubkey,
           () => true
         )
+        const authorization = getProtectedReadAuthorization(
+          plan.merchantPubkey
+        )!
+        inboxOwner = new CommerceInbox(
+          authorization,
+          merchantSigner,
+          new CommerceInboxStore(authorization, database)
+        )
         __setCommerceTestOverrides({
           getAccountSigner: () => merchantSigner,
+          getCommerceInbox: () => inboxOwner!,
           now: () => now,
           checkoutSparkSettledRepository: repository,
           resolveInboxRelayUrls: async () => [INBOX],
           readProtectedInbox: async (options) =>
             protectedRead(
               [...relayEvents.values()].filter(
-                (event) => !options.eventId || event.id === options.eventId
+                (event) =>
+                  (!options.eventId || event.id === options.eventId) &&
+                  (options.since === undefined ||
+                    event.created_at >= options.since) &&
+                  (options.until === undefined ||
+                    event.created_at <= options.until)
               )
             ),
           readCheckoutSparkPlanSourceEvents: async () => {
@@ -433,6 +448,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
         let availableSats = grossSats
         const progressTransport: MerchantCheckoutSparkProgressTransport = {
           recipientInboxRelays: [INBOX],
+          deliveryStore: inboxOwner.store,
           accountNetworkLocalStateRepository: { get: async () => undefined },
           publishFn: async (event, options) => {
             expect(options.exclusiveRelayUrls).toEqual([INBOX])
@@ -632,7 +648,12 @@ describe("offline cold Merchant guest supplier recovery", () => {
         let needsRescan = false
         const discover = async () => {
           if (needsRescan) followupDiscovery!.restartScan()
-          const found = await followupDiscovery!.nextPage()
+          let found = await followupDiscovery!.nextPage()
+          for (let page = 1; found.history.hasMore && page < 8; page += 1) {
+            expect(found.conflictCount).toBe(0)
+            expect(found.decryptFailureCount).toBe(0)
+            found = await followupDiscovery!.nextPage()
+          }
           expect(found.history.hasMore).toBe(false)
           needsRescan = true
           expect(found.conflictCount).toBe(0)
@@ -863,6 +884,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
         expect(calls.opens).toBe(opensAfterRetirement)
       } finally {
         followupDiscovery?.dispose()
+        inboxOwner?.stop()
         clearTestAccountSigner()
         __resetCommerceTestOverrides()
         __resetProtectedReadSigner()

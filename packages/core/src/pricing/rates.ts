@@ -5,6 +5,8 @@ import {
   type BtcUsdRateQuote,
 } from "./index"
 import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
+import { getCheckoutSparkPricingConfiguration } from "../protocol/checkout-spark-pricing-config"
+import { fetchCheckoutSparkPricingRate } from "./signed-rate-client"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
 export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
@@ -71,6 +73,9 @@ function parseEnvRate(): BtcUsdRateQuote | null {
 }
 
 export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
+  const configuration = getCheckoutSparkPricingConfiguration()
+  if (configuration)
+    return (await fetchCheckoutSparkPricingRate({ configuration })).pricing.rate
   const env = parseEnvRate()
   if (env) return env
   return fetchTrustedPricingRateQuote({ includeFiatRates: true })
@@ -128,10 +133,12 @@ function readStoredRate(): BtcUsdRateQuote | null {
 }
 
 export function getConfiguredBtcUsdRate(): number | null {
+  if (getCheckoutSparkPricingConfiguration()) return null
   return parseEnvRate()?.rate ?? null
 }
 
 export function getConfiguredPricingRateQuote(): BtcUsdRateQuote | null {
+  if (getCheckoutSparkPricingConfiguration()) return null
   return parseEnvRate()
 }
 
@@ -144,8 +151,10 @@ export function isBtcUsdRateQuoteFresh(
 }
 
 export function useBtcUsdRate() {
-  const env = parseEnvRate()
-  const stored = env ?? readStoredRate()
+  const signedFeed = getCheckoutSparkPricingConfiguration()
+  const env = signedFeed ? null : parseEnvRate()
+  // Legacy storage is display-only and must not suppress the authenticated feed.
+  const stored = signedFeed ? null : (env ?? readStoredRate())
 
   return useQuery({
     queryKey: BTC_USD_RATE_QUERY_KEY,

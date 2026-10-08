@@ -17,6 +17,29 @@ const base = {
 }
 
 describe("Merchant order payment presentation", () => {
+  it("keeps receiver-only receipts informational until exact checkout wallet history is verified", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        projection={{
+          creditVerified: false,
+          merchantVerified: false,
+          commerceVerified: false,
+          feePending: false,
+          recipientUnverified: false,
+          receiverSettlementObserved: true,
+          receiverCommerceObserved: true,
+        }}
+      />
+    )
+    expect(html).toContain("Processing payment")
+    expect(html).toContain("A recipient receipt was observed")
+    expect(html).toContain("exact wallet payment history")
+    expect(html).toContain("Do not request another payment")
+    expect(html).not.toContain("Payment verified")
+    expect(html).not.toContain("Continue with fulfillment")
+  })
+
   it.each([false, true])(
     "explains expired-payout return proof without requesting more buyer funding when commerce is verified %s",
     (commerceVerified) => {

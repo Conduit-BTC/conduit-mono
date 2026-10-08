@@ -2,6 +2,7 @@ import { appendFileSync, chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 
 import ts from "typescript"
+import { safeSmokeDiagnostics } from "../../e2e/helpers/smoke-diagnostics"
 
 import type {
   FullConfig,
@@ -46,6 +47,7 @@ type SafeResult = {
   diagnostic?: HermeticNetworkFailureDiagnostic
   router?: RouterSmokeDiagnostic
   duration: number
+  diagnostics?: Array<Record<string, string | number | boolean>>
   error?: { location: SafeLocation }
   retry: number
   status: TestResult["status"]
@@ -379,6 +381,13 @@ export class PrivacySafeSmokeReporter implements Reporter {
     )
     const existing = this.specs.get(test.id)
     const location = safeLocation(result.error?.location)
+    const diagnostics = safeSmokeDiagnostics(file, result.annotations)
+    if (result.status !== "passed") {
+      for (const diagnostic of diagnostics)
+        this.progress(
+          `diagnostic retry=${result.retry} project=${safeProject(test)} ${file}:${test.location.line} ${JSON.stringify(diagnostic)}`
+        )
+    }
     const safeResult: SafeResult = {
       duration: Math.max(0, Math.round(result.duration)),
       retry: Math.max(0, result.retry),
@@ -386,6 +395,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
       ...(diagnostic ? { diagnostic } : {}),
       ...(router ? { router } : {}),
       ...(location ? { error: { location } } : {}),
+      ...(diagnostics.length ? { diagnostics } : {}),
     }
     if (existing) {
       existing.ok = test.ok()

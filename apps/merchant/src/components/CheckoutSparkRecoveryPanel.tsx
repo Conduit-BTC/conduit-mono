@@ -311,6 +311,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         const repository = new DexieCheckoutSparkSettledRepository()
         provider = startMerchantCheckoutSparkReconciliation({
           active: document.visibilityState !== "hidden",
+          // The adapter observes exact receiver and query-only native facts now,
+          // but retains takeover for every claim-capable Spark operation.
+          observeBeforeTakeover: true,
           async reconcile(candidate, assertWorkerCurrent) {
             const assertActive = () => {
               assertWorkerCurrent()

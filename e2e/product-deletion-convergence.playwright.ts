@@ -740,6 +740,14 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
           hasLocalProductStockCheckpoints: state.stores.includes(
             "localProductStockCheckpoints"
           ),
+          hasCommerceInboxStores: [
+            "commerceInboxDeletions",
+            "commerceInboxKeys",
+            "commerceInboxWrappers",
+            "commerceInboxRecords",
+            "commerceInboxRanges",
+            "commerceInboxDeliveries",
+          ].every((name) => state.stores.includes(name)),
         }
       },
       { timeout: 20_000 }
@@ -768,6 +776,7 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasLocalProductWriteFrontiers: true,
       hasLocalProductShippingOutbox: true,
       hasLocalProductStockCheckpoints: true,
+      hasCommerceInboxStores: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

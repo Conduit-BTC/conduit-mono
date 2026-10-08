@@ -21,8 +21,11 @@ Portable/Connected model without changing this terminology.
 
 ## Ownership and key boundary
 
-Nostr authentication remains external-signer-only. Market must never request,
-derive, persist, or transmit an account `nsec`.
+Nostr authentication follows the signer boundary in `protocol.md`: NIP-07 and
+NIP-46 remain available, and the optional installed-PWA existing-NSEC path keeps
+the account key exclusively in the separate signer origin. Market must never
+receive, derive, persist, or transmit the raw account `nsec`. The wallet provider
+boundary does not authorize account-key import or generation.
 
 A Portable Wallet seed is a separate wallet credential. It may be created or
 restored by a client-side provider adapter only when:
@@ -283,6 +286,11 @@ original native receive creation time, not the recovery clock or buyer labels.
 Deterministic SAT, MSAT and BTC terms require no rate service. Current rates and
 key rotation must not reprice existing orders; retain historical verification
 keys. Missing trusted authority or native time evidence pauses fiat admission.
+Shared display and checkout requests use a common bounded currency set and
+authenticated cache with the original validity timestamps. Mixed feeds retain
+signed per-currency provenance; absent extensions preserve historical digests.
+Only immediate live issuance permits an explicit one-second clock tolerance.
+Expiry and historical native funding-time verification remain strict.
 
 All required Lightning receivers must satisfy an accepted deployment-qualified
 capability before funding. V1 qualifies ordinary private metadata-hash
@@ -309,6 +317,22 @@ bindings and possible-send state. Never rewrite them as private payments or
 infer nonpayment from a missing receipt. Exact settlement can be reconciled;
 unavailable recipient proof or public renewal remains paused. Deferred public
 signing adds no new service activation or V1 acceptance dependency.
+
+### Immediate Merchant settlement observation
+
+Authenticated exact-order recovery may query funding and outgoing evidence
+before the two-minute takeover. Use an independently audited, pinned query-only
+adapter: no wallet initialization, claim/sync, privacy change, invoice creation,
+transaction signing or send. Verify its derived wallet identity, exact native
+credit and every required commerce debit together with independent recipient
+verification. Receiver-paid invoices alone are informational and cannot mark
+another checkout paid. Bound reads and invalidate timed-out or revoked work.
+
+Independent commerce settlement may enable the existing fulfillment flow
+before takeover. It does not advance reconciliation, prepare another intent,
+collect the Conduit fee or retire the wallet. Claim-capable recovery and outgoing
+operations still obey the saved takeover deadline; historical deadlines and the
+separate fifteen-minute funding invoice remain unchanged.
 
 ### Native final treasury allocation
 

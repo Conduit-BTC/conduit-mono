@@ -1,3 +1,4 @@
+import { getEventHash } from "nostr-tools"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { describe, expect, it } from "bun:test"
@@ -12,7 +13,6 @@ import {
   buildCheckoutSparkRecoveryRumor,
   createCheckoutSparkRecoveryPayload,
   freezeCheckoutSparkPlan,
-  getNdk,
   inspectCheckoutSparkRecoveryWrap,
   openCheckoutSparkRecoveryDelivery,
   openCheckoutSparkRecoveryWrap,
@@ -24,6 +24,7 @@ import {
   type CheckoutSparkRecoveryDeliveryProgress,
   type CheckoutSparkRecoveryDeliveryRecord,
 } from "@conduit/core"
+import { getNdk } from "@conduit/core/protocol/ndk"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const SENDER_SECRET = generateSecretKey()
@@ -182,20 +183,20 @@ describe("checkout Spark merchant recovery", () => {
     expect(rumor.content).toContain(MNEMONIC)
     expect(() => parseOrderMessageRumorEvent(rumor)).toThrow()
 
-    const tampered = new NDKEvent(getNdk(), rumor.rawEvent())
+    const tampered = structuredClone(rumor)
     const decoded = JSON.parse(tampered.content)
     decoded.plan.planDigest = "0".repeat(64)
     tampered.content = JSON.stringify(decoded)
-    tampered.id = tampered.getEventHash()
+    tampered.id = getEventHash(tampered)
     expect(() => parseCheckoutSparkRecoveryRumor(tampered)).toThrow(
       "recovery rumor"
     )
 
-    const quoteTampered = new NDKEvent(getNdk(), rumor.rawEvent())
+    const quoteTampered = structuredClone(rumor)
     const changed = JSON.parse(quoteTampered.content)
     changed.plan.commerceQuote.lines[0].productEventId = "e".repeat(64)
     quoteTampered.content = JSON.stringify(changed)
-    quoteTampered.id = quoteTampered.getEventHash()
+    quoteTampered.id = getEventHash(quoteTampered)
     expect(() => parseCheckoutSparkRecoveryRumor(quoteTampered)).toThrow(
       "recovery rumor"
     )

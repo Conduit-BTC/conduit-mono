@@ -7,6 +7,7 @@ import {
 } from "@conduit/core/protocol/checkout-spark-pricing-authority"
 import { getCheckoutSparkPricingAuthorityPublicKey } from "@conduit/core/protocol/checkout-spark-pricing-authority-server"
 import {
+  createCheckoutSparkPricingAuthorityCache,
   handleCheckoutSparkPricingAuthorityRequest,
   type CheckoutSparkPricingAuthorityEnv,
 } from "../apps/anon-zap-signer/src/checkout-pricing-authority"
@@ -54,7 +55,9 @@ describe("checkout Spark pricing authority standalone Worker", () => {
         nowMs: () => NOW_MS,
         fetchPricingRate: async (options) => {
           fetches++
-          expect(options?.requiredFiatCurrencies).toEqual(["EUR"])
+          expect(options?.requiredFiatCurrencies).toBeUndefined()
+          expect(options?.preferredFiatCurrencies).toContain("EUR")
+          expect(options?.preferredFiatCurrencies).toContain("CAD")
           expect(options?.timeoutMs).toBe(3_000)
           return {
             rate: 100_000,
@@ -74,7 +77,7 @@ describe("checkout Spark pricing authority standalone Worker", () => {
       pricingAuthority: CheckoutSparkPricingRateAttestation
     }
     expect(Object.keys(body).sort()).toEqual(["pricing", "pricingAuthority"])
-    expect(body.pricing.rate.fiatUsdRates).toEqual({ EUR: 1.25 })
+    expect(body.pricing.rate.fiatUsdRates).toEqual({ EUR: 1.25, CAD: 0.75 })
     expect(
       verifyCheckoutSparkPricingRateAttestation({
         ...body,
@@ -151,5 +154,82 @@ describe("checkout Spark pricing authority standalone Worker", () => {
     )
     expect(result.status).toBe(429)
     expect(result.headers.get("retry-after")).toBe("60")
+  })
+
+  it("coalesces ordinary requests and preserves the original fetch, issue and expiry on cache hits", async () => {
+    const configuration = env()
+    const cache = createCheckoutSparkPricingAuthorityCache()
+    let now = NOW_MS
+    let calls = 0
+    const overrides = {
+      cache,
+      nowMs: () => now,
+      fetchPricingRate: async () => {
+        calls++
+        await Promise.resolve()
+        return { rate: 100_000, fetchedAt: now, source: "mempool" as const }
+      },
+    }
+    const [first, second] = await Promise.all([
+      handleCheckoutSparkPricingAuthorityRequest(
+        request(),
+        configuration,
+        overrides
+      ),
+      handleCheckoutSparkPricingAuthorityRequest(
+        request(["EUR"]),
+        configuration,
+        overrides
+      ),
+    ])
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    const original = await first.json()
+    expect(await second.json()).toEqual(original)
+    now += 30_000
+    const cached = await handleCheckoutSparkPricingAuthorityRequest(
+      request(),
+      configuration,
+      overrides
+    )
+    expect(await cached.json()).toEqual(original)
+    expect(calls).toBe(1)
+  })
+
+  it("serves an unexpired cached snapshot through an outage without rejuvenating it", async () => {
+    const cache = createCheckoutSparkPricingAuthorityCache()
+    const configuration = env()
+    let now = NOW_MS
+    let outage = false
+    const overrides = {
+      cache,
+      nowMs: () => now,
+      fetchPricingRate: async () => {
+        if (outage) throw new Error("Unavailable.")
+        return { rate: 100_000, fetchedAt: now, source: "mempool" as const }
+      },
+    }
+    const initial = await handleCheckoutSparkPricingAuthorityRequest(
+      request(),
+      configuration,
+      overrides
+    )
+    const original = await initial.json()
+    outage = true
+    now += 250_000
+    const duringOutage = await handleCheckoutSparkPricingAuthorityRequest(
+      request(),
+      configuration,
+      overrides
+    )
+    expect(duringOutage.status).toBe(200)
+    expect(await duringOutage.json()).toEqual(original)
+    now = NOW_MS + 300_000
+    const expired = await handleCheckoutSparkPricingAuthorityRequest(
+      request(),
+      configuration,
+      overrides
+    )
+    expect(expired.status).toBe(503)
   })
 })

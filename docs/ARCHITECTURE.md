@@ -101,18 +101,44 @@ anchors so navigation re-enters that boot boundary.
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
-Market and Merchant durable account authentication is external-signer-only. The
-repo policy allows NIP-07 and NIP-46 external signers. Guest checkout may create
-a temporary order-scoped browser key, and an NIP-46 connection may use an
-encrypted browser-local client key; neither is a Conduit-custodied user account
-key. The approved server-side signing exceptions in `docs/specs/protocol.md`
-are the Anon Conduit Shopper public zap signer and a separate pricing-only
-live-rate attestation signer. The former is limited to authenticated,
-merchant-authorized checkout zap requests and fixed-scope Conduit.Market
-project tip zap requests created by the trusted server boundary. The latter
-signs currency-rate snapshots only; it cannot sign Nostr events or authorize
-payments. Neither permits user key custody or general-purpose signing, and
-the pricing exception does not itself authorize key creation or deployment.
+Market and Merchant currently use external NIP-07 and NIP-46 account signers.
+An optional installed-PWA local signer has an approved bounded policy exception:
+an existing NSEC may be imported only inside the separate `conduit-signer`
+repository's dedicated HTTPS origin. That origin owns import, device-local
+persistence, automatic restore and ordinary signing without per-action
+approvals. Explicit logout deletes its stored key and revokes live sessions.
+Market/Merchant receive public identity and operation results, never the raw key,
+backup or independent unwrapping material. Conduit services never receive the
+key. Account creation, server custody, wallet derivation, settings sync and
+recovery remain outside this exception. Implementation and composed preview
+testing may proceed before production device sign-off. Exact-origin isolation,
+session integrity, privacy review, physical-iPhone validation and maintainer
+security sign-off remain required for a production decision; origin, deployment
+and release approval remain separate. This documentation enables no runtime
+provider; the current client paths remain NIP-07/NIP-46.
+
+Shared connection UI will embed the exact approved signer origin for import.
+The local provider must adapt to the existing SessionSigner/AccountSigner owner,
+with narrow typed status/public-key, verified event signing, NIP-44,
+legacy NIP-04 decrypt-only and logout operations. Exact origin/source, request,
+frame, account and session binding, timeouts and stale-response rejection are
+mandatory. Auth/frame replacement and logout cancel pending work. App storage
+contains no raw key or independent unwrapping capability. Separate storage
+partitions may require separate imports and logout, as established by device
+evidence and explained in the UI. Automatic restore provides no independent
+unlock or hardware-backed at-rest guarantee. Browsing and external signers stay
+available; installed mode is a UX gate.
+
+Guest checkout may create a temporary order-scoped browser key, and an NIP-46
+connection may use an encrypted browser-local client key; neither is a
+Conduit-custodied user account key. The approved server-side signing exceptions
+in `docs/specs/protocol.md` are the Anon Conduit Shopper public zap signer and a
+separate pricing-only live-rate attestation signer. The former is limited
+to authenticated, merchant-authorized checkout zap requests and fixed-scope
+Conduit.Market project tip zap requests created by the trusted server boundary.
+The latter signs currency-rate snapshots only; it cannot sign Nostr events or
+authorize payments. Neither permits user key custody or general-purpose signing,
+and the pricing exception does not itself authorize key creation or deployment.
 
 ### Product Discovery
 
@@ -318,7 +344,7 @@ registry:
   protocol. NWC is the first connection protocol.
 
 Portable Wallet credentials are distinct from Nostr identity keys. Nostr account
-authentication remains external-signer-only; a Portable Wallet provider may
+authentication follows the signer boundary above; a Portable Wallet provider may
 create or restore a wallet seed only inside its isolated client-side storage.
 Non-secret registry metadata lives in Dexie. See `docs/specs/wallets.md`.
 

@@ -623,6 +623,12 @@ export function getMerchantConversationStatusDisplay(
     if (settlement?.merchantVerified) {
       return { tone: "info", label: "Other payouts pending" }
     }
+    if (settlement?.receiverSettlementObserved) {
+      return {
+        tone: "info",
+        label: "Recipient receipt observed — verifying checkout",
+      }
+    }
     if (settlement?.creditVerified) {
       return { tone: "info", label: "Funding verified — routing pending" }
     }

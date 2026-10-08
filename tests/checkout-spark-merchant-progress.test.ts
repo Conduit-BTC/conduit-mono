@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
-  giftWrap,
+  giftWrap as legacyGiftWrap,
   NDKEvent,
   NDKPrivateKeySigner,
   NDKUser,
@@ -8,7 +8,12 @@ import {
 import { plainTestSigner } from "./helpers/plain-signer"
 import { unwrapPrivateMessageEnvelope } from "../packages/core/src/protocol/messaging"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
-import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+} from "nostr-tools/pure"
+import type { PrivateMessageEvent } from "../packages/core/src/protocol/messaging"
 
 import {
   buildCheckoutSparkMerchantProgressRumor,
@@ -46,6 +51,19 @@ const HANDOFF_ID = "1".repeat(64)
 // Disposable in-memory fixture keys only; no account signer or provider is used.
 const merchant = plainTestSigner(NDKPrivateKeySigner.generate())
 const other = plainTestSigner(NDKPrivateKeySigner.generate())
+
+/** Independent retained-client interop fixture; production remains NDK-neutral. */
+function giftWrap(
+  rumor: PrivateMessageEvent,
+  recipient: NDKUser,
+  signer: typeof merchant
+) {
+  return legacyGiftWrap(
+    new NDKEvent(getNdk(), rumor as never),
+    recipient,
+    signer
+  )
+}
 
 function invoice(amountSats: number, hashByte: number): string {
   return makeSignedBolt11Fixture({
@@ -170,10 +188,12 @@ function changedAtPath(
   return changed
 }
 
-function changedRumor(change: (rumor: NDKEvent) => void): NDKEvent {
+function changedRumor(
+  change: (rumor: PrivateMessageEvent) => void
+): PrivateMessageEvent {
   const rumor = buildCheckoutSparkMerchantProgressRumor(payload())
   change(rumor)
-  rumor.id = rumor.getEventHash()
+  rumor.id = getEventHash(rumor)
   return rumor
 }
 
@@ -341,7 +361,7 @@ describe("checkout Spark merchant machine progress", () => {
       ["order", state.plan.orderId],
     ])
     expect(rumor.content).toBe(JSON.stringify(expected))
-    expect(rumor.id).toBe(rumor.getEventHash())
+    expect(rumor.id).toBe(getEventHash(rumor))
     expect(parseCheckoutSparkMerchantProgressRumor(rumor)).toEqual(expected)
   })
 
@@ -519,8 +539,8 @@ describe("checkout Spark merchant machine progress", () => {
           signedRecipientWrap,
           signer: merchant,
           giftUnwrap: async (wrapped, signer) => {
-            expect(wrapped.ndk).toBeUndefined()
-            expect(wrapped.rawEvent()).toEqual(signedRecipientWrap)
+            expect("ndk" in wrapped).toBe(false)
+            expect(wrapped).toEqual(signedRecipientWrap)
             expect(signer).toBe(merchant)
             return result
           },
@@ -554,7 +574,7 @@ describe("checkout Spark merchant machine progress", () => {
       signedRecipientWrap,
       signer,
       giftUnwrap: async (wrapped) => {
-        expect(wrapped.rawEvent()).toEqual(original)
+        expect(wrapped).toEqual(original)
         return rumor
       },
     })
@@ -591,7 +611,7 @@ describe("checkout Spark merchant machine progress", () => {
         signer: merchant,
         giftUnwrap: async (event, signer) => {
           unwraps += 1
-          expect(event.ndk).toBeUndefined()
+          expect("ndk" in event).toBe(false)
           return unwrapPrivateMessageEnvelope(event, signer)
         },
       })
@@ -713,7 +733,7 @@ describe("checkout Spark merchant machine progress", () => {
       signedRecipientWrap,
       signer,
       giftUnwrap: async (event) => {
-        expect(event.rawEvent()).toEqual(original)
+        expect(event).toEqual(original)
         return rumor
       },
     })

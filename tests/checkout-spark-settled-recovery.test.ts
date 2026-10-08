@@ -160,7 +160,7 @@ describe("settled Spark merchant recovery handoff", () => {
     expect(expected.state.credit).toBeNull()
     expect(expected.state.legs.every((leg) => leg.intent === null)).toBe(true)
 
-    const tampered = new NDKEvent(getNdk(), rumor.rawEvent())
+    const tampered = new NDKEvent(getNdk(), rumor)
     const changed = JSON.parse(tampered.content)
     changed.state.plan.recipients[0].weightSats = 11
     tampered.content = JSON.stringify(changed)
@@ -189,7 +189,7 @@ describe("settled Spark merchant recovery handoff", () => {
     expect(parseCheckoutSparkRecoveryRumor(rumor)).toEqual(progress)
     expect(JSON.stringify(progress)).not.toContain(mnemonic)
     expect(JSON.stringify(progress)).not.toContain("accountNumber")
-    const changed = new NDKEvent(getNdk(), rumor.rawEvent())
+    const changed = new NDKEvent(getNdk(), rumor)
     const forged = JSON.parse(changed.content)
     forged.initialHandoffId = "a".repeat(64)
     changed.content = JSON.stringify(forged)

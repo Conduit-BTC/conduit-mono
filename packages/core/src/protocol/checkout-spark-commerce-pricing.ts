@@ -41,6 +41,12 @@ export const checkoutSparkCommercePricingSchema = z
         fiatSource: z
           .enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
           .optional(),
+        fiatSources: z
+          .record(
+            z.string().regex(/^[A-Z]{3}$/),
+            z.enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
+          )
+          .optional(),
       })
       .strict(),
   })
@@ -55,6 +61,7 @@ export function freezeCheckoutSparkCommercePricing(
 ): CheckoutSparkCommercePricing {
   const pricing = checkoutSparkCommercePricingSchema.parse(input)
   if (pricing.rate.fiatUsdRates) Object.freeze(pricing.rate.fiatUsdRates)
+  if (pricing.rate.fiatSources) Object.freeze(pricing.rate.fiatSources)
   Object.freeze(pricing.rate)
   return Object.freeze(pricing)
 }
@@ -204,6 +211,16 @@ export function checkoutSparkCommerceQuoteDigestValue(quote: {
               ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)
             ),
             quote.pricing.rate.fiatSource ?? null,
+            ...(quote.pricing.rate.fiatSources
+              ? [
+                  [
+                    "fiat_sources",
+                    Object.entries(quote.pricing.rate.fiatSources).sort(
+                      ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)
+                    ),
+                  ],
+                ]
+              : []),
           ],
         ]
       : []),

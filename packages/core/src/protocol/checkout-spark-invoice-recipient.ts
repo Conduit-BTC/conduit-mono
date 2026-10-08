@@ -10,7 +10,13 @@ import {
 } from "./checkout-spark-receiver-verification"
 import { requireCheckoutSparkSettledExactOutgoingRequest } from "./checkout-spark-settled-outgoing-history"
 import type { CheckoutSparkSettledOutgoingTarget } from "./checkout-spark-settled-outgoing"
-import type { CheckoutSparkSettledPlan } from "./checkout-spark-settled-router"
+import {
+  getCheckoutSparkSettledLegGeneration,
+  restoreCheckoutSparkSettledReconciliation,
+  type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
+} from "./checkout-spark-settled-router"
+import type { CheckoutSparkMerchantSettlementProjection } from "./checkout-spark-merchant-settlement"
 
 const SOURCE = "qualified_receiver_v1" as const
 
@@ -218,4 +224,58 @@ export function hasCheckoutSparkInvoiceRecipientSettlement(
     record?.providerSettled === true &&
     hasCheckoutSparkInvoiceRecipient(record, plan, target)
   )
+}
+
+/**
+ * Informational presentation only. Positive exact ordinary receiver receipts do not
+ * attest Spark funding, debit, fees, execution state or retirement authority.
+ * Callers must additionally bind this to validated sources and the buyer order.
+ */
+export function projectCheckoutSparkMerchantRecipientSettlement(
+  stateInput: CheckoutSparkSettledReconciliation,
+  records: readonly CheckoutSparkInvoiceRecipientRecord[]
+): CheckoutSparkMerchantSettlementProjection {
+  const state = restoreCheckoutSparkSettledReconciliation(stateInput)
+  const commerce = state.plan.recipients.filter(
+    (recipient) => recipient.kind !== "conduit"
+  )
+  const verified = new Set<string>()
+  for (const recipient of commerce) {
+    const leg = state.legs.find((item) => item.legId === recipient.legId)!
+    // Historical public or unbound invoices keep their existing stricter path.
+    if (
+      !leg.intent?.receiverBinding ||
+      leg.intent.publicZap ||
+      leg.intent.receiverBinding.mode !== "private" ||
+      leg.allocationSats === null
+    )
+      continue
+    const target: CheckoutSparkSettledOutgoingTarget = {
+      walletId: state.plan.walletId,
+      network: state.plan.network,
+      legId: leg.legId,
+      recipientId: recipient.recipientId,
+      allocationSats: leg.allocationSats,
+      unpaidAllocationSats: leg.allocationSats,
+      intent: leg.intent,
+      generation: getCheckoutSparkSettledLegGeneration(leg),
+    }
+    if (
+      records.some((record) =>
+        hasCheckoutSparkInvoiceRecipientSettlement(record, state.plan, target)
+      )
+    )
+      verified.add(leg.legId)
+  }
+  return {
+    creditVerified: false,
+    merchantVerified: false,
+    commerceVerified: false,
+    feePending: false,
+    recipientUnverified: false,
+    receiverSettlementObserved: verified.size > 0,
+    receiverCommerceObserved: commerce.every((recipient) =>
+      verified.has(recipient.legId)
+    ),
+  }
 }

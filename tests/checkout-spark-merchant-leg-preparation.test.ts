@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
-import { finalizeEvent } from "nostr-tools/pure"
+import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { ConduitDB } from "@conduit/core/db"
 import {
@@ -28,7 +28,6 @@ import {
   type SignedPublicNostrEvent,
   type CheckoutSparkConduitDestinationPolicy,
 } from "@conduit/core"
-import { getNdk } from "../packages/core/src/protocol/ndk"
 import {
   prepareMerchantCheckoutSparkSettledPayout,
   prepareNextMerchantCheckoutSparkSettledPayout,
@@ -56,6 +55,7 @@ import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualif
 
 const MNEMONIC = createRuntimeMnemonic()
 const OTHER_MNEMONIC = createRuntimeMnemonic()
+const WRAP_SECRET = generateSecretKey()
 
 const CREATED_AT = 1_800_000_000_000
 const TAKEOVER_AT = CREATED_AT + 120_000
@@ -311,17 +311,14 @@ async function harness(
         expect(progress.initialHandoffId).toBe(value.payload.handoffId)
         expect(rumor.content).not.toContain(value.payload.wallet.mnemonic)
         calls.wraps.push(progress)
-        return new NDKEvent(
-          getNdk(),
-          finalizeEvent(
-            {
-              kind: 1_059,
-              created_at: CREATED_AT / 1_000,
-              tags: [["p", recipient.pubkey]],
-              content: `synthetic-opaque-preparation-wrap-${calls.wraps.length}`,
-            },
-            new Uint8Array(32).fill(12)
-          )
+        return finalizeEvent(
+          {
+            kind: 1_059,
+            created_at: CREATED_AT / 1_000,
+            tags: [["p", recipient.pubkey]],
+            content: `synthetic-opaque-preparation-wrap-${calls.wraps.length}`,
+          },
+          WRAP_SECRET
         )
       }) as NonNullable<Dependencies["progressTransport"]>["giftWrapFn"],
       publishFn: (async (event, options) => {
@@ -338,7 +335,8 @@ async function harness(
         expect(options.exclusiveRelayUrls).toEqual([INBOX])
         expect(options.appRelayUrls).toEqual([])
         expect(options.personalRelayUrls).toEqual([])
-        calls.publishes.push(event as SignedPublicNostrEvent)
+        // Capture transport fields, not nostr-tools' in-memory verification symbol.
+        calls.publishes.push(structuredClone(event as SignedPublicNostrEvent))
         return {
           attemptedRelayUrls: [INBOX],
           successfulRelayUrls: [INBOX],

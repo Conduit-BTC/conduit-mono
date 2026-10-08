@@ -5,6 +5,7 @@ import * as pureSdk from "../apps/market/node_modules/@buildonspark/spark-sdk"
 import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
 import { createHermeticSparkTransport } from "../e2e/helpers/hermetic-spark-transport"
 import { createHermeticSparkSdkFacade } from "../e2e/helpers/hermetic-spark-sdk-facade"
+import { openMerchantCheckoutSparkObservationWallet } from "../apps/merchant/src/lib/checkout-spark-observation-wallet"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -58,11 +59,19 @@ function setup(nativeInvoices = false) {
     },
   })
   const transport = createHermeticSparkTransport(fixture)
+  const trace: Array<{ type: string; method?: string }> = []
   return {
     fixture,
     transport,
+    trace,
     sdk: createHermeticSparkSdkFacade({
-      request: (command) => transport.request(command),
+      request: (command) => {
+        trace.push({
+          type: command.type,
+          ...("method" in command ? { method: command.method } : {}),
+        })
+        return transport.request(command)
+      },
       pureSdk,
     }),
   }
@@ -141,6 +150,185 @@ it("round-trips open-amount native fulfillment and byte-accurate invoice query o
     expect((await wallet.getBalance()).satsBalance.owned).toBe(0n)
   } finally {
     await wallet.cleanup()
+    await transport.close()
+  }
+})
+
+it("composes the real query-only Merchant opener with independently recorded native credit and debit", async () => {
+  const { fixture, transport, sdk, trace } = setup(true)
+  const { wallet: runnerWallet } = await fixture.module.initialize({
+    mnemonicOrSeed: MNEMONIC,
+    accountNumber: 0,
+    options: { network: "REGTEST", log: false },
+  })
+  const identity = await runnerWallet.getIdentityPublicKey()
+  const control = fixture.control.forIdentity(identity)
+  const funding = await runnerWallet.createLightningInvoice({ amountSats: 113 })
+  control.completeFunding()
+  const fundingTransfer = (await runnerWallet.getLightningReceiveRequest(
+    funding.id
+  ))!.transfer!.sparkId!
+  const payout = makeSignedBolt11Fixture({
+    hrp: "lnbcrt200n",
+    createdAt: Math.floor(Date.now() / 1_000),
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(72)),
+      bolt11PaymentSecretField(),
+      bolt11PlainDescriptionField("Offline observation fixture"),
+    ],
+  })
+  control.registerPayout({
+    paymentRequest: payout,
+    preimage: "synthetic bounded provider placeholder",
+    feeSats: 1,
+  })
+  const transferId = sdk.UUID.parse(crypto.randomUUID())
+  const send = await runnerWallet.payLightningInvoice({
+    invoice: payout,
+    maxFeeSats: 1,
+    preferSpark: false,
+    transferId,
+  })
+  await runnerWallet.cleanup()
+  const before = control.snapshot()
+  const observation = await openMerchantCheckoutSparkObservationWallet(
+    {
+      mnemonic: MNEMONIC,
+      accountNumber: 0,
+      network: "regtest",
+      expectedWalletIdentityPubkey: identity,
+    },
+    {
+      sdkVersion: "0.13.0",
+      loadSdk: async () =>
+        sdk as unknown as typeof import("../apps/merchant/node_modules/@buildonspark/spark-sdk"),
+    }
+  )
+  try {
+    expect(await observation.getIdentityPublicKey()).toBe(identity)
+    expect(
+      await observation.getLightningReceiveRequest!(funding.id)
+    ).toMatchObject({
+      id: funding.id,
+      network: "REGTEST",
+      status: "TRANSFER_COMPLETED",
+    })
+    expect(await observation.getTransfer!(fundingTransfer)).toMatchObject({
+      id: fundingTransfer,
+      transferDirection: "INCOMING",
+      receiverIdentityPublicKey: identity,
+    })
+    expect(
+      await observation.getTransferFromSsp!(transferId.toString())
+    ).toMatchObject({
+      sparkId: transferId.toString(),
+      userRequest: { id: send.id },
+    })
+    expect(await observation.getLightningSendRequest!(send.id)).toMatchObject({
+      id: send.id,
+      status: "LIGHTNING_PAYMENT_SUCCEEDED",
+    })
+    expect(
+      await observation.getLightningReceiveRequest!("not-this-receive")
+    ).toBeNull()
+    expect(control.snapshot()).toEqual(before)
+  } finally {
+    await observation.cleanup()
+    await transport.close()
+  }
+  expect(trace[0]?.type).toBe("observation.challenge")
+  expect(trace[1]?.type).toBe("observation.open")
+  expect(trace.every((row) => row.type.startsWith("observation."))).toBe(true)
+  expect(trace.filter((row) => row.type === "observation.close")).toHaveLength(
+    1
+  )
+  expect(trace.filter((row) => row.method).map((row) => row.method)).toEqual([
+    "getIdentityPublicKey",
+    "getLightningReceiveRequest",
+    "getTransfer",
+    "getTransferFromSsp",
+    "getTransfer",
+    "getLightningSendRequest",
+    "getLightningReceiveRequest",
+  ])
+  await expect(observation.getTransfer!(fundingTransfer)).rejects.toThrow(
+    "unavailable"
+  )
+})
+
+it("rejects all mutation and broad wallet capabilities on a supplied signer constructor", async () => {
+  const { sdk, transport, trace } = setup()
+  const signer = new sdk.DefaultSparkSigner()
+  const seed = await signer.mnemonicToSeed(MNEMONIC)
+  try {
+    await signer.createSparkWalletFromSeed(seed, 0)
+  } finally {
+    seed.fill(0)
+  }
+  const wallet = new sdk.SparkWallet({ network: "REGTEST", log: false }, signer)
+  try {
+    await expect(wallet.setPrivacyEnabled(true)).rejects.toThrow("unavailable")
+    await expect(wallet.getBalance()).rejects.toThrow("unavailable")
+    await expect(wallet.getTransfers()).rejects.toThrow("unavailable")
+    await expect(
+      wallet.createLightningInvoice({ amountSats: 1 })
+    ).rejects.toThrow("unavailable")
+    expect(trace).toEqual([])
+  } finally {
+    await wallet.cleanup()
+    await transport.close()
+  }
+})
+
+it("closes a lazily authenticated query session when caller authority is revoked during authentication", async () => {
+  const { fixture, transport, sdk: pureFacade } = setup()
+  const { wallet } = await fixture.module.initialize({
+    mnemonicOrSeed: MNEMONIC,
+    accountNumber: 0,
+    options: { network: "REGTEST", log: false },
+  })
+  const identity = await wallet.getIdentityPublicKey()
+  await wallet.cleanup()
+  let active = true
+  const trace: string[] = []
+  const sdk = createHermeticSparkSdkFacade({
+    pureSdk,
+    request: async (command) => {
+      trace.push(command.type)
+      const result = await transport.request(command)
+      if (command.type === "observation.open") active = false
+      return result
+    },
+  })
+  try {
+    await expect(
+      openMerchantCheckoutSparkObservationWallet(
+        {
+          mnemonic: MNEMONIC,
+          accountNumber: 0,
+          network: "regtest",
+          expectedWalletIdentityPubkey: identity,
+          assertActive: () => {
+            if (!active) throw new Error("revoked")
+          },
+        },
+        {
+          sdkVersion: "0.13.0",
+          loadSdk: async () =>
+            ({
+              ...pureFacade,
+              ...sdk,
+            }) as unknown as typeof import("../apps/merchant/node_modules/@buildonspark/spark-sdk"),
+        }
+      )
+    ).rejects.toThrow("unavailable")
+    expect(trace).toEqual([
+      "observation.challenge",
+      "observation.open",
+      "observation.call",
+      "observation.close",
+    ])
+  } finally {
     await transport.close()
   }
 })

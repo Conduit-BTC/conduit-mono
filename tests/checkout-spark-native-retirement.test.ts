@@ -64,15 +64,15 @@ describe("authenticated native successful-retirement evidence", () => {
         refundsTerminal: true,
       }
     )
-    expect(f.calls.indexOf("available")).toBeGreaterThan(
-      f.calls.lastIndexOf("history")
-    )
-    expect(f.calls.indexOf("owned")).toBeGreaterThan(
-      f.calls.lastIndexOf("history")
-    )
-    expect(f.calls.indexOf("pending")).toBeGreaterThan(
-      f.calls.lastIndexOf("history")
-    )
+    expect(f.calls).toEqual([
+      "history",
+      "history",
+      "available",
+      "owned",
+      "pending",
+      "history",
+      "history",
+    ])
   })
 
   it("retains recovery when a known successful transfer is absent from authenticated history", async () => {
@@ -126,6 +126,28 @@ describe("authenticated native successful-retirement evidence", () => {
       ],
       offset: -1,
     })
+    expect(
+      await collectCheckoutSparkNativeRetirementEvidence(f.input)
+    ).toBeNull()
+  })
+
+  it("retains recovery for newly completed activity after history but during zero-funds reads", async () => {
+    const f = fixture()
+    f.reader.getPendingTransfers = async () => {
+      f.transfers.push(transfer("completed-between-observations"))
+      return []
+    }
+    expect(
+      await collectCheckoutSparkNativeRetirementEvidence(f.input)
+    ).toBeNull()
+  })
+
+  it("retains recovery when an expected transfer changes during balance reads", async () => {
+    const f = fixture()
+    f.reader.getAvailableBalance = async () => {
+      f.transfers[0]!.totalValue += 1
+      return 0n
+    }
     expect(
       await collectCheckoutSparkNativeRetirementEvidence(f.input)
     ).toBeNull()

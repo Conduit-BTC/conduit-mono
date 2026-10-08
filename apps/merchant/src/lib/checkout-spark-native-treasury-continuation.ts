@@ -52,6 +52,8 @@ export interface MerchantCheckoutSparkNativeTreasuryContinuationDependencies ext
   repository?: NativeStore
   proveCommerce?: typeof proveMerchantCheckoutSparkNativeCommerce
   assertDispatchPlan?: typeof assertMerchantCheckoutSparkDispatchPlan
+  /** Repair saved state from this exact request only; never prepare or send. */
+  inspectionOnly?: boolean
 }
 
 /** Explicit native finalization; never prepares or reviews a Lightning fee invoice. */
@@ -271,6 +273,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
         legId: fee.legId,
         actor: "merchant",
         now,
+        inspectionOnly: dependencies.inspectionOnly,
         store: {
           load: async () => {
             await assertDurable()

@@ -19,6 +19,8 @@ import type {
   TestResult,
 } from "@playwright/test/reporter"
 
+import { safeSmokeDiagnostics } from "../e2e/helpers/smoke-diagnostics"
+
 import {
   PrivacySafeSmokeReporter,
   safePlaywrightSmokeId,
@@ -635,6 +637,133 @@ describe("privacy-safe Playwright smoke reporter", () => {
       }
     } finally {
       rmSync(directory, { force: true, recursive: true })
+    }
+  })
+})
+
+describe("bounded smoke failure diagnostics", () => {
+  it("exports only allowlisted scalar observations from the matching fixture", () => {
+    const annotation = {
+      type: "smoke:footer-layout",
+      description: JSON.stringify({
+        phase: "initial",
+        layout: "clipped",
+        triggerY: 612.345,
+        footerHidden: true,
+        footerX: "private-value",
+        footerY: 1000000,
+        viewportWidth: null,
+        message: "private-value",
+        content: "private-value",
+        pubkey: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/mobile-safari-baseline.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "footer-layout",
+        phase: "initial",
+        layout: "clipped",
+        triggerY: 612.3,
+        footerHidden: true,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    for (const description of [
+      "{",
+      "[]",
+      "null",
+      "x".repeat(2049),
+      '{"phase":"private-value"}',
+    ]) {
+      expect(
+        safeSmokeDiagnostics("e2e/mobile-safari-baseline.playwright.ts", [
+          { ...annotation, description },
+        ])
+      ).toEqual([])
+    }
+  })
+
+  it("keeps first-attempt readiness evidence in the report and failure progress without private annotations", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-diagnostic-"))
+    try {
+      const outputFile = join(directory, "results.json")
+      const progressFile = join(directory, "progress.log")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      const testCase = {
+        id: "diagnostic-case",
+        title: "redacted",
+        expectedStatus: "passed",
+        location: {
+          file: "e2e/merchant-shipping-tables.playwright.ts",
+          line: 390,
+          column: 1,
+        },
+        ok: () => false,
+        outcome: () => "flaky",
+        tags: ["@merchant"],
+      } as TestCase
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [testCase] } as unknown as Suite
+      )
+      reporter.onTestEnd(testCase, {
+        duration: 12,
+        retry: 0,
+        status: "failed",
+        annotations: [
+          {
+            type: "smoke:product-submit",
+            description: JSON.stringify({
+              phase: "first_product",
+              present: true,
+              enabled: false,
+              signerAvailable: true,
+              validation: "images",
+              action: "publish",
+              rawError: "private-value",
+            }),
+          },
+          { type: "private", description: "private-value" },
+        ],
+      } as unknown as TestResult)
+      reporter.onTestEnd(testCase, {
+        duration: 10,
+        retry: 1,
+        status: "passed",
+        annotations: [],
+      } as unknown as TestResult)
+      reporter.onEnd({ status: "passed" } as FullResult)
+      const report = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
+      const parsed = JSON.parse(report)
+      expect(parsed.suites[0].specs[0].tests[0].results[0].diagnostics).toEqual(
+        [
+          {
+            kind: "product-submit",
+            phase: "first_product",
+            present: true,
+            enabled: false,
+            signerAvailable: true,
+            validation: "images",
+            action: "publish",
+          },
+        ]
+      )
+      expect(progress).toContain("diagnostic retry=0")
+      expect(progress).toContain('"signerAvailable":true')
+      expect(report + progress).not.toContain("private-value")
+      expect(JSON.parse(report).stats.flaky).toBe(1)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
     }
   })
 })

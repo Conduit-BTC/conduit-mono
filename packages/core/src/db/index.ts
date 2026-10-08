@@ -36,6 +36,14 @@ import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
 import type { WalletDescriptor, WalletProviderId } from "../wallets"
+import type {
+  InboxDeletionRow,
+  InboxDeviceKey,
+  InboxWrapperRow,
+  InboxProjectionRow,
+  InboxRangeRow,
+  InboxDeliveryRow,
+} from "../protocol/commerce-inbox-store"
 
 export interface StoredOrder {
   id: string
@@ -868,6 +876,8 @@ export interface StoredMerchantPendingInvoice {
   source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock"
   invoiceExpiresAt: number
   deliveryState: "pending" | "sent"
+  /** A semantic publish began; absent positive evidence, only exact-wrap recovery is safe. */
+  deliveryAttempted?: boolean
   updatedAt: number
 }
 
@@ -1254,6 +1264,12 @@ export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTo
 export class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
+  commerceInboxDeletions!: EntityTable<InboxDeletionRow, "id">
+  commerceInboxKeys!: EntityTable<InboxDeviceKey, "id">
+  commerceInboxWrappers!: EntityTable<InboxWrapperRow, "id">
+  commerceInboxRecords!: EntityTable<InboxProjectionRow, "id">
+  commerceInboxRanges!: EntityTable<InboxRangeRow, "id">
+  commerceInboxDeliveries!: EntityTable<InboxDeliveryRow, "id">
   products!: EntityTable<CachedProduct, "id">
   productTombstones!: EntityTable<CachedProductTombstone, "id">
   shippingOptionFrontiers!: EntityTable<
@@ -1543,6 +1559,9 @@ export class ConduitDB extends Dexie {
       localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
       localProductWriteFrontiers: "id, merchantPubkey, intentId",
       localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      // v24 also opened on recovery previews. Retain their additive stores in
+      // the historical union so Dexie does not delete/recreate their rows.
+      sparkRecoveryEvidence: "ownerPubkey",
       localProductStockCheckpoints:
         "id, merchantPubkey, orderId, productAddressId, state, committedAt",
       // Restore direct per-market recovery queries while keeping the current
@@ -1560,8 +1579,37 @@ export class ConduitDB extends Dexie {
       localProductShippingOutbox: "id, merchantPubkey, createdAt",
       localProductStockCheckpoints:
         "id, merchantPubkey, orderId, productAddressId, state, committedAt",
+      // v24 exists in concurrent recovery branches. Preserve their additive
+      // stores/indexes without rewriting an already-opened database lineage.
+      sparkRecoveryEvidence: "ownerPubkey",
       eventMarketMerchantDecisionJobs:
-        "id, marketCoordinate, merchantPubkey, status, updatedAt",
+        "id, marketCoordinate, merchantPubkey, [marketCoordinate+merchantPubkey], status, updatedAt, createdAt",
+      commerceInboxDeletions: "id, accountPubkey",
+      commerceInboxKeys: "id",
+      commerceInboxWrappers: "id, accountPubkey, state, observedAt",
+      commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
+      commerceInboxRanges: "id, accountPubkey",
+      commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
+    })
+    // Both preview lineages already opened v25. Add the complete union at a
+    // fresh version so neither lineage loses durable authority or recovery.
+    this.version(26).stores({
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
+      sparkRecoveryEvidence: "ownerPubkey",
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, [marketCoordinate+merchantPubkey], status, updatedAt, createdAt",
+      commerceInboxDeletions: "id, accountPubkey",
+      commerceInboxKeys: "id",
+      commerceInboxWrappers: "id, accountPubkey, state, observedAt",
+      commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
+      commerceInboxRanges: "id, accountPubkey",
+      commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
     })
   }
 }
@@ -1652,7 +1700,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     // Shipping option frontiers are likewise intentionally absent here: a
     // relay/config change cannot erase a previously observed stronger price.
     db.profiles.clear(),
-    db.orderMessages.clear(),
+    // Private histories are durable account evidence, never relay-scope cache.
     db.relayLists.clear(),
     db.productSocialSummaries.clear(),
     db.nip05Verifications.clear(),

@@ -148,6 +148,59 @@ async function merchantRecordedCompletion(
   )
 }
 
+// Admission diagnostics are booleans only. They distinguish absent local
+// evidence from a projection/UI lag without importing or manufacturing proof.
+async function merchantRecoveryAdmission(page: Page, orderId: string | null) {
+  const modulePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ modulePath, orderId }) => {
+      const { db } = await import(/* @vite-ignore */ modulePath)
+      const bindings = await db.checkoutSparkPlanBindings.toArray()
+      const matching = bindings.filter(
+        (row: { orderWitness?: { orderId: string } }) =>
+          row.orderWitness?.orderId === orderId
+      )
+      const binding = matching.length === 1 ? matching[0] : null
+      return {
+        uniqueWitness: binding !== null,
+        sourcesValidated: binding?.sourceValidation != null,
+        settlementPresent: binding?.merchantSettlement != null,
+        creditPresent: binding?.merchantSettlement?.credit != null,
+      }
+    },
+    { modulePath, orderId }
+  )
+}
+
+// Read-only terminal-state check: receipt truth must not strand a submitted
+// exact request behind the retirement gate. No provider or order data leaves
+// this isolated browser; the reporter emits only the fixed assertion phase.
+async function merchantTerminalReconciliation(
+  page: Page,
+  orderId: string | null
+) {
+  const modulePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ modulePath, orderId }) => {
+      const { db } = await import(/* @vite-ignore */ modulePath)
+      const rows = await db.checkoutSparkReconciliations.toArray()
+      const matching = rows.filter(
+        (row: { state: { plan: { orderId: string } } }) =>
+          row.state.plan.orderId === orderId
+      )
+      if (matching.length !== 1) return null
+      const state = matching[0].state
+      return {
+        treasuryPaid: state.treasuryFinalization?.status === "paid",
+        allLegsPaid: state.legs.every(
+          (leg: { status: string }) => leg.status === "paid"
+        ),
+      }
+    },
+    { modulePath, orderId }
+  )
+}
+
 // Read only the isolated checkout's frozen clock facts. No invoice, wallet,
 // identity or order content leaves the page, and this helper never alters the
 // saved deadlines or produces payment authority.
@@ -449,16 +502,31 @@ async function rehearseRouter(
   })
   const nativeTransport = createHermeticSparkTransport(native)
   let fundingObservations = 0
+  let observationOpenAttempts = 0
+  let observationOpenSuccesses = 0
+  let nativeWalletOpenSuccesses = 0
+  let completedFundingReads = 0
   const transport = {
     ...nativeTransport,
     async request(command: Parameters<typeof nativeTransport.request>[0]) {
+      if (command.type === "observation.open") observationOpenAttempts += 1
       const result = await nativeTransport.request(command)
+      if (command.type === "observation.open") observationOpenSuccesses += 1
+      if (command.type === "wallet.open") nativeWalletOpenSuccesses += 1
       if (
         command.type === "wallet.call" &&
         command.method === "getLightningReceiveRequest"
       ) {
         fundingObservations += 1
       }
+      if (
+        (command.type === "wallet.call" ||
+          command.type === "observation.call") &&
+        command.method === "getLightningReceiveRequest" &&
+        (result as { status?: unknown } | undefined)?.status ===
+          "TRANSFER_COMPLETED"
+      )
+        completedFundingReads += 1
       return result
     },
   }
@@ -977,6 +1045,10 @@ async function rehearseRouter(
       // Recovery must come from the real signed private order/inbox messages.
       const verificationRequestsBeforeCold =
         lnurl.verificationSnapshot().verificationRequests
+      const observationAttemptsBeforeCold = observationOpenAttempts
+      const observationsBeforeCold = observationOpenSuccesses
+      const nativeWalletsBeforeCold = nativeWalletOpenSuccesses
+      const completedFundingBeforeCold = completedFundingReads
       setStage("cold Merchant discovers the signed recovery")
       const coldContext = await browser.newContext({ serviceWorkers: "block" })
       contexts.push(coldContext)
@@ -1000,14 +1072,16 @@ async function rehearseRouter(
           isAbandonedCompletedRequest: coldNetwork.isAbandonedCompletedRequest,
         }
       )
-      // Keep Date exactly one millisecond before the saved handoff while the
-      // fresh browser discovers recovery. Timers continue normally. Never
-      // rewind provider/relay history if fixture setup already used this window.
-      expect(sharedClock.nowMs() < frozenTiming!.takeoverAt - 1).toBe(true)
+      // Start from the current shared clock without rewinding provider history.
+      // Date must advance with foreground timers so checkedAt/backoff retry
+      // eligibility stays meaningful. Exact boundary behavior is unit-tested;
+      // this browser case observes the original frozen deadlines unchanged.
+      const coldObservationStartedAt = sharedClock.nowMs()
+      expect(coldObservationStartedAt < frozenTiming!.takeoverAt).toBe(true)
       await coldPage.clock.install({
-        time: new Date(frozenTiming!.takeoverAt - 1),
+        time: new Date(coldObservationStartedAt),
       })
-      await coldPage.clock.setFixedTime(frozenTiming!.takeoverAt - 1)
+      await coldPage.clock.setSystemTime(coldObservationStartedAt)
       await installRealTestSigner(coldPage, merchant, TEST_RELAY_URL)
       await coldPage.goto(`${merchantUrl}/orders?order=${orderId}`)
       const recovery = coldPage.getByRole("region", {
@@ -1038,13 +1112,24 @@ async function rehearseRouter(
       }
       setStage("cold Merchant respects the frozen shopper handoff")
       expect(await frozenRouterTiming(coldPage, orderId)).toEqual(frozenTiming)
-      expect(await coldPage.evaluate(() => Date.now())).toBe(
-        frozenTiming!.takeoverAt - 1
-      )
+      const beforeHandoffTime = await coldPage.evaluate(() => Date.now())
+      expect(beforeHandoffTime).toBeGreaterThanOrEqual(coldObservationStartedAt)
+      expect(beforeHandoffTime).toBeLessThan(frozenTiming!.takeoverAt)
+      setStage("cold Merchant requests query-only native authentication")
+      await expect
+        .poll(() => observationOpenAttempts - observationAttemptsBeforeCold, {
+          timeout: 30_000,
+        })
+        .toBeGreaterThan(0)
+      setStage("cold Merchant authenticates query-only native observations")
+      await expect
+        .poll(() => observationOpenSuccesses - observationsBeforeCold, {
+          timeout: 30_000,
+        })
+        .toBeGreaterThan(0)
       await expect(
         recovery.getByRole("button", {
-          name: "Pause",
-          exact: true,
+          name: /^(?:Pause|Pause coordination fee)$/,
         })
       ).toBeVisible()
       const beforeHandoff = control().snapshot()
@@ -1052,11 +1137,16 @@ async function rehearseRouter(
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(
         partialRecovery ? 1 : 0
       )
-      await recovery.getByRole("button", { name: "Pause", exact: true }).click()
+      expect(await coldPage.evaluate(() => Date.now())).toBeLessThan(
+        frozenTiming!.takeoverAt
+      )
+      expect(nativeWalletOpenSuccesses).toBe(nativeWalletsBeforeCold)
+      await recovery
+        .getByRole("button", { name: /^(?:Pause|Pause coordination fee)$/ })
+        .click()
       await expect(
         recovery.getByRole("button", {
-          name: "Resume payment processing",
-          exact: true,
+          name: /^(?:Resume payment processing|Resume coordination fee)$/,
         })
       ).toBeVisible()
 
@@ -1079,8 +1169,7 @@ async function rehearseRouter(
       setStage("cold Merchant stays paused across the isolated clock advance")
       await expect(
         recovery.getByRole("button", {
-          name: "Resume payment processing",
-          exact: true,
+          name: /^(?:Resume payment processing|Resume coordination fee)$/,
         })
       ).toBeVisible()
       setStage("cold Merchant has no sends before reopening")
@@ -1109,16 +1198,83 @@ async function rehearseRouter(
       setStage("cold Merchant enables automatic recovery on reopening")
       await expect(
         recovery.getByRole("button", {
-          name: "Pause",
-          exact: true,
+          name: /^(?:Pause|Pause coordination fee)$/,
         })
       ).toBeVisible({ timeout: 30_000 })
+      setStage("cold Merchant foreground Date advances after reopening")
+      const reopenedClockTime = await coldPage.evaluate(() => Date.now())
+      expect(reopenedClockTime).toBeGreaterThan(frozenTiming!.takeoverAt)
+      await expect
+        .poll(
+          async () =>
+            (await coldPage.evaluate(() => Date.now())) - reopenedClockTime,
+          { timeout: 10_000 }
+        )
+        .toBeGreaterThanOrEqual(5_000)
       setStage("cold Merchant submits the final native treasury transfer")
       await expect
         .poll(() => control().nativeSnapshot().nativePaymentCount, {
           timeout: 75_000,
         })
         .toBe(1)
+      setStage("cold Merchant opens native recovery only after handoff")
+      await expect
+        .poll(() => nativeWalletOpenSuccesses - nativeWalletsBeforeCold, {
+          timeout: 30_000,
+        })
+        .toBeGreaterThan(0)
+      setStage("cold Merchant reads exact completed funding from the provider")
+      await expect
+        .poll(() => completedFundingReads - completedFundingBeforeCold, {
+          timeout: 30_000,
+        })
+        .toBeGreaterThan(0)
+      setStage("cold Merchant retains the exact admitted recovery witness")
+      await expect
+        .poll(() => merchantRecoveryAdmission(coldPage, orderId), {
+          timeout: 30_000,
+        })
+        .toMatchObject({ uniqueWitness: true, sourcesValidated: true })
+      setStage("cold Merchant retains a separate provider settlement record")
+      await expect
+        .poll(() => merchantRecoveryAdmission(coldPage, orderId), {
+          timeout: 30_000,
+        })
+        .toMatchObject({ settlementPresent: true })
+      setStage("cold Merchant retains independent provider funding credit")
+      await expect
+        .poll(() => merchantRecoveryAdmission(coldPage, orderId), {
+          timeout: 30_000,
+        })
+        .toMatchObject({ creditPresent: true })
+      setStage("cold Merchant retains independently verified credit")
+      await expect
+        .poll(
+          async () =>
+            (
+              await merchantRecordedCompletion(
+                coldPage,
+                merchant.pubkey,
+                orderId
+              )
+            )?.creditVerified,
+          { timeout: 30_000 }
+        )
+        .toBe(true)
+      setStage("cold Merchant retains independently verified commerce")
+      await expect
+        .poll(
+          async () =>
+            (
+              await merchantRecordedCompletion(
+                coldPage,
+                merchant.pubkey,
+                orderId
+              )
+            )?.commerceVerified,
+          { timeout: 30_000 }
+        )
+        .toBe(true)
       setStage(
         "cold Merchant independently verifies supported recipient invoices"
       )
@@ -1127,16 +1283,23 @@ async function rehearseRouter(
           exact: true,
         })
       ).toBeVisible({ timeout: 30_000 })
+      setStage(
+        "cold Merchant independently checks recipient verification requests"
+      )
       expect(
         lnurl.verificationSnapshot().verificationRequests -
           verificationRequestsBeforeCold
       ).toBeGreaterThanOrEqual(2)
+      setStage("cold Merchant preserves exact commerce payment counters")
       expect(control().snapshot()).toEqual({
         fundingInvoiceCount: 1,
         sendInvocationCount: 2,
         outgoingPaymentCount: 2,
         debitedSats: 1_113,
       })
+      setStage(
+        "cold Merchant observes the exact pending native treasury transfer"
+      )
       expect(control().nativeSnapshot()).toMatchObject({
         nativeSendInvocationCount: 1,
         nativePaymentCount: 1,
@@ -1155,6 +1318,14 @@ async function rehearseRouter(
       control().setNativeCompletion(true)
       setStage("cold Merchant reconciles the completed transfer without replay")
       await coldPersistence.reload()
+      setStage(
+        "cold Merchant keeps automatic native reconciliation active after claim"
+      )
+      await expect(
+        recovery.getByRole("button", {
+          name: /^(?:Pause|Pause coordination fee)$/,
+        })
+      ).toBeVisible({ timeout: 30_000 })
       await expect
         .poll(
           () => control().nativeSnapshot().transfers[0]?.status ?? "missing",
@@ -1196,6 +1367,49 @@ async function rehearseRouter(
         nativeDebitSats: 113,
         nativeFeeSats: 0,
       }
+      setStage("cold Merchant retains independently verified credit")
+      await expect
+        .poll(
+          async () =>
+            (
+              await merchantRecordedCompletion(
+                coldPage,
+                merchant.pubkey,
+                orderId
+              )
+            )?.creditVerified,
+          { timeout: 30_000 }
+        )
+        .toBe(true)
+      setStage("cold Merchant retains independently verified commerce")
+      await expect
+        .poll(
+          async () =>
+            (
+              await merchantRecordedCompletion(
+                coldPage,
+                merchant.pubkey,
+                orderId
+              )
+            )?.commerceVerified,
+          { timeout: 30_000 }
+        )
+        .toBe(true)
+      setStage("cold Merchant retains independently verified native receipt")
+      await expect
+        .poll(
+          async () =>
+            (
+              await merchantRecordedCompletion(
+                coldPage,
+                merchant.pubkey,
+                orderId
+              )
+            )?.feePending,
+          { timeout: 30_000 }
+        )
+        .toBe(false)
+      setStage("cold Merchant records exact independently verified accounting")
       await expect
         .poll(
           () => merchantRecordedCompletion(coldPage, merchant.pubkey, orderId),
@@ -1204,6 +1418,12 @@ async function rehearseRouter(
           }
         )
         .toEqual(completedReceipt)
+      setStage("cold Merchant persists terminal treasury reconciliation")
+      await expect
+        .poll(() => merchantTerminalReconciliation(coldPage, orderId), {
+          timeout: 30_000,
+        })
+        .toEqual({ treasuryPaid: true, allLegsPaid: true })
       setStage(
         "cold Merchant payments match the frozen destinations and allocations"
       )

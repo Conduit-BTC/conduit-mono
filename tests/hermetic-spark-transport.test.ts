@@ -21,7 +21,7 @@ async function signerFor(accountNumber: number) {
   return signer
 }
 
-function createTransport() {
+function createTransportFixture() {
   const fixture = createHermeticSparkNative({
     async deriveIdentity(mnemonic, accountNumber) {
       const signer = new DefaultSparkSigner()
@@ -36,7 +36,11 @@ function createTransport() {
       throw new Error("This test does not issue invoices")
     },
   })
-  return createHermeticSparkTransport(fixture)
+  return { fixture, transport: createHermeticSparkTransport(fixture) }
+}
+
+function createTransport() {
+  return createTransportFixture().transport
 }
 
 it("opens a credential-authenticated native wallet through the test transport", async () => {
@@ -203,6 +207,137 @@ it("rejects mainnet and never exposes runner funding controls over native RPC", 
         args: [],
       })
     ).toMatchObject({ balance: 0n })
+  } finally {
+    await transport.close()
+  }
+})
+
+it("authenticates a distinct exact-query session without opening an RPC wallet or gaining write capabilities", async () => {
+  const { fixture, transport } = createTransportFixture()
+  // Populate only the independent runner registry; the observation path cannot
+  // submit a mnemonic or initialize/register native accounts over browser RPC.
+  const { wallet } = await fixture.module.initialize({
+    mnemonicOrSeed: MNEMONIC,
+    accountNumber: 0,
+    options: { network: "REGTEST", log: false },
+  })
+  const identityPublicKey = await wallet.getIdentityPublicKey()
+  await wallet.cleanup()
+  const before = fixture.control.forIdentity(identityPublicKey).snapshot()
+  const signer = await signerFor(0)
+  const challenge = (await transport.request({
+    type: "observation.challenge",
+    identityPublicKey,
+    network: "REGTEST",
+  })) as { challengeId: string; digest: string }
+  const signature = Buffer.from(
+    await signer.signMessageWithIdentityKey(
+      Buffer.from(challenge.digest, "hex")
+    )
+  ).toString("hex")
+  try {
+    await expect(
+      transport.request({
+        type: "reader.open",
+        challengeId: challenge.challengeId,
+        signature,
+      })
+    ).rejects.toThrow("unavailable")
+    const { handle } = (await transport.request({
+      type: "observation.open",
+      challengeId: challenge.challengeId,
+      signature,
+    })) as { handle: string }
+    expect(
+      await transport.request({
+        type: "observation.call",
+        handle,
+        method: "getIdentityPublicKey",
+        args: [],
+      })
+    ).toBe(identityPublicKey)
+    expect(
+      await transport.request({
+        type: "observation.call",
+        handle,
+        method: "getLightningReceiveRequest",
+        args: ["unknown-exact-request"],
+      })
+    ).toBeNull()
+    for (const method of [
+      "initialize",
+      "syncWallet",
+      "claimTransfer",
+      "setPrivacyEnabled",
+      "getBalance",
+      "getTransfers",
+      "getLeaves",
+      "createLightningInvoice",
+      "payLightningInvoice",
+      "transfer",
+      "fulfillSparkInvoice",
+    ]) {
+      await expect(
+        transport.request({
+          type: "observation.call",
+          handle,
+          method,
+          args: [],
+        } as unknown as Parameters<typeof transport.request>[0])
+      ).rejects.toThrow("unavailable")
+    }
+    await expect(
+      transport.request({
+        type: "wallet.call",
+        handle,
+        method: "getIdentityPublicKey",
+        args: [],
+      })
+    ).rejects.toThrow("unavailable")
+    await expect(
+      transport.request({
+        type: "observation.call",
+        handle,
+        method: "getTransfer",
+        args: [],
+      })
+    ).rejects.toThrow("unavailable")
+    await expect(
+      transport.request({
+        type: "observation.open",
+        challengeId: challenge.challengeId,
+        signature,
+      })
+    ).rejects.toThrow("unavailable")
+    const denied = (await transport.request({
+      type: "observation.challenge",
+      identityPublicKey,
+      network: "REGTEST",
+    })) as { challengeId: string; digest: string }
+    const other = await signerFor(1)
+    await expect(
+      transport.request({
+        type: "observation.open",
+        challengeId: denied.challengeId,
+        signature: Buffer.from(
+          await other.signMessageWithIdentityKey(
+            Buffer.from(denied.digest, "hex")
+          )
+        ).toString("hex"),
+      })
+    ).rejects.toThrow("unavailable")
+    await transport.request({ type: "observation.close", handle })
+    await expect(
+      transport.request({
+        type: "observation.call",
+        handle,
+        method: "getIdentityPublicKey",
+        args: [],
+      })
+    ).rejects.toThrow("unavailable")
+    expect(fixture.control.forIdentity(identityPublicKey).snapshot()).toEqual(
+      before
+    )
   } finally {
     await transport.close()
   }

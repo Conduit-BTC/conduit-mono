@@ -70,7 +70,7 @@ export function CheckoutSparkMerchantPaymentCard({
     ? "Payment verified"
     : attention
       ? "Payment needs attention"
-      : projection?.creditVerified
+      : projection?.creditVerified || projection?.receiverSettlementObserved
         ? "Processing payment"
         : outcome === "pending"
           ? "Awaiting payment"
@@ -91,9 +91,12 @@ export function CheckoutSparkMerchantPaymentCard({
                 ? "Payment processing needs a closer look. Check the saved payment before taking another action."
                 : outcome === "renewal_wait"
                   ? renewalExplanation
-                  : projection?.creditVerified
-                    ? "The buyer's payment has arrived. We are finishing this order's payments automatically."
-                    : "We are checking for the buyer's payment. Funding and recipient payments are verified separately."
+                  : projection?.receiverSettlementObserved &&
+                      !projection?.creditVerified
+                    ? "A recipient receipt was observed. We still need this checkout's exact wallet payment history before confirming payment or fulfillment. Do not request another payment."
+                    : projection?.creditVerified
+                      ? "The buyer's payment has arrived. We are finishing this order's payments automatically."
+                      : "We are checking for the buyer's payment. Funding and recipient payments are verified separately."
 
   return (
     <section

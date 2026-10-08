@@ -3,6 +3,7 @@ import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { createHash } from "node:crypto"
 import { NDKPrivateKeySigner, NDKUser } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
+import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -428,10 +429,10 @@ describe("initial recovery signed source bundle", () => {
     )
     expect(wrapped.kind).toBe(1059)
     expect(wrapped.pubkey).not.toBe(identity.pubkey)
-    expect(wrapped.verifySignature(false)).toBe(true)
+    expect(isValidSignedPublicNostrEvent(wrapped)).toBe(true)
     expect(wrapped.content).not.toContain(events[0]!.id)
     const opened = await openCheckoutSparkRecoveryWrap({
-      signedRecipientWrap: wrapped.rawEvent() as SignedPublicNostrEvent,
+      signedRecipientWrap: wrapped as SignedPublicNostrEvent,
       signer: MERCHANT_SIGNER,
     })
     expect(opened.payload).toEqual(payload)

@@ -248,7 +248,7 @@ async function encryptedOrder(
       inlineOrderContentBytes: utf8Bytes(JSON.stringify(order)),
       rumorPlaintextBytes: utf8Bytes(JSON.stringify(rumor.rawEvent())),
       relayMessageBytes: utf8Bytes(
-        JSON.stringify(["EVENT", "test-subscription", wrapped.rawEvent()])
+        JSON.stringify(["EVENT", "test-subscription", wrapped])
       ),
     },
   }
@@ -396,7 +396,7 @@ describe("shipping order transport", () => {
     const signer = plainTestSigner(fixture.buyer)
     const wrapped = await wrapPrivateMessage(rumor, recipient, signer)
     expect(
-      JSON.stringify(["EVENT", "0".repeat(64), wrapped.rawEvent()]).length
+      JSON.stringify(["EVENT", "0".repeat(64), wrapped]).length
     ).toBeLessThan(512 * 1024)
     const unwrapped = await giftUnwrap(
       wrapped,

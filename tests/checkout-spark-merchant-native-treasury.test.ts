@@ -45,7 +45,8 @@ const INBOX = "wss://merchant.inbox.relay.dev"
 const BUYER = "f".repeat(64)
 async function fixture(
   options: {
-    restoredStatus?: "submitted" | "ambiguous"
+    restoredStatus?: "prepared" | "submitted" | "ambiguous"
+    inspectionOnly?: boolean
     ackFailure?: number
     ambiguous?: boolean
     preflight?: "ready" | "fee_over_cap" | "unavailable"
@@ -58,11 +59,13 @@ async function fixture(
       settlement: f.record,
       preparedAt: AT + 4,
     })
-    state = recordCheckoutSparkNativeTreasuryStatus(state, {
-      invoiceId: f.plan.nativeTreasury!.invoiceId,
-      status: options.restoredStatus,
-      observedAt: AT + 5,
-    })
+    if (options.restoredStatus !== "prepared") {
+      state = recordCheckoutSparkNativeTreasuryStatus(state, {
+        invoiceId: f.plan.nativeTreasury!.invoiceId,
+        status: options.restoredStatus,
+        observedAt: AT + 5,
+      })
+    }
   }
   const database = new ConduitDB(`merchant-native-${crypto.randomUUID()}`, {
     indexedDB,
@@ -169,6 +172,7 @@ async function fixture(
       user: async () => new NDKUser({ pubkey: MERCHANT }),
     } as NDKSigner as never),
     now: () => clock++,
+    inspectionOnly: options.inspectionOnly,
     lockManager: null,
     requireCrossTabLock: false,
     assertDispatchPlan: () => {},
@@ -260,6 +264,34 @@ async function fixture(
 }
 
 describe("Merchant native treasury continuation", () => {
+  it("keeps a restored prepared request query-only when terminal-state repair lacks exact readback", async () => {
+    const f = await fixture({
+      restoredStatus: "prepared",
+      inspectionOnly: true,
+    })
+    try {
+      const result = await f.run()
+      expect(result.payout).toMatchObject({
+        outcome: "wait",
+        reason: "inspection_only",
+        sendAttempted: false,
+      })
+      expect(f.calls.filter((call) => call === "inspect")).toHaveLength(1)
+      expect(f.calls).not.toContain("preflight")
+      expect(f.calls).not.toContain("ack")
+      expect(f.calls).toContain("cleanup")
+      expect(f.progress).toHaveLength(0)
+      expect(f.sends()).toBe(0)
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state).toEqual(f.state)
+    } finally {
+      await f.database.delete()
+    }
+  })
+
   it("selects native finalization before any Lightning review or invoice preparation", async () => {
     const f = await fixture()
     try {
@@ -608,6 +640,52 @@ describe("Merchant native treasury fresh commerce proof", () => {
     await expect(
       proveMerchantCheckoutSparkNativeCommerce(f.input)
     ).rejects.toThrow()
+  })
+  it("keeps exact receipt proof independent of residual wallet funds without authorizing another send", async () => {
+    const f = await commerceProofFixture()
+    f.transfers.push({
+      id: "unrelated-deposit-after-native-send",
+      type: 0,
+      status: 5,
+      network: 1,
+      totalValue: 1,
+    })
+    f.wallet.openRetirementReader = async () => {
+      throw new Error("Receipt proof must not read wallet ownership")
+    }
+    expect(
+      await proveMerchantCheckoutSparkNativeCommerce({
+        ...f.input,
+        proofMode: "receipt",
+      })
+    ).toEqual(f.record)
+    expect(f.calls).toEqual(["credit", "recipient", "commerce"])
+    await expect(
+      proveMerchantCheckoutSparkNativeCommerce(f.input)
+    ).rejects.toThrow("Receipt proof must not read wallet ownership")
+  })
+  it("still requires exact funding and recipient evidence when reconciling a native receipt", async () => {
+    const funding = await commerceProofFixture()
+    funding.wallet.getLightningReceiveRequest = async () => null
+    await expect(
+      proveMerchantCheckoutSparkNativeCommerce({
+        ...funding.input,
+        proofMode: "receipt",
+      })
+    ).rejects.toThrow()
+    expect(funding.calls).toEqual([])
+
+    const recipient = await commerceProofFixture()
+    recipient.repository.assertLocalInvoiceOrigin = async () => {
+      throw new Error("Recipient origin missing")
+    }
+    await expect(
+      proveMerchantCheckoutSparkNativeCommerce({
+        ...recipient.input,
+        proofMode: "receipt",
+      })
+    ).rejects.toThrow("Recipient origin missing")
+    expect(recipient.calls).not.toContain("commerce")
   })
   it("does not trust paid signed metadata when provider or recipient evidence is unavailable", async () => {
     const f = await commerceProofFixture()

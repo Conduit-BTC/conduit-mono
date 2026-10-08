@@ -9,6 +9,7 @@ import type {
   WalletMethod,
   ReaderMethod,
 } from "./hermetic-spark-transport-types"
+import { OBSERVATION_METHODS } from "./hermetic-spark-transport-types"
 
 type PureSdk = Pick<
   typeof import("../../apps/market/node_modules/@buildonspark/spark-sdk"),
@@ -32,6 +33,10 @@ type NativeConfig = { network?: string; log?: boolean }
 type ReaderSigner = Pick<
   InstanceType<PureSdk["DefaultSparkSigner"]>,
   "getIdentityPublicKey" | "signSchnorrWithIdentityKey"
+>
+type ObservationSigner = Pick<
+  InstanceType<PureSdk["DefaultSparkSigner"]>,
+  "getIdentityPublicKey" | "signMessageWithIdentityKey"
 >
 
 function unavailable(): never {
@@ -63,17 +68,56 @@ export function createHermeticSparkSdkFacade(input: {
   class SparkWallet implements SparkNativeWallet {
     #handle: string | undefined
     #closed = false
+    #observationSigner: ObservationSigner | undefined
+    #observationOpening: Promise<{ handle: string }> | undefined
     protected readonly config: {
       signer: InstanceType<PureSdk["DefaultSparkSigner"]>
       getSspIdentityPublicKey(): string
     }
-    constructor(options?: NativeConfig, _signer?: unknown) {
-      void _signer
+    constructor(options?: NativeConfig, signer?: unknown) {
       requireRegtest(options)
+      this.#observationSigner = signer as ObservationSigner | undefined
       this.config = {
-        signer: new input.pureSdk.DefaultSparkSigner(),
+        signer: (signer ??
+          new input.pureSdk.DefaultSparkSigner()) as InstanceType<
+          PureSdk["DefaultSparkSigner"]
+        >,
         getSspIdentityPublicKey: () => HERMETIC_SPARK_SSP_IDENTITY_PUBLIC_KEY,
       }
+    }
+    private async openObservation() {
+      if (this.#closed || !this.#observationSigner) unavailable()
+      const identityPublicKey = hex(
+        await this.#observationSigner.getIdentityPublicKey()
+      )
+      if (this.#closed) unavailable()
+      const challenge = (await input.request({
+        type: "observation.challenge",
+        identityPublicKey,
+        network: "REGTEST",
+      })) as { challengeId: string; digest: string }
+      if (this.#closed || !/^[0-9a-f]{64}$/.test(challenge.digest))
+        unavailable()
+      const digest = Uint8Array.from(
+        challenge.digest.match(/../g)!.map((byte) => parseInt(byte, 16))
+      )
+      const signature = hex(
+        await this.#observationSigner.signMessageWithIdentityKey(digest)
+      )
+      if (this.#closed) unavailable()
+      const opened = (await input.request({
+        type: "observation.open",
+        challengeId: challenge.challengeId,
+        signature,
+      })) as { handle: string }
+      if (this.#closed) {
+        await input.request({
+          type: "observation.close",
+          handle: opened.handle,
+        })
+        unavailable()
+      }
+      return opened
     }
     static async initialize<T extends SparkWallet>(
       this: new (options?: NativeConfig, signer?: unknown) => T,
@@ -114,7 +158,21 @@ export function createHermeticSparkSdkFacade(input: {
       method: K,
       args: unknown[]
     ): Promise<Awaited<ReturnType<NonNullable<SparkNativeWallet[K]>>>> {
-      if (this.#closed || !this.#handle) unavailable()
+      if (this.#closed) unavailable()
+      if (this.#observationSigner) {
+        if (!OBSERVATION_METHODS.some((allowed) => allowed === method))
+          unavailable()
+        this.#observationOpening ??= this.openObservation()
+        const opened = await this.#observationOpening
+        if (this.#closed) unavailable()
+        return (await input.request({
+          type: "observation.call",
+          handle: opened.handle,
+          method: method as (typeof OBSERVATION_METHODS)[number],
+          args,
+        })) as Awaited<ReturnType<NonNullable<SparkNativeWallet[K]>>>
+      }
+      if (!this.#handle) unavailable()
       return (await input.request({
         type: "wallet.call",
         handle: this.#handle,
@@ -133,6 +191,13 @@ export function createHermeticSparkSdkFacade(input: {
       const handle = this.#handle
       this.#handle = undefined
       if (handle) await input.request({ type: "wallet.close", handle })
+      const observation = await this.#observationOpening?.catch(() => undefined)
+      this.#observationOpening = undefined
+      if (observation)
+        await input.request({
+          type: "observation.close",
+          handle: observation.handle,
+        })
     }
     setPrivacyEnabled(enabled: boolean) {
       return this.call("setPrivacyEnabled", [enabled])

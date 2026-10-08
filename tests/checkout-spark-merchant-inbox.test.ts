@@ -26,7 +26,6 @@ import {
   freezeCheckoutSparkSettledPlan,
   freezeCheckoutSparkPlan,
   getMerchantCheckoutSparkRecoveryList,
-  getNdk,
   parseCheckoutSparkMerchantProgressRumor,
   parseCheckoutSparkRecoveryRumor,
   prepareCheckoutSparkSettledLeg,
@@ -40,6 +39,9 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { ConduitDB } from "@conduit/core/db"
+import type { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import type { ReadProtectedInboxOptions } from "../packages/core/src/protocol/protected-inbox-read"
 import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
   importMerchantCheckoutSparkSettledRecovery,
@@ -464,7 +466,7 @@ function protectedRead(
     },
     relayResult: {
       status: success ? "success" : coverage,
-      observations: [],
+      observations: success ? [{ type: "eose", relayIndex: 0 }] : [],
       relays: [
         {
           relayIndex: 0,
@@ -505,6 +507,69 @@ function setMerchantSigner(pubkey = MERCHANT) {
   })
 }
 
+/** Ciphertext-only fixture owner. Real encryption/storage coverage is in durable-inbox. */
+function fixtureInboxOwner(): CommerceInbox {
+  let observed: ReturnType<typeof signedWrap>[] = []
+  let observedRelays: string[] = []
+  let clean = false
+  let readCoverage: ProtectedInboxReadResult["coverage"] = "partial"
+  return {
+    async loadOlder(options: {
+      relayUrls: string[]
+      read?: (
+        input: ReadProtectedInboxOptions
+      ) => Promise<ProtectedInboxReadResult>
+    }) {
+      const read = await options.read?.({
+        principalPubkey: MERCHANT,
+        relayUrls: options.relayUrls,
+        ownerSelectedRelayUrls: options.relayUrls,
+        appRelayUrls: [],
+        limit: 400,
+        authorization: getProtectedReadAuthorization(MERCHANT),
+      })
+      observed = read?.events ?? []
+      readCoverage = read?.coverage ?? "unavailable"
+      observedRelays = options.relayUrls
+      clean =
+        read?.coverage === "complete" &&
+        read.relayResult.failedCount === 0 &&
+        read.relayResult.relays.every(
+          (row) =>
+            row.eventCount < 400 &&
+            row.malformedCount === 0 &&
+            row.unusableCount === 0
+        ) === true
+    },
+    async checkoutRecoveryDescriptors() {
+      return observed.map((event) => ({ wrapId: event.id }))
+    },
+    store: {
+      key: (logical: string) => logical,
+      wrappers: async () =>
+        observed.map((event) => ({
+          event,
+          sources: observedRelays,
+          state: "machine",
+        })),
+      database: {
+        commerceInboxRanges: {
+          where: () => ({
+            equals: () => ({
+              toArray: async () =>
+                observedRelays.map((relay) => ({
+                  id: `${relay}:nip17`,
+                  status: clean ? "source_eose" : readCoverage,
+                  pageCount: 1,
+                })),
+            }),
+          }),
+        },
+      },
+    },
+  } as unknown as CommerceInbox
+}
+
 beforeEach(() => {
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
@@ -515,6 +580,7 @@ beforeEach(() => {
     { indexedDB, IDBKeyRange }
   )
   __setCommerceTestOverrides({
+    getCommerceInbox: () => fixtureInboxOwner(),
     checkoutSparkSettledRepository: new DexieCheckoutSparkSettledRepository(
       sourceDatabase
     ),
@@ -2992,6 +3058,10 @@ describe("Merchant checkout Spark payout history inspection", () => {
       } as NDKSigner as never),
       progressStore,
       progressTransport: {
+        deliveryStore: new CommerceInboxStore(
+          getProtectedReadAuthorization(MERCHANT)!,
+          database
+        ),
         recipientInboxRelays: [progressInbox],
         accountNetworkLocalStateRepository: { get: async () => undefined },
         giftWrapFn: (async (rumor, recipient) => {
@@ -3007,12 +3077,9 @@ describe("Merchant checkout Spark payout history inspection", () => {
           expect(payload.state.legs[0]!.intent).toEqual(fixture.intent)
           expect(rumor.content).not.toContain(initial.wallet.mnemonic)
           snapshots.push(payload)
-          return new NDKEvent(
-            getNdk(),
-            signedWrap(
-              MERCHANT,
-              CREATED_AT + 130_000 + snapshots.length * 1_000
-            )
+          return signedWrap(
+            MERCHANT,
+            CREATED_AT + 130_000 + snapshots.length * 1_000
           )
         }) as NonNullable<
           MerchantCheckoutSparkContinuationDependencies["progressTransport"]

@@ -38,9 +38,11 @@ import {
 } from "../packages/core/src/protocol/session-signer"
 import { plainTestSigner } from "./helpers/plain-signer"
 import {
+  getProtectedReadAuthorization,
   installProtectedReadSigner,
   removeProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 import {
   makeSignedBolt11Fixture,
@@ -322,6 +324,10 @@ describe("verified supplier payment notifications", () => {
       const owner = accountSigner(authMethod, () => active)
       activateAccountSigner(owner)
       const lease = installProtectedReadSigner(owner, MERCHANT, () => active)
+      const deliveryDatabase = new ConduitDB(
+        `supplier-auth-delivery-${crypto.randomUUID()}`,
+        { indexedDB, IDBKeyRange }
+      )
       try {
         const session = captureCheckoutSparkSupplierNotificationSession({
           merchantPubkey: MERCHANT,
@@ -363,7 +369,14 @@ describe("verified supplier payment notifications", () => {
             signer: session.signer,
             store,
             shouldContinue: session.shouldContinue,
-            transport: { ...io, ...session.transport },
+            transport: {
+              ...io,
+              ...session.transport,
+              deliveryStore: new CommerceInboxStore(
+                getProtectedReadAuthorization(MERCHANT)!,
+                deliveryDatabase
+              ),
+            },
           })
         ).toBe("relay_accepted")
         expect(authenticatedWrites).toBe(2)
@@ -378,6 +391,7 @@ describe("verified supplier payment notifications", () => {
       } finally {
         removeProtectedReadSigner(lease)
         retireAccountSigner(owner)
+        await deliveryDatabase.delete()
       }
     })
   }

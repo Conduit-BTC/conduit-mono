@@ -1,4 +1,5 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import { getEventHash } from "nostr-tools"
+import type { PrivateMessageEvent } from "./messaging"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -177,12 +178,12 @@ export interface CheckoutSparkMerchantOrderWitness {
  * this helper additionally verifies the unsigned rumor's NIP-01 event hash.
  */
 export function readCheckoutSparkMerchantOrderEvidence(
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
 ): CheckoutSparkMerchantOrderEvidence | null {
   try {
     if (
       !isHex64(rumor.id) ||
-      rumor.id !== rumor.getEventHash() ||
+      rumor.id !== getEventHash({ ...rumor, created_at: rumor.created_at! }) ||
       !isHex64(rumor.pubkey) ||
       rumor.sig !== undefined ||
       typeof rumor.created_at !== "number" ||

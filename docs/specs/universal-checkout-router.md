@@ -83,9 +83,13 @@ they never become public NIP-57 checkout payments.
 
 ## Signed live fiat pricing
 
-Market requests only required currency codes from the dedicated rate service,
-which obtains the existing live price feeds and signs a bounded versioned rate
-snapshot. The service receives no cart, account, order, recipient or invoice.
+Display and checkout share a common bounded currency request and authenticated
+cache from the dedicated rate service, which obtains the existing live price
+feeds with bounded fallback and signs a versioned rate snapshot. Missing an
+unrelated currency does not block an available checkout currency. Cache reuse
+preserves the original issue, provider-observation and expiry timestamps; it
+cannot refresh stale evidence. The service receives no cart, account, order,
+recipient or invoice.
 Its key is pricing-only, distinct from account and anonymous-zap keys. Market
 authenticates the snapshot against the deployment's public verification ring
 and reauthorizes exact signed products, selected variations and shipping at
@@ -102,6 +106,12 @@ Expiry of the rate snapshot today does not invalidate a correctly authenticated
 historical quote. Retain old verification keys for saved plans; changing the
 service, key or current rate cannot reprice a funded plan. Missing authority or
 time evidence pauses fiat financial admission without changing its obligations.
+For immediate live reads only, an explicit issuance tolerance of at most one
+second accommodates small service/client clock differences. It cannot extend
+expiry, provider age or historical funding-time verification. Mixed fiat feeds
+retain optional per-currency provenance covering every non-USD rate exactly;
+when present it is authoritative and signed. Historical quotes without that
+extension retain their original digest bytes.
 The standalone service and trusted deployment policy require explicit
 activation; dormant code and synthetic tests do not establish live readiness.
 
@@ -187,6 +197,17 @@ or withdrawn approval stops new dispatch. Reload requires renewed same-plan
 approval and reconciliation, not automatic authorization.
 
 ## Settlement, Merchant trust and retirement
+
+Merchant settlement observation starts when authenticated exact-order recovery
+and source evidence are available, independently of takeover. A pinned,
+query-only adapter must not initialize or synchronize a wallet, claim funds,
+change privacy, create invoices or sign/send transactions. Bound all reads and
+fence late results after timeout, account/order change or suspension. Receiver
+verification alone is informational: paid commerce requires its exact native
+funding credit and all required commerce debits plus recipient proof. Verified
+commerce may enable fulfillment before takeover without advancing the saved
+router state. Merchant claim-capable recovery, fee collection and retirement
+retain the original takeover boundary and independent evidence requirements.
 
 Conforming clients independently verify exact funding and each commerce
 payment, including recipient association, before continuing. An invoice

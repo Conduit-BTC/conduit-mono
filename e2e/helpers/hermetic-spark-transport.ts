@@ -1,5 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
-import { schnorr } from "../../packages/core/node_modules/@noble/curves/secp256k1.js"
+import {
+  schnorr,
+  secp256k1,
+} from "../../packages/core/node_modules/@noble/curves/secp256k1.js"
 import type { BrowserContext } from "@playwright/test"
 import type { SparkNativeWallet } from "../../apps/market/src/lib/spark-sdk"
 import type { CheckoutSparkNativeRetirementReader } from "@conduit/core"
@@ -8,7 +11,10 @@ import type {
   HermeticSparkRequest,
   WalletMethod,
 } from "./hermetic-spark-transport-types"
-import { HERMETIC_SPARK_BINDING } from "./hermetic-spark-transport-types"
+import {
+  HERMETIC_SPARK_BINDING,
+  OBSERVATION_METHODS,
+} from "./hermetic-spark-transport-types"
 
 const walletMethods = new Set<WalletMethod>([
   "setPrivacyEnabled",
@@ -59,6 +65,15 @@ export function createHermeticSparkTransport(
     string,
     Awaited<ReturnType<typeof fixture.openAuthenticatedRetirementReader>>
   >()
+  const observationChallenges = new Map<
+    string,
+    { identityPublicKey: string; digest: Uint8Array; expiresAt: number }
+  >()
+  const observations = new Map<
+    string,
+    ReturnType<typeof fixture.openAuthenticatedObservation>
+  >()
+  const observationMethods = new Set<string>(OBSERVATION_METHODS)
   const readerMethods = new Set([
     "getTransfers",
     "getPendingTransfers",
@@ -255,6 +270,90 @@ export function createHermeticSparkTransport(
             await reader?.cleanup()
             return null
           }
+          case "observation.challenge": {
+            if (
+              command.network !== "REGTEST" ||
+              !/^(02|03)[0-9a-f]{64}$/.test(command.identityPublicKey)
+            )
+              unavailable()
+            // Only independently registered native data can be queried. The
+            // browser supplies identity proof, never application ledger facts.
+            fixture.control.forIdentity(command.identityPublicKey)
+            for (const [id, challenge] of observationChallenges) {
+              if (challenge.expiresAt <= Date.now())
+                observationChallenges.delete(id)
+            }
+            if (observationChallenges.size >= 128) unavailable()
+            const challengeId = randomUUID()
+            const digest = createHash("sha256")
+              .update("conduit-hermetic-spark-observation-v1:REGTEST:")
+              .update(command.identityPublicKey)
+              .update(randomBytes(32))
+              .digest()
+            observationChallenges.set(challengeId, {
+              identityPublicKey: command.identityPublicKey,
+              digest,
+              expiresAt: Date.now() + 30_000,
+            })
+            return { challengeId, digest: digest.toString("hex") }
+          }
+          case "observation.open": {
+            const challenge = observationChallenges.get(command.challengeId)
+            observationChallenges.delete(command.challengeId)
+            if (
+              !challenge ||
+              challenge.expiresAt <= Date.now() ||
+              // Canonical DER integers are variable-width; verification, not a
+              // near-fixed signature length, establishes signer possession.
+              !/^[0-9a-f]{16,144}$/.test(command.signature) ||
+              command.signature.length % 2 !== 0 ||
+              !secp256k1.verify(
+                Buffer.from(command.signature, "hex"),
+                challenge.digest,
+                Buffer.from(challenge.identityPublicKey, "hex"),
+                { format: "der", prehash: false }
+              ) ||
+              observations.size >= 128
+            )
+              unavailable()
+            const observation = fixture.openAuthenticatedObservation({
+              identityPublicKey: challenge.identityPublicKey,
+              network: "regtest",
+            })
+            if (closed) {
+              await observation.cleanup()
+              unavailable()
+            }
+            const handle = randomUUID()
+            observations.set(handle, observation)
+            return { handle }
+          }
+          case "observation.call": {
+            const observation = observations.get(command.handle)
+            if (
+              !observation ||
+              !observationMethods.has(command.method) ||
+              !Array.isArray(command.args) ||
+              (command.method === "getIdentityPublicKey"
+                ? command.args.length !== 0
+                : command.args.length !== 1 ||
+                  typeof command.args[0] !== "string" ||
+                  command.args[0].length === 0 ||
+                  command.args[0].length > 1_024)
+            )
+              unavailable()
+            return await Reflect.apply(
+              observation[command.method],
+              observation,
+              command.args
+            )
+          }
+          case "observation.close": {
+            const observation = observations.get(command.handle)
+            observations.delete(command.handle)
+            await observation?.cleanup()
+            return null
+          }
           default:
             unavailable()
         }
@@ -266,12 +365,17 @@ export function createHermeticSparkTransport(
       closed = true
       const sessions = [...wallets.values()]
       const readerSessions = [...readers.values()]
+      const observationSessions = [...observations.values()]
       wallets.clear()
       readers.clear()
+      observations.clear()
       challenges.clear()
+      observationChallenges.clear()
       credentials.clear()
       await Promise.all(
-        [...sessions, ...readerSessions].map((session) => session.cleanup())
+        [...sessions, ...readerSessions, ...observationSessions].map(
+          (session) => session.cleanup()
+        )
       )
     },
   }

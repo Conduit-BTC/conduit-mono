@@ -70,6 +70,7 @@ import {
   createCheckoutSparkInvoiceRecipientRecord,
   hasCheckoutSparkInvoiceRecipient,
   hasCheckoutSparkInvoiceRecipientSettlement,
+  projectCheckoutSparkMerchantRecipientSettlement,
   type CheckoutSparkInvoiceRecipientProof,
 } from "./checkout-spark-invoice-recipient"
 import {
@@ -995,6 +996,81 @@ export class DexieCheckoutSparkSettledRepository {
             results.push({ witness, settlement })
           } catch {
             // Invalid local rows cannot confer verified status on an order.
+          }
+        }
+        return results
+      }
+    )
+  }
+
+  /**
+   * Read-only informational presentation from exact ordinary receiver receipts.
+   * Empty financial records below are display defaults, never persisted provider
+   * evidence or authority to dispatch, collect fees, renew or retire a wallet.
+   */
+  async loadMerchantOrderRecipientSettlements(
+    merchantPubkey: string,
+    orderIds?: readonly string[]
+  ) {
+    if (!HEX_64.test(merchantPubkey))
+      throw new CheckoutSparkSettledRepositoryIntegrityError()
+    const selectedOrders = orderIds ? new Set(orderIds) : null
+    return this.database.transaction(
+      "r",
+      this.database.checkoutSparkPlanBindings,
+      this.database.checkoutSparkReconciliations,
+      this.database.checkoutSparkRetirements,
+      async () => {
+        const bindings = await this.database.checkoutSparkPlanBindings.toArray()
+        const results = []
+        for (const binding of bindings) {
+          if (!binding.orderWitness || !binding.sourceValidation) continue
+          try {
+            const snapshot = await this.readInTransaction(binding.checkoutId)
+            if (snapshot.status !== "active") continue
+            const witness = restoreCheckoutSparkMerchantOrderWitness(
+              binding.orderWitness,
+              snapshot.state.plan
+            )
+            if (
+              witness.merchantPubkey !== merchantPubkey ||
+              (selectedOrders && !selectedOrders.has(witness.orderId)) ||
+              binding.checkoutId !== witness.checkoutId ||
+              binding.planDigest !== witness.planDigest
+            )
+              continue
+            restoreCheckoutSparkPlanSourceValidation(
+              binding.sourceValidation,
+              snapshot.state.plan
+            )
+            if (binding.buyerOrderBinding) {
+              const buyer = restoreCheckoutSparkBuyerOrderBinding(
+                binding.buyerOrderBinding
+              )
+              if (
+                buyer.buyerPubkey !== witness.buyerPubkey ||
+                buyer.orderId !== witness.orderId ||
+                buyer.merchantPubkey !== witness.merchantPubkey ||
+                buyer.checkoutId !== witness.checkoutId ||
+                buyer.planDigest !== witness.planDigest
+              )
+                continue
+            }
+            const receiverSettlement =
+              projectCheckoutSparkMerchantRecipientSettlement(
+                snapshot.state,
+                binding.invoiceRecipients ?? []
+              )
+            if (!receiverSettlement.receiverSettlementObserved) continue
+            const settlement = binding.merchantSettlement
+              ? restoreCheckoutSparkMerchantSettlementRecord(
+                  binding.merchantSettlement,
+                  snapshot.state.plan
+                )
+              : createCheckoutSparkMerchantSettlementRecord(snapshot.state.plan)
+            results.push({ witness, settlement, receiverSettlement })
+          } catch {
+            // Invalid or conflicting local evidence grants no commerce status.
           }
         }
         return results

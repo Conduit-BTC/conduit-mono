@@ -1,13 +1,19 @@
 import { describe, expect, it } from "bun:test"
-import type {
-  CheckoutSparkMerchantOrderWitness,
-  CheckoutSparkMerchantSettlementRecord,
-  MerchantCheckoutSparkRecoveryCandidate,
+import {
+  prepareCheckoutSparkNativeTreasury,
+  recordCheckoutSparkMerchantTreasury,
+  recordCheckoutSparkNativeTreasuryStatus,
+  runCheckoutSparkNativeTreasuryStep,
+  type CheckoutSparkNativeTreasuryObservation,
+  type CheckoutSparkMerchantOrderWitness,
+  type CheckoutSparkMerchantSettlementRecord,
+  type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
 import {
   advanceMerchantCheckoutSparkOrder,
   reconcileMerchantCheckoutSparkOrder,
 } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
+import { nativeTreasuryFixture } from "./support/checkout-spark-native-treasury-fixture"
 
 const merchant = "a".repeat(64)
 const buyer = "b".repeat(64)
@@ -83,6 +89,9 @@ type PayoutInspection = NonNullable<ReconciliationOptions["inspectPayouts"]>
 function fixture() {
   let currentWitness: CheckoutSparkMerchantOrderWitness | null = witness
   let currentRecord: CheckoutSparkMerchantSettlementRecord | null = null
+  let savedCredit: { transferId: string } | null = {
+    transferId: "buyer-claimed-credit",
+  }
   let snapshot: "active" | "retired" = "active"
   let witnessReads = 0
   let stateReads = 0
@@ -101,7 +110,7 @@ function fixture() {
             revision: 1,
             // Buyer-signed state is intentionally not a provider payment record.
             state: {
-              credit: { transferId: "buyer-claimed-credit" },
+              credit: savedCredit,
               legs: [{ status: "paid", legId: merchantLeg }],
               plan: {
                 merchantPubkey: merchant,
@@ -125,6 +134,9 @@ function fixture() {
     },
     setRecord(next: CheckoutSparkMerchantSettlementRecord | null) {
       currentRecord = next
+    },
+    setSavedCredit(next: { transferId: string } | null) {
+      savedCredit = next
     },
     setRetired() {
       snapshot = "retired"
@@ -155,7 +167,426 @@ const inspected = {
   },
 }
 
+function interruptedNativeFixture(
+  status: "prepared" | "submitted" | "ambiguous",
+  observation: "paid" | "not_found" = "paid"
+) {
+  const native = nativeTreasuryFixture()
+  const clock = native.plan.takeoverAt + 1
+  let state = prepareCheckoutSparkNativeTreasury(native.state, {
+    settlement: native.record,
+    preparedAt: native.plan.createdAt + 4,
+  })
+  if (status !== "prepared") {
+    state = recordCheckoutSparkNativeTreasuryStatus(state, {
+      invoiceId: native.plan.nativeTreasury!.invoiceId,
+      status,
+      observedAt: native.plan.createdAt + 5,
+    })
+  }
+  const intent = structuredClone(state.treasuryFinalization!.intent!)
+  const evidence = {
+    invoiceId: intent.invoiceId,
+    providerTransferId: "native-completed-transfer",
+    status: "paid" as const,
+    observedAt: clock,
+    finalFeeSats: 0,
+    finalDebitSats: intent.amountSats,
+  }
+  // The provider receipt was saved, but the subsequent terminal state write
+  // was interrupted. Payment truth does not itself repair this router state.
+  const record = recordCheckoutSparkMerchantTreasury(
+    native.record,
+    state,
+    evidence
+  )
+  const selected: MerchantCheckoutSparkRecoveryCandidate = {
+    ...candidate,
+    checkoutId: native.plan.checkoutId,
+    orderId: native.plan.orderId,
+    planDigest: native.plan.planDigest,
+    takeoverAt: native.plan.takeoverAt,
+  }
+  let revision = 1
+  let retired = false
+  let inspections = 0
+  let sends = 0
+  let preparations = 0
+  let retirementChecks = 0
+  let rescans = 0
+  const repository = {
+    async loadMerchantOrderWitness() {
+      return {
+        ...witness,
+        checkoutId: selected.checkoutId,
+        orderId: selected.orderId,
+        planDigest: selected.planDigest,
+      }
+    },
+    async load() {
+      return retired
+        ? {
+            status: "retired" as const,
+            planDigest: selected.planDigest,
+            retiredAt: clock,
+          }
+        : { status: "active" as const, revision, state: structuredClone(state) }
+    },
+    async loadMerchantSettlement() {
+      return record
+    },
+    async save(next: typeof state, expected: number) {
+      expect(expected).toBe(revision)
+      state = structuredClone(next)
+      revision += 1
+      return {
+        status: "active" as const,
+        revision,
+        state: structuredClone(state),
+      }
+    },
+    async saveTreasuryPrepared() {
+      preparations += 1
+      throw new Error("A paid receipt cannot authorize a new native intent")
+    },
+    async recordMerchantTreasury() {},
+    async retire() {},
+  } as unknown as NonNullable<
+    Parameters<typeof advanceMerchantCheckoutSparkOrder>[3]["repository"]
+  >
+  const options: Parameters<typeof advanceMerchantCheckoutSparkOrder>[3] = {
+    repository,
+    now: () => clock,
+    notifySuppliers: () => {},
+    inspectPayouts: async () => ({ ...inspected, candidate: selected }),
+    selectPayout: async () => ({ status: "native_treasury" }),
+    continueNativeTreasury: async (_principal, recovered, input) => {
+      expect(recovered).toEqual(selected)
+      expect(input?.inspectionOnly).toBe(true)
+      const payout = await runCheckoutSparkNativeTreasuryStep({
+        checkoutId: selected.checkoutId,
+        planDigest: selected.planDigest,
+        legId: native.feeId,
+        actor: "merchant",
+        now: () => clock,
+        inspectionOnly: input?.inspectionOnly,
+        store: {
+          load: () => repository.load(selected.checkoutId, selected.planDigest),
+          save: (next, expected) => repository.save(next, expected),
+          savePrepared: async () => {
+            preparations += 1
+            throw new Error("Do not prepare another native request")
+          },
+        },
+        provider: {
+          reconcile: async (
+            target
+          ): Promise<CheckoutSparkNativeTreasuryObservation> => {
+            inspections += 1
+            expect(target.intent).toEqual(intent)
+            expect(target.nativeTreasury).toEqual(native.plan.nativeTreasury)
+            return observation === "paid"
+              ? evidence
+              : { status: "not_found", invoiceId: intent.invoiceId }
+          },
+          preflight: async () => {
+            throw new Error("Receipt repair is query-only")
+          },
+          send: async () => {
+            sends += 1
+            throw new Error("Never resend the completed native payment")
+          },
+        },
+        proveCommerce: async () => {
+          throw new Error("Existing native intent must reconcile first")
+        },
+        acknowledgeRecoverySnapshot: async () => {
+          throw new Error("Inspection does not authorize a new send snapshot")
+        },
+      })
+      return { ...consumed, candidate: recovered, payout }
+    },
+    retireWallet: async () => {
+      retirementChecks += 1
+      expect(state.treasuryFinalization!.status).toBe("paid")
+      expect(state.legs.every((leg) => leg.status === "paid")).toBe(true)
+      retired = true
+      return { ...consumed, candidate: selected, retirementStatus: "retired" }
+    },
+    requestRescan: () => {
+      rescans += 1
+    },
+  }
+  return {
+    selected,
+    options,
+    state: () => structuredClone(state),
+    counts: () => ({
+      inspections,
+      sends,
+      preparations,
+      retirementChecks,
+      rescans,
+    }),
+    run: () =>
+      advanceMerchantCheckoutSparkOrder(merchant, selected, () => {}, options),
+  }
+}
+
 describe("automatic checkout Spark order reconciliation adapter", () => {
+  it("rechecks exact funding after query-only credit when the saved router state has no credit", async () => {
+    const context = fixture()
+    context.setSavedCredit(null)
+    context.setRecord(providerRecord(true))
+    const calls: string[] = []
+    const guard = () => {}
+    const status = await reconcileMerchantCheckoutSparkOrder(
+      merchant,
+      candidate,
+      guard,
+      {
+        repository: context.repository,
+        now: () => 2_000,
+        checkCredit: async (principal, selected, options) => {
+          calls.push("exact-funding")
+          expect(principal).toBe(merchant)
+          expect(selected).toEqual(candidate)
+          expect(options?.expectedOrderWitness).toEqual(witness)
+          expect(options?.assertActive).toBe(guard)
+          // Model the existing funding adapter's independent receive proof and
+          // guarded state save, not a copy of ledger or buyer-claimed credit.
+          context.setSavedCredit({ transferId: "funding-transfer" })
+          return { ...consumed, creditStatus: "recorded" }
+        },
+        inspectPayouts: async () => {
+          const saved = await context.repository.load(
+            candidate.checkoutId,
+            candidate.planDigest
+          )
+          if (saved.status !== "active" || !saved.state.credit) {
+            return {
+              ...consumed,
+              payoutHistory: {
+                ...inspected.payoutHistory,
+                status: "credit_needed",
+              },
+            }
+          }
+          calls.push("exact-payouts")
+          context.setRecord(providerRecord(true, [merchantLeg, supplierLeg]))
+          return inspected
+        },
+      }
+    )
+    expect(status).toBe("verified")
+    expect(calls).toEqual(["exact-funding", "exact-payouts"])
+  })
+
+  it("keeps independently observed credit informational when exact saved-state funding proof is still pending", async () => {
+    const context = fixture()
+    context.setSavedCredit(null)
+    context.setRecord(providerRecord(true))
+    let fundingChecks = 0
+    let historyChecks = 0
+    const status = await reconcileMerchantCheckoutSparkOrder(
+      merchant,
+      candidate,
+      () => {},
+      {
+        repository: context.repository,
+        now: () => 2_000,
+        checkCredit: async () => {
+          fundingChecks += 1
+          return { ...consumed, creditStatus: "pending" }
+        },
+        inspectPayouts: async () => {
+          historyChecks += 1
+          return {
+            ...consumed,
+            payoutHistory: {
+              ...inspected.payoutHistory,
+              status: "credit_needed",
+            },
+          }
+        },
+      }
+    )
+    expect(status).toBe("pending")
+    expect(fundingChecks).toBe(1)
+    expect(historyChecks).toBe(0)
+    const saved = await context.repository.load(
+      candidate.checkoutId,
+      candidate.planDigest
+    )
+    expect(saved.status === "active" && saved.state.credit).toBeNull()
+    expect(
+      await context.repository.loadMerchantSettlement(
+        merchant,
+        candidate.checkoutId,
+        candidate.planDigest
+      )
+    ).toEqual(providerRecord(true))
+  })
+
+  it("restores missing saved credit before automatic fee continuation even when commerce is already verified", async () => {
+    const context = fixture()
+    context.setSavedCredit(null)
+    context.setRecord(providerRecord(true, [merchantLeg, supplierLeg]))
+    const calls: string[] = []
+    const noSend = async () => {
+      throw new Error("This funding check cannot prepare or send a payout")
+    }
+    const status = await advanceMerchantCheckoutSparkOrder(
+      merchant,
+      candidate,
+      () => {},
+      {
+        repository: Object.assign(context.repository, { retire: noSend }),
+        now: () => 2_000,
+        checkCredit: async () => {
+          calls.push("exact-funding")
+          context.setSavedCredit({ transferId: "funding-transfer" })
+          return { ...consumed, creditStatus: "recorded" }
+        },
+        inspectPayouts: async () => {
+          const saved = await context.repository.load(
+            candidate.checkoutId,
+            candidate.planDigest
+          )
+          if (saved.status !== "active" || !saved.state.credit) {
+            return {
+              ...consumed,
+              payoutHistory: {
+                ...inspected.payoutHistory,
+                status: "credit_needed",
+              },
+            }
+          }
+          calls.push("exact-payouts")
+          return inspected
+        },
+        selectPayout: async () => {
+          calls.push("selection")
+          return { status: "recovery_unavailable" }
+        },
+        preparePayout: noSend,
+        continuePayout: noSend,
+        continueNativeTreasury: noSend,
+        retireWallet: noSend,
+        requestRescan: () => {
+          throw new Error("No send or preparation was attempted")
+        },
+      }
+    )
+    expect(status).toBe("unavailable")
+    expect(calls).toEqual(["exact-funding", "exact-payouts", "selection"])
+  })
+
+  it.each(["submitted", "ambiguous"] as const)(
+    "repairs an interrupted %s native terminal save against the same request before retirement",
+    async (status) => {
+      const context = interruptedNativeFixture(status)
+      expect(await context.run()).toBe("progress_pending")
+      expect(context.state().treasuryFinalization!.status).toBe("paid")
+      expect(context.counts()).toEqual({
+        inspections: 1,
+        sends: 0,
+        preparations: 0,
+        retirementChecks: 0,
+        rescans: 1,
+      })
+      expect(await context.run()).toBe("retired")
+      expect(context.counts().retirementChecks).toBe(1)
+      expect(context.counts().sends).toBe(0)
+    }
+  )
+
+  it("does not resend a stale prepared native request when its paid ledger lacks fresh provider readback", async () => {
+    const context = interruptedNativeFixture("prepared", "not_found")
+    expect(await context.run()).toBe("progress_pending")
+    expect(context.state().treasuryFinalization!.status).toBe("prepared")
+    expect(context.counts()).toEqual({
+      inspections: 1,
+      sends: 0,
+      preparations: 0,
+      retirementChecks: 0,
+      rescans: 1,
+    })
+  })
+
+  it("observes recipient evidence immediately without opening claim-capable Spark or advancing", async () => {
+    const context = fixture()
+    Object.assign(context.repository, {
+      hasInvoiceRecipient: async () => false,
+      recordInvoiceRecipientVerification: async () => {},
+      loadMerchantPlanSourceEvents: async () => [],
+      recordMerchantCredit: async () => {
+        throw new Error("Mock observation owns its financial proof")
+      },
+      recordMerchantPayout: async () => {
+        throw new Error("Mock observation owns its financial proof")
+      },
+    })
+    let observations = 0
+    let nativeObservations = 0
+    const noSpark = async () => {
+      throw new Error("No Spark inspection or advancement before takeover")
+    }
+    const dependencies = {
+      repository: context.repository,
+      now: () => 999,
+      verifyRecipients: async () => {
+        observations += 1
+        return "complete" as const
+      },
+      observeNative: async () => {
+        nativeObservations += 1
+        // Already verified commerce still cannot trigger pre-takeover fee,
+        // preparation, claim-capable inspection, dispatch or retirement.
+        return "verified" as const
+      },
+      checkCredit: noSpark,
+      inspectPayouts: noSpark,
+      selectPayout: noSpark,
+      preparePayout: noSpark,
+      continuePayout: noSpark,
+      continueNativeTreasury: noSpark,
+      retireWallet: noSpark,
+      requestRescan: () => {
+        throw new Error("No dispatch rescan is needed before takeover")
+      },
+    }
+    expect(
+      await reconcileMerchantCheckoutSparkOrder(
+        merchant,
+        candidate,
+        () => {},
+        dependencies
+      )
+    ).toBe("pending")
+    expect(
+      await advanceMerchantCheckoutSparkOrder(
+        merchant,
+        candidate,
+        () => {},
+        dependencies
+      )
+    ).toBe("pending")
+    expect(observations).toBe(2)
+    expect(nativeObservations).toBe(2)
+    expect(context.reads().recordReads).toBe(0)
+    context.setWitness(null)
+    expect(
+      await reconcileMerchantCheckoutSparkOrder(
+        merchant,
+        candidate,
+        () => {},
+        dependencies
+      )
+    ).toBe("unbound")
+    expect(observations).toBe(2)
+  })
+
   it("attributes already provider-paid facts before projecting the order as verified", async () => {
     const context = fixture()
     const verified = providerRecord(true, [merchantLeg, supplierLeg])
@@ -378,8 +809,8 @@ describe("automatic checkout Spark order reconciliation adapter", () => {
       )
     ).toBe("pending")
     expect(context.reads()).toEqual({
-      witnessReads: 0,
-      stateReads: 0,
+      witnessReads: 1,
+      stateReads: 1,
       recordReads: 0,
     })
 

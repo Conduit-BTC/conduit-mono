@@ -285,10 +285,13 @@ describe("settled router guest UI contracts", () => {
     )
     const messages = section(
       orders,
-      "const messagesQuery =",
-      "const cachedMessagesQuery ="
+      "const inbox = useCommerceInbox(",
+      "const refetchAll ="
     )
-    expect(messages).toContain("enabled: signerConnected")
+    expect(messages).toContain(
+      "useCommerceInbox(activeBuyerPubkey, signerConnected)"
+    )
+    expect(messages).toContain("const messagesQuery = inbox.buyer")
     expect(orders).toContain("guestIdentity.expiresAt - Date.now()")
     expect(orders).toContain("pruneExpiredGuestOrderData()")
     expect(orders).toContain(

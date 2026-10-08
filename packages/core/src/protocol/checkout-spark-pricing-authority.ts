@@ -12,10 +12,21 @@ export const CHECKOUT_SPARK_PRICING_AUTHORITY_DOMAIN =
   "conduit-checkout-spark-pricing-rate-v1"
 export const CHECKOUT_SPARK_PRICING_AUTHORITY_PURPOSE =
   "checkout_spark_pricing_rate"
+/** Live service/client clocks only; never applied to the funding-time anchor. */
+export const CHECKOUT_SPARK_PRICING_LIVE_ISSUANCE_SKEW_MS = 1_000
 
 const keyIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/)
 const publicKeyPattern = /^[0-9a-f]{64}$/
 const timestampSchema = z.number().int().safe().nonnegative()
+const fiatCurrencySchema = z
+  .string()
+  .refine((key) =>
+    SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
+      (currency) =>
+        currency !== "SATS" && currency !== "USD" && currency === key
+    )
+  )
+const fiatSourceSchema = z.enum(["frankfurter", "exchange-rate-api", "mempool"])
 
 /** A service-owned provider snapshot; browser environment overrides cannot qualify. */
 export const checkoutSparkAuthorizedPricingRateSchema = z
@@ -35,14 +46,23 @@ export const checkoutSparkAuthorizedPricingRateSchema = z
         z.number().finite().positive()
       )
       .optional(),
-    fiatSource: z
-      .enum(["frankfurter", "exchange-rate-api", "mempool"])
-      .optional(),
+    fiatSource: fiatSourceSchema.optional(),
+    fiatSources: z.record(fiatCurrencySchema, fiatSourceSchema).optional(),
   })
   .strict()
   .refine(
     (rate) => !Object.keys(rate.fiatUsdRates ?? {}).length || !!rate.fiatSource,
     "Fiat conversion rates require their provider source."
+  )
+  .refine(
+    (rate) =>
+      !rate.fiatSources ||
+      (Object.keys(rate.fiatSources).length ===
+        Object.keys(rate.fiatUsdRates ?? {}).length &&
+        Object.keys(rate.fiatUsdRates ?? {}).every(
+          (currency) => rate.fiatSources?.[currency] !== undefined
+        )),
+    "Per-currency provenance must describe every conversion exactly."
   )
 
 export const checkoutSparkPricingRateAttestationSchema = z
@@ -83,6 +103,16 @@ export function checkoutSparkPricingRateDigestValue(
       a < b ? -1 : a > b ? 1 : 0
     ),
     rate.fiatSource ?? null,
+    ...(rate.fiatSources
+      ? [
+          [
+            "fiat_sources",
+            Object.entries(rate.fiatSources).sort(([a], [b]) =>
+              a < b ? -1 : a > b ? 1 : 0
+            ),
+          ],
+        ]
+      : []),
   ]
 }
 
@@ -116,6 +146,7 @@ export function freezeCheckoutSparkPricingRateAttestation(
   const attestation = checkoutSparkPricingRateAttestationSchema.parse(input)
   if (attestation.rate.fiatUsdRates)
     Object.freeze(attestation.rate.fiatUsdRates)
+  if (attestation.rate.fiatSources) Object.freeze(attestation.rate.fiatSources)
   Object.freeze(attestation.rate)
   return Object.freeze(attestation)
 }
@@ -155,6 +186,8 @@ export function verifyCheckoutSparkPricingRateAttestation(input: {
   acceptedAtMs: number
   trustedPublicKeys: ReadonlyMap<string, string> | null | undefined
   nowMs?: number
+  /** Only live observation at nowMs may tolerate this bounded issuance skew. */
+  allowLiveIssuanceClockSkew?: true
 }): CheckoutSparkPricingRateAuthorization {
   if (!input.trustedPublicKeys?.size) return "unconfigured"
   const parsed = checkoutSparkPricingRateAttestationSchema.safeParse(
@@ -170,7 +203,8 @@ export function verifyCheckoutSparkPricingRateAttestation(input: {
     !timestampSchema.safeParse(input.acceptedAtMs).success ||
     (input.nowMs !== undefined &&
       (!timestampSchema.safeParse(input.nowMs).success ||
-        input.nowMs < input.acceptedAtMs))
+        input.nowMs < input.acceptedAtMs)) ||
+    (input.allowLiveIssuanceClockSkew && input.nowMs !== input.acceptedAtMs)
   )
     return "invalid"
   const attestation = parsed.data
@@ -180,7 +214,11 @@ export function verifyCheckoutSparkPricingRateAttestation(input: {
     !publicKeyPattern.test(publicKey) ||
     JSON.stringify(checkoutSparkPricingRateDigestValue(pricing.data)) !==
       JSON.stringify(checkoutSparkPricingRateDigestValue(attestation.rate)) ||
-    input.acceptedAtMs < attestation.issuedAtMs
+    input.acceptedAtMs +
+      (input.allowLiveIssuanceClockSkew
+        ? CHECKOUT_SPARK_PRICING_LIVE_ISSUANCE_SKEW_MS
+        : 0) <
+      attestation.issuedAtMs
   )
     return "invalid"
   try {

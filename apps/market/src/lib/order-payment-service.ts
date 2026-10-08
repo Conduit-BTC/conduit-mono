@@ -18,7 +18,6 @@ import {
   hasEffectiveMerchantInvoiceReopenEvidence,
   getAnonZapDraftTag,
   getOrderPublicZapSigner,
-  getNdk,
   getAccountSigner,
   type AccountSigner,
   type UnsignedNostrEvent,
@@ -837,7 +836,6 @@ async function deliverReceiptLinkedProof(
       verificationState: "verified",
       note: `Public zap receipt observed for order ${lifecycle.orderId}`,
     })
-    const ndk = getNdk()
     const proofRumor = buildPaymentProofRumor({
       merchantPubkey: locked.merchantPubkey,
       orderId: locked.orderId,
@@ -848,10 +846,10 @@ async function deliverReceiptLinkedProof(
     })
 
     let proofPublished = false
+    let deliveryNotice: string | null = null
     try {
-      await publishBuyerOrderMessage(
+      const proofDelivery = await publishBuyerOrderMessage(
         proofRumor,
-        ndk,
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
         {
@@ -862,6 +860,7 @@ async function deliverReceiptLinkedProof(
         }
       )
       proofPublished = true
+      deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
     } catch {
       // Payment remains proven by the exact receipt; delivery can be retried.
     }
@@ -876,7 +875,7 @@ async function deliverReceiptLinkedProof(
       const recorded = await recordOrderPaymentProofDelivery(
         locked.orderId,
         proofDeliveryStatus,
-        {},
+        proofPublished ? { deliveryNotice: deliveryNotice ?? undefined } : {},
         claimId
       )
       emit(locked.orderId, { lifecycle: recorded.lifecycle })
@@ -1718,7 +1717,6 @@ async function runOrderPaymentInternal(
 
     try {
       await assertPaymentAuthority()
-      const ndk = getNdk()
       const lnurlMeta = await dependencies.fetchLnurlPayMetadata(
         ctx.merchantLud16
       )
@@ -2127,7 +2125,6 @@ async function runOrderPaymentInternal(
       try {
         const proofDelivery = await dependencies.publishBuyerOrderMessage(
           proofRumor,
-          ndk,
           ctx.merchantPubkey,
           ctx.buyerIdentity ?? ctx.buyerPubkey,
           {
@@ -2435,7 +2432,6 @@ export async function resendOrderProof(
   )
   try {
     const content = buildLifecycleResendProofContentJson(locked)
-    const ndk = getNdk()
     const proofRumor = buildPaymentProofRumor({
       merchantPubkey: locked.merchantPubkey,
       orderId,
@@ -2448,10 +2444,10 @@ export async function resendOrderProof(
           : undefined,
     })
     let proofPublished = false
+    let deliveryNotice: string | null = null
     try {
-      await publishBuyerOrderMessage(
+      const proofDelivery = await publishBuyerOrderMessage(
         proofRumor,
-        ndk,
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
         {
@@ -2462,6 +2458,7 @@ export async function resendOrderProof(
         }
       )
       proofPublished = true
+      deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
     } catch {
       // The payment remains paid; only proof delivery needs another attempt.
     }
@@ -2476,7 +2473,10 @@ export async function resendOrderProof(
         orderId,
         proofDeliveryStatus,
         proofPublished
-          ? { lastError: undefined }
+          ? {
+              lastError: undefined,
+              deliveryNotice: deliveryNotice ?? undefined,
+            }
           : { lastError: "Proof delivery failed" },
         proofDeliveryClaimId
       )
@@ -2696,7 +2696,6 @@ export async function submitExternalPaymentProof(
       verificationState: "needs_merchant_verification",
       note: `External wallet payment for order ${orderId}`,
     })
-    const ndk = getNdk()
     const proofRumor = buildPaymentProofRumor({
       merchantPubkey: locked.merchantPubkey,
       orderId,
@@ -2705,10 +2704,10 @@ export async function submitExternalPaymentProof(
       content,
     })
     let proofPublished = false
+    let deliveryNotice: string | null = null
     try {
-      await publishBuyerOrderMessage(
+      const proofDelivery = await publishBuyerOrderMessage(
         proofRumor,
-        ndk,
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
         {
@@ -2719,6 +2718,7 @@ export async function submitExternalPaymentProof(
         }
       )
       proofPublished = true
+      deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
     } catch {
       // Buyer attestation remains durable; proof delivery may be retried.
     }
@@ -2733,7 +2733,10 @@ export async function submitExternalPaymentProof(
         orderId,
         proofDeliveryStatus,
         proofPublished
-          ? { lastError: undefined }
+          ? {
+              lastError: undefined,
+              deliveryNotice: deliveryNotice ?? undefined,
+            }
           : { lastError: "Proof delivery failed" },
         proofDeliveryClaimId
       )

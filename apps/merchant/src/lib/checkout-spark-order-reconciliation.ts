@@ -17,6 +17,7 @@ import {
 import { prepareNextMerchantCheckoutSparkSettledPayout } from "./checkout-spark-settled-leg-preparation"
 import { queueMerchantCheckoutSparkSupplierNotifications } from "./checkout-spark-supplier-notifications"
 import { verifySavedMerchantCheckoutSparkRecipients } from "./checkout-spark-invoice-recipient"
+import { observeMerchantCheckoutSparkOrder } from "./checkout-spark-order-observation"
 
 interface ReconciliationDependencies {
   repository?: Pick<
@@ -34,6 +35,8 @@ interface ReconciliationDependencies {
       Pick<
         DexieCheckoutSparkSettledRepository,
         | "hasInvoiceRecipient"
+        | "hasInvoiceRecipientSettlement"
+        | "loadMerchantPlanSourceEvents"
         | "recordInvoiceRecipientVerification"
         | "assertInvoiceRecipient"
         | "saveRenewedWithInvoiceOrigin"
@@ -45,15 +48,17 @@ interface ReconciliationDependencies {
   inspectPayouts?: typeof inspectMerchantCheckoutSparkSettledPayoutHistory
   notifySuppliers?: typeof queueMerchantCheckoutSparkSupplierNotifications
   verifyRecipients?: typeof verifySavedMerchantCheckoutSparkRecipients
+  observeNative?: typeof observeMerchantCheckoutSparkOrder
   /** Session/page guard independent of a replaceable recovery candidate. */
   assertNotificationActive?: () => void
   now?: () => number
 }
 
 /**
- * Compose the existing exact-history adapters for one authenticated order.
- * This never creates invoices or sends payouts. Opening Spark can claim inbound
- * funds, so even this inspection must respect takeover and active-page guards.
+ * Observe exact recipient receipts and query-only native facts immediately.
+ * Receiver reads alone never confirm this checkout paid. Ordinary recovered
+ * wallet initialization can claim funds, so that history path still waits for
+ * takeover and respects active-page guards.
  */
 export async function reconcileMerchantCheckoutSparkOrder(
   principalPubkey: string,
@@ -89,7 +94,6 @@ async function inspectMerchantCheckoutSparkOrder(
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   assertActive()
   if (candidate.schemaVersion === 1) return "unbound"
-  if (now() < candidate.takeoverAt) return "pending"
 
   const witness = await repository.loadMerchantOrderWitness(
     principal,
@@ -136,7 +140,6 @@ async function inspectMerchantCheckoutSparkOrder(
   ) {
     return "needs_attention"
   }
-  if (now() < saved.state.plan.takeoverAt) return "pending"
 
   // This independent, bounded lookup repairs cross-device attribution before
   // projecting paid facts or continuing a preserved unpaid invoice. It never
@@ -153,6 +156,12 @@ async function inspectMerchantCheckoutSparkOrder(
       state: saved.state,
       repository: {
         hasInvoiceRecipient: repository.hasInvoiceRecipient.bind(repository),
+        ...(repository.hasInvoiceRecipientSettlement
+          ? {
+              hasInvoiceRecipientSettlement:
+                repository.hasInvoiceRecipientSettlement.bind(repository),
+            }
+          : {}),
         recordInvoiceRecipientVerification:
           repository.recordInvoiceRecipientVerification.bind(repository),
       },
@@ -163,6 +172,46 @@ async function inspectMerchantCheckoutSparkOrder(
     // A recipient API outage cannot suppress unrelated exact Spark observations.
     // Reconcile those facts below, but do not advance a send without attribution.
     attributionUnavailable = attribution === "unavailable"
+  }
+
+  if (now() < saved.state.plan.takeoverAt) {
+    // This separate version-pinned adapter queries exact native/SSP evidence
+    // without initialize, privacy mutation, claims, or outgoing capabilities.
+    // Receiver-only evidence remains informational if that read cannot finish.
+    if (repository.loadMerchantPlanSourceEvents) {
+      try {
+        await (dependencies.observeNative ?? observeMerchantCheckoutSparkOrder)(
+          principal,
+          candidate,
+          assertActive,
+          {
+            repository: {
+              load: repository.load.bind(repository),
+              loadMerchantOrderWitness:
+                repository.loadMerchantOrderWitness.bind(repository),
+              loadMerchantPlanSourceEvents:
+                repository.loadMerchantPlanSourceEvents.bind(repository),
+              recordMerchantCredit:
+                repository.recordMerchantCredit.bind(repository),
+              recordMerchantPayout:
+                repository.recordMerchantPayout.bind(repository),
+              loadMerchantSettlement:
+                repository.loadMerchantSettlement.bind(repository),
+            },
+            expectedOrderWitness: witness,
+            now,
+          }
+        )
+        assertActive()
+      } catch {
+        assertActive()
+        // Failed reads preserve prior facts. They cannot authorize a fallback
+        // claim-capable wallet initialization or mark receiver-only facts paid.
+      }
+    }
+    // Even verified commerce cannot advance fee, preparation or retirement
+    // before takeover; keep this candidate scheduled for its frozen boundary.
+    return "pending"
   }
 
   const readProjection = async () => {
@@ -211,12 +260,22 @@ async function inspectMerchantCheckoutSparkOrder(
     (includeRouterPayouts
       ? projection.allProviderPaid
       : !projection.commerceVerified && projection.allCommerceProviderPaid)
+  const nativeReceiptNeedsReconciliation =
+    saved.state.plan.schemaVersion === 4 &&
+    saved.state.treasuryFinalization?.status !== "paid"
   let projection = await readProjection()
   if (originNeedsAttention(projection))
     return attributionUnavailable ? "unavailable" : "recipient_unverified"
   if (projection?.commerceVerified) {
     if (!includeRouterPayouts) return "verified"
-    if (!projection.feePending) return "retirement_pending"
+    if (!projection.feePending) {
+      // Provider receipt persistence precedes the terminal router-state save.
+      // An interrupted save must reconcile that same native request before
+      // retirement, not loop on an unpaid local state or infer it paid here.
+      return nativeReceiptNeedsReconciliation
+        ? "progress_pending"
+        : "retirement_pending"
+    }
   }
 
   const options = {
@@ -225,7 +284,11 @@ async function inspectMerchantCheckoutSparkOrder(
     expectedOrderWitness: witness,
     now,
   }
-  if (!projection?.creditVerified) {
+  // Query-only observation can attest funding in the independent receipt
+  // ledger without advancing the signed router snapshot. History/continuation
+  // still require its guarded saved credit, so reconcile the exact original
+  // funding request after takeover when that state is missing.
+  if (!projection?.creditVerified || !saved.state.credit) {
     const credit = await (
       dependencies.checkCredit ?? reconcileMerchantCheckoutSparkSettledCredit
     )(principal, candidate, options)
@@ -249,7 +312,11 @@ async function inspectMerchantCheckoutSparkOrder(
     return attributionUnavailable ? "unavailable" : "recipient_unverified"
   if (projection?.commerceVerified) {
     if (!includeRouterPayouts) return "verified"
-    if (!projection.feePending) return "retirement_pending"
+    if (!projection.feePending) {
+      return nativeReceiptNeedsReconciliation
+        ? "progress_pending"
+        : "retirement_pending"
+    }
   }
   if (attributionUnavailable) return "unavailable"
   if (includeRouterPayouts) return "progress_pending"
@@ -330,6 +397,17 @@ export async function advanceMerchantCheckoutSparkOrder(
   if (selection.status === "native_treasury") {
     if (!repository.saveTreasuryPrepared || !repository.recordMerchantTreasury)
       return "unavailable"
+    const settlement = await repository.loadMerchantSettlement(
+      principal,
+      candidate.checkoutId,
+      candidate.planDigest
+    )
+    assertActive()
+    // A retained receipt is not a shortcut to terminal state. It limits this
+    // invocation to exact provider reconciliation: a delayed/missing readback
+    // must never turn an older prepared snapshot into another native send.
+    const inspectionOnly =
+      settlement?.schemaVersion === 2 && settlement.nativeTreasury !== null
     const result = await (
       dependencies.continueNativeTreasury ??
       continueMerchantCheckoutSparkNativeTreasury
@@ -339,6 +417,7 @@ export async function advanceMerchantCheckoutSparkOrder(
       >["repository"],
       now,
       shouldContinue,
+      inspectionOnly,
     })
     assertActive()
     if (result.status !== "consumed" || !result.payout) return "unavailable"

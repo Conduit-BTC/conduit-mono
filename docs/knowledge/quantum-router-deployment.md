@@ -1,10 +1,12 @@
 # Quantum Router deployment capability
 
-The code-owned mainnet Pages preview and production profiles enable Quantum
-Router through the shared `isQuantumRouterEnabled()` capability. Market checkout,
-saved buyer continuation, Merchant Orders and Merchant Home use the same
-resolved setting. A production deployment of the merged implementation does not
-need a localhost host or local rehearsal flags. Signet staging remains disabled:
+The code-owned mainnet Pages preview and production profiles keep Quantum
+Router inactive until their ordinary receiving endpoints are qualified and
+activation is explicitly approved. Enabling a profile uses the shared
+`isQuantumRouterEnabled()` capability: Market checkout, saved buyer continuation,
+Merchant Orders and Merchant Home use the same resolved setting. An activated
+production deployment needs no localhost host or local rehearsal flags.
+Signet staging remains disabled:
 the current settled Spark plan supports mainnet and regtest, not Signet.
 
 ## Scope and prerequisites
@@ -75,10 +77,12 @@ behavior to be independently qualified; a `pending` descriptor or LUD-21 adverti
 insufficient. Every required Merchant/supplier address is checked before
 funding. See [receiver qualification](checkout-spark-recipient-verification-compat.md).
 
-The pricing URL and verification-key ring also default inactive. The standalone
+Preview contains the separately provisioned public pricing URL and verification
+key ring; production pricing remains inactive. Pricing trust alone does not
+activate routing or qualify a receiver. The standalone
 `apps/anon-zap-signer/wrangler.checkout-pricing.jsonc` uses a distinct rate-only
 runtime-secret key, approved HTTPS origin list and mandatory native limiter.
-Its source configuration has no active route or preview deployment. Provisioning
+Its source configuration does not create an active route or deployment. Provisioning
 the key, enabling the service and publishing its public trust policy require
 explicit maintainer authorization; merging source does none of those actions.
 Retain prior public verification keys for historical frozen quotes even when
@@ -173,5 +177,6 @@ current-session guards and public dispatch policy checks.
 Automated capability and synthetic payment fixtures do not establish live
 provider settlement, signer/device behavior or recovery liveness. Those remain
 maintainer-owned funded validation before release sign-off. Current source-only
-pricing and receiver defaults are inactive; real qualification and service
-activation are separate prerequisites for their acceptance tests.
+receiving defaults and production activation are inactive. Preview pricing
+still requires current-source service qualification; accepted live receivers
+and explicit routing activation are separate acceptance prerequisites.

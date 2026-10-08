@@ -100,7 +100,7 @@ describe("already-v24 database lineage convergence", () => {
       const current = new ConduitDB(name, options)
       try {
         await current.open()
-        expect(current.verno).toBe(25)
+        expect(current.verno).toBe(26)
         for (const [table, row] of rows)
           expect(await current.table(table).toArray()).toEqual([row])
         for (const table of Object.keys(localStores)) {
@@ -115,8 +115,10 @@ describe("already-v24 database lineage convergence", () => {
         expect(jobs.schema.indexes.map((index) => index.name)).toEqual([
           "marketCoordinate",
           "merchantPubkey",
+          "[marketCoordinate+merchantPubkey]",
           "status",
           "updatedAt",
+          "createdAt",
         ])
         expect(
           await jobs

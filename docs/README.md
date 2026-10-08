@@ -38,6 +38,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
   frozen payment authority, isolated-wallet Merchant recovery and historical
   order compatibility
+- `docs/knowledge/commerce-inbox-recovery.md`: account-owned encrypted inbox,
+  history recovery, commerce codecs, immutable delivery and runtime evidence
 - `docs/knowledge/signed-event-publication.md`: plain signed-event writer,
   fixed relay targets, retry ownership, and per-relay delivery evidence
 - `docs/specs/event-markets.md`: organizer-authored Event Market and NIP-52
@@ -87,6 +89,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/checkout-spark-recipient-verification-compat.md`: provider-neutral
   ordinary receiver qualification, exact invoice association, independent
   settlement evidence, historical compatibility and live acceptance gates
+- `docs/knowledge/commerce-inbox-recovery.md`: bounded authenticated client-seal
+  metadata read compatibility, accounting and maintainer activation/removal gates
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order
   compatibility routing while users migrate to discoverable NIP-17 inbox
   declarations

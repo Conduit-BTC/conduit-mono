@@ -21,7 +21,6 @@ import {
   useState,
 } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   isContactFreeEventHandoff,
   getEventGuestReceiptCommitment,
@@ -29,6 +28,7 @@ import {
   getProfilePaymentAddress,
   hasFreshProfilePaymentAddress,
   EVENT_KINDS,
+  type PrivateMessageEvent,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
   BTC_USD_RATE_QUERY_KEY,
@@ -45,7 +45,6 @@ import {
   getTelemetryLatencyBucket,
   hasWebLN,
   isCommerceReadIncomplete,
-  getNdk,
   getOrderLifecycle,
   getShippingOptionsByCoordinates,
   listOrderLifecycles,
@@ -3347,8 +3346,13 @@ function CheckoutPage() {
       }
       const validatedPayload = orderSchema.parse(payload)
 
-      const ndk = getNdk()
-      const rumor = new NDKEvent(ndk)
+      const rumor = {
+        id: "",
+        pubkey: buyerPubkey,
+        kind: 16,
+        tags: [],
+        content: "",
+      } as PrivateMessageEvent
       rumor.kind = EVENT_KINDS.ORDER
       rumor.created_at = Math.floor(Date.now() / 1000)
       rumor.tags = [
@@ -3413,7 +3417,6 @@ function CheckoutPage() {
 
       const delivery = await publishBuyerOrderMessage(
         rumor,
-        ndk,
         selectedMerchant,
         buyerIdentity,
         {
@@ -3965,7 +3968,6 @@ function CheckoutPage() {
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
-      const ndk = getNdk()
       const orderPayload = {
         id: orderId,
         merchantPubkey: selectedMerchant,
@@ -3988,7 +3990,13 @@ function CheckoutPage() {
       }
       const validatedOrderPayload = orderSchema.parse(orderPayload)
 
-      const orderRumor = new NDKEvent(ndk)
+      const orderRumor = {
+        id: "",
+        pubkey: buyerPubkey,
+        kind: 16,
+        tags: [],
+        content: "",
+      } as PrivateMessageEvent
       orderRumor.kind = EVENT_KINDS.ORDER
       orderRumor.created_at = Math.floor(Date.now() / 1000)
       orderRumor.tags = [
@@ -4085,7 +4093,6 @@ function CheckoutPage() {
       orderDeliveryStartedAt = performance.now()
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
-        ndk,
         selectedMerchant,
         buyerIdentity,
         {

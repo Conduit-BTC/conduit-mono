@@ -207,7 +207,7 @@ describe("critical signer recovery flows", () => {
     expect(presets).toContain("stateOwnerPubkeyRef.current = identityPubkey")
     expect(presets).toContain("setDecryptedPreset(null)")
     expect(orders).toContain(
-      "key={`${activeBuyerPubkey}:${selectedRow.orderId}`}"
+      "key={`${activeBuyerPubkey}:${selectedRow.merchantPubkey}:${selectedRow.orderId}`}"
     )
   })
 

@@ -129,8 +129,8 @@ describe("deployment profiles", () => {
     expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
     expect(production.publicFeatures.livePresenceEnabled).toBe(true)
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
-    expect(preview.publicFeatures.quantumRouterEnabled).toBe(true)
-    expect(production.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(preview.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(production.publicFeatures.quantumRouterEnabled).toBe(false)
     expect(staging.publicFeatures.quantumRouterEnabled).toBe(false)
     expect(preview.lightningNetwork).toBe("mainnet")
     expect(production.lightningNetwork).toBe("mainnet")
@@ -139,7 +139,7 @@ describe("deployment profiles", () => {
 
   it("ignores dashboard router overrides for managed public profiles", () => {
     for (const profile of ["preview", "production", "staging"] as const) {
-      const expected = profile !== "staging"
+      const expected = false
       for (const override of ["true", "false"]) {
         expect(
           resolveDeploymentProfile({
@@ -295,7 +295,7 @@ describe("deployment profiles", () => {
       true
     )
     expect(manifest.publicFeatures.livePresenceEnabled).toBe(true)
-    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(false)
     expect(Object.keys(manifest.publicFeatures).sort()).toEqual([
       "dmCompatibilityOrderRoutingEnabled",
       "livePresenceEnabled",
@@ -336,7 +336,7 @@ describe("deployment profiles", () => {
       "manifest.publicFeatures?.livePresenceEnabled !== true"
     )
     expect(workflow).toContain(
-      "manifest.publicFeatures?.quantumRouterEnabled !== true"
+      "manifest.publicFeatures?.quantumRouterEnabled !== expectedRouterEnabled"
     )
     expect(workflow).toContain("throw new Error(")
   })
@@ -360,7 +360,7 @@ describe("deployment profiles", () => {
       })
       expect(result.exitCode).toBe(0)
       expect(JSON.parse(result.stdout.toString())).toEqual({
-        router: JSON.stringify(profile !== "staging" ? "true" : "false"),
+        router: JSON.stringify("false"),
         network: JSON.stringify(profile === "staging" ? "signet" : "mainnet"),
         profile: JSON.stringify(profile),
       })

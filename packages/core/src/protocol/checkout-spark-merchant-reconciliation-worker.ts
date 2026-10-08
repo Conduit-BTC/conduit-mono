@@ -55,6 +55,8 @@ interface ReconciliationOptions {
   /** Aggregate only: no candidate IDs, wallet data, or private order content. */
   onUpdate: (summary: MerchantCheckoutSparkReconciliationSummary) => void
   active?: boolean
+  /** Opt in only when the adapter has a genuinely read-only pre-handoff phase. */
+  observeBeforeTakeover?: boolean
   now?: () => number
   schedule?: (callback: () => void, delayMs: number) => () => void
 }
@@ -247,11 +249,13 @@ export function startMerchantCheckoutSparkReconciliation(
       entry.retryCount = 0
     } else {
       entry.retryCount = Math.min(entry.retryCount + 1, 5)
-      entry.nextAt = Math.max(
-        entry.candidate.takeoverAt,
+      const retryAt =
         checkedAt +
-          Math.min(MIN_RETRY_MS * 2 ** (entry.retryCount - 1), MAX_RETRY_MS)
-      )
+        Math.min(MIN_RETRY_MS * 2 ** (entry.retryCount - 1), MAX_RETRY_MS)
+      entry.nextAt =
+        options.observeBeforeTakeover && checkedAt < entry.candidate.takeoverAt
+          ? Math.min(retryAt, entry.candidate.takeoverAt)
+          : Math.max(entry.candidate.takeoverAt, retryAt)
     }
   }
 
@@ -297,7 +301,9 @@ export function startMerchantCheckoutSparkReconciliation(
                 status: validTakeover ? "pending" : "unavailable",
                 retryCount: 0,
                 nextAt: validTakeover
-                  ? candidate.takeoverAt
+                  ? options.observeBeforeTakeover
+                    ? now()
+                    : candidate.takeoverAt
                   : Number.POSITIVE_INFINITY,
               }
         )

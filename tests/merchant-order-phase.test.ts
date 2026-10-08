@@ -573,6 +573,27 @@ describe("merchant order phase", () => {
       )
     ).toBe(false)
 
+    const receiverOnly = {
+      creditVerified: false,
+      merchantVerified: false,
+      commerceVerified: false,
+      feePending: false,
+      receiverSettlementObserved: true,
+      receiverCommerceObserved: true,
+    }
+    expect(getMerchantConversationQueue(routed, receiverOnly)).not.toBe(
+      "paid_fulfill"
+    )
+    expect(
+      getMerchantConversationStatusDisplay(routed, receiverOnly).label
+    ).toBe("Recipient receipt observed — verifying checkout")
+    expect(isMerchantConversationActiveFulfillment(routed, receiverOnly)).toBe(
+      false
+    )
+    expect(
+      isMerchantOrderPaid(getMerchantConversationState(routed, receiverOnly))
+    ).toBe(false)
+
     const merchantOnly = {
       creditVerified: true,
       merchantVerified: true,

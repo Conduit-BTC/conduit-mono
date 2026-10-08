@@ -5,6 +5,7 @@ import {
   hasCheckoutSparkInvoiceRecipient,
   hasCheckoutSparkInvoiceRecipientSettlement,
   verifyCheckoutSparkInvoiceRecipient,
+  projectCheckoutSparkMerchantRecipientSettlement,
   type CheckoutSparkInvoiceRecipientRecord,
 } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 import {
@@ -192,6 +193,44 @@ function fixture(address = "merchant@receiver.conduit.cash") {
 }
 
 describe("merchant saved invoice recipient verification", () => {
+  it("projects exact settled receiver evidence before takeover without inferring Spark credit or debits", async () => {
+    const context = fixture()
+    const original = JSON.stringify(context.input.state)
+    expect(context.input.now()).toBeLessThan(
+      context.input.state.plan.takeoverAt
+    )
+    expect(
+      projectCheckoutSparkMerchantRecipientSettlement(context.input.state, [])
+        .commerceVerified
+    ).toBe(false)
+    await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    expect(
+      projectCheckoutSparkMerchantRecipientSettlement(
+        context.input.state,
+        context.records
+      )
+    ).toEqual({
+      creditVerified: false,
+      merchantVerified: false,
+      commerceVerified: false,
+      feePending: false,
+      recipientUnverified: false,
+      receiverSettlementObserved: true,
+      receiverCommerceObserved: true,
+    })
+    expect(JSON.stringify(context.input.state)).toBe(original)
+    expect(
+      projectCheckoutSparkMerchantRecipientSettlement(context.input.state, [
+        { ...context.records[0]!, providerSettled: false },
+      ]).receiverSettlementObserved
+    ).toBe(false)
+    expect(
+      projectCheckoutSparkMerchantRecipientSettlement(context.input.state, [
+        { ...context.records[0]!, intentDigest: "f".repeat(64) },
+      ]).receiverSettlementObserved
+    ).toBe(false)
+  })
+
   it("verifies an approved ordinary receiver without the retired compatibility flag", async () => {
     const context = fixture()
     context.input.allowProviderCompatibility = false

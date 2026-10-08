@@ -140,6 +140,9 @@ export interface CheckoutSparkMerchantSettlementProjection {
   readonly commerceVerified: boolean
   readonly feePending: boolean
   readonly recipientUnverified?: boolean
+  /** Informational receiver receipts; never establish this checkout's debit. */
+  readonly receiverSettlementObserved?: boolean
+  readonly receiverCommerceObserved?: boolean
 }
 
 /** Only validated V3 recipient kinds determine the required commerce legs. */

@@ -75,6 +75,7 @@ export type MerchantCheckoutSparkProgressTransport = Pick<
   | "accountNetworkLocalStateRepository"
   | "relayAuthMethod"
   | "waitForSignerVisibility"
+  | "deliveryStore"
 >
 
 export function parseMerchantCheckoutSparkProgressDeliveryRecord(
@@ -421,7 +422,7 @@ export async function publishMerchantCheckoutSparkProgress(input: {
         snapshotId: payload.snapshotId,
         initialHandoffId: payload.initialHandoffId,
         rumorId: prepared.rumorId,
-        signedRecipientWrap: prepared.wrappedToRecipient.rawEvent(),
+        signedRecipientWrap: prepared.wrappedToRecipient,
         recordedAt: payload.recordedAt,
       })
       const exactRecord = JSON.stringify(record)

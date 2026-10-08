@@ -7,8 +7,13 @@
   "quantumRouterTrust": {
     "preview": {
       "receiverContracts": [],
-      "pricingUrl": null,
-      "pricingPublicKeys": []
+      "pricingUrl": "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing",
+      "pricingPublicKeys": [
+        {
+          "keyId": "preview-20261007-01",
+          "publicKey": "7d67f2698711a7b54187b613b66acb301af9d749b98f752cc7e2099145cc0dc8"
+        }
+      ]
     },
     "production": {
       "receiverContracts": [],
@@ -43,7 +48,7 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
         "livePresenceEnabled": true,
-        "quantumRouterEnabled": true
+        "quantumRouterEnabled": false
       }
     },
     "production": {
@@ -52,7 +57,7 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": false,
         "livePresenceEnabled": true,
-        "quantumRouterEnabled": true
+        "quantumRouterEnabled": false
       }
     },
     "staging": {

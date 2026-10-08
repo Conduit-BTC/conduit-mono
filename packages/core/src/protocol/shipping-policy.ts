@@ -681,6 +681,12 @@ const shippingPricingRateSchema = z.union([
       fiatSource: z
         .enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
         .optional(),
+      fiatSources: z
+        .record(
+          z.string().regex(/^[A-Z]{3}$/),
+          z.enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
+        )
+        .optional(),
     })
     .strict(),
   z.null(),

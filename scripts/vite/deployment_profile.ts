@@ -244,6 +244,24 @@ export function parsePagesProfiles(value: unknown): PagesProfilesFile {
   for (const name of ["preview", "production", "staging"] as const) {
     assertProfile(name, value.profiles[name])
   }
+  for (const name of ["preview", "production"] as const) {
+    const profile = value.profiles[name] as PublicDeploymentProfile
+    const trust = (
+      value.quantumRouterTrust as PagesProfilesFile["quantumRouterTrust"]
+    )[name]
+    if (
+      profile.publicFeatures.quantumRouterEnabled &&
+      !trust.receiverContracts.some(
+        (contract) =>
+          contract.qualification === "accepted" &&
+          contract.modes.includes("private")
+      )
+    ) {
+      throw new Error(
+        `Deployment profile ${name} cannot enable Quantum Router without a qualified private receiver.`
+      )
+    }
+  }
   return value as unknown as PagesProfilesFile
 }
 

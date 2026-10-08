@@ -1,10 +1,11 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import {
+  installPrivateInboxTestRead,
+  cleanupPrivateInboxTestReads,
+} from "./helpers/private-inbox"
 import { afterEach, describe, expect, it } from "bun:test"
-import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __resetFutureMarketHandoffTestState,
-  __setCommerceTestOverrides,
   buildFutureMarketPrivateRumor,
   buildFutureMarketReadyReceipt,
   orderSchema,
@@ -15,9 +16,9 @@ import { getMerchantOrderFulfillment } from "../apps/merchant/src/lib/order-phas
 import { verifyFutureEventMarketOrderAuthorization } from "../apps/merchant/src/lib/order-pickup-authorization"
 import { assertCreatedEventMarketPickupTerms } from "../apps/market/src/lib/order-pickup-retry"
 import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
-import { plainTestSigner } from "./helpers/plain-signer"
 
-afterEach(() => {
+afterEach(async () => {
+  await cleanupPrivateInboxTestReads()
   __resetCommerceTestOverrides()
   __resetFutureMarketHandoffTestState()
 })
@@ -84,7 +85,7 @@ describe("Event Market pickup with a digital order line", () => {
   })
 
   it("recovers the exact physical receipt when a digital line comes first", async () => {
-    const { order, merchant } = mixedOrder()
+    const { order, merchant, merchantSecret } = mixedOrder()
     const receipt = buildFutureMarketReadyReceipt({
       order,
       signedOrderEvidence: [],
@@ -92,36 +93,10 @@ describe("Event Market pickup with a digital order line", () => {
       releaseConfirmed: true,
     })
     const ready = buildFutureMarketPrivateRumor(receipt)
-    const relaySecret = generateSecretKey()
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () =>
-        plainTestSigner({
-          user: async () => ({ pubkey: merchant }),
-          sign: async () => "",
-        } as never),
-      resolveInboxRelayUrls: async () => ["wss://mixed-order.inbox.test"],
-      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-        events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: 250,
-                tags: [["p", merchant]],
-                content: ready.id!,
-              },
-              relaySecret
-            )
-          ),
-        ],
-        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-        successfulRelayUrls: [...(options?.relayUrls ?? [])],
-        failedRelayUrls: [],
-        cappedRelayUrls: [],
-      }),
-      giftUnwrap: async () => ready,
+    installPrivateInboxTestRead({
+      principalSecret: merchantSecret,
+      authorSecrets: [merchantSecret],
+      rumors: [ready],
     })
     const recovered = await readFutureMarketMerchantClaim({
       order,

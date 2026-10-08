@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner, NDKUser } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { wrapPrivateMessage } from "../packages/core/src/protocol/messaging"
-import { verifyEvent } from "nostr-tools/pure"
+import { getEventHash, verifyEvent } from "nostr-tools/pure"
 import {
   buildCheckoutSparkRecoveryRumor,
   createCheckoutSparkRecoveryPayload,
@@ -224,15 +224,20 @@ function recoveryPayload(
     : progressPayload(identity, input)
 }
 
-function serialize(rumor: NDKEvent): string {
-  return JSON.stringify(rumor.rawEvent())
+function serialize(
+  rumor: ReturnType<typeof buildCheckoutSparkRecoveryRumor>
+): string {
+  return JSON.stringify(rumor)
 }
 
 function capability(identity: GuestOrderSigningIdentity, now = () => NOW) {
   return createGuestCheckoutSparkRecoverySigner(identity, { now })
 }
 
-function encryptRumor(signer: NostrKeySigner, rumor: NDKEvent) {
+function encryptRumor(
+  signer: NostrKeySigner,
+  rumor: ReturnType<typeof buildCheckoutSparkRecoveryRumor>
+) {
   return signer.encryptNip44(merchant.pubkey, serialize(rumor))
 }
 
@@ -275,7 +280,7 @@ describe("bounded guest Spark recovery wrapping capability", () => {
         ["p", merchant.pubkey],
       ])
       expect(wrapped.pubkey).not.toBe(identity.pubkey)
-      expect(wrapped.verifySignature(false)).toBe(true)
+      expect(verifyEvent(wrapped)).toBe(true)
       expect(wrapped.content).not.toContain(MNEMONIC)
       expect(wrapped.content).not.toContain(ORDER_ID)
 
@@ -377,12 +382,14 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     "does not sign v%i %s recovery as kind %i directly",
     async (version, phase, kind) => {
       const { identity } = guest()
-      const rumor = buildCheckoutSparkRecoveryRumor(
-        recoveryPayload(identity, version, phase)
+      const rumor = structuredClone(
+        buildCheckoutSparkRecoveryRumor(
+          recoveryPayload(identity, version, phase)
+        )
       )
       rumor.kind = kind
       await expect(
-        capability(identity).signEvent(rumor.rawEvent() as UnsignedNostrEvent)
+        capability(identity).signEvent(rumor as UnsignedNostrEvent)
       ).rejects.toThrow()
     }
   )
@@ -396,7 +403,7 @@ describe("bounded guest Spark recovery wrapping capability", () => {
         identity.signer.signEvent(
           buildCheckoutSparkRecoveryRumor(
             recoveryPayload(identity, version, phase)
-          ).rawEvent() as UnsignedNostrEvent
+          ) as UnsignedNostrEvent
         )
       ).rejects.toThrow()
     }
@@ -497,11 +504,13 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     "rejects v%i %s with duplicate %s binding tags",
     async (version, phase, name) => {
       const { identity } = guest()
-      const rumor = buildCheckoutSparkRecoveryRumor(
-        recoveryPayload(identity, version, phase)
+      const rumor = structuredClone(
+        buildCheckoutSparkRecoveryRumor(
+          recoveryPayload(identity, version, phase)
+        )
       )
       rumor.tags.push([...rumor.tags.find((tag) => tag[0] === name)!])
-      rumor.id = rumor.getEventHash()
+      rumor.id = getEventHash(rumor)
       await expect(encryptRumor(capability(identity), rumor)).rejects.toThrow()
     }
   )
@@ -522,7 +531,7 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     async (version, phase, change) => {
       const { identity } = guest()
       const payload = recoveryPayload(identity, version, phase)
-      const rumor = buildCheckoutSparkRecoveryRumor(payload)
+      const rumor = structuredClone(buildCheckoutSparkRecoveryRumor(payload))
       if (change === "extra-tag") rumor.tags.push(["extra", "not-canonical"])
       if (change === "generic-order")
         rumor.tags.find((tag) => tag[0] === "type")![1] = "order"
@@ -536,7 +545,7 @@ describe("bounded guest Spark recovery wrapping capability", () => {
         })
       if (change === "noncanonical-content")
         rumor.content = JSON.stringify(payload, null, 2)
-      rumor.id = rumor.getEventHash()
+      rumor.id = getEventHash(rumor)
       await expect(encryptRumor(capability(identity), rumor)).rejects.toThrow()
     }
   )
@@ -557,7 +566,7 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     const signer = capability(identity)
     const ciphertext = await signer.encryptNip44(
       merchant.pubkey,
-      JSON.stringify({ ...rumor.rawEvent(), extra: "unrelated raw field" })
+      JSON.stringify({ ...rumor, extra: "unrelated raw field" })
     )
     const opened = await merchant.decrypt(
       new NDKUser({ pubkey: identity.pubkey }),

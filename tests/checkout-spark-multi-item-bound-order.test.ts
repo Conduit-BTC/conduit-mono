@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { NDKPrivateKeySigner, NDKUser } from "@nostr-dev-kit/ndk"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { wrapPrivateMessage } from "../packages/core/src/protocol/messaging"
 import { Buffer } from "node:buffer"
@@ -317,7 +317,7 @@ function fixture(
     // Transport and persistence are local stubs; construction and the separate
     // NIP-59 round trip below use the real application and crypto boundaries.
     publishOrder: async (...args) => {
-      const [rumor, , recipient, , options] = args
+      const [rumor, recipient, , options] = args
       prepareBuyerRumor(rumor, buyer.pubkey)
       assertStagedOrderLifecycleMatchesRumor(
         options!.orderLifecycle!,
@@ -364,7 +364,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
       async (shippingSats) => {
         const f = fixture(kind, shippingSats)
         await publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)
-        const [rumor, , , , options] = f.calls.published[0]!
+        const [rumor, , , options] = f.calls.published[0]!
         expect(options?.orderLifecycle).toMatchObject({
           itemSubtotalSats: 1_000,
           shippingCostSats: shippingSats * 2,
@@ -389,7 +389,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
         }
         const wrap = await wrapPrivateMessage(
           rumor,
-          new NDKUser({ pubkey: f.merchant.pubkey }),
+          { pubkey: f.merchant.pubkey },
           f.buyer.signer
         )
         const opened = await unwrapGiftWrap(wrap, f.merchant)
@@ -581,7 +581,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
       expect(f.calls.loads).toBe(1)
       expect(f.calls.published).toHaveLength(1)
       expect(f.calls.binds).toBe(1)
-      const [rumor, , recipient, , options] = f.calls.published[0]!
+      const [rumor, recipient, , options] = f.calls.published[0]!
       expect(recipient).toBe(f.merchant.pubkey)
       expect(rumor.sig).toBeUndefined()
       expect(rumor.tags).toContainEqual([...CHECKOUT_SPARK_ROUTER_ORDER_TAG])
@@ -619,7 +619,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
 
       const wrap = await wrapPrivateMessage(
         rumor,
-        new NDKUser({ pubkey: f.merchant.pubkey }),
+        { pubkey: f.merchant.pubkey },
         f.buyer.signer
       )
       expect(wrap.kind).toBe(EVENT_KINDS.GIFT_WRAP)

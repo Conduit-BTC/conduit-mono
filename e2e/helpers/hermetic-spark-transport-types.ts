@@ -11,6 +11,14 @@ export type WalletMethod = Exclude<
   "on" | "off" | "cleanup" | "openRetirementReader"
 >
 export type ReaderMethod = keyof CheckoutSparkNativeRetirementReader
+export const OBSERVATION_METHODS = [
+  "getIdentityPublicKey",
+  "getLightningReceiveRequest",
+  "getTransfer",
+  "getTransferFromSsp",
+  "getLightningSendRequest",
+] as const
+export type ObservationMethod = (typeof OBSERVATION_METHODS)[number]
 
 export type HermeticSparkRequest =
   | {
@@ -33,6 +41,19 @@ export type HermeticSparkRequest =
       args: unknown[]
     }
   | { type: "reader.close"; handle: string }
+  | {
+      type: "observation.challenge"
+      identityPublicKey: string
+      network: string
+    }
+  | { type: "observation.open"; challengeId: string; signature: string }
+  | {
+      type: "observation.call"
+      handle: string
+      method: ObservationMethod
+      args: unknown[]
+    }
+  | { type: "observation.close"; handle: string }
 
 export type HermeticSparkRequestFn = (
   command: HermeticSparkRequest

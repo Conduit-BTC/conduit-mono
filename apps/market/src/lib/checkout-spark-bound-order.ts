@@ -464,7 +464,7 @@ async function publishBoundOrderFromFrozenPlan(
   }
   const delivery = await (
     dependencies.publishOrder ?? publishBuyerOrderMessage
-  )(rumor, input.ndk, merchantPubkey, input.buyer, {
+  )(rumor, merchantPubkey, input.buyer, {
     accountPubkey: guest ? null : buyerPubkey,
     authenticatedPubkey: guest ? null : buyerPubkey,
     // Signing/route preparation can cross the event end. Guard first delivery,

@@ -1,4 +1,4 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { getEventHash } from "nostr-tools"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -6,8 +6,11 @@ import {
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
 import { EVENT_KINDS } from "./kinds"
-import { getNdk } from "./ndk"
-import { unwrapPrivateMessageEnvelope } from "./messaging"
+import {
+  unwrapPrivateMessageEnvelope,
+  type PrivateMessageEvent,
+  type PrivateMessageRumor,
+} from "./messaging"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import {
   isValidSignedPublicNostrEvent,
@@ -29,9 +32,9 @@ export interface CheckoutSparkMerchantProgressPayload {
 }
 
 export type CheckoutSparkMerchantProgressGiftUnwrap = (
-  event: NDKEvent,
+  event: PrivateMessageEvent,
   signer: NostrKeySigner
-) => Promise<NDKEvent | null>
+) => Promise<PrivateMessageEvent | null>
 
 export interface OpenCheckoutSparkMerchantProgressWrapResult {
   wrapId: string
@@ -176,27 +179,34 @@ function rumorTags(payload: CheckoutSparkMerchantProgressPayload): string[][] {
 
 export function buildCheckoutSparkMerchantProgressRumor(
   input: CheckoutSparkMerchantProgressPayload
-): NDKEvent {
+): PrivateMessageRumor {
   const payload = parseCheckoutSparkMerchantProgress(input)
-  const rumor = new NDKEvent(getNdk())
+  const rumor: PrivateMessageRumor = {
+    id: "",
+    pubkey: payload.merchantPubkey,
+    kind: EVENT_KINDS.ORDER,
+    created_at: Math.floor(payload.recordedAt / 1_000),
+    tags: [],
+    content: "",
+  }
   rumor.kind = EVENT_KINDS.ORDER
   rumor.pubkey = payload.merchantPubkey
   rumor.created_at = Math.floor(payload.recordedAt / 1_000)
   rumor.tags = rumorTags(payload)
   rumor.content = JSON.stringify(payload)
-  rumor.id = rumor.getEventHash()
+  rumor.id = getEventHash({ ...rumor, created_at: rumor.created_at! })
   return rumor
 }
 
 export function parseCheckoutSparkMerchantProgressRumor(
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
 ): CheckoutSparkMerchantProgressPayload {
   try {
     if (
       rumor.kind !== EVENT_KINDS.ORDER ||
       rumor.sig !== undefined ||
       !HEX_64.test(rumor.id) ||
-      rumor.id !== rumor.getEventHash()
+      rumor.id !== getEventHash({ ...rumor, created_at: rumor.created_at! })
     ) {
       throw new Error("Invalid rumor identity")
     }
@@ -240,7 +250,7 @@ export async function openCheckoutSparkMerchantProgressWrap(input: {
       throw new Error("Invalid recipient")
     }
     // The shared plain unwrap verifies the seal afresh without a decrypted cache.
-    const wrapped = new NDKEvent(undefined, wrap)
+    const wrapped = wrap
     const rumor = input.giftUnwrap
       ? await input.giftUnwrap(wrapped, input.signer)
       : await unwrapPrivateMessageEnvelope(wrapped, input.signer)

@@ -1,15 +1,23 @@
 # Merchant checkout reconciliation
 
-The capability-enabled Merchant recovery surface composes three separate sources
+The capability-enabled Merchant recovery surface composes separate sources
 of evidence. It is not a second payment engine.
 
 1. Declared-inbox discovery finds signed checkout recovery envelopes and the
    authenticated buyer order. An exact order witness binds the private saved
    plan to that order. Discovery does not initialize Spark or prove payment.
-2. After the signed shopper handoff time, an active, visible Merchant session
+2. As soon as authenticated order and source evidence is available, a bounded
+   read-only check can observe an exact ordinary receiver invoice settlement.
+   This does not initialize Spark, claim funds, confirm this checkout paid, or
+   unlock fulfillment. It is informational until native checkout evidence joins it.
+3. An isolated query-only adapter can read exact native funding and payout
+   evidence immediately, without calling wallet initialization or changing
+   privacy. Only jointly verified native debits and recipient attribution can
+   confirm commerce before handoff. Receiver receipts alone remain informational.
+4. After the signed shopper handoff time, an active, visible Merchant session
    checks the exact funding receive and existing frozen payout IDs. Opening the
    SDK can claim pending inbound funds, even when no outgoing payment is sent.
-3. Separate provider-attested facts, joined to device-local invoice-origin or
+5. Separate provider-attested facts, joined to device-local invoice-origin or
    independently verified receiving-provider evidence, project recipient
    payment truth into Merchant Orders and Home.
    Imported buyer progress, a funded wallet, and a generic order status are not
@@ -23,6 +31,24 @@ changed or removed candidate invalidates the old operation's result guard.
 Pending or unavailable work retries with bounded backoff. A retired wallet is
 not reopened. History-only mode stops repeated checks after verified commerce;
 automatic payout mode keeps an unfinished Conduit leg scheduled independently.
+
+The Merchant adapter explicitly opts into immediate receiver observation. The
+shared worker otherwise retains its handoff-first default. Pre-handoff retries
+are bounded and still wake at the frozen takeover boundary. Only independent
+receiver checks and the separate query-only native adapter can run early. Every
+claim-capable initialization, ordinary recovered-wallet history inspection,
+invoice preparation and send remains behind takeover.
+
+The immediate native adapter is source-audited against exactly Spark SDK 0.13.0.
+It uses only the public inert constructor with a prederived, exact-identity
+authentication signer and allowlisted getters; it never invokes initialization,
+sync, privacy mutation, leaf derivation, claims, invoices or sends. Upgrades must
+be re-audited and otherwise fail closed. The authenticated recovery callback
+rechecks the exact buyer order, frozen signed sources, wallet identity and saved
+revision. The shared credit and exact-invoice debit validators record independent
+financial facts only. No outgoing intent, payment-state transition, treasury
+collection or retirement is advanced. This source audit and offline operation
+traces do not establish a funded-provider or mobile lifecycle guarantee.
 
 A candidate whose next send lacks independent recipient evidence pauses with
 `recipient_unverified`; provider-paid history lacking recipient attribution
@@ -221,6 +247,21 @@ persistence; imported recovery hints cannot manufacture it. An unpaid issuance
 result or local origin alone cannot mark a bound recipient settled. See
 [receiver qualification and acceptance](checkout-spark-recipient-verification-compat.md).
 
+Receiver-only observations never set paid commerce, paid revenue, fulfillment
+readiness, fee completion or wallet retirement. A buyer can reuse an older paid
+invoice in another matching checkout; even valid receiver account and preimage
+evidence does not prove this checkout funded or debited that invoice. A fresh
+device may have no older plan to exclude locally. Exact native debit attribution
+is therefore still required for every required commerce recipient. The UI may
+show a recipient receipt observed while wallet verification remains pending;
+already jointly verified native and recipient facts remain paid immediately.
+
+The local observation projection requires the exact authenticated buyer-order
+witness and locally validated frozen sources. It does not persist empty display
+defaults as financial facts, advance outgoing intents, or expose receiver
+payloads in diagnostics. An ambiguous witness, changed plan or unsupported
+historical receiver cannot grant observation or payment authority.
+
 Transient attribution outages retry while exact funding/history observations
 continue. A verified required commerce payment remains terminal even if the
 optional fee's recipient is unverified; that fee-only exception remains visible
@@ -231,7 +272,8 @@ before funding; historical unbound imported invoices remain unverified. This
 does not introduce an application ACK or generic portable receipt protocol.
 
 Sources: [LUD-16 Lightning addresses](https://github.com/lnurl/luds/blob/luds/16.md),
-[LUD-06 LNURL-pay](https://github.com/lnurl/luds/blob/luds/06.md), and
+[LUD-06 LNURL-pay](https://github.com/lnurl/luds/blob/luds/06.md),
+[LUD-21 invoice verification](https://github.com/lnurl/luds/blob/luds/21.md), and
 [Spark Lightning payment semantics](https://docs.spark.money/api-reference/wallet/pay-lightning-invoice).
 
 ## Merchant-authored progress transport
@@ -516,8 +558,11 @@ existing signer, never a public privacy-filtered reader or exported credential.
 The exact wallet address, identity, and network must match the frozen plan.
 
 The success-only native collector requires two equal, complete, bounded transfer
-history scans with all observed transfers completed, every expected transfer
-present, no pending incoming transfers, and fresh zero available and owned funds.
+history scans before the funds observations and another matching equal pair
+afterward, with all observed transfers completed, every expected transfer present,
+no pending incoming transfers, and fresh zero available and owned funds. Newly
+completed or changed activity during funds reads rejects cleanup. The surrounding
+scans do not claim an atomic provider snapshot or close future wallet activity.
 Each native read is bounded. Locked or residual funds, unknown transfer states,
 truncated history, provider failure, or lost authority retain recovery. These
 observations do not establish the absence of future wallet activity, nor do they

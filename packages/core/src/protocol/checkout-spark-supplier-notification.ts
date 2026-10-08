@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -23,6 +22,7 @@ import {
   buildDirectMessageRumor,
   publishPrivateMessage,
   type PublishPrivateMessageInput,
+  type PrivateMessageEvent,
 } from "./messaging"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
@@ -101,6 +101,7 @@ export type CheckoutSparkSupplierNotificationTransport = Pick<
   | "resolveInboxRelays"
   | "inspectOwnInboxReadiness"
   | "giftWrapFn"
+  | "deliveryStore"
   | "publishFn"
   | "accountNetworkLocalStateRepository"
   | "relayAuthMethod"
@@ -233,7 +234,7 @@ export function getCheckoutSparkSupplierNotifications(
 
 export function buildCheckoutSparkSupplierNotificationRumor(
   notification: CheckoutSparkSupplierNotification
-): NDKEvent {
+): PrivateMessageEvent {
   if (
     !notification ||
     Object.keys(notification).length !== 8 ||
@@ -385,6 +386,9 @@ export async function publishRetainedCheckoutSparkSupplierNotification(input: {
         signer: input.signer,
         rumorKind: 14,
         selfCopy: true,
+        // This domain outbox retains both exact ciphertexts before any relay
+        // write; ordinary delivery may otherwise defer the optional self-wrap.
+        requireSelfWrap: true,
         shouldContinue: input.shouldContinue,
         signerInteraction: "external",
         onWrapped: async (prepared) => {
@@ -394,11 +398,8 @@ export async function publishRetainedCheckoutSparkSupplierNotification(input: {
               {
                 notification,
                 rumorId: prepared.rumorId,
-                signedRecipientWrap:
-                  prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
-                signedSenderWrap:
-                  (prepared.wrappedToSelf?.rawEvent() as SignedPublicNostrEvent) ??
-                  null,
+                signedRecipientWrap: prepared.wrappedToRecipient,
+                signedSenderWrap: prepared.wrappedToSelf ?? null,
               },
               assertCurrent,
               input.plan

@@ -120,6 +120,42 @@ function binding(paid: readonly string[] = []): MerchantOrderSettlementBinding {
 }
 
 describe("exact merchant order settlement overlay", () => {
+  it("shows exact witnessed receiver observations without confirming commerce or manufacturing Spark facts", () => {
+    const observed = {
+      witness,
+      settlement: { ...settlement(), credit: null },
+      receiverSettlement: {
+        creditVerified: false,
+        merchantVerified: false,
+        commerceVerified: false,
+        feePending: false,
+        recipientUnverified: false,
+        receiverSettlementObserved: true,
+        receiverCommerceObserved: true,
+      },
+    }
+    expect(
+      getCheckoutSparkOrderSettlement(conversation, [observed])
+    ).toMatchObject({
+      creditVerified: false,
+      merchantVerified: false,
+      commerceVerified: false,
+      feePending: false,
+      receiverSettlementObserved: true,
+      receiverCommerceObserved: true,
+    })
+    expect(
+      getCheckoutSparkOrderSettlementRecord(conversation, [observed])
+    ).toEqual(observed.settlement)
+    expect(observed.settlement.paidLegs).toEqual([])
+    expect(
+      getCheckoutSparkOrderSettlement(
+        { ...conversation, buyerPubkey: "c".repeat(64) },
+        [observed]
+      )
+    ).toBeNull()
+  })
+
   it("keeps provider-paid imported records visible without marking commerce verified", () => {
     const verified = binding([merchantLeg, supplierLeg])
     const imported = {

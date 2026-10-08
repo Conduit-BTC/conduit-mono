@@ -441,22 +441,24 @@ async function readCompleteHistory(
 async function readStableHistoryScope(
   input: CollectCheckoutSparkNativeRetirementEvidenceInput,
   closedReturns: ReadonlyMap<string, number>
-): Promise<boolean> {
+): Promise<string | null> {
   const first = await readCompleteHistory(input, closedReturns)
-  if (!first) return false
+  if (!first) return null
   const firstSwaps = input.requireExactHistoryScope
     ? await proveInternalSwapScope(input, first, closedReturns)
     : []
-  if (!firstSwaps) return false
+  if (!firstSwaps) return null
   const second = await readCompleteHistory(input, closedReturns)
-  if (!second || JSON.stringify(first) !== JSON.stringify(second)) return false
+  if (!second || JSON.stringify(first) !== JSON.stringify(second)) return null
   const secondSwaps = input.requireExactHistoryScope
     ? await proveInternalSwapScope(input, second, closedReturns)
     : []
-  return (
-    secondSwaps !== null &&
-    JSON.stringify(firstSwaps) === JSON.stringify(secondSwaps)
+  if (
+    secondSwaps === null ||
+    JSON.stringify(firstSwaps) !== JSON.stringify(secondSwaps)
   )
+    return null
+  return JSON.stringify({ history: second, swaps: secondSwaps })
 }
 
 /** Exact checkout-attributed pre-send scope, not a wallet sweep authorization. */
@@ -590,7 +592,8 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
       return null
     const reader = input.authenticatedReader
-    if (!(await readStableHistoryScope(input, closedReturns))) return null
+    const historyScope = await readStableHistoryScope(input, closedReturns)
+    if (historyScope === null) return null
     const available = await guardedRead(input, () =>
       reader.getAvailableBalance(input.sparkAddress)
     )
@@ -606,6 +609,11 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
       !Array.isArray(pending) ||
       pending.length !== 0
     )
+      return null
+    // Catch activity that completed between history and balance reads. This
+    // remains a bounded observation, not an atomic provider closure or proof
+    // that future deposits cannot arrive.
+    if ((await readStableHistoryScope(input, closedReturns)) !== historyScope)
       return null
     const observedAt = input.now()
     if (

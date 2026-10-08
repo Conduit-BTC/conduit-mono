@@ -8,12 +8,17 @@ export type SourcePriceQuote = {
   normalizedCurrency: string
 }
 
+export type PricingFiatSource =
+  "frankfurter" | "exchange-rate-api" | "env" | "mempool"
+
 export type BtcUsdRateQuote = {
   rate: number
   fetchedAt: number
   source: "env" | "mempool" | "coinbase"
   fiatUsdRates?: Record<string, number>
-  fiatSource?: "frankfurter" | "exchange-rate-api" | "env" | "mempool"
+  fiatSource?: PricingFiatSource
+  /** Present for mixed feeds; binds every conversion to its actual provider. */
+  fiatSources?: Record<string, PricingFiatSource>
 }
 
 export type PricingRateInput = number | BtcUsdRateQuote | null

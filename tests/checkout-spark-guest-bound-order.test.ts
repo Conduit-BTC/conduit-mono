@@ -191,7 +191,7 @@ function fixture() {
       return prepared
     },
     publishOrder: async (...args) => {
-      const [rumor, , recipient, , options] = args
+      const [rumor, recipient, , options] = args
       prepareBuyerRumor(rumor, identity.pubkey)
       assertStagedOrderLifecycleMatchesRumor(
         options!.orderLifecycle!,
@@ -241,7 +241,7 @@ describe("guest settled checkout bound order", () => {
     expect(result.delivery.localCacheError).toBeNull()
     expect(f.calls.published).toHaveLength(1)
     expect(f.calls.binds).toBe(1)
-    const [event, , recipient, buyer, options] = f.calls.published[0]!
+    const [event, recipient, buyer, options] = f.calls.published[0]!
     expect(recipient).toBe(f.merchant.pubkey)
     expect(buyer).toMatchObject(f.identity)
     expect(event.sig).toBeUndefined()

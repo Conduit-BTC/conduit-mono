@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
@@ -18,6 +18,7 @@ import {
   createCheckoutSparkSettledRecoveryPayload,
   createCheckoutSparkSettledRecoveryProgressPayload,
   createMerchantCheckoutSparkRecoveryDiscovery,
+  createPrivateMessageRumor,
   deriveCheckoutSparkSettledTransferId,
   DexieCheckoutSparkSettledRepository,
   freezeCheckoutSparkSettledPlan,
@@ -29,13 +30,19 @@ import {
   type CheckoutSparkMerchantProgressPayload,
   type CheckoutSparkSettledReconciliation,
   type MerchantCheckoutSparkRecoveryCandidate,
+  type PrivateMessageEvent,
 } from "@conduit/core"
 import { ConduitDB } from "@conduit/core/db"
 import {
   __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
-import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
+import type {
+  ProtectedInboxReadResult,
+  ReadProtectedInboxOptions,
+} from "../packages/core/src/protocol/protected-inbox-read"
+import type { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -207,7 +214,7 @@ function fixtures(withSources = false) {
   }
 }
 
-function entry(rumor: NDKEvent, second: number, suffix = "") {
+function entry(rumor: PrivateMessageEvent, second: number, suffix = "") {
   const event = finalizeEvent(
     {
       kind: 1_059,
@@ -221,6 +228,66 @@ function entry(rumor: NDKEvent, second: number, suffix = "") {
 }
 type Entry = ReturnType<typeof entry>
 
+// This suite tests signed authority/selection with opaque bounded ciphertext.
+// Production ciphertext retention and decryption are covered by durable-inbox.
+function fixtureInboxOwner(): CommerceInbox {
+  let observed: Entry["event"][] = []
+  let sources: string[] = []
+  let complete = false
+  let coverage: ProtectedInboxReadResult["coverage"] = "unavailable"
+  return {
+    async loadOlder(options: {
+      relayUrls: string[]
+      read?: (
+        input: ReadProtectedInboxOptions
+      ) => Promise<ProtectedInboxReadResult>
+    }) {
+      const read = await options.read?.({
+        principalPubkey: MERCHANT,
+        relayUrls: options.relayUrls,
+        ownerSelectedRelayUrls: options.relayUrls,
+        appRelayUrls: [],
+        limit: 400,
+        authorization: getProtectedReadAuthorization(MERCHANT),
+      })
+      observed = read?.events ?? []
+      sources = options.relayUrls
+      coverage = read?.coverage ?? "unavailable"
+      complete =
+        read?.coverage === "complete" &&
+        read.relayResult.failedCount === 0 &&
+        read.relayResult.relays.every(
+          (row) =>
+            row.eventCount < 400 &&
+            row.malformedCount === 0 &&
+            row.unusableCount === 0
+        )
+    },
+    async checkoutRecoveryDescriptors() {
+      return observed.map((event) => ({ wrapId: event.id }))
+    },
+    store: {
+      key: (logical: string) => logical,
+      wrappers: async () =>
+        observed.map((event) => ({ event, sources, state: "machine" })),
+      database: {
+        commerceInboxRanges: {
+          where: () => ({
+            equals: () => ({
+              toArray: async () =>
+                sources.map((relay) => ({
+                  id: `${relay}:nip17`,
+                  status: complete ? "source_eose" : coverage,
+                  pageCount: 1,
+                })),
+            }),
+          }),
+        },
+      },
+    },
+  } as unknown as CommerceInbox
+}
+
 function protectedRead(events: Entry["event"][]): ProtectedInboxReadResult {
   return {
     events,
@@ -233,7 +300,7 @@ function protectedRead(events: Entry["event"][]): ProtectedInboxReadResult {
     },
     relayResult: {
       status: "success",
-      observations: [],
+      observations: [{ type: "eose", relayIndex: 0 }],
       relays: [
         {
           relayIndex: 0,
@@ -292,44 +359,43 @@ function inbox(
 }
 
 function orderRumor() {
-  const rumor = new NDKEvent()
-  rumor.kind = 16
-  rumor.pubkey = BUYER
-  rumor.created_at = CREATED_AT / 1_000
-  rumor.tags = [
-    ["p", MERCHANT],
-    ["type", "order"],
-    ["order", "merchant-progress-inbox-order"],
-    ["amount", "1000"],
-    ["currency", "SATS"],
-    ["item", `30402:${MERCHANT}:progress-inbox-fixture`, "1"],
-    [...CHECKOUT_SPARK_ROUTER_ORDER_TAG],
-  ]
-  rumor.content = JSON.stringify({
-    id: "merchant-progress-inbox-order",
-    buyerPubkey: BUYER,
-    buyerIdentityKind: "signed_in",
-    merchantPubkey: MERCHANT,
-    items: [
-      {
-        productId: `30402:${MERCHANT}:progress-inbox-fixture`,
-        format: "digital",
-        fulfillment: { type: "digital" },
-        quantity: 1,
-        priceAtPurchase: 1000,
-        currency: "SATS",
-        shippingCostSats: 0,
-      },
+  return createPrivateMessageRumor({
+    kind: 16,
+    pubkey: BUYER,
+    created_at: CREATED_AT / 1_000,
+    tags: [
+      ["p", MERCHANT],
+      ["type", "order"],
+      ["order", "merchant-progress-inbox-order"],
+      ["amount", "1000"],
+      ["currency", "SATS"],
+      ["item", `30402:${MERCHANT}:progress-inbox-fixture`, "1"],
+      [...CHECKOUT_SPARK_ROUTER_ORDER_TAG],
     ],
-    subtotal: 1000,
-    currency: "SATS",
-    shippingCostSats: 0,
-    shippingCostStatus: "not_required",
-    createdAt: CREATED_AT,
-    note: "private full-order note",
+    content: JSON.stringify({
+      id: "merchant-progress-inbox-order",
+      buyerPubkey: BUYER,
+      buyerIdentityKind: "signed_in",
+      merchantPubkey: MERCHANT,
+      items: [
+        {
+          productId: `30402:${MERCHANT}:progress-inbox-fixture`,
+          format: "digital",
+          fulfillment: { type: "digital" },
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+          shippingCostSats: 0,
+        },
+      ],
+      subtotal: 1000,
+      currency: "SATS",
+      shippingCostSats: 0,
+      shippingCostStatus: "not_required",
+      createdAt: CREATED_AT,
+      note: "private full-order note",
+    }),
   })
-  rumor.id = rumor.getEventHash()
-  return rumor
 }
 
 function progressEntry(
@@ -407,6 +473,7 @@ beforeEach(() => {
     () => true
   )
   __setCommerceTestOverrides({
+    getCommerceInbox: () => fixtureInboxOwner(),
     checkoutSparkSettledRepository: new DexieCheckoutSparkSettledRepository(
       sourceDatabase
     ),
@@ -512,7 +579,13 @@ describe("Merchant-authored progress inbox integration", () => {
     const merchant = progressEntry(fixture.progress)
     const unrelated = Array.from({ length: 49 }, (_, index) =>
       entry(
-        new NDKEvent(undefined, { kind: 14, tags: [], content: "ordinary" }),
+        createPrivateMessageRumor({
+          kind: 14,
+          pubkey: BUYER,
+          created_at: CREATED_AT / 1_000,
+          tags: [],
+          content: "ordinary",
+        }),
         30 + index
       )
     )

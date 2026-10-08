@@ -90,6 +90,7 @@ export type CheckoutPricingIntent =
         fetchedAt: number
         source: BtcUsdRateQuote["source"]
         fiatSource?: BtcUsdRateQuote["fiatSource"]
+        fiatSources?: BtcUsdRateQuote["fiatSources"]
         fiatUsdRates?: BtcUsdRateQuote["fiatUsdRates"]
       }
       approximate: boolean
@@ -481,6 +482,9 @@ export function buildCheckoutPricingIntent(
           fetchedAt: rateInput.fetchedAt,
           source: rateInput.source,
           fiatSource: rateInput.fiatSource,
+          ...(rateInput.fiatSources
+            ? { fiatSources: { ...rateInput.fiatSources } }
+            : {}),
           fiatUsdRates: rateInput.fiatUsdRates
             ? { ...rateInput.fiatUsdRates }
             : undefined,

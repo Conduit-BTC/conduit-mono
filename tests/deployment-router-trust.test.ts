@@ -8,6 +8,7 @@ import {
   createPublicDeploymentManifest,
   loadPagesProfiles,
   resolveDeploymentProfile,
+  parsePagesProfiles,
   type ResolvedDeploymentProfile,
 } from "../scripts/vite/deployment_profile"
 
@@ -20,6 +21,7 @@ const HISTORICAL = getCheckoutSparkPricingAuthorityPublicKey(
 function retainedTrustProfile(name: "preview" | "production" = "preview") {
   const file = structuredClone(loadPagesProfiles())
   const policy = file.quantumRouterTrust[name]
+  policy.pricingUrl = null
   policy.receiverContracts = [
     {
       schemaVersion: 1,
@@ -116,6 +118,25 @@ async function compiledCore(
 }
 
 describe("managed router public trust configuration", () => {
+  it("rejects global activation without an accepted ordinary receiver", () => {
+    const file = retainedTrustProfile()
+    file.profiles.preview.publicFeatures.quantumRouterEnabled = true
+    expect(() => parsePagesProfiles(file)).toThrow(
+      "without a qualified private receiver"
+    )
+    file.quantumRouterTrust.preview.receiverContracts[0] = {
+      ...file.quantumRouterTrust.preview.receiverContracts[0]!,
+      qualification: "accepted",
+    }
+    expect(
+      parsePagesProfiles(file).profiles.preview.publicFeatures
+        .quantumRouterEnabled
+    ).toBe(true)
+    file.profiles.production.publicFeatures.quantumRouterEnabled = true
+    expect(() => parsePagesProfiles(file)).toThrow(
+      "production cannot enable Quantum Router"
+    )
+  })
   it("keeps code-owned defaults explicitly inactive in every managed profile", () => {
     const file = loadPagesProfiles()
     expect(Object.keys(file.quantumRouterTrust).sort()).toEqual([
@@ -125,16 +146,33 @@ describe("managed router public trust configuration", () => {
     for (const name of ["preview", "production"] as const) {
       const policy = file.quantumRouterTrust[name]
       expect(policy.receiverContracts.length).toBe(0)
-      expect(policy.pricingPublicKeys.length).toBe(0)
-      expect(policy.pricingUrl === null).toBe(true)
+      expect(file.profiles[name].publicFeatures.quantumRouterEnabled).toBe(
+        false
+      )
+      if (name === "preview") {
+        expect(policy.pricingUrl).toBe(
+          "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing"
+        )
+        expect(policy.pricingPublicKeys.map((entry) => entry.keyId)).toEqual([
+          "preview-20261007-01",
+        ])
+      } else {
+        expect(policy.pricingPublicKeys.length).toBe(0)
+        expect(policy.pricingUrl === null).toBe(true)
+      }
     }
     for (const name of ["preview", "production", "staging"] as const) {
       const profile = resolveDeploymentProfile({
         CONDUIT_DEPLOYMENT_PROFILE: name,
       })
-      expect(
-        Object.values(profile.quantumRouterTrust).every((value) => value === "")
-      ).toBe(true)
+      expect(profile.quantumRouterTrust.receiverContracts).toBe("")
+      if (name !== "preview") {
+        expect(
+          Object.values(profile.quantumRouterTrust).every(
+            (value) => value === ""
+          )
+        ).toBe(true)
+      }
       expect(
         profile.quantumRouterTrustDigest ===
           checkoutSparkPublicTrustDigest(profile.quantumRouterTrust)

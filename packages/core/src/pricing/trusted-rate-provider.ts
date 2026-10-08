@@ -11,6 +11,8 @@ type FiatUsdRates = Record<string, number>
 
 export type TrustedPricingRateOptions = {
   requiredFiatCurrencies?: readonly string[]
+  /** A common feed may request broad coverage without failing unrelated prices. */
+  preferredFiatCurrencies?: readonly string[]
   includeFiatRates?: boolean
   fetchImpl?: typeof fetch
   nowMs?: () => number
@@ -64,6 +66,8 @@ async function fetchJsonRecord(
 ): Promise<Record<string, unknown>> {
   const response = await fetchImpl(url, {
     headers: { accept: "application/json" },
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!response.ok) {
@@ -120,6 +124,13 @@ async function fetchMempoolQuote(
     source: "mempool",
     fiatUsdRates,
     fiatSource: fiatUsdRates ? "mempool" : undefined,
+    ...(fiatUsdRates
+      ? {
+          fiatSources: Object.fromEntries(
+            Object.keys(fiatUsdRates).map((currency) => [currency, "mempool"])
+          ) as NonNullable<BtcUsdRateQuote["fiatSources"]>,
+        }
+      : {}),
   }
 }
 
@@ -134,7 +145,7 @@ async function fetchCoinbaseQuote(
     data && typeof data === "object" && !Array.isArray(data)
       ? (data as Record<string, unknown>).amount
       : null
-  const rate = typeof amount === "string" ? Number.parseFloat(amount) : NaN
+  const rate = typeof amount === "string" ? Number(amount) : NaN
   if (!Number.isFinite(rate) || rate <= 0) {
     throw new Error("Pricing provider returned an invalid BTC/USD rate.")
   }
@@ -148,58 +159,53 @@ function unitsPerUsdToUsdPerUnit(value: unknown): number | null {
 }
 
 async function fetchFiatUsdRates(
+  quote: BtcUsdRateQuote,
   fetchImpl: typeof fetch,
-  timeoutMs: number
-): Promise<{
-  rates: FiatUsdRates
-  source: NonNullable<BtcUsdRateQuote["fiatSource"]>
-}> {
-  try {
-    const json = await fetchJsonRecord(
-      FRANKFURTER_USD_URL,
-      fetchImpl,
-      timeoutMs
-    )
-    const rawRates =
-      json.rates && typeof json.rates === "object" && !Array.isArray(json.rates)
-        ? (json.rates as Record<string, unknown>)
-        : {}
-    const rates = normalizeFiatRates(
-      Object.entries(rawRates).reduce<FiatUsdRates>(
-        (accumulator, [currency, value]) => {
-          const rate = unitsPerUsdToUsdPerUnit(value)
-          if (rate) accumulator[currency] = rate
-          return accumulator
-        },
-        {}
-      )
-    )
-    if (rates) return { rates, source: "frankfurter" }
-  } catch {
-    // Continue to the independent fallback provider.
+  timeoutMs: number,
+  desiredCurrencies: readonly string[]
+): Promise<BtcUsdRateQuote> {
+  const rates: FiatUsdRates = { ...quote.fiatUsdRates }
+  const sources: NonNullable<BtcUsdRateQuote["fiatSources"]> = {
+    ...quote.fiatSources,
   }
-
-  const json = await fetchJsonRecord(
-    EXCHANGE_RATE_USD_URL,
-    fetchImpl,
-    timeoutMs
-  )
-  const rawRates =
-    json.rates && typeof json.rates === "object" && !Array.isArray(json.rates)
-      ? (json.rates as Record<string, unknown>)
-      : {}
-  const rates = normalizeFiatRates(
-    Object.entries(rawRates).reduce<FiatUsdRates>(
-      (accumulator, [currency, value]) => {
-        const rate = unitsPerUsdToUsdPerUnit(value)
-        if (rate) accumulator[currency] = rate
-        return accumulator
-      },
-      {}
-    )
-  )
-  if (!rates) throw new Error("Pricing provider returned invalid fiat rates.")
-  return { rates, source: "exchange-rate-api" }
+  let fiatSource = quote.fiatSource
+  const providers = [
+    { url: FRANKFURTER_USD_URL, source: "frankfurter" },
+    { url: EXCHANGE_RATE_USD_URL, source: "exchange-rate-api" },
+  ] as const
+  for (const provider of providers) {
+    try {
+      const json = await fetchJsonRecord(provider.url, fetchImpl, timeoutMs)
+      const rawRates =
+        json.rates &&
+        typeof json.rates === "object" &&
+        !Array.isArray(json.rates)
+          ? (json.rates as Record<string, unknown>)
+          : {}
+      const normalized = normalizeFiatRates(
+        Object.fromEntries(
+          Object.entries(rawRates).flatMap(([currency, value]) => {
+            const rate = unitsPerUsdToUsdPerUnit(value)
+            return rate === null ? [] : [[currency, rate]]
+          })
+        )
+      )
+      if (!normalized) continue
+      for (const [currency, rate] of Object.entries(normalized)) {
+        // Earlier valid conversions remain authoritative, not overwritten.
+        if (rates[currency] !== undefined) continue
+        rates[currency] = rate
+        sources[currency] = provider.source
+        fiatSource = provider.source
+      }
+      if (hasRequiredRates(rates, desiredCurrencies)) break
+    } catch {
+      // A missing currency, timeout or outage still permits the next provider.
+    }
+  }
+  return Object.keys(rates).length
+    ? { ...quote, fiatUsdRates: rates, fiatSources: sources, fiatSource }
+    : quote
 }
 
 export async function fetchTrustedPricingRateQuote(
@@ -218,6 +224,10 @@ export async function fetchTrustedPricingRateQuote(
   const requiredCurrencies = normalizeRequiredCurrencies(
     options.requiredFiatCurrencies ?? []
   )
+  const desiredCurrencies = normalizeRequiredCurrencies([
+    ...requiredCurrencies,
+    ...(options.preferredFiatCurrencies ?? []),
+  ])
   let quote: BtcUsdRateQuote
   try {
     quote = await fetchMempoolQuote(fetchImpl, timeoutMs, fetchedAt)
@@ -225,35 +235,17 @@ export async function fetchTrustedPricingRateQuote(
     quote = await fetchCoinbaseQuote(fetchImpl, timeoutMs, fetchedAt)
   }
 
-  const needsFiatRates =
-    options.includeFiatRates === true ||
-    !hasRequiredRates(quote.fiatUsdRates, requiredCurrencies)
   if (
-    needsFiatRates &&
-    (options.includeFiatRates === true || quote.fiatSource !== "mempool")
+    options.includeFiatRates === true ||
+    !hasRequiredRates(quote.fiatUsdRates, desiredCurrencies)
   ) {
-    try {
-      const fiat = await fetchFiatUsdRates(fetchImpl, timeoutMs)
-      quote = {
-        ...quote,
-        fiatUsdRates: { ...quote.fiatUsdRates, ...fiat.rates },
-        fiatSource: fiat.source,
-      }
-    } catch (error) {
-      if (requiredCurrencies.length > 0) throw error
-    }
-  } else if (
-    requiredCurrencies.length > 0 &&
-    !hasRequiredRates(quote.fiatUsdRates, requiredCurrencies)
-  ) {
-    const fiat = await fetchFiatUsdRates(fetchImpl, timeoutMs)
-    quote = {
-      ...quote,
-      fiatUsdRates: fiat.rates,
-      fiatSource: fiat.source,
-    }
+    quote = await fetchFiatUsdRates(
+      quote,
+      fetchImpl,
+      timeoutMs,
+      desiredCurrencies
+    )
   }
-
   if (!hasRequiredRates(quote.fiatUsdRates, requiredCurrencies)) {
     throw new Error("Required fiat conversion rates are unavailable.")
   }

@@ -508,13 +508,7 @@ describe("settled preparation phase recovery", () => {
                   now: () => time,
                   loadSettledFunding: loadAuthorized,
                   bindBuyerOrder: repository.bindBuyerOrder.bind(repository),
-                  publishOrder: async (
-                    rumor,
-                    _ndk,
-                    recipient,
-                    _buyer,
-                    options
-                  ) => {
+                  publishOrder: async (rumor, recipient, _buyer, options) => {
                     prepareBuyerRumor(rumor, f.signer.pubkey)
                     const wrap = await wrapPrivateMessage(
                       rumor,
@@ -536,8 +530,7 @@ describe("settled preparation phase recovery", () => {
                         leaseOwner: "synthetic-late-funding",
                         prepared: {
                           rumorId: rumor.id,
-                          signedRecipientWrap:
-                            wrap.rawEvent() as SignedPublicNostrEvent,
+                          signedRecipientWrap: wrap as SignedPublicNostrEvent,
                           route: "declared_inbox",
                           routingAuthority: {
                             eventId: declaration.id,
@@ -835,20 +828,14 @@ describe("settled preparation phase recovery", () => {
                       recoveryStorage: storage,
                       repository,
                     }),
-                  publishOrder: async (
-                    rumor,
-                    _ndk,
-                    recipient,
-                    buyer,
-                    options
-                  ) => {
+                  publishOrder: async (rumor, recipient, buyer, options) => {
                     prepareBuyerRumor(rumor, f.signer.pubkey)
                     const wrap = await wrapPrivateMessage(
                       rumor,
                       new NDKUser({ pubkey: recipient }),
                       f.signer
                     )
-                    signedOrder = wrap.rawEvent() as SignedPublicNostrEvent
+                    signedOrder = wrap as SignedPublicNostrEvent
                     const declaration = finalizeEvent(
                       {
                         kind: 10_050,

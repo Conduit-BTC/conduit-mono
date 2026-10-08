@@ -715,10 +715,17 @@ function VerificationRunStatus({
   }
   if (run.verified > 0) {
     return (
-      <p className="text-sm text-[var(--success)]">
-        Verified and advanced {run.verified} paid order
-        {run.verified === 1 ? "" : "s"}.
-      </p>
+      <div className="space-y-1 text-sm">
+        <p className="text-[var(--success)]">
+          Verified and advanced {run.verified} paid order
+          {run.verified === 1 ? "" : "s"}.
+        </p>
+        {run.message && (
+          <p role="status" className="text-[var(--warning)]">
+            {run.message}
+          </p>
+        )}
+      </div>
     )
   }
   if (run.checked > 0) {

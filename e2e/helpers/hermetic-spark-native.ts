@@ -9,6 +9,7 @@ import type {
   SparkNativeModule,
   SparkNativeWallet,
 } from "../../apps/market/src/lib/spark-sdk"
+import type { ObservationMethod } from "./hermetic-spark-transport-types"
 
 type NativeReceive = Awaited<
   ReturnType<SparkNativeWallet["createLightningInvoice"]>
@@ -138,6 +139,18 @@ export function createHermeticSparkNative(input: {
     }) {
       const account = await getAccount(request)
       return account.openReader()
+    },
+    /** The transport verifies signer possession; never initializes a wallet. */
+    openAuthenticatedObservation(request: {
+      identityPublicKey: string
+      network: string
+    }) {
+      if (request.network !== network) unsupported()
+      const matches = [...accounts.values()].filter(
+        (account) => account.identityPublicKey === request.identityPublicKey
+      )
+      if (matches.length !== 1) unsupported()
+      return matches[0]!.native.openObservation()
     },
     control: {
       forIdentity(identityPublicKey: string) {
@@ -534,6 +547,8 @@ function createHermeticWalletNative(input: {
             totalValue: debit,
             type: "LIGHTNING",
             transferDirection: "OUTGOING",
+            senderIdentityPublicKey: identityPublicKey,
+            senders: [{ identityPublicKey }],
             userRequest: completed,
           },
           transfer: {
@@ -564,9 +579,49 @@ function createHermeticWalletNative(input: {
       },
     }
   }
+  function openObservation(): Pick<
+    SparkNativeWallet,
+    ObservationMethod | "cleanup"
+  > {
+    let closed = false
+    const assertOpen = () => {
+      if (closed) throw new Error("Hermetic Spark observation is closed")
+    }
+    return {
+      async getIdentityPublicKey() {
+        assertOpen()
+        return identityPublicKey
+      },
+      async getLightningReceiveRequest(id) {
+        assertOpen()
+        return receive?.id === id ? structuredClone(receive) : null
+      },
+      async getTransfer(id) {
+        assertOpen()
+        const saved = history().find((transfer) => transfer.id === id)
+        return saved ? structuredClone(saved) : undefined
+      },
+      async getTransferFromSsp(id) {
+        assertOpen()
+        const saved = extraSspTransfers.get(id) ?? outgoing.get(id)?.transfer
+        return saved ? structuredClone(saved) : undefined
+      },
+      async getLightningSendRequest(id) {
+        assertOpen()
+        const saved = [...outgoing.values()].find(
+          (row) => row.request.id === id
+        )
+        return saved ? structuredClone(saved.request) : null
+      },
+      async cleanup() {
+        closed = true
+      },
+    }
+  }
   return {
     openWallet,
     openReader,
+    openObservation,
     control: {
       setNativeCompletion(completed: boolean) {
         nativeCompleted = completed
@@ -681,6 +736,8 @@ function createHermeticWalletNative(input: {
             totalValue: debit,
             type: "LIGHTNING",
             transferDirection: "OUTGOING",
+            senderIdentityPublicKey: identityPublicKey,
+            senders: [{ identityPublicKey }],
             status: "TRANSFER_STATUS_RETURNED",
             userRequest,
           },

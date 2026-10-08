@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
-import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { wrapPrivateMessage } from "../packages/core/src/protocol/messaging"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
@@ -370,8 +370,8 @@ describe("offline guest supplier settled checkout composition", () => {
                   now: () => now,
                   loadSettledFunding: loadAuthorized,
                   bindBuyerOrder: repository.bindBuyerOrder.bind(repository),
-                  publishOrder: (rumor, ndk, merchant, buyer, options) =>
-                    publishBuyerOrderMessage(rumor, ndk, merchant, buyer, {
+                  publishOrder: (rumor, merchant, buyer, options) =>
+                    publishBuyerOrderMessage(rumor, merchant, buyer, {
                       ...options,
                       orderRelayDeliveryRepository: orderRepository(database),
                       rememberCheckoutOrderAttemptFn: () => {},
@@ -386,7 +386,7 @@ describe("offline guest supplier settled checkout composition", () => {
                         expect(message.senderPubkey).toBe(guest.pubkey)
                         orderWrap = await wrapPrivateMessage(
                           message.rumor,
-                          new NDKUser({ pubkey: merchant }),
+                          { pubkey: merchant },
                           message.signer
                         )
                         const prepared = {

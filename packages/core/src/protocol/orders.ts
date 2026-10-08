@@ -1,4 +1,5 @@
-import type { SignedPublicNostrEvent } from "./signed-event"
+import { decodeConduitCommerceExtension } from "./commerce-wire"
+import type { PrivateMessageEvent } from "./messaging"
 import { z } from "zod"
 import { isSatsLikeCurrency } from "../pricing"
 import { matchesCheckoutSparkOrderPrice } from "./checkout-spark-commerce-pricing"
@@ -42,7 +43,7 @@ import {
  * Parse a Conduit MVP order rumor event (kind 16) from its JSON content.
  */
 export function parseOrderRumorEvent(
-  event: Pick<SignedPublicNostrEvent, "content">
+  event: Pick<PrivateMessageEvent, "content">
 ): OrderSchema {
   const parsed = JSON.parse(event.content || "{}") as unknown
   return orderSchema.parse(expandOrderShippingPolicyQuotes(parsed))
@@ -135,9 +136,9 @@ function expandOrderShippingPolicyQuotes(input: unknown): unknown {
 }
 
 type OrderRumorEvent = Pick<
-  SignedPublicNostrEvent,
-  "id" | "content" | "tags" | "pubkey"
-> & { created_at?: number; kind?: number }
+  PrivateMessageEvent,
+  "id" | "created_at" | "content" | "tags" | "pubkey"
+> & { kind?: number }
 
 /** Private kind-16 buyer order hint; never payment or fulfillment evidence. */
 export const CHECKOUT_SPARK_ROUTER_ORDER_TAG = [
@@ -544,6 +545,7 @@ function parseCheckoutOrderPaymentRoute(
 export function parseOrderMessageRumorEvent(
   event: OrderRumorEvent
 ): ParsedOrderMessage {
+  event = decodeConduitCommerceExtension(event)
   const type = orderMessageTypeSchema.parse(
     getTagValue(event.tags ?? [], "type") ?? "order"
   )

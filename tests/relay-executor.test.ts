@@ -1562,6 +1562,73 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toHaveLength(1)
   })
 
+  it("joins an already-sent authentication while its matching OK is pending", async () => {
+    const wrap = giftWrap()
+    let signCalls = 0
+    let acknowledgeAuth!: () => void
+    let authSent!: () => void
+    const sent = new Promise<void>((resolve) => {
+      authSent = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "pending-shared-challenge"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") {
+          acknowledgeAuth = () => respondToAuth(socket, frame)
+          authSent()
+        }
+        if (frame[0] === "REQ") {
+          socket.relay(["EVENT", frame[1], wrap])
+          socket.relay(["EOSE", frame[1]])
+        }
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
+    const first = executor.query(protectedRequest(), { authorization })
+    await sent
+    const exact = executor.query(
+      {
+        ...protectedRequest(),
+        filters: [
+          { kinds: [1_059], "#p": [PUBKEY_A], ids: [wrap.id], limit: 2 },
+        ],
+      },
+      { authorization }
+    )
+    // Admit the second consumer after AUTH has left the socket but before the
+    // relay's matching OK. It must join that same in-flight authentication.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    acknowledgeAuth()
+    const results = await Promise.all([first, exact])
+
+    expect(results.map((result) => source(result).failure)).toEqual([
+      undefined,
+      undefined,
+    ])
+    expect(results.map((result) => result.status)).toEqual([
+      "success",
+      "success",
+    ])
+    expect(results.map((result) => source(result).auth)).toEqual([
+      "succeeded",
+      "succeeded",
+    ])
+    const expectedWrap = structuredClone(wrap)
+    expect(results.map((result) => result.events)).toEqual([
+      [expectedWrap],
+      [expectedWrap],
+    ])
+    expect(signCalls).toBe(1)
+    expect(harness.sockets).toHaveLength(1)
+    expect(harness.sockets[0]?.closed).toBe(false)
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(1)
+  })
+
   it("keeps an aborted signer serialized until timeout, then recovers on retry", async () => {
     let releaseFirstSignature!: () => void
     const firstSignature = new Promise<void>((resolve) => {

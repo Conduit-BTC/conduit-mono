@@ -95,11 +95,44 @@ status are maintained in the guide rather than duplicated here.
 
 ### Auth and payments
 
-- Conduit Market and Merchant durable account auth remains external-signer-only. NIP-07 and NIP-46 are signer paths, not key-custody permission. Approved browser-generated exceptions are the outbound-only `guest_ephemeral` order sender and the encrypted browser-local client connection key used to establish a NIP-46 signer session. The guest capability in `docs/specs/protocol.md` is limited to one guest order, same-order payment reports and separately constrained merchant-only router recovery sealing. Recovery sealing must bind the same order, merchant, canonical payload and existing guest deadline, and reject generic messages, direct rumor signatures and other recipients. Neither browser-generated exception is a Conduit-custodied user account key. The approved server-side signing exceptions in `docs/specs/protocol.md` are the Anon Conduit Shopper public zap signer, scoped to authenticated merchant-authorized checkout zap requests and fixed-recipient Conduit.Market project-tip zap requests, and a separate pricing-only live-rate attestation signer. The pricing signer cannot sign Nostr events, authorize payments or hold user keys; its contract does not itself authorize key creation or deployment. See `docs/knowledge/anon-zap-signer-handoff.md` for the public-safe zap signer config and request boundary.
+- Conduit Market and Merchant currently use external NIP-07/NIP-46 signers.
+  The approved optional installed-PWA NSEC path imports an existing account key
+  only in the separate `conduit-signer` repository's dedicated signer origin.
+  That origin owns import, persistence, automatic restore, ordinary operations
+  without per-action approvals, and key deletion/session revocation on explicit
+  logout. Apps receive public identity and operation results, never the raw key,
+  backup or independent unwrapping material; services never receive the key.
+  Implementation and composed preview testing may precede production device
+  sign-off. Exact-origin isolation, session integrity, privacy and maintainer
+  security review plus physical-iPhone validation remain production requirements;
+  origin, deployment and release approval remain separate. No product account
+  creation, server custody, wallet derivation, settings sync or recovery.
+  Automatic restore is not independent at-rest protection. See
+  `docs/specs/protocol.md` for the bounded contract.
+- Approved browser-generated exceptions remain the outbound-only
+  `guest_ephemeral` order sender and encrypted browser-local NIP-46 client
+  connection key. Test identities are ordinary newly generated CSPRNG Nostr
+  keys in controlled test processes or the signer-owned test surface, including
+  composed previews. They are not a product key-creation feature. Fixed
+  credentials in source/history and raw-key app/service/diagnostic/artifact sinks
+  remain prohibited.
+  The guest capability in `docs/specs/protocol.md` is limited to one guest
+  order, same-order payment reports and separately constrained Merchant-only
+  router recovery sealing. Sealing binds the same order, Merchant, canonical
+  payload and existing deadline; generic messages, direct rumors and other
+  recipients are prohibited. Existing Portable Wallet boundaries and
+  protected-smoke checks remain enforced.
+- The approved server-side signing exceptions are the Anon Conduit Shopper
+  public zap signer, scoped to authenticated merchant-
+  authorized checkout zap and fixed-recipient Conduit.Market project-tip zap
+  requests, and a separate pricing-only live-rate attestation signer. The
+  pricing signer cannot sign Nostr events, authorize payments or hold user keys;
+  its contract does not itself authorize key creation or deployment. See
+  `docs/specs/protocol.md` and `docs/knowledge/anon-zap-signer-handoff.md`.
 - NIP-42 relay AUTH is ephemeral relay-session authentication, not an app login
   system or persisted Conduit identity layer. The Conduit client keeps challenge
   and auth-event state in memory, but sends the signing request to the selected
-  external signer and the signed auth event to the selected relay; those
+  account signer and the signed auth event to the selected relay; those
   signers and relays may retain records under their own policies.
 - NWC/NIP-47 payment behavior remains non-custodial. NWC secrets stay in the
   isolated Connected Wallet provider path. Portable Wallet seed handling is a

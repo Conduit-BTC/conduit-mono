@@ -21,6 +21,7 @@ import {
   getCheckoutSparkRequiredFiatCurrencies,
 } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { parseCheckoutSparkPricingConfiguration } from "@conduit/core/protocol/checkout-spark-pricing-config"
+import { SIGNED_PRICING_FEED_CURRENCIES } from "@conduit/core/pricing/signed-rate-client"
 import {
   getSparkCheckoutReceiveFundingTimeAnchor,
   proveSparkCheckoutReceiveCredit,
@@ -66,6 +67,7 @@ const RATE = {
   source: "mempool" as const,
   fiatUsdRates: { EUR: 1.25 },
   fiatSource: "mempool" as const,
+  fiatSources: { EUR: "mempool" as const },
 }
 
 function configuration() {
@@ -380,7 +382,7 @@ describe("authorized fiat checkout integration", () => {
     expect(result.status).toBe("changed")
   })
 
-  it("fetches only required currencies without account credentials or checkout contents", async () => {
+  it("reuses the common display feed without account credentials or checkout contents", async () => {
     let calls = 0
     const authorized = await fetchCheckoutSparkAuthorizedPricing({
       currencies: ["USD", "EUR", "USD"],
@@ -395,7 +397,8 @@ describe("authorized fiat checkout integration", () => {
         expect(init?.redirect === "error").toBe(true)
         expect(init?.referrerPolicy === "no-referrer").toBe(true)
         expect(
-          String(init?.body) === JSON.stringify({ currencies: ["EUR", "USD"] })
+          String(init?.body) ===
+            JSON.stringify({ currencies: SIGNED_PRICING_FEED_CURRENCIES })
         ).toBe(true)
         return Response.json(snapshot())
       }) as typeof fetch,
