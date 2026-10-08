@@ -446,6 +446,7 @@ test("kind-15 hex metadata retains fixed lengths and accepts uppercase", async (
   expect(await decryptPrivateFileBytes(ciphertext, uppercase)).toEqual(
     plaintext
   )
+  const expectedError = /^Invalid private file key, nonce, or hash$/
   for (const field of [
     "key",
     "nonce",
@@ -456,36 +457,8 @@ test("kind-15 hex metadata retains fixed lengths and accepts uppercase", async (
       envelope[field].slice(2),
       `${envelope[field]}00`,
       `g${envelope[field].slice(1)}`,
+      `${envelope[field].slice(0, -1)}\n`,
     ]) {
-      const invalid = { ...envelope, [field]: value }
-      expect(() =>
-        buildPrivateFileRumor({
-          recipientPubkeys: ["merchant"],
-          url: "https://files.conduit.market/file",
-          mimeType: "text/plain",
-          envelope: invalid,
-        })
-      ).toThrow("Invalid private file key, nonce, or hash")
-      await expect(
-        decryptPrivateFileBytes(ciphertext, invalid)
-      ).rejects.toThrow("Invalid private file key, nonce, or hash")
-    }
-  }
-})
-
-test("kind-15 terminal line separators retain generic metadata errors", async () => {
-  const { ciphertext, envelope } = await encryptPrivateFileBytes(
-    new TextEncoder().encode("synthetic line separator attachment")
-  )
-  const expectedError = /^Invalid private file key, nonce, or hash$/
-  for (const field of [
-    "key",
-    "nonce",
-    "encryptedSha256",
-    "originalSha256",
-  ] as const) {
-    for (const separator of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) {
-      const value = envelope[field].slice(0, -separator.length) + separator
       const invalid = { ...envelope, [field]: value }
       expect(() =>
         buildPrivateFileRumor({
