@@ -392,9 +392,10 @@ function HowConduitWorks() {
             You stay in control
           </h3>
           <p className="mt-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Your durable Nostr identity key remains in your external signer.
-            Payments stay non-custodial, and wallet credentials or recovery
-            material remain within their device or wallet boundary.
+            Your Nostr identity key stays in your external signer or, with local
+            import enabled, on this device. Payments stay non-custodial, and
+            wallet credentials or recovery material remain within their device
+            or wallet boundary.
           </p>
         </Card>
       </div>

@@ -14,8 +14,10 @@ Prioritize in this order:
 
 ## Non-Negotiable Constraints
 
-- Durable account signing uses external NIP-07 or NIP-46 signers. Do not
-  generate or store a user's durable Nostr account private key. Preserve the
+- Account signing uses one shared owner for NIP-07, NIP-46 and optional local
+  import. Only `packages/core/src/protocol/local-key/` and its storage may possess
+  imported account secrets. Never generate product account keys or propagate
+  secrets into other code, logs, telemetry or network requests. Preserve the
   narrow temporary guest-order and encrypted browser-local NIP-46 client-key
   exceptions documented in the Product policies. Client-side Portable Wallet
   credentials are a separate exception permitted only inside the isolated

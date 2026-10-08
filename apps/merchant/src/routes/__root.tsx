@@ -306,7 +306,11 @@ function AuthGateGrace() {
   )
 }
 
-function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
+function AuthRestoring({
+  method,
+}: {
+  method: "nip07" | "nip46" | "local" | null
+}) {
   return (
     <div className="flex min-h-[50vh] items-center justify-center">
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
@@ -317,7 +321,9 @@ function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
         <div className="mt-1 text-sm text-[var(--text-secondary)]">
           {method === "nip46"
             ? "Reconnecting to your remote signer."
-            : "Waiting for your browser extension."}
+            : method === "local"
+              ? "Restoring the signer saved on this device."
+              : "Waiting for your browser extension."}
         </div>
       </div>
     </div>
@@ -434,6 +440,7 @@ function ConnectGate() {
     status,
     method,
     connect,
+    localKeyEnabled,
     cancelConnect,
     disconnect,
     error,
@@ -487,6 +494,10 @@ function ConnectGate() {
           connectingMethod={status === "restoring" ? null : method}
           extensionNotice={extensionNotice}
           mobile={isProbablyMobileBrowser}
+          localKeyEnabled={localKeyEnabled}
+          onImportLocalKey={(localKeyInput) =>
+            connect({ method: "local", localKeyInput })
+          }
           extensionAvailable={extensionAvailable}
           connectPending={authPending}
           connectDisabled={authPending}

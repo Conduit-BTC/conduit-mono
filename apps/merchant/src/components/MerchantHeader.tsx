@@ -307,7 +307,7 @@ function AccountMenuLink({
 }
 
 export function MerchantAccountMenu() {
-  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const { pubkey, status, disconnect, authGeneration, method } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   const [open, setOpen] = useState(false)
 
@@ -390,11 +390,13 @@ export function MerchantAccountMenu() {
           className="min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
           onSelect={() => {
             setOpen(false)
-            disconnect()
+            void disconnect().catch(() => undefined)
           }}
         >
           <LogOut className="mr-3 size-4" />
-          <span>Disconnect</span>
+          <span>
+            {method === "local" ? "Sign out and remove key" : "Disconnect"}
+          </span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

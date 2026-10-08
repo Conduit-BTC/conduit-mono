@@ -416,7 +416,7 @@ const browserTelemetryLabelValues = {
     "private_checkout",
   ],
   rail: ["lightning", "wallet", "nwc", "webln", "none"],
-  method: ["nip07", "nip46", "nwc"],
+  method: ["nip07", "nip46", "local", "nwc"],
   event_family: [
     "type_error",
     "reference_error",

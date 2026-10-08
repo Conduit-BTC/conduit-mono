@@ -1,3 +1,4 @@
+import { isAccountAuthMethod } from "./auth-session"
 /** Plain signed-event publication with explicit relay policy and exact wire writes. */
 import { getRelayLists } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
@@ -283,8 +284,7 @@ function assertRelayAuthenticationConfiguration(
     accountPubkey !== expectedPubkey ||
     typeof input.relayAuthentication.sessionScope !== "object" ||
     input.relayAuthentication.sessionScope === null ||
-    (input.relayAuthentication.signer.authMethod !== "nip07" &&
-      input.relayAuthentication.signer.authMethod !== "nip46")
+    !isAccountAuthMethod(input.relayAuthentication.signer.authMethod)
   ) {
     throw new Error(
       "Relay authentication requires an active foreground account and exact recipient relay plan."

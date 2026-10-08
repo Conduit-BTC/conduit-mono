@@ -55,10 +55,10 @@ describe("Merchant navigation shell", () => {
       "<span>Privacy</span>",
       "<span>conduit.market</span>",
     ])
-    expectInOrder(account, [
+    expectInOrder(account.replace(/\s+/g, " "), [
       'to="/profile"',
       'to="/network"',
-      "<span>Disconnect</span>",
+      '"Sign out and remove key" : "Disconnect"',
     ])
 
     expect(commerce).not.toContain('label: "Profile"')

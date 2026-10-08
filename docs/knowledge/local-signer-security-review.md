@@ -1,99 +1,119 @@
-# Separate-origin local signer: security and policy review
+# Contained local signer: security and acceptance
 
-**Status: existing-NSEC policy approved; implementation and composed preview
-testing may proceed before production device sign-off.** The intended product
-imports an existing key in the separate signer origin, restores automatically,
-performs ordinary operations without per-action approvals, and deletes the
-stored key on explicit logout. NIP-07/NIP-46 remain alternatives. The local
-option is shown only in installed standalone Market/Merchant PWAs.
+The optional installed-PWA existing-account signer lives in
+`packages/core/src/protocol/local-key/`. NIP-07, NIP-46 and local keys share
+`AuthProvider`, `AccountSigner` and `SessionSigner`. Production activation
+defaults off (`VITE_ENABLE_LOCAL_KEY_SIGNER=false`) pending focused review and
+physical-device evidence. Import is not product account creation.
 
-The separate public MIT-licensed [signer feasibility implementation](https://github.com/Conduit-BTC/conduit-signer/pull/1)
-is merged. Its parent probes are test equipment, not composed Market/Merchant
-applications. The current client still implements only NIP-07/NIP-46; this policy
-PR adds no runtime provider. Browser and cryptographic checks support development
-but do not establish physical-iPhone persistence or production readiness.
+## Architecture and ownership
 
-## Existing owners and signer boundary
+The account owner was established by [#600](https://github.com/Conduit-BTC/conduit-mono/pull/600).
+Publication [#605](https://github.com/Conduit-BTC/conduit-mono/pull/605), public
+reads [#606](https://github.com/Conduit-BTC/conduit-mono/pull/606), private delivery
+[#616](https://github.com/Conduit-BTC/conduit-mono/pull/616) and immutable event
+admission [#637](https://github.com/Conduit-BTC/conduit-mono/pull/637) retain their
+existing owners. Auth extraction [#641](https://github.com/Conduit-BTC/conduit-mono/pull/641)
+separates public metadata, revision/revocation, browser locking and method-specific
+retirement. Local import builds on that extraction and the current bounded
+foreground/background scheduler. It does not replace Network or wallet owners.
 
-`packages/core/src/protocol/nostr-event-signer.ts` defines `AccountSigner` and
-`NostrKeySigner`. `session-signer.ts` owns principal/revision fencing, serialized
-operations, signed-event validation, timeout and cancellation. `AuthContext.tsx`
-owns account lifecycle; `SignerSwitch.tsx` owns shared connection UX. A future
-provider must adapt to these owners. It must not impersonate NIP-07/NIP-46, add a
-second account owner, or replace publication/public-read/protected-read owners.
+Only the local module and its storage possess the imported account secret. The
+uncontrolled password input is consumed and cleared synchronously before the
+first await. Auth receives an opaque one-use import capability, then public
+identity and operations; no raw values in React state, props or context. The
+module exposes no secret getter/export or constructor accepting account-secret
+bytes. Already pinned `nostr-tools` supplies NIP-19, signatures, NIP-44 and legacy
+NIP-04 decrypt. Current history consumers still require legacy decrypt; no new
+legacy send capability. No custom crypto or new runtime dependency.
 
-The approved `conduit-signer` repository owns the standalone proof and eventual
-separately reviewed signer. This document does not approve a dedicated HTTPS origin, deployment or release. The two parent surfaces are probes,
-not actual installed Market/Merchant applications.
+## Threat model and lifecycle
 
-The signer alone owns existing-nsec import, persistent key storage, key operations
-and logout. The parent receives status/public key, a complete verified signed
-event, NIP-44 operation results, narrow legacy NIP-04 decrypt results and logout
-status. Import/export, backup retrieval, key generation and NIP-04 sending are
-absent from the message API. Test identities are ordinary newly generated Nostr keys from a CSPRNG; the
-signer-owned test generator is test equipment, not product account creation.
-Use the same account/session behavior for composed previews. Do not add a
-passkey, Face ID, password unlock, backup-verification step or recovery ceremony
-to the existing-key product.
+Contain accidental key propagation, logging/telemetry, ad hoc signing,
+unreviewed crypto, unnecessary copies and lifecycle mistakes. This is **not** a
+browser security boundary against compromised same-origin application code.
+Automatic restore has no independent unlock. IndexedDB provides atomic local
+persistence, not encryption or hardware-backed protection. An automatically
+available wrapping key would not change same-origin authority.
 
-## Threats and required controls
+The local record stores secret bytes and a random import revision. Public auth
+metadata stores public identity and that revision, separately from the shared
+auth claim. Check stored account/revision before use and before returning.
+Replacement, cancellation and logout fence pending results; the shared owner
+also fences queued work. Missing/unavailable storage stops signing and offers
+retry/removal/reimport. Logout stops live authority immediately, then commits
+exact-revision deletion and public-session retirement. Failed deletion stays a
+visible error and blocks connection until removal succeeds. Stale cleanup must
+preserve a newer import. Malformed unusable records can be explicitly removed.
+The shared auth owner keeps a public-only removal journal so failed rollback
+before session installation is also retryable after restart; it carries no key.
 
-| Boundary / attacker                                   | Impact                                         | Recorded proof control                                                                                                                                                        | Production decision or residual risk                                                                                                              |
-| ----------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unapproved parent or sibling frame sends requests     | Unauthorized signing/decryption                | Exact origin allowlist, direct parent/source checks, exact frame-ancestors; parent checks signer origin and current WindowProxy                                               | Freeze and review each deployment/preview origin; no wildcard preview admission                                                                   |
-| Stale response, old frame, replay or account switch   | Result committed under wrong authority         | Random channel/request/frame identifiers, stored-record revision and public-key binding, bounded requests, verified exact template/signature, timeout and reload cancellation | Integrate with existing SessionSigner and auth authority; prove composed tab/account transitions                                                  |
-| Another view logs out or reimports                    | Old key operation survives revocation          | Per-operation storage read and post-operation revision check; conditional logout deletion; BroadcastChannel invalidation; parent pending-operation cancellation               | Verify partition-specific behavior physically; suspension can delay notifications, so durable checks must remain authoritative                    |
-| Compromised Market/Merchant script                    | Allowed signing/decryption oracle; UI spoofing | Same-origin policy isolates raw key storage and frame DOM                                                                                                                     | High residual risk: origin isolation does not stop allowed RPC misuse. No routine action approval means this tradeoff needs maintainer acceptance |
-| Compromised signer script, dependency or release      | Account key theft                              | Small static bundle, locked crypto dependency, no app scripts/analytics, restrictive CSP                                                                                      | High residual risk: signer-origin code can read keys. Separate repository/release access and reviewed dependency graph required                   |
-| Local device/browser data access                      | Persistent key disclosure                      | Signer-owned device-local storage; no independent unlock or false wrapping-key claim                                                                                          | High impact; automatic restore provides no independent unlock protection. Maintainer must accept and document the device-local threat model       |
-| WebKit partitioning, eviction or offline load failure | Repeated import or unavailable signer          | Explicit absent/unavailable status, signer-owned reimport, static-only offline cache                                                                                          | Physical device matrix decides feasibility. Never move key/unwrapping capability into app storage                                                 |
-| Diagnostics or test artifacts disclose data           | Key/message disclosure                         | Content-free UI/errors, no telemetry, no payload logs, no browser traces/video; server accepts only fixed GET/HEAD asset routes                                               | Review hosted logging, CSP reporting, crash tooling and release artifacts before deployment; screenshots must exclude input and payloads          |
+Clear accessible secret/conversation-key buffers on completion/invalidation.
+JavaScript strings, engine/library copies, browser backups and device storage
+prevent forensic-erasure guarantees. Logout affects this storage partition,
+not independent Safari/PWA or Market/Merchant partitions. No shared-storage or
+cloud-recovery promise.
 
-Origin/session checks and signature validation are security/data-integrity
-invariants and fail closed. Installed mode is a UX gate; it does not grant key
-authority. Storage availability is a capability observation. Missing capability
-must preserve browsing and external signers.
+## Focused review requirements
 
-Byte-array clearing is best effort; JavaScript strings, browser copies, swap and
-backups prevent forensic-erasure guarantees. Encrypting a local record with an
-automatically available wrapping key does not protect it from compromised
-same-origin code. Logout removes the active stored record and revokes that
-storage partition; it cannot promise deletion in a separately isolated PWA.
+Module, import-input, auth-retirement and crypto-dependency changes require
+focused maintainer security review. `CODEOWNERS` routes these changes. Verify
+the configured branch rule enforces the required approval before activation;
+ownership files alone do not prove enforcement.
+Main's protection was checked on 2026-10-08: one approving review, required
+code-owner review and stale-review dismissal are enabled. Recheck before release.
 
-## Approved policy boundary
+- No key getters, general serialization/stores, logging/telemetry, diagnostics,
+  network submission, export, account creation or unrelated logic here.
+- Inspect dependency/lock changes and public crypto sources. Add no crypto or
+  storage dependency without a demonstrated gap and explicit approval.
+- Review storage checks, rollback, cancellation, replacement and deletion failure
+  together. Failed removal must never appear to be successful logout.
+- Require independent signature verification, official NIP-44 vectors, peer
+  NIP-44/NIP-04/NIP-59 interoperability and composed app lifecycle regressions.
+- Run credential history and boundary guards. Generate disposable identities at
+  runtime. No real/fixed credentials or key-bearing logs, traces, screenshots,
+  videos or evidence. Protected-smoke credential rules remain intact.
+- Keep activation disabled until focused review, physical evidence and an
+  explicit production decision. CI and emulation do not replace those gates.
 
-The canonical [separate-origin imported account key contract](../specs/protocol.md#separate-origin-imported-account-key-exception)
-defines the lifecycle, adapter, preview, test-identity and production-validation
-requirements.
+## Acceptance and physical evidence
 
-## Acceptance evidence boundaries
+| ID    | Required evidence                                                                                                                           |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| LS-01 | Shared installed-PWA option; browsing and NIP-07/NIP-46 preserved                                                                           |
+| LS-02 | Exclusive secret ownership, narrow API, dependency/leakage guards, honest threat model                                                      |
+| LS-03 | Persistence, automatic restore/reopen, malformed/lost/unavailable storage, failed writes                                                    |
+| LS-04 | Real signatures, official NIP-44 vector, independent NIP-44/NIP-04/NIP-59 and composed Market/Merchant owner flows                          |
+| LS-05 | Replacement/revision fencing, stale completion, cancellation, pending logout, failed deletion, durable removal and no restore after restart |
+| LS-06 | Corrected policy, content-free diagnostics, credential history and focused maintainer sign-off                                              |
+| LS-07 | Current-head checks, browser coverage, physical-iPhone matrix, explicit production decision                                                 |
 
-| ID    | Proof evidence                                                                                                                                                                          | Gap before full acceptance                                                                                                                            |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LS-01 | Parent probe observes browser/standalone mode; signer owns import UI                                                                                                                    | Actual shared connection option, external signer/browsing regression and physical installed-app screenshots                                           |
-| LS-02 | Separate public MIT repository; typed operation allowlist, cross-origin browser isolation, strict headers, no parent IndexedDB, no data-bearing network requests; locked crypto imports | Exact approved HTTPS origins, hosted header/logging review and production dependency/release review                                                   |
-| LS-03 | Fake IndexedDB recreation and desktop browser/frame reload restore                                                                                                                      | Physical exact-origin Safari/PWA termination/relaunch, offline cold launch, device/iOS details, eviction and separate-import observations             |
-| LS-04 | Standalone real synthetic signing/NIP-44/legacy decrypt and independent kind-14/kind-16 NIP-59 interoperability                                                                         | AccountSigner/AuthContext integration, shared envelope composition, protected-read eligibility and actual Market/Merchant flows on stable merged base |
-| LS-05 | Record deletion, revision change, stale-account/frame rejection, parent cancellation and same-partition cross-view browser logout                                                       | Physical suspension/relaunch and separate-partition logout/reimport evidence; composed auth lifecycle                                                 |
-| LS-06 | Content-free diagnostics, approved bounded existing-key and development-fixture exceptions, explicitly confirmed policy/contract edits                                                  | Maintainer threat sign-off, merged contract changes and hosted privacy review                                                                         |
-| LS-07 | Repeatable focused tests, browser checks, strict browser TypeScript, lint and static build commands                                                                                     | Current-head hosted CI, product smoke/Playwright coverage, human iPhone QA and separate release approval                                              |
+Record exact heads/results in the implementation PR. Physical iPhone evidence
+must record device/iOS, build, Safari versus installed Market/Merchant, import,
+normal reopen, full termination/relaunch, signing, NIP-44, offline/online,
+storage loss, logout/reimport and observed partition behavior. Exclude all
+secret input and private payloads. Desktop/WebKit emulation is supporting
+evidence only; this note claims no physical validation.
 
-Maintain exact candidate heads and run results in the PR, and device evidence in
-the review record. Do not mark a criterion complete merely because this table
-identifies its future validation.
+## Retired experiment
+
+[conduit-signer PR #2](https://github.com/Conduit-BTC/conduit-signer/pull/2) is an
+abandoned experiment, never a product dependency. Port mature crypto usage,
+validation, atomic persistence/deletion, revision checks, buffer hygiene and
+meaningful regressions. Simplify lifecycle into direct calls and the existing
+owner. Discard iframe/postMessage, frame/source/channel correlation, parent
+admission, CSP framing, standalone builds and deployment. Close remaining work
+and archive after useful work is preserved in the monorepo PR. Old PRs/Git
+history are the historical record, not an active delivery plan.
 
 ## Public sources
 
-- [NIP-01: event shape, serialization and signatures](https://github.com/nostr-protocol/nips/blob/master/01.md)
-- [NIP-07: public key, signing and encryption operations](https://github.com/nostr-protocol/nips/blob/master/07.md)
-- [NIP-46: remote signing and account/client-key separation](https://github.com/nostr-protocol/nips/blob/master/46.md)
-- [NIP-44: version 2 encrypted payloads](https://github.com/nostr-protocol/nips/blob/master/44.md)
-- [NIP-17: private messages and recipient relay routing](https://github.com/nostr-protocol/nips/blob/master/17.md)
-- [NIP-59: rumor, seal and gift wrap verification](https://github.com/nostr-protocol/nips/blob/master/59.md)
-- [NIP-04: deprecated legacy encryption](https://github.com/nostr-protocol/nips/blob/master/04.md)
-- [WebKit 181850: cross-origin Home Screen storage](https://bugs.webkit.org/show_bug.cgi?id=181850)
+- [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md), [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md)
+- [NIP-44 v2 and vectors](https://github.com/nostr-protocol/nips/blob/master/44.md#tests-and-code), [NIP-04 legacy decrypt](https://github.com/nostr-protocol/nips/blob/master/04.md)
+- [NIP-07](https://github.com/nostr-protocol/nips/blob/master/07.md), [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md)
+- [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), [NIP-59](https://github.com/nostr-protocol/nips/blob/master/59.md)
+- [nostr-tools](https://github.com/nbd-wtf/nostr-tools)
 
-NIP-01/07/46/44/17/59/04 were checked for this policy refresh on 2026-10-07.
-The historical WebKit reports do not establish current-iOS behavior in either
-direction. The required physical device matrix supplies production evidence;
-desktop emulation is supporting evidence only.
+Primary sources checked 2026-10-08. NIP-44 v3 planning remains gated on public
+draft/client references and explicit capability detection.

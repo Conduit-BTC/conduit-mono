@@ -10,6 +10,8 @@
     "./types": "./src/types/index.ts",
     "./protocol": "./src/protocol/index.ts",
     "./protocol/*": "./src/protocol/*.ts",
+    "./protocol/local-key": null,
+    "./protocol/local-key/*": null,
     "./pricing": "./src/pricing/index.ts",
     "./pricing/trusted-rate-provider": "./src/pricing/trusted-rate-provider.ts",
     "./wallets": "./src/wallets/index.ts",

@@ -36,7 +36,7 @@ describe("no-signer onboarding", () => {
     expect(sharedSigner).toContain("Connect Extension (NIP-07)")
     expect(sharedSigner).toContain("<RemoteSignerConnect")
     expect(sharedSigner.replace(/\s+/g, " ")).toContain(
-      "Your account keys stay in your signer app. Conduit cannot recover them."
+      "Keep your account backup safe. Conduit cannot recover your keys."
     )
     expect(merchantRoot).toContain("UNLOCK YOUR COMMAND CENTER")
     expect(merchantRoot).toContain(

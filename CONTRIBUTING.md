@@ -380,24 +380,19 @@ These are non-negotiable across all code:
 
 ### Authentication
 
-- NIP-07/NIP-46 remain supported account connection methods. The approved
-  optional installed-PWA NSEC path in [the protocol contract](docs/specs/protocol.md)
-  imports an existing account key only into the separate `conduit-signer` origin.
-  The signer owns persistence, automatic restore, ordinary operations without
-  per-action approvals, and stored-key deletion/session revocation on explicit
-  logout. Market/Merchant receive public identity and operation results, never
-  the raw key, backup or independent unwrapping material; services never receive
-  the key. Implementation and composed preview testing may precede production
-  device sign-off; origin/session/privacy controls apply throughout. Production
-  still requires maintainer security review, exact-origin physical-iPhone
-  validation and separate deployment/release approval.
-- Do not generate, store, or manage durable account keys in app origins or
-  services. Product account creation is outside the existing-key exception.
-  Test identities are ordinary newly generated CSPRNG Nostr keys in controlled
-  test processes or signer-owned test surfaces. No fixed credentials in source
-  or history and no raw keys in app storage, services, diagnostics or artifacts;
-  protected-smoke guards remain enforced.
-  A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
+- NIP-07/NIP-46 and enabled installed-PWA local import share the existing
+  account/session owner. Only `packages/core/src/protocol/local-key/` and its
+  storage may possess the imported account secret. No key getters, general
+  stores/props, logs, telemetry, network submission, export or product key
+  generation. Services never receive account keys. Review changes here and
+  their dependencies as security-critical; see
+  [the focused review contract](docs/knowledge/local-signer-security-review.md).
+- Preserve automatic restore, account/revision fencing, cancellation and
+  durable logout. Failed deletion is a failure, even after live authority stops.
+  Same-origin compromise is outside this containment model. Physical-iPhone
+  installed-PWA validation and maintainer security review precede production
+  activation. Implementation/preview evidence does not approve a release.
+- A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
   Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
   signing to the initial private order and same-order payment reports. It must
   never become an account key or nsec.
