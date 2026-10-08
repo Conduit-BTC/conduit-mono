@@ -1111,11 +1111,6 @@ export class CommerceInbox {
     this.assertCurrent()
     return { messages, authenticatedWraps, decryptFailures, unresolved }
   }
-  async recoveryMessages(
-    relayUrls?: readonly string[]
-  ): Promise<ParsedEventMarketPrivateMessage[]> {
-    return (await this.recoveryEvidence(relayUrls)).messages
-  }
   async checkoutRecoveryDescriptors(
     relayUrls: readonly string[]
   ): Promise<CheckoutRecoveryDescriptor[]> {

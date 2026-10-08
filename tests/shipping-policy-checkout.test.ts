@@ -425,7 +425,7 @@ describe("signed shipping policy composed checkout", () => {
             plan,
             state: createCheckoutSparkSettledReconciliation(plan),
           }) as PreparedCheckoutSparkSettledFunding,
-        publishOrder: async (rumor, _ndk, recipient, _buyer, options) => {
+        publishOrder: async (rumor, recipient, _buyer, options) => {
           prepareBuyerRumor(rumor, buyer.pubkey)
           assertStagedOrderLifecycleMatchesRumor(
             options!.orderLifecycle!,

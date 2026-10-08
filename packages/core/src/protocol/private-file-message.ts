@@ -1,3 +1,4 @@
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
 /** NIP-17 kind-15 AES-GCM byte handling. Callers own upload and explicit download UI. */
 export const MAX_PRIVATE_FILE_BYTES = 8 * 1024 * 1024
@@ -46,10 +47,10 @@ export function buildPrivateFileRumor(input: {
   ) {
     throw new Error("Invalid private file metadata")
   }
-  fromHex(envelope.key, 32)
-  fromHex(envelope.nonce, 12)
-  fromHex(envelope.encryptedSha256, 32)
-  fromHex(envelope.originalSha256, 32)
+  fixedLengthHexToBytes(envelope.key, 32)
+  fixedLengthHexToBytes(envelope.nonce, 12)
+  fixedLengthHexToBytes(envelope.encryptedSha256, 32)
+  fixedLengthHexToBytes(envelope.originalSha256, 32)
   const tags: string[][] = input.recipientPubkeys.map((pubkey) => ["p", pubkey])
   if (input.replyTo) tags.push(["e", input.replyTo, "", "reply"])
   if (input.subject) tags.push(["subject", input.subject])
@@ -65,23 +66,19 @@ export function buildPrivateFileRumor(input: {
   return { kind: 15, tags, content: input.url }
 }
 
-function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    ""
-  )
-}
-
-function fromHex(hex: string, bytes: number): Uint8Array {
-  if (!new RegExp(`^[0-9a-f]{${bytes * 2}}$`, "i").test(hex)) {
+function fixedLengthHexToBytes(hex: string, bytes: number): Uint8Array {
+  if (
+    typeof hex !== "string" ||
+    hex.length !== bytes * 2 ||
+    !/^[0-9a-f]+$/i.test(hex)
+  ) {
     throw new Error("Invalid private file key, nonce, or hash")
   }
-  return new Uint8Array(
-    hex.match(/../g)!.map((pair) => Number.parseInt(pair, 16))
-  )
+  return hexToBytes(hex)
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
-  return toHex(
+  return bytesToHex(
     new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)))
   )
 }
@@ -113,8 +110,8 @@ export async function encryptPrivateFileBytes(plaintext: Uint8Array): Promise<{
     ciphertext,
     envelope: {
       algorithm: "aes-gcm",
-      key: toHex(keyBytes),
-      nonce: toHex(nonceBytes),
+      key: bytesToHex(keyBytes),
+      nonce: bytesToHex(nonceBytes),
       encryptedSha256: await sha256(ciphertext),
       originalSha256: await sha256(plaintext),
       encryptedSize: ciphertext.byteLength,
@@ -136,11 +133,11 @@ export async function decryptPrivateFileBytes(
   ) {
     throw new Error("Unsupported or oversized private file")
   }
-  const keyBytes = fromHex(envelope.key, 32)
-  const nonceBytes = fromHex(envelope.nonce, 12)
-  fromHex(envelope.encryptedSha256, 32)
+  const keyBytes = fixedLengthHexToBytes(envelope.key, 32)
+  const nonceBytes = fixedLengthHexToBytes(envelope.nonce, 12)
+  fixedLengthHexToBytes(envelope.encryptedSha256, 32)
   if (envelope.originalSha256 !== undefined)
-    fromHex(envelope.originalSha256, 32)
+    fixedLengthHexToBytes(envelope.originalSha256, 32)
   if ((await sha256(ciphertext)) !== envelope.encryptedSha256.toLowerCase()) {
     throw new Error("Encrypted private file hash mismatch")
   }
