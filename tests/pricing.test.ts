@@ -1,3 +1,4 @@
+import { signFixture, publicFixturePubkey } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   BTC_USD_RATE_STALE_MS,
@@ -469,20 +470,25 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("parses tag-only NIP-99 SAT listings as sats-canonical products", () => {
-    const product = parseProductEvent({
-      id: "event-1",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Pocket clip",
-      tags: [
-        ["d", "clip"],
-        ["title", "Extra Pocket Clip"],
-        ["price", "250000", "SAT"],
-        ["shipping_cost", "5000"],
-        ["image", "https://example.com/clip.png"],
-      ],
-    })
+  it("parses tag-only NIP-99 SAT listings as sats-canonical products", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-1",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Pocket clip",
+          tags: [
+            ["d", "clip"],
+            ["title", "Extra Pocket Clip"],
+            ["price", "250000", "SAT"],
+            ["shipping_cost", "5000"],
+            ["image", "https://example.com/clip.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
@@ -495,19 +501,24 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("preserves canonical signed zero-SATS evidence for an authorized pickup flow", () => {
-    const product = parseProductEvent({
-      id: "event-free-pickup",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Event badge",
-      tags: [
-        ["d", "event-badge"],
-        ["title", "Event Badge"],
-        ["price", "0", "SATS"],
-        ["type", "simple", "physical"],
-      ],
-    })
+  it("preserves canonical signed zero-SATS evidence for an authorized pickup flow", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-free-pickup",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Event badge",
+          tags: [
+            ["d", "event-badge"],
+            ["title", "Event Badge"],
+            ["price", "0", "SATS"],
+            ["type", "simple", "physical"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product).toMatchObject({
       price: 0,
@@ -576,20 +587,25 @@ describe("commerce pricing", () => {
     expect(getShopperSatsDisplay(0).primary).not.toBe("Free")
   })
 
-  it("preserves fiat shipping source quotes and converts them with rate input", () => {
-    const product = parseProductEvent({
-      id: "event-usd-shipping",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Notebook",
-      tags: [
-        ["d", "notebook"],
-        ["title", "Notebook"],
-        ["price", "1000", "SATS"],
-        ["shipping_cost", "10", "USD"],
-        ["image", "https://example.com/notebook.png"],
-      ],
-    })
+  it("preserves fiat shipping source quotes and converts them with rate input", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-usd-shipping",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Notebook",
+          tags: [
+            ["d", "notebook"],
+            ["title", "Notebook"],
+            ["price", "1000", "SATS"],
+            ["shipping_cost", "10", "USD"],
+            ["image", "https://example.com/notebook.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.shippingCostSats).toBeUndefined()
     expect(product.sourceShippingCost).toEqual({
@@ -603,19 +619,24 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("parses BTC listings as sats-canonical products", () => {
-    const product = parseProductEvent({
-      id: "event-2",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Knife",
-      tags: [
-        ["d", "knife"],
-        ["title", "Cyberita Scandigrind Folder"],
-        ["price", "0.0025", "BTC"],
-        ["image", "https://example.com/knife.png"],
-      ],
-    })
+  it("parses BTC listings as sats-canonical products", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-2",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Knife",
+          tags: [
+            ["d", "knife"],
+            ["title", "Cyberita Scandigrind Folder"],
+            ["price", "0.0025", "BTC"],
+            ["image", "https://example.com/knife.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
@@ -626,20 +647,25 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("parses tag-only digital listings as not requiring shipping", () => {
-    const product = parseProductEvent({
-      id: "event-digital",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "PDF guide",
-      tags: [
-        ["d", "pdf-guide"],
-        ["title", "PDF Guide"],
-        ["price", "25000", "SATS"],
-        ["type", "simple", "digital"],
-        ["image", "https://example.com/guide.png"],
-      ],
-    })
+  it("parses tag-only digital listings as not requiring shipping", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-digital",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "PDF guide",
+          tags: [
+            ["d", "pdf-guide"],
+            ["title", "PDF Guide"],
+            ["price", "25000", "SATS"],
+            ["type", "simple", "digital"],
+            ["image", "https://example.com/guide.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.type).toBe("simple")
     expect(product.format).toBe("digital")
@@ -647,18 +673,23 @@ describe("commerce pricing", () => {
     expect(product.shippingOptionId).toBeUndefined()
   })
 
-  it("preserves fiat source quotes and displays rate-backed sats", () => {
-    const product = parseProductEvent({
-      id: "event-3",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Euro listing",
-      tags: [
-        ["d", "euro-listing"],
-        ["title", "Euro Listing"],
-        ["price", "10", "EUR"],
-      ],
-    })
+  it("preserves fiat source quotes and displays rate-backed sats", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-3",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Euro listing",
+          tags: [
+            ["d", "euro-listing"],
+            ["title", "Euro Listing"],
+            ["price", "10", "EUR"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.price).toBe(10)
     expect(product.currency).toBe("EUR")
@@ -799,11 +830,11 @@ describe("commerce pricing", () => {
   it("allows checkout payloads to preserve source quotes while settling in sats", () => {
     const parsed = orderSchema.parse({
       id: "order-1",
-      merchantPubkey: "merchant",
+      merchantPubkey: publicFixturePubkey,
       buyerPubkey: "buyer",
       items: [
         {
-          productId: "30402:merchant:item",
+          productId: `30402:${publicFixturePubkey}:item`,
           quantity: 1,
           priceAtPurchase: 250_000,
           currency: "SATS",

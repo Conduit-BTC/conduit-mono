@@ -1,5 +1,27 @@
 export * from "./kinds"
-export * from "./products"
+export {
+  PRODUCT_SHIPPING_ADJUSTMENTS_TAG,
+  MAX_PRODUCT_IMAGE_CANDIDATES,
+  PRODUCT_PUBLIC_ZAPS_TAG,
+  PRODUCT_ZAP_MESSAGE_POLICY_TAG,
+  type ProductListingEventDraft,
+  type BuildProductListingEventDraftInput,
+  type ProductDeletionEventTarget,
+  type ProductDeletionEventDraft,
+  type BuildProductDeletionEventDraftInput,
+  canonicalizeProductTags,
+  canonicalizeProductSpecifications,
+  buildProductDeletionEventDraft,
+  buildProductListingEventDraft,
+  getProductImageCandidates,
+  getProductProtocolImages,
+  hasMarketVisibleProductImage,
+  type ProductJsonDisplayProjection,
+  projectProductJsonDisplayFields,
+  normalizeProductJsonDisplaySummary,
+  normalizeProductSummaryForDisplay,
+  parseProductEvent,
+} from "./products"
 export * from "./product-reference"
 export * from "./product-family"
 export * from "./listing-availability"
@@ -78,11 +100,49 @@ export * from "./protected-inbox-read"
 export * from "./protected-read-state"
 export * from "./shipping"
 export * from "./shipping-policy"
-export * from "./event-market"
+export {
+  EVENT_MARKET_ADDRESSABLE_KINDS,
+  EVENT_MARKET_CALENDAR_KINDS,
+  type AddressableEventCoordinate,
+  type DecodedEventMarketReference,
+  type EventMarketEventDraft,
+  type EventMarketCalendarDraftInput,
+  type ParsedEventMarketCalendar,
+  parseAddressableCoordinate,
+  buildEventMarketShareRelayHints,
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
+  encodeEventMarketShareLink,
+  buildEventMarketCalendarDraft,
+  parseEventMarketCalendarEvent,
+  type EventMarketDeletionEvidence,
+  isEventMarketAddressableRevisionDeleted,
+  __setEventMarketTestOverrides,
+  __resetEventMarketTestOverrides,
+  type EventMarketReadPlan,
+  getEventMarketReadPlan,
+} from "./event-market"
 export * from "./event-market-enrollment"
 export * from "./event-market-roster"
-export * from "./event-market-schedule"
-export * from "./event-market-authorization"
+export {
+  type ParsedEventMarketSeries,
+  type EventMarketSeriesResolution,
+  type EventMarketSchedule,
+  buildEventMarketSeriesDraft,
+  parseEventMarketSeriesEvent,
+  resolveEventMarketSeries,
+  resolveEventMarketOccurrence,
+} from "./event-market-schedule"
+export {
+  type EventMarketAuthorizationState,
+  type EventMarketAuthorizationRepair,
+  type ParsedEventMarketAuthorization,
+  type EventMarketAuthorizationDraftInput,
+  type EventMarketAuthorizationResolution,
+  buildEventMarketAuthorizationDraft,
+  parseEventMarketAuthorizationEvent,
+  resolveEventMarketAuthorization,
+} from "./event-market-authorization"
 export * from "./event-market-authorization-read"
 export * from "./event-market-authorization-publish"
 export * from "./event-guest-checkout"
@@ -121,3 +181,18 @@ export type {
   VerifySignedPublicNostrEventsResult,
 } from "./relay-reader"
 export * from "./event-market-calendar-retry"
+
+export {
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+  type PublicEventAdmission,
+} from "./verified-public-event"
+export * from "./commerce-inbox"
+export * from "./commerce-message-codec"
+export * from "./private-file-message"
+export * from "./protected-inbox-history"
+export * from "./private-message-delivery"
+export * from "./commerce-wire"
+export * from "./inbox-send"
+export * from "./private-file-upload"

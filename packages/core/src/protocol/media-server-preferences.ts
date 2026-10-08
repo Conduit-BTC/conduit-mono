@@ -9,7 +9,13 @@ import { getRelayLists } from "./relay-list"
 import {
   fetchSignedEventsFanoutDetailed,
   type SignedEventRelayReadResult,
+  verifySignedEvents,
 } from "./relay-reader"
+import {
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import {
   DEFAULT_READ_FANOUT,
   planRelayReads,
@@ -66,12 +72,12 @@ export interface MediaServerPreferenceEventLike {
   pubkey: string
   created_at: number
   kind: number
-  tags: string[][]
+  tags: readonly (readonly string[])[]
   content: string
 }
 
 export interface SelectedMediaServerPreferenceEvent {
-  event: MediaServerPreferenceEventLike
+  event: VerifiedNostrEvent
   parsed: ParsedMediaServerTags & { state: "valid" }
 }
 
@@ -252,14 +258,45 @@ export class MediaServerPreferencesError extends Error {
 const inMemoryRecords = new Map<string, MediaServerPreferenceEvidenceRecord>()
 
 function clone<T>(value: T): T {
-  return structuredClone(value)
+  const copied = structuredClone(value)
+  if (
+    value &&
+    typeof value === "object" &&
+    copied &&
+    typeof copied === "object"
+  ) {
+    const source = value as Record<string, unknown>
+    const target = copied as Record<string, unknown>
+    if (isVerifiedNostrEvent(source.signedEvent)) {
+      target.signedEvent = source.signedEvent
+    }
+    for (const key of ["published", "pending"] as const) {
+      const sourcePart = source[key]
+      const targetPart = target[key]
+      if (
+        sourcePart &&
+        typeof sourcePart === "object" &&
+        targetPart &&
+        typeof targetPart === "object"
+      ) {
+        const signedEvent = (sourcePart as { signedEvent?: unknown })
+          .signedEvent
+        if (isVerifiedNostrEvent(signedEvent)) {
+          ;(targetPart as { signedEvent?: unknown }).signedEvent = signedEvent
+        }
+      }
+    }
+  }
+  return copied
 }
 
 /** Canonicalize relay evidence without granting permission for network I/O. */
 function normalizeRetainedRelayUrls(relayUrls: readonly string[]): string[] {
   const normalizedUrls: string[] = []
   const seen = new Set<string>()
+  if (!Array.isArray(relayUrls)) return normalizedUrls
   for (const relayUrl of relayUrls) {
+    if (typeof relayUrl !== "string") continue
     const normalized = tryNormalizeRelayUrl(relayUrl)
     if (!normalized.ok || seen.has(normalized.url)) continue
     seen.add(normalized.url)
@@ -314,7 +351,7 @@ export function normalizeBlossomServerRoot(raw: unknown): string | null {
 }
 
 export function parseBlossomServerListTags(
-  tags: readonly string[][]
+  tags: readonly (readonly string[])[]
 ): ParsedMediaServerTags {
   const serverUrls: string[] = []
   const seen = new Set<string>()
@@ -413,13 +450,14 @@ function compareReplaceable(
 }
 
 function matchingOwnerEvents(
-  events: readonly MediaServerPreferenceEventLike[],
+  events: readonly VerifiedNostrEvent[],
   owner: string
-): MediaServerPreferenceEventLike[] {
+): VerifiedNostrEvent[] {
   const normalizedOwner = normalizeMediaServerPreferenceOwner(owner)
   return events
     .filter(
       (event) =>
+        isVerifiedNostrEvent(event) &&
         event.kind === BLOSSOM_SERVER_LIST_KIND &&
         event.pubkey.trim().toLowerCase() === normalizedOwner
     )
@@ -427,7 +465,7 @@ function matchingOwnerEvents(
 }
 
 export function selectLatestValidBlossomServerListEvent(
-  events: readonly MediaServerPreferenceEventLike[],
+  events: readonly VerifiedNostrEvent[],
   owner: string
 ): SelectedMediaServerPreferenceEvent | null {
   for (const event of matchingOwnerEvents(events, owner)) {
@@ -443,9 +481,9 @@ export function selectLatestValidBlossomServerListEvent(
 }
 
 export function selectLatestObservedBlossomServerListEvent(
-  events: readonly MediaServerPreferenceEventLike[],
+  events: readonly VerifiedNostrEvent[],
   owner: string
-): MediaServerPreferenceEventLike | null {
+): VerifiedNostrEvent | null {
   return matchingOwnerEvents(events, owner)[0] ?? null
 }
 
@@ -493,10 +531,28 @@ export function getMediaServerPreferencesStorageKey(owner: string): string {
 
 function validSignedPreferenceEvent(
   event: SignedPublicNostrEvent,
-  owner: string
+  owner: string,
+  displayOnly = false
 ): { event: SignedPublicNostrEvent; serverUrls: string[] } | null {
   if (
-    !isValidSignedPublicNostrEvent(event) ||
+    (!displayOnly && !isVerifiedNostrEvent(event)) ||
+    !event ||
+    typeof event !== "object" ||
+    typeof event.id !== "string" ||
+    typeof event.sig !== "string" ||
+    typeof event.pubkey !== "string" ||
+    !/^[0-9a-f]{64}$/.test(event.id) ||
+    !/^[0-9a-f]{128}$/.test(event.sig) ||
+    !Number.isSafeInteger(event.created_at) ||
+    event.created_at < 0 ||
+    typeof event.content !== "string" ||
+    !Array.isArray(event.tags) ||
+    event.tags.some(
+      (tag) =>
+        !Array.isArray(tag) ||
+        tag.length === 0 ||
+        tag.some((value) => typeof value !== "string")
+    ) ||
     event.kind !== BLOSSOM_SERVER_LIST_KIND ||
     event.pubkey !== owner ||
     event.id !== event.id.toLowerCase() ||
@@ -507,13 +563,18 @@ function validSignedPreferenceEvent(
   }
   const parsed = parseBlossomServerListTags(event.tags)
   return parsed.state === "valid"
-    ? { event: clone(event), serverUrls: parsed.serverUrls }
+    ? { event, serverUrls: parsed.serverUrls }
     : null
+}
+
+function validStoredTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 }
 
 function sanitizeStoredRecord(
   value: unknown,
-  owner: string
+  owner: string,
+  displayOnly = false
 ): MediaServerPreferenceEvidenceRecord | null {
   if (!value || typeof value !== "object") return null
   const candidate = value as Partial<MediaServerPreferenceEvidenceRecord>
@@ -531,9 +592,10 @@ function sanitizeStoredRecord(
   if (candidate.published) {
     const valid = validSignedPreferenceEvent(
       candidate.published.signedEvent,
-      owner
+      owner,
+      displayOnly
     )
-    if (valid) {
+    if (valid && validStoredTimestamp(candidate.published.observedAt)) {
       record.published = {
         signedEvent: valid.event,
         serverUrls: valid.serverUrls,
@@ -541,29 +603,69 @@ function sanitizeStoredRecord(
           candidate.published.sourceRelayUrls ?? []
         ),
         observedAt: candidate.published.observedAt,
-        completeObservedAt: candidate.published.completeObservedAt,
+        ...(validStoredTimestamp(candidate.published.completeObservedAt) &&
+        candidate.published.completeObservedAt <= candidate.published.observedAt
+          ? { completeObservedAt: candidate.published.completeObservedAt }
+          : {}),
       }
     }
   }
   if (
     candidate.frontier &&
+    typeof candidate.frontier.eventId === "string" &&
     /^[0-9a-f]{64}$/.test(candidate.frontier.eventId) &&
-    Number.isSafeInteger(candidate.frontier.createdAt) &&
+    validStoredTimestamp(candidate.frontier.createdAt) &&
     ["valid", "empty", "malformed"].includes(candidate.frontier.state)
   ) {
-    record.frontier = clone(candidate.frontier)
+    record.frontier = {
+      eventId: candidate.frontier.eventId,
+      createdAt: candidate.frontier.createdAt,
+      state: candidate.frontier.state,
+    }
   }
-  if (candidate.latestLookup)
-    record.latestLookup = clone(candidate.latestLookup)
+  const lookup = candidate.latestLookup
+  if (
+    lookup &&
+    validStoredTimestamp(lookup.observedAt) &&
+    ["complete", "partial", "unavailable"].includes(lookup.coverage) &&
+    typeof lookup.hadEvent === "boolean" &&
+    [
+      lookup.plannedRelayCount,
+      lookup.successfulRelayCount,
+      lookup.partialRelayCount,
+      lookup.failedRelayCount,
+      lookup.rejectedEventCount,
+    ].every(validStoredTimestamp) &&
+    (lookup.eventId === undefined ||
+      (typeof lookup.eventId === "string" &&
+        /^[0-9a-f]{64}$/.test(lookup.eventId)))
+  ) {
+    record.latestLookup = {
+      observedAt: lookup.observedAt,
+      coverage: lookup.coverage,
+      plannedRelayCount: lookup.plannedRelayCount,
+      successfulRelayCount: lookup.successfulRelayCount,
+      partialRelayCount: lookup.partialRelayCount,
+      failedRelayCount: lookup.failedRelayCount,
+      rejectedEventCount: lookup.rejectedEventCount,
+      hadEvent: lookup.hadEvent,
+      ...(lookup.eventId ? { eventId: lookup.eventId } : {}),
+    }
+  }
   if (candidate.pending) {
     const valid = validSignedPreferenceEvent(
       candidate.pending.signedEvent,
-      owner
+      owner,
+      displayOnly
     )
     const publishRelayUrls = normalizeRetainedRelayUrls(
       candidate.pending.publishRelayUrls ?? []
     )
-    if (valid && publishRelayUrls.length > 0) {
+    if (
+      valid &&
+      publishRelayUrls.length > 0 &&
+      validStoredTimestamp(candidate.pending.stagedAt)
+    ) {
       const targetSet = new Set(publishRelayUrls)
       const withinPlan = (urls: readonly string[]) =>
         normalizeRetainedRelayUrls(urls).filter((url) => targetSet.has(url))
@@ -587,7 +689,7 @@ function sanitizeStoredRecord(
       }
     }
   }
-  if (candidate.draft) {
+  if (candidate.draft && validStoredTimestamp(candidate.draft.updatedAt)) {
     try {
       record.draft = {
         serverUrls: normalizeMediaServerPreferenceList(
@@ -600,7 +702,8 @@ function sanitizeStoredRecord(
         ),
         baseEventId:
           candidate.draft.baseEventId === null ||
-          /^[0-9a-f]{64}$/.test(candidate.draft.baseEventId)
+          (typeof candidate.draft.baseEventId === "string" &&
+            /^[0-9a-f]{64}$/.test(candidate.draft.baseEventId))
             ? candidate.draft.baseEventId
             : null,
         updatedAt: candidate.draft.updatedAt,
@@ -612,6 +715,73 @@ function sanitizeStoredRecord(
   return record
 }
 
+async function loadAdmittedMediaServerPreferenceRecord(
+  owner: string,
+  storage: MediaServerPreferencesStorage | null
+): Promise<
+  MediaServerPreferenceEvidenceRecord & {
+    unverifiedPriorFrontier?: MediaServerFrontierEvidence
+  }
+> {
+  const normalizedOwner = normalizeMediaServerPreferenceOwner(owner)
+  const key = getMediaServerPreferencesStorageKey(normalizedOwner)
+  let raw: unknown = inMemoryRecords.get(key)
+  if (storage) {
+    try {
+      const stored = storage.getItem(key)
+      if (stored) raw = JSON.parse(stored)
+    } catch {
+      // Keep the process checkpoint when storage is unavailable.
+    }
+  }
+  if (!raw || typeof raw !== "object") {
+    return {
+      version: MEDIA_SERVER_PREFERENCES_STORAGE_VERSION,
+      owner: normalizedOwner,
+    }
+  }
+  const candidate = clone(raw as MediaServerPreferenceEvidenceRecord)
+  const evidenceFields = ["published", "pending"] as const
+  const admissions = await Promise.all(
+    evidenceFields.map(async (field) => {
+      const evidence = candidate[field]
+      return evidence ? await admitPublicEvent(evidence.signedEvent) : null
+    })
+  )
+  for (const [index, field] of evidenceFields.entries()) {
+    const evidence = candidate[field]
+    if (!evidence) continue
+    const admission = admissions[index]
+    if (admission?.status === "verified") {
+      evidence.signedEvent = admission.event
+    } else if (admission?.status === "invalid") {
+      delete candidate[field]
+    } else {
+      throw new MediaServerPreferencesError(
+        "evidence_unavailable",
+        "Retained media server evidence cannot currently be verified. Its saved bytes were preserved."
+      )
+    }
+  }
+  const sanitized = sanitizeStoredRecord(candidate, normalizedOwner)
+  if (!sanitized) {
+    return {
+      version: MEDIA_SERVER_PREFERENCES_STORAGE_VERSION,
+      owner: normalizedOwner,
+    }
+  }
+  if (
+    sanitized.frontier &&
+    sanitized.frontier.eventId !== sanitized.published?.signedEvent.id &&
+    sanitized.frontier.eventId !== sanitized.pending?.signedEvent.id
+  ) {
+    const unverifiedPriorFrontier = sanitized.frontier
+    delete sanitized.frontier
+    return { ...sanitized, unverifiedPriorFrontier }
+  }
+  return sanitized
+}
+
 export function loadMediaServerPreferenceRecord(
   owner: string,
   storage: MediaServerPreferencesStorage | null = getDefaultStorage()
@@ -619,17 +789,26 @@ export function loadMediaServerPreferenceRecord(
   const normalizedOwner = normalizeMediaServerPreferenceOwner(owner)
   const key = getMediaServerPreferencesStorageKey(normalizedOwner)
   const memory = inMemoryRecords.get(key)
-  if (memory) return clone(memory)
+  if (memory) {
+    const display = sanitizeStoredRecord(memory, normalizedOwner, true)
+    if (display) return clone(display)
+  }
 
   if (storage) {
     try {
       const raw = storage.getItem(key)
       const parsed = raw
-        ? sanitizeStoredRecord(JSON.parse(raw), normalizedOwner)
+        ? (JSON.parse(raw) as MediaServerPreferenceEvidenceRecord)
         : null
-      if (parsed) {
+      if (
+        parsed?.version === MEDIA_SERVER_PREFERENCES_STORAGE_VERSION &&
+        parsed.owner === normalizedOwner
+      ) {
+        // This synchronous projection is display-only. Async operations re-admit
+        // the exact stored event before using it as a signed frontier.
         inMemoryRecords.set(key, clone(parsed))
-        return clone(parsed)
+        const display = sanitizeStoredRecord(parsed, normalizedOwner, true)
+        if (display) return clone(display)
       }
     } catch {
       // Local persistence is best-effort; the process cache remains usable.
@@ -639,33 +818,6 @@ export function loadMediaServerPreferenceRecord(
     version: MEDIA_SERVER_PREFERENCES_STORAGE_VERSION,
     owner: normalizedOwner,
   }
-}
-
-function loadFreshMediaServerPreferenceRecord(
-  owner: string,
-  storage: MediaServerPreferencesStorage | null
-): MediaServerPreferenceEvidenceRecord {
-  const normalizedOwner = normalizeMediaServerPreferenceOwner(owner)
-  if (storage) {
-    try {
-      const raw = storage.getItem(
-        getMediaServerPreferencesStorageKey(normalizedOwner)
-      )
-      const parsed = raw
-        ? sanitizeStoredRecord(JSON.parse(raw), normalizedOwner)
-        : null
-      if (parsed) {
-        inMemoryRecords.set(
-          getMediaServerPreferencesStorageKey(normalizedOwner),
-          clone(parsed)
-        )
-        return clone(parsed)
-      }
-    } catch {
-      // Fall back to the exact process checkpoint when storage is unavailable.
-    }
-  }
-  return loadMediaServerPreferenceRecord(normalizedOwner, storage)
 }
 
 function saveMediaServerPreferenceRecord(
@@ -698,8 +850,10 @@ export function saveMediaServerDraft(
   draft: MediaServerDraftRecord,
   storage?: MediaServerPreferencesStorage | null
 ): MediaServerDraftRecord {
-  const record = loadMediaServerPreferenceRecord(owner, storage)
-  record.draft = {
+  const normalizedOwner = normalizeMediaServerPreferenceOwner(owner)
+  const key = getMediaServerPreferencesStorageKey(normalizedOwner)
+  const targetStorage = storage === undefined ? getDefaultStorage() : storage
+  const normalizedDraft: MediaServerDraftRecord = {
     serverUrls: normalizeMediaServerPreferenceList(draft.serverUrls, {
       allowEmpty: true,
     }),
@@ -709,7 +863,32 @@ export function saveMediaServerDraft(
     baseEventId: draft.baseEventId,
     updatedAt: draft.updatedAt,
   }
-  return saveMediaServerPreferenceRecord(record, storage).draft!
+  let raw: unknown = inMemoryRecords.get(key)
+  try {
+    const stored = targetStorage?.getItem(key)
+    if (stored) raw = JSON.parse(stored)
+  } catch {
+    // The process checkpoint remains usable when storage is unavailable.
+  }
+  const record: MediaServerPreferenceEvidenceRecord =
+    raw &&
+    typeof raw === "object" &&
+    (raw as { version?: unknown }).version ===
+      MEDIA_SERVER_PREFERENCES_STORAGE_VERSION &&
+    (raw as { owner?: unknown }).owner === normalizedOwner
+      ? clone(raw as MediaServerPreferenceEvidenceRecord)
+      : {
+          version: MEDIA_SERVER_PREFERENCES_STORAGE_VERSION,
+          owner: normalizedOwner,
+        }
+  record.draft = normalizedDraft
+  inMemoryRecords.set(key, clone(record))
+  try {
+    targetStorage?.setItem(key, JSON.stringify(record))
+  } catch {
+    // Keep the draft in process memory.
+  }
+  return clone(normalizedDraft)
 }
 
 export function sameOrderedMediaServerList(
@@ -782,7 +961,8 @@ export function moveMediaServerPreference(
 function readCoverage(
   plannedRelayUrls: readonly string[],
   result: SignedEventRelayReadResult | null,
-  observedAt: number
+  observedAt: number,
+  verificationComplete = true
 ): MediaServerLookupEvidence {
   const admittedRelayUrls = result?.admittedRelayUrls ?? plannedRelayUrls
   const admittedRelaySet = new Set(admittedRelayUrls)
@@ -806,16 +986,15 @@ function readCoverage(
     (count, relay) => count + (relay.rejectedEventCount ?? 0),
     0
   )
-  const verified = result?.eventsVerified === true
   const allComplete =
-    verified &&
+    verificationComplete &&
     admittedRelayUrls.length > 0 &&
     admittedRelayUrls.every(
       (relayUrl) => statusByRelay.get(relayUrl) === "success"
     ) &&
     rejectedEventCount === 0
   const usable =
-    verified &&
+    verificationComplete &&
     relays.some(
       (relay) => relay.status === "success" || relay.status === "partial"
     )
@@ -1080,6 +1259,39 @@ function resolutionStatus(
       : "malformed"
 }
 
+/** A sanitized display projection never supplies signed action authority. */
+function unavailableMediaServerResolution(
+  owner: string,
+  storage: MediaServerPreferencesStorage | null,
+  observedAt: number
+): MediaServerPreferenceResolution {
+  const display = loadMediaServerPreferenceRecord(owner, storage)
+  return {
+    owner,
+    status: "lookup_unavailable",
+    coverage: "unavailable",
+    publishedServerUrls: [...(display.published?.serverUrls ?? [])],
+    publishedRevision: null,
+    frontier: null,
+    sourceRelayUrls: [],
+    observedAt,
+    completeObservedAt: null,
+    stale: true,
+    retained: !!display.published,
+    lookup: {
+      observedAt,
+      coverage: "unavailable",
+      plannedRelayCount: 0,
+      successfulRelayCount: 0,
+      partialRelayCount: 0,
+      failedRelayCount: 0,
+      rejectedEventCount: 0,
+      hadEvent: false,
+    },
+    pending: null,
+  }
+}
+
 export async function readMediaServerPreferences(
   owner: string,
   dependencies: ReadMediaServerPreferencesDependencies = {}
@@ -1090,12 +1302,32 @@ export async function readMediaServerPreferences(
     dependencies.storage === undefined
       ? getDefaultStorage()
       : dependencies.storage
-  const retainedRecord = loadMediaServerPreferenceRecord(
-    normalizedOwner,
-    storage
-  )
+  let retainedRecord: Awaited<
+    ReturnType<typeof loadAdmittedMediaServerPreferenceRecord>
+  >
+  try {
+    retainedRecord = await loadAdmittedMediaServerPreferenceRecord(
+      normalizedOwner,
+      storage
+    )
+  } catch (error) {
+    if (
+      !(error instanceof MediaServerPreferencesError) ||
+      error.code !== "evidence_unavailable"
+    )
+      throw error
+    if (dependencies.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    return unavailableMediaServerResolution(
+      normalizedOwner,
+      storage,
+      observedAt
+    )
+  }
   let resolvedPlan: ResolvedMediaServerReadPlan
   let result: SignedEventRelayReadResult | null = null
+  let verificationComplete = true
   try {
     resolvedPlan = await resolveReadPlan(normalizedOwner, dependencies)
     result = await (
@@ -1123,6 +1355,13 @@ export async function readMediaServerPreferences(
         skipHealthFilter: true,
       }
     )
+    const rawEventCount = result.events.length
+    const verification = await verifySignedEvents(result.events, {
+      maxEvents: rawEventCount,
+    })
+    verificationComplete =
+      !verification.truncated && verification.events.length === rawEventCount
+    result = { ...result, events: verification.events }
   } catch (error) {
     if (dependencies.shouldContinue?.() === false) {
       throw new NostrSignerError("authority_changed")
@@ -1148,9 +1387,14 @@ export async function readMediaServerPreferences(
   }
 
   const plan = resolvedPlan.plan
-  const lookup = readCoverage(plan.relayUrls, result, observedAt)
+  const lookup = readCoverage(
+    plan.relayUrls,
+    result,
+    observedAt,
+    verificationComplete
+  )
   const admittedRelayUrls = result?.admittedRelayUrls ?? plan.relayUrls
-  const events = result?.eventsVerified === true ? result.events : []
+  const events = result?.events ?? []
   const networkFrontierEvent = selectLatestObservedBlossomServerListEvent(
     events,
     normalizedOwner
@@ -1159,6 +1403,21 @@ export async function readMediaServerPreferences(
     events,
     normalizedOwner
   )
+  const unverifiedPriorFrontier = retainedRecord.unverifiedPriorFrontier
+  if (
+    unverifiedPriorFrontier &&
+    (!networkFrontierEvent ||
+      strongerRevision(
+        {
+          id: unverifiedPriorFrontier.eventId,
+          created_at: unverifiedPriorFrontier.createdAt,
+        },
+        networkFrontierEvent
+      ))
+  ) {
+    lookup.coverage =
+      lookup.coverage === "unavailable" ? "unavailable" : "partial"
+  }
   const record = clone(retainedRecord)
   if (networkFrontierEvent) {
     const parsed = parseBlossomServerListTags(networkFrontierEvent.tags)
@@ -1191,7 +1450,7 @@ export async function readMediaServerPreferences(
     )
     if (strongerRevision(signedEvent, record.published?.signedEvent)) {
       record.published = {
-        signedEvent: clone(signedEvent),
+        signedEvent,
         serverUrls: [...networkValid.parsed.serverUrls],
         sourceRelayUrls,
         observedAt,
@@ -1217,10 +1476,26 @@ export async function readMediaServerPreferences(
   }
 
   record.latestLookup = lookup
-  preserveCurrentRecordState(
-    record,
-    loadMediaServerPreferenceRecord(normalizedOwner, storage)
-  )
+  try {
+    preserveCurrentRecordState(
+      record,
+      await loadAdmittedMediaServerPreferenceRecord(normalizedOwner, storage)
+    )
+  } catch (error) {
+    if (
+      !(error instanceof MediaServerPreferencesError) ||
+      error.code !== "evidence_unavailable"
+    )
+      throw error
+    if (dependencies.shouldContinue?.() === false) {
+      throw new NostrSignerError("authority_changed")
+    }
+    return unavailableMediaServerResolution(
+      normalizedOwner,
+      storage,
+      observedAt
+    )
+  }
   const saved = saveMediaServerPreferenceRecord(record, storage)
   const networkPublishedSelected =
     !!networkValid && saved.published?.signedEvent.id === networkValid.event.id
@@ -1442,11 +1717,20 @@ async function verifyPreferenceReadBack(input: {
         skipHealthFilter: true,
       }
     )
-    if (result.eventsVerified !== true) {
+    const verification = await verifySignedEvents(result.events, {
+      maxEvents: result.events.length,
+    })
+    if (
+      verification.truncated ||
+      verification.events.length !== result.events.length
+    ) {
       return { confirmed: false, sourceRelayUrls: [], complete: false }
     }
-    const observed = result.events.some(
-      (event) => event.id === input.pending.signedEvent.id
+    const observed = verification.events.some(
+      (event) =>
+        isVerifiedNostrEvent(event) &&
+        event.id === input.pending.signedEvent.id &&
+        event.sig === input.pending.signedEvent.sig
     )
     const sourceRelayUrls = uniqueWithinPlan(
       result.eventSourceRelayUrls[input.pending.signedEvent.id] ?? [],
@@ -1584,7 +1868,7 @@ async function deliverPendingPreference(input: {
   )
   preserveCurrentRecordState(
     input.record,
-    loadMediaServerPreferenceRecord(input.owner, input.storage)
+    await loadAdmittedMediaServerPreferenceRecord(input.owner, input.storage)
   )
   if (
     !input.record.pending ||
@@ -1617,7 +1901,7 @@ async function deliverPendingPreference(input: {
 
   preserveCurrentRecordState(
     input.record,
-    loadMediaServerPreferenceRecord(input.owner, input.storage)
+    await loadAdmittedMediaServerPreferenceRecord(input.owner, input.storage)
   )
   if (
     !input.record.pending ||
@@ -1640,7 +1924,7 @@ async function deliverPendingPreference(input: {
   if (readBack.confirmed) {
     const observedAt = (input.dependencies.now ?? Date.now)()
     input.record.published = {
-      signedEvent: clone(pending.signedEvent),
+      signedEvent: pending.signedEvent,
       serverUrls: [...pending.serverUrls],
       sourceRelayUrls: [...readBack.sourceRelayUrls],
       observedAt,
@@ -1661,7 +1945,7 @@ async function deliverPendingPreference(input: {
 
   return {
     outcome,
-    signedEvent: clone(pending.signedEvent),
+    signedEvent: pending.signedEvent,
     acceptedRelayCount: pending.acknowledgedRelayUrls.length,
     rejectedRelayCount: pending.rejectedRelayUrls.length,
     timedOutRelayCount: pending.timedOutRelayUrls.length,
@@ -1701,7 +1985,7 @@ export async function publishMediaServerPreferences(
       "Media server preference evidence changed after review. Review the current state and try again."
     )
   }
-  const record = loadMediaServerPreferenceRecord(owner, storage)
+  const record = await loadAdmittedMediaServerPreferenceRecord(owner, storage)
   if (record.pending) {
     throw new MediaServerPreferencesError(
       "pending_publish",
@@ -1750,11 +2034,23 @@ export async function publishMediaServerPreferences(
       "The signer returned an invalid media server preference event."
     )
   }
-  const latestRecord = loadFreshMediaServerPreferenceRecord(owner, storage)
+  const admission = await admitPublicEvent(signedEvent)
+  assertContinue(dependencies.shouldContinue)
+  if (admission.status !== "verified") {
+    throw new MediaServerPreferencesError(
+      "invalid_signature",
+      "The signer returned an event that could not be admitted."
+    )
+  }
+  const latestRecord = await loadAdmittedMediaServerPreferenceRecord(
+    owner,
+    storage
+  )
   const reviewedFrontierEventId = current.frontier?.eventId ?? null
   const latestFrontierEventId = latestRecord.frontier?.eventId ?? null
   if (
     latestRecord.pending ||
+    latestRecord.unverifiedPriorFrontier ||
     latestFrontierEventId !== reviewedFrontierEventId
   ) {
     throw new MediaServerPreferencesError(
@@ -1765,7 +2061,7 @@ export async function publishMediaServerPreferences(
   const staged = stagePendingPublish(
     latestRecord,
     {
-      signedEvent: clone(signedEvent),
+      signedEvent: admission.event,
       serverUrls,
       publishRelayUrls: publishPlan.relayUrls,
       ownerSelectedRelayUrls: publishPlan.ownerSelectedRelayUrls,
@@ -1793,7 +2089,10 @@ export async function retryMediaServerPreferencesPublish(
     dependencies.storage === undefined
       ? getDefaultStorage()
       : dependencies.storage
-  const retainedRecord = loadMediaServerPreferenceRecord(owner, storage)
+  const retainedRecord = await loadAdmittedMediaServerPreferenceRecord(
+    owner,
+    storage
+  )
   if (!retainedRecord.pending) {
     throw new MediaServerPreferencesError(
       "missing_pending_publish",
@@ -1802,7 +2101,7 @@ export async function retryMediaServerPreferencesPublish(
   }
   dependencies.onPhase?.("checking")
   await readMediaServerPreferences(owner, dependencies)
-  const record = loadMediaServerPreferenceRecord(owner, storage)
+  const record = await loadAdmittedMediaServerPreferenceRecord(owner, storage)
   if (
     record.pending &&
     recordSupersedesEvent(record, record.pending.signedEvent)

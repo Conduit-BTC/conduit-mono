@@ -1,15 +1,16 @@
 import {
+  installPrivateInboxTestRead,
+  cleanupPrivateInboxTestReads,
+} from "./helpers/private-inbox"
+import {
   plainTestSigner,
   setTestAccountSigner as setSigner,
   removeTestAccountSigner as removeSigner,
 } from "./helpers/plain-signer"
-import {
-  giftWrap,
-  NDKEvent,
-  NDKPrivateKeySigner,
-  NDKUser,
-} from "@nostr-dev-kit/ndk"
-import { afterEach, describe, expect, it } from "bun:test"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
+import * as messaging from "../packages/core/src/protocol/messaging"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -22,8 +23,6 @@ import {
   canCompleteFutureMarketHandoff,
   readFutureMarketMerchantClaim,
   publishFutureMarketReadyReceipt,
-  getNdk,
-  __setCommerceTestOverrides,
   buildFutureMarketPrivateRumor,
   readFutureMarketReadyReceipts,
   readFutureMarketHandoffAcks,
@@ -43,11 +42,14 @@ import {
   reduceFutureMarketOrganizerClaims,
   validateFutureMarketPrivateUpdate,
   verifyEventMarketOrderEvidence,
+  admitEmbeddedEventMarketOrderEvidence,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { assertCreatedEventMarketPickupTerms } from "../apps/market/src/lib/order-pickup-retry"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
 
-afterEach(() => {
+afterEach(async () => {
+  await cleanupPrivateInboxTestReads()
   __resetCommerceTestOverrides()
   __resetFutureMarketHandoffTestState()
 })
@@ -172,8 +174,28 @@ const order = orderSchema.parse({
   createdAt: 102_000,
 })
 
+async function admittedVerifier(
+  input: Parameters<typeof verifyEventMarketOrderEvidence>[0]
+): Promise<ReturnType<typeof verifyEventMarketOrderEvidence>> {
+  const parsed = orderSchema.safeParse(input.order)
+  if (!parsed.success) return verifyEventMarketOrderEvidence(input)
+  const embedded = await admitEmbeddedEventMarketOrderEvidence(parsed.data)
+  const supplied = await Promise.all(
+    input.events.map((event) => admitPublicEvent(event))
+  )
+  return verifyEventMarketOrderEvidence({
+    ...input,
+    events: [
+      ...embedded,
+      ...supplied.flatMap((result) =>
+        result.status === "verified" ? [result.event] : []
+      ),
+    ],
+  })
+}
+
 describe("created future Event Market order evidence", () => {
-  it("binds selected variation specifications to the exact signed product", () => {
+  it("binds selected variation specifications to the exact signed product", async () => {
     const variation = finalizeEvent(
       {
         kind: 30402,
@@ -217,10 +239,12 @@ describe("created future Event Market order evidence", () => {
         })),
       })
     expect(
-      verifyEventMarketOrderEvidence({
-        order: variationOrder([{ key: "Size", value: "Small" }]),
-        events: [],
-      }).status
+      (
+        await admittedVerifier({
+          order: variationOrder([{ key: "Size", value: "Small" }]),
+          events: [],
+        })
+      ).status
     ).toBe("verified")
     for (const selected of [
       [{ key: "Size", value: "Large" }],
@@ -232,7 +256,7 @@ describe("created future Event Market order evidence", () => {
       undefined,
     ]) {
       expect(
-        verifyEventMarketOrderEvidence({
+        await admittedVerifier({
           order: variationOrder(selected),
           events: [],
         })
@@ -240,7 +264,7 @@ describe("created future Event Market order evidence", () => {
     }
   })
 
-  it("binds a series order to its exact signed schedule and selected occurrence", () => {
+  it("binds a series order to its exact signed schedule and selected occurrence", async () => {
     const secondCoordinate = `31923:${organizer}:fair-second`
     const second = finalizeEvent(
       {
@@ -313,7 +337,7 @@ describe("created future Event Market order evidence", () => {
       })),
     })
     expect(
-      verifyEventMarketOrderEvidence({ order: seriesOrder, events: [] })
+      await admittedVerifier({ order: seriesOrder, events: [] })
     ).toMatchObject({ status: "verified", marketCoordinate })
 
     const removedSchedule = finalizeEvent(
@@ -329,7 +353,7 @@ describe("created future Event Market order evidence", () => {
       organizerSecret
     )
     expect(
-      verifyEventMarketOrderEvidence({
+      await admittedVerifier({
         order: seriesOrder,
         events: [removedSchedule, second],
       })
@@ -354,26 +378,24 @@ describe("created future Event Market order evidence", () => {
     }
     expect(orderSchema.safeParse(falseMembership).success).toBe(false)
     expect(
-      verifyEventMarketOrderEvidence({
+      await admittedVerifier({
         order: falseMembership as typeof seriesOrder,
         events: [schedule, calendar],
       })
     ).toEqual({ status: "invalid", reason: "order" })
   })
 
-  it("verifies exact historical signed revisions without consulting a later roster", () => {
-    expect(verifyEventMarketOrderEvidence({ order, events: [] })).toMatchObject(
-      {
-        status: "verified",
-        mode: "merchant_present",
-        assignment: "Booth 12",
-      }
-    )
+  it("verifies exact historical signed revisions without consulting a later roster", async () => {
+    expect(await admittedVerifier({ order, events: [] })).toMatchObject({
+      status: "verified",
+      mode: "merchant_present",
+      assignment: "Booth 12",
+    })
   })
 
-  it("recovers every exact signed revision from the order and rejects coordinate-only claims", () => {
+  it("recovers every exact signed revision from the order and rejects coordinate-only claims", async () => {
     expect(
-      verifyEventMarketOrderEvidence({
+      await admittedVerifier({
         order,
         events: [],
       })
@@ -397,7 +419,7 @@ describe("created future Event Market order evidence", () => {
       }
       expect(orderSchema.safeParse(coordinateOnly).success).toBe(false)
       expect(
-        verifyEventMarketOrderEvidence({
+        await admittedVerifier({
           order: coordinateOnly as typeof order,
           events: signed,
         })
@@ -426,14 +448,14 @@ describe("created future Event Market order evidence", () => {
       })),
     }
     expect(
-      verifyEventMarketOrderEvidence({
+      await admittedVerifier({
         order: tampered as typeof order,
         events: signed,
       })
     ).toEqual({ status: "invalid", reason: "order" })
   })
 
-  it("rejects a valid signed market with different roster terms", () => {
+  it("rejects a valid signed market with different roster terms", async () => {
     const changedMarket = finalizeEvent(
       {
         ...buildEventMarketRosterDraft({
@@ -472,14 +494,14 @@ describe("created future Event Market order evidence", () => {
     }
     expect(orderSchema.safeParse(forged).success).toBe(false)
     expect(
-      verifyEventMarketOrderEvidence({
+      await admittedVerifier({
         order: forged as typeof order,
         events: [],
       })
     ).toEqual({ status: "invalid", reason: "order" })
   })
 
-  it("matches a signed zero SAT source price after checkout normalizes the order to SATS", () => {
+  it("matches a signed zero SAT source price after checkout normalizes the order to SATS", async () => {
     const zeroProduct = finalizeEvent(
       {
         kind: 30402,
@@ -517,15 +539,17 @@ describe("created future Event Market order evidence", () => {
       })),
     })
     expect(
-      verifyEventMarketOrderEvidence({
-        order: zeroOrder,
-        events: [
-          market,
-          calendar,
-          grant,
-          zeroProduct,
-        ] as SignedPublicNostrEvent[],
-      }).status
+      (
+        await admittedVerifier({
+          order: zeroOrder,
+          events: [
+            market,
+            calendar,
+            grant,
+            zeroProduct,
+          ] as SignedPublicNostrEvent[],
+        })
+      ).status
     ).toBe("verified")
   })
 })
@@ -578,7 +602,7 @@ describe("future Event Market private physical handoff", () => {
   ] as SignedPublicNostrEvent[]
 
   for (const visibility of ["hidden", "private"]) {
-    it(`rejects the exact signed ${visibility} product before payment or release`, () => {
+    it(`rejects the exact signed ${visibility} product before payment or release`, async () => {
       const hiddenProduct = finalizeEvent(
         {
           kind: product.kind,
@@ -606,21 +630,20 @@ describe("future Event Market private physical handoff", () => {
         })),
       }
       expect(
-        verifyEventMarketOrderEvidence({ order: hiddenOrder, events: [] })
-          .status
+        (await admittedVerifier({ order: hiddenOrder, events: [] })).status
       ).toBe("invalid")
-      expect(() =>
+      await expect(
         buildFutureMarketReadyReceipt({
           order: hiddenOrder,
           signedOrderEvidence: [],
           paymentAuthenticated: true,
           releaseConfirmed: true,
         })
-      ).toThrow()
+      ).rejects.toThrow()
     })
   }
 
-  it("rejects a positive signed fiat price forged into a free order", () => {
+  it("rejects a positive signed fiat price forged into a free order", async () => {
     const forged = {
       ...handoffOrder,
       subtotal: 0,
@@ -630,40 +653,40 @@ describe("future Event Market private physical handoff", () => {
       })),
     }
     expect(orderSchema.safeParse(forged).success).toBe(false)
-    expect(
-      verifyEventMarketOrderEvidence({ order: forged, events: [] }).status
-    ).toBe("invalid")
-    expect(() =>
+    expect((await admittedVerifier({ order: forged, events: [] })).status).toBe(
+      "invalid"
+    )
+    await expect(
       buildFutureMarketReadyReceipt({
         order: forged,
         signedOrderEvidence: [],
         paymentAuthenticated: false,
         releaseConfirmed: true,
       })
-    ).toThrow()
+    ).rejects.toThrow()
   })
 
-  it("rejects a subtotal that does not equal the quantity-adjusted line prices", () => {
+  it("rejects a subtotal that does not equal the quantity-adjusted line prices", async () => {
     const forged = {
       ...handoffOrder,
       subtotal: 1200,
       items: handoffOrder.items.map((item) => ({ ...item, quantity: 2 })),
     }
     expect(orderSchema.safeParse(forged).success).toBe(false)
-    expect(
-      verifyEventMarketOrderEvidence({ order: forged, events: [] }).status
-    ).toBe("invalid")
-    expect(() =>
+    expect((await admittedVerifier({ order: forged, events: [] })).status).toBe(
+      "invalid"
+    )
+    await expect(
       buildFutureMarketReadyReceipt({
         order: forged,
         signedOrderEvidence: [],
         paymentAuthenticated: true,
         releaseConfirmed: true,
       })
-    ).toThrow()
+    ).rejects.toThrow()
   })
 
-  it("permits an exact signed zero-price product without payment evidence", () => {
+  it("permits an exact signed zero-price product without payment evidence", async () => {
     const zeroProduct = finalizeEvent(
       {
         kind: product.kind,
@@ -696,25 +719,27 @@ describe("future Event Market private physical handoff", () => {
       })),
     })
     expect(
-      buildFutureMarketReadyReceipt({
-        order: zeroOrder,
-        signedOrderEvidence: [],
-        paymentAuthenticated: false,
-        releaseConfirmed: true,
-      }).releaseAuthorized
+      (
+        await buildFutureMarketReadyReceipt({
+          order: zeroOrder,
+          signedOrderEvidence: [],
+          paymentAuthenticated: false,
+          releaseConfirmed: true,
+        })
+      ).releaseAuthorized
     ).toBe(true)
   })
 
-  it("requires exact historical signed terms and paid merchant release, then redacts organizer payload", () => {
-    expect(() =>
+  it("requires exact historical signed terms and paid merchant release, then redacts organizer payload", async () => {
+    await expect(
       buildFutureMarketReadyReceipt({
         order: handoffOrder,
         signedOrderEvidence: evidence,
         paymentAuthenticated: false,
         releaseConfirmed: true,
       })
-    ).toThrow()
-    const receipt = buildFutureMarketReadyReceipt({
+    ).rejects.toThrow()
+    const receipt = await buildFutureMarketReadyReceipt({
       order: handoffOrder,
       signedOrderEvidence: [],
       paymentAuthenticated: true,
@@ -723,7 +748,7 @@ describe("future Event Market private physical handoff", () => {
     })
     expect(receipt.items).toHaveLength(1)
     expect(receipt.items[0]?.quantity).toBe(1)
-    expect(verifyFutureMarketReceiptAuthority(receipt)).toBe(true)
+    expect(await verifyFutureMarketReceiptAuthority(receipt)).toBe(true)
     expect(
       receipt.authorityEvidence?.map((event) => event.kind).sort()
     ).toEqual([30409, 31923, 3841].sort())
@@ -772,7 +797,7 @@ describe("future Event Market private physical handoff", () => {
     )
   })
 
-  it("rejects forged buyer specification labels before issuing a ready receipt", () => {
+  it("rejects forged buyer specification labels before issuing a ready receipt", async () => {
     const forged = orderSchema.parse({
       ...handoffOrder,
       items: handoffOrder.items.map((item) => ({
@@ -780,25 +805,23 @@ describe("future Event Market private physical handoff", () => {
         selectedSpecifications: [{ key: "Scent", value: "Mint" }],
       })),
     })
-    expect(
-      verifyEventMarketOrderEvidence({ order: forged, events: [] })
-    ).toEqual({
+    expect(await admittedVerifier({ order: forged, events: [] })).toEqual({
       status: "invalid",
       reason: "product",
     })
-    expect(() =>
+    await expect(
       buildFutureMarketReadyReceipt({
         order: forged,
         signedOrderEvidence: [],
         paymentAuthenticated: true,
         releaseConfirmed: true,
       })
-    ).toThrow("Exact signed organizer handoff evidence is required.")
+    ).rejects.toThrow("Exact signed organizer handoff evidence is required.")
   })
 
   for (const coverage of ["partial", "capped"] as const) {
     it(`retains exact ready and ACK authority with ${coverage} inbox coverage`, async () => {
-      const receipt = buildFutureMarketReadyReceipt({
+      const receipt = await buildFutureMarketReadyReceipt({
         order: handoffOrder,
         signedOrderEvidence: [],
         paymentAuthenticated: true,
@@ -816,36 +839,12 @@ describe("future Event Market private physical handoff", () => {
       let principal = organizer
       let rumors = [ready]
       const setRead = () =>
-        __setCommerceTestOverrides({
-          allowMissingProtectedReadAuthorization: true,
-          getAccountSigner: () =>
-            ({ getPublicKey: async () => principal }) as never,
-          resolveInboxRelayUrls: async () => ["wss://future.inbox.test"],
-          fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-            events: rumors.map(
-              (rumor) =>
-                new NDKEvent(
-                  undefined,
-                  finalizeEvent(
-                    {
-                      kind: 1059,
-                      created_at: rumor.created_at!,
-                      tags: [["p", principal]],
-                      content: rumor.id!,
-                    },
-                    merchantSecret
-                  )
-                )
-            ),
-            attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-            successfulRelayUrls: [...(options?.relayUrls ?? [])],
-            failedRelayUrls:
-              coverage === "partial" ? [...(options?.relayUrls ?? [])] : [],
-            cappedRelayUrls:
-              coverage === "capped" ? [...(options?.relayUrls ?? [])] : [],
-          }),
-          giftUnwrap: async (event) =>
-            rumors.find((rumor) => rumor.id === event.content)!,
+        installPrivateInboxTestRead({
+          principalSecret:
+            principal === organizer ? organizerSecret : merchantSecret,
+          authorSecrets: [merchantSecret, organizerSecret],
+          rumors,
+          coverage,
         })
       setRead()
       const organizerRead = await readFutureMarketReadyReceipts({
@@ -855,14 +854,12 @@ describe("future Event Market private physical handoff", () => {
       expect(organizerRead.stale).toBe(false)
       expect(organizerRead.coverageDegraded).toBe(true)
       expect(organizerRead.claims[0]?.state).toBe("ready_for_pickup")
-      __setCommerceTestOverrides({
-        fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-          events: [],
-          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-          successfulRelayUrls: [],
-          failedRelayUrls: [...(options?.relayUrls ?? [])],
-          cappedRelayUrls: [],
-        }),
+      installPrivateInboxTestRead({
+        principalSecret:
+          principal === organizer ? organizerSecret : merchantSecret,
+        authorSecrets: [merchantSecret, organizerSecret],
+        rumors: [],
+        coverage: "unavailable",
       })
       const retained = await readFutureMarketReadyReceipts({
         organizerPubkey: organizer,
@@ -893,14 +890,12 @@ describe("future Event Market private physical handoff", () => {
           hasLocalRevocation: true,
         })
       ).toBe(false)
-      __setCommerceTestOverrides({
-        fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-          events: [],
-          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-          successfulRelayUrls: [],
-          failedRelayUrls: [...(options?.relayUrls ?? [])],
-          cappedRelayUrls: [],
-        }),
+      installPrivateInboxTestRead({
+        principalSecret:
+          principal === organizer ? organizerSecret : merchantSecret,
+        authorSecrets: [merchantSecret, organizerSecret],
+        rumors: [],
+        coverage: "unavailable",
       })
       const degradedAck = await readFutureMarketHandoffAcks({
         merchantPubkey: merchant,
@@ -944,8 +939,8 @@ describe("future Event Market private physical handoff", () => {
     })
   }
 
-  it("binds ACK and revocation to one exact receipt and detects conflict", () => {
-    const receipt = buildFutureMarketReadyReceipt({
+  it("binds ACK and revocation to one exact receipt and detects conflict", async () => {
+    const receipt = await buildFutureMarketReadyReceipt({
       order: handoffOrder,
       signedOrderEvidence: evidence,
       paymentAuthenticated: true,
@@ -1030,7 +1025,7 @@ describe("future Event Market private physical handoff", () => {
     ).toBe("conflicting")
   })
 
-  it("archives more than 100 completed deliveries without losing exact retry evidence", () => {
+  it("archives more than 100 completed deliveries without losing exact retry evidence", async () => {
     const values = new Map<string, string>()
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
@@ -1118,7 +1113,7 @@ describe("future Event Market private physical handoff", () => {
   })
 
   it("fresh-device authenticated self-copy recovery prevents signing another release", async () => {
-    const receipt = buildFutureMarketReadyReceipt({
+    const receipt = await buildFutureMarketReadyReceipt({
       order: handoffOrder,
       signedOrderEvidence: evidence,
       paymentAuthenticated: true,
@@ -1134,31 +1129,10 @@ describe("future Event Market private physical handoff", () => {
         return ""
       },
     }
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(signer as never),
-      resolveInboxRelayUrls: async () => ["wss://fresh.inbox.test"],
-      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-        events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: 250,
-                tags: [["p", merchant]],
-                content: ready.id!,
-              },
-              merchantSecret
-            )
-          ),
-        ],
-        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-        successfulRelayUrls: [...(options?.relayUrls ?? [])],
-        failedRelayUrls: [],
-        cappedRelayUrls: [],
-      }),
-      giftUnwrap: async () => ready,
+    installPrivateInboxTestRead({
+      principalSecret: merchantSecret,
+      authorSecrets: [merchantSecret],
+      rumors: [ready],
     })
     const recovered = await readFutureMarketMerchantClaim({
       order: handoffOrder,
@@ -1179,18 +1153,78 @@ describe("future Event Market private physical handoff", () => {
     expect(signatures).toBe(0)
   })
 
-  it("payment retry verifies retained physical terms without requiring current roster admission", () => {
+  it.each([
+    "permission_declined",
+    "provider_unavailable",
+    "decrypt_failed",
+  ] as const)(
+    "stops fresh-device issuance on retained %s self-copy and recovers the original claim",
+    async (reason) => {
+      const receipt = await buildFutureMarketReadyReceipt({
+        order: handoffOrder,
+        signedOrderEvidence: evidence,
+        paymentAuthenticated: true,
+        releaseConfirmed: true,
+        issuedAt: 250,
+      })
+      const ready = buildFutureMarketPrivateRumor(receipt)
+      const owner = installPrivateInboxTestRead({
+        principalSecret: merchantSecret,
+        authorSecrets: [merchantSecret],
+        rumors: [ready],
+      })
+      const decrypt = owner.signer.decryptNip44!
+      owner.signer.decryptNip44 = async () => {
+        throw new NostrSignerError(reason)
+      }
+      let persisted = 0
+      const publisher = spyOn(
+        messaging,
+        "publishPrivateMessage"
+      ).mockResolvedValue({} as never)
+      const issue = () =>
+        publishFutureMarketReadyReceipt({
+          order: handoffOrder,
+          signedOrderEvidence: evidence,
+          paymentAuthenticated: true,
+          releaseConfirmed: true,
+          signer: owner.signer,
+          persistExactWraps: () => {
+            persisted += 1
+          },
+        })
+      try {
+        await expect(issue()).rejects.toThrow("recovery is incomplete")
+        expect(publisher).not.toHaveBeenCalled()
+        expect(persisted).toBe(0)
+        expect(
+          (await owner.store.wrappers()).some((row) => row.state !== "opened")
+        ).toBe(true)
+        owner.signer.decryptNip44 = decrypt
+        await owner.retryDecode()
+        __resetFutureMarketHandoffTestState()
+        await expect(issue()).rejects.toThrow("already exists")
+        expect(publisher).not.toHaveBeenCalled()
+        expect(persisted).toBe(0)
+      } finally {
+        owner.signer.decryptNip44 = decrypt
+        publisher.mockRestore()
+      }
+    }
+  )
+
+  it("payment retry verifies retained physical terms without requiring current roster admission", async () => {
     const original = JSON.stringify(handoffOrder)
-    expect(() =>
+    await expect(
       assertCreatedEventMarketPickupTerms(handoffOrder)
-    ).not.toThrow()
+    ).resolves.toBeUndefined()
     expect(JSON.stringify(handoffOrder)).toBe(original)
-    expect(() =>
+    await expect(
       assertCreatedEventMarketPickupTerms({
         ...handoffOrder,
         subtotal: handoffOrder.subtotal + 1,
       })
-    ).toThrow("exact signed")
+    ).rejects.toThrow("exact signed")
   })
 
   it("authenticates stored encrypted self-copy after restart while inbox reads fail", async () => {
@@ -1214,7 +1248,7 @@ describe("future Event Market private physical handoff", () => {
     )
     const lease = setSigner(signer)
     try {
-      const receipt = buildFutureMarketReadyReceipt({
+      const receipt = await buildFutureMarketReadyReceipt({
         order: handoffOrder,
         signedOrderEvidence: evidence,
         paymentAuthenticated: true,
@@ -1222,27 +1256,12 @@ describe("future Event Market private physical handoff", () => {
         issuedAt: 260,
       })
       const ready = buildFutureMarketPrivateRumor(receipt)
-      ready.ndk = getNdk()
-      const selfWrap = await giftWrap(
-        ready,
-        new NDKUser({ pubkey: merchant }),
-        signer,
-        { rumorKind: ready.kind }
-      )
       const setRead = (available: boolean) =>
-        __setCommerceTestOverrides({
-          allowMissingProtectedReadAuthorization: true,
-          getAccountSigner: () => plainTestSigner(signer as never),
-          resolveInboxRelayUrls: async () => ["wss://restart.inbox.test"],
-          fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-            events: available ? [selfWrap] : [],
-            attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-            successfulRelayUrls: available
-              ? [...(options?.relayUrls ?? [])]
-              : [],
-            failedRelayUrls: available ? [] : [...(options?.relayUrls ?? [])],
-            cappedRelayUrls: [],
-          }),
+        installPrivateInboxTestRead({
+          principalSecret: merchantSecret,
+          authorSecrets: [merchantSecret],
+          rumors: available ? [ready] : [],
+          coverage: available ? "complete" : "unavailable",
         })
       setRead(true)
       const first = await readFutureMarketMerchantClaim({

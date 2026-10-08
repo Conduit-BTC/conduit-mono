@@ -1,6 +1,5 @@
-import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -22,11 +21,28 @@ import {
   type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import { admitFixture } from "./helpers/public-event"
 import {
   __resetProtectedReadSigner,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
-import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
+import type {
+  NostrKeySigner,
+  SignedNostrEvent,
+} from "../packages/core/src/protocol/nostr-event-signer"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
+import { getEventHash } from "nostr-tools"
+import { v2 } from "nostr-tools/nip44"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import { getProtectedReadAuthorization } from "../packages/core/src/protocol/protected-read-authorization"
+import type {
+  ReadProtectedInboxOptions,
+  ProtectedInboxReadResult,
+} from "../packages/core/src/protocol/protected-inbox-read"
 const ORGANIZER_SECRET = generateSecretKey()
 const MERCHANT_SECRET = generateSecretKey()
 const WRAP_SECRET = generateSecretKey()
@@ -36,20 +52,16 @@ const MARKET = `30409:${ORGANIZER}:market`
 const CALENDAR = `31923:${ORGANIZER}:market-day`
 const ISSUED_AT = 1_700_000_100
 const originalConfig = structuredClone(config)
-afterEach(() => {
+const recoveryOwners: CommerceInbox[] = []
+const recoveryDatabases: ConduitDB[] = []
+afterEach(async () => {
+  for (const owner of recoveryOwners.splice(0)) owner.stop()
+  for (const db of recoveryDatabases.splice(0)) await db.delete()
   Object.assign(config, structuredClone(originalConfig))
   __resetInboxRelayCache()
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
 })
-function protectedReadSigner(secret: Uint8Array): NostrEventSigner {
-  const pubkey = getPublicKey(secret)
-  return {
-    authMethod: "nip07",
-    getPublicKey: async () => pubkey,
-    signEvent: async (event) => finalizeEvent(event, secret),
-  }
-}
 function readyPayload(
   overrides: Partial<FutureMarketReadyReceiptSchema> = {}
 ): FutureMarketReadyReceiptSchema {
@@ -96,25 +108,6 @@ function revocationPayload(readyReceiptId: string) {
     issuedAt: ISSUED_AT + 1,
   })
 }
-function signedWrap(
-  recipientPubkey: string,
-  nonce?: number,
-  createdAt = ISSUED_AT
-): NDKEvent {
-  const raw = finalizeEvent(
-    {
-      kind: EVENT_KINDS.GIFT_WRAP,
-      created_at: createdAt,
-      tags: [["p", recipientPubkey]],
-      content: `ciphertext-${recipientPubkey}-${nonce ?? ""}`,
-    },
-    WRAP_SECRET
-  ) as SignedPublicNostrEvent
-  return new NDKEvent(undefined, raw)
-}
-const organizerSigner = {
-  user: async () => ({ pubkey: ORGANIZER }),
-} as unknown as NDKSigner
 // Compose the actual shared encrypted inbox scan with the current claim reducer.
 async function readCurrentClaims(input: {
   organizerPubkey: string
@@ -144,17 +137,20 @@ describe("current Event Market private inbox authority and bounded scanning", ()
         },
         ORGANIZER_SECRET
       )
-    const resolve = (relayUrl: string, createdAt: number) =>
-      resolveEventMarketOrganizerInbox(ORGANIZER, {
+    const resolve = async (relayUrl: string, createdAt: number) => {
+      const observed = await admitFixture(declaration(relayUrl, createdAt))
+      attachEventSourceRelayUrl(observed as never, isolatedRelayUrl)
+      return resolveEventMarketOrganizerInbox(ORGANIZER, {
         relayUrls: [isolatedRelayUrl],
         now: () => createdAt * 1_000,
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration(relayUrl, createdAt))],
+          events: [observed],
           attemptedRelayUrls: [isolatedRelayUrl],
           successfulRelayUrls: [isolatedRelayUrl],
           failedRelayUrls: [],
         }),
       })
+    }
 
     await expect(resolve(isolatedRelayUrl, ISSUED_AT)).resolves.toEqual({
       state: "ready",
@@ -179,12 +175,14 @@ describe("current Event Market private inbox authority and bounded scanning", ()
       },
       ORGANIZER_SECRET
     )
+    const observed = await admitFixture(declaration)
+    attachEventSourceRelayUrl(observed as never, "wss://discovery.relay.dev")
     await expect(
       resolveEventMarketOrganizerInbox(ORGANIZER, {
         relayUrls: ["wss://discovery.relay.dev"],
         now: () => ISSUED_AT * 1_000,
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration)],
+          events: [observed],
           attemptedRelayUrls: ["wss://discovery.relay.dev"],
           successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],
@@ -214,780 +212,498 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     ).resolves.toMatchObject({ state: "blocked", reason: "not_observed" })
   })
 
-  it("reads handoff wraps from declared kind-10050 relays only", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const compatibilityRelay = "wss://compatibility.relay.dev"
-    const wrap = signedWrap(ORGANIZER)
-    const seenPlans: string[][] = []
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (_filter, options) => {
-        const relays = [...(options?.relayUrls ?? [])]
-        seenPlans.push(relays)
-        return relays.includes(compatibilityRelay) ? [wrap] : []
+  function recoveryOwner(
+    database?: ConduitDB,
+    options: {
+      principalSecret?: Uint8Array
+      refuseDecrypt?: () => boolean
+    } = {}
+  ): CommerceInbox {
+    const principalSecret = options.principalSecret ?? ORGANIZER_SECRET
+    const principal = getPublicKey(principalSecret)
+    const signer: NostrKeySigner = {
+      pubkey: principal,
+      authMethod: "nip07",
+      getPublicKey: async () => principal,
+      signEvent: async (event) => finalizeEvent(event, principalSecret),
+      encryptNip44: async (peer, value) =>
+        v2.encrypt(value, v2.utils.getConversationKey(principalSecret, peer)),
+      decryptNip44: async (peer, value) => {
+        if (options.refuseDecrypt?.()) throw new NostrSignerError("unavailable")
+        return v2.decrypt(
+          value,
+          v2.utils.getConversationKey(principalSecret, peer)
+        )
       },
-      giftUnwrap: async () => buildFutureMarketPrivateRumor(readyPayload()),
-    })
+      decryptLegacy: async () => "",
+    }
+    installProtectedReadSigner(signer, principal, () => true)
+    const authorization = getProtectedReadAuthorization(principal)
+    if (!authorization) throw new Error("Expected organizer authorization")
+    const resolvedDatabase =
+      database ??
+      new ConduitDB(`organizer-inbox-${crypto.randomUUID()}`, {
+        indexedDB: new IDBFactory(),
+        IDBKeyRange,
+      })
+    if (!database) recoveryDatabases.push(resolvedDatabase)
+    const owner = new CommerceInbox(
+      authorization,
+      signer,
+      new CommerceInboxStore(authorization, resolvedDatabase)
+    )
+    recoveryOwners.push(owner)
+    return owner
+  }
 
-    expect(
-      (await getEventMarketPrivateMessageList(ORGANIZER)).messages
-    ).toEqual([])
-    expect(seenPlans).toEqual([[declaredRelay]])
-
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (_filter, options) => {
-        const relays = [...(options?.relayUrls ?? [])]
-        seenPlans.push(relays)
-        return relays.includes(declaredRelay) ? [wrap] : []
+  function encryptedRecoveryWrap(
+    rumor: {
+      kind: number
+      pubkey: string
+      created_at?: number
+      tags: string[][]
+      content: string
+      id?: string
+    },
+    createdAt = ISSUED_AT + 1_000,
+    recipient = ORGANIZER
+  ): SignedNostrEvent {
+    const inner = {
+      ...rumor,
+      created_at: rumor.created_at ?? createdAt,
+      id: rumor.id ?? "",
+    }
+    const seal = finalizeEvent(
+      {
+        kind: 13,
+        created_at: createdAt,
+        tags: [],
+        content: v2.encrypt(
+          JSON.stringify(inner),
+          v2.utils.getConversationKey(MERCHANT_SECRET, recipient)
+        ),
       },
+      MERCHANT_SECRET
+    )
+    return finalizeEvent(
+      {
+        kind: 1_059,
+        created_at: createdAt,
+        tags: [["p", recipient]],
+        content: v2.encrypt(
+          JSON.stringify(seal),
+          v2.utils.getConversationKey(WRAP_SECRET, recipient)
+        ),
+      },
+      WRAP_SECRET
+    )
+  }
+
+  function recoveryRead(relayEvents: Map<string, SignedNostrEvent[]>) {
+    const calls: ReadProtectedInboxOptions[] = []
+    const read = async (
+      options: ReadProtectedInboxOptions
+    ): Promise<ProtectedInboxReadResult> => {
+      calls.push(options)
+      const relayUrl = options.relayUrls[0]!
+      const events = (relayEvents.get(relayUrl) ?? [])
+        .filter(
+          (event) =>
+            (options.since === undefined ||
+              event.created_at >= options.since) &&
+            (options.until === undefined || event.created_at <= options.until)
+        )
+        .sort(
+          (left, right) =>
+            right.created_at - left.created_at ||
+            left.id.localeCompare(right.id)
+        )
+        .slice(0, options.limit)
+      return {
+        events,
+        coverage: "complete",
+        auth: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+        relayResult: {
+          status: "success",
+          observations: [{ type: "eose", relayIndex: 0 }],
+          relays: [
+            {
+              relayIndex: 0,
+              status: "success",
+              auth: "not_challenged",
+              eventCount: events.length,
+              duplicateCount: 0,
+              malformedCount: 0,
+              unusableCount: 0,
+            },
+          ],
+          attemptedCount: 1,
+          completedCount: 1,
+          failedCount: 0,
+          authoritativeEmpty: events.length === 0,
+        },
+      }
+    }
+    return { read, calls }
+  }
+
+  function directWrap(index: number, createdAt: number): SignedNostrEvent {
+    const rumor = {
+      kind: 14,
+      pubkey: MERCHANT,
+      created_at: createdAt,
+      tags: [["p", ORGANIZER]],
+      content: `synthetic direct ${index}`,
+    }
+    return encryptedRecoveryWrap(
+      { ...rumor, id: getEventHash(rumor) },
+      createdAt
+    )
+  }
+
+  it("reads current handoff authority only from the declared relay and excludes it from general search", async () => {
+    const relay = "wss://organizer.inbox.relay.dev"
+    const owner = recoveryOwner()
+    const ready = buildFutureMarketPrivateRumor(readyPayload())
+    const sources = new Map([[relay, [encryptedRecoveryWrap(ready)]]])
+    const { read, calls } = recoveryRead(sources)
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [relay],
+      readProtectedInbox: read,
     })
+    const result = await readCurrentClaims({
+      organizerPubkey: ORGANIZER,
+      marketCoordinate: MARKET,
+    })
+    expect(result.data[0]?.state).toBe("ready_for_pickup")
+    expect(result.inbox?.coverage).toBe("complete")
     expect(
-      (await getEventMarketPrivateMessageList(ORGANIZER)).messages.map(
-        (message) => message.type
+      calls.every(
+        (call) => call.relayUrls.length === 1 && call.relayUrls[0] === relay
       )
-    ).toEqual(["future_market_ready"])
-    expect(seenPlans.at(-1)).toEqual([declaredRelay])
+    ).toBe(true)
+    expect(owner.getSnapshot().externalRecords).toEqual([])
+    expect(owner.getSnapshot().orderMessages).toEqual([])
   })
 
-  it("reads handoff wraps only from the exact configured E2E loopback", async () => {
-    const isolatedRelayUrl = "ws://127.0.0.1:7777"
-    const otherLoopbackRelayUrl = "ws://127.0.0.1:7788"
-    Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
-    const wrap = signedWrap(ORGANIZER)
-    const seenPlans: string[][] = []
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [
-        otherLoopbackRelayUrl,
-        isolatedRelayUrl,
+  it("retains a late revocation past a bounded page without certifying the stitched history", async () => {
+    const relay = "wss://organizer.inbox.relay.dev"
+    const owner = recoveryOwner()
+    const ready = buildFutureMarketPrivateRumor(readyPayload())
+    const revocation = buildFutureMarketPrivateRumor(
+      revocationPayload(ready.id)
+    )
+    const high = ISSUED_AT + 1000
+    const sources = new Map([
+      [
+        relay,
+        [
+          ...Array.from({ length: 55 }, (_, i) => directWrap(i, high - i)),
+          encryptedRecoveryWrap(ready, high - 55),
+          encryptedRecoveryWrap(revocation, high - 56),
+        ],
       ],
-      fetchPublicEvents: async (_filter, options) => {
-        const relays = [...(options?.relayUrls ?? [])]
-        seenPlans.push(relays)
-        return relays.includes(isolatedRelayUrl) ? [wrap] : []
-      },
-      giftUnwrap: async () => buildFutureMarketPrivateRumor(readyPayload()),
-    })
-
-    const exact = await getEventMarketPrivateMessageList(ORGANIZER)
-    expect(exact.messages.map((message) => message.type)).toEqual([
-      "future_market_ready",
     ])
-    expect(exact.inbox).toMatchObject({
-      declarationState: "declared",
-      coverage: "complete",
-      readSource: "declared",
-    })
-    expect(seenPlans).toEqual([[isolatedRelayUrl]])
-
+    const { read } = recoveryRead(sources)
     __setCommerceTestOverrides({
-      resolveInboxRelayUrls: async () => [otherLoopbackRelayUrl],
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [relay],
+      readProtectedInbox: read,
     })
-    const rejected = await getEventMarketPrivateMessageList(ORGANIZER)
-    expect(rejected.messages).toEqual([])
-    expect(rejected.inbox).toMatchObject({
-      declarationState: "not_observed",
-      coverage: "unavailable",
-      readSource: "declared",
+    const first = await readCurrentClaims({
+      organizerPubkey: ORGANIZER,
+      marketCoordinate: MARKET,
     })
-    expect(seenPlans).toHaveLength(1)
-  })
+    expect(first.data).toEqual([])
+    expect(first.inbox?.coverage).toBe("partial")
+    const second = await readCurrentClaims({
+      organizerPubkey: ORGANIZER,
+      marketCoordinate: MARKET,
+    })
+    expect(second.data[0]?.state).toBe("revoked")
+    expect(second.inbox?.coverage).toBe("partial")
+    expect((await owner.store.wrappers()).length).toBe(57)
+  }, 60_000)
 
-  it("coalesces concurrent bounded inbox reads before fetch and decrypt", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const readyWrap = signedWrap(ORGANIZER)
-    let declarationCount = 0
-    let fetchCount = 0
-    let unwrapCount = 0
-    let releaseDeclarations!: () => void
-    const declarationsReady = new Promise<void>((resolve) => {
-      releaseDeclarations = resolve
-    })
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => {
-        declarationCount += 1
-        if (declarationCount === 2) releaseDeclarations()
-        return [declaredRelay]
-      },
-      fetchPublicEvents: async () => {
-        fetchCount += 1
-        await declarationsReady
-        return [readyWrap]
-      },
-      giftUnwrap: async () => {
-        unwrapCount += 1
-        return readyRumor
-      },
-    })
-
-    const [first, second] = await Promise.all([
-      getEventMarketPrivateMessageList(ORGANIZER),
-      getEventMarketPrivateMessageList(ORGANIZER),
+  it("restarts an observed EOSE source and finds a newly backdated revocation", async () => {
+    const relay = "wss://organizer.inbox.relay.dev"
+    const owner = recoveryOwner()
+    const ready = buildFutureMarketPrivateRumor(readyPayload())
+    const revocation = buildFutureMarketPrivateRumor(
+      revocationPayload(ready.id)
+    )
+    const sources = new Map([
+      [relay, [encryptedRecoveryWrap(ready, ISSUED_AT + 200)]],
     ])
-
-    expect(declarationCount).toBe(2)
-    expect(fetchCount).toBe(1)
-    expect(unwrapCount).toBe(1)
-    expect(first.messages.map((message) => message.id)).toEqual(
-      second.messages.map((message) => message.id)
-    )
-    expect(first.inbox?.coverage).toBe("complete")
-  })
-
-  it("rejects an in-flight scan after same-account signer session replacement", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const firstRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const secondRumor = buildFutureMarketPrivateRumor(
-      readyPayload({ issuedAt: ISSUED_AT + 1 })
-    )
-    const firstWrap = signedWrap(ORGANIZER, 501, ISSUED_AT + 1)
-    const secondWrap = signedWrap(ORGANIZER, 502, ISSUED_AT + 2)
-    let fetchCount = 0
-    let releaseFirstFetch!: () => void
-    let markFirstFetchStarted!: () => void
-    const firstFetchGate = new Promise<void>((resolve) => {
-      releaseFirstFetch = resolve
-    })
-    const firstFetchStarted = new Promise<void>((resolve) => {
-      markFirstFetchStarted = resolve
-    })
-    const unwrappedIds: string[] = []
-
+    const { read, calls } = recoveryRead(sources)
     __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
-        fetchCount += 1
-        const isFirst = fetchCount === 1
-        if (isFirst) {
-          markFirstFetchStarted()
-          await firstFetchGate
-        }
-        return {
-          events: [isFirst ? firstWrap : secondWrap],
-          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-          successfulRelayUrls: [...(options?.relayUrls ?? [])],
-          failedRelayUrls: [],
-          cappedRelayUrls: [],
-        }
-      },
-      giftUnwrap: async (event) => {
-        unwrappedIds.push(event.id)
-        return event.id === firstWrap.id ? firstRumor : secondRumor
-      },
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [relay],
+      readProtectedInbox: read,
     })
-
-    installProtectedReadSigner(
-      protectedReadSigner(ORGANIZER_SECRET),
-      ORGANIZER,
-      () => true
-    )
-    const staleSessionRead = getEventMarketPrivateMessageList(ORGANIZER)
-    await firstFetchStarted
-
-    installProtectedReadSigner(
-      protectedReadSigner(ORGANIZER_SECRET),
-      ORGANIZER,
-      () => true
-    )
-    const currentSessionRead = await getEventMarketPrivateMessageList(ORGANIZER)
-    releaseFirstFetch()
-
-    await expect(staleSessionRead).rejects.toThrow(
-      "Protected-read authority changed during inbox synchronization"
-    )
-    expect(currentSessionRead.messages.map((message) => message.id)).toEqual([
-      secondRumor.id,
-    ])
-    expect(currentSessionRead.inbox?.coverage).toBe("complete")
-    expect(unwrappedIds).toEqual([secondWrap.id])
-  })
-
-  it("does not carry partial decrypted evidence into a replacement signer session", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const firstRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const secondRumor = buildFutureMarketPrivateRumor(
-      readyPayload({ issuedAt: ISSUED_AT + 1 })
-    )
-    const firstWrap = signedWrap(ORGANIZER, 601, ISSUED_AT + 1)
-    const secondWrap = signedWrap(ORGANIZER, 602, ISSUED_AT + 2)
-    let currentWrap = firstWrap
-    let firstSession = true
-
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
-        events: [currentWrap],
-        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-        successfulRelayUrls: [...(options?.relayUrls ?? [])],
-        failedRelayUrls: firstSession ? [...(options?.relayUrls ?? [])] : [],
-        cappedRelayUrls: [],
-      }),
-      giftUnwrap: async (event) =>
-        event.id === firstWrap.id ? firstRumor : secondRumor,
-    })
-
-    installProtectedReadSigner(
-      protectedReadSigner(ORGANIZER_SECRET),
-      ORGANIZER,
-      () => true
-    )
-    const partial = await getEventMarketPrivateMessageList(ORGANIZER)
-    expect(partial.messages.map((message) => message.id)).toEqual([
-      firstRumor.id,
-    ])
-    expect(partial.inbox?.coverage).toBe("partial")
-
-    firstSession = false
-    currentWrap = secondWrap
-    installProtectedReadSigner(
-      protectedReadSigner(ORGANIZER_SECRET),
-      ORGANIZER,
-      () => true
-    )
-    const replacement = await getEventMarketPrivateMessageList(ORGANIZER)
-    expect(replacement.messages.map((message) => message.id)).toEqual([
-      secondRumor.id,
-    ])
-    expect(replacement.inbox?.coverage).toBe("complete")
-  })
-
-  it("rejects an in-flight read after the declared relay plan changes", async () => {
-    const oldRelay = "wss://organizer.old-inbox.relay.dev"
-    const newRelay = "wss://organizer.new-inbox.relay.dev"
-    const oldRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const newRumor = buildFutureMarketPrivateRumor(
-      readyPayload({ issuedAt: ISSUED_AT + 1 })
-    )
-    const oldWrap = signedWrap(ORGANIZER, 701, ISSUED_AT + 1)
-    const newWrap = signedWrap(ORGANIZER, 702, ISSUED_AT + 2)
-    let declaredRelay = oldRelay
-    let releaseOldRelay!: () => void
-    let markOldRelayStarted!: () => void
-    const oldRelayGate = new Promise<void>((resolve) => {
-      releaseOldRelay = resolve
-    })
-    const oldRelayStarted = new Promise<void>((resolve) => {
-      markOldRelayStarted = resolve
-    })
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (_filter, options) => {
-        if (options?.relayUrls?.[0] === oldRelay) {
-          markOldRelayStarted()
-          await oldRelayGate
-          return [oldWrap]
-        }
-        return [newWrap]
-      },
-      giftUnwrap: async (event) =>
-        event.id === oldWrap.id ? oldRumor : newRumor,
-    })
-
-    const superseded = getEventMarketPrivateMessageList(ORGANIZER)
-    await oldRelayStarted
-    declaredRelay = newRelay
-    const current = await getEventMarketPrivateMessageList(ORGANIZER)
-    releaseOldRelay()
-
-    await expect(superseded).rejects.toThrow(
-      "Event-market inbox relay plan changed during synchronization"
-    )
-    expect(current.messages.map((message) => message.id)).toEqual([newRumor.id])
-    expect(current.inbox?.coverage).toBe("complete")
-  })
-
-  it("discovers paginated receipt evidence without certifying a multi-request scan", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const revocationRumor = buildFutureMarketPrivateRumor(
-      revocationPayload(readyRumor.id)
-    )
-    const unrelatedRumor = new NDKEvent()
-    unrelatedRumor.kind = 1
-    unrelatedRumor.pubkey = MERCHANT
-    unrelatedRumor.created_at = ISSUED_AT
-    unrelatedRumor.tags = [["p", ORGANIZER]]
-    unrelatedRumor.content = ""
-    const relayEvents = Array.from({ length: 400 }, (_, index) =>
-      signedWrap(ORGANIZER, index, ISSUED_AT + 100)
-    )
-    const readyWrap = signedWrap(ORGANIZER, 400, ISSUED_AT)
-    const revocationWrap = signedWrap(ORGANIZER, 401, ISSUED_AT)
-    relayEvents.push(readyWrap, revocationWrap)
-    const requestedFilters: Array<{
-      limit?: number
-      since?: number
-      until?: number
-    }> = []
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (filter) => {
-        requestedFilters.push({
-          limit: filter.limit,
-          since: filter.since,
-          until: filter.until,
+    expect(
+      (
+        await readCurrentClaims({
+          organizerPubkey: ORGANIZER,
+          marketCoordinate: MARKET,
         })
-        return relayEvents
-          .filter(
-            (event) =>
-              (filter.since === undefined ||
-                event.created_at! >= filter.since) &&
-              (filter.until === undefined || event.created_at! <= filter.until)
-          )
-          .sort(
-            (left, right) =>
-              right.created_at! - left.created_at! ||
-              left.id.localeCompare(right.id)
-          )
-          .slice(0, filter.limit ?? relayEvents.length)
-      },
-      giftUnwrap: async (event) =>
-        event.id === readyWrap.id
-          ? readyRumor
-          : event.id === revocationWrap.id
-            ? revocationRumor
-            : unrelatedRumor,
-    })
-
-    const read = await readCurrentClaims({
+      ).data[0]?.state
+    ).toBe("ready_for_pickup")
+    sources.get(relay)!.push(encryptedRecoveryWrap(revocation, ISSUED_AT + 100))
+    const result = await readCurrentClaims({
       organizerPubkey: ORGANIZER,
       marketCoordinate: MARKET,
     })
-
-    expect(requestedFilters).toEqual([
-      { limit: 400, since: undefined, until: undefined },
-      { limit: 512, since: ISSUED_AT + 100, until: ISSUED_AT + 100 },
-      { limit: 400, since: undefined, until: ISSUED_AT + 99 },
-    ])
-    expect(read.data).toHaveLength(1)
-    expect(read.data[0]?.state).toBe("revoked")
-    expect(read.inbox?.coverage).toBe("partial")
+    expect(result.data[0]?.state).toBe("revoked")
+    expect(calls.every((call) => call.until === undefined)).toBe(true)
   })
 
-  it("keeps coverage partial when a backdated revocation arrives after the first page", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const revocationRumor = buildFutureMarketPrivateRumor(
-      revocationPayload(readyRumor.id)
+  it("rejects an in-flight handoff read when its declared plan changes", async () => {
+    const relay = "wss://organizer.inbox.relay.dev"
+    const owner = recoveryOwner()
+    let relays = [relay]
+    const { read } = recoveryRead(
+      new Map([
+        [
+          relay,
+          [
+            encryptedRecoveryWrap(
+              buildFutureMarketPrivateRumor(readyPayload())
+            ),
+          ],
+        ],
+      ])
     )
-    const unrelatedRumor = new NDKEvent()
-    unrelatedRumor.kind = 1
-    unrelatedRumor.pubkey = MERCHANT
-    unrelatedRumor.created_at = ISSUED_AT
-    unrelatedRumor.tags = [["p", ORGANIZER]]
-    unrelatedRumor.content = ""
-    const relayEvents = Array.from({ length: 399 }, (_, index) => {
-      const event = new NDKEvent()
-      event.id = (30_000 + index).toString(16).padStart(64, "0")
-      event.kind = EVENT_KINDS.GIFT_WRAP
-      event.created_at = ISSUED_AT + 1_000 - index
-      event.pubkey = MERCHANT
-      event.tags = [["p", ORGANIZER]]
-      event.content = "ciphertext"
-      return event
-    })
-    const readyWrap = signedWrap(ORGANIZER, 30_500, ISSUED_AT + 900)
-    const revocationWrap = signedWrap(ORGANIZER, 30_501, ISSUED_AT + 800)
-    relayEvents.push(readyWrap)
-    let firstPrimary = true
-    const unwrappedIds: string[] = []
-
     __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (filter) => {
-        const page = relayEvents
-          .filter(
-            (event) =>
-              (filter.since === undefined ||
-                event.created_at! >= filter.since) &&
-              (filter.until === undefined || event.created_at! <= filter.until)
-          )
-          .sort(
-            (left, right) =>
-              right.created_at! - left.created_at! ||
-              left.id.localeCompare(right.id)
-          )
-          .slice(0, filter.limit ?? relayEvents.length)
-        if (filter.limit === 400 && firstPrimary) {
-          firstPrimary = false
-          relayEvents.push(revocationWrap)
-        }
-        return page
-      },
-      giftUnwrap: async (event) => {
-        unwrappedIds.push(event.id)
-        return event.id === readyWrap.id
-          ? readyRumor
-          : event.id === revocationWrap.id
-            ? revocationRumor
-            : unrelatedRumor
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => relays,
+      readProtectedInbox: async (options) => {
+        const result = await read(options)
+        relays = ["wss://replacement.inbox.relay.dev"]
+        return result
       },
     })
-
-    const read = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(unwrappedIds).toContain(readyWrap.id)
-    expect(unwrappedIds).not.toContain(revocationWrap.id)
-    expect(read.data[0]?.state).toBe("ready_for_pickup")
-    expect(read.inbox?.coverage).toBe("partial")
+    await expect(getEventMarketPrivateMessageList(ORGANIZER)).rejects.toThrow(
+      "relay plan changed"
+    )
   })
 
-  it("discovers evidence past 3,200 wraps but keeps stitched coverage partial", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const revocationRumor = buildFutureMarketPrivateRumor(
-      revocationPayload(readyRumor.id)
+  it("keeps found authenticated receipts under incomplete source coverage", async () => {
+    const relay = "wss://organizer.inbox.relay.dev"
+    const owner = recoveryOwner()
+    await owner.ingest(
+      encryptedRecoveryWrap(buildFutureMarketPrivateRumor(readyPayload())),
+      [relay]
     )
-    const unrelatedRumor = new NDKEvent()
-    unrelatedRumor.kind = 1
-    unrelatedRumor.pubkey = MERCHANT
-    unrelatedRumor.created_at = ISSUED_AT
-    unrelatedRumor.tags = [["p", ORGANIZER]]
-    unrelatedRumor.content = ""
-    const unrelatedWraps = Array.from({ length: 3_200 }, (_, index) => {
-      const event = new NDKEvent()
-      event.id = (index + 1).toString(16).padStart(64, "0")
-      event.kind = EVENT_KINDS.GIFT_WRAP
-      event.created_at = ISSUED_AT + 4_000 - index
-      event.pubkey = MERCHANT
-      event.tags = [["p", ORGANIZER]]
-      event.content = "ciphertext"
-      return event
-    })
-    const readyWrap = signedWrap(ORGANIZER, 3_201, ISSUED_AT)
-    const revocationWrap = signedWrap(ORGANIZER, 3_202, ISSUED_AT)
-    const relayEvents = [...unrelatedWraps, readyWrap, revocationWrap]
-    const unwrapCounts = new Map<string, number>()
-    let primaryPageCount = 0
-
+    await owner.waitForDecode()
+    const { read } = recoveryRead(new Map())
     __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (filter) => {
-        if (filter.limit === 400) primaryPageCount += 1
-        return relayEvents
-          .filter(
-            (event) =>
-              (filter.since === undefined ||
-                event.created_at! >= filter.since) &&
-              (filter.until === undefined || event.created_at! <= filter.until)
-          )
-          .sort(
-            (left, right) =>
-              right.created_at! - left.created_at! ||
-              left.id.localeCompare(right.id)
-          )
-          .slice(0, filter.limit ?? relayEvents.length)
-      },
-      giftUnwrap: async (event) => {
-        unwrapCounts.set(event.id, (unwrapCounts.get(event.id) ?? 0) + 1)
-        return event.id === readyWrap.id
-          ? readyRumor
-          : event.id === revocationWrap.id
-            ? revocationRumor
-            : unrelatedRumor
-      },
-    })
-
-    const partial = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(primaryPageCount).toBe(8)
-    expect(unwrapCounts.size).toBe(3_200)
-    expect(partial.data).toEqual([])
-    expect(partial.inbox?.coverage).toBe("partial")
-
-    const continued = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(primaryPageCount).toBe(9)
-    expect(unwrapCounts.size).toBe(3_202)
-    expect(Math.max(...unwrapCounts.values())).toBe(1)
-    expect(continued.data).toHaveLength(1)
-    expect(continued.data[0]?.state).toBe("revoked")
-    expect(continued.inbox?.coverage).toBe("partial")
-  })
-
-  it("restarts fresh to discover a late backdated revocation without certifying the stitched gap", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const revocationRumor = buildFutureMarketPrivateRumor(
-      revocationPayload(readyRumor.id)
-    )
-    const unrelatedRumor = new NDKEvent()
-    unrelatedRumor.kind = 1
-    unrelatedRumor.pubkey = MERCHANT
-    unrelatedRumor.created_at = ISSUED_AT
-    unrelatedRumor.tags = [["p", ORGANIZER]]
-    unrelatedRumor.content = ""
-    const relayEvents = Array.from({ length: 3_200 }, (_, index) => {
-      const event = new NDKEvent()
-      event.id = (10_000 + index).toString(16).padStart(64, "0")
-      event.kind = EVENT_KINDS.GIFT_WRAP
-      event.created_at = ISSUED_AT + 4_000 - index
-      event.pubkey = MERCHANT
-      event.tags = [["p", ORGANIZER]]
-      event.content = "ciphertext"
-      return event
-    })
-    const readyWrap = signedWrap(ORGANIZER, 7_201, ISSUED_AT + 3_900)
-    const revocationWrap = signedWrap(ORGANIZER, 7_202, ISSUED_AT + 2_000)
-    relayEvents.push(readyWrap)
-    const unwrapCounts = new Map<string, number>()
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (filter) =>
-        relayEvents
-          .filter(
-            (event) =>
-              (filter.since === undefined ||
-                event.created_at! >= filter.since) &&
-              (filter.until === undefined || event.created_at! <= filter.until)
-          )
-          .sort(
-            (left, right) =>
-              right.created_at! - left.created_at! ||
-              left.id.localeCompare(right.id)
-          )
-          .slice(0, filter.limit ?? relayEvents.length),
-      giftUnwrap: async (event) => {
-        unwrapCounts.set(event.id, (unwrapCounts.get(event.id) ?? 0) + 1)
-        return event.id === readyWrap.id
-          ? readyRumor
-          : event.id === revocationWrap.id
-            ? revocationRumor
-            : unrelatedRumor
-      },
-    })
-
-    const initial = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(initial.data[0]?.state).toBe("ready_for_pickup")
-    expect(initial.inbox?.coverage).toBe("partial")
-
-    relayEvents.push(revocationWrap)
-    const stitched = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(unwrapCounts.get(revocationWrap.id)).toBeUndefined()
-    expect(stitched.data[0]?.state).toBe("ready_for_pickup")
-    expect(stitched.inbox?.coverage).toBe("partial")
-
-    const revalidated = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(unwrapCounts.get(revocationWrap.id)).toBe(1)
-    expect(revalidated.data[0]?.state).toBe("revoked")
-    expect(revalidated.inbox?.coverage).toBe("partial")
-  })
-
-  it("revalidates a relay that reached EOSE while another relay continues", async () => {
-    const shortRelay = "wss://organizer.short-inbox.relay.dev"
-    const longRelay = "wss://organizer.long-inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const revocationRumor = buildFutureMarketPrivateRumor(
-      revocationPayload(readyRumor.id)
-    )
-    const unrelatedRumor = new NDKEvent()
-    unrelatedRumor.kind = 1
-    unrelatedRumor.pubkey = MERCHANT
-    unrelatedRumor.created_at = ISSUED_AT
-    unrelatedRumor.tags = [["p", ORGANIZER]]
-    unrelatedRumor.content = ""
-    const readyWrap = signedWrap(ORGANIZER, 8_001, ISSUED_AT + 1)
-    const revocationWrap = signedWrap(ORGANIZER, 8_002, ISSUED_AT)
-    const shortRelayEvents = [readyWrap]
-    const longRelayEvents = Array.from({ length: 3_200 }, (_, index) => {
-      const event = new NDKEvent()
-      event.id = (20_000 + index).toString(16).padStart(64, "0")
-      event.kind = EVENT_KINDS.GIFT_WRAP
-      event.created_at = ISSUED_AT + 4_000 - index
-      event.pubkey = MERCHANT
-      event.tags = [["p", ORGANIZER]]
-      event.content = "ciphertext"
-      return event
-    })
-    let shortRelayPrimaryReads = 0
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [shortRelay, longRelay],
-      fetchPublicEvents: async (filter, options) => {
-        const relayUrl = options?.relayUrls?.[0]
-        if (relayUrl === shortRelay && filter.limit === 400) {
-          shortRelayPrimaryReads += 1
-        }
-        const source =
-          relayUrl === shortRelay ? shortRelayEvents : longRelayEvents
-        return source
-          .filter(
-            (event) =>
-              (filter.since === undefined ||
-                event.created_at! >= filter.since) &&
-              (filter.until === undefined || event.created_at! <= filter.until)
-          )
-          .sort(
-            (left, right) =>
-              right.created_at! - left.created_at! ||
-              left.id.localeCompare(right.id)
-          )
-          .slice(0, filter.limit ?? source.length)
-      },
-      giftUnwrap: async (event) =>
-        event.id === readyWrap.id
-          ? readyRumor
-          : event.id === revocationWrap.id
-            ? revocationRumor
-            : unrelatedRumor,
-    })
-
-    const initial = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(initial.data[0]?.state).toBe("ready_for_pickup")
-    expect(initial.inbox?.coverage).toBe("partial")
-
-    shortRelayEvents.push(revocationWrap)
-    const continued = await readCurrentClaims({
-      organizerPubkey: ORGANIZER,
-      marketCoordinate: MARKET,
-    })
-    expect(shortRelayPrimaryReads).toBe(2)
-    expect(continued.data[0]?.state).toBe("revoked")
-    expect(continued.inbox?.coverage).toBe("partial")
-  })
-
-  it("retains a late matching revocation after bounded evidence reaches 1,024 messages", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumors = Array.from({ length: 1_024 }, (_, index) =>
-      buildFutureMarketPrivateRumor(
-        index === 0
-          ? readyPayload()
-          : readyPayload({
-              issuedAt: ISSUED_AT + index,
-              claimRef: (40_000 + index).toString(16).padStart(64, "0"),
-            })
-      )
-    )
-    const targetReady = readyRumors[0]!
-    const revocationRumor = buildFutureMarketPrivateRumor(
-      revocationPayload(targetReady.id)
-    )
-    const rumorByWrapId = new Map<string, NDKEvent>()
-    const relayEvents = readyRumors.map((rumor, index) => {
-      const wrap = new NDKEvent()
-      wrap.id = (50_000 + index).toString(16).padStart(64, "0")
-      wrap.kind = EVENT_KINDS.GIFT_WRAP
-      wrap.created_at = ISSUED_AT + 2_000 - index
-      wrap.pubkey = MERCHANT
-      wrap.tags = [["p", ORGANIZER]]
-      wrap.content = "ciphertext"
-      rumorByWrapId.set(wrap.id, rumor)
-      return wrap
-    })
-    const revocationWrap = new NDKEvent()
-    revocationWrap.id = "f".repeat(64)
-    revocationWrap.kind = EVENT_KINDS.GIFT_WRAP
-    revocationWrap.created_at = ISSUED_AT
-    revocationWrap.pubkey = MERCHANT
-    revocationWrap.tags = [["p", ORGANIZER]]
-    revocationWrap.content = "ciphertext"
-    rumorByWrapId.set(revocationWrap.id, revocationRumor)
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEvents: async (filter) =>
-        relayEvents
-          .filter(
-            (event) =>
-              (filter.since === undefined ||
-                event.created_at! >= filter.since) &&
-              (filter.until === undefined || event.created_at! <= filter.until)
-          )
-          .sort(
-            (left, right) =>
-              right.created_at! - left.created_at! ||
-              left.id.localeCompare(right.id)
-          )
-          .slice(0, filter.limit ?? relayEvents.length),
-      giftUnwrap: async (event) => rumorByWrapId.get(event.id)!,
-    })
-
-    const initial = await getEventMarketPrivateMessageList(ORGANIZER)
-    expect(initial.messages).toHaveLength(1_024)
-    expect(initial.inbox?.coverage).toBe("partial")
-
-    relayEvents.push(revocationWrap)
-    const continued = await getEventMarketPrivateMessageList(ORGANIZER)
-    expect(continued.messages).toHaveLength(1_024)
-    expect(
-      continued.messages.some((message) => message.id === targetReady.id)
-    ).toBe(true)
-    expect(
-      continued.messages.some((message) => message.id === revocationRumor.id)
-    ).toBe(true)
-    expect(continued.inbox?.coverage).toBe("partial")
-  })
-
-  it("authorizes a found receipt when an exact timestamp boundary stays capped", async () => {
-    const declaredRelay = "wss://organizer.inbox.relay.dev"
-    const readyRumor = buildFutureMarketPrivateRumor(readyPayload())
-    const readyWrap = signedWrap(ORGANIZER)
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(organizerSigner),
-      resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchPublicEventsWithDiagnostics: async () => ({
-        events: [readyWrap],
-        attemptedRelayUrls: [declaredRelay],
-        successfulRelayUrls: [declaredRelay],
-        failedRelayUrls: [],
-        cappedRelayUrls: [declaredRelay],
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [relay],
+      readProtectedInbox: async (options) => ({
+        ...(await read(options)),
+        coverage: "partial",
       }),
-      giftUnwrap: async () => readyRumor,
     })
-
-    const read = await readCurrentClaims({
+    const result = await readCurrentClaims({
       organizerPubkey: ORGANIZER,
       marketCoordinate: MARKET,
     })
+    expect(result.data[0]?.state).toBe("ready_for_pickup")
+    expect(result.inbox?.coverage).toBe("partial")
+  })
 
-    expect(read.data).toHaveLength(1)
-    expect(read.data[0]?.state).toBe("ready_for_pickup")
-    expect(read.inbox?.coverage).toBe("partial")
+  it("keeps an undecoded merchant self-copy unresolved until signer retry", async () => {
+    const relay = "wss://merchant.inbox.relay.dev"
+    let refuseDecrypt = true
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+      refuseDecrypt: () => refuseDecrypt,
+    })
+    const ready = buildFutureMarketPrivateRumor(readyPayload())
+    const wrap = encryptedRecoveryWrap(ready, ISSUED_AT + 1_000, MERCHANT)
+    const { read } = recoveryRead(new Map([[relay, [wrap]]]))
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [relay],
+      readProtectedInbox: read,
+    })
+
+    const refused = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(refused.messages).toEqual([])
+    expect(refused.inbox?.coverage).toBe("partial")
+    expect(refused.decryptFailures).toEqual([
+      { wrapId: wrap.id, reason: "nip44_failed" },
+    ])
+    expect(await owner.recoveryEvidence([relay])).toMatchObject({
+      unresolved: true,
+      decryptFailures: [{ wrapId: wrap.id, reason: "nip44_failed" }],
+    })
+
+    refuseDecrypt = false
+    await owner.retryDecode()
+    const recovered = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(recovered.messages.map((message) => message.id)).toContain(ready.id)
+    expect(recovered.authenticatedWraps?.[ready.id]?.id).toBe(wrap.id)
+    expect(recovered.decryptFailures).toEqual([])
+    expect(recovered.inbox?.coverage).toBe("complete")
+    expect((await owner.recoveryEvidence([relay])).unresolved).toBe(false)
+  })
+
+  it("does not let a different source's failed wrap degrade declared recovery", async () => {
+    const declaredRelay = "wss://merchant.inbox.relay.dev"
+    const otherRelay = "wss://merchant.other.relay.dev"
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+      refuseDecrypt: () => true,
+    })
+    const wrap = encryptedRecoveryWrap(
+      buildFutureMarketPrivateRumor(readyPayload()),
+      ISSUED_AT + 1_001,
+      MERCHANT
+    )
+    await owner.ingest(wrap, [otherRelay])
+    await owner.waitForDecode()
+    const { read } = recoveryRead(new Map())
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [declaredRelay],
+      readProtectedInbox: read,
+    })
+
+    const evidence = await owner.recoveryEvidence([declaredRelay])
+    expect(evidence.unresolved).toBe(false)
+    expect(evidence.decryptFailures).toEqual([])
+    const result = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(result.inbox?.coverage).toBe("complete")
+    expect(result.decryptFailures).toEqual([])
+  })
+
+  it("keeps a malformed decoded commerce record adverse while excluding an unsupported one", async () => {
+    const declaredRelay = "wss://merchant.inbox.relay.dev"
+    const otherRelay = "wss://merchant.other.relay.dev"
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+    })
+    const malformedRumor = {
+      kind: 16,
+      pubkey: MERCHANT,
+      created_at: ISSUED_AT + 3_000,
+      tags: [
+        ["p", MERCHANT],
+        ["type", "message"],
+        ["order", "order-malformed"],
+      ],
+      content: "{}",
+    }
+    const unsupportedRumor = {
+      ...malformedRumor,
+      created_at: malformedRumor.created_at + 1,
+      tags: [
+        ["p", MERCHANT],
+        ["type", "unrecognized-commerce-type"],
+        ["order", "order-unsupported"],
+      ],
+    }
+    const malformedWrap = encryptedRecoveryWrap(
+      { ...malformedRumor, id: getEventHash(malformedRumor) },
+      malformedRumor.created_at,
+      MERCHANT
+    )
+    const unsupportedWrap = encryptedRecoveryWrap(
+      { ...unsupportedRumor, id: getEventHash(unsupportedRumor) },
+      unsupportedRumor.created_at,
+      MERCHANT
+    )
+    await owner.ingest(unsupportedWrap, [otherRelay])
+    await owner.waitForDecode()
+    const { read } = recoveryRead(new Map([[declaredRelay, [malformedWrap]]]))
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [declaredRelay],
+      readProtectedInbox: read,
+    })
+
+    const strict = await getEventMarketPrivateMessageList(MERCHANT)
+    expect(strict.messages).toEqual([])
+    expect(strict.inbox?.coverage).toBe("partial")
+    expect(strict.decryptFailures).toEqual([
+      { wrapId: malformedWrap.id, reason: "malformed" },
+    ])
+    const rows = await owner.store.wrappers()
+    expect(rows.find((row) => row.event.id === malformedWrap.id)?.state).toBe(
+      "malformed"
+    )
+    expect(rows.find((row) => row.event.id === unsupportedWrap.id)?.state).toBe(
+      "unsupported"
+    )
+    expect((await owner.recoveryEvidence([otherRelay])).unresolved).toBe(false)
+  })
+
+  it("classifies retained undecoded wraps without treating resolved states as failures", async () => {
+    const relay = "wss://merchant.inbox.relay.dev"
+    const owner = recoveryOwner(undefined, {
+      principalSecret: MERCHANT_SECRET,
+    })
+    const states = [
+      "queued",
+      "waiting_for_signer",
+      "opening",
+      "permission_declined",
+      "provider_unavailable",
+      "retryable_failure",
+      "malformed",
+      "invalid_envelope",
+      "machine",
+      "unrelated",
+      "unsupported",
+      "deleted",
+      "expired",
+    ] as const
+    const wraps = states.map((state, index) => ({
+      state,
+      wrap: encryptedRecoveryWrap(
+        buildFutureMarketPrivateRumor(readyPayload()),
+        ISSUED_AT + 2_000 + index,
+        MERCHANT
+      ),
+    }))
+    for (const { state, wrap } of wraps) {
+      await owner.store.receive(wrap, [relay])
+      await owner.store.database.commerceInboxWrappers.update(
+        owner.store.key(wrap.id),
+        { state }
+      )
+    }
+    const evidence = await owner.recoveryEvidence([relay])
+    expect(evidence.unresolved).toBe(true)
+    expect(
+      evidence.decryptFailures.map((failure) => failure.wrapId).sort()
+    ).toEqual(
+      wraps
+        .filter(({ state }) =>
+          [
+            "permission_declined",
+            "provider_unavailable",
+            "retryable_failure",
+            "malformed",
+            "invalid_envelope",
+          ].includes(state)
+        )
+        .map(({ wrap }) => wrap.id)
+        .sort()
+    )
+    for (const { wrap } of wraps.slice(0, 8))
+      await owner.store.database.commerceInboxWrappers.update(
+        owner.store.key(wrap.id),
+        { state: "unrelated" }
+      )
+    expect((await owner.recoveryEvidence([relay])).unresolved).toBe(false)
   })
 })

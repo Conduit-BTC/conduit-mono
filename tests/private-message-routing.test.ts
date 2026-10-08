@@ -30,25 +30,28 @@ import {
   type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import { admitFixture } from "./helpers/public-event"
 
 const OWNER_SECRET = new Uint8Array(32).fill(1)
 const OTHER_SECRET = new Uint8Array(32).fill(2)
 const OWNER = getPublicKey(OWNER_SECRET)
 const OTHER = getPublicKey(OTHER_SECRET)
 
-function declarationEvent(params: {
+async function declarationEvent(params: {
   secretKey?: Uint8Array
   createdAt: number
   relays: string[]
 }) {
-  return finalizeEvent(
-    {
-      kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-      created_at: params.createdAt,
-      tags: params.relays.map((url) => ["relay", url]),
-      content: "",
-    },
-    params.secretKey ?? OWNER_SECRET
+  return await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: params.createdAt,
+        tags: params.relays.map((url) => ["relay", url]),
+        content: "",
+      },
+      params.secretKey ?? OWNER_SECRET
+    )
   )
 }
 
@@ -95,7 +98,7 @@ describe("resolveInboxDeclaration", () => {
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
-          declarationEvent({
+          await declarationEvent({
             createdAt: 100,
             relays: [
               "wss://inbox.conduit.market",
@@ -128,7 +131,7 @@ describe("resolveInboxDeclaration", () => {
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
-          declarationEvent({
+          await declarationEvent({
             createdAt: 100,
             relays: [
               "ws://owner-inbox.example",
@@ -151,14 +154,16 @@ describe("resolveInboxDeclaration", () => {
 
   it("adds owner discovery reads only from durable signed evidence for the active account", async () => {
     const signedReadRelay = "ws://owner-read.example"
-    const signedRelayList = finalizeEvent(
-      {
-        kind: EVENT_KINDS.RELAY_LIST,
-        created_at: 100,
-        tags: [["r", signedReadRelay, "read"]],
-        content: "",
-      },
-      OWNER_SECRET
+    const signedRelayList = await admitFixture(
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.RELAY_LIST,
+          created_at: 100,
+          tags: [["r", signedReadRelay, "read"]],
+          content: "",
+        },
+        OWNER_SECRET
+      )
     )
     const ownerRepository = createInMemoryOwnerRelayListEvidenceRepository()
     await reconcileOwnerRelayListEvidence(
@@ -358,7 +363,7 @@ describe("resolveInboxDeclaration", () => {
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
-          declarationEvent({
+          await declarationEvent({
             createdAt: 100,
             relays: ["wss://127.0.0.1:8080", "wss://inbox.conduit.market"],
           }),
@@ -417,15 +422,15 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("selects the newest declaration deterministically", async () => {
-    const older = declarationEvent({
+    const older = await declarationEvent({
       createdAt: 100,
       relays: ["wss://old.conduit.market"],
     })
-    const tieA = declarationEvent({
+    const tieA = await declarationEvent({
       createdAt: 200,
       relays: ["wss://tie-a.conduit.market"],
     })
-    const tieB = declarationEvent({
+    const tieB = await declarationEvent({
       createdAt: 200,
       relays: ["wss://tie-b.conduit.market"],
     })
@@ -449,7 +454,7 @@ describe("resolveInboxDeclaration", () => {
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
         events: [
-          declarationEvent({
+          await declarationEvent({
             secretKey: OTHER_SECRET,
             createdAt: 100,
             relays: ["wss://attacker.conduit.market"],
@@ -466,7 +471,7 @@ describe("resolveInboxDeclaration", () => {
     const result = await resolveForTest({
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
-        events: [declarationEvent({ createdAt: 100, relays: [] })],
+        events: [await declarationEvent({ createdAt: 100, relays: [] })],
         successful: ["wss://read.conduit.market"],
       }),
     })
@@ -478,7 +483,9 @@ describe("resolveInboxDeclaration", () => {
     const malformed = await resolveForTest({
       relayUrls: ["wss://read.conduit.market"],
       fetchEventsWithDiagnostics: diagnostics({
-        events: [declarationEvent({ createdAt: 100, relays: ["ws://bad"] })],
+        events: [
+          await declarationEvent({ createdAt: 100, relays: ["ws://bad"] }),
+        ],
         successful: ["wss://read.conduit.market"],
       }),
     })
@@ -491,7 +498,7 @@ describe("resolveInboxDeclaration", () => {
       now: () => 0,
       fetchEventsWithDiagnostics: diagnostics({
         events: [
-          declarationEvent({
+          await declarationEvent({
             createdAt: 100,
             relays: ["wss://inbox.conduit.market"],
           }),
@@ -505,7 +512,7 @@ describe("resolveInboxDeclaration", () => {
       now: () => 1_000,
       fetchEventsWithDiagnostics: diagnostics({
         events: [
-          declarationEvent({
+          await declarationEvent({
             createdAt: 200,
             relays: ["ftp://not-a-relay.example"],
           }),
@@ -519,8 +526,8 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("converges non-overlapping relay views when the blocker is observed first", async () => {
-    const signedEmpty = declarationEvent({ createdAt: 200, relays: [] })
-    const olderDeclared = declarationEvent({
+    const signedEmpty = await declarationEvent({ createdAt: 200, relays: [] })
+    const olderDeclared = await declarationEvent({
       createdAt: 100,
       relays: ["wss://older-inbox.conduit.market"],
     })
@@ -553,8 +560,8 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("retains an older usable declaration returned with a newer blocker in one fanout", async () => {
-    const signedEmpty = declarationEvent({ createdAt: 200, relays: [] })
-    const olderDeclared = declarationEvent({
+    const signedEmpty = await declarationEvent({ createdAt: 200, relays: [] })
+    const olderDeclared = await declarationEvent({
       createdAt: 100,
       relays: ["wss://older-inbox.conduit.market"],
     })
@@ -600,7 +607,7 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("does not hydrate a partial exact-event observation as fresh", async () => {
-    const event = declarationEvent({
+    const event = await declarationEvent({
       createdAt: 100,
       relays: ["wss://inbox.conduit.market"],
     })
@@ -656,7 +663,7 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("keeps later degraded observations stale across cache reset", async () => {
-    const event = declarationEvent({
+    const event = await declarationEvent({
       createdAt: 100,
       relays: ["wss://inbox.conduit.market"],
     })
@@ -730,7 +737,7 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("hydrates a complete source-ambiguous observation consistently", async () => {
-    const event = declarationEvent({
+    const event = await declarationEvent({
       createdAt: 100,
       relays: ["wss://inbox.conduit.market"],
     })
@@ -800,8 +807,8 @@ describe("resolveInboxDeclaration", () => {
       mergeBatch: failMerge,
       recordCutoverRecoveryReadback: failMerge,
     }
-    const newer = declarationEvent({ createdAt: 200, relays: [] })
-    const older = declarationEvent({
+    const newer = await declarationEvent({ createdAt: 200, relays: [] })
+    const older = await declarationEvent({
       createdAt: 100,
       relays: ["wss://older.conduit.market"],
     })
@@ -862,7 +869,7 @@ describe("resolveInboxDeclaration", () => {
         recordCutoverRecoveryReadback: (input) =>
           backing.recordCutoverRecoveryReadback(input),
       }
-      const event = declarationEvent({
+      const event = await declarationEvent({
         createdAt: 100,
         relays: ["wss://inbox.example"],
       })
@@ -926,8 +933,8 @@ describe("resolveInboxDeclaration", () => {
         throw new Error("IndexedDB unavailable")
       },
     }
-    const blocker = declarationEvent({ createdAt: 200, relays: [] })
-    const older = declarationEvent({
+    const blocker = await declarationEvent({ createdAt: 200, relays: [] })
+    const older = await declarationEvent({
       createdAt: 100,
       relays: ["wss://older.conduit.market"],
     })
@@ -962,11 +969,11 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("targets only eligible members of a superseded local recovery plan", async () => {
-    const replacement = declarationEvent({
+    const replacement = await declarationEvent({
       createdAt: 100,
       relays: ["wss://replacement-inbox.example"],
     })
-    const stronger = declarationEvent({
+    const stronger = await declarationEvent({
       createdAt: 200,
       relays: ["wss://stronger-inbox.example"],
     })
@@ -1102,7 +1109,7 @@ describe("resolveInboxDeclaration", () => {
   })
 
   it("projects signer-free redistribution when whole removal blocks the current recovery attempt", async () => {
-    const replacement = declarationEvent({
+    const replacement = await declarationEvent({
       createdAt: 100,
       relays: ["wss://replacement-inbox.example"],
     })
@@ -1164,11 +1171,11 @@ describe("resolveInboxDeclaration", () => {
         throw new Error("IndexedDB unavailable")
       },
     }
-    const declared = declarationEvent({
+    const declared = await declarationEvent({
       createdAt: 100,
       relays: ["wss://usable.conduit.market"],
     })
-    const blocker = declarationEvent({ createdAt: 200, relays: [] })
+    const blocker = await declarationEvent({ createdAt: 200, relays: [] })
     await resolveInboxDeclaration(OWNER, {
       relayUrls: ["wss://shared.conduit.market"],
       freshnessMs: 0,
@@ -1218,11 +1225,11 @@ describe("resolveInboxDeclaration", () => {
 
   it("keeps persisted last-usable evidence when get fails but merge recovers", async () => {
     const durable = createInMemoryInboxDeclarationEvidenceRepository()
-    const declared = declarationEvent({
+    const declared = await declarationEvent({
       createdAt: 100,
       relays: ["wss://usable.conduit.market"],
     })
-    const blocker = declarationEvent({ createdAt: 200, relays: [] })
+    const blocker = await declarationEvent({ createdAt: 200, relays: [] })
     await mergeInboxDeclarationEvidence(
       { pubkey: OWNER, signedEvent: declared },
       durable
@@ -1262,7 +1269,7 @@ describe("resolveInboxDeclaration", () => {
     let fetches = 0
     const fetch = diagnostics({
       events: [
-        declarationEvent({
+        await declarationEvent({
           createdAt: 100,
           relays: ["wss://a.conduit.market"],
         }),
@@ -1294,7 +1301,7 @@ describe("resolveInboxDeclaration", () => {
     const cases = [
       {
         name: "changed declaration",
-        event: declarationEvent({
+        event: await declarationEvent({
           createdAt: 200,
           relays: ["wss://new-inbox.conduit.market"],
         }),
@@ -1302,12 +1309,12 @@ describe("resolveInboxDeclaration", () => {
       },
       {
         name: "signed empty",
-        event: declarationEvent({ createdAt: 200, relays: [] }),
+        event: await declarationEvent({ createdAt: 200, relays: [] }),
         state: "signed_empty" as const,
       },
       {
         name: "malformed",
-        event: declarationEvent({
+        event: await declarationEvent({
           createdAt: 200,
           relays: ["ws://insecure.example"],
         }),
@@ -1327,7 +1334,7 @@ describe("resolveInboxDeclaration", () => {
         },
       }
       let networkReads = 0
-      const oldEvent = declarationEvent({
+      const oldEvent = await declarationEvent({
         createdAt: 100,
         relays: ["wss://old-inbox.conduit.market"],
       })
@@ -1383,7 +1390,7 @@ describe("resolveInboxDeclaration", () => {
       fetches += 1
       return {
         events: [
-          declarationEvent({
+          await declarationEvent({
             createdAt: 100,
             relays: ["wss://a.conduit.market"],
           }),
@@ -1472,7 +1479,7 @@ describe("resolveInboxDeclaration", () => {
 })
 
 describe("inbox declaration discovery planning", () => {
-  it("reserves shared discovery before owner-local relays under the cap", () => {
+  it("reserves shared discovery before owner-local relays under the cap", async () => {
     const owner = [
       "wss://owner-one.conduit.market",
       "wss://owner-two.conduit.market",
@@ -1489,7 +1496,7 @@ describe("inbox declaration discovery planning", () => {
 })
 
 describe("planInboxReadRelays", () => {
-  it("limits canonical compatibility reads to the protected inbox defaults", () => {
+  it("limits canonical compatibility reads to the protected inbox defaults", async () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
     })
@@ -1500,7 +1507,7 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
-  it("unions declared and compatibility reads with sources", () => {
+  it("unions declared and compatibility reads with sources", async () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
       compatibilityRelayUrls: [
@@ -1520,7 +1527,7 @@ describe("planInboxReadRelays", () => {
     expect(plan.source).toBe("mixed")
   })
 
-  it("reserves approved compatibility write targets inside a capped read plan", () => {
+  it("reserves approved compatibility write targets inside a capped read plan", async () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
       compatibilityRelayUrls: [
@@ -1545,7 +1552,7 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
-  it("uses the cached declared relays when discovery degraded", () => {
+  it("uses the cached declared relays when discovery degraded", async () => {
     primeInboxDeclarationCache(
       OWNER,
       ["wss://cached-inbox.conduit.market"],
@@ -1566,7 +1573,7 @@ describe("planInboxReadRelays", () => {
     expect(plan.relaySources["wss://cached-inbox.conduit.market"]).toBe("cache")
   })
 
-  it("does not restore a private cached declaration outside the exact owner context", () => {
+  it("does not restore a private cached declaration outside the exact owner context", async () => {
     const localRelay = "wss://127.0.0.1:7447"
     const publicRelay = "wss://cached-inbox.conduit.market"
     primeInboxDeclarationCache(OWNER, [localRelay, publicRelay], () => 0)
@@ -1590,7 +1597,7 @@ describe("planInboxReadRelays", () => {
     expect(ownerPlan.relayUrls).toEqual([localRelay, publicRelay])
   })
 
-  it("caps the plan at maxRelays preserving priority order", () => {
+  it("caps the plan at maxRelays preserving priority order", async () => {
     const plan = planInboxReadRelays({
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
       compatibilityRelayUrls: [
@@ -1606,7 +1613,7 @@ describe("planInboxReadRelays", () => {
     ])
   })
 
-  it("never truncates overlapping active recovery batches at the fanout target", () => {
+  it("never truncates overlapping active recovery batches at the fanout target", async () => {
     const recoveryRelayUrls = Array.from(
       { length: 27 },
       (_, index) =>
@@ -1636,7 +1643,7 @@ describe("planInboxReadRelays", () => {
     ).toBe(true)
   })
 
-  it("admits ws only from an exact authenticated-owner read source", () => {
+  it("admits ws only from an exact authenticated-owner read source", async () => {
     const remotePlan = planInboxReadRelays({
       declaration: resolution({
         relayUrls: ["ws://inbox.conduit.market"],
@@ -1671,7 +1678,7 @@ describe("planInboxReadRelays", () => {
 })
 
 describe("deriveInboxReadCoverage", () => {
-  it("maps diagnostics to coverage states", () => {
+  it("maps diagnostics to coverage states", async () => {
     expect(
       deriveInboxReadCoverage({
         successfulRelayUrls: ["wss://a"],
@@ -1701,7 +1708,7 @@ describe("deriveInboxReadCoverage", () => {
 })
 
 describe("selectPrivateMessageDeliveryRoute", () => {
-  it("limits canonical compatibility writes to the protected inbox defaults", () => {
+  it("limits canonical compatibility writes to the protected inbox defaults", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
@@ -1716,7 +1723,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     ])
   })
 
-  it("always prefers a valid declaration over compatibility", () => {
+  it("always prefers a valid declaration over compatibility", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ relayUrls: ["wss://inbox.conduit.market"] }),
@@ -1729,7 +1736,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.relayUrls).toEqual(["wss://inbox.conduit.market"])
   })
 
-  it("never auto-routes to a ws target from a recipient declaration", () => {
+  it("never auto-routes to a ws target from a recipient declaration", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       declaration: resolution({
@@ -1749,7 +1756,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.ownerSelectedRelayUrls).toEqual([])
   })
 
-  it("allows only the exact selected ws subset for an authenticated owner self-route", () => {
+  it("allows only the exact selected ws subset for an authenticated owner self-route", async () => {
     const selectedOwnerRelay = "ws://owner-inbox.example"
     const unselectedRelay = "ws://unselected-owner-inbox.example"
     const selection = selectPrivateMessageDeliveryRoute({
@@ -1774,7 +1781,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.ownerSelectedRelayUrls).toEqual([selectedOwnerRelay])
   })
 
-  it("routes a validated order to a bounded compatibility plan when enabled", () => {
+  it("routes a validated order to a bounded compatibility plan when enabled", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
@@ -1796,7 +1803,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     ])
   })
 
-  it("caps an oversized declared inbox without adding compatibility targets", () => {
+  it("caps an oversized declared inbox without adding compatibility targets", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({
@@ -1820,7 +1827,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.truncated).toBe(true)
   })
 
-  it("blocks compatibility when the deployment-profile flag is off", () => {
+  it("blocks compatibility when the deployment-profile flag is off", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
@@ -1833,7 +1840,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("recipient_not_ready")
   })
 
-  it("never routes kind-14 general DMs through compatibility", () => {
+  it("never routes kind-14 general DMs through compatibility", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
@@ -1846,7 +1853,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("recipient_not_ready")
   })
 
-  it("blocks unvalidated kind-16 orders from the compatibility lane", () => {
+  it("blocks unvalidated kind-16 orders from the compatibility lane", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
@@ -1858,7 +1865,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.route).toBe("blocked")
   })
 
-  it("blocks writes on a signed malformed declaration", () => {
+  it("blocks writes on a signed malformed declaration", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "malformed", relayUrls: [] }),
@@ -1871,7 +1878,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("declaration_malformed")
   })
 
-  it("keeps a signed empty declaration distinct while blocking writes", () => {
+  it("keeps a signed empty declaration distinct while blocking writes", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "signed_empty", relayUrls: [] }),
@@ -1884,7 +1891,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("declaration_signed_empty")
   })
 
-  it("never lets a locally staged declaration authorize writes or compatibility", () => {
+  it("never lets a locally staged declaration authorize writes or compatibility", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({
@@ -1902,7 +1909,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("declaration_distribution_pending")
   })
 
-  it("maps lookup failure to recipient_lookup_failed when compatibility is off", () => {
+  it("maps lookup failure to recipient_lookup_failed when compatibility is off", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "lookup_unavailable", relayUrls: [] }),
@@ -1914,7 +1921,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("recipient_lookup_failed")
   })
 
-  it("never lets partial or unavailable lookup evidence authorize compatibility", () => {
+  it("never lets partial or unavailable lookup evidence authorize compatibility", async () => {
     for (const state of ["lookup_partial", "lookup_unavailable"] as const) {
       const selection = selectPrivateMessageDeliveryRoute({
         rumorKind: EVENT_KINDS.ORDER,
@@ -1928,7 +1935,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     }
   })
 
-  it("drops insecure compatibility relay urls", () => {
+  it("drops insecure compatibility relay urls", async () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
@@ -1942,7 +1949,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
 })
 
 describe("planCompatibilityOrderRelays", () => {
-  it("normalizes, deduplicates, and caps the approved pool", () => {
+  it("normalizes, deduplicates, and caps the approved pool", async () => {
     const plan = planCompatibilityOrderRelays({
       approvedRelayUrls: [
         "WSS://One.Conduit.Market/",
@@ -1963,7 +1970,7 @@ describe("planCompatibilityOrderRelays", () => {
     ])
   })
 
-  it("lets signed recipient read evidence reorder but never widen the approved pool", () => {
+  it("lets signed recipient read evidence reorder but never widen the approved pool", async () => {
     const plan = planCompatibilityOrderRelays({
       approvedRelayUrls: [
         "wss://one.conduit.market",

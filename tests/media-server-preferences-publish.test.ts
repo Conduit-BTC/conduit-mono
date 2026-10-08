@@ -25,6 +25,7 @@ import {
 } from "../packages/core/src/protocol/nostr-event-signer"
 import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { admitFixture } from "./helpers/public-event"
 
 const OWNER_KEY = generateSecretKey()
 const OTHER_KEY = generateSecretKey()
@@ -67,13 +68,13 @@ function signer(
   }
 }
 
-function readResult(input: {
+async function readResult(input: {
   events?: SignedPublicNostrEvent[]
   relayUrls: readonly string[]
   sources?: Record<string, string[]>
   failedRelayUrls?: readonly string[]
 }) {
-  const events = input.events ?? []
+  const events = await Promise.all((input.events ?? []).map(admitFixture))
   const failed = new Set(input.failedRelayUrls ?? [])
   return {
     events,
@@ -84,7 +85,6 @@ function readResult(input: {
       eventCount: events.length,
       rejectedEventCount: 0,
     })),
-    eventsVerified: true,
   }
 }
 
@@ -159,7 +159,9 @@ describe("explicit kind 10063 publication", () => {
     expect(result.targetRelayCount).toBe(6)
     expect(attempted).toEqual(targets.slice(0, 6))
     expect(signed).not.toBeNull()
-    expect(verifyEvent(signed!)).toBe(true)
+    expect(
+      verifyEvent({ ...signed!, tags: signed!.tags.map((tag) => [...tag]) })
+    ).toBe(true)
     expect(signed).toMatchObject({
       kind: BLOSSOM_SERVER_LIST_KIND,
       pubkey: OWNER,

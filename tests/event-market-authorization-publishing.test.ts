@@ -10,6 +10,7 @@ import {
   resolveEventMarketAuthorization,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -23,18 +24,28 @@ const rootDraft = buildEventMarketAuthorizationDraft({
   parentIds: [],
 })
 const root = finalizeEvent({ ...rootDraft, created_at: 100 }, secret)
-const current = {
-  marketCoordinate,
-  merchantPubkey: merchant,
-  resolution: resolveEventMarketAuthorization({
+async function admitted(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error(`Fixture admission failed: ${result.status}`)
+  return result.event
+}
+
+async function current() {
+  const event = await admitted(root)
+  return {
     marketCoordinate,
     merchantPubkey: merchant,
-    transitions: [root],
-  }),
-  coverage: "complete" as const,
-  retained: true,
-  actionable: true,
-  observedEvidence: [root],
+    resolution: resolveEventMarketAuthorization({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      transitions: [event],
+    }),
+    coverage: "complete" as const,
+    retained: true,
+    actionable: true,
+    observedEvidence: [event],
+  }
 }
 
 describe("Event Market authorization publishing", () => {
@@ -51,7 +62,7 @@ describe("Event Market authorization publishing", () => {
           onSignedLocal: async () => undefined,
         },
         {
-          read: async () => current,
+          read: current,
           sign: async () => {
             signCalls++
             return root
@@ -81,7 +92,7 @@ describe("Event Market authorization publishing", () => {
         },
       },
       {
-        read: async () => current,
+        read: current,
         sign: async ({ draft, createdAt }) =>
           finalizeEvent({ ...draft, created_at: createdAt }, secret),
         publish: async (event) => {
@@ -97,7 +108,7 @@ describe("Event Market authorization publishing", () => {
       resolveEventMarketAuthorization({
         marketCoordinate,
         merchantPubkey: merchant,
-        transitions: [root, result.signedEvent],
+        transitions: [await admitted(root), await admitted(result.signedEvent)],
       }).state
     ).toBe("revoked")
   })

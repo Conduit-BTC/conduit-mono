@@ -5,6 +5,7 @@ import {
   getPublicKey,
   verifyEvent,
 } from "nostr-tools/pure"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 import {
   buildEventMarketCalendarDraft,
@@ -71,16 +72,50 @@ async function expectMobileTouchTarget(
 async function expectVisibleDisjointControls(
   page: Page,
   first: Locator,
-  second: Locator
+  second: Locator,
+  phase: "initial" | "returned"
 ): Promise<void> {
   await expect
     .poll(async () => {
       const [firstBox, secondBox, viewport] = await Promise.all([
         first.boundingBox(),
         second.boundingBox(),
-        page.evaluate(() => ({ width: innerWidth, height: innerHeight })),
+        page.evaluate(() => ({
+          width: innerWidth,
+          height: innerHeight,
+          scrollY,
+          measuredFooterHeight:
+            Number.parseFloat(
+              getComputedStyle(document.documentElement).getPropertyValue(
+                "--market-fixed-footer-height"
+              )
+            ) || 0,
+          footerHidden:
+            document.querySelector("footer")?.getAttribute("aria-hidden") ===
+            "true",
+        })),
       ])
-      if (!firstBox || !secondBox) return "missing"
+      const record = (layout: string) => {
+        recordSmokeDiagnostic(test.info(), "footer-layout", {
+          phase,
+          layout,
+          triggerX: firstBox?.x,
+          triggerY: firstBox?.y,
+          triggerWidth: firstBox?.width,
+          triggerHeight: firstBox?.height,
+          footerX: secondBox?.x,
+          footerY: secondBox?.y,
+          footerWidth: secondBox?.width,
+          footerHeight: secondBox?.height,
+          viewportWidth: viewport.width,
+          viewportHeight: viewport.height,
+          scrollY: viewport.scrollY,
+          measuredFooterHeight: viewport.measuredFooterHeight,
+          footerHidden: viewport.footerHidden,
+        })
+        return layout
+      }
+      if (!firstBox || !secondBox) return record("missing")
 
       const fullyVisible = [firstBox, secondBox].every(
         ({ x, y, width, height }) =>
@@ -89,7 +124,7 @@ async function expectVisibleDisjointControls(
           x + width <= viewport.width &&
           y + height <= viewport.height
       )
-      if (!fullyVisible) return "clipped"
+      if (!fullyVisible) return record("clipped")
 
       const intersects = !(
         firstBox.x + firstBox.width <= secondBox.x ||
@@ -97,7 +132,7 @@ async function expectVisibleDisjointControls(
         firstBox.y + firstBox.height <= secondBox.y ||
         secondBox.y + secondBox.height <= firstBox.y
       )
-      return intersects ? "intersecting" : "disjoint"
+      return record(intersects ? "intersecting" : "disjoint")
     })
     .toBe("disjoint")
 }
@@ -839,6 +874,38 @@ test.describe("CND-162 mobile browser baseline", () => {
     await assertMobileViewport(page)
   })
 
+  test("market cart follows the hidden and returning mobile footer @market", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 700 })
+    await seedMarketCart(page)
+    await page.goto(`${marketUrl}/products`)
+    const cart = page.getByRole("region", { name: "Cart inventory" })
+    const footer = page.locator("footer")
+    await expect(cart).toBeVisible()
+    const bottomDistance = () =>
+      cart.evaluate((element) => {
+        const wrapperBottom =
+          element.parentElement!.getBoundingClientRect().bottom
+        const footerTop = document
+          .querySelector("footer")!
+          .getBoundingClientRect().top
+        return Math.abs(footerTop - wrapperBottom)
+      })
+    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+    // Give the actual scroll-driven chrome a long page without changing controls.
+    await page.locator("main").evaluate((main) => {
+      main.style.minHeight = `${innerHeight * 3}px`
+    })
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    await expect(footer).toHaveAttribute("aria-hidden", "true")
+    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+    await page.evaluate(() => window.scrollBy(0, -64))
+    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
+    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+    await assertMobileViewport(page)
+  })
+
   test("market order messages stay clear of the returning mobile footer @market", async ({
     page,
   }) => {
@@ -871,7 +938,12 @@ test.describe("CND-162 mobile browser baseline", () => {
       exact: true,
     })
 
-    await expectVisibleDisjointControls(page, messagesTrigger, reportBug)
+    await expectVisibleDisjointControls(
+      page,
+      messagesTrigger,
+      reportBug,
+      "initial"
+    )
     await messagesTrigger.tap()
     const messagesDialog = page.getByRole("dialog", {
       name: "Messages",
@@ -880,12 +952,28 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(messagesDialog).toBeVisible()
     await messagesDialog.getByRole("button", { name: "Close" }).tap()
     await expect(messagesDialog).toHaveCount(0)
-
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
     await expect
       .poll(() => page.evaluate(() => window.scrollY))
       .toBeGreaterThan(12)
     await expect(footer).toHaveAttribute("aria-hidden", "true")
+    await expect
+      .poll(() =>
+        messagesTrigger.evaluate((element) => {
+          const bottom = Number.parseFloat(
+            getComputedStyle(element.parentElement!).bottom
+          )
+          const footerTop = document
+            .querySelector("footer")!
+            .getBoundingClientRect().top
+          return Math.abs(
+            footerTop -
+              element.parentElement!.getBoundingClientRect().bottom -
+              bottom
+          )
+        })
+      )
+      .toBeLessThanOrEqual(1)
 
     const transitionOverlapCount = await page.evaluate(async () => {
       const trigger = document.querySelector<HTMLElement>(
@@ -916,7 +1004,12 @@ test.describe("CND-162 mobile browser baseline", () => {
 
     expect(transitionOverlapCount).toBe(0)
     await expect(footer).not.toHaveAttribute("aria-hidden", "true")
-    await expectVisibleDisjointControls(page, messagesTrigger, reportBug)
+    await expectVisibleDisjointControls(
+      page,
+      messagesTrigger,
+      reportBug,
+      "returned"
+    )
     await assertMobileViewport(page)
   })
 

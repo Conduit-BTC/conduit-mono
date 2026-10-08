@@ -50,8 +50,8 @@ describe("Market cart identity contract", () => {
       "utf8"
     )
     expect(repository).toContain("export const CART_RECORD_VERSION = 1")
-    expect(repository).toContain('db.transaction(\n        "rw"')
-    expect(repository).toContain("parseStoredRecord(stored)")
+    expect(repository).toMatch(/db\.transaction\(\s*"rw"/)
+    expect(repository).toContain("restoreStoredRecord(stored)")
     expect(repository).toContain('publishRecord(record, "memory")')
     expect(repository).toContain("if (!identity.cartLineId) return false")
     expect(repository).toContain("const nextItem = selectCartItemSnapshot")

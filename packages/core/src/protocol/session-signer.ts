@@ -12,7 +12,13 @@ import {
 import { isValidSignedPublicNostrEvent } from "./signed-event"
 
 export type SessionSignerErrorCode =
-  "authority_changed" | "identity_changed" | "timeout" | "invalid_response"
+  | "authority_changed"
+  | "identity_changed"
+  | "timeout"
+  | "invalid_response"
+  | "background_paused"
+  | "queue_full"
+  | "provider_unavailable"
 
 export class SessionSignerError extends Error {
   readonly code: SessionSignerErrorCode
@@ -29,7 +35,7 @@ export class SessionSignerError extends Error {
 let activeAccountSigner: SessionSigner | null = null
 
 export function activateAccountSigner(signer: SessionSigner): void {
-  signer.pubkey
+  if (!signer.pubkey) throw new NostrSignerError("invalid_response")
   if (activeAccountSigner !== signer) activeAccountSigner?.invalidateLocal()
   activeAccountSigner = signer
 }
@@ -59,7 +65,7 @@ export function getAccountSigner(): AccountSigner | undefined {
   const signer = activeAccountSigner
   if (!signer) return undefined
   try {
-    signer.pubkey
+    if (!signer.pubkey) return undefined
     return signer
   } catch {
     // Stale authority has already been retired by the session owner.
@@ -73,12 +79,29 @@ export interface SessionSignerOptions {
   authMethod: AuthMethod
   getCapabilities: () => AccountSignerCapabilities
   operationTimeoutMs?: number
+  maxQueuedOperations?: number
   hasAuthority: () => boolean
   onInvalidated?: (error: SessionSignerError) => void
 }
 
 function normalizePubkey(value: string): string {
   return value.trim().toLowerCase()
+}
+
+function publicSignerFailure(error: unknown): Error {
+  if (
+    error instanceof SessionSignerError &&
+    ["background_paused", "queue_full", "provider_unavailable"].includes(
+      error.code
+    )
+  )
+    return error
+  return classifyNostrSignerError(error)
+}
+
+interface QueuedSignerOperation {
+  start: () => void
+  reject: (error: Error) => void
 }
 
 /**
@@ -95,7 +118,13 @@ export class SessionSigner implements AccountSigner {
   readonly authMethod: AuthMethod
   private readonly getCapabilities: () => AccountSignerCapabilities
   private readonly operationTimeoutMs: number
-  private operationTail: Promise<void> = Promise.resolve()
+  private readonly maxQueuedOperations: number
+  private readonly foregroundQueue: QueuedSignerOperation[] = []
+  private readonly backgroundQueue: QueuedSignerOperation[] = []
+  private running = false
+  private providerUnavailable = false
+  private backgroundPaused = false
+  private foregroundBurst = 0
   private readonly cancellation = new AbortController()
   private invalidated = false
 
@@ -105,12 +134,15 @@ export class SessionSigner implements AccountSigner {
     this.authMethod = options.authMethod
     this.getCapabilities = options.getCapabilities
     this.operationTimeoutMs = options.operationTimeoutMs ?? 60_000
+    this.maxQueuedOperations = options.maxQueuedOperations ?? 256
     this.expectedPubkey = normalizePubkey(options.expectedPubkey)
     if (
       !/^[0-9a-f]{64}$/.test(this.expectedPubkey) ||
       !this.revision ||
       !Number.isFinite(this.operationTimeoutMs) ||
-      this.operationTimeoutMs <= 0
+      this.operationTimeoutMs <= 0 ||
+      !Number.isSafeInteger(this.maxQueuedOperations) ||
+      this.maxQueuedOperations < 2
     ) {
       throw new NostrSignerError("invalid_response")
     }
@@ -124,6 +156,14 @@ export class SessionSigner implements AccountSigner {
   ): void {
     this.invalidated = true
     this.cancellation.abort(classifyNostrSignerError(cause))
+    this.rejectQueued(classifyNostrSignerError(cause))
+  }
+
+  /** A deliberate retry may resume history decryption after a declined prompt. */
+  resumeBackgroundOperations(): void {
+    this.assertAuthority()
+    this.backgroundPaused = false
+    this.pump()
   }
 
   get pubkey(): string {
@@ -142,7 +182,7 @@ export class SessionSigner implements AccountSigner {
     try {
       return this.pubkey
     } catch (error) {
-      throw classifyNostrSignerError(error)
+      throw publicSignerFailure(error)
     }
   }
 
@@ -203,7 +243,7 @@ export class SessionSigner implements AccountSigner {
         return { ...expected, id: signed.id, sig: signed.sig }
       })
     } catch (error) {
-      throw classifyNostrSignerError(error)
+      throw publicSignerFailure(error)
     }
   }
 
@@ -216,23 +256,38 @@ export class SessionSigner implements AccountSigner {
 
   async decryptNip44(
     senderPubkey: string,
-    ciphertext: string
+    ciphertext: string,
+    options: { priority?: "foreground" | "background" } = {}
   ): Promise<string> {
-    return this.runKeyOperation("decrypt", senderPubkey, ciphertext, "nip44")
+    return this.runKeyOperation(
+      "decrypt",
+      senderPubkey,
+      ciphertext,
+      "nip44",
+      options.priority ?? "background"
+    )
   }
 
   async decryptLegacy(
     senderPubkey: string,
-    ciphertext: string
+    ciphertext: string,
+    options: { priority?: "foreground" | "background" } = {}
   ): Promise<string> {
-    return this.runKeyOperation("decrypt", senderPubkey, ciphertext, "nip04")
+    return this.runKeyOperation(
+      "decrypt",
+      senderPubkey,
+      ciphertext,
+      "nip04",
+      options.priority ?? "background"
+    )
   }
 
   private async runKeyOperation(
     operation: "encrypt" | "decrypt",
     peerPubkey: string,
     value: string,
-    scheme: "nip44" | "nip04"
+    scheme: "nip44" | "nip04",
+    priority: "foreground" | "background" = "foreground"
   ): Promise<string> {
     if (!/^[0-9a-f]{64}$/i.test(peerPubkey))
       throw new NostrSignerError("invalid_response")
@@ -244,7 +299,8 @@ export class SessionSigner implements AccountSigner {
           ? this.signer.encryptNip44(peer, value)
           : scheme === "nip44"
             ? this.signer.decryptNip44(peer, value)
-            : this.signer.decryptLegacy(peer, value)
+            : this.signer.decryptLegacy(peer, value),
+      priority
     )
     if (
       typeof result !== "string" ||
@@ -256,18 +312,99 @@ export class SessionSigner implements AccountSigner {
 
   private async runOperation<T>(
     capability: keyof AccountSignerCapabilities,
+    operation: () => Promise<T>,
+    priority: "foreground" | "background" = "foreground"
+  ): Promise<T> {
+    this.assertAuthority()
+    if (this.providerUnavailable)
+      throw new SessionSignerError(
+        "provider_unavailable",
+        "The signer is still finishing a previous request. Try again when it responds."
+      )
+    if (priority === "background" && this.backgroundPaused)
+      throw new SessionSignerError(
+        "background_paused",
+        "Background decryption is paused after a declined signer request."
+      )
+    const queued = this.foregroundQueue.length + this.backgroundQueue.length
+    const backgroundLimit = Math.max(
+      1,
+      Math.floor(this.maxQueuedOperations * 0.75)
+    )
+    if (
+      queued >= this.maxQueuedOperations ||
+      (priority === "background" &&
+        this.backgroundQueue.length >= backgroundLimit)
+    )
+      throw new SessionSignerError(
+        "queue_full",
+        "The signer has too many pending requests. Try again shortly."
+      )
+    return new Promise<T>((resolve, reject) => {
+      const queuedOperation = {
+        start: () => {
+          void this.executeOperation(capability, operation).then(
+            resolve,
+            reject
+          )
+        },
+        reject,
+      }
+      const queue =
+        priority === "foreground" ? this.foregroundQueue : this.backgroundQueue
+      queue.push(queuedOperation)
+      this.pump()
+    })
+  }
+
+  private pump(): void {
+    if (this.running || this.invalidated || this.providerUnavailable) return
+    const preferForeground =
+      this.foregroundQueue.length > 0 &&
+      (this.foregroundBurst < 4 || this.backgroundQueue.length === 0)
+    const next = preferForeground
+      ? this.foregroundQueue.shift()
+      : this.backgroundQueue.shift()
+    this.foregroundBurst = preferForeground ? this.foregroundBurst + 1 : 0
+    next?.start()
+  }
+
+  private rejectQueued(error: Error, backgroundOnly = false): void {
+    const queues = backgroundOnly
+      ? [this.backgroundQueue]
+      : [this.foregroundQueue, this.backgroundQueue]
+    for (const queue of queues) {
+      while (queue.length) queue.shift()?.reject(error)
+    }
+  }
+
+  private async executeOperation<T>(
+    capability: keyof AccountSignerCapabilities,
     operation: () => Promise<T>
   ): Promise<T> {
-    let release: (() => void) | undefined
+    this.running = true
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
+    let provider: Promise<T> | undefined
+    let providerSettled = false
+    const finish = () => {
+      this.running = false
+      this.providerUnavailable = false
+      this.pump()
+    }
     try {
       this.assertAuthority()
-      const slot = new Promise<void>((resolve) => {
-        release = resolve
-      })
-      const previous = this.operationTail
-      this.operationTail = previous.then(() => slot)
+      if (!this.capabilities[capability])
+        throw new NostrSignerError("unsupported_operation")
+      provider = Promise.resolve(operation())
+      void provider.then(
+        () => {
+          providerSettled = true
+        },
+        () => {
+          providerSettled = true
+        }
+      )
       const cancelled = new Promise<never>((_, reject) => {
         onAbort = () =>
           reject(classifyNostrSignerError(this.cancellation.signal.reason))
@@ -275,40 +412,50 @@ export class SessionSigner implements AccountSigner {
           once: true,
         })
       })
-      let rejectTimeout!: (error: NostrSignerError) => void
       const timeout = new Promise<never>((_, reject) => {
-        rejectTimeout = reject
-      })
-      const task = (async () => {
-        await previous
-        this.assertAuthority()
-        if (!this.capabilities[capability])
-          throw new NostrSignerError("unsupported_operation")
-        // Queueing does not consume another operation's approval window.
         timer = setTimeout(() => {
-          try {
-            this.reject(
-              "timeout",
-              "The signer did not answer in time. Reconnect it and try again."
+          this.providerUnavailable = true
+          this.rejectQueued(
+            new SessionSignerError(
+              "provider_unavailable",
+              "The signer is still finishing a previous request. Try again when it responds."
             )
-          } catch (error) {
-            rejectTimeout(classifyNostrSignerError(error))
-          }
+          )
+          reject(
+            new SessionSignerError(
+              "timeout",
+              "The signer did not answer in time."
+            )
+          )
         }, this.operationTimeoutMs)
-        const result = await operation()
-        this.assertAuthority()
-        if (!this.capabilities[capability])
-          throw new NostrSignerError("unsupported_operation")
-        return result
-      })()
-      return await Promise.race([task, cancelled, timeout])
+      })
+      const result = await Promise.race([provider, cancelled, timeout])
+      this.assertAuthority()
+      if (!this.capabilities[capability])
+        throw new NostrSignerError("unsupported_operation")
+      return result
     } catch (error) {
-      throw classifyNostrSignerError(error)
+      const failure =
+        error instanceof SessionSignerError
+          ? error
+          : classifyNostrSignerError(error)
+      if (failure.code === "authorization_denied") {
+        this.backgroundPaused = true
+        this.rejectQueued(
+          new SessionSignerError(
+            "background_paused",
+            "Background decryption is paused after a declined signer request."
+          ),
+          true
+        )
+      }
+      throw failure
     } finally {
       if (timer !== undefined) clearTimeout(timer)
       if (onAbort)
         this.cancellation.signal.removeEventListener("abort", onAbort)
-      release?.()
+      if (provider && !providerSettled) void provider.then(finish, finish)
+      else finish()
     }
   }
 
@@ -337,6 +484,7 @@ export class SessionSigner implements AccountSigner {
       this.invalidated = true
       // Publish the cause before auth cleanup can revoke the local lease.
       this.cancellation.abort(error)
+      this.rejectQueued(error)
       this.onInvalidated?.(error)
     }
     throw error

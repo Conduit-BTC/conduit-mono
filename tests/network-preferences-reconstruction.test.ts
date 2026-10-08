@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -98,14 +99,13 @@ function obsoleteStorage(phase: "prepared" | "complete"): MemoryStorage {
   return storage
 }
 
-function signedEvent(
+async function signedEvent(
   kind: 10002 | 10050,
   createdAt: number,
   tags: string[][]
-): SignedPublicNostrEvent {
-  return finalizeEvent(
-    { kind, created_at: createdAt, tags, content: "" },
-    SECRET
+): Promise<SignedPublicNostrEvent> {
+  return await admitFixture(
+    finalizeEvent({ kind, created_at: createdAt, tags, content: "" }, SECRET)
   )
 }
 
@@ -208,11 +208,11 @@ describe("signed account Network reconstruction", () => {
     installStorage(obsoleteStorage("complete"))
     const retained = repositories()
     const invalidOwner = {
-      ...signedEvent(10002, 100, [["r", READ]]),
+      ...(await signedEvent(10002, 100, [["r", READ]])),
       sig: "0".repeat(128),
     }
     const invalidInbox = {
-      ...signedEvent(10050, 100, [["relay", INBOX]]),
+      ...(await signedEvent(10050, 100, [["relay", INBOX]])),
       sig: "0".repeat(128),
     }
     const reconciled = await reconcileAccountNetworkPreferences(OWNER, {
@@ -265,11 +265,11 @@ describe("signed account Network reconstruction", () => {
   it("reconstructs Read, Write, and Private Inbox from signed events after all process caches reset", async () => {
     installStorage(obsoleteStorage("complete"))
     const retained = repositories()
-    const ownerEvent = signedEvent(10002, 100, [
+    const ownerEvent = await signedEvent(10002, 100, [
       ["r", READ, "read"],
       ["r", WRITE, "write"],
     ])
-    const inboxEvent = signedEvent(10050, 100, [["relay", INBOX]])
+    const inboxEvent = await signedEvent(10050, 100, [["relay", INBOX]])
     const fresh = await reconcileAccountNetworkPreferences(OWNER, {
       ...retained,
       relayUrls: [DISCOVERY],
@@ -349,10 +349,10 @@ describe("signed account Network reconstruction", () => {
             } as unknown as Storage)
           : obsoleteStorage("complete")
       )
-      const oldOwner = signedEvent(10002, 100, [["r", READ]])
-      const oldInbox = signedEvent(10050, 100, [["relay", INBOX]])
-      const newOwner = signedEvent(10002, 101, [["r", READ]])
-      const newInbox = signedEvent(10050, 101, [["relay", INBOX]])
+      const oldOwner = await signedEvent(10002, 100, [["r", READ]])
+      const oldInbox = await signedEvent(10050, 100, [["relay", INBOX]])
+      const newOwner = await signedEvent(10002, 101, [["r", READ]])
+      const newInbox = await signedEvent(10050, 101, [["relay", INBOX]])
       const retained = repositories()
       let local = emptyAccountNetworkLocalState(OWNER)
       for (const relayUrl of [READ, INBOX, LEGACY]) {
@@ -401,7 +401,7 @@ describe("signed account Network reconstruction", () => {
 
   it("retains current inbox cutover recovery across reload independently of obsolete recovery bytes", async () => {
     installStorage(obsoleteStorage("complete"))
-    const event = signedEvent(10050, 200, [["relay", INBOX]])
+    const event = await signedEvent(10050, 200, [["relay", INBOX]])
     const staged = applyInboxDeclarationDistributionStage(undefined, {
       pubkey: OWNER,
       signedEvent: event,

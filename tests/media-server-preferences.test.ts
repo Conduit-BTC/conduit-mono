@@ -24,6 +24,7 @@ import { planRelayReads } from "../packages/core/src/protocol/relay-planner"
 import { createRelaySettingsFromPreferences } from "../packages/core/src/protocol/relay-settings"
 import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { admitFixture } from "./helpers/public-event"
 
 const OWNER_KEY = generateSecretKey()
 const OTHER_KEY = generateSecretKey()
@@ -62,7 +63,7 @@ function event(
   )
 }
 
-function relayRead(
+async function relayRead(
   events: SignedPublicNostrEvent[],
   relays: Array<{
     relayUrl: string
@@ -73,14 +74,13 @@ function relayRead(
   admittedRelayUrls?: string[]
 ) {
   return {
-    events,
+    events: await Promise.all(events.map(admitFixture)),
     eventSourceRelayUrls: sources,
     ...(admittedRelayUrls ? { admittedRelayUrls } : {}),
     relays: relays.map((relay) => ({
       ...relay,
       eventCount: events.length,
     })),
-    eventsVerified: true,
   }
 }
 
@@ -210,7 +210,7 @@ describe("BUD-03 media server preference parsing", () => {
 })
 
 describe("kind 10063 replacement selection and evidence", () => {
-  it("selects the latest valid owner event with the NIP-01 lowest-id tie break", () => {
+  it("selects the latest valid owner event with the NIP-01 lowest-id tie break", async () => {
     const older = event([["server", "https://older.conduit.market"]], {
       createdAt: 10,
     })
@@ -236,7 +236,11 @@ describe("kind 10063 replacement selection and evidence", () => {
     )[0]!
 
     const selected = selectLatestValidBlossomServerListEvent(
-      [older, tiedA, tiedB, malformedNewer, otherOwner, wrongKind],
+      await Promise.all(
+        [older, tiedA, tiedB, malformedNewer, otherOwner, wrongKind].map(
+          admitFixture
+        )
+      ),
       OWNER
     )
     expect(selected?.event.id).toBe(expectedTie.id)

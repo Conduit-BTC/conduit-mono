@@ -353,19 +353,14 @@ async function safeRead(
       independentRelayUrls,
     })
     throwIfTrustAborted(signal, shouldContinue)
-    const usesVerifiedFanout =
-      fetchEvents === fetchSignedEventsFanoutDetailed &&
-      result.eventsVerified === true
-    const boundedResultEvents = usesVerifiedFanout
-      ? result.events
-      : result.events.slice(0, FALLBACK_EVENT_VERIFICATION_CAP)
-    const candidates = dedupeEventCandidates(boundedResultEvents)
-    const verification = usesVerifiedFanout
-      ? { events: candidates, truncated: false }
-      : await verifySignedEvents(candidates, {
-          signal,
-          maxEvents: FALLBACK_EVENT_VERIFICATION_CAP,
-        })
+    const boundedResultEvents = result.events.slice(
+      0,
+      FALLBACK_EVENT_VERIFICATION_CAP
+    )
+    const verification = await verifySignedEvents(boundedResultEvents, {
+      signal,
+      maxEvents: FALLBACK_EVENT_VERIFICATION_CAP,
+    })
     const verifiedEvents = dedupeEventCandidates(verification.events).sort(
       compareEventsNewestFirst
     )
@@ -384,6 +379,7 @@ async function safeRead(
         truncated ||
           reachedLimit ||
           verification.truncated ||
+          verification.events.length !== boundedResultEvents.length ||
           result.events.length > boundedResultEvents.length
       ),
     }

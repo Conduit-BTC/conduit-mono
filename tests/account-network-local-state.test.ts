@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -35,12 +36,12 @@ const RELAY_B = "wss://relay-b.net"
 const RELAY_C = "wss://relay-c.net"
 const RELAY_D = "wss://relay-d.net"
 
-function signedEvent(input: {
+async function signedEvent(input: {
   kind: 10002 | 10050
   createdAt: number
   tags: string[][]
   secret?: Uint8Array
-}): SignedPublicNostrEvent {
+}): Promise<SignedPublicNostrEvent> {
   const event = finalizeEvent(
     {
       kind: input.kind,
@@ -50,10 +51,10 @@ function signedEvent(input: {
     },
     input.secret ?? OWNER_SECRET
   )
-  return {
+  return await admitFixture({
     ...event,
     tags: event.tags.map((tag) => [...tag]),
-  }
+  })
 }
 
 function frontier(event: SignedPublicNostrEvent) {
@@ -82,7 +83,7 @@ function excludeRelay(
 }
 
 describe("account network local state", () => {
-  it("reads existing local policy without retaining obsolete migration metadata", () => {
+  it("reads existing local policy without retaining obsolete migration metadata", async () => {
     const policy = excludeRelay(emptyAccountNetworkLocalState(OWNER, () => 10))
     const historical = { ...policy, migrationVersion: 1 }
     expect(normalizeAccountNetworkLocalState(historical, OWNER)).toEqual(policy)
@@ -91,7 +92,7 @@ describe("account network local state", () => {
     ).not.toHaveProperty("migrationVersion")
   })
 
-  it("strictly normalizes account identity, versions, and causal references", () => {
+  it("strictly normalizes account identity, versions, and causal references", async () => {
     const empty = emptyAccountNetworkLocalState(OWNER.toUpperCase(), () => 10)
     expect(empty).toMatchObject({
       pubkey: OWNER,
@@ -129,7 +130,7 @@ describe("account network local state", () => {
     ).toEqual(["ws://owner-relay.example"])
   })
 
-  it("migrates legacy local records without disabling prior personal routing", () => {
+  it("migrates legacy local records without disabling prior personal routing", async () => {
     const migrated = normalizeAccountNetworkLocalState({
       pubkey: OWNER,
       version: 1,
@@ -405,13 +406,13 @@ describe("account network local state", () => {
     ).toEqual([RELAY_B])
   })
 
-  it("clears exclusions only for stronger valid own events that explicitly re-add", () => {
-    const relayList = signedEvent({
+  it("clears exclusions only for stronger valid own events that explicitly re-add", async () => {
+    const relayList = await signedEvent({
       kind: 10002,
       createdAt: 100,
       tags: [["r", RELAY_A, "read"]],
     })
-    const inboxDeclaration = signedEvent({
+    const inboxDeclaration = await signedEvent({
       kind: 10050,
       createdAt: 100,
       tags: [
@@ -431,7 +432,7 @@ describe("account network local state", () => {
       }).exclusions
     ).toHaveLength(1)
 
-    const newerOmission = signedEvent({
+    const newerOmission = await signedEvent({
       kind: 10002,
       createdAt: 101,
       tags: [["r", RELAY_B]],
@@ -443,7 +444,7 @@ describe("account network local state", () => {
       }).exclusions
     ).toHaveLength(1)
 
-    const otherAuthorReadd = signedEvent({
+    const otherAuthorReadd = await signedEvent({
       kind: 10002,
       createdAt: 102,
       tags: [["r", RELAY_A]],
@@ -456,7 +457,7 @@ describe("account network local state", () => {
       })
     ).toThrow("author does not match")
 
-    const newerRelayListReadd = signedEvent({
+    const newerRelayListReadd = await signedEvent({
       kind: 10002,
       createdAt: 102,
       tags: [["r", RELAY_A, "write"]],
@@ -474,7 +475,7 @@ describe("account network local state", () => {
       inboxDeclaration,
       committedAt: 1_005,
     })
-    const newerInboxReadd = signedEvent({
+    const newerInboxReadd = await signedEvent({
       kind: 10050,
       createdAt: 103,
       tags: [["relay", RELAY_B]],
@@ -490,7 +491,7 @@ describe("account network local state", () => {
       emptyAccountNetworkLocalState(OWNER, () => 1),
       { relayUrl: RELAY_C, committedAt: 2 }
     )
-    const firstRelayList = signedEvent({
+    const firstRelayList = await signedEvent({
       kind: 10002,
       createdAt: 1,
       tags: [["r", RELAY_C]],

@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, NDKUser, nip19, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { matchFilter } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import { v2 } from "nostr-tools/nip44"
+import { wrapEvent } from "nostr-tools/nip59"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
@@ -20,13 +24,13 @@ import {
   cacheSignedProductListingEvent,
   decodeProductReference,
   encodeProductNaddr,
-  getConversationDetail,
   getFollowPubkeys,
   getAtomicProductDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
   getMerchantConversationList,
   getMerchantStorefront,
+  admitPublicEvent,
   openCheckoutSparkRecoveryWrap,
   getProductImageCandidates,
   getProductDetail,
@@ -57,6 +61,27 @@ import {
   attachEventSourceRelayUrl,
   __resetPublicReaderTestState,
 } from "@conduit/core/protocol/relay-reader"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import type {
+  NostrKeySigner,
+  SignedNostrEvent,
+} from "../packages/core/src/protocol/nostr-event-signer"
+import {
+  getProtectedReadAuthorization,
+  installProtectedReadSigner,
+  __resetProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
+import {
+  activateAccountSigner,
+  retireAccountSigner,
+  SessionSigner,
+} from "../packages/core/src/protocol/session-signer"
+import type {
+  ReadProtectedInboxOptions,
+  ProtectedInboxReadResult,
+} from "../packages/core/src/protocol/protected-inbox-read"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
@@ -68,13 +93,215 @@ const FIXED_NOW = 1_700_000_000_000
 const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
 const MERCHANT_B_SECRET = new Uint8Array(32).fill(2)
 const MERCHANT_A_PUBKEY = getPublicKey(MERCHANT_A_SECRET)
-const EVENT_TEST_MERCHANT_PUBKEY = "a".repeat(64)
-const EVENT_TEST_ORGANIZER_PUBKEY = "b".repeat(64)
+const fixtureKeys = new Map<string, Uint8Array>([
+  [MERCHANT_A_PUBKEY, MERCHANT_A_SECRET],
+  [getPublicKey(MERCHANT_B_SECRET), MERCHANT_B_SECRET],
+])
+function fixturePubkeyForSecret(key: Uint8Array): string {
+  const pubkey = getPublicKey(key)
+  fixtureKeys.set(pubkey, key)
+  return pubkey
+}
+function fixturePubkey(label: string): string {
+  const key = new Uint8Array(createHash("sha256").update(label).digest())
+  const pubkey = getPublicKey(key)
+  fixtureKeys.set(pubkey, key)
+  return pubkey
+}
+function fixtureSecret(pubkey: string): Uint8Array {
+  const key = fixtureKeys.get(pubkey)
+  if (!key) throw new Error(`Missing fixture signer for ${pubkey}`)
+  return key
+}
+const EVENT_TEST_MERCHANT_PUBKEY = fixturePubkey("event-merchant")
+const EVENT_TEST_ORGANIZER_PUBKEY = fixturePubkey("event-organizer")
 let cachedProducts: CachedProduct[] = []
 let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
+const orderInboxDatabases: ConduitDB[] = []
+const orderInboxOwners: CommerceInbox[] = []
+const orderInboxSigners: SessionSigner[] = []
 const originalConfig = structuredClone(config)
+
+function signedOrderWrap(input: {
+  senderSecret: Uint8Array
+  principalPubkey: string
+  kind?: number
+  tags: string[][]
+  content: string
+  createdAt?: number
+}): SignedNostrEvent {
+  return wrapEvent(
+    {
+      kind: input.kind ?? 16,
+      pubkey: getPublicKey(input.senderSecret),
+      created_at: input.createdAt ?? Math.floor(FIXED_NOW / 1_000),
+      tags: input.tags,
+      content: input.content,
+    },
+    input.senderSecret,
+    input.principalPubkey
+  )
+}
+
+function orderPayload(
+  orderId: string,
+  buyer: string,
+  merchant: string,
+  amount = 1
+) {
+  return {
+    id: orderId,
+    merchantPubkey: merchant,
+    buyerPubkey: buyer,
+    items: [
+      {
+        productId: `30402:${merchant}:synthetic`,
+        format: "physical",
+        quantity: 1,
+        priceAtPurchase: amount,
+        currency: "SATS",
+      },
+    ],
+    subtotal: amount,
+    currency: "SATS",
+    shippingCostSats: 0,
+    shippingCostStatus: "not_required",
+    createdAt: FIXED_NOW,
+  }
+}
+
+function setupOrderInbox(principalSecret: Uint8Array) {
+  const principalPubkey = getPublicKey(principalSecret)
+  let active = true
+  let decrypts = 0
+  let failDecrypt = false
+  const provider: NostrKeySigner = {
+    pubkey: principalPubkey,
+    authMethod: "nip07",
+    getPublicKey: async () => principalPubkey,
+    signEvent: async (event) => finalizeEvent(event, principalSecret),
+    encryptNip44: async (peer, value) =>
+      v2.encrypt(value, v2.utils.getConversationKey(principalSecret, peer)),
+    decryptNip44: async (peer, value) => {
+      decrypts += 1
+      if (failDecrypt) throw new Error("synthetic provider failure")
+      return v2.decrypt(
+        value,
+        v2.utils.getConversationKey(principalSecret, peer)
+      )
+    },
+    decryptLegacy: async () => {
+      throw new Error("legacy not used")
+    },
+  }
+  const signer = new SessionSigner(provider, {
+    expectedPubkey: principalPubkey,
+    revision: crypto.randomUUID(),
+    authMethod: "nip07",
+    getCapabilities: () => ({
+      signEvent: true,
+      nip44: true,
+      nip04Decrypt: true,
+    }),
+    hasAuthority: () => active,
+  })
+  activateAccountSigner(signer)
+  orderInboxSigners.push(signer)
+  installProtectedReadSigner(signer, principalPubkey, () => active)
+  const authorization = getProtectedReadAuthorization(principalPubkey)!
+  const database = new ConduitDB(`order-gateway-${crypto.randomUUID()}`, {
+    indexedDB: new IDBFactory(),
+    IDBKeyRange,
+  })
+  orderInboxDatabases.push(database)
+  const owner = new CommerceInbox(
+    authorization,
+    signer,
+    new CommerceInboxStore(authorization, database)
+  )
+  orderInboxOwners.push(owner)
+  const events: SignedNostrEvent[] = []
+  const readCalls: Array<{
+    relayUrls: string[]
+    transport: ReadProtectedInboxOptions["transport"]
+  }> = []
+  const read = async (
+    options: ReadProtectedInboxOptions
+  ): Promise<ProtectedInboxReadResult> => {
+    readCalls.push({
+      relayUrls: options.relayUrls,
+      transport: options.transport,
+    })
+    const selected =
+      options.transport === "nip17"
+        ? events.filter(
+            (event) =>
+              event.kind === 1059 &&
+              event.tags.some(
+                (tag) => tag[0] === "p" && tag[1] === principalPubkey
+              )
+          )
+        : []
+    return {
+      events: selected,
+      coverage: "complete",
+      auth: {
+        state: "not_challenged",
+        challengedCount: 0,
+        succeededCount: 0,
+        failedCount: 0,
+      },
+      relayResult: {
+        status: "success",
+        observations: [],
+        attemptedCount: 1,
+        completedCount: 1,
+        failedCount: 0,
+        authoritativeEmpty: selected.length === 0,
+        relays: [
+          {
+            relayIndex: 0,
+            status: "success",
+            auth: "not_challenged",
+            eventCount: selected.length,
+            duplicateCount: 0,
+            malformedCount: 0,
+            unusableCount: 0,
+          },
+        ],
+      },
+    }
+  }
+  __setCommerceTestOverrides({
+    getCommerceInbox: (pubkey) => {
+      if (pubkey !== principalPubkey) throw new Error("Wrong account inbox")
+      return owner
+    },
+    getAccountSigner: () => signer,
+    getCachedOrderMessages: undefined,
+    putCachedOrderMessages: undefined,
+    resolveInboxRelayUrls: async () => ["wss://inbox.example"],
+    readProtectedInbox: read,
+  })
+  return {
+    principalPubkey,
+    owner,
+    database,
+    signer,
+    events,
+    readCalls,
+    decrypts: () => decrypts,
+    setDecryptFailure: (enabled: boolean) => {
+      failDecrypt = enabled
+    },
+    retire: () => {
+      active = false
+      retireAccountSigner(signer)
+    },
+  }
+}
 
 async function durableMerchantRelayListRepository(tags: string[][]) {
   const repository = createInMemoryOwnerRelayListEvidenceRepository()
@@ -87,11 +314,14 @@ async function durableMerchantRelayListRepository(tags: string[][]) {
     },
     MERCHANT_A_SECRET
   )
+  const admission = await admitPublicEvent(signedEvent)
+  if (admission.status !== "verified")
+    throw new Error(`Fixture admission failed: ${admission.status}`)
   await repository.reconcile({
     pubkey: MERCHANT_A_PUBKEY,
     observations: [
       {
-        signedEvent,
+        signedEvent: admission.event,
         sourceRelayUrls: ["wss://discovery.example"],
         observedAt: FIXED_NOW,
         completeObservedAt: FIXED_NOW,
@@ -141,7 +371,7 @@ function makeFollowListRead(input: {
         eventCount: input.event ? 1 : 0,
       },
     ],
-    eventsVerified: true,
+    verificationComplete: true,
     coverage,
     relayListState: "network" as const,
     relayHintTruncated: false,
@@ -154,7 +384,7 @@ function makeFollowListRead(input: {
     authors: [author],
     plannedRelayUrls: [relayUrl],
     relays: author.relays,
-    eventsVerified: true,
+    verificationComplete: true,
   }
 }
 
@@ -179,56 +409,60 @@ function makeProductEvent(params: {
   sig: string
   tags: string[][]
 } {
-  return {
-    id: params.id,
-    kind: EVENT_KINDS.PRODUCT,
-    pubkey: params.pubkey,
-    created_at: params.createdAt,
-    content: JSON.stringify({
-      id: `30402:${params.pubkey}:${params.dTag}`,
-      pubkey: params.pubkey,
-      title: params.title,
-      price: 25,
-      currency: "USD",
-      type: "simple",
-      format: params.format ?? "physical",
-      visibility:
-        params.visibility ??
-        (params.visibilityTag === "hidden" || params.visibilityTag === "private"
-          ? "private"
-          : "public"),
-      collectionRefs: params.collectionRefs,
-      shippingOptionRefs: params.shippingOptionRefs?.map((coordinate) => ({
-        coordinate,
-      })),
-      images: [{ url: "https://cdn.conduit.market/conduit-test/product.png" }],
-      tags: ["test"],
-      stock: params.stock,
-      createdAt: params.createdAt * 1000,
-      updatedAt: params.createdAt * 1000,
-    }),
-    sig: "signed",
-    tags: [
-      ["d", params.dTag],
-      ["title", params.title],
-      ["price", "25", "USD"],
-      ...(params.format ? [["type", "simple", params.format]] : []),
-      ...(params.visibilityTag
-        ? [["visibility", params.visibilityTag]]
-        : params.visibility === "private"
-          ? [["visibility", "hidden"]]
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRODUCT,
+      created_at: params.createdAt,
+      content: JSON.stringify({
+        id: `30402:${params.pubkey}:${params.dTag}`,
+        pubkey: params.pubkey,
+        title: params.title,
+        price: 25,
+        currency: "USD",
+        type: "simple",
+        format: params.format ?? "physical",
+        visibility:
+          params.visibility ??
+          (params.visibilityTag === "hidden" ||
+          params.visibilityTag === "private"
+            ? "private"
+            : "public"),
+        collectionRefs: params.collectionRefs,
+        shippingOptionRefs: params.shippingOptionRefs?.map((coordinate) => ({
+          coordinate,
+        })),
+        images: [
+          { url: "https://cdn.conduit.market/conduit-test/product.png" },
+        ],
+        tags: ["test"],
+        stock: params.stock,
+        createdAt: params.createdAt * 1000,
+        updatedAt: params.createdAt * 1000,
+      }),
+      tags: [
+        ["fixture", params.id],
+        ["d", params.dTag],
+        ["title", params.title],
+        ["price", "25", "USD"],
+        ...(params.format ? [["type", "simple", params.format]] : []),
+        ...(params.visibilityTag
+          ? [["visibility", params.visibilityTag]]
+          : params.visibility === "private"
+            ? [["visibility", "hidden"]]
+            : []),
+        ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
+        ...(params.shippingOptionRefs ?? []).map((reference) => [
+          "shipping_option",
+          reference,
+        ]),
+        ["t", "test"],
+        ...(typeof params.stock === "number"
+          ? [["stock", String(params.stock)]]
           : []),
-      ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
-      ...(params.shippingOptionRefs ?? []).map((reference) => [
-        "shipping_option",
-        reference,
-      ]),
-      ["t", "test"],
-      ...(typeof params.stock === "number"
-        ? [["stock", String(params.stock)]]
-        : []),
-    ],
-  }
+      ],
+    },
+    fixtureSecret(params.pubkey)
+  )
 }
 
 function makeGammaProductEvent(params: {
@@ -247,34 +481,35 @@ function makeGammaProductEvent(params: {
   collectionRefs?: string[]
   shippingOptionRefs?: string[]
 }) {
-  return {
-    id: params.id,
-    kind: EVENT_KINDS.PRODUCT,
-    pubkey: params.pubkey,
-    created_at: params.createdAt,
-    content: `${params.title} description`,
-    sig: "signed",
-    tags: [
-      ["d", params.dTag],
-      ["title", params.title],
-      ["price", String(params.price ?? 25_000), "SATS"],
-      ["type", params.type, "physical"],
-      ...(params.visibility === "private" ? [["visibility", "hidden"]] : []),
-      ...(params.parentProductId ? [["a", params.parentProductId]] : []),
-      ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
-      ...(params.shippingOptionRefs ?? []).map((reference) => [
-        "shipping_option",
-        reference,
-      ]),
-      ...(params.size ? [["spec", "size", params.size]] : []),
-      ...(typeof params.stock === "number"
-        ? [["stock", String(params.stock)]]
-        : []),
-      ...(params.image === false
-        ? []
-        : [["image", "https://cdn.conduit.market/conduit-test/product.png"]]),
-    ],
-  }
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRODUCT,
+      created_at: params.createdAt,
+      content: `${params.title} description`,
+      tags: [
+        ["fixture", params.id],
+        ["d", params.dTag],
+        ["title", params.title],
+        ["price", String(params.price ?? 25_000), "SATS"],
+        ["type", params.type, "physical"],
+        ...(params.visibility === "private" ? [["visibility", "hidden"]] : []),
+        ...(params.parentProductId ? [["a", params.parentProductId]] : []),
+        ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
+        ...(params.shippingOptionRefs ?? []).map((reference) => [
+          "shipping_option",
+          reference,
+        ]),
+        ...(params.size ? [["spec", "size", params.size]] : []),
+        ...(typeof params.stock === "number"
+          ? [["stock", String(params.stock)]]
+          : []),
+        ...(params.image === false
+          ? []
+          : [["image", "https://cdn.conduit.market/conduit-test/product.png"]]),
+      ],
+    },
+    fixtureSecret(params.pubkey)
+  )
 }
 
 function makeSignedProductEvent(params: {
@@ -488,6 +723,10 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  for (const owner of orderInboxOwners.splice(0)) owner.stop()
+  __resetProtectedReadSigner()
+  for (const signer of orderInboxSigners.splice(0)) retireAccountSigner(signer)
+  for (const database of orderInboxDatabases.splice(0)) await database.delete()
   Object.assign(config, structuredClone(originalConfig))
   __resetCommerceTestOverrides()
   __resetRelayHealth()
@@ -553,7 +792,7 @@ describe("commerce gateway", () => {
   it("caps final hinted detail, parent and sibling plans at six relays", async () => {
     const previousDiscovery = config.commerceDiscoveryRelayUrls
     const source = "wss://bounded-source.conduit.market"
-    const pubkey = "f".repeat(64)
+    const pubkey = fixturePubkey("author-f")
     const parentAddress = `30402:${pubkey}:bounded-parent`
     const childAddress = `30402:${pubkey}:bounded-child`
     const events = [
@@ -1119,7 +1358,7 @@ describe("commerce gateway", () => {
     "keeps distinct %s variation families within independent relay plans",
     async (referenceKind) => {
       const families = Array.from({ length: 7 }, (_, index) => {
-        const pubkey = (index + 1).toString(16).padStart(64, "0")
+        const pubkey = fixturePubkey(`author-${index}`)
         const parentDTag = `source-only-family-${index}`
         const childDTag = `${parentDTag}-child`
         const siblingDTag = `${parentDTag}-sibling`
@@ -1401,7 +1640,7 @@ describe("commerce gateway", () => {
 
   it("chunks large variation-family reads and isolates a failed author chunk", async () => {
     const families = Array.from({ length: 65 }, (_, index) => {
-      const pubkey = (index + 1).toString(16).padStart(64, "0")
+      const pubkey = fixturePubkey(`author-${index}`)
       const parentDTag = `large-family-${index}`
       const childDTag = `${parentDTag}-child`
       const parentAddress = `30402:${pubkey}:${parentDTag}`
@@ -1566,7 +1805,7 @@ describe("commerce gateway", () => {
   it.each([120, 201])(
     "isolates saturated family coverage with %i heavy variations",
     async (heavyCount) => {
-      const pubkey = "e".repeat(64)
+      const pubkey = fixturePubkey("author-e")
       const families = ["heavy", "small"].map((name, familyIndex) => {
         const parentAddress = `30402:${pubkey}:saturation-${name}`
         return {
@@ -2083,16 +2322,16 @@ describe("commerce gateway", () => {
       tag[0] === "visibility" ? ["visibility", "private"] : [...tag]
     )
     if (!event.tags.some((tag) => tag[0] === "visibility"))
-      event.tags.push(["visibility", "private"])
+      event.tags = [...event.tags, ["visibility", "private"]]
     cachedProducts = []
     const second = await getMarketplaceProducts({
       authorPubkeys: [event.pubkey],
     })
     expect(second.data).toEqual([])
-    expect(cachedProducts).toHaveLength(1)
-    expect(cachedProducts[0]?.signedProductEvent).toBeUndefined()
-    expect(cachedProducts[0]?.visibility).toBe("private")
-    expect(first.data[0]?.product.signedProductEvent).toEqual(original)
+    expect(cachedProducts).toEqual([])
+    expect(first.data[0]?.product.signedProductEvent).toEqual(
+      expect.objectContaining(original)
+    )
   })
 
   it("persists a progressive browse batch before the remaining relay read completes", async () => {
@@ -2391,7 +2630,7 @@ describe("commerce gateway", () => {
 
   it("schedules every exact author without Cartesian collisions or unbounded concurrency", async () => {
     const merchants = Array.from({ length: 11 }, (_, index) =>
-      getPublicKey(new Uint8Array(32).fill(index + 1))
+      fixturePubkeyForSecret(new Uint8Array(32).fill(index + 1))
     )
     const wantedEvents = merchants.map((pubkey, index) =>
       makeProductEvent({
@@ -2475,7 +2714,7 @@ describe("commerce gateway", () => {
 
   it("isolates one failed relay-list author without suppressing adjacent chunks", async () => {
     const merchants = Array.from({ length: 65 }, (_, index) =>
-      getPublicKey(new Uint8Array(32).fill(index + 1))
+      fixturePubkeyForSecret(new Uint8Array(32).fill(index + 1))
     )
     const failedAuthor = merchants[17]!
     const wantedEvents = merchants.map((pubkey, index) =>
@@ -2677,14 +2916,14 @@ describe("commerce gateway", () => {
   it("passes author filters for perspective-scoped marketplace discovery", async () => {
     const productEvents = [
       makeProductEvent({
-        pubkey: "merchant-a",
+        pubkey: fixturePubkey("merchant-a"),
         dTag: "item-a",
         id: "event-a",
         createdAt: 101,
         title: "Item A",
       }),
       makeProductEvent({
-        pubkey: "merchant-b",
+        pubkey: fixturePubkey("merchant-b"),
         dTag: "item-b",
         id: "event-b",
         createdAt: 102,
@@ -2705,27 +2944,27 @@ describe("commerce gateway", () => {
     })
 
     const result = await getMarketplaceProducts({
-      authorPubkeys: ["merchant-a"],
+      authorPubkeys: [fixturePubkey("merchant-a")],
       sort: "newest",
     })
 
-    expect(seenAuthors).toEqual(["merchant-a"])
+    expect(seenAuthors).toEqual([fixturePubkey("merchant-a")])
     expect(result.data.map((record) => record.product.pubkey)).toEqual([
-      "merchant-a",
+      fixturePubkey("merchant-a"),
     ])
   })
 
   it("searches products globally when no perspective authors are supplied", async () => {
     const productEvents = [
       makeProductEvent({
-        pubkey: "merchant-a",
+        pubkey: fixturePubkey("merchant-a"),
         dTag: "other-item",
         id: "global-search-event-a",
         createdAt: 101,
         title: "Other item",
       }),
       makeProductEvent({
-        pubkey: "merchant-b",
+        pubkey: fixturePubkey("merchant-b"),
         dTag: "test-shirt",
         id: "global-search-event-b",
         createdAt: 102,
@@ -2887,7 +3126,6 @@ describe("commerce gateway", () => {
             status,
             eventCount: 0,
           })),
-          eventsVerified: true,
         } as never
       },
     })
@@ -3248,7 +3486,7 @@ describe("commerce gateway", () => {
 
   it("keeps a large whitelist and category constraint client-side with a minimal relay request", async () => {
     const authors = Array.from({ length: 2048 }, (_, index) =>
-      (index + 1).toString(16).padStart(64, "0")
+      fixturePubkey(`author-${index}`)
     )
     const requests: Array<Record<string, unknown>> = []
     __setCommerceTestOverrides({
@@ -3287,7 +3525,7 @@ describe("commerce gateway", () => {
       title: "Blue cup",
     })
     const outsidePerspective = makeProductEvent({
-      pubkey: "merchant-b",
+      pubkey: fixturePubkey("merchant-b"),
       dTag: "outside",
       id: "search-outside-perspective",
       createdAt: 103,
@@ -3339,13 +3577,12 @@ describe("commerce gateway", () => {
   })
 
   it("reports capped whitelist coverage rather than asking the relay to enforce the whitelist", async () => {
-    const authorPubkeys = Array.from(
-      { length: 65 },
-      (_, index) => `merchant-${index}`
+    const authorPubkeys = Array.from({ length: 65 }, (_, index) =>
+      fixturePubkey(`merchant-${index}`)
     )
     const outsideHits = Array.from({ length: 100 }, (_, index) =>
       makeProductEvent({
-        pubkey: "outside-catalog",
+        pubkey: fixturePubkey("outside-catalog"),
         dTag: `outside-${index}`,
         id: `outside-${index}`,
         createdAt: 200 + index,
@@ -3393,7 +3630,7 @@ describe("commerce gateway", () => {
 
   it("reports unavailable search without mixing catalog products and skips NIP-50 for empty text", async () => {
     const fallbackProduct = makeProductEvent({
-      pubkey: "merchant-a",
+      pubkey: fixturePubkey("merchant-a"),
       dTag: "bowl",
       id: "fallback-bowl",
       createdAt: 103,
@@ -3413,7 +3650,6 @@ describe("commerce gateway", () => {
             eventCount: productRead && !filter.search ? 1 : 0,
           })),
           admittedRelayUrls: [...(options?.relayUrls ?? [])],
-          eventsVerified: true,
         } as never
       },
     })
@@ -3491,14 +3727,14 @@ describe("commerce gateway", () => {
   it("keeps same d-tag listings from different merchants separate", async () => {
     const productEvents = [
       makeProductEvent({
-        pubkey: "merchant-a",
+        pubkey: fixturePubkey("merchant-a"),
         dTag: "shared-item",
         id: "event-a",
         createdAt: 101,
         title: "Merchant A Item",
       }),
       makeProductEvent({
-        pubkey: "merchant-b",
+        pubkey: fixturePubkey("merchant-b"),
         dTag: "shared-item",
         id: "event-b",
         createdAt: 102,
@@ -3516,15 +3752,15 @@ describe("commerce gateway", () => {
     const result = await getMarketplaceProducts({ sort: "newest" })
 
     expect(result.data.map((record) => record.addressId).sort()).toEqual([
-      "30402:merchant-a:shared-item",
-      "30402:merchant-b:shared-item",
+      `30402:${fixturePubkey("merchant-a")}:shared-item`,
+      `30402:${fixturePubkey("merchant-b")}:shared-item`,
     ])
   })
 
   it("falls back to local cached marketplace products without changing shape", async () => {
     cachedProducts.push({
-      id: "30402:merchant:cached-item",
-      pubkey: "merchant",
+      id: `30402:${fixturePubkey("merchant")}:cached-item`,
+      pubkey: fixturePubkey("merchant"),
       title: "Cached Item",
       summary: "cached summary",
       price: 25,
@@ -3556,8 +3792,8 @@ describe("commerce gateway", () => {
 
   it("retains cached product evidence while projecting profile and image requests safely", async () => {
     cachedProducts.push({
-      id: "30402:merchant:cached-image-safety",
-      pubkey: "merchant",
+      id: `30402:${fixturePubkey("merchant")}:cached-image-safety`,
+      pubkey: fixturePubkey("merchant"),
       title: "Cached Image Safety",
       price: 25,
       currency: "USD",
@@ -3572,8 +3808,8 @@ describe("commerce gateway", () => {
       updatedAt: FIXED_NOW - 5_000,
       cachedAt: FIXED_NOW - 1_000,
     })
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    cachedProfiles.set(fixturePubkey("merchant"), {
+      pubkey: fixturePubkey("merchant"),
       name: "Cached Merchant",
       picture: "http://127.0.0.1/avatar.png",
       banner: "https://cdn.conduit.market/conduit-test/banner.png",
@@ -3581,7 +3817,7 @@ describe("commerce gateway", () => {
     })
 
     const products = await getCachedMarketplaceProducts()
-    const profiles = await getProfiles({ pubkeys: ["merchant"] })
+    const profiles = await getProfiles({ pubkeys: [fixturePubkey("merchant")] })
 
     expect(products.data[0]?.product.images).toEqual([
       { url: "https://192.168.1.5/private.png" },
@@ -3590,16 +3826,16 @@ describe("commerce gateway", () => {
     expect(getProductImageCandidates(products.data[0]!.product)).toEqual([
       { url: "https://cdn.conduit.market/conduit-test/public.png" },
     ])
-    expect(profiles.data.merchant?.picture).toBeUndefined()
-    expect(profiles.data.merchant?.banner).toBe(
+    expect(profiles.data[fixturePubkey("merchant")]?.picture).toBeUndefined()
+    expect(profiles.data[fixturePubkey("merchant")]?.banner).toBe(
       "https://cdn.conduit.market/conduit-test/banner.png"
     )
   })
 
   it("normalizes JSON-shaped summaries restored from the product cache", async () => {
     cachedProducts.push({
-      id: "30402:merchant:cached-json-summary",
-      pubkey: "merchant",
+      id: `30402:${fixturePubkey("merchant")}:cached-json-summary`,
+      pubkey: fixturePubkey("merchant"),
       title: "Love, Love, Love",
       summary: JSON.stringify({
         title: "Love, Love, Love",
@@ -3630,12 +3866,16 @@ describe("commerce gateway", () => {
       tags: [" BITCOIN "],
     })
     expect(filtered.data.map((record) => record.product.id)).toEqual([
-      "30402:merchant:cached-json-summary",
+      `30402:${fixturePubkey("merchant")}:cached-json-summary`,
     ])
   })
 
   it("scopes cached marketplace reads to the requested author set at the loader", async () => {
-    for (const pubkey of ["merchant-a", "merchant-b", "merchant-c"]) {
+    for (const pubkey of [
+      fixturePubkey("merchant-a"),
+      fixturePubkey("merchant-b"),
+      fixturePubkey("merchant-c"),
+    ]) {
       cachedProducts.push({
         id: `30402:${pubkey}:item`,
         pubkey,
@@ -3672,13 +3912,16 @@ describe("commerce gateway", () => {
     })
 
     const result = await getCachedMarketplaceProducts({
-      authorPubkeys: ["merchant-a", "merchant-b"],
+      authorPubkeys: [fixturePubkey("merchant-a"), fixturePubkey("merchant-b")],
     })
 
-    expect(seenAuthorPubkeys).toEqual(["merchant-a", "merchant-b"])
+    expect(seenAuthorPubkeys).toEqual([
+      fixturePubkey("merchant-a"),
+      fixturePubkey("merchant-b"),
+    ])
     expect(result.data.map((record) => record.product.pubkey).sort()).toEqual([
-      "merchant-a",
-      "merchant-b",
+      fixturePubkey("merchant-a"),
+      fixturePubkey("merchant-b"),
     ])
   })
 
@@ -3718,7 +3961,7 @@ describe("commerce gateway", () => {
   })
 
   it("lets storefront reads skip broad deletion fallback for faster first paint", async () => {
-    const merchantPubkey = "merchant"
+    const merchantPubkey = fixturePubkey("merchant")
     const productEvent = makeProductEvent({
       pubkey: merchantPubkey,
       dTag: "live-item",
@@ -3762,7 +4005,7 @@ describe("commerce gateway", () => {
   })
 
   it("keeps the broad deletion fallback for Merchant storefront reads", async () => {
-    const merchantPubkey = "merchant"
+    const merchantPubkey = fixturePubkey("merchant")
     const productEvent = makeProductEvent({
       pubkey: merchantPubkey,
       dTag: "fallback-item",
@@ -3794,8 +4037,8 @@ describe("commerce gateway", () => {
 
   it("does not let an empty merchant live read blank cached products", async () => {
     cachedProducts.push({
-      id: "30402:merchant:cached-item",
-      pubkey: "merchant",
+      id: `30402:${fixturePubkey("merchant")}:cached-item`,
+      pubkey: fixturePubkey("merchant"),
       title: "Cached Item",
       summary: "cached summary",
       price: 25,
@@ -3816,7 +4059,7 @@ describe("commerce gateway", () => {
     })
 
     const result = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       limit: 10,
     })
 
@@ -4005,7 +4248,7 @@ describe("commerce gateway", () => {
     invalid.sig = "00".repeat(64)
 
     await expect(cacheSignedProductListingEvent(invalid)).rejects.toThrow(
-      "valid signed product listing"
+      "valid signed event"
     )
     expect(cachedProducts).toHaveLength(0)
   })
@@ -4018,7 +4261,7 @@ describe("commerce gateway", () => {
     invalid.sig = "00".repeat(64)
 
     await expect(cacheSignedProductDeletionEvent(invalid)).rejects.toThrow(
-      "valid signed product deletion"
+      "valid signed event"
     )
     expect(cachedProductTombstones).toHaveLength(0)
   })
@@ -5017,8 +5260,8 @@ describe("commerce gateway", () => {
 
   it("keeps image-broken products manageable for Merchant but hidden from Market storefront reads", async () => {
     cachedProducts.push({
-      id: "30402:merchant:needs-image",
-      pubkey: "merchant",
+      id: `30402:${fixturePubkey("merchant")}:needs-image`,
+      pubkey: fixturePubkey("merchant"),
       title: "Needs Image",
       summary: "cached summary",
       price: 25,
@@ -5037,11 +5280,11 @@ describe("commerce gateway", () => {
     })
 
     const marketResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       limit: 10,
     })
     const merchantResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       includeMarketHidden: true,
       limit: 10,
     })
@@ -5053,7 +5296,7 @@ describe("commerce gateway", () => {
 
   it("admits formerly blocked title text to Market and product detail", async () => {
     const productEvent = makeProductEvent({
-      pubkey: "merchant",
+      pubkey: fixturePubkey("merchant"),
       dTag: "blocked-item",
       id: "event-blocked",
       createdAt: 100,
@@ -5068,19 +5311,19 @@ describe("commerce gateway", () => {
     })
 
     const marketResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       limit: 10,
     })
     const merchantResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       includeMarketHidden: true,
       limit: 10,
     })
     const publicDetail = await getProductDetail({
-      productId: "30402:merchant:blocked-item",
+      productId: `30402:${fixturePubkey("merchant")}:blocked-item`,
     })
     const merchantDetail = await getProductDetail({
-      productId: "30402:merchant:blocked-item",
+      productId: `30402:${fixturePubkey("merchant")}:blocked-item`,
       includeMarketHidden: true,
     })
 
@@ -5094,7 +5337,7 @@ describe("commerce gateway", () => {
 
   it("admits formerly warned title text in Market and Merchant", async () => {
     const productEvent = makeProductEvent({
-      pubkey: "merchant",
+      pubkey: fixturePubkey("merchant"),
       dTag: "warning-item",
       id: "event-warning",
       createdAt: 100,
@@ -5109,11 +5352,11 @@ describe("commerce gateway", () => {
     })
 
     const marketResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       limit: 10,
     })
     const merchantResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       includeMarketHidden: true,
       limit: 10,
     })
@@ -5126,8 +5369,8 @@ describe("commerce gateway", () => {
 
   it("keeps a newer signed replacement visible over an older cached listing", async () => {
     cachedProducts.push({
-      id: "30402:merchant:replacement-item",
-      pubkey: "merchant",
+      id: `30402:${fixturePubkey("merchant")}:replacement-item`,
+      pubkey: fixturePubkey("merchant"),
       title: "Previously Safe Item",
       summary: "cached summary",
       price: 25,
@@ -5141,7 +5384,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     const blockedEvent = makeProductEvent({
-      pubkey: "merchant",
+      pubkey: fixturePubkey("merchant"),
       dTag: "replacement-item",
       id: "event-blocked-replacement",
       createdAt: 200,
@@ -5156,11 +5399,11 @@ describe("commerce gateway", () => {
     })
 
     const marketResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       limit: 10,
     })
     const merchantResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       includeMarketHidden: true,
       limit: 10,
     })
@@ -5174,8 +5417,10 @@ describe("commerce gateway", () => {
       "Counterfeit goods display sample"
     )
     expect(
-      cachedProducts.find((row) => row.id === "30402:merchant:replacement-item")
-        ?.title
+      cachedProducts.find(
+        (row) =>
+          row.id === `30402:${fixturePubkey("merchant")}:replacement-item`
+      )?.title
     ).toBe("Counterfeit goods display sample")
 
     __setCommerceTestOverrides({
@@ -5183,11 +5428,11 @@ describe("commerce gateway", () => {
     })
 
     const cachedMarketResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       limit: 10,
     })
     const cachedMerchantResult = await getMerchantStorefront({
-      merchantPubkey: "merchant",
+      merchantPubkey: fixturePubkey("merchant"),
       includeMarketHidden: true,
       limit: 10,
     })
@@ -5200,7 +5445,7 @@ describe("commerce gateway", () => {
   })
 
   it("resolves product detail from a NIP-89 naddr handler URL", async () => {
-    const merchantPubkey = "a".repeat(64)
+    const merchantPubkey = fixturePubkey("event-merchant")
     const dTag = "naddr-item"
     const productEvent = makeProductEvent({
       pubkey: merchantPubkey,
@@ -5244,7 +5489,7 @@ describe("commerce gateway", () => {
         orderId: "order-1",
         type: "order",
         senderPubkey: "buyer",
-        recipientPubkey: "merchant",
+        recipientPubkey: fixturePubkey("merchant"),
         createdAt: FIXED_NOW - 10_000,
         rawContent: JSON.stringify({
           id: "order-msg",
@@ -5252,15 +5497,15 @@ describe("commerce gateway", () => {
           type: "order",
           createdAt: FIXED_NOW - 10_000,
           senderPubkey: "buyer",
-          recipientPubkey: "merchant",
+          recipientPubkey: fixturePubkey("merchant"),
           rawContent: "",
           payload: {
             id: "order-1",
-            merchantPubkey: "merchant",
+            merchantPubkey: fixturePubkey("merchant"),
             buyerPubkey: "buyer",
             items: [
               {
-                productId: "30402:merchant:item",
+                productId: `30402:${fixturePubkey("merchant")}:item`,
                 quantity: 1,
                 priceAtPurchase: 25,
                 currency: "USD",
@@ -5277,7 +5522,7 @@ describe("commerce gateway", () => {
         id: "status-msg",
         orderId: "order-1",
         type: "status_update",
-        senderPubkey: "merchant",
+        senderPubkey: fixturePubkey("merchant"),
         recipientPubkey: "buyer",
         createdAt: FIXED_NOW - 5_000,
         rawContent: JSON.stringify({
@@ -5285,7 +5530,7 @@ describe("commerce gateway", () => {
           orderId: "order-1",
           type: "status_update",
           createdAt: FIXED_NOW - 5_000,
-          senderPubkey: "merchant",
+          senderPubkey: fixturePubkey("merchant"),
           recipientPubkey: "buyer",
           rawContent: "",
           payload: {
@@ -5301,22 +5546,16 @@ describe("commerce gateway", () => {
       getAccountSigner: () => plainTestSigner(undefined as never),
     })
 
-    const listResult = await getBuyerConversationList({
+    const listResult = await getCachedBuyerConversationList({
       principalPubkey: "buyer",
       limit: 50,
-    })
-    const detailResult = await getConversationDetail({
-      principalPubkey: "buyer",
-      orderId: "order-1",
-      role: "buyer",
     })
 
     expect(listResult.meta.source).toBe("local_cache")
     expect(listResult.data).toHaveLength(1)
     expect(listResult.data[0]?.status).toBe("paid")
     expect(listResult.data[0]?.totalSummary).toBe("25 USD")
-    expect(detailResult.meta.source).toBe("local_cache")
-    expect(detailResult.data?.messages).toHaveLength(2)
+    expect(listResult.data[0]?.messages).toHaveLength(2)
   })
 
   it("separates buyer-placed and merchant-received orders by role", async () => {
@@ -5491,144 +5730,82 @@ describe("commerce gateway", () => {
   })
 
   it("persists buyer-originated order messages into the conversation cache", async () => {
-    await cacheParsedOrderMessage({
-      id: "local-order-msg",
-      orderId: "order-2",
-      type: "order",
-      createdAt: FIXED_NOW - 1_000,
-      senderPubkey: "buyer",
-      recipientPubkey: "merchant",
-      rawContent: JSON.stringify({
-        id: "order-2",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 1250,
-            currency: "SATS",
-          },
-        ],
-        subtotal: 1250,
-        currency: "SATS",
+    const h = setupOrderInbox(MERCHANT_B_SECRET)
+    const merchant = MERCHANT_A_PUBKEY
+    const payload = orderPayload("order-2", h.principalPubkey, merchant, 1_250)
+    await cacheParsedOrderMessage(
+      {
+        id: "local-order-msg",
+        orderId: "order-2",
+        type: "order",
         createdAt: FIXED_NOW - 1_000,
-      }),
-      payload: {
-        id: "order-2",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 1250,
-            currency: "SATS",
-          },
-        ],
-        subtotal: 1250,
-        currency: "SATS",
-        createdAt: FIXED_NOW - 1_000,
+        senderPubkey: h.principalPubkey,
+        recipientPubkey: merchant,
+        rawContent: JSON.stringify(payload),
+        payload: payload as never,
       },
-    })
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(undefined as never),
-    })
+      h.owner
+    )
 
     const result = await getBuyerConversationList({
-      principalPubkey: "buyer",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
-    expect(result.meta.source).toBe("local_cache")
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-2")
-    expect(result.data[0]?.merchantPubkey).toBe("merchant")
+    expect(result.data[0]?.merchantPubkey).toBe(merchant)
+    expect(await h.database.orderMessages.count()).toBe(0)
+    expect(
+      JSON.stringify(await h.database.commerceInboxRecords.toArray())
+    ).not.toContain("order-2")
   })
 
   it("retries wrapped order messages that failed to unwrap before marking them seen", async () => {
-    let unwrapCalls = 0
-    const wrappedEvent = {
-      id: "wrap-1",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "merchant",
-      created_at: 100,
-      content: "wrapped",
-      tags: [["p", "buyer"]],
-    }
-    const orderRumor = {
-      id: "order-rumor-1",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: "buyer",
-      created_at: 101,
-      content: JSON.stringify({
-        id: "order-3",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 2100,
-            currency: "SATS",
-          },
+    const h = setupOrderInbox(MERCHANT_B_SECRET)
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_B_SECRET,
+        principalPubkey: h.principalPubkey,
+        content: JSON.stringify(
+          orderPayload("order-3", h.principalPubkey, MERCHANT_A_PUBKEY, 2_100)
+        ),
+        tags: [
+          ["p", MERCHANT_A_PUBKEY],
+          ["type", "order"],
+          ["order", "order-3"],
+          ["amount", "2100"],
         ],
-        subtotal: 2100,
-        currency: "SATS",
-        createdAt: FIXED_NOW,
-      }),
-      tags: [
-        ["p", "merchant"],
-        ["type", "order"],
-        ["order", "order-3"],
-        ["amount", "2100"],
-        ["currency", "SATS"],
-      ],
-    }
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return unwrapCalls === 1 ? null : (orderRumor as never)
-      },
-    })
+      })
+    )
+    h.setDecryptFailure(true)
 
     const first = await getBuyerConversationList({
-      principalPubkey: "buyer",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
+    expect(first.data).toHaveLength(0)
+    expect(h.owner.getSnapshot().diagnostics.states.provider_unavailable).toBe(
+      1
+    )
+    h.setDecryptFailure(false)
+    await h.owner.retryDecode()
     const second = await getBuyerConversationList({
-      principalPubkey: "buyer",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
-    expect(first.data).toHaveLength(0)
-    expect(unwrapCalls).toBe(2)
     expect(second.data).toHaveLength(1)
     expect(second.data[0]?.orderId).toBe("order-3")
+    expect(h.decrypts()).toBe(3)
+    expect((await h.owner.store.wrappers())[0]?.state).toBe("opened")
   })
 
   it("keeps organizer handoff rumors out of the generic order cache", async () => {
-    let unwrapCalls = 0
-    const merchantPubkey = "a".repeat(64)
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
     const organizerPubkey = "b".repeat(64)
     const claimRef = "c".repeat(64)
-    const wrappedEvent = {
-      id: "handoff-wrap",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "wrapper",
-      created_at: 100,
-      content: "wrapped",
-      tags: [["p", merchantPubkey]],
-    }
     const handoffRumor = {
       id: "d".repeat(64),
       kind: EVENT_KINDS.ORDER,
@@ -5674,42 +5851,41 @@ describe("commerce gateway", () => {
       ],
     }
 
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return handoffRumor as never
-      },
-    })
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_A_SECRET,
+        principalPubkey: h.principalPubkey,
+        tags: handoffRumor.tags,
+        content: handoffRumor.content,
+      })
+    )
 
     const first = await getMerchantConversationList({
-      principalPubkey: merchantPubkey,
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
     const second = await getMerchantConversationList({
-      principalPubkey: merchantPubkey,
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
     expect(first.data).toHaveLength(0)
     expect(second.data).toHaveLength(0)
-    expect(unwrapCalls).toBe(1)
-    expect(cachedOrderMessages).toHaveLength(0)
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(0)
+    expect(h.owner.getSnapshot().diagnostics.states.machine).toBe(1)
+    expect(await h.database.orderMessages.count()).toBe(0)
 
-    const strictHandoffRead =
-      await getEventMarketPrivateMessageList(merchantPubkey)
+    const strictHandoffRead = await getEventMarketPrivateMessageList(
+      h.principalPubkey
+    )
     expect(strictHandoffRead.messages.map((message) => message.type)).toEqual([
       "future_market_ready",
     ])
-    expect(unwrapCalls).toBe(2)
+    expect(h.decrypts()).toBe(2)
   })
 
   it("leaves checkout Spark recovery wraps for the dedicated reader without treating them as order failures", async () => {
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
     const plan = freezeCheckoutSparkPlan({
       checkoutId: "checkout-recovery-cache-isolation",
       orderId: "order-recovery-cache-isolation",
@@ -5766,32 +5942,14 @@ describe("commerce gateway", () => {
         preparedAt: FIXED_NOW + 1_000,
       })
     )
-    const wrappedEvent = finalizeEvent(
-      {
-        kind: EVENT_KINDS.GIFT_WRAP,
-        created_at: Math.floor(FIXED_NOW / 1_000),
-        content: "opaque ciphertext",
-        tags: [["p", MERCHANT_A_PUBKEY]],
-      },
-      new Uint8Array(32).fill(3)
-    )
-    let unwrapCalls = 0
-    let cachedDirectCount = 0
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return rumor
-      },
-      putCachedDirectMessages: async (rows) => {
-        cachedDirectCount += rows.length
-      },
+    const wrappedEvent = signedOrderWrap({
+      senderSecret: MERCHANT_B_SECRET,
+      principalPubkey: MERCHANT_A_PUBKEY,
+      tags: rumor.tags,
+      content: rumor.content,
+      createdAt: rumor.created_at,
     })
+    h.events.push(wrappedEvent)
 
     const first = await getMerchantConversationList({
       principalPubkey: MERCHANT_A_PUBKEY,
@@ -5804,114 +5962,85 @@ describe("commerce gateway", () => {
     expect(second.data).toEqual([])
     expect(first.meta.decryptFailures).toBeUndefined()
     expect(second.meta.decryptFailures).toBeUndefined()
-    expect(cachedOrderMessages).toEqual([])
-    expect(cachedDirectCount).toBe(0)
+    expect(h.owner.getSnapshot().orderMessages).toEqual([])
+    expect(h.owner.getSnapshot().directMessages).toEqual([])
+    expect(h.owner.getSnapshot().diagnostics.states.machine).toBe(1)
+    expect(
+      JSON.stringify(await h.database.commerceInboxRecords.toArray())
+    ).not.toContain("mnemonic")
     // Generic reads classify the wrap once; Merchant's dedicated recovery
     // reader must still discover the same exact relay ciphertext.
-    expect(unwrapCalls).toBe(1)
+    expect(h.decrypts()).toBe(2)
     const recovery = await openCheckoutSparkRecoveryWrap({
       signedRecipientWrap: wrappedEvent,
-      signer: {
-        getPublicKey: async () => MERCHANT_A_PUBKEY,
-      } as NDKSigner,
-      giftUnwrap: async () => rumor,
+      signer: h.signer,
     })
     expect(recovery.wrapId).toBe(wrappedEvent.id)
     expect(recovery.payload.plan.orderId).toBe(plan.orderId)
-    expect(unwrapCalls).toBe(1)
+    expect(h.decrypts()).toBe(4)
   })
 
   it("keeps malformed recovery claims retryable in the generic inbox", async () => {
-    const wrappedEvent = {
-      id: "malformed-checkout-recovery-wrap",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "wrapper",
-      created_at: Math.floor(FIXED_NOW / 1_000),
-      content: "opaque ciphertext",
-      tags: [["p", MERCHANT_A_PUBKEY]],
-    }
-    let unwrapCalls = 0
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return {
-          kind: EVENT_KINDS.ORDER,
-          tags: [
-            ["p", MERCHANT_A_PUBKEY],
-            ["type", "checkout_spark_recovery"],
-          ],
-          content: "{}",
-        } as never
-      },
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const wrappedEvent = signedOrderWrap({
+      senderSecret: MERCHANT_B_SECRET,
+      principalPubkey: h.principalPubkey,
+      tags: [
+        ["p", h.principalPubkey],
+        ["type", "checkout_spark_recovery"],
+      ],
+      content: "{}",
     })
+    h.events.push(wrappedEvent)
 
     const first = await getMerchantConversationList({
-      principalPubkey: MERCHANT_A_PUBKEY,
+      principalPubkey: h.principalPubkey,
     })
+    await h.owner.retryDecode()
     const second = await getMerchantConversationList({
-      principalPubkey: MERCHANT_A_PUBKEY,
+      principalPubkey: h.principalPubkey,
     })
 
     expect(first.data).toEqual([])
     expect(second.data).toEqual([])
-    expect(first.meta.decryptFailures).toEqual([
-      { wrapId: wrappedEvent.id, reason: "malformed" },
-    ])
-    expect(second.meta.decryptFailures).toEqual(first.meta.decryptFailures)
-    expect(unwrapCalls).toBe(2)
+    expect(h.owner.getSnapshot().orderMessages).toEqual([])
+    expect(h.owner.getSnapshot().directMessages).toEqual([])
+    expect(h.owner.getSnapshot().diagnostics.states.malformed).toBe(1)
+    expect(
+      h.owner.getSnapshot().diagnostics.states.provider_unavailable ?? 0
+    ).toBe(0)
+    expect(h.decrypts()).toBe(4)
+    expect((await h.owner.store.wrappers())[0]?.event.id).toBe(wrappedEvent.id)
   })
 
   it("keeps payment-proof-only merchant conversations visible without marking them paid", async () => {
-    const merchantPubkey = "merchant"
-    const buyerPubkey = "buyer"
-    const wrappedEvent = {
-      id: "wrap-proof-1",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: buyerPubkey,
-      created_at: 100,
-      content: "wrapped-proof",
-      tags: [["p", merchantPubkey]],
-    }
-    const proofRumor = {
-      id: "proof-rumor-1",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: buyerPubkey,
-      created_at: 101,
-      content: JSON.stringify({
-        orderId: "order-proof-1",
-        rail: "lightning",
-        action: "private_checkout",
-        amount: 2100,
-        currency: "SATS",
-        invoice: "lnbc2100n1proof",
-        preimage: "paid-preimage",
-        paymentHash: "paid-hash",
-        proofDeliveryStatus: "pending",
-      }),
-      tags: [
-        ["p", merchantPubkey],
-        ["type", "payment_proof"],
-        ["order", "order-proof-1"],
-        ["amount", "2100"],
-        ["currency", "SATS"],
-      ],
-    }
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => proofRumor as never,
-    })
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
+    const buyerPubkey = getPublicKey(MERCHANT_B_SECRET)
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_B_SECRET,
+        principalPubkey: merchantPubkey,
+        content: JSON.stringify({
+          orderId: "order-proof-1",
+          rail: "lightning",
+          action: "private_checkout",
+          amount: 2100,
+          currency: "SATS",
+          invoice: "lnbc2100n1proof",
+          preimage: "paid-preimage",
+          paymentHash: "paid-hash",
+          proofDeliveryStatus: "pending",
+        }),
+        tags: [
+          ["p", merchantPubkey],
+          ["type", "payment_proof"],
+          ["order", "order-proof-1"],
+          ["amount", "2100"],
+          ["currency", "SATS"],
+        ],
+      })
+    )
 
     const result = await getMerchantConversationList({
       principalPubkey: merchantPubkey,
@@ -5924,41 +6053,25 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.merchantPubkey).toBe(merchantPubkey)
     expect(result.data[0]?.latestType).toBe("payment_proof")
     expect(result.data[0]?.status).toBeNull()
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(1)
+    expect(await h.database.orderMessages.count()).toBe(0)
   })
 
   it("keeps malformed payment-proof-only buckets visible but unpaid", async () => {
-    const merchantPubkey = "merchant"
-    const buyerPubkey = "buyer"
-    const wrappedEvent = {
-      id: "wrap-proof-malformed",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: buyerPubkey,
-      created_at: 100,
-      content: "wrapped-proof",
-      tags: [["p", merchantPubkey]],
-    }
-    const proofRumor = {
-      id: "proof-rumor-malformed",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: buyerPubkey,
-      created_at: 101,
-      content: JSON.stringify({}),
-      tags: [
-        ["p", merchantPubkey],
-        ["type", "payment_proof"],
-        ["order", "order-proof-malformed"],
-      ],
-    }
-
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => proofRumor as never,
-    })
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
+    h.events.push(
+      signedOrderWrap({
+        senderSecret: MERCHANT_B_SECRET,
+        principalPubkey: merchantPubkey,
+        content: JSON.stringify({}),
+        tags: [
+          ["p", merchantPubkey],
+          ["type", "payment_proof"],
+          ["order", "order-proof-malformed"],
+        ],
+      })
+    )
 
     const result = await getMerchantConversationList({
       principalPubkey: merchantPubkey,
@@ -5968,39 +6081,18 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-proof-malformed")
     expect(result.data[0]?.status).toBeNull()
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(1)
   })
 
   it("reads gift wraps from declared inbox plus compatibility relays", async () => {
-    const merchantPubkey = "merchant"
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const merchantPubkey = h.principalPubkey
     const merchantReadRelays = Array.from(
       { length: 8 },
       (_, index) => `wss://merchant-read-${index}.example`
     )
-    let seenRelayUrls: string[] | undefined
-
-    __setRelayListTestOverrides({
-      now: () => FIXED_NOW,
-      loadCached: async (pubkey) =>
-        pubkey === merchantPubkey
-          ? {
-              pubkey,
-              readRelayUrls: merchantReadRelays,
-              writeRelayUrls: [],
-              eventCreatedAt: 1,
-              cachedAt: FIXED_NOW,
-            }
-          : undefined,
-    })
     __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => merchantReadRelays,
-      fetchPublicEvents: async (filter, options) => {
-        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
-          seenRelayUrls = options?.relayUrls
-        }
-        return []
-      },
     })
 
     await getMerchantConversationList({
@@ -6010,7 +6102,10 @@ describe("commerce gateway", () => {
 
     // Permissive reads (CND-208): declared inbox relays lead the plan and the
     // bounded compatibility read set stays present even with local settings.
-    expect(seenRelayUrls?.slice(0, merchantReadRelays.length)).toEqual(
+    const seenRelayUrls = h.readCalls
+      .filter((call) => call.transport === "nip17")
+      .flatMap((call) => call.relayUrls)
+    expect(seenRelayUrls.slice(0, merchantReadRelays.length)).toEqual(
       merchantReadRelays
     )
     for (const compatibilityRelayUrl of config.commerceDmFallbackRelayUrls) {
@@ -6019,84 +6114,59 @@ describe("commerce gateway", () => {
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {
-    let unwrapCalls = 0
-    let putCalls = 0
-    const wrappedEvent = {
-      id: "wrap-cache-fail-1",
-      kind: EVENT_KINDS.GIFT_WRAP,
-      pubkey: "buyer",
-      created_at: 100,
-      content: "wrapped",
-      tags: [["p", "merchant"]],
-    }
-    const orderRumor = {
-      id: "order-rumor-cache-fail-1",
-      kind: EVENT_KINDS.ORDER,
-      pubkey: "buyer",
-      created_at: 101,
-      content: JSON.stringify({
-        id: "order-cache-fail-1",
-        merchantPubkey: "merchant",
-        buyerPubkey: "buyer",
-        items: [
-          {
-            productId: "30402:merchant:item",
-            quantity: 1,
-            priceAtPurchase: 2100,
-            currency: "SATS",
-          },
-        ],
-        subtotal: 2100,
-        currency: "SATS",
-        createdAt: FIXED_NOW,
-      }),
+    const h = setupOrderInbox(MERCHANT_A_SECRET)
+    const buyerPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const wrappedEvent = signedOrderWrap({
+      senderSecret: MERCHANT_B_SECRET,
+      principalPubkey: h.principalPubkey,
+      content: JSON.stringify(
+        orderPayload(
+          "order-cache-fail-1",
+          buyerPubkey,
+          h.principalPubkey,
+          2_100
+        )
+      ),
       tags: [
-        ["p", "merchant"],
+        ["p", h.principalPubkey],
         ["type", "order"],
         ["order", "order-cache-fail-1"],
         ["amount", "2100"],
         ["currency", "SATS"],
       ],
+    })
+    h.events.push(wrappedEvent)
+    const originalCommit = h.owner.store.commit.bind(h.owner.store)
+    let projectionCommits = 0
+    h.owner.store.commit = async (...args) => {
+      if (args[3]?.kind === "order" && projectionCommits++ === 0) {
+        throw new Error("synthetic storage failure")
+      }
+      await originalCommit(...args)
     }
 
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner({} as never),
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([wrappedEvent] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return orderRumor as never
-      },
-      putCachedOrderMessages: async (rows) => {
-        putCalls += 1
-        if (putCalls === 1) {
-          throw new Error("cache unavailable")
-        }
-        for (const row of rows) {
-          cachedOrderMessages = [
-            ...cachedOrderMessages.filter((existing) => existing.id !== row.id),
-            row,
-          ]
-        }
-      },
-    })
-
     const first = await getMerchantConversationList({
-      principalPubkey: "merchant",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
+    expect(first.data).toHaveLength(0)
+    expect(h.owner.getSnapshot().diagnostics.states.retryable_failure).toBe(1)
+    expect(h.owner.getSnapshot().diagnostics.storageUnavailable).toBe(true)
+    expect(
+      h.owner.getSnapshot().diagnostics.states.provider_unavailable ?? 0
+    ).toBe(0)
+    await h.owner.retryDecode()
     const second = await getMerchantConversationList({
-      principalPubkey: "merchant",
+      principalPubkey: h.principalPubkey,
       limit: 50,
     })
 
-    expect(first.data).toHaveLength(1)
     expect(second.data).toHaveLength(1)
-    expect(unwrapCalls).toBe(2)
-    expect(cachedOrderMessages).toHaveLength(1)
+    expect(second.data[0]?.orderId).toBe("order-cache-fail-1")
+    expect(projectionCommits).toBe(2)
+    expect(h.decrypts()).toBe(4)
+    expect((await h.owner.store.wrappers())[0]?.state).toBe("opened")
+    expect(await h.database.commerceInboxRecords.count()).toBe(1)
   })
 
   it("marks follow discovery stale when relay coverage is incomplete", async () => {
@@ -6262,18 +6332,34 @@ describe("commerce gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
+  function signedProfile(
+    pubkey: string,
+    createdAt: number,
+    content: string,
+    tags: string[][] = []
+  ) {
+    return finalizeEvent(
+      { kind: EVENT_KINDS.PROFILE, created_at: createdAt, content, tags },
+      fixtureSecret(pubkey)
+    )
+  }
+
+  const PROFILE_MERCHANT = fixturePubkey("merchant")
+  const PROFILE_ALICE = fixturePubkey("alice")
+  const PROFILE_BOB = fixturePubkey("bob")
+  const PROFILE_LIVE_MERCHANT = fixturePubkey("live-merchant")
+  const PROFILE_PROGRESS_MERCHANT = fixturePubkey("progress-merchant")
+
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
           return [
-            {
-              id: "profile-1",
-              pubkey: "alice",
-              created_at: 10,
-              content: JSON.stringify({ display_name: "Alice" }),
-              tags: [],
-            } as never,
+            signedProfile(
+              PROFILE_ALICE,
+              10,
+              JSON.stringify({ display_name: "Alice" })
+            ),
           ]
         }
 
@@ -6281,12 +6367,14 @@ describe("commerce gateway", () => {
       },
     })
 
-    const firstResult = await getProfiles({ pubkeys: ["alice", "alice"] })
+    const firstResult = await getProfiles({
+      pubkeys: [PROFILE_ALICE, PROFILE_ALICE],
+    })
 
-    expect(Object.keys(firstResult.data)).toEqual(["alice"])
-    expect(firstResult.data.alice?.displayName).toBe("Alice")
+    expect(Object.keys(firstResult.data)).toEqual([PROFILE_ALICE])
+    expect(firstResult.data[PROFILE_ALICE]?.displayName).toBe("Alice")
     expect(firstResult.meta.source).toBe("public")
-    expect(cachedProfiles.get("alice")?.displayName).toBe("Alice")
+    expect(cachedProfiles.get(PROFILE_ALICE)?.displayName).toBe("Alice")
 
     __setCommerceTestOverrides({
       fetchPublicEvents: async () => {
@@ -6294,15 +6382,15 @@ describe("commerce gateway", () => {
       },
     })
 
-    const secondResult = await getProfiles({ pubkeys: ["alice"] })
+    const secondResult = await getProfiles({ pubkeys: [PROFILE_ALICE] })
 
     expect(secondResult.meta.source).toBe("local_cache")
-    expect(secondResult.data.alice?.displayName).toBe("Alice")
+    expect(secondResult.data[PROFILE_ALICE]?.displayName).toBe("Alice")
   })
 
   it("keeps cached profile absence degraded when a required relay view is partial", async () => {
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       displayName: "Cached Merchant",
       cachedAt: FIXED_NOW - 1_000,
     })
@@ -6320,11 +6408,11 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       requireCompleteEvidence: true,
     })
 
-    expect(result.data.merchant?.displayName).toBe("Cached Merchant")
+    expect(result.data[PROFILE_MERCHANT]?.displayName).toBe("Cached Merchant")
     expect(result.meta).toMatchObject({
       source: "local_cache",
       stale: true,
@@ -6347,12 +6435,14 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       requireCompleteEvidence: true,
     })
 
-    expect(result.data.merchant).toMatchObject({ pubkey: "merchant" })
+    expect(result.data[PROFILE_MERCHANT]).toMatchObject({
+      pubkey: PROFILE_MERCHANT,
+    })
     expect(result.meta).toMatchObject({
       source: "public",
       stale: false,
@@ -6375,12 +6465,14 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       requireCompleteEvidence: true,
     })
 
-    expect(result.data.merchant).toMatchObject({ pubkey: "merchant" })
+    expect(result.data[PROFILE_MERCHANT]).toMatchObject({
+      pubkey: PROFILE_MERCHANT,
+    })
     expect(result.meta).toMatchObject({
       source: "public",
       degraded: false,
@@ -6396,7 +6488,7 @@ describe("commerce gateway", () => {
     __setRelayListTestOverrides({
       now: () => FIXED_NOW,
       loadCached: async (pubkey) =>
-        pubkey === "merchant"
+        pubkey === PROFILE_MERCHANT
           ? {
               pubkey,
               readRelayUrls: [],
@@ -6422,12 +6514,14 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       requireCompleteEvidence: true,
     })
 
-    expect(result.data.merchant).toMatchObject({ pubkey: "merchant" })
+    expect(result.data[PROFILE_MERCHANT]).toMatchObject({
+      pubkey: PROFILE_MERCHANT,
+    })
     expect(result.meta).toMatchObject({
       source: "public",
       stale: false,
@@ -6442,16 +6536,14 @@ describe("commerce gateway", () => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [
-            {
-              id: "profile-current-payment",
-              pubkey: "merchant",
-              created_at: 20,
-              content: JSON.stringify({
+            signedProfile(
+              PROFILE_MERCHANT,
+              20,
+              JSON.stringify({
                 display_name: "Current Merchant",
                 lud16: "current@wallet.example",
-              }),
-              tags: [],
-            } as never,
+              })
+            ),
           ],
           attemptedRelayUrls: relayUrls,
           successfulRelayUrls: relayUrls.slice(0, -1),
@@ -6462,13 +6554,13 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "payment",
     })
 
-    expect(result.data.merchant?.lud16).toBe("current@wallet.example")
+    expect(result.data[PROFILE_MERCHANT]?.lud16).toBe("current@wallet.example")
     expect(result.meta).toMatchObject({
       source: "public",
       stale: false,
@@ -6479,23 +6571,15 @@ describe("commerce gateway", () => {
 
   it("allows complete owner repair while malformed kind-0 stays unavailable for payment", async () => {
     const events = [
-      {
-        id: "profile-valid-older",
-        pubkey: "merchant",
-        created_at: 10,
-        content: JSON.stringify({
+      signedProfile(
+        PROFILE_MERCHANT,
+        10,
+        JSON.stringify({
           display_name: "Older Merchant",
           lud16: "obsolete@wallet.example",
-        }),
-        tags: [],
-      },
-      {
-        id: "profile-malformed-latest",
-        pubkey: "merchant",
-        created_at: 20,
-        content: "[]",
-        tags: [],
-      },
+        })
+      ),
+      signedProfile(PROFILE_MERCHANT, 20, "[]"),
     ] as never
     __setCommerceTestOverrides({
       fetchPublicEventsWithDiagnostics: async (_filter, options) => {
@@ -6511,38 +6595,42 @@ describe("commerce gateway", () => {
     })
 
     const editResult = await getProfiles({
-      pubkeys: ["merchant"],
-      authenticatedPubkey: "merchant",
+      pubkeys: [PROFILE_MERCHANT],
+      authenticatedPubkey: PROFILE_MERCHANT,
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "profile_edit",
     })
 
-    expect(editResult.data.merchant?.displayName).toBe("Older Merchant")
-    expect(editResult.data.merchant?.lud16).toBeUndefined()
+    expect(editResult.data[PROFILE_MERCHANT]?.displayName).toBe(
+      "Older Merchant"
+    )
+    expect(editResult.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
     expect(editResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
       capped: false,
-      profileFrontierStates: { merchant: "observed_malformed" },
+      profileFrontierStates: { [PROFILE_MERCHANT]: "observed_malformed" },
     })
 
     const paymentResult = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "payment",
     })
 
-    expect(paymentResult.data.merchant?.displayName).toBe("Older Merchant")
-    expect(paymentResult.data.merchant?.lud16).toBeUndefined()
+    expect(paymentResult.data[PROFILE_MERCHANT]?.displayName).toBe(
+      "Older Merchant"
+    )
+    expect(paymentResult.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
     expect(paymentResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: true,
       capped: false,
-      profileFrontierStates: { merchant: "observed_malformed" },
+      profileFrontierStates: { [PROFILE_MERCHANT]: "observed_malformed" },
     })
 
     __setCommerceTestOverrides({
@@ -6559,8 +6647,8 @@ describe("commerce gateway", () => {
     })
 
     const partialEditResult = await getProfiles({
-      pubkeys: ["merchant"],
-      authenticatedPubkey: "merchant",
+      pubkeys: [PROFILE_MERCHANT],
+      authenticatedPubkey: PROFILE_MERCHANT,
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "profile_edit",
@@ -6577,24 +6665,16 @@ describe("commerce gateway", () => {
   it("certifies a valid signed empty kind-0 after complete coverage", async () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async () =>
-        [
-          {
-            id: "profile-valid-empty",
-            pubkey: "merchant",
-            created_at: 20,
-            content: "{}",
-            tags: [],
-          },
-        ] as never,
+        [signedProfile(PROFILE_MERCHANT, 20, "{}")] as never,
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       requireCompleteEvidence: true,
     })
 
-    expect(result.data.merchant).toEqual({ pubkey: "merchant" })
+    expect(result.data[PROFILE_MERCHANT]).toEqual({ pubkey: PROFILE_MERCHANT })
     expect(result.meta).toMatchObject({
       source: "public",
       stale: false,
@@ -6605,8 +6685,8 @@ describe("commerce gateway", () => {
 
   it("revalidates a fresh public cache row from the authenticated owner's relay perspective", async () => {
     const localRelayUrl = "wss://127.0.0.1:7447"
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       displayName: "Public Cache",
       cachedAt: FIXED_NOW - 1_000,
     })
@@ -6625,26 +6705,24 @@ describe("commerce gateway", () => {
         seenRelayUrls = options?.relayUrls
         return filter.kinds?.includes(EVENT_KINDS.PROFILE)
           ? ([
-              {
-                id: "profile-owner-local",
-                pubkey: "merchant",
-                created_at: 10,
-                content: JSON.stringify({ display_name: "Owner Relay" }),
-                tags: [],
-              },
+              signedProfile(
+                PROFILE_MERCHANT,
+                10,
+                JSON.stringify({ display_name: "Owner Relay" })
+              ),
             ] as never)
           : []
       },
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
-      authenticatedPubkey: "merchant",
+      pubkeys: [PROFILE_MERCHANT],
+      authenticatedPubkey: PROFILE_MERCHANT,
     })
 
     expect(seenRelayUrls?.[0]).toBe(localRelayUrl)
     expect(seenRelayUrls).toContain(localRelayUrl)
-    expect(result.data.merchant?.displayName).toBe("Owner Relay")
+    expect(result.data[PROFILE_MERCHANT]?.displayName).toBe("Owner Relay")
   })
 
   it("preserves signed owner authority through generic reads while keeping commerce discovery", async () => {
@@ -6746,7 +6824,7 @@ describe("commerce gateway", () => {
       }),
       fetchSignedEventsFanoutDetailed: async () => {
         relayListFanoutCount += 1
-        return { events: [], relays: [], eventsVerified: true }
+        return { events: [], relays: [] }
       },
     })
     await getProfiles({
@@ -6792,13 +6870,11 @@ describe("commerce gateway", () => {
         profileReadRelayUrls = [...(options?.relayUrls ?? [])]
         if (!profileReadRelayUrls.includes(remoteRelayUrl)) return []
         return [
-          {
-            id: "remote-profile-through-discovered-relay",
-            pubkey: remotePubkey,
-            created_at: 10,
-            content: JSON.stringify({ name: "Remote merchant" }),
-            tags: [],
-          },
+          signedProfile(
+            remotePubkey,
+            10,
+            JSON.stringify({ name: "Remote merchant" })
+          ),
         ] as never
       },
     })
@@ -6834,27 +6910,19 @@ describe("commerce gateway", () => {
       fetchPublicEvents: async (filter, options) => {
         seenFilterAuthors = filter.authors
         seenOptions = options
-        return [
-          {
-            id: "profile-2",
-            pubkey: "bob",
-            created_at: 10,
-            content: JSON.stringify({ name: "Bob" }),
-            tags: [],
-          } as never,
-        ]
+        return [signedProfile(PROFILE_BOB, 10, JSON.stringify({ name: "Bob" }))]
       },
     })
 
     const result = await getProfiles({
-      pubkeys: ["bob"],
+      pubkeys: [PROFILE_BOB],
       priority: "visible",
       skipCache: true,
     })
 
-    expect(result.data.bob?.name).toBe("Bob")
+    expect(result.data[PROFILE_BOB]?.name).toBe("Bob")
     expect(calledRequireNdk).toBe(false)
-    expect(seenFilterAuthors).toEqual(["bob"])
+    expect(seenFilterAuthors).toEqual([PROFILE_BOB])
     expect(seenOptions?.relayUrls?.length).toBeGreaterThan(0)
     expect(seenOptions?.connectTimeoutMs).toBe(1_500)
     expect(seenOptions?.fetchTimeoutMs).toBe(3_000)
@@ -6863,7 +6931,7 @@ describe("commerce gateway", () => {
   it("uses public cached product sources but drops stale private profile hints", async () => {
     cachedProducts.push({
       id: "30402:merchant:source-hinted-item",
-      pubkey: "merchant",
+      pubkey: PROFILE_MERCHANT,
       title: "Source Hinted Item",
       summary: "cached summary",
       price: 25,
@@ -6895,16 +6963,14 @@ describe("commerce gateway", () => {
           options?.relayUrls?.[0] === "wss://profile-source.conduit.market"
         ) {
           return [
-            {
-              id: "profile-merchant",
-              pubkey: "merchant",
-              created_at: 10,
-              content: JSON.stringify({
+            signedProfile(
+              PROFILE_MERCHANT,
+              10,
+              JSON.stringify({
                 name: "Source Merchant",
                 picture: "https://cdn.conduit.market/conduit-test/avatar.png",
-              }),
-              tags: [],
-            } as never,
+              })
+            ),
           ]
         }
 
@@ -6913,7 +6979,7 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       priority: "background",
       skipCache: true,
       readPolicy: { maxRelays: 1 },
@@ -6921,8 +6987,8 @@ describe("commerce gateway", () => {
 
     expect(seenRelayUrls?.[0]).toBe("wss://profile-source.conduit.market")
     expect(seenRelayUrls).not.toContain("wss://127.0.0.1:7447")
-    expect(result.data.merchant?.name).toBe("Source Merchant")
-    expect(result.data.merchant?.picture).toBe(
+    expect(result.data[PROFILE_MERCHANT]?.name).toBe("Source Merchant")
+    expect(result.data[PROFILE_MERCHANT]?.picture).toBe(
       "https://cdn.conduit.market/conduit-test/avatar.png"
     )
   })
@@ -6931,7 +6997,7 @@ describe("commerce gateway", () => {
     const localRelayUrl = "wss://127.0.0.1:7447"
     cachedProducts.push({
       id: "30402:merchant:local-source-item",
-      pubkey: "merchant",
+      pubkey: PROFILE_MERCHANT,
       title: "Local Source Item",
       summary: "cached summary",
       price: 25,
@@ -6968,8 +7034,8 @@ describe("commerce gateway", () => {
     })
 
     await getProfiles({
-      pubkeys: ["merchant"],
-      authenticatedPubkey: "merchant",
+      pubkeys: [PROFILE_MERCHANT],
+      authenticatedPubkey: PROFILE_MERCHANT,
       priority: "background",
       skipCache: true,
       readPolicy: { maxRelays: 1 },
@@ -6989,13 +7055,11 @@ describe("commerce gateway", () => {
           options?.relayUrls?.[0] === "wss://live-product-source.conduit.market"
         ) {
           return [
-            {
-              id: "profile-live-merchant",
-              pubkey: "live-merchant",
-              created_at: 10,
-              content: JSON.stringify({ display_name: "Live Merchant" }),
-              tags: [],
-            } as never,
+            signedProfile(
+              PROFILE_LIVE_MERCHANT,
+              10,
+              JSON.stringify({ display_name: "Live Merchant" })
+            ),
           ]
         }
 
@@ -7004,12 +7068,12 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["live-merchant"],
+      pubkeys: [PROFILE_LIVE_MERCHANT],
       priority: "visible",
       skipCache: true,
       readPolicy: { maxRelays: 2 },
       relayHintsByPubkey: {
-        "live-merchant": [
+        [PROFILE_LIVE_MERCHANT]: [
           "https://live-product-source.conduit.market/?ignored=true",
           "wss://live-product-source.conduit.market",
           "wss://127.0.0.1:7447",
@@ -7024,7 +7088,9 @@ describe("commerce gateway", () => {
       "wss://live-product-source.conduit.market",
       "wss://second-product-source.conduit.market/path",
     ])
-    expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
+    expect(result.data[PROFILE_LIVE_MERCHANT]?.displayName).toBe(
+      "Live Merchant"
+    )
   })
 
   it("drops public profile hints after planning during E2E isolation", async () => {
@@ -7050,9 +7116,8 @@ describe("commerce gateway", () => {
   })
 
   it("bounds broad progressive product author chunk fanout", async () => {
-    const authorPubkeys = Array.from(
-      { length: 129 },
-      (_, index) => `merchant-${index}`
+    const authorPubkeys = Array.from({ length: 129 }, (_, index) =>
+      fixturePubkey(`merchant-${index}`)
     )
     let activeFetches = 0
     let maxActiveFetches = 0
@@ -7110,9 +7175,8 @@ describe("commerce gateway", () => {
   })
 
   it("bounds and parallelizes broad deletion-frontier discovery", async () => {
-    const authorPubkeys = Array.from(
-      { length: 129 },
-      (_, index) => `merchant-${index}`
+    const authorPubkeys = Array.from({ length: 129 }, (_, index) =>
+      fixturePubkey(`merchant-${index}`)
     )
     const productEvents = authorPubkeys.map((pubkey, index) =>
       makeProductEvent({
@@ -7166,88 +7230,79 @@ describe("commerce gateway", () => {
         if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
 
         return [
-          {
-            id: "profile-progress-merchant",
-            pubkey: "progress-merchant",
-            created_at: 10,
-            content: JSON.stringify({ display_name: "Progress Merchant" }),
-            tags: [],
-          } as never,
+          signedProfile(
+            PROFILE_PROGRESS_MERCHANT,
+            10,
+            JSON.stringify({ display_name: "Progress Merchant" })
+          ),
         ]
       },
     })
 
     const result = await getProfiles({
-      pubkeys: ["progress-merchant"],
+      pubkeys: [PROFILE_PROGRESS_MERCHANT],
       skipCache: true,
       onProgress: (progress) => {
-        const name = progress.data["progress-merchant"]?.displayName
+        const name = progress.data[PROFILE_PROGRESS_MERCHANT]?.displayName
         if (name) progressNames.push(name)
       },
     })
 
     expect(progressNames).toEqual(["Progress Merchant"])
-    expect(result.data["progress-merchant"]?.displayName).toBe(
+    expect(result.data[PROFILE_PROGRESS_MERCHANT]?.displayName).toBe(
       "Progress Merchant"
     )
   })
 
   it("uses the newest profile event with content instead of a newer bare event", async () => {
+    const newestEvent = signedProfile(PROFILE_MERCHANT, 20, "{}")
     __setCommerceTestOverrides({
       fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
 
         return [
-          {
-            id: "profile-blank-newer",
-            pubkey: "merchant",
-            created_at: 20,
-            content: "{}",
-            tags: [],
-          } as never,
-          {
-            id: "profile-rich-older",
-            pubkey: "merchant",
-            created_at: 10,
-            content: JSON.stringify({
+          newestEvent,
+          signedProfile(
+            PROFILE_MERCHANT,
+            10,
+            JSON.stringify({
               name: "ZALGEBAR",
               lud16: "obsolete@example.com",
-            }),
-            tags: [],
-          } as never,
+            })
+          ),
         ]
       },
     })
 
     const firstResult = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
     })
     const secondResult = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
     })
 
-    expect(firstResult.data.merchant?.name).toBe("ZALGEBAR")
-    expect(secondResult.data.merchant?.name).toBe("ZALGEBAR")
-    expect(firstResult.data.merchant?.lud16).toBeUndefined()
-    expect(secondResult.data.merchant?.lud16).toBeUndefined()
+    expect(firstResult.data[PROFILE_MERCHANT]?.name).toBe("ZALGEBAR")
+    expect(secondResult.data[PROFILE_MERCHANT]?.name).toBe("ZALGEBAR")
+    expect(firstResult.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
+    expect(secondResult.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
     expect(firstResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
-      profileFrontierStates: { merchant: "observed_valid" },
+      profileFrontierStates: { [PROFILE_MERCHANT]: "observed_valid" },
     })
     expect(secondResult.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
-      profileFrontierStates: { merchant: "observed_valid" },
+      profileFrontierStates: { [PROFILE_MERCHANT]: "observed_valid" },
     })
-    expect(cachedProfiles.get("merchant")).toMatchObject({
+    expect(cachedProfiles.get(PROFILE_MERCHANT)).toMatchObject({
       name: "ZALGEBAR",
       rawContent: "{}",
-      eventId: "profile-blank-newer",
+      eventId: newestEvent.id,
       eventCreatedAt: 20,
       lud16: undefined,
     })
@@ -7266,24 +7321,14 @@ describe("commerce gateway", () => {
               throw new Error("Synthetic profile outage")
             }
             const events = initial
-              ? [
-                  {
-                    id: "current",
-                    pubkey: "merchant",
-                    created_at: 20,
-                    content,
-                    tags: [],
-                  },
-                ]
+              ? [signedProfile(PROFILE_MERCHANT, 20, content)]
               : gap === "older"
                 ? [
-                    {
-                      id: "older",
-                      pubkey: "merchant",
-                      created_at: 10,
-                      content: JSON.stringify({ lud16: "old@wallet.example" }),
-                      tags: [],
-                    },
+                    signedProfile(
+                      PROFILE_MERCHANT,
+                      10,
+                      JSON.stringify({ lud16: "old@wallet.example" })
+                    ),
                   ]
                 : []
             return {
@@ -7299,16 +7344,17 @@ describe("commerce gateway", () => {
           },
         })
         const query = {
-          pubkeys: ["merchant"],
+          pubkeys: [PROFILE_MERCHANT],
           skipCache: true,
           requireCompleteEvidence: true,
           evidenceScope: "payment" as const,
         }
         await getProfiles(query)
         const result = await getProfiles(query)
-        expect(result.data.merchant?.lud16).toBeUndefined()
+        expect(result.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
         expect(result.meta.profileFrontierStates).toEqual({
-          merchant: content === "[]" ? "retained_malformed" : "retained_valid",
+          [PROFILE_MERCHANT]:
+            content === "[]" ? "retained_malformed" : "retained_valid",
         })
         expect(result.meta.stale).toBe(true)
       })
@@ -7320,40 +7366,32 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async () => {
         if (++read > 1) throw new Error("Synthetic profile outage")
-        return [
-          {
-            id: "unsaved",
-            pubkey: "merchant",
-            created_at: 20,
-            content: "{}",
-            tags: [],
-          },
-        ] as never
+        return [signedProfile(PROFILE_MERCHANT, 20, "{}")] as never
       },
       putCachedProfiles: async () => {
         throw new Error("Synthetic storage failure")
       },
     })
     const query = {
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment" as const,
     }
     const observed = await getProfiles(query)
     expect(observed.meta.profileFrontierStates).toEqual({
-      merchant: "observed_valid",
+      [PROFILE_MERCHANT]: "observed_valid",
     })
     const retained = await getProfiles(query)
     expect(retained.meta.profileFrontierStates).toEqual({
-      merchant: "retained_valid",
+      [PROFILE_MERCHANT]: "retained_valid",
     })
-    expect(retained.data.merchant?.lud16).toBeUndefined()
-    expect(cachedProfiles.has("merchant")).toBe(false)
+    expect(retained.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
+    expect(cachedProfiles.has(PROFILE_MERCHANT)).toBe(false)
   })
 
   it("marks progressive retained payment evidence stale before final reconciliation", async () => {
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       eventId: "known",
       eventCreatedAt: 20,
       rawContent: JSON.stringify({ name: "Current Merchant" }),
@@ -7363,16 +7401,14 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async () =>
         [
-          {
-            id: "older",
-            pubkey: "merchant",
-            created_at: 10,
-            content: JSON.stringify({
+          signedProfile(
+            PROFILE_MERCHANT,
+            10,
+            JSON.stringify({
               name: "Old Merchant",
               lud16: "old@wallet.example",
-            }),
-            tags: [],
-          },
+            })
+          ),
         ] as never,
     })
     const progress: Array<{
@@ -7382,15 +7418,15 @@ describe("commerce gateway", () => {
       lud16: string | undefined
     }> = []
     await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment",
       onProgress: (result) =>
         progress.push({
           stale: result.meta.stale,
           source: result.meta.source,
-          state: result.meta.profileFrontierStates?.merchant,
-          lud16: result.data.merchant?.lud16,
+          state: result.meta.profileFrontierStates?.[PROFILE_MERCHANT],
+          lud16: result.data[PROFILE_MERCHANT]?.lud16,
         }),
     })
     expect(progress).toEqual([
@@ -7407,23 +7443,15 @@ describe("commerce gateway", () => {
     it(`reports unreadable durable payment authority after a successful removal write and ${network} network read`, async () => {
       __setCommerceTestOverrides({
         fetchPublicEvents: async () =>
-          [
-            {
-              id: "persisted-removal",
-              pubkey: "merchant",
-              created_at: 20,
-              content: "{}",
-              tags: [],
-            },
-          ] as never,
+          [signedProfile(PROFILE_MERCHANT, 20, "{}")] as never,
       })
       const query = {
-        pubkeys: ["merchant"],
+        pubkeys: [PROFILE_MERCHANT],
         skipCache: true,
         evidenceScope: "payment" as const,
       }
       await getProfiles(query)
-      expect(cachedProfiles.get("merchant")?.rawContent).toBe("{}")
+      expect(cachedProfiles.get(PROFILE_MERCHANT)?.rawContent).toBe("{}")
       __setCommerceTestOverrides({
         getCachedProfiles: async () => {
           throw new Error("Synthetic unreadable profile storage")
@@ -7435,12 +7463,12 @@ describe("commerce gateway", () => {
         },
       })
       const result = await getProfiles(query)
-      expect(result.profileContexts.merchant).toMatchObject({
+      expect(result.profileContexts[PROFILE_MERCHANT]).toMatchObject({
         persistence: "unavailable",
         freshness: "unobserved",
         readComplete: false,
       })
-      expect(result.profileContexts.merchant?.frontier).toBeUndefined()
+      expect(result.profileContexts[PROFILE_MERCHANT]?.frontier).toBeUndefined()
       expect(result.meta.degraded).toBe(true)
     })
   }
@@ -7455,11 +7483,13 @@ describe("commerce gateway", () => {
       fetchPublicEvents: async () => [],
     })
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment",
     })
-    expect(result.profileContexts.merchant?.persistence).toBe("unavailable")
+    expect(result.profileContexts[PROFILE_MERCHANT]?.persistence).toBe(
+      "unavailable"
+    )
     expect(result.meta.degraded).toBe(true)
   })
 
@@ -7470,7 +7500,7 @@ describe("commerce gateway", () => {
         if (++cacheReads > 1) throw new Error("Synthetic storage failure")
         return [
           {
-            pubkey: "merchant",
+            pubkey: PROFILE_MERCHANT,
             rawContent: "{}",
             eventId: "known",
             eventCreatedAt: 20,
@@ -7483,34 +7513,31 @@ describe("commerce gateway", () => {
       },
     })
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment",
     })
     expect(result.meta.profileFrontierStates).toEqual({
-      merchant: "retained_valid",
+      [PROFILE_MERCHANT]: "retained_valid",
     })
-    expect(result.data.merchant?.lud16).toBeUndefined()
+    expect(result.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
   })
 
   it("retains unsaved authority through cache-read failure and lets a newer live repair supersede it", async () => {
+    const repairEvent = signedProfile(
+      PROFILE_MERCHANT,
+      30,
+      JSON.stringify({ lud16: "repaired@wallet.example" })
+    )
     __setCommerceTestOverrides({
       fetchPublicEvents: async () =>
-        [
-          {
-            id: "unsaved",
-            pubkey: "merchant",
-            created_at: 20,
-            content: "[]",
-            tags: [],
-          },
-        ] as never,
+        [signedProfile(PROFILE_MERCHANT, 20, "[]")] as never,
       putCachedProfiles: async () => {
         throw new Error("Synthetic storage failure")
       },
     })
     const query = {
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment" as const,
     }
@@ -7525,7 +7552,7 @@ describe("commerce gateway", () => {
     })
     const unavailable = await getProfiles(query)
     expect(unavailable.meta.profileFrontierStates).toEqual({
-      merchant: "retained_malformed",
+      [PROFILE_MERCHANT]: "retained_malformed",
     })
     __setCommerceTestOverrides({
       getCachedProfiles: async (pubkeys) =>
@@ -7533,51 +7560,38 @@ describe("commerce gateway", () => {
       putCachedProfiles: async (rows) => {
         for (const row of rows) cachedProfiles.set(row.pubkey, row)
       },
-      fetchPublicEvents: async () =>
-        [
-          {
-            id: "repair",
-            pubkey: "merchant",
-            created_at: 30,
-            content: JSON.stringify({ lud16: "repaired@wallet.example" }),
-            tags: [],
-          },
-        ] as never,
+      fetchPublicEvents: async () => [repairEvent] as never,
     })
     const repaired = await getProfiles(query)
     expect(repaired.meta.profileFrontierStates).toEqual({
-      merchant: "observed_valid",
+      [PROFILE_MERCHANT]: "observed_valid",
     })
-    expect(repaired.data.merchant?.lud16).toBe("repaired@wallet.example")
+    expect(repaired.data[PROFILE_MERCHANT]?.lud16).toBe(
+      "repaired@wallet.example"
+    )
     expect(repaired.meta.source).toBe("public")
     expect(repaired.meta.stale).toBe(false)
-    expect(cachedProfiles.get("merchant")?.eventId).toBe("repair")
+    expect(cachedProfiles.get(PROFILE_MERCHANT)?.eventId).toBe(repairEvent.id)
     __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
     const retained = await getProfiles(query)
     expect(retained.meta.profileFrontierStates).toEqual({
-      merchant: "retained_valid",
+      [PROFILE_MERCHANT]: "retained_valid",
     })
-    expect(retained.data.merchant?.lud16).toBe("repaired@wallet.example")
+    expect(retained.data[PROFILE_MERCHANT]?.lud16).toBe(
+      "repaired@wallet.example"
+    )
   })
 
   it("does not discard unsaved authority for a projection-only row with the same identity", async () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async () =>
-        [
-          {
-            id: "unsaved",
-            pubkey: "merchant",
-            created_at: 20,
-            content: "{}",
-            tags: [],
-          },
-        ] as never,
+        [signedProfile(PROFILE_MERCHANT, 20, "{}")] as never,
       putCachedProfiles: async () => {
         throw new Error("Synthetic storage failure")
       },
     })
     const query = {
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment" as const,
     }
@@ -7585,7 +7599,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       getCachedProfiles: async () => [
         {
-          pubkey: "merchant",
+          pubkey: PROFILE_MERCHANT,
           eventId: "unsaved",
           eventCreatedAt: 20,
           lud16: "obsolete@wallet.example",
@@ -7598,9 +7612,9 @@ describe("commerce gateway", () => {
     })
     const result = await getProfiles(query)
     expect(result.meta.profileFrontierStates).toEqual({
-      merchant: "retained_valid",
+      [PROFILE_MERCHANT]: "retained_valid",
     })
-    expect(result.data.merchant?.lud16).toBeUndefined()
+    expect(result.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
   })
 
   for (const batch of [false, true]) {
@@ -7608,8 +7622,8 @@ describe("commerce gateway", () => {
       __setCommerceTestOverrides({
         fetchPublicEvents: async () => {
           // Another reader finishes after this request's initial cache load.
-          cachedProfiles.set("merchant", {
-            pubkey: "merchant",
+          cachedProfiles.set(PROFILE_MERCHANT, {
+            pubkey: PROFILE_MERCHANT,
             eventId: "concurrent-removal",
             eventCreatedAt: 20,
             rawContent: "{}",
@@ -7617,26 +7631,26 @@ describe("commerce gateway", () => {
           })
           return batch
             ? ([
-                {
-                  id: "other-live",
-                  pubkey: "other",
-                  created_at: 20,
-                  content: JSON.stringify({ name: "Other Merchant" }),
-                  tags: [],
-                },
+                signedProfile(
+                  fixturePubkey("other"),
+                  20,
+                  JSON.stringify({ name: "Other Merchant" })
+                ),
               ] as never)
             : []
         },
       })
       const result = await getProfiles({
         pubkeys: batch
-          ? ["merchant", "other", "genuine-miss"]
-          : ["merchant", "genuine-miss"],
+          ? [PROFILE_MERCHANT, fixturePubkey("other"), "genuine-miss"]
+          : [PROFILE_MERCHANT, "genuine-miss"],
         skipCache: true,
         evidenceScope: "payment",
       })
-      expect(result.data.merchant?.lud16).toBeUndefined()
-      expect(result.meta.profileFrontierStates?.merchant).toBe("retained_valid")
+      expect(result.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
+      expect(result.meta.profileFrontierStates?.[PROFILE_MERCHANT]).toBe(
+        "retained_valid"
+      )
       expect(result.meta.source).toBe("local_cache")
       expect(result.meta.stale).toBe(true)
       expect(result.meta.profileFrontierStates?.["genuine-miss"]).toBe(
@@ -7644,7 +7658,9 @@ describe("commerce gateway", () => {
       )
       expect(cachedProfiles.has("genuine-miss")).toBe(false)
       if (batch)
-        expect(result.meta.profileFrontierStates?.other).toBe("observed_valid")
+        expect(
+          result.meta.profileFrontierStates?.[fixturePubkey("other")]
+        ).toBe("observed_valid")
     })
   }
 
@@ -7656,7 +7672,7 @@ describe("commerce gateway", () => {
           ? []
           : [
               {
-                pubkey: "merchant",
+                pubkey: PROFILE_MERCHANT,
                 rawContent: "[]",
                 eventId: "stronger",
                 eventCreatedAt: 30,
@@ -7666,23 +7682,21 @@ describe("commerce gateway", () => {
             ],
       fetchPublicEvents: async () =>
         [
-          {
-            id: "loser",
-            pubkey: "merchant",
-            created_at: 20,
-            content: JSON.stringify({ lud16: "old@wallet.example" }),
-            tags: [],
-          },
+          signedProfile(
+            PROFILE_MERCHANT,
+            20,
+            JSON.stringify({ lud16: "old@wallet.example" })
+          ),
         ] as never,
     })
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
       evidenceScope: "payment",
     })
-    expect(result.data.merchant?.lud16).toBeUndefined()
+    expect(result.data[PROFILE_MERCHANT]?.lud16).toBeUndefined()
     expect(result.meta.profileFrontierStates).toEqual({
-      merchant: "retained_malformed",
+      [PROFILE_MERCHANT]: "retained_malformed",
     })
     expect(result.meta.stale).toBe(true)
   })
@@ -7693,8 +7707,9 @@ describe("commerce gateway", () => {
       about: "Current relay bio",
       picture: "",
     })
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    const latestEvent = signedProfile(PROFILE_MERCHANT, 20, latestContent)
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       displayName: "Cached Merchant",
       picture: "https://cdn.conduit.market/cached-avatar.png",
       rawContent: JSON.stringify({
@@ -7708,34 +7723,26 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PROFILE)
-          ? ([
-              {
-                id: "profile-current",
-                pubkey: "merchant",
-                created_at: 20,
-                content: latestContent,
-                tags: [],
-              },
-            ] as never)
+          ? ([latestEvent] as never)
           : [],
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
     })
 
-    expect(result.data.merchant).toMatchObject({
+    expect(result.data[PROFILE_MERCHANT]).toMatchObject({
       displayName: "Cached Merchant",
       about: "Current relay bio",
       picture: "https://cdn.conduit.market/cached-avatar.png",
     })
-    expect(cachedProfiles.get("merchant")).toMatchObject({
+    expect(cachedProfiles.get(PROFILE_MERCHANT)).toMatchObject({
       displayName: "Cached Merchant",
       about: "Current relay bio",
       picture: "https://cdn.conduit.market/cached-avatar.png",
       rawContent: latestContent,
-      eventId: "profile-current",
+      eventId: latestEvent.id,
       eventCreatedAt: 20,
     })
     expect(result.meta).toMatchObject({
@@ -7750,8 +7757,9 @@ describe("commerce gateway", () => {
       name: "Current Merchant",
       about: "Current relay bio",
     })
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    const currentEvent = signedProfile(PROFILE_MERCHANT, 20, currentContent)
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       displayName: "Cached Merchant",
       picture: "https://cdn.conduit.market/cached-avatar.png",
       rawContent: JSON.stringify({
@@ -7766,15 +7774,7 @@ describe("commerce gateway", () => {
       fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
-          events: [
-            {
-              id: "profile-current",
-              pubkey: "merchant",
-              created_at: 20,
-              content: currentContent,
-              tags: [],
-            } as never,
-          ],
+          events: [currentEvent],
           attemptedRelayUrls: relayUrls,
           successfulRelayUrls: relayUrls,
           failedRelayUrls: [],
@@ -7784,22 +7784,22 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
-      authenticatedPubkey: "merchant",
+      pubkeys: [PROFILE_MERCHANT],
+      authenticatedPubkey: PROFILE_MERCHANT,
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "profile_edit",
     })
 
-    expect(result.data.merchant).toMatchObject({
+    expect(result.data[PROFILE_MERCHANT]).toMatchObject({
       name: "Current Merchant",
       displayName: "Cached Merchant",
       about: "Current relay bio",
       picture: "https://cdn.conduit.market/cached-avatar.png",
     })
-    expect(cachedProfiles.get("merchant")).toMatchObject({
+    expect(cachedProfiles.get(PROFILE_MERCHANT)).toMatchObject({
       rawContent: currentContent,
-      eventId: "profile-current",
+      eventId: currentEvent.id,
       eventCreatedAt: 20,
     })
     expect(result.meta).toMatchObject({
@@ -7811,8 +7811,8 @@ describe("commerce gateway", () => {
   })
 
   it("keeps profile editing blocked when current-frontier relay coverage is partial", async () => {
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       displayName: "Cached Merchant",
       rawContent: JSON.stringify({ display_name: "Cached Merchant" }),
       eventId: "profile-cached",
@@ -7824,13 +7824,11 @@ describe("commerce gateway", () => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [
-            {
-              id: "profile-current",
-              pubkey: "merchant",
-              created_at: 20,
-              content: JSON.stringify({ name: "Current Merchant" }),
-              tags: [],
-            } as never,
+            signedProfile(
+              PROFILE_MERCHANT,
+              20,
+              JSON.stringify({ name: "Current Merchant" })
+            ),
           ],
           attemptedRelayUrls: relayUrls,
           successfulRelayUrls: relayUrls.slice(0, -1),
@@ -7841,8 +7839,8 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
-      authenticatedPubkey: "merchant",
+      pubkeys: [PROFILE_MERCHANT],
+      authenticatedPubkey: PROFILE_MERCHANT,
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "profile_edit",
@@ -7858,8 +7856,8 @@ describe("commerce gateway", () => {
 
   for (const currentLud16 of ["current@example.com", undefined]) {
     it(`keeps ${currentLud16 ? "current payment" : "current payment absence"} authoritative across display enrichment`, async () => {
-      cachedProfiles.set("merchant", {
-        pubkey: "merchant",
+      cachedProfiles.set(PROFILE_MERCHANT, {
+        pubkey: PROFILE_MERCHANT,
         displayName: "Cached Merchant",
         about: "Cached biography",
         picture: "https://cdn.conduit.market/cached-avatar.png",
@@ -7882,15 +7880,7 @@ describe("commerce gateway", () => {
         fetchPublicEventsWithDiagnostics: async (_filter, options) => {
           const relayUrls = [...(options?.relayUrls ?? [])]
           return {
-            events: [
-              {
-                id: "profile-current",
-                pubkey: "merchant",
-                created_at: 20,
-                content: currentContent,
-                tags: [],
-              } as never,
-            ],
+            events: [signedProfile(PROFILE_MERCHANT, 20, currentContent)],
             attemptedRelayUrls: relayUrls,
             successfulRelayUrls: relayUrls,
             failedRelayUrls: [],
@@ -7900,30 +7890,30 @@ describe("commerce gateway", () => {
       })
 
       const result = await getProfiles({
-        pubkeys: ["merchant"],
+        pubkeys: [PROFILE_MERCHANT],
         skipCache: true,
         requireCompleteEvidence: true,
         evidenceScope: "payment",
       })
 
-      expect(result.data.merchant).toMatchObject({
+      expect(result.data[PROFILE_MERCHANT]).toMatchObject({
         displayName: "Current Merchant",
         about: "Cached biography",
         picture: "https://cdn.conduit.market/cached-avatar.png",
       })
-      expect(result.data.merchant?.lud16).toBe(currentLud16)
+      expect(result.data[PROFILE_MERCHANT]?.lud16).toBe(currentLud16)
       expect(result.meta).toMatchObject({
         source: "public",
         stale: false,
         degraded: false,
-        profileFrontierStates: { merchant: "observed_valid" },
+        profileFrontierStates: { [PROFILE_MERCHANT]: "observed_valid" },
       })
     })
   }
 
   it("does not regress raw profile publish context during a forced narrower refresh", async () => {
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       name: "Current Merchant",
       rawContent: JSON.stringify({
         name: "Current Merchant",
@@ -7937,29 +7927,27 @@ describe("commerce gateway", () => {
       fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PROFILE)
           ? ([
-              {
-                id: "profile-older",
-                pubkey: "merchant",
-                created_at: 10,
-                content: JSON.stringify({ name: "Older Relay View" }),
-                tags: [],
-              },
+              signedProfile(
+                PROFILE_MERCHANT,
+                10,
+                JSON.stringify({ name: "Older Relay View" })
+              ),
             ] as never)
           : [],
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
     })
 
-    expect(result.data.merchant?.name).toBe("Current Merchant")
+    expect(result.data[PROFILE_MERCHANT]?.name).toBe("Current Merchant")
     expect(result.meta).toMatchObject({
       source: "local_cache",
       stale: true,
       degraded: true,
     })
-    expect(cachedProfiles.get("merchant")).toMatchObject({
+    expect(cachedProfiles.get(PROFILE_MERCHANT)).toMatchObject({
       rawContent: JSON.stringify({
         name: "Current Merchant",
         picture: "http://127.0.0.1/private-avatar.png",
@@ -7970,10 +7958,11 @@ describe("commerce gateway", () => {
   })
 
   it("repairs a stale projection when the exact cached event is observed", async () => {
-    const eventId = "1".repeat(64)
     const rawContent = JSON.stringify({ name: "Alice" })
-    cachedProfiles.set("merchant", {
-      pubkey: "merchant",
+    const exactEvent = signedProfile(PROFILE_MERCHANT, 110, rawContent)
+    const eventId = exactEvent.id
+    cachedProfiles.set(PROFILE_MERCHANT, {
+      pubkey: PROFILE_MERCHANT,
       name: "Alice",
       about: "Stale enriched biography",
       rawContent,
@@ -7984,59 +7973,74 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PROFILE)
-          ? ([
-              {
-                id: eventId,
-                pubkey: "merchant",
-                created_at: 110,
-                content: rawContent,
-                tags: [],
-              },
-            ] as never)
+          ? ([exactEvent] as never)
           : [],
     })
 
     const result = await getProfiles({
-      pubkeys: ["merchant"],
+      pubkeys: [PROFILE_MERCHANT],
       skipCache: true,
     })
 
-    expect(result.data.merchant).toMatchObject({ name: "Alice" })
-    expect(result.data.merchant?.about).toBeUndefined()
+    expect(result.data[PROFILE_MERCHANT]).toMatchObject({ name: "Alice" })
+    expect(result.data[PROFILE_MERCHANT]?.about).toBeUndefined()
     expect(result.meta).toMatchObject({
       source: "public",
       stale: false,
       degraded: false,
     })
-    expect(cachedProfiles.get("merchant")).toMatchObject({
+    expect(cachedProfiles.get(PROFILE_MERCHANT)).toMatchObject({
       name: "Alice",
       rawContent,
       eventId,
       eventCreatedAt: 110,
     })
-    expect(cachedProfiles.get("merchant")?.about).toBeUndefined()
+    expect(cachedProfiles.get(PROFILE_MERCHANT)?.about).toBeUndefined()
   })
 
   for (const scenario of [
     {
       label: "a newer timestamp",
-      delayedId: "5".repeat(64),
       delayedCreatedAt: 105,
-      winnerId: "1".repeat(64),
       winnerCreatedAt: 110,
     },
     {
       label: "the lower event id at an equal timestamp",
-      delayedId: "7".repeat(64),
       delayedCreatedAt: 110,
-      winnerId: "1".repeat(64),
       winnerCreatedAt: 110,
     },
   ]) {
     it(`atomically retains ${scenario.label} across concurrent profile refreshes`, async () => {
+      const delayedEvent = signedProfile(
+        PROFILE_MERCHANT,
+        scenario.delayedCreatedAt,
+        JSON.stringify({ name: "Delayed loser" })
+      )
+      const winnerContent = JSON.stringify({
+        name: "Committed winner",
+        bot: true,
+        birthday: { year: 1990, month: 8 },
+      })
+      let winnerEvent = signedProfile(
+        PROFILE_MERCHANT,
+        scenario.winnerCreatedAt,
+        winnerContent
+      )
+      let nonce = 0
+      while (
+        scenario.delayedCreatedAt === scenario.winnerCreatedAt &&
+        winnerEvent.id >= delayedEvent.id
+      ) {
+        winnerEvent = signedProfile(
+          PROFILE_MERCHANT,
+          scenario.winnerCreatedAt,
+          winnerContent,
+          [["nonce", String(++nonce)]]
+        )
+      }
       const initialId = "9".repeat(64)
-      cachedProfiles.set("merchant", {
-        pubkey: "merchant",
+      cachedProfiles.set(PROFILE_MERCHANT, {
+        pubkey: PROFILE_MERCHANT,
         name: "Initial profile",
         rawContent: JSON.stringify({ name: "Initial profile" }),
         eventId: initialId,
@@ -8061,61 +8065,43 @@ describe("commerce gateway", () => {
           if (fetchCall === 1) {
             markDelayedFetchStarted()
             await delayedFetchGate
-            return [
-              {
-                id: scenario.delayedId,
-                pubkey: "merchant",
-                created_at: scenario.delayedCreatedAt,
-                content: JSON.stringify({ name: "Delayed loser" }),
-                tags: [],
-              } as never,
-            ]
+            return [delayedEvent]
           }
 
-          return [
-            {
-              id: scenario.winnerId,
-              pubkey: "merchant",
-              created_at: scenario.winnerCreatedAt,
-              content: JSON.stringify({
-                name: "Committed winner",
-                bot: true,
-                birthday: { year: 1990, month: 8 },
-              }),
-              tags: [],
-            } as never,
-          ]
+          return [winnerEvent]
         },
       })
 
       const delayedResultPromise = getProfiles({
-        pubkeys: ["merchant"],
+        pubkeys: [PROFILE_MERCHANT],
         skipCache: true,
       })
       await delayedFetchStarted
 
       const winnerResult = await getProfiles({
-        pubkeys: ["merchant"],
+        pubkeys: [PROFILE_MERCHANT],
         skipCache: true,
       })
       resumeDelayedFetch()
       const delayedResult = await delayedResultPromise
 
-      expect(winnerResult.data.merchant?.name).toBe("Committed winner")
-      expect(delayedResult.data.merchant?.name).toBe("Committed winner")
+      expect(winnerResult.data[PROFILE_MERCHANT]?.name).toBe("Committed winner")
+      expect(delayedResult.data[PROFILE_MERCHANT]?.name).toBe(
+        "Committed winner"
+      )
       expect(delayedResult.meta).toMatchObject({
         degraded: true,
         source: "local_cache",
         stale: true,
       })
-      expect(cachedProfiles.get("merchant")).toMatchObject({
+      expect(cachedProfiles.get(PROFILE_MERCHANT)).toMatchObject({
         name: "Committed winner",
         rawContent: JSON.stringify({
           name: "Committed winner",
           bot: true,
           birthday: { year: 1990, month: 8 },
         }),
-        eventId: scenario.winnerId,
+        eventId: winnerEvent.id,
         eventCreatedAt: scenario.winnerCreatedAt,
       })
     })

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -18,6 +18,8 @@ import {
 } from "@conduit/core"
 import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+import type { PublicRelayReadOptions } from "@conduit/core/protocol/relay-reader"
 
 const MERCHANT_SECRET = generateSecretKey()
 const ORGANIZER_SECRET = generateSecretKey()
@@ -44,6 +46,13 @@ function productEvent(dTag: string, title: string): SignedPublicNostrEvent {
     },
     MERCHANT_SECRET
   ) as SignedPublicNostrEvent
+}
+
+async function admitted(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error(`Fixture admission failed: ${result.status}`)
+  return result.event
 }
 
 function receiptFor(
@@ -93,13 +102,13 @@ afterEach(() => {
 })
 
 describe("event-market organizer merchandise evidence", () => {
-  it("returns only display-safe title from the exact signed product revision", () => {
+  it("returns only display-safe title from the exact signed product revision", async () => {
     const product = productEvent("coffee", "Fresh coffee")
     const receipt = receiptFor([product])
     const coverage = completeCoverage()
     const resolution = resolveEventMarketReceiptMerchandiseEvidence({
       receipt,
-      events: [product],
+      events: [await admitted(product)],
       coverage,
       sourceRelayUrlsById: new Map([[product.id, [RELAY_URL]]]),
     })
@@ -178,7 +187,13 @@ describe("event-market organizer merchandise evidence", () => {
     let relayListAuthenticatedPubkey: string | null | undefined
     let relayListShouldContinue: (() => boolean) | undefined
     __setEventMarketMerchandiseTestOverrides({
-      getRelayLists: (async (_pubkeys, options) => {
+      getRelayLists: (async (
+        _pubkeys: string[],
+        options?: {
+          authenticatedPubkey?: string | null
+          shouldContinue?: () => boolean
+        }
+      ) => {
         relayListAuthenticatedPubkey = options?.authenticatedPubkey
         relayListShouldContinue = options?.shouldContinue
         return new Map([
@@ -195,8 +210,11 @@ describe("event-market organizer merchandise evidence", () => {
           ],
         ])
       }) as never,
-      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
-        observedRelayUrls.push(...options.relayUrls)
+      fetchSignedEventsFanoutDetailed: (async (
+        filter: NDKFilter,
+        options: PublicRelayReadOptions
+      ) => {
+        observedRelayUrls.push(...(options.relayUrls ?? []))
         observedOwnerSelectedRelayUrls.push(
           ...(options.ownerSelectedRelayUrls ?? [])
         )
@@ -206,13 +224,12 @@ describe("event-market organizer merchandise evidence", () => {
           ? [product]
           : []
         return {
-          events: events.map((event) => new NDKEvent(undefined, event)),
-          relays: options.relayUrls.map((relayUrl) => ({
+          events: await Promise.all(events.map(admitted)),
+          relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
             relayUrl,
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       }) as never,
     })
@@ -290,8 +307,11 @@ describe("event-market organizer merchandise evidence", () => {
             },
           ],
         ])) as never,
-      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
-        observedRelayUrls.push(...options.relayUrls)
+      fetchSignedEventsFanoutDetailed: (async (
+        filter: NDKFilter,
+        options: PublicRelayReadOptions
+      ) => {
+        observedRelayUrls.push(...(options.relayUrls ?? []))
         observedOwnerSelectedRelayUrls.push(
           ...(options.ownerSelectedRelayUrls ?? [])
         )
@@ -300,13 +320,12 @@ describe("event-market organizer merchandise evidence", () => {
           ? [product]
           : []
         return {
-          events: events.map((event) => new NDKEvent(undefined, event)),
-          relays: options.relayUrls.map((relayUrl) => ({
+          events: await Promise.all(events.map(admitted)),
+          relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
             relayUrl,
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       }) as never,
     })
@@ -406,7 +425,10 @@ describe("event-market organizer merchandise evidence", () => {
             },
           ],
         ])) as never,
-      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (
+        filter: NDKFilter,
+        options: PublicRelayReadOptions
+      ) => {
         observedFilters.push(filter)
         active += 1
         maxActive = Math.max(maxActive, active)
@@ -425,13 +447,12 @@ describe("event-market organizer merchandise evidence", () => {
               .slice(0, filter.limit)
           }
           return {
-            events: events.map((event) => new NDKEvent(undefined, event)),
-            relays: options.relayUrls.map((relayUrl) => ({
+            events: await Promise.all(events.map(admitted)),
+            relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
               relayUrl,
               status: "success" as const,
               eventCount: events.length,
             })),
-            eventsVerified: true,
           }
         } finally {
           active -= 1

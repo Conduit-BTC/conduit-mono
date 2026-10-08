@@ -163,7 +163,7 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
-    expect(db.verno).toBe(24)
+    expect(db.verno).toBe(25)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -1117,7 +1117,6 @@ describe("shopper trust evidence", () => {
               status: "success" as const,
               eventCount: 0,
             })),
-            eventsVerified: true,
           }
         },
       }
@@ -1646,7 +1645,6 @@ describe("shopper trust evidence", () => {
           filter.authors?.includes(SHOPPER_PUBKEY) && filterHasKind(filter, 1)
             ? {
                 ...successfulRead([forgedActivity]),
-                eventsVerified: true,
               }
             : successfulRead(),
         now: () => NOW_MS,

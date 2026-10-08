@@ -8,7 +8,12 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchSignedEventsFanoutDetailed,
   type PublicRelayReadResult,
+  verifySignedEvents,
 } from "./relay-reader"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import {
   compareProfileFrontiers,
   projectCachedProfile,
@@ -259,9 +264,9 @@ function eventFrontier(event: SignedPublicNostrEvent): ProfileFrontier {
 }
 
 function pickLatestEventPerPubkey(
-  events: readonly SignedPublicNostrEvent[]
-): SignedPublicNostrEvent[] {
-  const latest = new Map<string, SignedPublicNostrEvent>()
+  events: readonly VerifiedNostrEvent[]
+): VerifiedNostrEvent[] {
+  const latest = new Map<string, VerifiedNostrEvent>()
   for (const event of events) {
     if (event.kind !== EVENT_KINDS.PROFILE || !event.pubkey) continue
     const current = latest.get(event.pubkey)
@@ -305,7 +310,9 @@ export interface ProfileSearchRelaySummary {
  * data this client could not trust.
  */
 export function summarizeProfileSearchRelays(
-  result: Pick<PublicRelayReadResult, "relays" | "eventsVerified">,
+  result: Pick<PublicRelayReadResult, "relays"> & {
+    events?: PublicRelayReadResult["events"]
+  },
   fetchLimit: number = NETWORK_FETCH_LIMIT
 ): Omit<ProfileSearchRelaySummary, "relaysPlanned"> {
   let relaysCompleted = 0
@@ -322,7 +329,7 @@ export function summarizeProfileSearchRelays(
   return {
     relaysCompleted,
     relaysDegraded,
-    verified: result.eventsVerified !== false,
+    verified: result.events?.every(isVerifiedNostrEvent) ?? true,
   }
 }
 
@@ -572,7 +579,7 @@ function summarizeProfileSearchRelayChunks(
   let verified = true
 
   for (const result of results) {
-    if (result?.eventsVerified === false) verified = false
+    if (result && !result.events.every(isVerifiedNostrEvent)) verified = false
   }
 
   for (const relayUrl of relayUrls) {
@@ -592,7 +599,7 @@ function summarizeProfileSearchRelayChunks(
 
       answeredChunks += 1
       if (
-        result?.eventsVerified === false ||
+        (result && !result.events.every(isVerifiedNostrEvent)) ||
         !relayObservationIsComplete(relay, fetchLimit)
       ) {
         allChunksComplete = false
@@ -824,12 +831,38 @@ export async function searchNetworkProfiles(
           ? input.signal.reason
           : new DOMException("Aborted", "AbortError")
       }
+      const admittedResults = await Promise.all(
+        chunkResults.map(async (result) => {
+          if (!result) return null
+          const verification = await verifySignedEvents(result.events, {
+            signal: input.signal,
+            maxEvents: NETWORK_FETCH_LIMIT * PROFILE_SEARCH_MAX_RELAYS,
+          })
+          if (
+            verification.truncated ||
+            verification.events.length !== result.events.length
+          ) {
+            summary.verified = false
+          }
+          return { ...result, events: verification.events }
+        })
+      )
+      if (input.signal?.aborted) {
+        throw input.signal.reason instanceof Error
+          ? input.signal.reason
+          : new DOMException("Aborted", "AbortError")
+      }
       summary = {
         ...summary,
-        ...summarizeProfileSearchRelayChunks(chunkResults, relayUrls),
+        ...summarizeProfileSearchRelayChunks(admittedResults, relayUrls),
+        verified:
+          summary.verified &&
+          admittedResults.every(
+            (result) => !result || result.events.every(isVerifiedNostrEvent)
+          ),
       }
       const events = pickLatestEventPerPubkey(
-        chunkResults.flatMap((result) => result?.events ?? [])
+        admittedResults.flatMap((result) => result?.events ?? [])
       ).filter(
         (event) => !authorSet || authorSet.has(event.pubkey.toLowerCase())
       )

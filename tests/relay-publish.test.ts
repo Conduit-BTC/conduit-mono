@@ -42,6 +42,7 @@ import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
+import { admitFixture } from "./helpers/public-event"
 
 const NOW = 1_700_000_000_000
 const AUTHOR_SECRET = Uint8Array.from([...new Uint8Array(31), 21])
@@ -55,14 +56,16 @@ const originalConfig = structuredClone(config)
 
 async function durableOwnerRelayListRepository(tags: string[][]) {
   const repository = createInMemoryOwnerRelayListEvidenceRepository()
-  const signedEvent = finalizeEvent(
-    {
-      kind: EVENT_KINDS.RELAY_LIST,
-      created_at: Math.floor(NOW / 1_000),
-      tags,
-      content: "",
-    },
-    AUTHOR_SECRET
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.RELAY_LIST,
+        created_at: Math.floor(NOW / 1_000),
+        tags,
+        content: "",
+      },
+      AUTHOR_SECRET
+    )
   )
   await repository.reconcile({
     pubkey: AUTHOR_PUBKEY,
