@@ -1067,27 +1067,96 @@ describe("foreground settled shopper routing", () => {
     }
   }, 20_000)
 
-  it("revokes pending funding checks immediately on explicit pause", async () => {
+  it("wakes a held five-second passive observation wait on explicit pause", async () => {
     const f = await fixture()
     const entered = deferred()
     const release = deferred()
+    const delays: number[] = []
     try {
       f.hooks.completeFunding = false
-      f.hooks.beforeWait = async () => {
-        entered.resolve()
-        await release.promise
+      f.hooks.beforeWait = async (milliseconds) => {
+        delays.push(milliseconds)
+        if (milliseconds === 5_000) {
+          entered.resolve()
+          await release.promise
+        }
       }
       const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
       const running = runner.run({ ...f.input, fundingPoll: undefined })
       await entered.promise
-      const pausing = runner.pause()
-      release.resolve()
+      let drained = false
+      const pausing = runner.pause().then(() => {
+        drained = true
+      })
+      // The pending work here is only a passive observation delay, not an
+      // admitted provider operation. Pause must not depend on its expiry.
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+      expect(delays).toEqual([2_000, 4_000, 5_000])
+      expect(drained).toBe(true)
       expect(await running).toEqual({ status: "paused", reason: "paused" })
       await pausing
       expect(f.calls.payer).toBe(1)
       expect(f.control.snapshot().sendInvocationCount).toBe(0)
     } finally {
       release.resolve()
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("does not let a late passive wait rejection wake or revoke a later run", async () => {
+    const f = await fixture()
+    const entered = deferred()
+    const nextEntered = deferred()
+    const nextRelease = deferred()
+    let rejectLate!: (reason: unknown) => void
+    const lateWait = new Promise<void>((_, reject) => {
+      rejectLate = reject
+    })
+    try {
+      f.hooks.completeFunding = false
+      f.hooks.beforeWait = async () => {
+        entered.resolve()
+        await lateWait
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      const running = runner.run({ ...f.input, fundingPoll: undefined })
+      await entered.promise
+      await runner.pause()
+      expect(await running).toEqual({ status: "paused", reason: "paused" })
+      f.hooks.beforeWait = async () => {
+        nextEntered.resolve()
+        await nextRelease.promise
+      }
+      let nextFinished = false
+      const nextRunning = runner
+        .run({
+          ...f.input,
+          fundingMode: "inspect",
+          fundingPoll: { attempts: 2, intervalMs: 1 },
+        })
+        .then((result) => {
+          nextFinished = true
+          return result
+        })
+      await nextEntered.promise
+      rejectLate(new Error("Synthetic late passive wait rejection"))
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+      expect(nextFinished).toBe(false)
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+      let nextDrained = false
+      const nextPausing = runner.pause().then(() => {
+        nextDrained = true
+      })
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+      expect(nextDrained).toBe(true)
+      expect(await nextRunning).toEqual({ status: "paused", reason: "paused" })
+      await nextPausing
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      rejectLate(new Error("Synthetic passive wait cleanup"))
+      nextRelease.resolve()
       await f.cleanup()
     }
   }, 20_000)

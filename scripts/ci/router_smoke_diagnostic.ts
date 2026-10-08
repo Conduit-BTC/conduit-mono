@@ -29,6 +29,7 @@ const routerSmokePhases = [
   "inline price and authorization without a popup",
   "bound buyer continues while new router admission is disabled",
   "disabled execution preserves partial saved payment history",
+  "partial execution stop requests buyer pause",
   "partial execution stop waits for buyer pause",
   "partial execution stop mounts disabled saved order",
   "partial execution stop refreshes saved status",

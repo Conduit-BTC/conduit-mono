@@ -655,6 +655,11 @@ describe("bounded smoke failure diagnostics", () => {
         footerTransformY: 12.345,
         widgetHiddenShift: 114,
         widgetBottomOffset: 114,
+        atomicTriggerY: 588.456,
+        atomicTriggerBottom: 644.456,
+        atomicFooterLinkTop: 644,
+        atomicFooterHeight: 80,
+        atomicLayout: "intersecting",
         footerX: "private-value",
         footerY: 1000000,
         viewportWidth: null,
@@ -679,6 +684,11 @@ describe("bounded smoke failure diagnostics", () => {
         footerTransformY: 12.3,
         widgetHiddenShift: 114,
         widgetBottomOffset: 114,
+        atomicTriggerY: 588.5,
+        atomicTriggerBottom: 644.5,
+        atomicFooterLinkTop: 644,
+        atomicFooterHeight: 80,
+        atomicLayout: "intersecting",
       },
     ])
     expect(
@@ -706,6 +716,10 @@ describe("bounded smoke failure diagnostics", () => {
       "footerTransformY",
       "widgetHiddenShift",
       "widgetBottomOffset",
+      "atomicTriggerY",
+      "atomicTriggerBottom",
+      "atomicFooterLinkTop",
+      "atomicFooterHeight",
     ]) {
       for (const value of [
         "private-value",
@@ -734,6 +748,53 @@ describe("bounded smoke failure diagnostics", () => {
           ])
         ).toEqual([{ kind: "footer-layout", phase: "initial" }])
       }
+    }
+  })
+
+  it("keeps atomic footer layout categories closed and geometry bounded", () => {
+    for (const atomicLayout of ["missing", "intersecting", "disjoint"]) {
+      expect(
+        safeSmokeDiagnostics("e2e/mobile-safari-baseline.playwright.ts", [
+          {
+            type: "smoke:footer-layout",
+            description: JSON.stringify({
+              phase: "initial",
+              atomicLayout,
+              atomicTriggerY: -32768,
+              atomicTriggerBottom: 32768,
+              atomicFooterLinkTop: 0,
+              atomicFooterHeight: 80,
+              rawDom: "private-value",
+              rawStyle: "private-value",
+              message: "private-value",
+            }),
+          },
+        ])
+      ).toEqual([
+        {
+          kind: "footer-layout",
+          phase: "initial",
+          atomicLayout,
+          atomicTriggerY: -32768,
+          atomicTriggerBottom: 32768,
+          atomicFooterLinkTop: 0,
+          atomicFooterHeight: 80,
+        },
+      ])
+    }
+    for (const atomicLayout of ["private-value", "", null, 1, true, [], {}]) {
+      expect(
+        safeSmokeDiagnostics("e2e/mobile-safari-baseline.playwright.ts", [
+          {
+            type: "smoke:footer-layout",
+            description: JSON.stringify({
+              phase: "initial",
+              atomicLayout,
+              rawDom: "private-value",
+            }),
+          },
+        ])
+      ).toEqual([{ kind: "footer-layout", phase: "initial" }])
     }
   })
 

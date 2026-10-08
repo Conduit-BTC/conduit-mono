@@ -1700,10 +1700,11 @@ async function rehearseRouter(
     const pendingNative = control().nativeSnapshot()
     if (capabilityRegression) {
       setStage("disabled execution preserves partial saved payment history")
-      setStage("partial execution stop waits for buyer pause")
+      setStage("partial execution stop requests buyer pause")
       await page
         .getByRole("button", { name: "Pause payment", exact: true })
         .click()
+      setStage("partial execution stop waits for buyer pause")
       await expect(
         page.getByRole("button", { name: "Refresh saved status", exact: true })
       ).toBeEnabled()

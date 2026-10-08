@@ -91,10 +91,7 @@ export function createCheckoutSparkSettledShopperRunner(
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now
-  const wait =
-    dependencies.wait ??
-    ((milliseconds: number) =>
-      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const wait = dependencies.wait
   const readOrder = dependencies.readOrder ?? getOrderLifecycle
   const readPreparation =
     dependencies.readPreparation ?? getCheckoutSparkSettledPreparation
@@ -105,6 +102,7 @@ export function createCheckoutSparkSettledShopperRunner(
     dependencies.sparkConfiguration ?? getSparkConfiguration
   let epoch = 0
   let work: Promise<CheckoutSparkSettledShopperRunResult> | null = null
+  let wakeIdleWait: (() => void) | null = null
 
   async function execute(
     input: CheckoutSparkSettledShopperRunInput,
@@ -178,13 +176,38 @@ export function createCheckoutSparkSettledShopperRunner(
       pendingObservations += 1
       const remainingMs = reconciliationDeadline - now()
       if (pendingObservations >= poll.attempts || remainingMs <= 0) return false
-      await wait(
-        Math.min(
-          remainingMs,
-          5_000,
-          poll.intervalMs * 2 ** Math.min(pendingObservations - 1, 2)
-        )
+      const milliseconds = Math.min(
+        remainingMs,
+        5_000,
+        poll.intervalMs * 2 ** Math.min(pendingObservations - 1, 2)
       )
+      // A passive polling delay has no provider operation to drain. Waking it
+      // must not cancel any already admitted payment, ACK or persistence await.
+      await new Promise<void>((resolve, reject) => {
+        let finished = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const finish = (settle: () => void) => {
+          if (finished) return
+          finished = true
+          if (timer !== undefined) clearTimeout(timer)
+          if (wakeIdleWait === wake) wakeIdleWait = null
+          settle()
+        }
+        const wake = () => finish(() => reject(new RoutingPaused("paused")))
+        wakeIdleWait = wake
+        if (wait) {
+          // Observe late completion/rejection even after Pause has woken the
+          // runner; an old wait must never clear or wake a subsequent run.
+          void Promise.resolve()
+            .then(() => (finished ? undefined : wait(milliseconds)))
+            .then(
+              () => finish(resolve),
+              (error: unknown) => finish(() => reject(error))
+            )
+        } else {
+          timer = setTimeout(() => finish(resolve), milliseconds)
+        }
+      })
       if (!sessionCurrent()) throw new RoutingPaused("paused")
       return now() < reconciliationDeadline
     }
@@ -385,6 +408,7 @@ export function createCheckoutSparkSettledShopperRunner(
     },
     async pause() {
       epoch += 1
+      wakeIdleWait?.()
       await work
     },
   }

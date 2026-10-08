@@ -85,6 +85,23 @@ async function expectVisibleDisjointControls(
             'button[aria-label="Open messages"]'
           )?.parentElement
           const footer = document.querySelector("footer")
+          const atomicTrigger = widget
+            ?.querySelector("button")
+            ?.getBoundingClientRect()
+          const atomicFooterLink = Array.from(
+            document.querySelectorAll<HTMLAnchorElement>("footer a")
+          )
+            .find((link) => link.textContent?.trim() === "Report a Bug")
+            ?.getBoundingClientRect()
+          const atomicIntersects =
+            atomicTrigger && atomicFooterLink
+              ? !(
+                  atomicTrigger.right <= atomicFooterLink.left ||
+                  atomicFooterLink.right <= atomicTrigger.left ||
+                  atomicTrigger.bottom <= atomicFooterLink.top ||
+                  atomicFooterLink.bottom <= atomicTrigger.top
+                )
+              : undefined
           const widgetStyle = widget ? getComputedStyle(widget) : undefined
           const transformY = (style: CSSStyleDeclaration | undefined) => {
             if (!style) return undefined
@@ -107,6 +124,16 @@ async function expectVisibleDisjointControls(
                 )
               ) || 0,
             footerHidden: footer?.getAttribute("aria-hidden") === "true",
+            atomicTriggerY: atomicTrigger?.y,
+            atomicTriggerBottom: atomicTrigger?.bottom,
+            atomicFooterLinkTop: atomicFooterLink?.top,
+            atomicFooterHeight: footer?.getBoundingClientRect().height,
+            atomicLayout:
+              atomicIntersects === undefined
+                ? "missing"
+                : atomicIntersects
+                  ? "intersecting"
+                  : "disjoint",
             widgetMarginBottom: widgetStyle
               ? Number.parseFloat(widgetStyle.marginBottom)
               : undefined,
@@ -149,6 +176,11 @@ async function expectVisibleDisjointControls(
           footerTransformY: viewport.footerTransformY,
           widgetHiddenShift: viewport.widgetHiddenShift,
           widgetBottomOffset: viewport.widgetBottomOffset,
+          atomicTriggerY: viewport.atomicTriggerY,
+          atomicTriggerBottom: viewport.atomicTriggerBottom,
+          atomicFooterLinkTop: viewport.atomicFooterLinkTop,
+          atomicFooterHeight: viewport.atomicFooterHeight,
+          atomicLayout: viewport.atomicLayout,
         })
         return layout
       }
