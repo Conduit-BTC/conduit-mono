@@ -4,6 +4,7 @@ import {
   cloneInboxDeclarationEvidenceRecord,
   getActiveInboxCutoverRecoveryRelayUrls,
   getInboxDeclarationEvidence,
+  InboxDeclarationEvidenceUnavailableError,
   mergeInboxDeclarationEvidenceBatch as mergeInboxDeclarationEvidenceBatchDurably,
   normalizeInboxDeclarationEvidencePubkey,
   recordInboxDeclarationCutoverRecoveryReadback,
@@ -528,7 +529,8 @@ async function reconcileInboxDeclarationEvidenceBatch(
       for (const input of orderedInputs) {
         record = applyInboxDeclarationEvidenceMerge(record, input, now)
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof InboxDeclarationEvidenceUnavailableError) throw error
       // Re-read the shared map after the await: another resolver may have
       // advanced it while this repository call was pending.
       const latest = declarationEvidenceCache.get(key)
@@ -1240,7 +1242,23 @@ export async function resolveInboxDeclaration(
           now
         )
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof InboxDeclarationEvidenceUnavailableError) {
+        return {
+          pubkey: key,
+          state: "lookup_unavailable",
+          relayUrls: [],
+          stale: true,
+          fetchedAt,
+          observation: {
+            coverage: "unavailable",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventSourceRelayUrls: [],
+          },
+        }
+      }
       // IndexedDB can be unavailable in privacy modes. Relay discovery remains
       // usable; the durable store is an evidence aid, not a network gate.
     }

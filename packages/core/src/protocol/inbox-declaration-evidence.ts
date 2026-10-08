@@ -1887,6 +1887,15 @@ function sameOrderedStrings(
   )
 }
 
+export class InboxDeclarationEvidenceUnavailableError extends Error {
+  readonly code = "evidence_unavailable" as const
+
+  constructor() {
+    super("Retained inbox declaration verification is unavailable")
+    this.name = "InboxDeclarationEvidenceUnavailableError"
+  }
+}
+
 async function admitInboxRecord(
   record: InboxDeclarationEvidenceRecord | undefined
 ): Promise<InboxDeclarationEvidenceRecord | undefined> {
@@ -1894,6 +1903,9 @@ async function admitInboxRecord(
   const admitted = structuredClone(record)
   const admit = async (event: SignedPublicNostrEvent) => {
     const result = await admitPublicEvent(event)
+    if (result.status === "unavailable" || result.status === "cancelled") {
+      throw new InboxDeclarationEvidenceUnavailableError()
+    }
     if (result.status !== "verified") {
       throw new Error("Retained inbox declaration evidence is not verified")
     }
@@ -1972,7 +1984,8 @@ function createDexieRepository(
     let admittedBefore: InboxDeclarationEvidenceRecord | undefined
     try {
       admittedBefore = await admitInboxRecord(before)
-    } catch {
+    } catch (error) {
+      if (error instanceof InboxDeclarationEvidenceUnavailableError) throw error
       admittedBefore = undefined
     }
     return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
@@ -2007,7 +2020,9 @@ function createDexieRepository(
         return admitted
           ? cloneInboxDeclarationEvidenceRecord(admitted)
           : undefined
-      } catch {
+      } catch (error) {
+        if (error instanceof InboxDeclarationEvidenceUnavailableError)
+          throw error
         return undefined
       }
     },
@@ -2042,7 +2057,8 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
     let merged: InboxDeclarationEvidenceRecord | undefined
     try {
       merged = await admitInboxRecord(records.get(pubkey))
-    } catch {
+    } catch (error) {
+      if (error instanceof InboxDeclarationEvidenceUnavailableError) throw error
       merged = undefined
     }
     for (const candidate of candidates) {
@@ -2094,7 +2110,9 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
         return admitted
           ? cloneInboxDeclarationEvidenceRecord(admitted)
           : undefined
-      } catch {
+      } catch (error) {
+        if (error instanceof InboxDeclarationEvidenceUnavailableError)
+          throw error
         return undefined
       }
     },

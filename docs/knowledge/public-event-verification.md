@@ -163,12 +163,17 @@ than replacing bounded verification with unbounded concurrency or widening UI sc
 ## Durable evidence during verification outages
 
 An unavailable or cancelled admission is inconclusive. Owner relay-list
-reconciliation and media-preference restoration preserve the exact stored
+reconciliation, NIP-17 inbox declaration reads/merges, and media-preference
+restoration preserve the exact stored
 signed records, pending retry plans and delivery outcomes without writing a
 replacement checkpoint. A cold read reports verification unavailability;
 media display data is separately sanitized and supplies no signed frontier or
 action authority until admission recovers. Conclusively invalid signed bytes
 remain eligible for removal or repair through the existing reconciliation rules.
+Inbox verification unavailability propagates through retained reads and aborts
+merges before writes. Routing reports unavailable rather than declaration absence
+and cannot create candidate-only process fallback over an unverified durable
+frontier.
 
 Account Network staging admits raw signed checkpoints before opening an
 IndexedDB transaction. Invalid or unavailable admission cannot write durable

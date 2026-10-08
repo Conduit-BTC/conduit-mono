@@ -136,6 +136,80 @@ describe("durable public evidence admission", () => {
     `)
   }, 20000)
 
+  for (const mode of ["dexie", "memory"] as const) {
+    it(`preserves stronger ${mode} inbox evidence across unavailable reads and older merges`, () => {
+      runScenario(`
+        const inbox = await import("./packages/core/src/protocol/inbox-declaration-evidence");
+        const routing = await import("./packages/core/src/protocol/private-message-routing");
+        const raw = sign(10050, [["relay", relays[0]]], 200);
+        const older = sign(10050, [["relay", relays[1]]], 100);
+        const signed = (await proof.admitPublicEvent(raw)).event;
+        const retainedInbox = inbox.applyInboxDeclarationDistributionStage(undefined, {
+          pubkey, signedEvent: signed, publishRelayUrls: relays,
+          relayOutcomes: relays.map(relayUrl => ({relayUrl, publishStatus: "pending", publishAttemptCount: 1,
+            readbackStatus: "pending", readbackAttemptCount: 0})),
+          expectedCurrentEventId: null, stagedAt: 200000,
+        });
+        await db.inboxDeclarationEvidence.put(structuredClone(retainedInbox));
+        const repository = "${mode}" === "dexie" ? inbox.dexieInboxDeclarationEvidenceRepository
+          : inbox.createInMemoryInboxDeclarationEvidenceRepository([retainedInbox]);
+        const before = JSON.stringify(await repository.get(pubkey));
+        const originalWorker = globalThis.Worker;
+        proof.__resetPublicEventVerificationForTests();
+        routing.__resetInboxDeclarationCache();
+        globalThis.window = {};
+        const { isValidSignedPublicNostrEvent } = await import("./packages/core/src/protocol/signed-event");
+        globalThis.Worker = class {
+          postMessage({reqId, items}) {
+            queueMicrotask(() => items.every(item => item.id === older.id)
+              ? this.onmessage?.({data: {reqId, valid: items.map(isValidSignedPublicNostrEvent)}})
+              : this.onerror?.(new Error("retained verifier unavailable")));
+          }
+          terminate() {}
+        };
+        const candidate = await proof.admitPublicEvent(older);
+        assert(candidate.status === "verified", "older observation did not admit");
+        let readFailure;
+        try { await inbox.getInboxDeclarationEvidence(pubkey, repository); }
+        catch (error) { readFailure = error; }
+        assert(readFailure?.code === "evidence_unavailable", "unavailable read became declaration absence");
+        let sendReadFailure;
+        try { await routing.readRetainedInboxDeclaration(pubkey, {evidenceRepository: repository}); }
+        catch (error) { sendReadFailure = error; }
+        assert(sendReadFailure?.code === "evidence_unavailable", "send-time read became declaration absence");
+        const resolution = await routing.resolveInboxDeclaration(pubkey, {evidenceRepository: repository,
+          now: () => 300000, fetchEventsWithDiagnostics: async () => ({events: [],
+            attemptedRelayUrls: relays, successfulRelayUrls: relays, failedRelayUrls: []})});
+        assert(resolution.state === "lookup_unavailable", "unavailable retained evidence became not observed");
+        let mergeFailure;
+        try { await repository.mergeBatch([{pubkey, signedEvent: candidate.event, observedAt: 300000}]); }
+        catch (error) { mergeFailure = error; }
+        assert(mergeFailure?.code === "evidence_unavailable", "unavailable merge used an empty baseline");
+        let routingMergeFailure;
+        try { await routing.mergeInboxDeclarationEvidenceDurably({pubkey,
+          signedEvent: candidate.event, observedAt: 300000}, repository, () => 300000); }
+        catch (error) { routingMergeFailure = error; }
+        assert(routingMergeFailure?.code === "evidence_unavailable", "routing created candidate-only process fallback");
+        if ("${mode}" === "dexie") assert(JSON.stringify(await db.inboxDeclarationEvidence.get(pubkey)) === before, "stronger stored inbox was overwritten");
+        delete globalThis.window;
+        globalThis.Worker = originalWorker;
+        proof.__resetPublicEventVerificationForTests();
+        const recovered = await repository.get(pubkey);
+        assert(JSON.stringify(recovered) === before, "retained inbox bytes or pending outcomes changed");
+        assert(proof.isVerifiedNostrEvent(recovered.current.signedEvent), "inbox recovery did not re-admit proof");
+        const invalid = {...structuredClone(retainedInbox), current: {...retainedInbox.current,
+          signedEvent: {...raw, content: "changed"}}};
+        await db.inboxDeclarationEvidence.put(structuredClone(invalid));
+        const invalidRepository = "${mode}" === "dexie" ? repository
+          : inbox.createInMemoryInboxDeclarationEvidenceRepository([invalid]);
+        assert(await invalidRepository.get(pubkey) === undefined, "conclusively invalid record was accepted");
+        const repaired = await invalidRepository.merge({pubkey,
+          signedEvent: (await proof.admitPublicEvent(older)).event, observedAt: 300000});
+        assert(repaired.current.signedEvent.id === older.id, "conclusively invalid record was not repairable");
+      `)
+    }, 20000)
+  }
+
   it("admits raw staging checkpoints and rejects changed bytes in both repositories", () => {
     runScenario(`
       for (const mode of ["dexie", "memory"]) {
