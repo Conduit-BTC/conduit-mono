@@ -61,7 +61,7 @@ function fixtureFetch(fixtures: Fixtures, calls: string[] = []): typeof fetch {
     calls.push(provider)
     expect(options?.credentials).toBe("omit")
     expect(options?.referrerPolicy).toBe("no-referrer")
-    expect(options?.redirect).toBe("error")
+    expect(options?.redirect).toBe("manual")
     const value = fixtures[provider]
     if (value instanceof Error) throw value
     return value instanceof Response
@@ -78,6 +78,33 @@ const bitcoin = {
 }
 
 describe("shared ordered pricing providers", () => {
+  it("rejects redirects without following them or blocking later providers", async () => {
+    const calls: string[] = []
+    const quote = await fetchCommonPricingRateQuote({
+      nowMs: () => NOW,
+      requiredFiatCurrencies: ["EUR"],
+      includeFiatRates: true,
+      fetchImpl: fixtureFetch(
+        {
+          mempool: new Response(null, {
+            status: 302,
+            headers: { location: "https://unapproved.invalid/rates" },
+          }),
+          coinbase: bitcoin.coinbase,
+          frankfurter: new Response(null, {
+            status: 307,
+            headers: { location: "https://unapproved.invalid/fx" },
+          }),
+          floatrates: floatrates({ EUR: "0.8" }),
+        },
+        calls
+      ),
+    })
+    expect(quote.source).toBe("coinbase")
+    expect(quote.fiatSources).toEqual({ EUR: "floatrates" })
+    expect(calls).toEqual(["mempool", "frankfurter", "coinbase", "floatrates"])
+  })
+
   for (const [position, source] of [
     "mempool",
     "coinbase",

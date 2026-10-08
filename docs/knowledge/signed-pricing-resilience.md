@@ -34,6 +34,12 @@ another available conversion. Coinbase base/quote and Kraken's error envelope
 are validated. Decimal strings are parsed strictly, without hexadecimal or
 partial-string coercion.
 
+Provider fetches use `redirect: "manual"` and reject all non-success responses,
+including redirects. Cloudflare's runtime rejects `redirect: "error"` before
+network I/O despite its browser-standard type. Validate request options in the
+actual Worker runtime as well as adapter fixtures; a shared transport error can
+otherwise disable every independent upstream simultaneously.
+
 FX publication age and signed snapshot validity are separate. Frankfurter/ECB
 observations must be no more than seven calendar days old, allowing weekends and
 bank holidays; FloatRates observations must be no more than three days old.

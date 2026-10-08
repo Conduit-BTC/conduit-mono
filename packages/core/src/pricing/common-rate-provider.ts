@@ -106,7 +106,8 @@ async function fetchJson(
         headers: { accept: "application/json" },
         credentials: "omit",
         referrerPolicy: "no-referrer",
-        redirect: "error",
+        // workerd supports follow/manual only. A returned redirect fails !ok below.
+        redirect: "manual",
         signal,
       })
       if (!response.ok || !response.body)
