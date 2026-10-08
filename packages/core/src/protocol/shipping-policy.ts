@@ -5,6 +5,8 @@
  */
 import { z } from "zod"
 import {
+  PRICING_BTC_SOURCES,
+  PRICING_FIAT_SOURCES,
   getCurrencyFractionDigits,
   isSupportedCommercePriceCurrency,
   normalizeCurrencyIdentity,
@@ -702,18 +704,13 @@ const shippingPricingRateSchema = z.union([
     .object({
       rate: z.number().finite().positive(),
       fetchedAt: z.number().finite().nonnegative(),
-      source: z.enum(["env", "mempool", "coinbase"]),
+      source: z.enum(PRICING_BTC_SOURCES),
       fiatUsdRates: z
         .record(z.string(), z.number().finite().positive())
         .optional(),
-      fiatSource: z
-        .enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
-        .optional(),
+      fiatSource: z.enum(PRICING_FIAT_SOURCES).optional(),
       fiatSources: z
-        .record(
-          z.string().regex(/^[A-Z]{3}$/),
-          z.enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
-        )
+        .record(z.string().regex(/^[A-Z]{3}$/), z.enum(PRICING_FIAT_SOURCES))
         .optional(),
     })
     .strict(),

@@ -23,6 +23,7 @@ import {
 } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { parseCheckoutSparkPricingConfiguration } from "@conduit/core/protocol/checkout-spark-pricing-config"
 import { SIGNED_PRICING_FEED_CURRENCIES } from "@conduit/core/pricing/signed-rate-client"
+import type { BtcUsdRateQuote } from "@conduit/core/pricing"
 import {
   getSparkCheckoutReceiveFundingTimeAnchor,
   proveSparkCheckoutReceiveCredit,
@@ -78,14 +79,14 @@ function configuration() {
   })!
 }
 
-function snapshot() {
+function snapshot(rate: BtcUsdRateQuote = RATE) {
   const pricingAuthority = createCheckoutSparkPricingRateAttestation({
-    rate: RATE,
+    rate,
     keyId: "fixture-rate",
     privateKeyHex: RATE_KEY,
     issuedAtMs: NOW + 1_000,
   })
-  return { pricing: { version: 1 as const, rate: RATE }, pricingAuthority }
+  return { pricing: { version: 1 as const, rate }, pricingAuthority }
 }
 
 async function commerceQuote(): Promise<CheckoutSparkCommerceQuote> {
@@ -316,53 +317,65 @@ async function preparedPlan() {
 }
 
 describe("authorized fiat checkout integration", () => {
-  it("refreshes authenticated rate provenance for unchanged reviewed fiat shipping and retains final signed evidence", async () => {
-    const fixture = await fiatShippingFixture()
-    const signed = snapshot()
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: fixture.reviewedItems,
-      rawItems: [fixture.item],
-      refreshedProducts: [fixture.product],
-      readShippingOptions: async () => [fixture.option],
-      destination: fixture.destination,
-      rateInput: signed.pricing.rate,
-      reviewedRateInput: fixture.reviewedRate,
-      allowPricingRateEvidenceRefresh: true,
-      authorizePickupHandlers: async () => undefined,
-    })
-    expect(result.status).toBe("ok")
-    if (result.status !== "ok") throw new Error("Fixture authorization failed.")
-    expect(result.items[0]?.shippingPolicyQuote?.amountSats).toBe(5_000)
-    expect(
-      JSON.stringify(result.items[0]?.shippingPolicyQuote?.pricingRate) ===
-        JSON.stringify(signed.pricing.rate)
-    ).toBe(true)
-    expect(
-      JSON.stringify(
-        fixture.reviewedItems[0]?.shippingPolicyQuote?.pricingRate
-      ) === JSON.stringify(fixture.reviewedRate)
-    ).toBe(true)
-    const quote = buildCheckoutSparkCommerceEvidence(
-      buildCheckoutSparkQuoteAuthority({
-        authorization: result,
+  for (const [source, fiatSource] of [
+    ["mempool", "mempool"],
+    ["coinbase", "floatrates"],
+    ["kraken", "ecb"],
+  ] as const) {
+    it(`retains ${source}/${fiatSource} authority through unchanged reviewed fiat shipping and final signed evidence`, async () => {
+      const fixture = await fiatShippingFixture()
+      const signed = snapshot({
+        ...RATE,
+        source,
+        fiatSource,
+        fiatSources: { EUR: fiatSource },
+      })
+      const result = await authorizeCurrentCheckoutItems({
+        mode: "direct_payment",
+        reviewedItems: fixture.reviewedItems,
+        rawItems: [fixture.item],
+        refreshedProducts: [fixture.product],
+        readShippingOptions: async () => [fixture.option],
+        destination: fixture.destination,
         rateInput: signed.pricing.rate,
-        pricingAuthority: signed.pricingAuthority,
-        nowMs: NOW + 1_500,
+        reviewedRateInput: fixture.reviewedRate,
+        allowPricingRateEvidenceRefresh: true,
+        authorizePickupHandlers: async () => undefined,
       })
-    )
-    expect(quote.lines[0]?.unitMerchandiseSats).toBe(20_000)
-    expect(quote.lines[0]?.shippingPolicy?.allocatedCostSats).toBe(5_000)
-    expect(quote.commerceTotalSats).toBe(25_000)
-    expect(
-      assessCheckoutSparkCommercePricingAuthority({
-        quote,
-        acceptedAtMs: PROVIDER_CREATED_AT,
-        nowMs: PROVIDER_CREATED_AT,
-        trustedPublicKeys: configuration().publicKeys,
-      })
-    ).toBe("verified")
-  })
+      expect(result.status).toBe("ok")
+      if (result.status !== "ok")
+        throw new Error("Fixture authorization failed.")
+      expect(result.items[0]?.shippingPolicyQuote?.amountSats).toBe(5_000)
+      expect(
+        JSON.stringify(result.items[0]?.shippingPolicyQuote?.pricingRate) ===
+          JSON.stringify(signed.pricing.rate)
+      ).toBe(true)
+      expect(
+        JSON.stringify(
+          fixture.reviewedItems[0]?.shippingPolicyQuote?.pricingRate
+        ) === JSON.stringify(fixture.reviewedRate)
+      ).toBe(true)
+      const quote = buildCheckoutSparkCommerceEvidence(
+        buildCheckoutSparkQuoteAuthority({
+          authorization: result,
+          rateInput: signed.pricing.rate,
+          pricingAuthority: signed.pricingAuthority,
+          nowMs: NOW + 1_500,
+        })
+      )
+      expect(quote.lines[0]?.unitMerchandiseSats).toBe(20_000)
+      expect(quote.lines[0]?.shippingPolicy?.allocatedCostSats).toBe(5_000)
+      expect(quote.commerceTotalSats).toBe(25_000)
+      expect(
+        assessCheckoutSparkCommercePricingAuthority({
+          quote,
+          acceptedAtMs: PROVIDER_CREATED_AT,
+          nowMs: PROVIDER_CREATED_AT,
+          trustedPublicKeys: configuration().publicKeys,
+        })
+      ).toBe("verified")
+    })
+  }
 
   it("requests review for normal exchange-rate movement that changes the displayed SAT price or shipping amount", async () => {
     const fixture = await fiatShippingFixture()

@@ -1,18 +1,14 @@
+import { SUPPORTED_PRODUCT_PRICE_CURRENCIES } from "@conduit/core/pricing"
+import { fetchCommonPricingRateQuote } from "@conduit/core/pricing/common-rate-provider"
+import { parseCheckoutSparkPricingAuthorityPublicKeys } from "@conduit/core/protocol/checkout-spark-pricing-authority"
+import { getCheckoutSparkPricingAuthorityPublicKey } from "@conduit/core/protocol/checkout-spark-pricing-authority-server"
 import {
-  DEFAULT_PRICING_RATE_MAX_AGE_MS,
-  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  type BtcUsdRateQuote,
-} from "@conduit/core/pricing"
-import { fetchTrustedPricingRateQuote } from "@conduit/core/pricing/trusted-rate-provider"
-import {
-  checkoutSparkAuthorizedPricingRateSchema,
-  parseCheckoutSparkPricingAuthorityPublicKeys,
-  type CheckoutSparkPricingRateAttestation,
-} from "@conduit/core/protocol/checkout-spark-pricing-authority"
-import {
-  createCheckoutSparkPricingRateAttestation,
-  getCheckoutSparkPricingAuthorityPublicKey,
-} from "@conduit/core/protocol/checkout-spark-pricing-authority-server"
+  createCheckoutSparkPricingAuthorityCache,
+  nativePricingSnapshotStore,
+  type PricingSnapshotStore,
+} from "./checkout-pricing-cache"
+import { previewPricingQualification } from "./checkout-pricing-qualification"
+export { createCheckoutSparkPricingAuthorityCache } from "./checkout-pricing-cache"
 
 /**
  * Dormant standalone Worker entry, intentionally not wired to the anonymous-zap
@@ -24,6 +20,8 @@ export interface CheckoutSparkPricingAuthorityEnv {
   CHECKOUT_SPARK_PRICING_KEY_ID?: string
   CHECKOUT_SPARK_PRICING_PRIVATE_KEY_HEX?: string
   CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?: string
+  /** Fixed, expiring operator configuration for the dedicated preview only. */
+  CHECKOUT_SPARK_PRICING_QUALIFICATION?: string
   CHECKOUT_SPARK_PRICING_RATE_LIMITER?: {
     limit(input: { key: string }): Promise<{ success: boolean }>
   }
@@ -31,114 +29,9 @@ export interface CheckoutSparkPricingAuthorityEnv {
 
 interface CheckoutSparkPricingAuthorityDependencies {
   nowMs: () => number
-  fetchPricingRate: typeof fetchTrustedPricingRateQuote
+  fetchPricingRate: typeof fetchCommonPricingRateQuote
   cache: ReturnType<typeof createCheckoutSparkPricingAuthorityCache>
-}
-
-const COMMON_FIAT_CURRENCIES = SUPPORTED_PRODUCT_PRICE_CURRENCIES.filter(
-  (currency) => currency !== "SATS" && currency !== "USD"
-)
-const PROVIDER_REFRESH_AFTER_MS = 4 * 60_000
-
-/** Per-isolate bounded caches contain generic rates and public attestations only. */
-export function createCheckoutSparkPricingAuthorityCache() {
-  let rate: BtcUsdRateQuote | undefined
-  let pending: Promise<BtcUsdRateQuote> | undefined
-  const signed = new Map<
-    string,
-    { rate: BtcUsdRateQuote; snapshot: CheckoutSparkPricingRateAttestation }
-  >()
-  const isValid = (candidate: BtcUsdRateQuote | undefined, nowMs: number) =>
-    candidate &&
-    candidate.fetchedAt <= nowMs &&
-    nowMs < candidate.fetchedAt + DEFAULT_PRICING_RATE_MAX_AGE_MS
-  return {
-    async snapshot(input: {
-      keyId: string
-      privateKeyHex: string
-      publicKey: string
-      nowMs: () => number
-      fetchPricingRate: typeof fetchTrustedPricingRateQuote
-    }): Promise<CheckoutSparkPricingRateAttestation> {
-      const previous = rate
-      const currentTime = input.nowMs()
-      if (
-        !isValid(rate, currentTime) ||
-        currentTime - rate!.fetchedAt >= PROVIDER_REFRESH_AFTER_MS
-      ) {
-        if (!pending) {
-          pending = input
-            .fetchPricingRate({
-              preferredFiatCurrencies: COMMON_FIAT_CURRENCIES,
-              includeFiatRates: true,
-              nowMs: input.nowMs,
-              timeoutMs: 3_000,
-            })
-            .then((fetched) => {
-              const fiatUsdRates: Record<string, number> = {}
-              const fiatSources: NonNullable<BtcUsdRateQuote["fiatSources"]> =
-                {}
-              for (const currency of COMMON_FIAT_CURRENCIES) {
-                const value = fetched.fiatUsdRates?.[currency]
-                if (
-                  value === undefined ||
-                  !Number.isFinite(value) ||
-                  value <= 0
-                )
-                  continue
-                fiatUsdRates[currency] = value
-                if (fetched.fiatSources)
-                  fiatSources[currency] = fetched.fiatSources[currency]
-              }
-              const candidate = checkoutSparkAuthorizedPricingRateSchema.parse({
-                rate: fetched.rate,
-                fetchedAt: fetched.fetchedAt,
-                source: fetched.source,
-                ...(Object.keys(fiatUsdRates).length
-                  ? {
-                      fiatUsdRates,
-                      fiatSource: fetched.fiatSource,
-                      ...(fetched.fiatSources ? { fiatSources } : {}),
-                    }
-                  : {}),
-              })
-              if (!isValid(candidate, input.nowMs()))
-                throw new Error("Checkout pricing is unavailable.")
-              if (candidate.fiatUsdRates) Object.freeze(candidate.fiatUsdRates)
-              if (candidate.fiatSources) Object.freeze(candidate.fiatSources)
-              rate = Object.freeze(candidate)
-              return rate
-            })
-          const lookup = pending
-          void lookup
-            .finally(() => {
-              if (pending === lookup) pending = undefined
-            })
-            .catch(() => {})
-        }
-        try {
-          await pending
-        } catch (error) {
-          if (!isValid(previous, input.nowMs())) throw error
-          rate = previous
-        }
-      }
-      if (!rate || !isValid(rate, input.nowMs()))
-        throw new Error("Checkout pricing is unavailable.")
-      const key = `${input.keyId}:${input.publicKey}`
-      const existing = signed.get(key)
-      if (existing?.rate === rate) return existing.snapshot
-      const snapshot = createCheckoutSparkPricingRateAttestation({
-        rate,
-        keyId: input.keyId,
-        privateKeyHex: input.privateKeyHex,
-        issuedAtMs: input.nowMs(),
-      })
-      if (signed.size >= 16) signed.delete(signed.keys().next().value!)
-      signed.set(key, { rate, snapshot })
-      return snapshot
-    },
-  }
+  store?: PricingSnapshotStore
 }
 
 const sharedPricingAuthorityCache = createCheckoutSparkPricingAuthorityCache()
@@ -276,7 +169,8 @@ async function applyRateLimit(
 export async function handleCheckoutSparkPricingAuthorityRequest(
   request: Request,
   env: CheckoutSparkPricingAuthorityEnv,
-  overrides: Partial<CheckoutSparkPricingAuthorityDependencies> = {}
+  overrides: Partial<CheckoutSparkPricingAuthorityDependencies> = {},
+  execution?: { waitUntil(promise: Promise<unknown>): void }
 ): Promise<Response> {
   const url = new URL(request.url)
   if (
@@ -310,6 +204,26 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
       getCheckoutSparkPricingAuthorityPublicKey(privateKeyHex)
   )
     return response({ error: "Checkout pricing is unavailable." }, 503, origin)
+  try {
+    if (
+      ["authorization", "proxy-authorization", "cookie", "referer"].some(
+        (name) => request.headers.has(name)
+      )
+    )
+      throw new Error("Pricing request must be credential-free.")
+    if (
+      request.headers
+        .get("content-type")
+        ?.split(";")[0]
+        .trim()
+        .toLowerCase() !== "application/json"
+    )
+      throw new Error("Pricing request is unavailable.")
+    requestCurrencies(await readBoundedRequest(request))
+  } catch {
+    return response({ error: "Invalid pricing request." }, 400, origin)
+  }
+  // Rejected input cannot consume the capacity reserved for valid rate requests.
   const rateLimit = await applyRateLimit(env)
   if (rateLimit !== "ok")
     return response(
@@ -323,22 +237,20 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
       origin,
       rateLimit === "limited" ? { "retry-after": "60" } : undefined
     )
+  let qualification: ReturnType<typeof previewPricingQualification>
   try {
-    if (
-      request.headers
-        .get("content-type")
-        ?.split(";")[0]
-        .trim()
-        .toLowerCase() !== "application/json"
+    qualification = previewPricingQualification(
+      env.CHECKOUT_SPARK_PRICING_QUALIFICATION,
+      url.hostname,
+      Date.now()
     )
-      throw new Error("Pricing request is unavailable.")
-    requestCurrencies(await readBoundedRequest(request))
   } catch {
-    return response({ error: "Invalid pricing request." }, 400, origin)
+    return response({ error: "Checkout pricing is unavailable." }, 503, origin)
   }
   const dependencies = {
     nowMs: () => Date.now(),
-    fetchPricingRate: fetchTrustedPricingRateQuote,
+    fetchPricingRate: fetchCommonPricingRateQuote,
+    store: nativePricingSnapshotStore(url.origin),
     cache:
       Object.keys(overrides).length > 0
         ? createCheckoutSparkPricingAuthorityCache()
@@ -352,6 +264,11 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
       publicKey: publicKeys.get(keyId)!,
       nowMs: dependencies.nowMs,
       fetchPricingRate: dependencies.fetchPricingRate,
+      fetchImpl: qualification?.fetchImpl,
+      store: dependencies.store,
+      waitUntil: execution
+        ? (promise) => execution.waitUntil(promise)
+        : undefined,
     })
     return response(
       {
@@ -359,15 +276,40 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
         pricingAuthority,
       },
       200,
-      origin
+      origin,
+      {
+        ...dependencies.cache.diagnostics(),
+        ...(qualification
+          ? { "x-pricing-qualification": qualification.phase }
+          : {}),
+      }
     )
   } catch {
-    return response({ error: "Checkout pricing is unavailable." }, 503, origin)
+    return response(
+      { error: "Checkout pricing is unavailable." },
+      503,
+      origin,
+      {
+        ...dependencies.cache.diagnostics(),
+        ...(qualification
+          ? { "x-pricing-qualification": qualification.phase }
+          : {}),
+      }
+    )
   }
 }
 
 export default {
-  fetch(request: Request, env: CheckoutSparkPricingAuthorityEnv) {
-    return handleCheckoutSparkPricingAuthorityRequest(request, env)
+  fetch(
+    request: Request,
+    env: CheckoutSparkPricingAuthorityEnv,
+    execution: { waitUntil(promise: Promise<unknown>): void }
+  ) {
+    return handleCheckoutSparkPricingAuthorityRequest(
+      request,
+      env,
+      {},
+      execution
+    )
   },
 }

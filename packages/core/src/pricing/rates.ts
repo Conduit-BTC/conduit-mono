@@ -106,7 +106,8 @@ function readStoredRate(): BtcUsdRateQuote | null {
       typeof parsed.fetchedAt !== "number" ||
       (parsed.source !== "env" &&
         parsed.source !== "mempool" &&
-        parsed.source !== "coinbase")
+        parsed.source !== "coinbase" &&
+        parsed.source !== "kraken")
     ) {
       return null
     }
@@ -114,6 +115,8 @@ function readStoredRate(): BtcUsdRateQuote | null {
     const fiatUsdRates = normalizeFiatRates(parsed.fiatUsdRates ?? {})
     const fiatSource =
       parsed.fiatSource === "frankfurter" ||
+      parsed.fiatSource === "floatrates" ||
+      parsed.fiatSource === "ecb" ||
       parsed.fiatSource === "exchange-rate-api" ||
       parsed.fiatSource === "env" ||
       parsed.fiatSource === "mempool"

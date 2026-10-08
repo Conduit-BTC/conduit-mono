@@ -8,13 +8,33 @@ export type SourcePriceQuote = {
   normalizedCurrency: string
 }
 
-export type PricingFiatSource =
-  "frankfurter" | "exchange-rate-api" | "env" | "mempool"
+/** Shared provenance vocabulary, including labels retained for historical reads. */
+export const TRUSTED_PRICING_BTC_SOURCES = [
+  "mempool",
+  "coinbase",
+  "kraken",
+] as const
+export const PRICING_BTC_SOURCES = [
+  "env",
+  ...TRUSTED_PRICING_BTC_SOURCES,
+] as const
+export const TRUSTED_PRICING_FIAT_SOURCES = [
+  "frankfurter",
+  "floatrates",
+  "ecb",
+  "exchange-rate-api",
+  "mempool",
+] as const
+export const PRICING_FIAT_SOURCES = [
+  "env",
+  ...TRUSTED_PRICING_FIAT_SOURCES,
+] as const
+export type PricingFiatSource = (typeof PRICING_FIAT_SOURCES)[number]
 
 export type BtcUsdRateQuote = {
   rate: number
   fetchedAt: number
-  source: "env" | "mempool" | "coinbase"
+  source: (typeof PRICING_BTC_SOURCES)[number]
   fiatUsdRates?: Record<string, number>
   fiatSource?: PricingFiatSource
   /** Present for mixed feeds; binds every conversion to its actual provider. */

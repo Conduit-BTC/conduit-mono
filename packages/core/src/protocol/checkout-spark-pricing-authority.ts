@@ -4,6 +4,8 @@ import { hexToBytes } from "@noble/hashes/utils.js"
 import { z } from "zod"
 import {
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
+  TRUSTED_PRICING_BTC_SOURCES,
+  TRUSTED_PRICING_FIAT_SOURCES,
   isFiatCurrencyCode,
   type BtcUsdRateQuote,
 } from "../pricing"
@@ -22,7 +24,7 @@ const fiatCurrencySchema = z
   .string()
   .regex(/^[A-Z]{3}$/)
   .refine((key) => key !== "USD" && isFiatCurrencyCode(key))
-const fiatSourceSchema = z.enum(["frankfurter", "exchange-rate-api", "mempool"])
+const fiatSourceSchema = z.enum(TRUSTED_PRICING_FIAT_SOURCES)
 
 /**
  * A service-owned snapshot; browser environment overrides cannot qualify.
@@ -33,7 +35,7 @@ export const checkoutSparkAuthorizedPricingRateSchema = z
   .object({
     rate: z.number().finite().positive(),
     fetchedAt: timestampSchema,
-    source: z.enum(["mempool", "coinbase"]),
+    source: z.enum(TRUSTED_PRICING_BTC_SOURCES),
     fiatUsdRates: z
       .record(
         z
