@@ -38,7 +38,7 @@ import {
   type FollowListCoverageState,
 } from "./follows"
 import {
-  verifySignedEvents,
+  verifySignedEventBatches,
   attachEventSourceRelayUrl,
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
@@ -1047,15 +1047,7 @@ async function admitObservedPublicEvents(
   events: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ): Promise<VerifiedNostrEvent[]> {
-  const admitted: VerifiedNostrEvent[] = []
-  for (let offset = 0; offset < events.length; offset += 512) {
-    const batch = await verifySignedEvents(events.slice(offset, offset + 512), {
-      signal,
-      maxEvents: 512,
-    })
-    admitted.push(...batch.events)
-  }
-  return admitted
+  return verifySignedEventBatches(events, { signal })
 }
 
 async function runFetchEventsFanout(

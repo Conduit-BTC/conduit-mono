@@ -25,6 +25,7 @@ import {
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
+  verifySignedEventBatches,
   mergeEventSourceRelayUrls,
   type PublicRelayReadOptions,
   type PublicRelayReadResult,
@@ -41,7 +42,6 @@ import {
   admitPublicEvent,
   isVerifiedNostrEvent,
   sameSignedPublicEvent,
-  verifySignedEvents,
   type VerifiedNostrEvent,
 } from "./verified-public-event"
 
@@ -736,16 +736,7 @@ async function admitShippingEvents(
   events: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ): Promise<VerifiedNostrEvent[]> {
-  const admitted: VerifiedNostrEvent[] = []
-  for (let start = 0; start < events.length; start += 512) {
-    const batch = await verifySignedEvents(events.slice(start, start + 512), {
-      signal,
-    })
-    if (batch.truncated)
-      throw new Error("Shipping read exceeded verification bound")
-    admitted.push(...batch.events)
-  }
-  return admitted
+  return verifySignedEventBatches(events, { signal })
 }
 
 function validateCachedShippingOptionFrontier(

@@ -12,26 +12,17 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchSignedEventsFanoutDetailed,
+  verifySignedEventBatches,
   type PublicRelayReadOptions,
 } from "./relay-reader"
 import { type SignedPublicNostrEvent } from "./signed-event"
-import {
-  isVerifiedNostrEvent,
-  verifySignedEvents,
-} from "./verified-public-event"
+import { isVerifiedNostrEvent } from "./verified-public-event"
 
 async function admitRows(
   rows: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ) {
-  const verified = []
-  for (let offset = 0; offset < rows.length; offset += 64) {
-    const batch = await verifySignedEvents(rows.slice(offset, offset + 64), {
-      signal,
-    })
-    verified.push(...batch.events)
-  }
-  return verified
+  return verifySignedEventBatches(rows, { signal, batchSize: 64 })
 }
 
 export interface EventMarketAuthorizationReadResult {

@@ -76,6 +76,23 @@ export async function verifySignedEvents(
     throw error
   }
 }
+/** Admit every observation in bounded batches, preserving order and sources. */
+export async function verifySignedEventBatches(
+  events: readonly unknown[],
+  options: { signal?: AbortSignal; batchSize?: 64 | 512 } = {}
+): Promise<VerifiedNostrEvent[]> {
+  const batchSize = options.batchSize ?? 512
+  const verified: VerifiedNostrEvent[] = []
+  for (let offset = 0; offset < events.length; offset += batchSize) {
+    const batch = await verifySignedEvents(
+      events.slice(offset, offset + batchSize),
+      { signal: options.signal, maxEvents: batchSize }
+    )
+    verified.push(...batch.events)
+  }
+  return verified
+}
+
 export type {
   VerifySignedPublicNostrEventsOptions,
   VerifySignedPublicNostrEventsResult,
