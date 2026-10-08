@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -16,9 +18,14 @@ import {
 import {
   getMerchantProductMarketReferences,
   hydrateMerchantProductMarkets,
+  isMerchantTimelineMarketReadIncomplete,
   mergeMerchantTimelineMarketReads,
 } from "../apps/merchant/src/lib/merchant-event-relationship-hydration"
-import { projectFutureMerchantTimelineOccurrences } from "../apps/merchant/src/lib/merchant-event-timeline"
+import { MerchantEventTimelineEmptyState } from "../apps/merchant/src/components/MerchantEventsTimeline"
+import {
+  matchesMerchantEventRelationship,
+  projectFutureMerchantTimelineOccurrences,
+} from "../apps/merchant/src/lib/merchant-event-timeline"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -103,6 +110,84 @@ describe("Merchant product Event Market relationships", () => {
     ).toBe(true)
     expect(projectFutureMerchantTimelineOccurrences(merged[0]!)).toHaveLength(1)
   })
+
+  for (const field of ["coverage", "calendarCoverage"] as const)
+    for (const coverage of ["partial", "stale", "unavailable"] as const)
+      it(`marks successful ${field} ${coverage} reads incomplete`, () => {
+        expect(isMerchantTimelineMarketReadIncomplete(exactRead)).toBe(false)
+        expect(
+          isMerchantTimelineMarketReadIncomplete({
+            ...exactRead,
+            [field]: coverage,
+          })
+        ).toBe(true)
+      })
+
+  for (const relationship of ["selling", "all"] as const)
+    it(`keeps successful partial known-roster ${relationship} emptiness scoped`, async () => {
+      const revision = finalizeEvent(
+        {
+          kind: 30409,
+          created_at: signedMarket.created_at + 1,
+          content: "",
+          tags: [
+            ["prev", signedMarket.id],
+            ...signedMarket.tags.filter(
+              (tag) =>
+                tag[0] !== "merchant" &&
+                (relationship !== "all" || tag[0] !== "event_market")
+            ),
+          ],
+        },
+        organizerSecret
+      )
+      const partial: EventMarketRosterReadResult = {
+        ...exactRead,
+        resolution: resolveEventMarketRoster({
+          coordinate,
+          revisions: [signedMarket, revision],
+          deletions: [],
+        }),
+        observedEvidence: [signedMarket, revision],
+        coverage: "partial",
+      }
+      const result = await hydrateMerchantProductMarkets({
+        references: [coordinate],
+        read: async () => partial,
+      })
+      expect(result.failedCount).toBe(0)
+      const merged = mergeMerchantTimelineMarketReads(
+        [exactRead],
+        result.markets
+      )
+      expect(
+        merged
+          .filter((read) =>
+            matchesMerchantEventRelationship(read, merchant, relationship)
+          )
+          .flatMap(projectFutureMerchantTimelineOccurrences)
+      ).toEqual([])
+      const limited =
+        result.failedCount > 0 ||
+        result.markets.some(isMerchantTimelineMarketReadIncomplete)
+      expect(limited).toBe(true)
+      const markup = renderToStaticMarkup(
+        createElement(MerchantEventTimelineEmptyState, {
+          relationship,
+          limited,
+        })
+      )
+      expect(markup).toContain(
+        relationship === "selling"
+          ? "No selling events found yet"
+          : "No events found yet"
+      )
+      expect(markup).not.toContain(
+        relationship === "selling"
+          ? "You aren’t selling at any events"
+          : "No events found on your relays"
+      )
+    })
 
   it("does not duplicate a perspective market or replace its stronger calendar read", () => {
     const partial = {
@@ -200,6 +285,17 @@ describe("Merchant product Event Market relationships", () => {
     })
     const staleMany = read(oldSchedule, dates, "stale")
     const currentFew = read(newSchedule, dates.slice(0, 1), "complete")
+    expect(
+      isMerchantTimelineMarketReadIncomplete({
+        ...read(newSchedule, dates.slice(0, 1), "complete"),
+        scheduleCoverage: "partial",
+      })
+    ).toBe(true)
+    expect(
+      isMerchantTimelineMarketReadIncomplete(
+        read(newSchedule, dates.slice(0, 1), "complete")
+      )
+    ).toBe(false)
     expect(mergeMerchantTimelineMarketReads([staleMany], [currentFew])).toEqual(
       [currentFew]
     )
