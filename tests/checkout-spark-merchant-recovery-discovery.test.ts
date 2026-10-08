@@ -5,6 +5,7 @@ import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
+  verifyEvent,
 } from "nostr-tools/pure"
 import {
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
@@ -21,8 +22,8 @@ import {
   readMerchantCheckoutSparkPlanSources,
   readCheckoutSparkMerchantOrderEvidence,
   resolveCheckoutSparkSignedPickup,
-  parseShippingOptionEvent,
 } from "@conduit/core"
+import { parseShippingOptionFieldsForPrivateOrder } from "../packages/core/src/protocol/shipping"
 import {
   __resetProtectedReadSigner,
   installProtectedReadSigner,
@@ -303,8 +304,14 @@ function orderRumor(
                 normalizedCurrency: "SAT",
               },
               shippingCountries: ["US"],
-              shippingCountryRules:
-                parseShippingOptionEvent(SHIPPING_SOURCE)!.countryRules,
+              shippingCountryRules: (() => {
+                // Historical private order terms are parsed only after the
+                // exact Merchant source signature has been independently checked.
+                expect(verifyEvent(structuredClone(SHIPPING_SOURCE))).toBe(true)
+                return parseShippingOptionFieldsForPrivateOrder(
+                  SHIPPING_SOURCE
+                )!.countryRules
+              })(),
             }
           : {}),
       },

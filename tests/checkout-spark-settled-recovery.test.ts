@@ -176,7 +176,7 @@ describe("settled Spark merchant recovery handoff", () => {
       receiverIdentityPublicKey: initial.plan.funding.receiverIdentityPublicKey,
       transferId: "exact-funded-transfer",
       grossSats: 122,
-      creditedSats: 120,
+      creditedSats: 121,
       observedAt: createdAt + 2_000,
     })
     const progress = createCheckoutSparkSettledRecoveryProgressPayload({

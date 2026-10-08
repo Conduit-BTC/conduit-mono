@@ -17,10 +17,11 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 const HEX_64 = /^[0-9a-f]{64}$/i
 
 const CONTROL_CHARACTER = /\p{Cc}/u
@@ -536,13 +537,19 @@ export function buildEventMarketCalendarDraft(
   }
 }
 
-function tagValues(tags: readonly string[][], name: string): string[] {
+function tagValues(
+  tags: readonly (readonly string[])[],
+  name: string
+): string[] {
   return tags
     .filter((tag) => tag[0] === name && typeof tag[1] === "string")
     .map((tag) => tag[1]!)
 }
 
-function singleTag(tags: readonly string[][], name: string): string | null {
+function singleTag(
+  tags: readonly (readonly string[])[],
+  name: string
+): string | null {
   const values = tagValues(tags, name)
   return values.length === 1 ? values[0]! : null
 }
@@ -560,7 +567,7 @@ function eventCoordinate(
 }
 
 function optionalSingleTag(
-  tags: readonly string[][],
+  tags: readonly (readonly string[])[],
   name: string
 ): string | undefined | null {
   const values = tagValues(tags, name)
@@ -568,31 +575,19 @@ function optionalSingleTag(
   return values[0]
 }
 
-function validSignedKind(
-  event: SignedPublicNostrEvent,
-  kinds: readonly number[]
-): boolean {
-  return kinds.includes(event.kind) && isValidSignedPublicNostrEvent(event)
-}
-
-function copyPublicEvent(
-  event: SignedPublicNostrEvent
-): SignedPublicNostrEvent {
-  return {
-    id: event.id,
-    pubkey: event.pubkey,
-    kind: event.kind,
-    created_at: event.created_at,
-    content: event.content,
-    tags: event.tags.map((tag) => [...tag]),
-    sig: event.sig,
-  }
-}
-
 export function parseEventMarketCalendarEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketCalendar | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketCalendarFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Field parser for the private order schema after its own signature refinement. */
+export function parseEventMarketCalendarFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketCalendar | null {
-  if (!validSignedKind(event, EVENT_MARKET_CALENDAR_KINDS)) return null
+  if (!EVENT_MARKET_CALENDAR_KINDS.includes(event.kind as never)) return null
   const coordinate = eventCoordinate(event, EVENT_MARKET_CALENDAR_KINDS)
   const title = singleTag(event.tags, "title")
   const startValue = singleTag(event.tags, "start")
@@ -672,7 +667,7 @@ export function parseEventMarketCalendarEvent(
   )
 
   return {
-    signedEvent: copyPublicEvent(event),
+    signedEvent: event,
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,
@@ -700,9 +695,18 @@ export function parseEventMarketCalendarEvent(
 
 /** Parse a signed legacy pickup revision for immutable checkout recovery only. */
 export function parseEventMarketPickupEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketPickup | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketPickupFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private-order fields; its owner validates the signature first. */
+export function parseEventMarketPickupFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketPickup | null {
-  if (!validSignedKind(event, [EVENT_KINDS.SHIPPING_OPTION])) return null
+  if (event.kind !== EVENT_KINDS.SHIPPING_OPTION) return null
   if (
     event.tags.some(
       (tag) => tag[0] === "destination_schema" || tag[0] === "destination"
@@ -751,7 +755,7 @@ export function parseEventMarketPickupEvent(
   }
 
   return {
-    signedEvent: copyPublicEvent(event),
+    signedEvent: event,
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,
@@ -769,9 +773,18 @@ export function parseEventMarketPickupEvent(
 
 /** Parse a signed legacy collection revision for immutable checkout recovery only. */
 export function parseEventMarketCollectionEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketCollection | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketCollectionFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private-order fields; its owner validates the signature first. */
+export function parseEventMarketCollectionFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketCollection | null {
-  if (!validSignedKind(event, [EVENT_KINDS.PRODUCT_COLLECTION])) return null
+  if (event.kind !== EVENT_KINDS.PRODUCT_COLLECTION) return null
   const coordinate = eventCoordinate(event, [EVENT_KINDS.PRODUCT_COLLECTION])
   const title = singleTag(event.tags, "title")
   const summary = optionalSingleTag(event.tags, "summary")
@@ -848,7 +861,7 @@ export function parseEventMarketCollectionEvent(
   }
 
   return {
-    signedEvent: copyPublicEvent(event),
+    signedEvent: event,
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,
@@ -895,8 +908,7 @@ function validDeletionEvents(
 ): SignedPublicNostrEvent[] {
   return events.filter(
     (event) =>
-      event.kind === EVENT_KINDS.DELETION &&
-      isValidSignedPublicNostrEvent(event)
+      event.kind === EVENT_KINDS.DELETION && isVerifiedNostrEvent(event)
   )
 }
 

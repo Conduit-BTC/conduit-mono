@@ -7,6 +7,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildShippingPolicyEventDraft,
+  admitPublicEvent,
   extractOrderSummary,
   getMerchantShippingPolicyCoordinate,
   orderSchema,
@@ -98,7 +99,12 @@ const policy: ShippingPolicy = {
     freeShippingThresholdMinor: 5000,
   },
 }
-function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
+async function admitted(event: unknown) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified") throw new Error("Invalid signed fixture")
+  return result.event
+}
+async function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
   const event = finalizeEvent(
     {
       ...buildShippingPolicyEventDraft({ policy: { ...policy, ...changes } }),
@@ -106,7 +112,7 @@ function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
     },
     secret
   )
-  const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))
+  const parsed = parseShippingOptionEvent(await admitted(event))
   if (!parsed) throw new Error("Signed policy fixture failed parsing")
   return {
     ...parsed,
@@ -114,7 +120,7 @@ function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
     readCoverage: "complete" as const,
   }
 }
-function product(
+async function product(
   name: string,
   weight: number | undefined = 300,
   format: "physical" | "digital" = "physical",
@@ -142,16 +148,16 @@ function product(
     },
     key
   )
-  const parsed = parseProductEvent(new NDKEvent(undefined, event))
+  const parsed = parseProductEvent(await admitted(event))
   if (!parsed) throw new Error("Signed product fixture failed parsing")
   return { ...parsed, sourceEventId: event.id }
 }
-function raw(
+async function raw(
   name: string,
   quantity = 1,
   weight: number | undefined = 300
-): CartItem {
-  return { ...createCartItemFromProduct(product(name, weight)), quantity }
+): Promise<CartItem> {
+  return { ...createCartItemFromProduct(await product(name, weight)), quantity }
 }
 function priced(items: CartItem[], rateInput: PricingRateInput = null) {
   const result = buildCheckoutPricingIntent(items, rateInput)
@@ -507,8 +513,8 @@ describe("signed shipping policy composed checkout", () => {
   })
 
   it("keeps accepted region names aligned through pricing, authorization and order replay", async () => {
-    const input = raw("region-name")
-    const table = option(3, {
+    const input = await raw("region-name")
+    const table = await option(3, {
       domestic: {
         rules: [
           { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 500 }] },
@@ -548,7 +554,7 @@ describe("signed shipping policy composed checkout", () => {
       mode: "direct_payment",
       rawItems: [input],
       reviewedItems: reviewed,
-      refreshedProducts: [product("region-name")],
+      refreshedProducts: [await product("region-name")],
       readShippingOptions: async () => [table],
       destination,
       resolveProductFulfillment: async (product) => ({
@@ -583,10 +589,10 @@ describe("signed shipping policy composed checkout", () => {
       }).success
     ).toBe(false)
   })
-  it("charges one combined band and handling for two products and quantities, with integer allocations", () => {
+  it("charges one combined band and handling for two products and quantities, with integer allocations", async () => {
     const prepared = prepareCartFulfillment(
-      [raw("a", 2), raw("b")],
-      [option()],
+      [await raw("a", 2), await raw("b")],
+      [await option()],
       destination
     )
     const checkout = priced(prepared.items)
@@ -620,7 +626,7 @@ describe("signed shipping policy composed checkout", () => {
     expect(parsedOrder.success).toBe(true)
   })
 
-  it("does not combine merchants and excludes digital items from physical thresholds", () => {
+  it("does not combine merchants and excludes digital items from physical thresholds", async () => {
     const otherSecret = generateSecretKey()
     const otherMerchant = getPublicKey(otherSecret)
     const otherPolicyEvent = finalizeEvent(
@@ -628,23 +634,25 @@ describe("signed shipping policy composed checkout", () => {
       otherSecret
     )
     const otherOption = parseShippingOptionEvent(
-      new NDKEvent(undefined, otherPolicyEvent)
+      await admitted(otherPolicyEvent)
     )!
     otherOption.readSource = "relay"
     otherOption.readCoverage = "complete"
     const otherItem = {
       ...createCartItemFromProduct(
-        product("other", 300, "physical", otherMerchant, otherSecret)
+        await product("other", 300, "physical", otherMerchant, otherSecret)
       ),
       quantity: 1,
     }
     const digital = {
-      ...createCartItemFromProduct(product("download", undefined, "digital")),
+      ...createCartItemFromProduct(
+        await product("download", undefined, "digital")
+      ),
       quantity: 100,
     }
     const prepared = prepareCartFulfillment(
-      [raw("a"), otherItem, digital],
-      [option(), otherOption],
+      [await raw("a"), otherItem, digital],
+      [await option(), otherOption],
       destination
     )
     expect(priced(prepared.items).shippingCost.totalSats).toBe(14)
@@ -654,13 +662,13 @@ describe("signed shipping policy composed checkout", () => {
     expect(prepared.items[2]!.shippingPolicyQuote).toBeUndefined()
   })
 
-  it("excludes current signed Event Market pickup and stale table quotes from parcel shipping", () => {
+  it("excludes current signed Event Market pickup and stale table quotes from parcel shipping", async () => {
     const fixture = createEventMarketOrderFixture({ mode: "merchant_present" })
     const signedProduct = fixture.fulfillment.product.signedEvent
-    const listing = parseProductEvent(new NDKEvent(undefined, signedProduct))!
+    const listing = parseProductEvent(await admitted(signedProduct))!
     const staleTable = prepareCartFulfillment(
-      [raw("stale-table")],
-      [option()],
+      [await raw("stale-table")],
+      [await option()],
       destination
     ).items[0]!
     const pickup: CartItem = {
@@ -674,7 +682,7 @@ describe("signed shipping policy composed checkout", () => {
     expect(getCartShippingOptionCoordinates([pickup])).toEqual([])
     const prepared = prepareCartFulfillment(
       [pickup],
-      [option()],
+      [await option()],
       destination
     ).items
     expect(prepared[0]!.shippingPolicyQuote).toBeUndefined()
@@ -713,14 +721,14 @@ describe("signed shipping policy composed checkout", () => {
   })
 
   it("preserves rich authorization evidence and freezes exact table charges at the Spark router boundary", async () => {
-    const input = raw("router-table")
-    const shipping = option()
+    const input = await raw("router-table")
+    const shipping = await option()
     const reviewed = prepareCartFulfillment(
       [input],
       [shipping],
       destination
     ).items
-    const listing = product("router-table")
+    const listing = await product("router-table")
     const authorization = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
       rawItems: [input],
@@ -754,9 +762,9 @@ describe("signed shipping policy composed checkout", () => {
     ).toBe(7)
   })
 
-  it("sends a mixed table and unresolved physical order for coordination without agreeing to a partial charge", () => {
+  it("sends a mixed table and unresolved physical order for coordination without agreeing to a partial charge", async () => {
     const manual = createCartItemFromProduct(
-      product(
+      await product(
         "manual",
         300,
         "physical",
@@ -766,8 +774,8 @@ describe("signed shipping policy composed checkout", () => {
       )
     )
     const prepared = prepareCartFulfillment(
-      [raw("a"), { ...manual, quantity: 1 }],
-      [option()],
+      [await raw("a"), { ...manual, quantity: 1 }],
+      [await option()],
       destination
     )
     expect(prepared.items[0]!.shippingPolicyQuote!.amountMinor).toBe(7)
@@ -808,19 +816,19 @@ describe("signed shipping policy composed checkout", () => {
     ).toBe(true)
   })
 
-  it("keeps unresolved, missing weight, destination miss and overweight shipping manual before waiving a charge", () => {
-    const freeOption = option(1, {
+  it("keeps unresolved, missing weight, destination miss and overweight shipping manual before waiving a charge", async () => {
+    const freeOption = await option(1, {
       domestic: { ...policy.domestic!, freeShippingThresholdMinor: 0 },
     })
     for (const [items, options, dest] of [
-      [[raw("a")], [], destination],
+      [[await raw("a")], [], destination],
       [
-        [{ ...raw("a"), shippingWeightGrams: undefined }],
+        [{ ...(await raw("a")), shippingWeightGrams: undefined }],
         [freeOption],
         destination,
       ],
-      [[raw("a")], [freeOption], { ...destination, country: "MX" }],
-      [[raw("a", 20)], [freeOption], destination],
+      [[await raw("a")], [freeOption], { ...destination, country: "MX" }],
+      [[await raw("a", 20)], [freeOption], destination],
     ] as const) {
       const prepared = prepareCartFulfillment([...items], [...options], dest)
       const checkout = priced(prepared.items)
@@ -830,7 +838,7 @@ describe("signed shipping policy composed checkout", () => {
       )
     }
     const eligible = prepareCartFulfillment(
-      [raw("a")],
+      [await raw("a")],
       [freeOption],
       destination
     )
@@ -841,24 +849,25 @@ describe("signed shipping policy composed checkout", () => {
   })
 
   it("requires review when a signed policy changes before authorization and refreshes the quote", async () => {
-    const input = raw("a")
+    const input = await raw("a")
     const reviewed = prepareCartFulfillment(
       [input],
-      [option()],
+      [await option()],
       destination
     ).items
-    const nextOption = option(3, { handlingMinor: 4 })
+    const nextOption = await option(3, { handlingMinor: 4 })
     const next = prepareCartFulfillment(
       [input],
       [nextOption],
       destination
     ).items
+    const freshProduct = await product("a")
     const authorize = (reviewedItems: CartItem[]) =>
       authorizeCurrentCheckoutItems({
         mode: "direct_payment",
         rawItems: [input],
         reviewedItems,
-        refreshedProducts: [product("a")],
+        refreshedProducts: [freshProduct],
         readShippingOptions: async () => [nextOption],
         destination,
         resolveProductFulfillment: async (current) => ({
@@ -874,10 +883,10 @@ describe("signed shipping policy composed checkout", () => {
     expect(reviewed[0]!.shippingPolicyQuote!.amountMinor).toBe(7)
   })
 
-  it("preserves quote inputs through cart restart, encrypted order parsing and lifecycle recovery", () => {
+  it("preserves quote inputs through cart restart, encrypted order parsing and lifecycle recovery", async () => {
     const prepared = prepareCartFulfillment(
-      [raw("a", 2), raw("b")],
-      [option()],
+      [await raw("a", 2), await raw("b")],
+      [await option()],
       destination
     )
     const validQuote = shippingPolicyQuoteSchema.safeParse(
@@ -954,16 +963,19 @@ describe("signed shipping policy composed checkout", () => {
         0
       )
     ).toBe(7)
-    expect(option(3, { handlingMinor: 100 }).eventId).not.toBe(
+    expect((await option(3, { handlingMinor: 100 })).eventId).not.toBe(
       prepared.items[0]!.shippingPolicyQuote!.policyEventId
     )
     expect(recovered.items[0]!.shippingPolicyQuote!.amountMinor).toBe(7)
   })
 
-  it("rejects altered destinations, group quantities and allocations in saved order evidence", () => {
+  it("rejects altered destinations, group quantities and allocations in saved order evidence", async () => {
     const checkout = priced(
-      prepareCartFulfillment([raw("a", 2), raw("b")], [option()], destination)
-        .items
+      prepareCartFulfillment(
+        [await raw("a", 2), await raw("b")],
+        [await option()],
+        destination
+      ).items
     )
     const order = payload(checkout.items, 7)
     expect(
@@ -980,10 +992,13 @@ describe("signed shipping policy composed checkout", () => {
         .success
     ).toBe(false)
   })
-  it("rejects a forged group charge even when the buyer changes the matching order total", () => {
+  it("rejects a forged group charge even when the buyer changes the matching order total", async () => {
     const checkout = priced(
-      prepareCartFulfillment([raw("a", 2), raw("b")], [option()], destination)
-        .items
+      prepareCartFulfillment(
+        [await raw("a", 2), await raw("b")],
+        [await option()],
+        destination
+      ).items
     )
     const order = payload(checkout.items, 7)
     const altered = {
@@ -1023,7 +1038,7 @@ const mixedPolicy: ShippingPolicy = {
   },
   international: null,
 }
-function mixedOption(changes: Partial<ShippingPolicy> = {}) {
+async function mixedOption(changes: Partial<ShippingPolicy> = {}) {
   const event = finalizeEvent(
     {
       ...buildShippingPolicyEventDraft({
@@ -1034,12 +1049,12 @@ function mixedOption(changes: Partial<ShippingPolicy> = {}) {
     secret
   )
   return {
-    ...parseShippingOptionEvent(new NDKEvent(undefined, event))!,
+    ...parseShippingOptionEvent(await admitted(event))!,
     readSource: "relay" as const,
     readCoverage: "complete" as const,
   }
 }
-function mixedProduct(
+async function mixedProduct(
   name: string,
   changes: {
     currency?: string
@@ -1079,12 +1094,12 @@ function mixedProduct(
     },
     secret
   )
-  const parsed = parseProductEvent(new NDKEvent(undefined, event))
+  const parsed = parseProductEvent(await admitted(event))
   if (!parsed) throw new Error("Signed mixed currency product did not parse")
   return parsed
 }
-function mixedProducts() {
-  return [
+async function mixedProducts() {
+  return await Promise.all([
     mixedProduct("mixed-a"),
     mixedProduct("mixed-b", {
       currency: "EUR",
@@ -1093,9 +1108,12 @@ function mixedProducts() {
       padding: 100,
       handling: 1,
     }),
-  ]
+  ])
 }
-function mixedItems(products = mixedProducts()) {
+async function mixedItems(
+  products?: Awaited<ReturnType<typeof mixedProducts>>
+) {
+  products ??= await mixedProducts()
   return products.map((current, index) => ({
     ...createCartItemFromProduct(current),
     quantity: index === 0 ? 2 : 1,
@@ -1113,11 +1131,11 @@ function mixedRate(changes: Partial<BtcUsdRateQuote> = {}): BtcUsdRateQuote {
 }
 
 describe("per-product shipping adjustments with saved currency conversions", () => {
-  it("combines USD and EUR products with quantities, padding and fees in one GBP table and preserves exact replay", () => {
+  it("combines USD and EUR products with quantities, padding and fees in one GBP table and preserves exact replay", async () => {
     const rate = mixedRate()
     const prepared = prepareCartFulfillment(
-      mixedItems(),
-      [mixedOption()],
+      await mixedItems(),
+      [await mixedOption()],
       destination,
       rate
     )
@@ -1170,10 +1188,10 @@ describe("per-product shipping adjustments with saved currency conversions", () 
   })
 
   it("requires changed-term review for signed product adjustments and currency rates before authorization", async () => {
-    const products = mixedProducts()
-    const items = mixedItems(products)
+    const products = await mixedProducts()
+    const items = await mixedItems(products)
     const rate = mixedRate()
-    const table = mixedOption()
+    const table = await mixedOption()
     const reviewed = prepareCartFulfillment(
       items,
       [table],
@@ -1216,14 +1234,18 @@ describe("per-product shipping adjustments with saved currency conversions", () 
       status: "ok",
     })
     const nextProducts = [
-      mixedProduct("mixed-a", { padding: 70, handling: 2.5, createdAt: 3 }),
+      await mixedProduct("mixed-a", {
+        padding: 70,
+        handling: 2.5,
+        createdAt: 3,
+      }),
       products[1]!,
     ]
     expect(await authorize(reviewed, nextProducts)).toEqual({
       status: "changed",
     })
     const afterProduct = prepareCartFulfillment(
-      mixedItems(nextProducts),
+      await mixedItems(nextProducts),
       [table],
       destination,
       rate
@@ -1238,7 +1260,7 @@ describe("per-product shipping adjustments with saved currency conversions", () 
         afterProduct,
         nextProducts,
         rate,
-        mixedItems(nextProducts)
+        await mixedItems(nextProducts)
       )
     ).toMatchObject({
       status: "ok",
@@ -1250,10 +1272,10 @@ describe("per-product shipping adjustments with saved currency conversions", () 
     })
   })
 
-  it("converts the physical merchandise threshold before a full eligible shipping and handling waiver", () => {
-    const items = mixedItems()
+  it("converts the physical merchandise threshold before a full eligible shipping and handling waiver", async () => {
+    const items = await mixedItems()
     const rate = mixedRate()
-    const table = mixedOption({
+    const table = await mixedOption({
       domestic: { ...mixedPolicy.domestic!, freeShippingThresholdMinor: 3500 },
     })
     const below = prepareCartFulfillment(
@@ -1293,11 +1315,11 @@ describe("per-product shipping adjustments with saved currency conversions", () 
     expect(priced(unsupported, nextRate).shippingCost.status).toBe("manual")
   })
 
-  it("keeps a missing policy-currency rate in coordination while merchandise can still be priced", () => {
+  it("keeps a missing policy-currency rate in coordination while merchandise can still be priced", async () => {
     const rate = mixedRate({ fiatUsdRates: { EUR: 1.25 } })
     const prepared = prepareCartFulfillment(
-      mixedItems(),
-      [mixedOption()],
+      await mixedItems(),
+      [await mixedOption()],
       destination,
       rate
     )
@@ -1323,8 +1345,8 @@ describe("per-product shipping adjustments with saved currency conversions", () 
 })
 
 describe("shipping review regressions", () => {
-  it("prices an explicit zero fiat band without FX, but still requires threshold, handling and positive-charge conversions", () => {
-    const zero = mixedOption({
+  it("prices an explicit zero fiat band without FX, but still requires threshold, handling and positive-charge conversions", async () => {
+    const zero = await mixedOption({
       currency: "USD",
       domestic: {
         rules: [
@@ -1332,7 +1354,7 @@ describe("shipping review regressions", () => {
         ],
       },
     })
-    const items = [raw("zero-fiat")]
+    const items = [await raw("zero-fiat")]
     const prepared = prepareCartFulfillment(items, [zero], destination, null)
     expect(prepared.items[0]!.shippingPolicyQuote).toMatchObject({
       amountSats: 0,
@@ -1346,7 +1368,7 @@ describe("shipping review regressions", () => {
     expect(checkout.approximate).toBe(false)
     expect(orderSchema.safeParse(payload(checkout.items, 0)).success).toBe(true)
     for (const table of [
-      mixedOption({
+      await mixedOption({
         currency: "USD",
         domestic: {
           rules: [
@@ -1357,7 +1379,7 @@ describe("shipping review regressions", () => {
           ],
         },
       }),
-      mixedOption({
+      await mixedOption({
         currency: "USD",
         domestic: {
           ...zero.shippingPolicy!.domestic!,
@@ -1373,7 +1395,7 @@ describe("shipping review regressions", () => {
     const stale = mixedRate({ fetchedAt: 1, source: "mempool" })
     const unusedRate = prepareCartFulfillment(items, [zero], destination, stale)
     expect(priced(unusedRate.items, stale).approximate).toBe(false)
-    const threshold = mixedOption({
+    const threshold = await mixedOption({
       currency: "USD",
       domestic: {
         ...zero.shippingPolicy!.domestic!,
@@ -1396,7 +1418,7 @@ describe("shipping review regressions", () => {
     })
     const handled = [
       createCartItemFromProduct(
-        mixedProduct("zero-handled", {
+        await mixedProduct("zero-handled", {
           currency: "SATS",
           price: 100,
           handling: 1,

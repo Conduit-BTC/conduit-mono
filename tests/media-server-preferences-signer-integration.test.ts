@@ -74,7 +74,6 @@ async function publishWithExternalSigner(
         eventCount: filter.ids?.length && published ? 1 : 0,
         rejectedEventCount: 0,
       })),
-      eventsVerified: true,
     }
   }
   const resolution = await readMediaServerPreferences(PUBKEY, {
@@ -150,7 +149,9 @@ describe("kind 10063 external-signer integration", () => {
         session,
         new MemoryStorage()
       )
-      expect(verifyEvent(signed)).toBe(true)
+      expect(
+        verifyEvent({ ...signed, tags: signed.tags.map((tag) => [...tag]) })
+      ).toBe(true)
       expect(signed.kind).toBe(BLOSSOM_SERVER_LIST_KIND)
       expect(signed.tags).toEqual([["server", "https://media.conduit.market"]])
     } finally {
@@ -190,7 +191,9 @@ describe("kind 10063 external-signer integration", () => {
       hasAuthority: () => true,
     })
     const signed = await publishWithExternalSigner(session, new MemoryStorage())
-    expect(verifyEvent(signed)).toBe(true)
+    expect(
+      verifyEvent({ ...signed, tags: signed.tags.map((tag) => [...tag]) })
+    ).toBe(true)
     expect(signed.kind).toBe(BLOSSOM_SERVER_LIST_KIND)
     expect(signed.tags).toEqual([["server", "https://media.conduit.market"]])
   })

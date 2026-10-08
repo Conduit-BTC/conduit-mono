@@ -5,18 +5,20 @@ import {
   assertCheckoutSparkSettledRecoveryProgression,
   createCheckoutSparkMerchantProgress,
   deriveCheckoutSparkNativeTreasuryBudget,
+  isCheckoutSparkNativePreProviderRetry,
   getAccountSigner,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   publishMerchantCheckoutSparkProgress,
   restoreCheckoutSparkMerchantOrderWitness,
   restoreCheckoutSparkSettledReconciliation,
   retryMerchantCheckoutSparkProgress,
-  runCheckoutSparkNativeTreasuryStep,
+  runCheckoutSparkFinancialWorkflow,
   runWithCheckoutSparkMerchantRecoveryLock,
   withMerchantCheckoutSparkRecovery,
   type CheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRecoveryPayload,
   type CheckoutSparkNativeTreasuryTarget,
+  type CheckoutSparkNativeTreasuryStepInput,
   type MerchantCheckoutSparkRecoveryCandidate,
   type NostrKeySigner,
 } from "@conduit/core"
@@ -43,7 +45,14 @@ type NativeStore = Pick<
   | "recordMerchantTreasury"
   | "assertLocalInvoiceOrigin"
 > &
-  Partial<Pick<DexieCheckoutSparkSettledRepository, "assertInvoiceRecipient">>
+  Partial<
+    Pick<
+      DexieCheckoutSparkSettledRepository,
+      | "assertInvoiceRecipient"
+      | "nativeTreasuryAdmissionScope"
+      | "saveTreasuryPreProviderRetry"
+    >
+  >
 
 export interface MerchantCheckoutSparkNativeTreasuryContinuationDependencies extends Omit<
   MerchantCheckoutSparkContinuationDependencies,
@@ -267,7 +276,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
             expectedState.treasuryFinalization!.providerTransferId,
         }
       }
-      const step = await runCheckoutSparkNativeTreasuryStep({
+      const nativeInput: CheckoutSparkNativeTreasuryStepInput = {
         checkoutId: plan.checkoutId,
         planDigest: plan.planDigest,
         legId: fee.legId,
@@ -275,6 +284,30 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
         now,
         inspectionOnly: dependencies.inspectionOnly,
         store: {
+          ...(repository.nativeTreasuryAdmissionScope &&
+          repository.saveTreasuryPreProviderRetry
+            ? {
+                nativeAdmissionScope: repository.nativeTreasuryAdmissionScope,
+                savePreProviderRetry: async (
+                  state: CheckoutSparkSettledReconciliation,
+                  revision: number,
+                  cancellation: Parameters<
+                    NonNullable<typeof repository.saveTreasuryPreProviderRetry>
+                  >[2]
+                ) => {
+                  assertEligible()
+                  const result = await repository.saveTreasuryPreProviderRetry!(
+                    state,
+                    revision,
+                    cancellation,
+                    assertEligible
+                  )
+                  assertEligible()
+                  expectedState = state
+                  return result
+                },
+              }
+            : {}),
           load: async () => {
             await assertDurable()
             return load()
@@ -359,14 +392,28 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
             }
             return observation
           },
-          preflight: async (target) => {
+          preflight: async (target, cancellation) => {
             await assertDurable()
             const value = request(target)
-            if (expectedState.treasuryFinalization?.status !== "prepared")
+            if (
+              expectedState.treasuryFinalization?.status !== "prepared" &&
+              !(
+                expectedState.treasuryFinalization?.status ===
+                  "terminal_failure" &&
+                isCheckoutSparkNativePreProviderRetry(cancellation, target)
+              )
+            )
               return "unavailable"
             const status = await treasury.preflightCheckoutTreasury(value)
             await assertDurable()
-            if (expectedState.treasuryFinalization?.status !== "prepared")
+            if (
+              expectedState.treasuryFinalization?.status !== "prepared" &&
+              !(
+                expectedState.treasuryFinalization?.status ===
+                  "terminal_failure" &&
+                isCheckoutSparkNativePreProviderRetry(cancellation, target)
+              )
+            )
               return "unavailable"
             if (status === "ready") preparedAdmissions.add(admissionKey(target))
             return status
@@ -406,7 +453,31 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
             }
           },
         },
-      })
+      }
+      const financial = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId: plan.checkoutId,
+          planDigest: plan.planDigest,
+          legId: fee.legId,
+          actor: "merchant",
+          mode: "advance",
+          inspectionOnly: dependencies.inspectionOnly,
+        },
+        {
+          now,
+          assertCurrent: assertEligible,
+          store: nativeInput.store,
+          native: {
+            store: nativeInput.store,
+            provider: nativeInput.provider,
+            proveCommerce: nativeInput.proveCommerce,
+          },
+          acknowledgeRecoverySnapshot: nativeInput.acknowledgeRecoverySnapshot,
+        }
+      )
+      if (financial.status !== "outgoing_step")
+        throw new Error("Checkout Spark native execution state is unavailable.")
+      const step = financial.step
       assertEligible()
       payout = {
         outcome: step.outcome,

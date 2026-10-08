@@ -39,6 +39,9 @@ import {
   listCheckoutSparkRecoveryDeliveries,
   retryStoredCheckoutSparkRecoveryHandoff,
   publishCheckoutSparkSettledRecoveryHandoff,
+  archiveCompletedCheckoutSparkRecovery,
+  retryPendingCompletedCheckoutSparkRecovery,
+  type CheckoutSparkCompletedRecoveryTransport,
   type CheckoutSparkRecoverySigningIdentity,
 } from "./checkout-spark-recovery-handoff"
 import { generateSparkMnemonic } from "./spark-recovery"
@@ -58,6 +61,8 @@ import type {
 
 const STORAGE_KEY = "conduit:checkout-spark-settled-preparations:v3"
 const MAX_STORED = 64
+const COMPLETED_PREPARATION_PREFIX =
+  "conduit:checkout-spark-completed-preparation:v1:"
 const HEX_64 = /^[0-9a-f]{64}$/
 
 export type CheckoutSparkSettledPreparationStorage = Pick<
@@ -130,6 +135,7 @@ export interface CheckoutSparkSettledPreparationRepository {
   create: DexieCheckoutSparkSettledRepository["create"]
   load: DexieCheckoutSparkSettledRepository["load"]
   abandonPristine?: DexieCheckoutSparkSettledRepository["abandonPristine"]
+  loadBuyerSettlement?: DexieCheckoutSparkSettledRepository["loadBuyerSettlement"]
 }
 
 /** Positive local cleanup, not a timeout or inferred absence of payment. */
@@ -289,12 +295,151 @@ export function listCheckoutSparkSettledPreparations(
   return readStored(storage)
 }
 
+/** Terminal cleanup is independent of wallet closing and grants no execution authority. */
+export async function cleanupCompletedCheckoutSparkSettledExecution(input: {
+  checkoutId: string
+  planDigest: string
+  buyerPubkey: string
+  repository?: Pick<DexieCheckoutSparkSettledRepository, "loadBuyerSettlement">
+  storage?: CheckoutSparkSettledPreparationStorage | null
+  recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
+  assertCurrent?: () => void
+  /** Fresh preparation only compacts local queues; it never waits on old relays. */
+  retryPendingDelivery?: boolean
+  recoveryTransport?: CheckoutSparkCompletedRecoveryTransport
+}): Promise<"cleaned" | "active" | "delivery_pending"> {
+  input.assertCurrent?.()
+  const repository =
+    input.repository ?? new DexieCheckoutSparkSettledRepository()
+  const terminal = await repository.loadBuyerSettlement(
+    input.checkoutId,
+    input.planDigest,
+    input.buyerPubkey
+  )
+  input.assertCurrent?.()
+  if (terminal.status !== "retired") return "active"
+  const binding = terminal.buyerBinding
+  if (
+    binding.checkoutId !== input.checkoutId ||
+    binding.planDigest !== input.planDigest ||
+    binding.buyerPubkey !== input.buyerPubkey
+  ) {
+    throw new Error("Completed checkout execution binding changed.")
+  }
+  const exactBinding = JSON.stringify(binding)
+  const assertTerminalCurrent = async () => {
+    input.assertCurrent?.()
+    const current = await repository.loadBuyerSettlement(
+      input.checkoutId,
+      input.planDigest,
+      input.buyerPubkey
+    )
+    input.assertCurrent?.()
+    if (
+      current.status !== "retired" ||
+      JSON.stringify(current.buyerBinding) !== exactBinding
+    )
+      throw new Error("Completed checkout execution binding changed.")
+  }
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const recoveryStorage =
+    input.recoveryStorage === undefined
+      ? browserStorage()
+      : input.recoveryStorage
+  const item = getCheckoutSparkSettledPreparation(input.checkoutId, storage)
+  const archiveKey = `${COMPLETED_PREPARATION_PREFIX}${input.checkoutId}`
+  const previousRaw = requireStorage(storage).getItem(archiveKey)
+  const previous = previousRaw ? parseStored(JSON.parse(previousRaw)) : null
+  const preparation = item ?? previous
+  if (
+    preparation &&
+    (preparation.checkoutId !== input.checkoutId ||
+      preparation.planDigest !== input.planDigest)
+  ) {
+    throw new Error(
+      "Completed checkout preparation conflicts with terminal state."
+    )
+  }
+  if (previous && item && JSON.stringify(previous) !== JSON.stringify(item)) {
+    throw new Error("Completed checkout preparation archive changed.")
+  }
+  if (preparation) {
+    requireStorage(storage).setItem(archiveKey, JSON.stringify(preparation))
+    const readback = requireStorage(storage).getItem(archiveKey)
+    if (
+      !readback ||
+      JSON.stringify(parseStored(JSON.parse(readback))) !==
+        JSON.stringify(preparation)
+    ) {
+      throw new Error(
+        "Completed checkout preparation archive was not durably saved."
+      )
+    }
+  }
+  const scope = {
+    checkoutId: binding.checkoutId,
+    planDigest: binding.planDigest,
+    orderId: binding.orderId,
+    walletId: binding.walletId,
+    merchantPubkey: binding.merchantPubkey,
+    senderPubkey: binding.buyerPubkey,
+  }
+  if (input.retryPendingDelivery !== false)
+    await retryPendingCompletedCheckoutSparkRecovery({
+      scope,
+      storage: recoveryStorage,
+      assertCurrent: input.assertCurrent,
+      assertTerminalCurrent,
+      transport: input.recoveryTransport,
+    })
+  await assertTerminalCurrent()
+  const result = await archiveCompletedCheckoutSparkRecovery({
+    scope,
+    initialHandoffId: preparation?.recoveryHandoffId ?? null,
+    storage: recoveryStorage,
+    assertCurrent: input.assertCurrent,
+    verifyBeforeCommit: assertTerminalCurrent,
+  })
+  await assertTerminalCurrent()
+  if (result !== "cleaned") return result
+  // Archive writes can survive a callback failure. Cleanup is repeatable after
+  // reload, and the repository's terminal marker still blocks all payment work.
+  await withCheckoutSparkStorageLock(STORAGE_KEY, async () => {
+    await assertTerminalCurrent()
+    input.assertCurrent?.()
+    const items = readStored(storage)
+    const current = items.find(
+      (candidate) => candidate.checkoutId === input.checkoutId
+    )
+    if (current && JSON.stringify(current) !== JSON.stringify(preparation)) {
+      throw new Error("Completed checkout preparation changed during cleanup.")
+    }
+    const retained = items.filter(
+      (candidate) => candidate.checkoutId !== input.checkoutId
+    )
+    writeStored(retained, storage)
+    if (JSON.stringify(readStored(storage)) !== JSON.stringify(retained)) {
+      throw new Error(
+        "Completed checkout preparation cleanup was not durably saved."
+      )
+    }
+  })
+  return "cleaned"
+}
+
 export function saveCheckoutSparkSettledPreparation(
   item: StoredCheckoutSparkSettledPreparation,
   storage: CheckoutSparkSettledPreparationStorage | null = browserStorage(),
   options: { allowDefinitePreSendReset?: boolean } = {}
 ): StoredCheckoutSparkSettledPreparation {
   const next = parseStored(item)
+  if (
+    requireStorage(storage).getItem(
+      `${COMPLETED_PREPARATION_PREFIX}${next.checkoutId}`
+    )
+  ) {
+    throw new Error("Completed checkout preparation cannot be reopened.")
+  }
   const items = readStored(storage)
   const index = items.findIndex(
     (candidate) => candidate.checkoutId === next.checkoutId
@@ -422,6 +567,26 @@ export async function prepareCheckoutSparkSettledFunding(
       : input.recoveryStorage
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
+  // Completed execution entries are not a history archive. Finish interrupted
+  // terminal cleanup before a busy browser reaches either active queue's cap.
+  if (repository.loadBuyerSettlement) {
+    for (const completed of listCheckoutSparkSettledPreparations(storage)) {
+      assertCurrent()
+      await cleanupCompletedCheckoutSparkSettledExecution({
+        checkoutId: completed.checkoutId,
+        planDigest: completed.planDigest,
+        buyerPubkey: identity.pubkey,
+        repository: {
+          loadBuyerSettlement: (...args) =>
+            repository.loadBuyerSettlement!(...args),
+        },
+        storage,
+        recoveryStorage,
+        assertCurrent,
+        retryPendingDelivery: false,
+      })
+    }
+  }
   const makeWallet = dependencies.createWalletMaterial ?? createWalletMaterial
   const openWallet =
     dependencies.openWallet ??
@@ -481,7 +646,12 @@ export async function prepareCheckoutSparkSettledFunding(
   }
   // A pre-existing checkout cannot be given a second wallet or invoice.
   const assertUnprepared = () => {
-    if (getCheckoutSparkSettledPreparation(checkoutId, storage)) {
+    if (
+      getCheckoutSparkSettledPreparation(checkoutId, storage) ||
+      requireStorage(storage).getItem(
+        `${COMPLETED_PREPARATION_PREFIX}${checkoutId}`
+      )
+    ) {
       throw new Error("Settled checkout funding is already prepared.")
     }
   }

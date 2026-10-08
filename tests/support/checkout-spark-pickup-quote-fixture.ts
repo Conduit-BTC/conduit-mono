@@ -5,6 +5,7 @@ import {
 import type { CartItem } from "../../apps/market/src/lib/cart-model"
 import type { CheckoutSparkQuoteAuthority } from "../../apps/market/src/lib/checkout-spark-quote-authority"
 import { createCheckoutSparkPickupFixture } from "./checkout-spark-pickup-fixture"
+import { admitFixture } from "../helpers/public-event"
 
 /** Historical exact signed quote only; never new public checkout admission. */
 export async function createCheckoutSparkPickupQuoteFixture(
@@ -12,7 +13,7 @@ export async function createCheckoutSparkPickupQuoteFixture(
 ) {
   const f = createCheckoutSparkPickupFixture(options)
   const product = {
-    ...parseProductEvent(f.productEvent),
+    ...parseProductEvent(await admitFixture(f.productEvent)),
     sourceEventId: f.productEvent.id,
   }
   const fulfillment = resolveCheckoutSparkSignedPickup(f)!

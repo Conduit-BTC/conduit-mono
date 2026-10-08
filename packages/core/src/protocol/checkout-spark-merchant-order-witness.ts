@@ -19,7 +19,7 @@ import {
   type CheckoutSparkCommercePricing,
   type CheckoutSparkCommerceVariation,
 } from "./checkout-spark-commerce-pricing"
-import { parseProductEvent } from "./products"
+import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { validateAddressConsistency } from "./address-validation"
 import {
@@ -358,7 +358,7 @@ export function createCheckoutSparkMerchantOrderWitness(
           )
             return true
           assertCheckoutSparkCommerceProductPrice({
-            product: parseProductEvent(productEvent),
+            product: parseCheckoutSparkSignedProductFields(productEvent),
             line,
             pricing: quote.pricing,
             acceptedAtMs:

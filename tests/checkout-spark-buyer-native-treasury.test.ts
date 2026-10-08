@@ -527,9 +527,12 @@ async function fixture(
       inspectionOnly,
       now: () => ++now,
       store: {
+        nativeAdmissionScope: repository.nativeTreasuryAdmissionScope,
         load: repository.load.bind(repository),
         save: repository.save.bind(repository),
         savePrepared: repository.saveTreasuryPrepared.bind(repository),
+        savePreProviderRetry:
+          repository.saveTreasuryPreProviderRetry.bind(repository),
       },
       provider: provider(),
       proveCommerce: (fresh) =>
@@ -1206,6 +1209,52 @@ describe("Market native treasury composed provider evidence", () => {
       }),
     15_000
   )
+  it(
+    "automatically retries an exact positively cancelled native admission after transient submitted ACK failure",
+    async () =>
+      runForeground(async (f) => {
+        let failed = false
+        let waits = 0
+        let intent: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input, acknowledged } = await createForegroundRunner(
+          f,
+          {
+            acknowledge: async (state) => {
+              if (
+                state.treasuryFinalization!.status === "submitted" &&
+                !failed
+              ) {
+                failed = true
+                intent = structuredClone(state.treasuryFinalization)
+                throw new Error("Temporary relay outage")
+              }
+            },
+            wait: async (milliseconds) => {
+              f.setNow(f.now() + milliseconds)
+              waits++
+              expect(
+                (await f.loadState()).state.treasuryFinalization!.status
+              ).toBe("terminal_failure")
+              expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(
+                0
+              )
+            },
+          }
+        )
+        expect(await runner.run(input)).toEqual({ status: "complete" })
+        expect(waits).toBe(1)
+        const final = (await f.loadState()).state.treasuryFinalization!
+        expect(final.status).toBe("paid")
+        expect(final.intent).toEqual(intent!.intent)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+        expect(acknowledged).not.toContain("terminal_failure")
+        expect(
+          acknowledged.filter((status) => status === "submitted")
+        ).toHaveLength(2)
+      }, 120_000),
+    15_000
+  )
   it.each(["prepared", "submitted"] as const)(
     "does not enter native fulfillment when the %s recovery ACK crosses the foreground deadline",
     async (status) =>
@@ -1775,7 +1824,10 @@ describe("Market native treasury composed provider evidence", () => {
               },
             ])
         }
-        expect((await f.step()).reason).toBe("terminal_failure")
+        expect((await f.step()).reason).toBe("provider_evidence_unavailable")
+        // Positive cancellation permits a re-check, not bypassing the newly
+        // discovered unknown activity or invoking the provider regardless.
+        expect((await f.step()).reason).toBe("provider_evidence_unavailable")
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(0)
       }),
     15_000

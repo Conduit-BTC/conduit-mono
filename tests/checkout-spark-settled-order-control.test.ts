@@ -341,7 +341,7 @@ function preparedNativeFixture() {
     transferId: "native-funding-transfer",
     receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
     grossSats: 1_113,
-    creditedSats: 1_110,
+    creditedSats: 1_111,
     observedAt: NOW + 2,
   })
   const merchant = plan.recipients.find(
@@ -834,9 +834,9 @@ describe("settled Spark buyer order control", () => {
         estimatedBaseConduitAllocationSats: 111,
         fixedCheckoutTotalSats: 1_113,
         prepared: {
-          baseConduitAllocationSats: 110,
+          baseConduitAllocationSats: 111,
           unusedCommerceReserveSats: 4,
-          totalSats: 114,
+          totalSats: 115,
           sparkFeeCapSats: 0,
         },
       },
@@ -849,9 +849,9 @@ describe("settled Spark buyer order control", () => {
     expect(control.nativeTreasury!.prepared!.totalSats).toBeGreaterThan(
       control.priceSummary.coordinationFeeSats
     )
-    expect(
-      control.nativeTreasury!.prepared!.baseConduitAllocationSats
-    ).not.toBe(control.nativeTreasury!.estimatedBaseConduitAllocationSats)
+    expect(control.nativeTreasury!.prepared!.baseConduitAllocationSats).toBe(
+      control.nativeTreasury!.estimatedBaseConduitAllocationSats
+    )
     expect(control.intentFingerprint).toMatch(/^[0-9a-f]{64}$/)
     expect(
       matchesCheckoutSparkSettledOrderControl({
@@ -1827,7 +1827,8 @@ describe("settled Spark buyer action", () => {
         )
         expect(second.status).toBe("outgoing_step")
         if (second.status !== "outgoing_step") return
-        expect(second.step.outcome).toBe("paid")
+        expect(second.step.outcome).toBe("already_paid")
+        expect(second.step.sendAttempted).toBe(false)
         expect(sendCalls).toBe(1)
         expect(
           projectCheckoutSparkMerchantSettlement(
@@ -2060,12 +2061,19 @@ describe("settled Spark buyer action", () => {
           })
           return { status: "active" as const, revision: 2, state }
         },
-        outgoingProvider: () =>
-          ({}) as ReturnType<
-            NonNullable<
-              AdvanceCheckoutSparkSettledShopperDependencies["outgoingProvider"]
-            >
-          >,
+        outgoingProvider: () => ({
+          reconcile: async (target) => ({
+            legId: target.legId,
+            transferId: target.intent.transferId,
+            paymentRequest: target.intent.paymentRequest,
+            paymentHash: target.intent.paymentHash,
+            invoiceAmountSats: target.intent.invoiceAmountSats,
+            maxFeeSats: target.intent.maxFeeSats,
+            status: "not_found" as const,
+          }),
+          preflight: async () => "ready" as const,
+          send: async () => ({ status: "not_sent" as const }),
+        }),
         outgoingStep: async ({ inspectionOnly }) => {
           outgoingCalls += 1
           inspectionModes.push(inspectionOnly)
@@ -2082,12 +2090,17 @@ describe("settled Spark buyer action", () => {
         advanceCheckoutSparkSettledShopper(action, dependencies)
       ).rejects.toThrow("no exact relay ACK")
       expect(outgoingCalls).toBe(0)
-      await expect(
-        advanceCheckoutSparkSettledShopper(
-          { ...action, inspectionOnly: true },
-          dependencies
-        )
-      ).rejects.toThrow("inspection requires a saved invoice")
+      const inspection = await advanceCheckoutSparkSettledShopper(
+        { ...action, inspectionOnly: true },
+        dependencies
+      )
+      expect(inspection.status).toBe("outgoing_step")
+      if (inspection.status !== "outgoing_step")
+        throw new Error("Expected invoice-less read-only result")
+      expect(inspection.step).toMatchObject({
+        outcome: "invoice_needed",
+        sendAttempted: false,
+      })
       expect(outgoingCalls).toBe(0)
       failAcknowledgement = false
       expect(
@@ -2207,9 +2220,15 @@ describe("settled Spark buyer action", () => {
             >
           >,
         outgoingProvider: ({ assertBeforeSend }) => ({
-          reconcile: async () => {
-            throw new Error("not used")
-          },
+          reconcile: async (target) => ({
+            legId: target.legId,
+            transferId: target.intent.transferId,
+            paymentRequest: target.intent.paymentRequest,
+            paymentHash: target.intent.paymentHash,
+            invoiceAmountSats: target.intent.invoiceAmountSats,
+            maxFeeSats: target.intent.maxFeeSats,
+            status: "not_found" as const,
+          }),
           preflight: async () => {
             throw new Error("not used")
           },

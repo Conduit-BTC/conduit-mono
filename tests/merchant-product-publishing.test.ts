@@ -5,6 +5,7 @@ import {
   resetFixturePublishers,
 } from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
+import { admitFixture } from "./helpers/public-event"
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
@@ -25,7 +26,6 @@ import {
   db,
   EVENT_KINDS,
   getCachedMerchantStorefront,
-  parseProductEvent,
   projectSignedProductListingForLocalCommit,
   planProductDeletionRelays,
   RemoteSignerError,
@@ -35,6 +35,7 @@ import {
   type PublishWithPlannerResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { parsePrivateOrderProductFields } from "@conduit/core/protocol/products"
 import type {
   CachedProduct,
   ProductDeletionDeliveryJob,
@@ -156,7 +157,7 @@ function publishAndParse(
     MERCHANT_SECRET
   )
   expect(signed.sig).toHaveLength(128)
-  return { prepared, parsed: parseProductEvent(signed) }
+  return { prepared, parsed: parsePrivateOrderProductFields(signed) }
 }
 
 let cachedProducts: CachedProduct[] = []
@@ -375,7 +376,9 @@ beforeEach(async () => {
     acceptedRelayUrl: "wss://relay.conduit.market",
   })
   deletionSourceId = source.id
-  await db.products.put(projectSignedProductListingForLocalCommit(source))
+  await db.products.put(
+    projectSignedProductListingForLocalCommit(await admitFixture(source))
+  )
   cachedProducts = []
   __resetCommerceTestOverrides()
   resetFixturePublishers()
@@ -490,7 +493,9 @@ describe("merchant product event delivery", () => {
       },
       MERCHANT_SECRET
     )
-    expect(parseProductEvent(updated).location).toBe("Legacy nearby town")
+    expect(parsePrivateOrderProductFields(updated).location).toBe(
+      "Legacy nearby town"
+    )
   })
   it("routes product and shipping events through the commerce author intent", async () => {
     const relayUrl = "wss://relay.fixture.conduit.market"
@@ -640,9 +645,9 @@ describe("merchant product event delivery", () => {
     it(`preserves ${scenario.name} across cache reload before a stock update`, async () => {
       const event = makeSignedProductEventWithShippingTags(scenario)
 
-      expect(parseProductEvent(event).shippingOptionLaunchUnsupported).toBe(
-        true
-      )
+      expect(
+        parsePrivateOrderProductFields(event).shippingOptionLaunchUnsupported
+      ).toBe(true)
       await cacheSignedProductListingEvent(event)
       expect(
         cachedProducts.find((row) => row.dTag === scenario.dTag)
@@ -679,7 +684,9 @@ describe("merchant product event delivery", () => {
       ],
     })
 
-    expect(parseProductEvent(event).shippingOptionLaunchUnsupported).toBe(false)
+    expect(
+      parsePrivateOrderProductFields(event).shippingOptionLaunchUnsupported
+    ).toBe(false)
     await cacheSignedProductListingEvent(event)
     expect(cachedProducts[0]?.shippingOptionLaunchUnsupported).toBe(false)
 
@@ -718,7 +725,7 @@ describe("merchant product event delivery", () => {
     expect(product?.eventMarketRefs).toEqual([marketReference])
   })
 
-  it("fails legacy or malformed referenced cache rows closed", async () => {
+  it("repairs malformed cache projections from exact signed listing bytes", async () => {
     const dTag = "cached-ambiguous-shipping-reference"
     const event = makeSignedProductEventWithShippingTags({
       dTag,
@@ -743,13 +750,21 @@ describe("merchant product event delivery", () => {
       }
 
       const product = await readProductAfterCacheReload([row], dTag)
-      expect(product?.shippingOptionLaunchUnsupported).toBe(true)
+      expect(product?.shippingOptionLaunchUnsupported).toBe(false)
       if (!product) throw new Error("Expected the cached product after reload")
       expect(resolveProductFulfillment(product, [])).toMatchObject({
         status: "order_first",
-        reason: "unsupported",
+        reason: "unresolved",
       })
     }
+    const tampered = structuredClone(baseline)
+    if (!tampered.signedProductEvent)
+      throw new Error("Expected exact signed listing evidence")
+    tampered.signedProductEvent = {
+      ...tampered.signedProductEvent,
+      content: "tampered",
+    }
+    expect(await readProductAfterCacheReload([tampered], dTag)).toBeUndefined()
   })
 
   it("leaves cache rows without a shipping reference unaffected", async () => {
@@ -1682,7 +1697,7 @@ function event(kind: number): SignedPublicNostrEvent {
 
 describe("canonical product publication ordering", () => {
   it("upgrades a legacy inline listing to the product-scoped coordinate", () => {
-    const legacy = parseProductEvent({
+    const legacy = parsePrivateOrderProductFields({
       id: "legacy-event",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_700_000_100,
@@ -1695,7 +1710,7 @@ describe("canonical product publication ordering", () => {
         ["shipping_cost", "5", "USD"],
         ["shipping_country", "US"],
       ],
-    })
+    } as never)
 
     const prepared = applyProductFulfillmentIntentForPublication({
       product: legacy,
@@ -1831,7 +1846,7 @@ describe("canonical product publication ordering", () => {
   })
 
   it("removes legacy shipping fields from non-fixed publication state", () => {
-    const product = parseProductEvent({
+    const product = parsePrivateOrderProductFields({
       id: "legacy-event",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_700_000_100,
@@ -1844,7 +1859,7 @@ describe("canonical product publication ordering", () => {
         ["shipping_cost", "5", "USD"],
         ["shipping_country", "US"],
       ],
-    })
+    } as never)
 
     expect(
       applyProductFulfillmentIntentForPublication({

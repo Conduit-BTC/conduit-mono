@@ -1,6 +1,7 @@
 import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-expiry"
 import {
   recordCheckoutSparkSettledLegStatus,
+  assertCheckoutSparkSettledFundingCoverage,
   restoreCheckoutSparkSettledReconciliation,
   getCheckoutSparkSettledLegGeneration,
   getCheckoutSparkSettledClosedGeneration,
@@ -232,6 +233,7 @@ export interface CheckoutSparkSettledOutgoingStepResult {
     | "prerequisite_unpaid"
     | "renewal_return_unavailable"
     | "zero_remainder"
+    | "funding_shortfall"
   readonly sendAttempted: boolean
 }
 
@@ -475,6 +477,14 @@ export async function runCheckoutSparkSettledOutgoingStep(
   }
   if (input.inspectionOnly) {
     return result(state, "wait", "inspection_only")
+  }
+  try {
+    assertCheckoutSparkSettledFundingCoverage(
+      state.plan,
+      state.credit.creditedSats
+    )
+  } catch {
+    return result(state, "wait", "funding_shortfall")
   }
   const now = input.now()
   if (!hasAuthority(state.plan, input.actor, now)) {

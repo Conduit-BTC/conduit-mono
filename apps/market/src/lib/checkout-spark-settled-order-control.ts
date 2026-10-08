@@ -3,6 +3,7 @@ import {
   checkoutSparkProviderSendWindowEndsAt,
   fingerprintCheckoutSparkSettledLegIntent,
   hasCheckoutSparkProviderSendWindow,
+  hasCheckoutSparkNativePreProviderCancellation,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRepositorySnapshot,
   type CheckoutSparkBuyerPrice,
@@ -127,6 +128,8 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   initialRecoveryAcked: boolean
   now: number
   routerWalletOpen: boolean
+  /** Opaque process scope is a hint; never reconstruct it from saved progress. */
+  nativeAdmissionScope?: object
 }): CheckoutSparkSettledOrderControlState {
   const blocked = (reason: string): CheckoutSparkSettledOrderControlState => ({
     status: "blocked",
@@ -361,16 +364,24 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   if (!leg || !recipient || leg.legId !== recipient.legId) {
     return blocked("The next payout is not in the saved plan.")
   }
+  const nativeTreasuryLeg =
+    plan.schemaVersion === 4 && recipient.kind === "conduit"
+  const locallyCancelled =
+    nativeTreasuryLeg &&
+    snapshot.status === "active" &&
+    hasCheckoutSparkNativePreProviderCancellation(
+      input.nativeAdmissionScope,
+      state,
+      snapshot.revision
+    )
   if (
-    leg.status === "terminal_failure" ||
+    (leg.status === "terminal_failure" && !locallyCancelled) ||
     leg.status === "conflicting_evidence"
   ) {
     return blocked(
       "This payout needs manual recovery. Do not create another invoice or send it again."
     )
   }
-  const nativeTreasuryLeg =
-    plan.schemaVersion === 4 && recipient.kind === "conduit"
   if (leg.status === "prepared" && !leg.intent && !nativeTreasuryLeg) {
     return blocked("The saved payout invoice is unavailable. Do not send it.")
   }
@@ -430,7 +441,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     ? "check_payout"
     : leg.status === "unprepared"
       ? "prepare_payout"
-      : leg.status === "prepared"
+      : leg.status === "prepared" || locallyCancelled
         ? siblingPossibleSend
           ? "check_payout"
           : nativeTreasuryLeg || sendWindowAvailable

@@ -125,7 +125,7 @@ describe("offline guest supplier settled checkout composition", () => {
   it("uses one funding invoice, aggregated signed shares and private guest recovery; remote paid evidence remains unattributed", async () => {
     const createdAt = Math.floor(Date.now() / 1_000) * 1_000 - 60_000
     let now = createdAt + 1_000
-    const f = createCheckoutSparkGuestSupplierFixture(createdAt)
+    const f = await createCheckoutSparkGuestSupplierFixture(createdAt)
     const database = new ConduitDB(`guest-supplier-${crypto.randomUUID()}`, {
       indexedDB,
       IDBKeyRange,
@@ -755,9 +755,14 @@ describe("offline guest supplier settled checkout composition", () => {
           sendAttempted: sent.step.sendAttempted,
         }).toEqual({ outcome: "paid", reason: undefined, sendAttempted: true })
         expect(calls.sends).toHaveLength(index + 1)
-        await expect(advance(recipient.legId)).rejects.toThrow(
-          "next payout changed"
-        )
+        const repeated = await advance(recipient.legId)
+        expect(repeated.status).toBe("outgoing_step")
+        if (repeated.status !== "outgoing_step")
+          throw new Error("Expected reconciled replay protection")
+        expect(repeated.step).toMatchObject({
+          outcome: "already_paid",
+          sendAttempted: false,
+        })
         expect(calls.sends).toHaveLength(index + 1)
         const facts = await repository.loadMerchantSettlement(
           f.merchantPubkey,

@@ -340,7 +340,9 @@ export type OmfZapoutReceiptAuthorityVerificationResult =
   | { status: "invalid"; receipt: null }
   | { status: "authority_unavailable"; receipt: OmfZapoutReceipt }
 
-export function hasOmfZapoutMarker(tags: readonly string[][]): boolean {
+export function hasOmfZapoutMarker(
+  tags: readonly (readonly string[])[]
+): boolean {
   return tags.some(
     (tag) =>
       tag.length === OMF_ZAPOUT_MARKER_TAG.length &&
@@ -1234,7 +1236,7 @@ export function validateLightningInvoiceForPayment({
 }
 
 function getSingleTagValue(
-  tags: readonly string[][],
+  tags: readonly (readonly string[])[],
   name: string
 ): string | null {
   const matches = tags.filter((tag) => tag[0] === name)

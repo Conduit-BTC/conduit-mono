@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { generateSecretKey, getPublicKey, verifyEvent } from "nostr-tools/pure"
@@ -289,7 +290,7 @@ describe("supplier terms through durable Merchant publication", () => {
       )
       if (!signed) throw new Error("Signed supplier listing was not committed")
       expect(verifyEvent(signed)).toBe(true)
-      return signed
+      return admitFixture(signed)
     }
 
     const initialForm = reloadDraft(form())

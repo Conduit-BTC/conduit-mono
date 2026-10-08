@@ -117,3 +117,37 @@ exact checkout-to-configured-SSP and return ownership, exact returned-leaf links
 and equal conserved values. Two complete stable scans must agree on both history
 and request facts. Type labels, equal amounts, balance alone, partial pairs and
 unavailable evidence cannot authorize collection or exact-history retirement.
+
+<!-- session-doc-update:dcc55dcbb64f -->
+
+### 2026-10-08T17:35:40.342Z
+
+Buyer execution and claim-capable Merchant recovery share the Core financial
+workflow. Core owns verified credit admission, fact-before-projection persistence,
+exact sibling-attempt reconciliation, next-obligation preparation, write-ahead
+execution, Conduit-last collection, and evidence-gated retirement. Actor adapters
+retain session/time authority, independent receiver proofs, provider operations,
+storage and protected delivery. Authority is checked across asynchronous boundaries;
+an actor label is not permission. Immediate Merchant observation remains a separate,
+query-only path without wallet claim or send capability.
+
+New credit below the frozen funding weights pauses rather than reducing approved
+obligations. Historical short-funded projections remain readable for reconciliation,
+but cannot authorize another payout. No additional funding or refund flow is implied.
+
+A positive pre-provider cancellation may permit an exact native-intent retry only
+after durable cancellation readback, using a process-local capability bound to the
+same repository, revision and immutable intent. Imported failure labels, missing
+history and actual or possible provider invocations cannot authorize replay.
+
+Completed local execution queues are cleaned only after the exact durable terminal
+marker and encrypted recovery archive are read back. Interrupted cleanup resumes
+without reopening the wallet or invoking a payment provider. Terminal cleanup may
+retry at most four exact stored recovery envelopes within one ten-second transport
+window; it never signs a replacement envelope. Fresh checkout preparation performs
+local-only cleanup instead of waiting on these network retries. Unacknowledged
+delivery and late, revoked callbacks cannot authorize payment or discard evidence.
+Encrypted recovery evidence,
+independent settlement facts, replay markers and required pending delivery work are
+retained. Local queue cleanup does not establish atomic provider-side closure or
+prove that funds cannot arrive later.

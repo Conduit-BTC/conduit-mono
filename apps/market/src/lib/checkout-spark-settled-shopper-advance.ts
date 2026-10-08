@@ -3,6 +3,7 @@ import {
   getOrderLifecycle,
   runCheckoutSparkSettledOutgoingStep,
   runCheckoutSparkNativeTreasuryStep,
+  runCheckoutSparkFinancialWorkflow,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingProvider,
   type CheckoutSparkSettledOutgoingTarget,
@@ -16,7 +17,10 @@ import {
   type CheckoutSparkSettledFundingPaymentInput,
   type CheckoutSparkSettledFundingResult,
 } from "./checkout-spark-settled-funding"
-import { prepareCheckoutSparkSettledOutgoingLeg } from "./checkout-spark-settled-leg-preparation"
+import {
+  prepareCheckoutSparkSettledOutgoingLeg,
+  createBuyerCheckoutSparkLegPreparationPorts,
+} from "./checkout-spark-settled-leg-preparation"
 import { createCheckoutSparkSettledOutgoingProvider } from "./checkout-spark-settled-outgoing-provider"
 import { verifyBuyerCheckoutSparkRecipientSettlement } from "./checkout-spark-invoice-recipient"
 import { getCheckoutSparkRecoveryDelivery } from "./checkout-spark-recovery-handoff"
@@ -84,7 +88,10 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
     Partial<
       Pick<
         DexieCheckoutSparkSettledRepository,
-        "recordInvoiceRecipientVerification" | "hasInvoiceRecipientSettlement"
+        | "recordInvoiceRecipientVerification"
+        | "hasInvoiceRecipientSettlement"
+        | "nativeTreasuryAdmissionScope"
+        | "saveTreasuryPreProviderRetry"
       >
     >
   sparkConfiguration?: typeof getSparkConfiguration
@@ -287,117 +294,12 @@ export async function advanceCheckoutSparkSettledShopper(
     }
     return { status: "funding", funding }
   }
-  const nextLeg = snapshot.state.legs.find((leg) => leg.status !== "paid")
-  if (!nextLeg || input.legId !== nextLeg.legId) {
-    throw new Error("Checkout Spark next payout changed.")
-  }
-  if (
-    nextLeg.status === "terminal_failure" ||
-    nextLeg.status === "conflicting_evidence"
-  ) {
-    throw new Error("Checkout Spark payout needs manual recovery.")
-  }
   const acknowledgeRecoverySnapshot = async (
     state: CheckoutSparkSettledReconciliation
   ) => {
     await assertAuthority()
     await input.acknowledgeRecoverySnapshot(state)
     await assertAuthority()
-  }
-  if (
-    plan.nativeTreasury &&
-    plan.recipients.find((recipient) => recipient.legId === nextLeg.legId)
-      ?.kind === "conduit"
-  ) {
-    const provider = createBuyerCheckoutSparkNativeTreasuryProvider({
-      checkoutId: plan.checkoutId,
-      manager,
-      repository,
-      assertAuthority,
-      assertCurrent: assertSession,
-      now,
-    })
-    const step = await (
-      dependencies.treasuryStep ?? runCheckoutSparkNativeTreasuryStep
-    )({
-      checkoutId: plan.checkoutId,
-      planDigest: plan.planDigest,
-      legId: nextLeg.legId,
-      actor: "shopper",
-      inspectionOnly: input.inspectionOnly,
-      now,
-      store: {
-        load: repository.load.bind(repository),
-        save: (state, revision) =>
-          repository.save(state, revision, assertSession),
-        savePrepared: (state, revision, settlement) =>
-          repository.saveTreasuryPrepared(
-            state,
-            revision,
-            settlement,
-            assertSession
-          ),
-      },
-      provider: {
-        reconcile: provider.reconcile,
-        preflight: async (target) => {
-          await assertDispatchAuthority()
-          return provider.preflight(target)
-        },
-        send: async (target) => {
-          await assertDispatchAuthority()
-          try {
-            return await provider.send(target)
-          } finally {
-            admittedProviderDrained = true
-          }
-        },
-      },
-      proveCommerce: (state) =>
-        proveBuyerCheckoutSparkTreasuryCommerce({
-          state,
-          manager,
-          repository,
-          now,
-          assertAuthority,
-          assertCurrent: assertSession,
-        }),
-      acknowledgeRecoverySnapshot,
-    })
-    if (step.outcome === "paid" || step.outcome === "already_paid") {
-      // This exact terminal fact was proved and durably saved before returning.
-      // A later ACK crossing handoff must not downgrade it to paused. Reporting
-      // the result grants no new send; the runner reloads the order and plan
-      // before presenting completion. Withdrawn sessions still fail closed.
-      assertSession()
-    } else {
-      await assertAuthority()
-    }
-    return { status: "outgoing_step", step }
-  }
-  if (!nextLeg.intent) {
-    if (input.inspectionOnly) {
-      throw new Error("Checkout Spark inspection requires a saved invoice.")
-    }
-    const preparedLeg = await (
-      dependencies.prepareLeg ?? prepareCheckoutSparkSettledOutgoingLeg
-    )(
-      {
-        checkoutId: plan.checkoutId,
-        planDigest: plan.planDigest,
-        legId: nextLeg.legId,
-        shouldContinue: () =>
-          currentSessionMatches() && now() < plan.takeoverAt,
-      },
-      {
-        repository,
-        walletManager: manager,
-        acknowledgeRecoverySnapshot,
-        nowMs: now,
-      }
-    )
-    await assertAuthority()
-    return { status: "payout_prepared", state: preparedLeg.state }
   }
   const provider = (
     dependencies.outgoingProvider ?? createCheckoutSparkSettledOutgoingProvider
@@ -429,71 +331,170 @@ export async function advanceCheckoutSparkSettledShopper(
       target,
       observation,
       now(),
-      () => {
-        if (
-          !currentSessionMatches() ||
-          (now() >= plan.takeoverAt && !readOnlyExistingAttempt)
-        ) {
-          throw new Error("Checkout Spark shopper session changed.")
-        }
-      }
+      assertSession
     )
     await assertAuthority()
     return recipientSettled
   }
   const guardedProvider: CheckoutSparkSettledOutgoingProvider = {
-    reconcile: async (target) => {
-      await assertAuthority()
-      const observation = await provider.reconcile(target)
-      await assertAuthority()
-      const recipientSettled = await recordPaid(target, observation)
-      return recipientSettled
-        ? observation
-        : {
-            ...observation,
-            status: "lookup_unavailable" as const,
-          }
-    },
+    reconcile: provider.reconcile,
     preflight: async (target) => {
       await assertDispatchAuthority()
-      const result = await provider.preflight(target)
-      await assertAuthority()
-      return result
+      return provider.preflight(target)
     },
     send: async (target) => {
       await assertDispatchAuthority()
-      let observation: Awaited<
-        ReturnType<CheckoutSparkSettledOutgoingProvider["send"]>
-      >
       try {
-        observation = await provider.send(target)
+        return await provider.send(target)
       } finally {
         admittedProviderDrained = true
       }
-      await assertAuthority()
-      if (observation.status === "paid") {
-        if (!(await recordPaid(target, observation)))
-          return {
-            ...observation,
-            status: "lookup_unavailable" as const,
-          }
-      }
-      return observation
     },
   }
-  const step = await (
-    dependencies.outgoingStep ?? runCheckoutSparkSettledOutgoingStep
-  )({
-    checkoutId: plan.checkoutId,
-    planDigest: plan.planDigest,
-    legId: nextLeg.legId,
-    actor: "shopper",
-    ...(input.inspectionOnly ? { inspectionOnly: true } : {}),
-    now,
-    store: repository,
-    provider: guardedProvider,
-    acknowledgeRecoverySnapshot,
-  })
-  await assertAuthority()
-  return { status: "outgoing_step", step }
+  const nativeProvider = plan.nativeTreasury
+    ? createBuyerCheckoutSparkNativeTreasuryProvider({
+        checkoutId: plan.checkoutId,
+        manager,
+        repository,
+        assertAuthority,
+        assertCurrent: assertSession,
+        now,
+      })
+    : null
+  const nativeStore = {
+    ...(repository.nativeTreasuryAdmissionScope &&
+    repository.saveTreasuryPreProviderRetry
+      ? {
+          nativeAdmissionScope: repository.nativeTreasuryAdmissionScope,
+          savePreProviderRetry: (
+            state: CheckoutSparkSettledReconciliation,
+            revision: number,
+            cancellation: Parameters<
+              NonNullable<typeof repository.saveTreasuryPreProviderRetry>
+            >[2]
+          ) =>
+            repository.saveTreasuryPreProviderRetry!(
+              state,
+              revision,
+              cancellation,
+              assertSession
+            ),
+        }
+      : {}),
+    load: repository.load.bind(repository),
+    save: (state: CheckoutSparkSettledReconciliation, revision: number) =>
+      repository.save(state, revision, assertSession),
+    savePrepared: (
+      state: CheckoutSparkSettledReconciliation,
+      revision: number,
+      settlement: Parameters<typeof repository.saveTreasuryPrepared>[2]
+    ) =>
+      repository.saveTreasuryPrepared(
+        state,
+        revision,
+        settlement,
+        assertSession
+      ),
+  }
+  const nextId = input.legId
+  if (nextId === null)
+    throw new Error("Checkout Spark funding already settled.")
+  const result = await runCheckoutSparkFinancialWorkflow(
+    {
+      checkoutId: plan.checkoutId,
+      planDigest: plan.planDigest,
+      legId: nextId,
+      actor: "shopper",
+      mode: "advance",
+      inspectionOnly: input.inspectionOnly,
+    },
+    {
+      store: repository,
+      assertCurrent: assertAuthority,
+      now,
+      outgoing: guardedProvider,
+      recordPaid,
+      preparation: createBuyerCheckoutSparkLegPreparationPorts(
+        {
+          checkoutId: plan.checkoutId,
+          planDigest: plan.planDigest,
+          legId: nextId,
+          shouldContinue: () =>
+            currentSessionMatches() && now() < plan.takeoverAt,
+        },
+        {
+          repository,
+          walletManager: manager,
+          acknowledgeRecoverySnapshot,
+          nowMs: now,
+        }
+      ),
+      ...(dependencies.prepareLeg
+        ? {
+            prepareLeg: (legId: string) =>
+              dependencies.prepareLeg!(
+                {
+                  checkoutId: plan.checkoutId,
+                  planDigest: plan.planDigest,
+                  legId,
+                  shouldContinue: () =>
+                    currentSessionMatches() && now() < plan.takeoverAt,
+                },
+                {
+                  repository,
+                  walletManager: manager,
+                  acknowledgeRecoverySnapshot,
+                  nowMs: now,
+                }
+              ),
+          }
+        : {}),
+      ...(nativeProvider
+        ? {
+            native: {
+              store: nativeStore,
+              provider: {
+                reconcile: nativeProvider.reconcile,
+                preflight: async (
+                  target: Parameters<typeof nativeProvider.preflight>[0],
+                  cancellation: Parameters<typeof nativeProvider.preflight>[1]
+                ) => {
+                  await assertDispatchAuthority()
+                  return nativeProvider.preflight(target, cancellation)
+                },
+                send: async (
+                  target: Parameters<typeof nativeProvider.send>[0]
+                ) => {
+                  await assertDispatchAuthority()
+                  try {
+                    return await nativeProvider.send(target)
+                  } finally {
+                    admittedProviderDrained = true
+                  }
+                },
+              },
+              proveCommerce: (state: CheckoutSparkSettledReconciliation) =>
+                proveBuyerCheckoutSparkTreasuryCommerce({
+                  state,
+                  manager,
+                  repository,
+                  now,
+                  assertAuthority,
+                  assertCurrent: assertSession,
+                }),
+            },
+          }
+        : {}),
+      acknowledgeRecoverySnapshot,
+      outgoingStep: dependencies.outgoingStep,
+      treasuryStep: dependencies.treasuryStep,
+    }
+  )
+  if (result.status === "payout_prepared") return result
+  if (result.status !== "outgoing_step")
+    throw new Error("Checkout Spark execution state is unavailable.")
+  if (result.step.outcome === "paid" || result.step.outcome === "already_paid")
+    assertSession()
+  else await assertAuthority()
+  return result
 }

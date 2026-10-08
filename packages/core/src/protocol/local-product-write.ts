@@ -30,6 +30,20 @@ import {
 } from "./product-listing-delivery"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
 import type { SignedPublicNostrEvent } from "./signed-event"
+import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
+
+async function admitLocalProductWriteEvent(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const admission = await admitPublicEvent(event)
+  if (admission.status !== "verified") {
+    throw new Error("Local product write verification " + admission.status)
+  }
+  return admission.event
+}
 
 export interface LocalProductWriteExpectedRevision {
   addressId: string
@@ -891,6 +905,15 @@ export async function withLocalLegacyProductWriteStage<T>(
   input: LocalLegacyProductWriteStageInput,
   stage: () => Promise<T>
 ): Promise<T> {
+  // Admission may wait before taking coordinate locks; retain the captured
+  // recovery authority and exact bytes across that wait.
+  input = {
+    ...input,
+    expectedRevisions: structuredClone(input.expectedRevisions),
+    signedListings: structuredClone(input.signedListings),
+    signedDeletion: structuredClone(input.signedDeletion),
+    recovery: structuredClone(input.recovery),
+  }
   const merchantPubkey = input.merchantPubkey.trim().toLowerCase()
   const expected = assertedExpectedRevisions(
     input.expectedRevisions,
@@ -904,7 +927,9 @@ export async function withLocalLegacyProductWriteStage<T>(
   })
   const deletion = input.signedDeletion
   const deletionCoordinates = deletion
-    ? projectSignedProductDeletionForLocalCommit(deletion)
+    ? projectSignedProductDeletionForLocalCommit(
+        await admitLocalProductWriteEvent(deletion)
+      )
         .map((row) => row.addressId)
         .filter((addressId): addressId is string => !!addressId)
     : []
@@ -1105,7 +1130,9 @@ export async function withLocalLegacyProductWriteStage<T>(
   })
 }
 
-function prepareLocalProductWrite(input: LocalProductWriteCommitInput): {
+async function prepareLocalProductWrite(
+  input: LocalProductWriteCommitInput
+): Promise<{
   intent: LocalProductWriteIntent
   projections: CachedProduct[]
   tombstones: CachedProductTombstone[]
@@ -1115,7 +1142,7 @@ function prepareLocalProductWrite(input: LocalProductWriteCommitInput): {
   deletionJob: ProductDeletionDeliveryJob | null
   shippingJobs: LocalProductShippingJob[]
   expected: Map<string, string | null>
-} {
+}> {
   const merchantPubkey = input.merchantPubkey.trim().toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(merchantPubkey) || !input.intentId.trim()) {
     throw new Error("Product-write identity is invalid")
@@ -1169,19 +1196,23 @@ function prepareLocalProductWrite(input: LocalProductWriteCommitInput): {
   ) {
     throw new Error("Product listing delivery intent is not fresh")
   }
-  const projections = signedListings.map((event) => {
-    if (event.pubkey !== merchantPubkey) {
-      throw new Error("Signed listing author does not match the merchant")
-    }
-    const projection = projectSignedProductListingForLocalCommit(event)
-    if (
-      projection.id !== productAddressId(event) ||
-      projection.eventId !== event.id
-    ) {
-      throw new Error("Signed listing projection changed its coordinate")
-    }
-    return projection
-  })
+  const projections = await Promise.all(
+    signedListings.map(async (event) => {
+      if (event.pubkey !== merchantPubkey) {
+        throw new Error("Signed listing author does not match the merchant")
+      }
+      const projection = projectSignedProductListingForLocalCommit(
+        await admitLocalProductWriteEvent(event)
+      )
+      if (
+        projection.id !== productAddressId(event) ||
+        projection.eventId !== event.id
+      ) {
+        throw new Error("Signed listing projection changed its coordinate")
+      }
+      return projection
+    })
+  )
   const listingCoordinates = projections.map((row) => row.id)
   if (new Set(listingCoordinates).size !== listingCoordinates.length) {
     throw new Error("Product write repeats a coordinate")
@@ -1232,10 +1263,12 @@ function prepareLocalProductWrite(input: LocalProductWriteCommitInput): {
   }
 
   const signedDeletion = deletionJob?.signedEvent
+  const admittedDeletion = signedDeletion
+    ? await admitLocalProductWriteEvent(signedDeletion)
+    : undefined
   if (
     deletionJob &&
     (!signedDeletion ||
-      !isValidSignedPublicNostrEvent(signedDeletion) ||
       signedDeletion.kind !== EVENT_KINDS.DELETION ||
       signedDeletion.pubkey !== merchantPubkey ||
       deletionJob.id !== signedDeletion.id ||
@@ -1262,8 +1295,8 @@ function prepareLocalProductWrite(input: LocalProductWriteCommitInput): {
   ) {
     throw new Error("Product deletion delivery intent is not fresh")
   }
-  const tombstones = signedDeletion
-    ? projectSignedProductDeletionForLocalCommit(signedDeletion)
+  const tombstones = admittedDeletion
+    ? projectSignedProductDeletionForLocalCommit(admittedDeletion)
     : []
   const deletionCoordinates = tombstones
     .map((row) => row.addressId)
@@ -1493,7 +1526,21 @@ async function supersedePriorListingReplay(input: {
 export async function commitLocalProductWrite(
   input: LocalProductWriteCommitInput
 ): Promise<LocalProductWriteIntent> {
-  const prepared = prepareLocalProductWrite(input)
+  // Verification can wait on a worker. Seal every mutable input before that
+  // wait, preserving the exact signed delivery bytes and CAS authority.
+  input = {
+    ...input,
+    expectedRevisions: structuredClone(input.expectedRevisions),
+    additionalExpectedRevisions: structuredClone(
+      input.additionalExpectedRevisions
+    ),
+    listingJob: structuredClone(input.listingJob),
+    deletionJob: structuredClone(input.deletionJob),
+    shippingJobs: structuredClone(input.shippingJobs),
+    stock: structuredClone(input.stock),
+    reconcileListingJobIds: structuredClone(input.reconcileListingJobIds),
+  }
+  const prepared = await prepareLocalProductWrite(input)
   const reconcileListingJobIds = new Set(input.reconcileListingJobIds ?? [])
   const {
     intent,

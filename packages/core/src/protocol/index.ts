@@ -1,5 +1,27 @@
 export * from "./kinds"
-export * from "./products"
+export {
+  PRODUCT_SHIPPING_ADJUSTMENTS_TAG,
+  MAX_PRODUCT_IMAGE_CANDIDATES,
+  PRODUCT_PUBLIC_ZAPS_TAG,
+  PRODUCT_ZAP_MESSAGE_POLICY_TAG,
+  type ProductListingEventDraft,
+  type BuildProductListingEventDraftInput,
+  type ProductDeletionEventTarget,
+  type ProductDeletionEventDraft,
+  type BuildProductDeletionEventDraftInput,
+  canonicalizeProductTags,
+  canonicalizeProductSpecifications,
+  buildProductDeletionEventDraft,
+  buildProductListingEventDraft,
+  getProductImageCandidates,
+  getProductProtocolImages,
+  hasMarketVisibleProductImage,
+  type ProductJsonDisplayProjection,
+  projectProductJsonDisplayFields,
+  normalizeProductJsonDisplaySummary,
+  normalizeProductSummaryForDisplay,
+  parseProductEvent,
+} from "./products"
 export * from "./product-supplier-allocation"
 export * from "./product-supplier-readiness"
 export * from "./product-reference"
@@ -50,11 +72,18 @@ export * from "./checkout-spark-merchant-reconciliation-worker"
 export * from "./checkout-spark-merchant-order-witness"
 export * from "./checkout-spark-retired-settlement"
 export * from "./checkout-spark-settled-router-repository"
+export {
+  runCheckoutSparkFinancialWorkflow,
+  type CheckoutSparkFinancialWorkflowInput,
+  type CheckoutSparkFinancialWorkflowPorts,
+  type CheckoutSparkFinancialWorkflowResult,
+} from "./checkout-spark-financial-workflow"
 export * from "./checkout-spark-settled-outgoing"
 export * from "./checkout-spark-settled-outgoing-history"
 export * from "./checkout-spark-settled-native-outgoing"
 export * from "./spark-lightning-exact-history"
 export * from "./checkout-spark-signed-allocation"
+export { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
 export * from "./checkout-spark-shipping-evidence"
 export * from "./checkout-spark-commerce-pricing"
 export * from "./checkout-spark-pickup-evidence"
@@ -119,13 +148,140 @@ export * from "./protected-read-session-lifecycle"
 export * from "./relay-executor"
 export * from "./protected-inbox-read"
 export * from "./protected-read-state"
-export * from "./shipping"
-export * from "./shipping-policy"
-export * from "./event-market"
+export {
+  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+  FIXED_PRODUCT_SHIPPING_D_TAG_SUFFIX,
+  SHIPPING_OPTION_READ_BATCH_SIZE,
+  type ShippingDeletionFallbackStorage,
+  type ShippingTestOverrides,
+  __setShippingTestOverrides,
+  __resetShippingTestOverrides,
+  getShippingOptionAddress,
+  getProductShippingOptionDTag,
+  getProductShippingOptionAddress,
+  type ProductFulfillmentIntent,
+  compileProductFulfillmentIntent,
+  type ShippingOptionEventDraft,
+  buildFixedShippingOptionEventDraft,
+  type ShippingOptionAddress,
+  parseShippingOptionAddress,
+  type ShippingOptionDeletionEventDraft,
+  buildShippingOptionDeletionEventDraft,
+  type ShippingCountryConfig,
+  type ShippingConfig,
+  type ParsedShippingOption,
+  hasCurrentShippingPolicyEvidence,
+  type ProductFulfillmentResolutionReason,
+  type PreparedProductFulfillment,
+  type ResolvableProductFulfillment,
+  type ResolvedCartShippingCostStatus,
+  type CartShippingCostLine,
+  type ResolvedCartShippingCostSummary,
+  resolveCartShippingCost,
+  parseShippingOptionEvent,
+  type ShippingOptionReadOptions,
+  getShippingOptions,
+  selectLatestShippingOptions,
+  type ShippingOptionReadBatch,
+  buildShippingOptionReadBatches,
+  type ShippingOptionsDetailedResult,
+  getShippingOptionsByCoordinates,
+  getShippingOptionsByCoordinatesDetailed,
+  rememberPublishedShippingEvidence,
+  resolveProductFulfillment,
+  applyPreparedProductFulfillment,
+  isBuyerCountryEligible,
+  normalizeShippingPostalCode,
+  type ShippingDestinationEligibility,
+  getShippingDestinationEligibility,
+} from "./shipping"
+export {
+  MERCHANT_SHIPPING_POLICY_D_TAG,
+  SHIPPING_POLICY_EXTENSION_TAG,
+  shippingPolicyBandSchema,
+  shippingPolicyRuleSchema,
+  shippingPolicyTableSchema,
+  shippingPolicyV1Schema,
+  shippingPolicyV2Schema,
+  shippingPolicySchema,
+  type ShippingPolicyV1,
+  type ShippingPolicyV2,
+  type ShippingPolicy,
+  type ShippingPolicyTable,
+  type ShippingPolicyRule,
+  type ShippingPolicyBand,
+  normalizeShippingPolicyRegion,
+  normalizeShippingPolicySubdivision,
+  parseShippingPolicy,
+  shippingMoneyToMinorUnits,
+  shippingMinorUnitsToAmount,
+  getMerchantShippingPolicyCoordinate,
+  buildShippingPolicyEventDraft,
+  parseShippingPolicyEventTags,
+  type ShippingPolicyRevision,
+  type MerchantShippingPolicyReadResult,
+  fetchMerchantShippingPolicy,
+  publishMerchantShippingPolicy,
+  withdrawMerchantShippingPolicy,
+  hasSameShippingPolicyQuote,
+  shippingPolicyQuoteSchema,
+  type ShippingPolicyQuote,
+  type ShippingPolicyQuoteV1,
+  type ShippingPolicyQuoteV2,
+  type ShippingPolicyQuoteItem,
+  type ShippingPolicyDestination,
+  type ShippingPolicyQuoteResult,
+  type ShippingPolicyPreviewItem,
+  type ShippingPolicyCalculation,
+  type ShippingPolicyPreviewResult,
+  convertShippingMinor,
+  previewShippingPolicy,
+  quoteShippingPolicy,
+  getShippingDimensionWarnings,
+} from "./shipping-policy"
+export {
+  EVENT_MARKET_ADDRESSABLE_KINDS,
+  EVENT_MARKET_CALENDAR_KINDS,
+  type AddressableEventCoordinate,
+  type DecodedEventMarketReference,
+  type EventMarketEventDraft,
+  type EventMarketCalendarDraftInput,
+  type ParsedEventMarketCalendar,
+  parseAddressableCoordinate,
+  buildEventMarketShareRelayHints,
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
+  encodeEventMarketShareLink,
+  buildEventMarketCalendarDraft,
+  parseEventMarketCalendarEvent,
+  type EventMarketDeletionEvidence,
+  isEventMarketAddressableRevisionDeleted,
+  __setEventMarketTestOverrides,
+  __resetEventMarketTestOverrides,
+  type EventMarketReadPlan,
+  getEventMarketReadPlan,
+} from "./event-market"
 export * from "./event-market-enrollment"
 export * from "./event-market-roster"
-export * from "./event-market-schedule"
-export * from "./event-market-authorization"
+export {
+  type ParsedEventMarketSeries,
+  type EventMarketSeriesResolution,
+  type EventMarketSchedule,
+  buildEventMarketSeriesDraft,
+  parseEventMarketSeriesEvent,
+  resolveEventMarketSeries,
+  resolveEventMarketOccurrence,
+} from "./event-market-schedule"
+export {
+  type EventMarketAuthorizationState,
+  type EventMarketAuthorizationRepair,
+  type ParsedEventMarketAuthorization,
+  type EventMarketAuthorizationDraftInput,
+  type EventMarketAuthorizationResolution,
+  buildEventMarketAuthorizationDraft,
+  parseEventMarketAuthorizationEvent,
+  resolveEventMarketAuthorization,
+} from "./event-market-authorization"
 export * from "./event-market-authorization-read"
 export * from "./event-market-authorization-publish"
 export * from "./event-guest-checkout"
@@ -165,6 +321,13 @@ export type {
   VerifySignedPublicNostrEventsResult,
 } from "./relay-reader"
 export * from "./event-market-calendar-retry"
+
+export {
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+  type PublicEventAdmission,
+} from "./verified-public-event"
 export * from "./commerce-inbox"
 export * from "./commerce-message-codec"
 export * from "./private-file-message"

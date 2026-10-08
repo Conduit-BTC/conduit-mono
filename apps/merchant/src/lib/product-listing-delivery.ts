@@ -187,10 +187,16 @@ async function cacheCurrentListingEvidence(
       }
       return
     }
-    await cacheSignedProductListingEvent(new NDKEvent(undefined, event), {
-      sourceRelayUrls,
-      persistence,
-    })
+    await cacheSignedProductListingEvent(
+      new NDKEvent(undefined, {
+        ...event,
+        tags: event.tags.map((tag) => [...tag]),
+      }),
+      {
+        sourceRelayUrls,
+        persistence,
+      }
+    )
   })
 }
 
@@ -566,7 +572,10 @@ export async function resumeStagedProductListingDeliveries(
     restoreLocalListingEvidence: customRestoreListing,
     restoreLocalDeletionEvidence: restoreDeletion = async (signedEvent) => {
       await cacheSignedProductDeletionEvent(
-        new NDKEvent(undefined, signedEvent)
+        new NDKEvent(undefined, {
+          ...signedEvent,
+          tags: signedEvent.tags.map((tag) => [...tag]),
+        })
       )
     },
     ...listingOptions

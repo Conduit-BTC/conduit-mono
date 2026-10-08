@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { wrapPrivateMessage } from "../packages/core/src/protocol/messaging"
@@ -65,7 +66,7 @@ class MemoryStorage {
   }
 }
 
-function fixture(
+async function fixture(
   kind: IdentityKind,
   fixedShippingSats?: number,
   takeoverAfterMs = 45 * 60_000
@@ -103,32 +104,38 @@ function fixture(
           merchantSecret
         )
   const shipping = shippingEvent
-    ? parseShippingOptionEvent(shippingEvent)!
+    ? parseShippingOptionEvent(await admitFixture(shippingEvent))!
     : undefined
-  const products = [300, 400].map((amount, index) => {
-    const event = finalizeEvent(
-      {
-        kind: 30_402,
-        created_at: createdAt / 1_000,
-        tags: [
-          ["d", `digital-${index}`],
-          ["title", "Synthetic digital item"],
-          ["price", String(amount), "SAT"],
-          ["type", "simple", shipping && index === 0 ? "physical" : "digital"],
-          ...(shipping && index === 0
-            ? [["shipping_option", shipping.id]]
-            : []),
-        ],
-        content: "Synthetic test product",
-      },
-      merchantSecret
-    )
-    return {
-      ...parseProductEvent(event),
-      sourceEventId: event.id,
-      sourceEvent: event,
-    }
-  })
+  const products = await Promise.all(
+    [300, 400].map(async (amount, index) => {
+      const event = finalizeEvent(
+        {
+          kind: 30_402,
+          created_at: createdAt / 1_000,
+          tags: [
+            ["d", `digital-${index}`],
+            ["title", "Synthetic digital item"],
+            ["price", String(amount), "SAT"],
+            [
+              "type",
+              "simple",
+              shipping && index === 0 ? "physical" : "digital",
+            ],
+            ...(shipping && index === 0
+              ? [["shipping_option", shipping.id]]
+              : []),
+          ],
+          content: "Synthetic test product",
+        },
+        merchantSecret
+      )
+      return {
+        ...parseProductEvent(await admitFixture(event)),
+        sourceEventId: event.id,
+        sourceEvent: event,
+      }
+    })
+  )
   const items: OrderSchema["items"] = [
     {
       productId: products[0]!.id,
@@ -349,7 +356,7 @@ function fixture(
 }
 
 it("publishes the first approved order after the buyer dispatch cutoff while its funding invoice remains valid", async () => {
-  const f = fixture("signed_in", undefined, 120_000)
+  const f = await fixture("signed_in", undefined, 120_000)
   f.dependencies.now = () => f.plan.createdAt + 130_000
   await publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)
   expect(f.calls.published).toHaveLength(1)
@@ -362,7 +369,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     it.each([0, 50])(
       "binds mixed physical/digital terms with %i SAT unit shipping offline",
       async (shippingSats) => {
-        const f = fixture(kind, shippingSats)
+        const f = await fixture(kind, shippingSats)
         await publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)
         const [rumor, , , options] = f.calls.published[0]!
         expect(options?.orderLifecycle).toMatchObject({
@@ -443,7 +450,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
       "coordinate",
       "variation",
     ] as const)("rejects %s before order publication", async (change) => {
-      const f = fixture(kind, 50)
+      const f = await fixture(kind, 50)
       const item = f.input.order.items[0]!
       if (change === "missing_source") f.input.sourceEvents = undefined
       else if (change === "changed_source") {
@@ -469,7 +476,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     it.each(["missing", "inconsistent", "outside_zone"] as const)(
       "rejects %s destination despite caller authorization flags",
       async (change) => {
-        const f = fixture(kind, 50)
+        const f = await fixture(kind, 50)
         f.input.addressValidity = "valid"
         f.input.shippingZoneEligibility = "eligible"
         if (change === "missing") delete f.input.order.shippingAddress
@@ -492,7 +499,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     )
 
     it("pins the private destination and signed shipping revision before awaiting funding authorization", async () => {
-      const f = fixture(kind, 50)
+      const f = await fixture(kind, 50)
       const expectedAddress = structuredClone(f.input.order.shippingAddress)
       const load = f.dependencies.loadSettledFunding!
       f.dependencies.loadSettledFunding = async (...args) => {
@@ -510,7 +517,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     it.each(["country_name", "postal_rule", "shipping_cost_currency"] as const)(
       "does not create a Merchant witness for changed public %s snapshot",
       async (change) => {
-        const f = fixture(kind, 50)
+        const f = await fixture(kind, 50)
         await publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)
         const rumor = f.calls.published[0]![0]
         const payload: OrderSchema = JSON.parse(rumor.content)
@@ -544,7 +551,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     ] as const)(
       "does not retain Merchant order evidence for %s",
       async (change) => {
-        const f = fixture(kind, 50)
+        const f = await fixture(kind, 50)
         await publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)
         const rumor = f.calls.published[0]![0]
         const payload: OrderSchema = JSON.parse(rumor.content)
@@ -571,7 +578,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
   "%s multi-item settled bound order",
   (kind) => {
     it("delivers one combined order and authenticates every line against one merchant recovery plan offline", async () => {
-      const f = fixture(kind)
+      const f = await fixture(kind)
       const result = await publishCheckoutSparkSettledBoundOrder(
         f.input,
         f.dependencies
@@ -722,7 +729,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     it.each(["price_allocation", "quantity", "product_coordinate"] as const)(
       "rejects same-total per-line %s drift before publication or binding",
       async (field) => {
-        const f = fixture(kind)
+        const f = await fixture(kind)
         const [first, second] = f.input.order.items
         if (!first || !second) throw new Error("Expected two digital lines")
         if (field === "price_allocation") {
@@ -753,7 +760,7 @@ describe.each(["signed_in", "guest_ephemeral"] as const)(
     it.each(["BTC", "MSAT"])(
       "rejects unsupported %s source prices before publication",
       async (currency) => {
-        const f = fixture(kind)
+        const f = await fixture(kind)
         f.input.order.items[1]!.sourcePrice!.normalizedCurrency = currency
         await expect(
           publishCheckoutSparkSettledBoundOrder(f.input, f.dependencies)

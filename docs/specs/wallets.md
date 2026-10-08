@@ -388,6 +388,24 @@ whole-wallet inspection. Late or unrelated deposits are not automatically
 collected; recovery material stays available when retirement is not proven.
 These protocol rules do not publish a new effective legal-document version.
 
+Completed router execution queues may be cleaned only after positive terminal
+readback and verified persistence of their exact encrypted recovery evidence.
+Retain encrypted Merchant progress and the replay-blocking tombstone; active
+or uncertain entries and wallet credentials are not removed by queue cleanup.
+Interrupted cleanup resumes from that marker without sending another payment.
+
+Funding below the frozen commerce-plus-Conduit weights requires reconciliation,
+not proportional commerce haircuts. Existing historical short-funded evidence
+remains inspectable, without new preparation or dispatch authority.
+
+A positively prevented native provider submission may retain a durable terminal
+cancellation and retry the exact intent through an opaque, process-local
+capability bound to the committed revision. Durable readback precedes retry.
+Imported or reloaded labels, absent lookups and uncertain SDK errors cannot
+mint that capability. Actual or potentially actual provider invocation remains
+non-replayable until independently reconciled. The pinned provider supplies no
+general cross-device proof of non-submission.
+
 ### Lightning closed-attempt invoice renewal
 
 Merchant recovery may obtain a fresh invoice from the same frozen Lightning

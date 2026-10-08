@@ -30,6 +30,8 @@ const pauseMessages: Record<CheckoutSparkSettledShopperPauseReason, string> = {
     "The payout fee exceeds its approved limit. Payment stays paused; do not pay separately.",
   insufficient_funds:
     "Verified funds do not cover the approved payout and fee limit. Keep the saved recovery details; do not pay separately.",
+  funding_shortfall:
+    "The original payment needs reconciliation. Approved payouts have not been reduced; do not pay again.",
   fee_unavailable:
     "The payout fee could not be checked. Payment stays paused; do not pay separately.",
   recipient_unverified:

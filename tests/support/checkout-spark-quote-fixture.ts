@@ -1,5 +1,5 @@
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
-import { parseProductEvent } from "@conduit/core"
+import { parseCheckoutSparkSignedProductFields } from "../../packages/core/src/protocol/checkout-spark-product-fields"
 import type { CheckoutSparkQuoteAuthority } from "../../apps/market/src/lib/checkout-spark-quote-authority"
 
 /** Only the fields consumed by the router's frozen-quote boundary. */
@@ -45,7 +45,10 @@ export function checkoutSparkQuoteFixture(
     },
     products: [
       signedProduct
-        ? { ...parseProductEvent(signedProduct), sourceEventId: productEventId }
+        ? {
+            ...parseCheckoutSparkSignedProductFields(signedProduct),
+            sourceEventId: productEventId,
+          }
         : {
             id: productCoordinate,
             sourceEventId: productEventId,

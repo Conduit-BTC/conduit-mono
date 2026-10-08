@@ -12,6 +12,7 @@ import {
   validateCheckoutSparkRetiredSettlementRecord,
   DexieCheckoutSparkSettledRepository,
   assertCheckoutSparkSettledRecoveryProgression,
+  assertCheckoutSparkNativePreProviderRetry,
   deriveCheckoutSparkNativeTreasuryInvoiceId,
   deriveCheckoutSparkNativeTreasuryBudget,
   prepareCheckoutSparkNativeTreasury,
@@ -34,18 +35,24 @@ function engine(
     missing?: boolean
     ackFail?: number
     failedProofAt?: number
+    notSent?: boolean
+    throwSend?: boolean
+    cancelSaveFail?: "before" | "after"
+    retrySaveFail?: "before" | "after"
   } = {}
 ) {
   let state = options.state ?? f.state
   let revision = 1
   let sends = 0
+  let submittedSends = 0
   let proofs = 0
   let acks = 0
   let time = AT + 10
   const events: string[] = []
+  const nativeAdmissionScope = Object.freeze({})
   const provider: CheckoutSparkNativeTreasuryProvider = {
     reconcile: async (target) =>
-      sends && !options.missing
+      submittedSends && !options.missing
         ? {
             invoiceId: target.intent.invoiceId,
             status: "paid",
@@ -58,6 +65,9 @@ function engine(
     send: async () => {
       sends++
       events.push("send")
+      if (options.throwSend) throw new Error("Provider result lost")
+      if (options.notSent && sends === 1) return { status: "not_sent" }
+      submittedSends++
       return { status: "submitted" }
     },
   }
@@ -69,13 +79,50 @@ function engine(
     now: () => time++,
     provider,
     store: {
+      nativeAdmissionScope,
       load: async () => ({ status: "active", revision, state }),
       save: async (next, expected) => {
         expect(expected).toBe(revision)
+        if (
+          next.treasuryFinalization!.status === "terminal_failure" &&
+          options.cancelSaveFail === "before"
+        )
+          throw new Error("Write interrupted")
         assertCheckoutSparkSettledRecoveryProgression(state, next)
         state = next
         revision++
         events.push(`save:${state.treasuryFinalization!.status}`)
+        if (
+          next.treasuryFinalization!.status === "terminal_failure" &&
+          options.cancelSaveFail === "after"
+        )
+          throw new Error("Callback interrupted")
+        return { status: "active", revision, state }
+      },
+      savePreProviderRetry: async (next, expected, capability) => {
+        expect(expected).toBe(revision)
+        assertCheckoutSparkNativePreProviderRetry(
+          nativeAdmissionScope,
+          state,
+          next,
+          expected,
+          capability
+        )
+        if (options.retrySaveFail === "before")
+          throw new Error("Write interrupted")
+        assertCheckoutSparkSettledRecoveryProgression(
+          recordCheckoutSparkNativeTreasuryStatus(state, {
+            invoiceId: state.plan.nativeTreasury!.invoiceId,
+            status: "submitted",
+            observedAt: state.treasuryFinalization!.observedAt!,
+          }),
+          next
+        )
+        state = next
+        revision++
+        events.push("save:submitted")
+        if (options.retrySaveFail === "after")
+          throw new Error("Callback interrupted")
         return { status: "active", revision, state }
       },
       savePrepared: async (next, expected, record) => {
@@ -172,9 +219,10 @@ describe("Checkout Spark native treasury accounting", () => {
       if (change === "credit")
         record.credit = { ...record.credit!, transferId: "other-deposit" }
       if (change === "recipient")
-        record.paidLegs = record.paidLegs.map(
-          ({ recipientVerified: _, ...leg }) => leg
-        )
+        record.paidLegs = record.paidLegs.map((leg) => ({
+          ...leg,
+          recipientVerified: false,
+        }))
       if (change === "missing") record.paidLegs = []
       if (change === "debit")
         record.paidLegs = record.paidLegs.map((leg) => ({
@@ -328,48 +376,212 @@ describe("Checkout Spark native treasury durable step", () => {
     expect(e.sends()).toBe(0)
     expect(e.state().treasuryFinalization!.status).toBe("prepared")
   })
-  it("keeps recovery and performs no native send for a zero attributed remainder", async () => {
-    const f = fixture(2, 1)
-    const budget = deriveCheckoutSparkNativeTreasuryBudget(f.state, f.record)
-    expect(budget.authorizedDebitSats).toBe(0)
-    expect(() =>
-      restoreCheckoutSparkSettledReconciliation({
-        ...f.state,
-        updatedAt: AT + 4,
-        legs: f.state.legs.map((leg, index) =>
-          index ? { ...leg, status: "prepared", observedAt: AT + 4 } : leg
-        ),
-        treasuryFinalization: {
-          intent: {
-            ...budget,
-            invoiceId: f.plan.nativeTreasury!.invoiceId,
-            invoiceRequest: f.plan.nativeTreasury!.invoiceRequest,
-            amountSats: 0,
-            preparedAt: AT + 4,
-          },
-          status: "prepared",
-          providerTransferId: null,
-          observedAt: AT + 4,
-          finalFeeSats: null,
-          finalDebitSats: null,
-        },
-      })
-    ).toThrow()
-    const e = engine(f)
-    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
-      "zero_remainder"
-    )
+  it("rejects short funding before preparing or sending a native payment", () => {
+    const e = engine()
+    expect(() => fixture(2, 1)).toThrow("funding shortfall")
     expect(e.state().treasuryFinalization!.intent).toBeNull()
     expect(e.sends()).toBe(0)
   })
-  it("does not send after fresh commerce proof disappears at the last boundary", async () => {
+  it("durably cancels a proven pre-provider failure and retries only the exact intent", async () => {
     const e = engine(fixture(), { failedProofAt: 3 })
     expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
       "provider_evidence_unavailable"
     )
-    expect(e.state().treasuryFinalization!.status).toBe("submitted")
+    expect(e.state().treasuryFinalization!.status).toBe("terminal_failure")
+    expect(e.sends()).toBe(0)
+    const originalIntent = e.state().treasuryFinalization!.intent
+    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).outcome).toBe(
+      "paid"
+    )
+    expect(e.state().treasuryFinalization!.intent).toEqual(originalIntent)
+    expect(e.sends()).toBe(1)
+  })
+  it("retries after a submitted-snapshot ACK failure without changing the invoice", async () => {
+    const e = engine(fixture(), { ackFail: 2 })
+    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
+      "recovery_handoff_unavailable"
+    )
+    expect(e.state().treasuryFinalization!.status).toBe("terminal_failure")
+    const intent = e.state().treasuryFinalization!.intent
+    expect(e.sends()).toBe(0)
+    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).outcome).toBe(
+      "paid"
+    )
+    expect(e.state().treasuryFinalization!.intent).toEqual(intent)
+    expect(e.sends()).toBe(1)
+  })
+  it("rejects authority loss after the final ACK without calling the provider", async () => {
+    const e = engine()
+    let expired = false
+    const input = {
+      ...e.input,
+      now: () => (expired ? e.state().plan.takeoverAt : e.input.now()),
+      acknowledgeRecoverySnapshot: async (
+        state: CheckoutSparkSettledReconciliation
+      ) => {
+        await e.input.acknowledgeRecoverySnapshot(state)
+        if (state.treasuryFinalization?.status === "submitted") expired = true
+      },
+    }
+    expect((await runCheckoutSparkNativeTreasuryStep(input)).reason).toBe(
+      "authority_transferred"
+    )
+    expect(e.state().treasuryFinalization!.status).toBe("terminal_failure")
+    expect(e.sends()).toBe(0)
+    expect((await runCheckoutSparkNativeTreasuryStep(input)).reason).toBe(
+      "authority_transferred"
+    )
     expect(e.sends()).toBe(0)
   })
+  it("binds positive retry authority to the exact scope, revision, and snapshot", async () => {
+    const e = engine(fixture(), { failedProofAt: 3 })
+    await runCheckoutSparkNativeTreasuryStep(e.input)
+    const input = {
+      ...e.input,
+      store: {
+        ...e.input.store,
+        savePreProviderRetry: async (
+          ...args: Parameters<
+            NonNullable<
+              CheckoutSparkNativeTreasuryStepInput["store"]["savePreProviderRetry"]
+            >
+          >
+        ) => {
+          const [next, revision, capability] = args
+          const previous = e.state()
+          const scope = e.input.store.nativeAdmissionScope!
+          for (const [alteredScope, alteredState, alteredRevision] of [
+            [{}, previous, revision],
+            [scope, previous, revision + 1],
+            [
+              scope,
+              { ...previous, updatedAt: previous.updatedAt + 1 },
+              revision,
+            ],
+          ] as const) {
+            expect(() =>
+              assertCheckoutSparkNativePreProviderRetry(
+                alteredScope,
+                alteredState,
+                next,
+                alteredRevision,
+                capability
+              )
+            ).toThrow()
+          }
+          expect(() =>
+            assertCheckoutSparkNativePreProviderRetry(
+              scope,
+              previous,
+              {
+                ...next,
+                treasuryFinalization: {
+                  ...next.treasuryFinalization!,
+                  intent: {
+                    ...next.treasuryFinalization!.intent!,
+                    amountSats:
+                      next.treasuryFinalization!.intent!.amountSats + 1,
+                  },
+                },
+              },
+              revision,
+              capability
+            )
+          ).toThrow()
+          return e.input.store.savePreProviderRetry!(...args)
+        },
+      },
+    }
+    expect((await runCheckoutSparkNativeTreasuryStep(input)).outcome).toBe(
+      "paid"
+    )
+    expect(e.sends()).toBe(1)
+  })
+  it("accepts only the pinned adapter's positive not-sent result, not a thrown result", async () => {
+    const cancelled = engine(fixture(), { notSent: true })
+    expect(
+      (await runCheckoutSparkNativeTreasuryStep(cancelled.input)).reason
+    ).toBe("provider_evidence_unavailable")
+    expect(
+      (await runCheckoutSparkNativeTreasuryStep(cancelled.input)).outcome
+    ).toBe("paid")
+    expect(cancelled.sends()).toBe(2)
+    const uncertain = engine(fixture(), { throwSend: true })
+    expect(
+      (await runCheckoutSparkNativeTreasuryStep(uncertain.input)).outcome
+    ).toBe("send_ambiguous")
+    expect(
+      (await runCheckoutSparkNativeTreasuryStep(uncertain.input)).reason
+    ).toBe("prior_possible_send")
+    expect(uncertain.sends()).toBe(1)
+  })
+  it("never trusts an imported or reloaded cancellation label", async () => {
+    const f = fixture()
+    const local = engine(f, { failedProofAt: 3 })
+    await runCheckoutSparkNativeTreasuryStep(local.input)
+    const reloaded = engine(f, { state: structuredClone(local.state()) })
+    expect(
+      (await runCheckoutSparkNativeTreasuryStep(reloaded.input)).reason
+    ).toBe("prior_possible_send")
+    expect(reloaded.sends()).toBe(0)
+    const prepared = prepareCheckoutSparkNativeTreasury(f.state, {
+      settlement: f.record,
+      preparedAt: AT + 4,
+    })
+    const forged = recordCheckoutSparkNativeTreasuryStatus(prepared, {
+      invoiceId: f.plan.nativeTreasury!.invoiceId,
+      status: "terminal_failure",
+      observedAt: AT + 5,
+    })
+    const imported = engine(f, { state: forged })
+    expect(
+      (await runCheckoutSparkNativeTreasuryStep(imported.input)).reason
+    ).toBe("prior_possible_send")
+    expect(imported.sends()).toBe(0)
+    expect(() =>
+      assertCheckoutSparkNativePreProviderRetry(
+        {},
+        forged,
+        recordCheckoutSparkNativeTreasuryStatus(forged, {
+          invoiceId: f.plan.nativeTreasury!.invoiceId,
+          status: "submitted",
+          observedAt: AT + 6,
+        }),
+        1,
+        {} as never
+      )
+    ).toThrow()
+  })
+  it.each(["before", "after"] as const)(
+    "never retries after interrupted cancellation persistence: %s",
+    async (cancelSaveFail) => {
+      const e = engine(fixture(), { failedProofAt: 3, cancelSaveFail })
+      await expect(
+        runCheckoutSparkNativeTreasuryStep(e.input)
+      ).rejects.toThrow()
+      expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
+        "prior_possible_send"
+      )
+      expect(e.sends()).toBe(0)
+    }
+  )
+  it.each(["before", "after"] as const)(
+    "no provider call follows interrupted retry admission persistence: %s",
+    async (retrySaveFail) => {
+      const e = engine(fixture(), { failedProofAt: 3, retrySaveFail })
+      await runCheckoutSparkNativeTreasuryStep(e.input)
+      await expect(
+        runCheckoutSparkNativeTreasuryStep(e.input)
+      ).rejects.toThrow()
+      expect(e.sends()).toBe(0)
+      if (retrySaveFail === "after") {
+        expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
+          "prior_possible_send"
+        )
+        expect(e.sends()).toBe(0)
+      }
+    }
+  )
   it("requires a stored independent local ledger to CAS-save a native intent", async () => {
     const f = fixture()
     const database = new ConduitDB(`native-treasury-${crypto.randomUUID()}`, {
@@ -408,6 +620,71 @@ describe("Checkout Spark native treasury durable step", () => {
     await expect(
       repository.saveTreasuryPrepared(next, 1, f.record)
     ).rejects.toThrow()
+    database.close()
+    await database.delete()
+  })
+  it("CAS-retries a locally cancelled exact intent across repository instances, not storage domains", async () => {
+    const f = fixture()
+    const database = new ConduitDB(`native-retry-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    await database.checkoutSparkPlanBindings.add({
+      checkoutId: f.plan.checkoutId,
+      planDigest: f.plan.planDigest,
+      merchantSettlement: f.record,
+    })
+    await database.checkoutSparkReconciliations.add({
+      checkoutId: f.plan.checkoutId,
+      revision: 1,
+      state: f.state,
+    })
+    const first = new DexieCheckoutSparkSettledRepository(database)
+    const e = engine(f, { failedProofAt: 3 })
+    const ports = (
+      repository: DexieCheckoutSparkSettledRepository
+    ): CheckoutSparkNativeTreasuryStepInput["store"] => ({
+      nativeAdmissionScope: repository.nativeTreasuryAdmissionScope,
+      load: repository.load.bind(repository),
+      save: repository.save.bind(repository),
+      savePrepared: repository.saveTreasuryPrepared.bind(repository),
+      savePreProviderRetry:
+        repository.saveTreasuryPreProviderRetry.bind(repository),
+    })
+    const input = { ...e.input, store: ports(first) }
+    expect((await runCheckoutSparkNativeTreasuryStep(input)).reason).toBe(
+      "provider_evidence_unavailable"
+    )
+    const cancelled = await first.load(f.plan.checkoutId, f.plan.planDigest)
+    expect(cancelled.status).toBe("active")
+    if (cancelled.status !== "active")
+      throw new Error("Missing cancelled admission")
+    const next = recordCheckoutSparkNativeTreasuryStatus(cancelled.state, {
+      invoiceId: f.plan.nativeTreasury!.invoiceId,
+      status: "submitted",
+      observedAt: cancelled.state.updatedAt + 1,
+    })
+    await expect(first.save(next, cancelled.revision)).rejects.toThrow()
+    await expect(
+      first.saveTreasuryPreProviderRetry(next, cancelled.revision, {} as never)
+    ).rejects.toThrow()
+    const freshRepository = new DexieCheckoutSparkSettledRepository(database)
+    expect(freshRepository.nativeTreasuryAdmissionScope).toBe(
+      first.nativeTreasuryAdmissionScope
+    )
+    expect(
+      (
+        await runCheckoutSparkNativeTreasuryStep({
+          ...input,
+          store: ports(freshRepository),
+        })
+      ).outcome
+    ).toBe("paid")
+    expect(e.sends()).toBe(1)
+    const paid = await first.load(f.plan.checkoutId, f.plan.planDigest)
+    expect(
+      paid.status === "active" && paid.state.treasuryFinalization!.intent
+    ).toEqual(cancelled.state.treasuryFinalization!.intent)
     database.close()
     await database.delete()
   })

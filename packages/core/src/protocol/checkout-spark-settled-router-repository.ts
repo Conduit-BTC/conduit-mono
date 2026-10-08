@@ -33,9 +33,12 @@ import {
   type CheckoutSparkMerchantSettlementRecord,
 } from "./checkout-spark-merchant-settlement"
 import {
+  assertCheckoutSparkNativePreProviderRetry,
   deriveCheckoutSparkNativeTreasuryBudget,
   prepareCheckoutSparkNativeTreasury,
+  recordCheckoutSparkNativeTreasuryStatus,
   type CheckoutSparkNativeTreasuryEvidence,
+  type CheckoutSparkNativePreProviderCancellation,
 } from "./checkout-spark-treasury-finalization"
 import {
   restoreCheckoutSparkMerchantOrderWitness,
@@ -84,6 +87,7 @@ const UNCERTAIN_LEG_STATUSES = new Set([
   "lookup_unavailable",
   "conflicting_evidence",
 ])
+const nativeAdmissionScopes = new WeakMap<ConduitDB, object>()
 
 export type CheckoutSparkSettledRepositorySnapshot =
   | { status: "absent" }
@@ -368,7 +372,16 @@ export function assertCheckoutSparkSettledRecoveryProgression(
 
 /** Versioned CAS store using the existing checkout binding and state rows. */
 export class DexieCheckoutSparkSettledRepository {
-  constructor(private readonly database: ConduitDB = db) {}
+  /** This opaque process lifetime is deliberately never persisted or imported. */
+  readonly nativeTreasuryAdmissionScope: object
+  constructor(private readonly database: ConduitDB = db) {
+    let scope = nativeAdmissionScopes.get(database)
+    if (!scope) {
+      scope = Object.freeze({})
+      nativeAdmissionScopes.set(database, scope)
+    }
+    this.nativeTreasuryAdmissionScope = scope
+  }
 
   /** Historical source cache only; every returned signed event is revalidated. */
   async loadMerchantPlanSourceEvents(
@@ -1386,6 +1399,23 @@ export class DexieCheckoutSparkSettledRepository {
     )
   }
 
+  /** Exact-intent retry only after Core's durable, positively unsent cancellation. */
+  async saveTreasuryPreProviderRetry(
+    state: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    cancellation: CheckoutSparkNativePreProviderCancellation,
+    assertCurrent?: () => void
+  ): Promise<CheckoutSparkSettledRepositorySnapshot> {
+    return this.saveState(
+      state,
+      expectedRevision,
+      assertCurrent,
+      undefined,
+      undefined,
+      cancellation
+    )
+  }
+
   /** Native history proof, not a recovery paid flag, creates the local receipt. */
   async recordMerchantTreasury(
     state: CheckoutSparkSettledReconciliation,
@@ -1687,7 +1717,8 @@ export class DexieCheckoutSparkSettledRepository {
       nowMs?: number
       now?: () => number
     },
-    treasurySettlement?: CheckoutSparkMerchantSettlementRecord
+    treasurySettlement?: CheckoutSparkMerchantSettlementRecord,
+    cancellation?: CheckoutSparkNativePreProviderCancellation
   ): Promise<CheckoutSparkSettledRepositorySnapshot> {
     assertCurrent?.()
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
@@ -1712,7 +1743,24 @@ export class DexieCheckoutSparkSettledRepository {
         ) {
           throw new CheckoutSparkSettledRepositoryConflictError()
         }
-        assertCheckoutSparkSettledRecoveryProgression(current.state, next)
+        if (cancellation) {
+          assertCheckoutSparkNativePreProviderRetry(
+            this.nativeTreasuryAdmissionScope,
+            current.state,
+            next,
+            expectedRevision,
+            cancellation
+          )
+          assertCheckoutSparkSettledRecoveryProgression(
+            recordCheckoutSparkNativeTreasuryStatus(current.state, {
+              invoiceId: current.state.treasuryFinalization!.intent!.invoiceId,
+              status: "submitted",
+              observedAt: current.state.treasuryFinalization!.observedAt!,
+            }),
+            next
+          )
+        } else
+          assertCheckoutSparkSettledRecoveryProgression(current.state, next)
         if (
           !current.state.treasuryFinalization?.intent &&
           next.treasuryFinalization?.intent
@@ -1941,8 +1989,9 @@ export class DexieCheckoutSparkSettledRepository {
           }
         }
         // Terminal provider evidence has retired this checkout. Keep its
-        // minimal order/settlement/source attestation, but not encrypted retry
-        // payloads or the public source bodies needed only for active recovery.
+        // minimal order/settlement/source attestation and encrypted recovery
+        // evidence. Execution-queue cleanup is separately readback-gated;
+        // retirement never deletes those retained encrypted backups.
         const retainedBinding = { ...binding }
         if (binding.merchantSettlement) {
           // Persist eligibility before discarding the plan even if the signer or
@@ -1954,7 +2003,6 @@ export class DexieCheckoutSparkSettledRepository {
               current.state
             )
         }
-        delete retainedBinding.merchantProgressOutbox
         delete retainedBinding.sourceEvents
         delete retainedBinding.invoiceOrigins
         delete retainedBinding.invoiceRecipients

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   buildEventMarketCalendarDraft,
+  admitPublicEvent,
   buildEventMarketSeriesDraft,
   decodeEventMarketReference,
   encodeEventMarketNaddr,
@@ -622,8 +623,21 @@ function SeriesDateManager({
           })
           publishedDate = published.signedEvent
         }
+        const dateAdmission = publishedDate
+          ? await admitPublicEvent(publishedDate)
+          : undefined
+        if (dateAdmission?.status === "unavailable")
+          throw new Error(
+            "Published Event Market date verification is unavailable."
+          )
+        if (dateAdmission?.status === "cancelled")
+          throw new DOMException(
+            "Event Market update was cancelled.",
+            "AbortError"
+          )
         const updatedDate =
-          publishedDate && parseEventMarketCalendarEvent(publishedDate)
+          dateAdmission?.status === "verified" &&
+          parseEventMarketCalendarEvent(dateAdmission.event)
         if (!updatedDate)
           throw new Error("The published date could not be verified.")
         reviewDate(updatedDate)

@@ -1,4 +1,4 @@
-import type { SignedPublicNostrEvent } from "../protocol/signed-event"
+import type { VerifiedNostrEvent } from "../protocol/verified-public-event"
 import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
 import type {
   KnownOrderStatus,
@@ -23,7 +23,7 @@ export interface Product {
   id: string
   /** Signed kind-30402 event id behind this exact product projection. */
   sourceEventId?: EventId
-  signedProductEvent?: SignedPublicNostrEvent
+  signedProductEvent?: VerifiedNostrEvent
   pubkey: Pubkey
   title: string
   summary?: string

@@ -10,7 +10,7 @@ import {
   assertCheckoutSparkCommerceProductPrice,
   assertCheckoutSparkCommerceShippingPolicies,
   isValidSignedPublicNostrEvent,
-  parseProductEvent,
+  parseCheckoutSparkSignedProductFields,
   getShippingDestinationEligibility,
   matchesCheckoutSparkOrderShippingSnapshot,
   matchesCheckoutSparkOrderPickupSnapshot,
@@ -259,7 +259,7 @@ async function publishBoundOrderFromFrozenPlan(
         )
           return true
         assertCheckoutSparkCommerceProductPrice({
-          product: parseProductEvent(event),
+          product: parseCheckoutSparkSignedProductFields(event),
           line,
           pricing: plan.commerceQuote.pricing,
           acceptedAtMs: plan.createdAt,

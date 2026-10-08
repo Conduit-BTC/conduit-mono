@@ -229,6 +229,13 @@ or nonzero native provider fees pause the supported zero-fee path. See
 [native final collection](../knowledge/checkout-spark-native-treasury.md) and
 [deployment policy](../knowledge/quantum-router-deployment.md).
 
+An exact receive below the frozen commerce-plus-Conduit weights pauses for
+reconciliation; it does not proportionally reduce approved commerce obligations,
+request automatic extra funding or create a replacement invoice. Historical
+short-funded records remain readable for exact payment reconciliation, but
+grant no new preparation or send authority. Recipient outgoing fees within
+their approved allocations remain distinct from an inbound funding shortfall.
+
 Merchant recovery deliberately grants bearer spending control over only the
 isolated checkout wallet from delivery of its credential. Handoff timing,
 frozen allocations and Conduit-last ordering constrain conforming clients;
@@ -246,6 +253,14 @@ eventual settlement. After possible submission, query the same attempt; a
 timeout or absent lookup cannot authorize another send. Native completion
 requires exact claimed-transfer evidence, not only invoice finalization.
 
+An exact native intent may retry only after durable, positive pre-provider
+cancellation evidence. The current adapter retains that terminal cancellation
+and requires a process-local, exact-revision capability issued by the executor
+that positively prevented provider submission. A restored or imported failure
+label cannot recreate the capability. Any actual or potentially actual provider
+invocation remains query-only until independently reconciled; missing history
+does not establish cancellation.
+
 The bounded Merchant-only Lightning renewal in
 [wallets.md](wallets.md#lightning-closed-attempt-invoice-renewal) requires positive
 terminal unpaid closure, zero historical net debit and full spendable return. Preserve
@@ -260,6 +275,14 @@ fresh complete exact history and zero owned/available/pending funds. Keep a
 non-secret terminal marker that rejects replay. Unknown activity or extra
 funds blocks retirement; a zero attributed remainder does not fabricate a
 native payment receipt.
+
+After positive terminal readback, completed execution queues and preparation
+claims may be cleaned to release bounded queue capacity. First persist and
+verify exact encrypted recovery evidence in the device-local archive. Keep the
+terminal replay marker and encrypted Merchant progress, preserve active and
+uncertain entries, and resume interrupted cleanup from the saved terminal
+marker. Queue cleanup never deletes the wallet credential or establishes an
+atomic provider-side closure that the adapter has not proven.
 
 ## Privacy, guest scope and compatibility
 

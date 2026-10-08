@@ -14,6 +14,7 @@ import {
   freezeCheckoutSparkSettledTreasuryPlan,
   prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
+  assertCheckoutSparkSettledFundingCoverage,
   recordCheckoutSparkSettledLegStatus,
   restoreCheckoutSparkSettledPlan,
   restoreCheckoutSparkSettledReconciliation,
@@ -251,7 +252,7 @@ function preAllowancePlan(): CheckoutSparkSettledPlan {
   }
 }
 
-function credited(amount = 102_050) {
+function credited(amount = 102_100) {
   const frozen = plan()
   return recordCheckoutSparkSettledCredit(
     createCheckoutSparkSettledReconciliation(frozen),
@@ -460,9 +461,12 @@ describe("checkout Spark settled plan and progress", () => {
       const legacy = preAllowancePlan()
       const created = await repository.create(legacy)
       expect(created.status).toBe("active")
-      const credited = recordCheckoutSparkSettledCredit(
-        createCheckoutSparkSettledReconciliation(legacy),
-        {
+      // Restore the exact old persisted projection rather than admitting a
+      // new short-funded checkout under today's no-haircut policy.
+      const initial = createCheckoutSparkSettledReconciliation(legacy)
+      const credited = restoreCheckoutSparkSettledReconciliation({
+        ...initial,
+        credit: {
           requestId: legacy.funding.requestId,
           paymentHash: legacy.funding.paymentHash,
           transferId: "prior-receive",
@@ -470,8 +474,13 @@ describe("checkout Spark settled plan and progress", () => {
           grossSats: legacy.funding.grossFundingSats,
           creditedSats: 102_000,
           observedAt: CREATED_AT + 1,
-        }
-      )
+        },
+        legs: initial.legs.map((leg, index) => ({
+          ...leg,
+          allocationSats: [79_923, 19_980, 2_097][index]!,
+        })),
+        updatedAt: CREATED_AT + 1,
+      })
       const saved = await repository.save(credited, 1)
       const loaded = await repository.load(legacy.checkoutId, legacy.planDigest)
       expect(loaded).toEqual(saved)
@@ -484,6 +493,12 @@ describe("checkout Spark settled plan and progress", () => {
         "unprepared",
         "unprepared",
       ])
+      expect(() =>
+        assertCheckoutSparkSettledFundingCoverage(
+          loaded.state.plan,
+          loaded.state.credit!.creditedSats
+        )
+      ).toThrow("funding shortfall")
     } finally {
       database.close()
       await database.delete()
@@ -649,15 +664,15 @@ describe("checkout Spark settled plan and progress", () => {
 
   it("attributes one exact receive and allocates only credited sats", () => {
     const state = credited()
-    expect(state.credit?.creditedSats).toBe(102_050)
+    expect(state.credit?.creditedSats).toBe(102_100)
     expect(state.legs.map((leg) => leg.allocationSats)).toEqual([
-      79_962, 19_990, 2_098,
+      80_000, 20_000, 2_100,
     ])
     expect(
       restoreCheckoutSparkSettledReconciliation(state).legs.map(
         (leg) => leg.allocationSats
       )
-    ).toEqual([79_962, 19_990, 2_098])
+    ).toEqual([80_000, 20_000, 2_100])
     expect(() =>
       recordCheckoutSparkSettledCredit(state, {
         ...state.credit!,
@@ -673,6 +688,18 @@ describe("checkout Spark settled plan and progress", () => {
         }
       )
     ).toThrow("out of scope")
+  })
+
+  it("pauses short receives without proportionally reducing approved commerce", () => {
+    for (const amount of [1, 100_000, 102_099]) {
+      expect(() => credited(amount)).toThrow("funding shortfall")
+    }
+    expect(credited(102_100).legs.map((leg) => leg.allocationSats)).toEqual([
+      80_000, 20_000, 2_100,
+    ])
+    expect(credited(102_250).legs.map((leg) => leg.allocationSats)).toEqual([
+      80_118, 20_029, 2_103,
+    ])
   })
 
   it("persists one exact dynamic invoice before send and never changes it", () => {

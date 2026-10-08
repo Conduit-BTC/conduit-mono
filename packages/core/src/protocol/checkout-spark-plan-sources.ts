@@ -6,7 +6,7 @@ import {
 import { parseAddressableCoordinate } from "./event-market"
 import { isValidLud16Address } from "./lightning"
 import { projectProfileContent } from "./profile-cache"
-import { parseProductEvent } from "./products"
+import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -263,7 +263,10 @@ export function validateCheckoutSparkPlanSources(
 
     const products = frozen.commerceQuote.lines.map((line) => {
       const event = sources.get(line.productEventId)!
-      const product = { ...parseProductEvent(event), sourceEventId: event.id }
+      const product = {
+        ...parseCheckoutSparkSignedProductFields(event),
+        sourceEventId: event.id,
+      }
       return product
     })
     if (

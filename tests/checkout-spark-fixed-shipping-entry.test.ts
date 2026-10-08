@@ -22,6 +22,7 @@ import {
   type PrepareCheckoutSparkSettledOrderInput,
 } from "../apps/market/src/lib/checkout-spark-settled-entry"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
+import { admitFixture } from "./helpers/public-event"
 
 const NOW = 1_800_000_000_000
 const MERCHANT_SECRET = generateSecretKey()
@@ -58,7 +59,7 @@ async function shippingQuote(
     },
     MERCHANT_SECRET
   )
-  const shipping = parseShippingOptionEvent(shippingEvent)!
+  const shipping = parseShippingOptionEvent(await admitFixture(shippingEvent))!
   const event = finalizeEvent(
     {
       kind: 30_402,
@@ -81,7 +82,10 @@ async function shippingQuote(
     },
     MERCHANT_SECRET
   )
-  const product = { ...parseProductEvent(event), sourceEventId: event.id }
+  const product = {
+    ...parseProductEvent(await admitFixture(event)),
+    sourceEventId: event.id,
+  }
   const products = [product]
   if (includeDigital) {
     const digitalEvent = finalizeEvent(
@@ -100,7 +104,7 @@ async function shippingQuote(
       MERCHANT_SECRET
     )
     products.push({
-      ...parseProductEvent(digitalEvent),
+      ...parseProductEvent(await admitFixture(digitalEvent)),
       sourceEventId: digitalEvent.id,
     })
   }

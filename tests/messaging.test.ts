@@ -50,6 +50,7 @@ import {
   type ProgressivePublishSnapshot,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import { admitFixture } from "./helpers/public-event"
 
 const INBOX_OWNER_SECRET = generateSecretKey()
 const INBOX_PEER_SECRET = generateSecretKey()
@@ -73,19 +74,21 @@ const readyOwnInbox = async (): Promise<
   distributionRepairable: false,
 })
 
-function signedInboxDeclaration(
+async function signedInboxDeclaration(
   secretKey: Uint8Array,
   relayUrls: readonly string[],
   createdAt = 100
 ) {
-  return finalizeEvent(
-    {
-      kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-      created_at: createdAt,
-      tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
-      content: "",
-    },
-    secretKey
+  return await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: createdAt,
+        tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
+        content: "",
+      },
+      secretKey
+    )
   )
 }
 
@@ -233,7 +236,7 @@ describe("isOrderCompanionNotificationRumor", () => {
     ["client", "Conduit Market"],
   ]
 
-  it("recognizes only the complete v1 app marker", () => {
+  it("recognizes only the complete v1 app marker", async () => {
     expect(
       isOrderCompanionNotificationRumor(
         rumor(EVENT_KINDS.DIRECT_MESSAGE, {
@@ -244,7 +247,7 @@ describe("isOrderCompanionNotificationRumor", () => {
     ).toBe(true)
   })
 
-  it("fails open for arbitrary content and extra tags", () => {
+  it("fails open for arbitrary content and extra tags", async () => {
     expect(
       isOrderCompanionNotificationRumor(
         rumor(EVENT_KINDS.DIRECT_MESSAGE, {
@@ -305,7 +308,7 @@ describe("isOrderCompanionNotificationRumor", () => {
     ).toBe(false)
   })
 
-  it("does not classify an order rumor as an inbox notification", () => {
+  it("does not classify an order rumor as an inbox notification", async () => {
     expect(
       isOrderCompanionNotificationRumor(
         rumor(EVENT_KINDS.ORDER, {
@@ -318,7 +321,7 @@ describe("isOrderCompanionNotificationRumor", () => {
 })
 
 describe("order companion deployment links", () => {
-  it("builds the fixed guest copy on the selected Merchant origin", () => {
+  it("builds the fixed guest copy on the selected Merchant origin", async () => {
     const { companion } = guestOrderCompanionFixture(
       "https://fix-293.conduit-merchant-33n.pages.dev"
     )
@@ -330,13 +333,13 @@ describe("order companion deployment links", () => {
 })
 
 describe("classifyPrivateMessageKind", () => {
-  it("maps kind 14 to direct and kind 16 to order", () => {
+  it("maps kind 14 to direct and kind 16 to order", async () => {
     expect(classifyPrivateMessageKind(EVENT_KINDS.DIRECT_MESSAGE)).toBe(
       "direct"
     )
     expect(classifyPrivateMessageKind(EVENT_KINDS.ORDER)).toBe("order")
   })
-  it("returns null for unrelated kinds", () => {
+  it("returns null for unrelated kinds", async () => {
     expect(classifyPrivateMessageKind(1)).toBeNull()
     expect(classifyPrivateMessageKind(undefined)).toBeNull()
   })
@@ -629,7 +632,7 @@ describe("unwrapGiftWrap", () => {
 })
 
 describe("buildDirectMessageRumor / parseDirectMessageRumor", () => {
-  it("builds a kind-14 rumor tagged to the recipient", () => {
+  it("builds a kind-14 rumor tagged to the recipient", async () => {
     const built = buildDirectMessageRumor({
       senderPubkey:
         "0303030303030303030303030303030303030303030303030303030303030303",
@@ -649,7 +652,7 @@ describe("buildDirectMessageRumor / parseDirectMessageRumor", () => {
     expect(built.content).toBe("do you ship to NZ?")
   })
 
-  it("parses an unwrapped kind-14 rumor with ms timestamps", () => {
+  it("parses an unwrapped kind-14 rumor with ms timestamps", async () => {
     const parsed = parseDirectMessageRumor(
       rumor(EVENT_KINDS.DIRECT_MESSAGE, {
         id: "m1",
@@ -845,12 +848,15 @@ describe("publishPrivateMessage", () => {
     }
   }
 
-  function signedOrderDeliveryFixture(relayUrls: string[], initial = true) {
+  async function signedOrderDeliveryFixture(
+    relayUrls: string[],
+    initial = true
+  ) {
     __resetInboxRelayCache()
     const senderPubkey = getPublicKey(generateSecretKey())
     const recipientSecret = generateSecretKey()
     const recipientPubkey = getPublicKey(recipientSecret)
-    const declaration = signedInboxDeclaration(recipientSecret, relayUrls)
+    const declaration = await signedInboxDeclaration(recipientSecret, relayUrls)
     const observedAt = Date.now()
     mergeInboxDeclarationEvidenceInMemory({
       pubkey: recipientPubkey,
@@ -905,7 +911,7 @@ describe("publishPrivateMessage", () => {
     it(`retains ${status} in the initial signed order delivery checkpoint`, async () => {
       const ackRelay = "wss://acked.inbox.conduit.market"
       const failedRelay = "wss://failed.inbox.conduit.market"
-      const delivery = signedOrderDeliveryFixture([ackRelay, failedRelay])
+      const delivery = await signedOrderDeliveryFixture([ackRelay, failedRelay])
       const signedRecipientWrap = new NDKEvent(
         undefined,
         finalizeEvent(
@@ -965,7 +971,7 @@ describe("publishPrivateMessage", () => {
   it("returns only after the first ACK is durable and settles remaining relays in background", async () => {
     const firstRelay = "wss://first.inbox.conduit.market"
     const slowRelay = "wss://slow.inbox.conduit.market"
-    const delivery = signedOrderDeliveryFixture([firstRelay, slowRelay])
+    const delivery = await signedOrderDeliveryFixture([firstRelay, slowRelay])
     let resolveAccepted!: (snapshot: ProgressivePublishSnapshot) => void
     const accepted = new Promise<ProgressivePublishSnapshot>((resolve) => {
       resolveAccepted = resolve
@@ -1099,7 +1105,7 @@ describe("publishPrivateMessage", () => {
   for (const failure of ["refused", "timed out", "slow"]) {
     it(`commits recipient acceptance before ${failure} self-copy work`, async () => {
       const relay = "wss://merchant.inbox.conduit.market"
-      const delivery = signedOrderDeliveryFixture([relay])
+      const delivery = await signedOrderDeliveryFixture([relay])
       const snapshot = progressiveSnapshot({ successful: [relay] })
       let durable = false
       let selfCalls = 0
@@ -1142,7 +1148,7 @@ describe("publishPrivateMessage", () => {
 
   it("waits for terminal persistence before rejecting a zero-ACK initial order", async () => {
     const relayUrl = "wss://merchant.inbox.conduit.market"
-    const delivery = signedOrderDeliveryFixture([relayUrl])
+    const delivery = await signedOrderDeliveryFixture([relayUrl])
     let rejectAccepted!: (error: unknown) => void
     const accepted = new Promise<ProgressivePublishSnapshot>(
       (_resolve, reject) => {
@@ -1196,7 +1202,7 @@ describe("publishPrivateMessage", () => {
   })
 
   it("does not run accepted-order self-copy after the signer session changes", async () => {
-    const delivery = signedOrderDeliveryFixture([
+    const delivery = await signedOrderDeliveryFixture([
       "wss://merchant.inbox.conduit.market",
     ])
     const snapshot = progressiveSnapshot({
@@ -1266,7 +1272,7 @@ describe("publishPrivateMessage", () => {
 
   it("requires recipient staging to finish before any relay publish", async () => {
     const steps: string[] = []
-    const delivery = signedOrderDeliveryFixture(
+    const delivery = await signedOrderDeliveryFixture(
       ["wss://recipient.inbox.conduit.market"],
       false
     )
@@ -1346,7 +1352,7 @@ describe("publishPrivateMessage", () => {
     expect(published).toBe(false)
   })
 
-  it("does not accept kind 4 as a publish rumorKind", () => {
+  it("does not accept kind 4 as a publish rumorKind", async () => {
     type PublishRumorKind = Parameters<
       typeof publishPrivateMessage
     >[0]["rumorKind"]
@@ -2830,7 +2836,11 @@ describe("publishPrivateMessage", () => {
     const recipientPubkey = getPublicKey(recipientSecret)
     const relayUrl = "wss://durable-orders.conduit.market"
     const observedAt = Date.now()
-    const declaration = signedInboxDeclaration(recipientSecret, [relayUrl], 200)
+    const declaration = await signedInboxDeclaration(
+      recipientSecret,
+      [relayUrl],
+      200
+    )
     mergeInboxDeclarationEvidenceInMemory({
       pubkey: recipientPubkey,
       signedEvent: declaration,
@@ -3206,7 +3216,7 @@ describe("publishPrivateMessage", () => {
     expect(result.deliveryRoute).toBe("compatibility_order")
   })
 
-  it("does not authorize a mismatched order rumor for third-party delivery", () => {
+  it("does not authorize a mismatched order rumor for third-party delivery", async () => {
     const mismatchedOrder = orderRumor({
       pubkey:
         "0404040404040404040404040404040404040404040404040404040404040404",
@@ -3832,7 +3842,7 @@ describe("publishPrivateMessage", () => {
 })
 
 describe("detectNip44Capabilities", () => {
-  it("defaults to v2 and keeps v3 gated off even when present", () => {
+  it("defaults to v2 and keeps v3 gated off even when present", async () => {
     const caps = detectNip44Capabilities({ nip44: {}, nip44v3: {} })
     expect(caps.hasNip44).toBe(true)
     expect(caps.hasNip44V3).toBe(true)
@@ -3840,7 +3850,7 @@ describe("detectNip44Capabilities", () => {
     expect(caps.supportedVersions).toEqual(["v2"])
   })
 
-  it("reports no support when the signer lacks nip44", () => {
+  it("reports no support when the signer lacks nip44", async () => {
     const caps = detectNip44Capabilities({})
     expect(caps.hasNip44).toBe(false)
     expect(caps.supportedVersions).toEqual([])
@@ -3861,7 +3871,7 @@ describe("fetchInboxRelayUrls", () => {
         expect(options?.signal).toBe(controller.signal)
         expect(options?.shouldContinue).toBe(shouldContinue)
         return [
-          signedInboxDeclaration(INBOX_PEER_SECRET, [
+          await signedInboxDeclaration(INBOX_PEER_SECRET, [
             "wss://inbox.conduit.market",
             "ws://insecure.conduit.market",
           ]),
@@ -3894,7 +3904,7 @@ describe("fetchInboxRelayUrls", () => {
         fetches === 1
           ? []
           : [
-              signedInboxDeclaration(
+              await signedInboxDeclaration(
                 INBOX_PEER_SECRET,
                 ["wss://later.conduit.market"],
                 101
@@ -3927,7 +3937,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
     )
 
     await resolveInboxDeclaration(INBOX_OWNER, {
@@ -3971,7 +3981,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
       createInMemoryInboxDeclarationEvidenceRepository()
     const ownerLocalRelay = "wss://127.0.0.1:7777"
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"]),
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"]),
       ownerLocalRelay
     )
 
@@ -4019,7 +4029,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.example",
     ])
     await mergeInboxDeclarationEvidence(
@@ -4046,7 +4056,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
       distributionRepairable: false,
     })
 
-    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    const blocker = await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
     await mergeInboxDeclarationEvidence(
       { pubkey: INBOX_OWNER, signedEvent: blocker },
       evidenceRepository
@@ -4062,7 +4072,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const durable = signedInboxDeclaration(
+    const durable = await signedInboxDeclaration(
       INBOX_OWNER_SECRET,
       ["wss://durable-inbox.example"],
       100
@@ -4078,7 +4088,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     )
     mergeInboxDeclarationEvidenceInMemory({
       pubkey: INBOX_OWNER,
-      signedEvent: signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200),
+      signedEvent: await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200),
     })
 
     expect(
@@ -4091,7 +4101,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("revalidates durable rows before using them as send authority", async () => {
     __resetInboxRelayCache()
     const seed = createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.example",
     ])
     await mergeInboxDeclarationEvidence(
@@ -4117,7 +4127,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
     const mismatchedPending = structuredClone(validRecord)
     mismatchedPending.pendingDistribution = {
-      signedEvent: signedInboxDeclaration(
+      signedEvent: await signedInboxDeclaration(
         INBOX_OWNER_SECRET,
         ["wss://other-inbox.example"],
         200
@@ -4134,7 +4144,11 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     ).toEqual({ state: "lookup_unavailable" })
 
     const emptySeed = createInMemoryInboxDeclarationEvidenceRepository()
-    const signedEmpty = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 300)
+    const signedEmpty = await signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      [],
+      300
+    )
     await mergeInboxDeclarationEvidence(
       {
         pubkey: INBOX_OWNER,
@@ -4164,7 +4178,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("backfills legacy durable shared provenance at the send boundary", async () => {
     __resetInboxRelayCache()
     const seed = createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.example",
     ])
     await mergeInboxDeclarationEvidence(
@@ -4199,7 +4213,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     for (const testCase of cases) {
       __resetInboxRelayCache()
       const backing = createInMemoryInboxDeclarationEvidenceRepository()
-      const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+      const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
         "wss://inbox.example",
       ])
       await mergeInboxDeclarationEvidence(
@@ -4261,7 +4275,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("reports ready with the declared secure relays", async () => {
     __resetInboxRelayCache()
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
     )
     const readiness = await inspectOwnPrivateMessageRelayReadiness(
       INBOX_OWNER,
@@ -4285,7 +4299,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.conduit.market",
     ])
     await mergeInboxDeclarationEvidence(
@@ -4329,7 +4343,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
       __resetInboxRelayCache()
       const evidenceRepository =
         createInMemoryInboxDeclarationEvidenceRepository()
-      const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+      const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
         "wss://inbox.example",
       ])
       await mergeInboxDeclarationEvidence(
@@ -4373,7 +4387,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const siblingSharedRelay = sharedInboxDiscoveryRelayUrls()[1]!
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
     )
     const readiness = await inspectOwnPrivateMessageRelayReadiness(
       INBOX_OWNER,
@@ -4402,12 +4416,12 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const declared = signedInboxDeclaration(
+    const declared = await signedInboxDeclaration(
       INBOX_OWNER_SECRET,
       ["wss://usable.conduit.market"],
       100
     )
-    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    const blocker = await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
     await mergeInboxDeclarationEvidence(
       { pubkey: INBOX_OWNER, signedEvent: declared },
       evidenceRepository
@@ -4450,7 +4464,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    const blocker = await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
     await mergeInboxDeclarationEvidence(
       { pubkey: INBOX_OWNER, signedEvent: blocker },
       evidenceRepository
@@ -4543,7 +4557,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
         evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
         fetchEvents: async () =>
           [
-            signedInboxDeclaration(INBOX_OTHER_SECRET, [
+            await signedInboxDeclaration(INBOX_OTHER_SECRET, [
               "wss://attacker.conduit.market",
             ]),
           ] as never,
@@ -4555,7 +4569,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
   it("keeps an authenticated owner's ws inbox declaration usable", async () => {
     __resetInboxRelayCache()
-    const malformed = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const malformed = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "://invalid",
       "ftp://inbox.example",
       "ws://insecure.example",
@@ -4580,7 +4594,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
   it("reports a cryptographically valid empty declaration distinctly", async () => {
     __resetInboxRelayCache()
-    const signedEmpty = signedInboxDeclaration(INBOX_OWNER_SECRET, [])
+    const signedEmpty = await signedInboxDeclaration(INBOX_OWNER_SECRET, [])
     const readiness = await inspectOwnPrivateMessageRelayReadiness(
       INBOX_OWNER,
       {
@@ -4601,7 +4615,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 })
 
 describe("parsePrivateMessageRelays", () => {
-  it("parses relay tags from a kind-10050 event", () => {
+  it("parses relay tags from a kind-10050 event", async () => {
     const parsed = parsePrivateMessageRelays({
       kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
       pubkey:
@@ -4620,7 +4634,7 @@ describe("parsePrivateMessageRelays", () => {
     })
   })
 
-  it("returns null for a non-10050 event", () => {
+  it("returns null for a non-10050 event", async () => {
     expect(
       parsePrivateMessageRelays({ kind: EVENT_KINDS.RELAY_LIST, tags: [] })
     ).toBeNull()

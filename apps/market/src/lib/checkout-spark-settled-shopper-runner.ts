@@ -238,6 +238,7 @@ export function createCheckoutSparkSettledShopperRunner(
           initialRecovery?.deliveryProgress.acknowledgedRelayRefs.length
         ),
         routerWalletOpen: sparkManager()?.isOpen(plan.walletId) === true,
+        nativeAdmissionScope: repository.nativeTreasuryAdmissionScope,
         now: now(),
       })
       assertCurrent()

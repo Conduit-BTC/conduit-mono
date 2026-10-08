@@ -2,6 +2,7 @@ import {
   assertCheckoutSparkSettledClosedReturnedProof,
   classifyCheckoutSparkSettledExactOutgoingHistory,
   deriveCheckoutSparkNativeTreasuryBudget,
+  isCheckoutSparkNativePreProviderRetry,
   proveCheckoutSparkNativeTreasuryHistory,
   proveCheckoutSparkSettledClosedReturnedTransfer,
   requireCheckoutSparkSettledExactOutgoingRequest,
@@ -350,16 +351,26 @@ export function createBuyerCheckoutSparkNativeTreasuryProvider(input: {
       }
       return observation
     },
-    async preflight(target) {
+    async preflight(target, cancellation) {
       const { saved, request: value } = await request(target)
-      if (saved.state.treasuryFinalization?.status !== "prepared")
+      const retry = () =>
+        saved.state.treasuryFinalization?.status === "terminal_failure" &&
+        isCheckoutSparkNativePreProviderRetry(cancellation, target)
+      if (saved.state.treasuryFinalization?.status !== "prepared" && !retry())
         return "unavailable"
       const status = await manager.preflightCheckoutTreasury(
         target.walletId,
         value
       )
       const current = await request(target)
-      if (current.saved.state.treasuryFinalization?.status !== "prepared")
+      if (
+        current.saved.state.treasuryFinalization?.status !== "prepared" &&
+        !(
+          current.saved.state.treasuryFinalization?.status ===
+            "terminal_failure" &&
+          isCheckoutSparkNativePreProviderRetry(cancellation, target)
+        )
+      )
         return "unavailable"
       if (status === "ready") preparedAdmissions.add(admissionKey(target))
       return status

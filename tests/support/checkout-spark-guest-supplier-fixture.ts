@@ -16,9 +16,10 @@ import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
 import { prepareCartFulfillment } from "../../apps/market/src/lib/cart-shipping-options"
 import { buildCheckoutPricingIntent } from "../../apps/market/src/lib/checkout-payment"
 import type { CheckoutSparkQuoteAuthority } from "../../apps/market/src/lib/checkout-spark-quote-authority"
+import { admitFixture } from "../helpers/public-event"
 
 /** Genuine, offline signed evidence; all signing material is synthetic and in memory. */
-export function createCheckoutSparkGuestSupplierFixture(
+export async function createCheckoutSparkGuestSupplierFixture(
   nowMs: number,
   physical = false
 ) {
@@ -55,7 +56,7 @@ export function createCheckoutSparkGuestSupplierFixture(
       )
     : undefined
   const shipping = shippingEvent
-    ? parseShippingOptionEvent(shippingEvent)!
+    ? parseShippingOptionEvent(await admitFixture(shippingEvent))!
     : undefined
   const productEvents = terms.map(({ dTag, unitSats }, index) =>
     finalizeEvent(
@@ -79,10 +80,12 @@ export function createCheckoutSparkGuestSupplierFixture(
       merchantSecret
     )
   )
-  const products = productEvents.map((event) => ({
-    ...parseProductEvent(event),
-    sourceEventId: event.id,
-  }))
+  const products = await Promise.all(
+    productEvents.map(async (event) => ({
+      ...parseProductEvent(await admitFixture(event)),
+      sourceEventId: event.id,
+    }))
+  )
   const rawItems = products.map((product, index) => ({
     ...createCartItemFromProduct(product),
     quantity: terms[index]!.quantity,

@@ -6,11 +6,11 @@ import {
 import type { CheckoutSparkCommerceQuoteLine } from "./checkout-spark-reconciliation"
 import {
   parseAddressableCoordinate,
-  parseEventMarketCalendarEvent,
-  parseEventMarketCollectionEvent,
-  parseEventMarketPickupEvent,
+  parseEventMarketCalendarFieldsForPrivateOrder,
+  parseEventMarketCollectionFieldsForPrivateOrder,
+  parseEventMarketPickupFieldsForPrivateOrder,
 } from "./event-market"
-import { parseProductEvent } from "./products"
+import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -98,7 +98,7 @@ export function resolveCheckoutSparkSignedPickup(input: {
       kinds: [30402],
       acceptedAtMs,
     })
-    const product = parseProductEvent(productEvent)
+    const product = parseCheckoutSparkSignedProductFields(productEvent)
     if (
       productEvent.pubkey !== line.merchantPubkey ||
       product.id !== line.productCoordinate ||
@@ -137,9 +137,11 @@ export function resolveCheckoutSparkSignedPickup(input: {
     const pickupEvent = selectedSource(line.shippingOption, [30406])
     // This exact-revision graph is private compatibility for pre-31927 plans;
     // it neither discovers nor admits a legacy public market for new checkout.
-    const collection = parseEventMarketCollectionEvent(collectionEvent)
-    const calendar = parseEventMarketCalendarEvent(calendarEvent)
-    const pickup = parseEventMarketPickupEvent(pickupEvent)
+    const collection =
+      parseEventMarketCollectionFieldsForPrivateOrder(collectionEvent)
+    const calendar =
+      parseEventMarketCalendarFieldsForPrivateOrder(calendarEvent)
+    const pickup = parseEventMarketPickupFieldsForPrivateOrder(pickupEvent)
     if (
       !calendar ||
       !collection ||

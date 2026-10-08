@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it, spyOn } from "bun:test"
 import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import * as core from "@conduit/core"
@@ -188,7 +189,7 @@ describe("merchant-owned order stock mutation", () => {
     }
   })
 
-  it("signs the rebased stock with unchanged event and pickup references", () => {
+  it("signs the rebased stock with unchanged event and pickup references", async () => {
     const baseline = record()
     const prepared = prepare({ record: baseline })
     const product = applyProductFulfillmentIntentForPublication({
@@ -213,16 +214,18 @@ describe("merchant-owned order stock mutation", () => {
     expect(after.tags.filter((tag) => tag[0] !== "stock")).toEqual(
       before.tags.filter((tag) => tag[0] !== "stock")
     )
-    const parsed = core.parseProductEvent(signed)
+    const parsed = core.parseProductEvent(await admitFixture(signed))
     expect(parsed.stock).toBe(2)
     expect(parsed.collectionRefs).toEqual(baseline.product.collectionRefs)
     const previous = core.parseProductEvent(
-      finalizeEvent({ ...before, created_at: 3_000 }, SYNTHETIC_SECRET)
+      await admitFixture(
+        finalizeEvent({ ...before, created_at: 3_000 }, SYNTHETIC_SECRET)
+      )
     )
     expect(parsed.shippingOptionRefs).toEqual(previous.shippingOptionRefs)
   })
 
-  it("preserves event pickup and independent catalog references during order stock updates", () => {
+  it("preserves event pickup and independent catalog references during order stock updates", async () => {
     const baseline = record({
       collectionRefs: [COLLECTION, CATALOG_COLLECTION],
     })
@@ -245,7 +248,7 @@ describe("merchant-owned order stock mutation", () => {
       { ...after, created_at: 4_000 },
       SYNTHETIC_SECRET
     )
-    const parsed = core.parseProductEvent(signed)
+    const parsed = core.parseProductEvent(await admitFixture(signed))
 
     expect(core.isValidSignedPublicNostrEvent(signed)).toBe(true)
     expect(parsed.stock).toBe(2)

@@ -11,20 +11,17 @@ import {
   getCheckoutSparkSettledLegGeneration,
   getAccountSigner,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
-  prepareCheckoutSparkSettledOutgoingLegShared,
   proveSparkCheckoutReceiveCredit,
   publishMerchantCheckoutSparkProgress,
-  recordCheckoutSparkSettledCredit,
-  recordCheckoutSparkSettledLegStatus,
   restoreCheckoutSparkMerchantOrderWitness,
   restoreCheckoutSparkSettledReconciliation,
   resolveCheckoutSparkLnurlInvoice,
   retryMerchantCheckoutSparkProgress,
   runWithCheckoutSparkMerchantRecoveryLock,
+  runCheckoutSparkFinancialWorkflow,
   withMerchantCheckoutSparkRecovery,
   type CheckoutSparkMerchantRecoveryLockManager,
   type CheckoutSparkSettledLegPreparationDependencies,
-  type CheckoutSparkSettledOutgoingTarget,
   type CheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRecoveryPayload,
   type CheckoutSparkSettledRepositorySnapshot,
@@ -415,105 +412,72 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
       assertEligible()
       current = await load()
-      const credited = recordCheckoutSparkSettledCredit(current.state, {
-        requestId: proof.requestId,
-        paymentHash: plan.funding.paymentHash,
-        transferId: proof.transferId,
-        receiverIdentityPublicKey: proof.receiverIdentityPublicKey,
-        grossSats: proof.grossSats,
-        creditedSats: proof.creditedSats,
-        observedAt: now(),
-      })
-      if (!current.state.credit) {
-        current = requireActive(
-          await repository.save(credited, current.revision, assertEligible)
-        )
-        assertState(current.state)
+      const workflowStore = {
+        load: repository.load.bind(repository),
+        save: (state: CheckoutSparkSettledReconciliation, revision: number) =>
+          repository.save(state, revision, assertEligible),
       }
-      await repository.recordMerchantCredit(plan, proof, now(), assertEligible)
-      assertEligible()
-
-      // Re-attest every frozen sibling; buyer-signed paid progress is not proof.
-      for (const leg of current.state.legs) {
-        if (!leg.intent) continue
-        const recipient = plan.recipients.find(
-          (item) => item.legId === leg.legId
-        )!
-        const outgoing: CheckoutSparkSettledOutgoingTarget = {
-          walletId: plan.walletId,
-          network: plan.network,
-          legId: leg.legId,
-          recipientId: recipient.recipientId,
-          allocationSats: leg.allocationSats!,
-          unpaidAllocationSats: leg.allocationSats!,
-          ...(getCheckoutSparkSettledLegGeneration(leg) === 1
-            ? { generation: 1 as const }
-            : {}),
-          intent: leg.intent,
-        }
-        const observed = await inspectExactMerchantPayout(
-          plan,
-          outgoing,
-          wallet,
-          assertEligible
-        )
-        assertEligible()
-        if (observed.status === "not_found" && leg.status === "prepared")
-          continue
-        if (observed.status !== "paid") {
-          if (renewing && leg.legId === input.legId) {
-            try {
-              await proveMerchantCheckoutSparkReturnedPayout(
-                current.state,
-                leg.legId,
-                wallet,
-                assertEligible,
-                now
-              )
-              assertEligible()
-              continue
-            } catch {
-              assertEligible()
-            }
-          }
-          preparation = { status: "history_wait" }
-          return
-        }
-        if (
-          leg.status === "paid" &&
-          (leg.finalFeeSats !== observed.finalFeeSats ||
-            leg.finalDebitSats !== observed.finalDebitSats)
-        ) {
-          preparation = { status: "history_wait" }
-          return
-        }
-        if (leg.status !== "paid") {
-          current = requireActive(
-            await repository.save(
-              recordCheckoutSparkSettledLegStatus(current.state, {
-                legId: leg.legId,
-                transferId: leg.intent.transferId,
-                paymentHash: leg.intent.paymentHash,
-                status: "paid",
-                finalFeeSats: observed.finalFeeSats,
-                finalDebitSats: observed.finalDebitSats,
-                observedAt: Math.max(now(), current.state.updatedAt + 1),
-              }),
-              current.revision,
+      const reconciliation = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId: plan.checkoutId,
+          planDigest: plan.planDigest,
+          actor: "merchant",
+          mode: "reconcile",
+          legId: input.legId,
+          allowRenewal: renewing,
+        },
+        {
+          store: workflowStore,
+          assertCurrent: assertEligible,
+          now,
+          credit: {
+            proof,
+            record: (creditPlan, creditProof) =>
+              repository.recordMerchantCredit(
+                creditPlan,
+                creditProof,
+                now(),
+                assertEligible
+              ),
+          },
+          outgoing: {
+            reconcile: (target) =>
+              inspectExactMerchantPayout(plan, target, wallet, assertEligible),
+            preflight: async () => "unavailable",
+            send: async () => ({ status: "not_sent" }),
+          },
+          recordPaid: async (target, observed) => {
+            await repository.recordMerchantPayout(
+              plan,
+              target,
+              observed,
+              now(),
               assertEligible
             )
-          )
-          assertState(current.state)
+          },
+          ...(renewing
+            ? {
+                proveRenewalReturn: (
+                  state: CheckoutSparkSettledReconciliation,
+                  legId: string
+                ) =>
+                  proveMerchantCheckoutSparkReturnedPayout(
+                    state,
+                    legId,
+                    wallet,
+                    assertEligible,
+                    now
+                  ),
+              }
+            : {}),
+          acknowledgeRecoverySnapshot: async () => {},
         }
-        await repository.recordMerchantPayout(
-          plan,
-          outgoing,
-          observed,
-          now(),
-          assertEligible
-        )
-        assertEligible()
+      )
+      if (reconciliation.status !== "reconciled") {
+        preparation = { status: "history_wait" }
+        return
       }
+      current = await load()
       const selectedLeg = current.state.legs.find(
         (leg) => leg.legId === input.legId
       )!
@@ -590,64 +554,75 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
         }
       }
       let accepted = false
-      await prepareCheckoutSparkSettledOutgoingLegShared(
+      const acknowledgePrepared = async (
+        state: CheckoutSparkSettledReconciliation
+      ) => {
+        const saved = await load()
+        assertPreparedState(saved.state)
+        if (JSON.stringify(saved.state) !== JSON.stringify(state))
+          throw new CheckoutSparkSettledRepositoryConflictError()
+        accepted = await retainProgress(state)
+      }
+      const execution = await runCheckoutSparkFinancialWorkflow(
         {
           checkoutId: plan.checkoutId,
           planDigest: plan.planDigest,
           legId: input.legId,
-          shouldContinue: input.shouldContinue,
+          actor: "merchant",
+          mode: "prepare",
           allowRenewal: renewing,
         },
         {
-          repository,
-          async resolveInvoice(request, context) {
-            if (
-              context.state.plan.merchantPublicZapPolicy &&
-              context.recipient.kind === "merchant"
-            ) {
-              // Retain/reconcile an existing public intent above, but never
-              // silently replace its frozen authority with a new private one.
-              throw new Error(
-                "Historical public routed payments require exact-attempt recovery."
+          store: workflowStore,
+          assertCurrent: assertEligible,
+          now,
+          acknowledgeRecoverySnapshot: acknowledgePrepared,
+          preparation: {
+            repository,
+            async resolveInvoice(request, context) {
+              if (
+                context.state.plan.merchantPublicZapPolicy &&
+                context.recipient.kind === "merchant"
               )
-            }
-            return dependencies.resolveInvoice
-              ? dependencies.resolveInvoice(request, context)
-              : resolveCheckoutSparkLnurlInvoice(request)
-          },
-          estimateFee: ({ paymentRequest }) =>
-            wallet.estimateLightningFee!({ paymentRequest }),
-          assertAuthority: assertPreparedState,
-          nowMs: now,
-          ...(renewing
-            ? {
-                proveRenewalReturn: async (
-                  state: CheckoutSparkSettledReconciliation,
-                  legId: string
-                ) => {
-                  assertPreparedState(state)
-                  const proof = await proveMerchantCheckoutSparkReturnedPayout(
-                    state,
-                    legId,
-                    wallet,
-                    assertEligible,
-                    now
-                  )
-                  assertPreparedState(state)
-                  return proof
-                },
-              }
-            : {}),
-          async acknowledgeRecoverySnapshot(state) {
-            const saved = await load()
-            assertPreparedState(saved.state)
-            if (JSON.stringify(saved.state) !== JSON.stringify(state)) {
-              throw new CheckoutSparkSettledRepositoryConflictError()
-            }
-            accepted = await retainProgress(state)
+                throw new Error(
+                  "Historical public routed payments require exact-attempt recovery."
+                )
+              return dependencies.resolveInvoice
+                ? dependencies.resolveInvoice(request, context)
+                : resolveCheckoutSparkLnurlInvoice(request)
+            },
+            estimateFee: ({ paymentRequest }) =>
+              wallet.estimateLightningFee!({ paymentRequest }),
+            assertAuthority: assertPreparedState,
+            nowMs: now,
+            acknowledgeRecoverySnapshot: acknowledgePrepared,
+            ...(renewing
+              ? {
+                  proveRenewalReturn: async (
+                    state: CheckoutSparkSettledReconciliation,
+                    legId: string
+                  ) => {
+                    assertPreparedState(state)
+                    const proof =
+                      await proveMerchantCheckoutSparkReturnedPayout(
+                        state,
+                        legId,
+                        wallet,
+                        assertEligible,
+                        now
+                      )
+                    assertPreparedState(state)
+                    return proof
+                  },
+                }
+              : {}),
           },
         }
       )
+      if (execution.status !== "payout_prepared") {
+        preparation = { status: "prerequisite_unpaid" }
+        return
+      }
       assertEligible()
       preparation = {
         status: accepted ? "prepared" : "recovery_pending",

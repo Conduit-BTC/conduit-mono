@@ -1,10 +1,11 @@
 import { z } from "zod"
 import { checkoutSparkCommercePricingSchema } from "../protocol/checkout-spark-commerce-pricing"
 import { checkoutSparkPricingRateAttestationSchema } from "../protocol/checkout-spark-pricing-authority"
+import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "../protocol/signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "../protocol/verified-public-event"
 import { normalizeCurrencyIdentity } from "../pricing"
 import {
   shippingPolicyQuoteSchema,
@@ -22,9 +23,9 @@ import {
   normalizePublicMediaUrl,
   normalizePublicWebSocketUrl,
 } from "../network-target-safety"
-import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
-import { parseEventMarketCalendarEvent } from "../protocol/event-market"
-import { parseEventMarketSeriesEvent } from "../protocol/event-market-schedule"
+import { resolveEventMarketAuthorizationForPrivateOrder } from "../protocol/event-market-authorization"
+import { parseEventMarketCalendarFieldsForPrivateOrder } from "../protocol/event-market"
+import { parseEventMarketSeriesFieldsForPrivateOrder } from "../protocol/event-market-schedule"
 import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
 
 /** Conduit product extension; not an Open Markets physical-property tag. */
@@ -260,13 +261,7 @@ export const productSchema = z.object({
   id: z.string(),
   sourceEventId: z.string().optional(),
   signedProductEvent: z
-    .custom<SignedPublicNostrEvent>((value) =>
-      Boolean(
-        value &&
-        typeof value === "object" &&
-        isValidSignedPublicNostrEvent(value as SignedPublicNostrEvent)
-      )
-    )
+    .custom<VerifiedNostrEvent>(isVerifiedNostrEvent)
     .optional(),
   pubkey: z.string(),
   title: z.string().min(1).max(200),
@@ -597,7 +592,7 @@ export const orderEventMarketPickupFulfillmentSchema = z
       })
     }
     if (fulfillment.schedule) {
-      const series = parseEventMarketSeriesEvent(
+      const series = parseEventMarketSeriesFieldsForPrivateOrder(
         fulfillment.schedule.signedEvent
       )
       if (
@@ -619,7 +614,7 @@ export const orderEventMarketPickupFulfillmentSchema = z
         message: "A series order requires its exact signed schedule.",
       })
     }
-    const signedCalendar = parseEventMarketCalendarEvent(
+    const signedCalendar = parseEventMarketCalendarFieldsForPrivateOrder(
       fulfillment.calendar.signedEvent
     )
     if (
@@ -688,7 +683,7 @@ export const orderEventMarketPickupFulfillmentSchema = z
           "The signed authorization bundle must match the exact saved event IDs.",
       })
     } else {
-      const resolved = resolveEventMarketAuthorization({
+      const resolved = resolveEventMarketAuthorizationForPrivateOrder({
         marketCoordinate: fulfillment.market.coordinate,
         merchantPubkey: fulfillment.merchantPubkey,
         transitions: signed.ancestry,

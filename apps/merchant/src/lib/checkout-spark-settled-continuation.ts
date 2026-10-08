@@ -12,12 +12,10 @@ import {
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   proveSparkCheckoutReceiveCredit,
   publishMerchantCheckoutSparkProgress,
-  recordCheckoutSparkSettledCredit,
-  recordCheckoutSparkSettledLegStatus,
   restoreCheckoutSparkMerchantOrderWitness,
   restoreCheckoutSparkSettledReconciliation,
   retryMerchantCheckoutSparkProgress,
-  runCheckoutSparkSettledOutgoingStep,
+  runCheckoutSparkFinancialWorkflow,
   runWithCheckoutSparkMerchantRecoveryLock,
   withMerchantCheckoutSparkRecovery,
   type CheckoutSparkMerchantRecoveryLockManager,
@@ -701,17 +699,6 @@ export async function continueMerchantCheckoutSparkSettledPayout(
       })
       assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
       assertEligible()
-      recordCheckoutSparkSettledCredit(expectedState, {
-        requestId: proof.requestId,
-        paymentHash: plan.funding.paymentHash,
-        transferId: proof.transferId,
-        receiverIdentityPublicKey: proof.receiverIdentityPublicKey,
-        grossSats: proof.grossSats,
-        creditedSats: proof.creditedSats,
-        observedAt: now(),
-      })
-      await repository.recordMerchantCredit(plan, proof, now(), assertEligible)
-      assertEligible()
       const store = {
         async load() {
           const current = await load()
@@ -728,86 +715,6 @@ export async function continueMerchantCheckoutSparkSettledPayout(
           return saved
         },
       }
-      // Reconcile every frozen sibling first. In particular, a buyer's `paid`
-      // claim cannot release another allocation or unlock the Conduit leg.
-      for (const leg of expectedState.legs) {
-        if (!leg.intent) continue
-        const recipient = plan.recipients.find(
-          (item) => item.legId === leg.legId
-        )!
-        const target: CheckoutSparkSettledOutgoingTarget = {
-          walletId: plan.walletId,
-          network: plan.network,
-          legId: leg.legId,
-          recipientId: recipient.recipientId,
-          allocationSats: leg.allocationSats!,
-          unpaidAllocationSats: leg.allocationSats!,
-          intent: leg.intent,
-          ...(getCheckoutSparkSettledLegGeneration(leg) === 1
-            ? { generation: 1 as const }
-            : {}),
-        }
-        const observed = await inspectExactMerchantPayout(
-          plan,
-          target,
-          wallet,
-          assertEligible
-        )
-        assertEligible()
-        if (observed.status === "paid") {
-          if (leg.status === "paid") {
-            if (
-              leg.finalFeeSats !== observed.finalFeeSats ||
-              leg.finalDebitSats !== observed.finalDebitSats
-            ) {
-              payout = {
-                outcome: "wait",
-                reason: "provider_evidence_conflicting",
-                sendAttempted: false,
-              }
-              return
-            }
-          } else {
-            const current = await store.load()
-            await store.save(
-              recordCheckoutSparkSettledLegStatus(current.state, {
-                legId: leg.legId,
-                transferId: leg.intent.transferId,
-                paymentHash: leg.intent.paymentHash,
-                status: "paid",
-                finalFeeSats: observed.finalFeeSats,
-                finalDebitSats: observed.finalDebitSats,
-                observedAt: Math.max(now(), current.state.updatedAt + 1),
-              }),
-              current.revision
-            )
-          }
-          await repository.recordMerchantPayout(
-            plan,
-            target,
-            observed,
-            now(),
-            assertEligible
-          )
-          assertEligible()
-          await retainVerifiedProgress()
-        } else if (
-          observed.status !== "not_found" ||
-          leg.status !== "prepared"
-        ) {
-          payout = {
-            outcome: "wait",
-            reason:
-              observed.status === "conflicting_evidence"
-                ? "provider_evidence_conflicting"
-                : observed.status === "lookup_unavailable"
-                  ? "provider_evidence_unavailable"
-                  : "prior_possible_send",
-            sendAttempted: false,
-          }
-          return
-        }
-      }
       const provider = createCheckoutSparkSettledNativeOutgoingProvider({
         plan,
         wallet: wallet.outgoing,
@@ -819,16 +726,6 @@ export async function continueMerchantCheckoutSparkSettledPayout(
             assertEligible
           )
           assertEligible()
-          if (observed.status === "paid") {
-            await repository.recordMerchantPayout(
-              plan,
-              target,
-              observed,
-              now(),
-              assertEligible
-            )
-            assertEligible()
-          }
           return observed
         },
         async assertBeforeSend() {
@@ -871,35 +768,64 @@ export async function continueMerchantCheckoutSparkSettledPayout(
         },
         now,
       })
-      const step = await runCheckoutSparkSettledOutgoingStep({
-        checkoutId: plan.checkoutId,
-        planDigest: plan.planDigest,
-        legId: review.legId,
-        actor: "merchant",
-        now,
-        store,
-        provider,
-        // The original buyer snapshot remains available. Merchant-authored
-        // progress additionally uses the existing exact private self-outbox.
-        // Neither relay acceptance nor the local write-ahead is a payment proof.
-        acknowledgeRecoverySnapshot: retainProgress,
-        proveRenewalReturn: async (state, legId) => {
-          await assertDurableState()
-          if (JSON.stringify(state) !== JSON.stringify(expectedState)) {
-            throw new CheckoutSparkSettledRepositoryConflictError()
-          }
-          const proof = await proveMerchantCheckoutSparkReturnedPayout(
-            state,
-            legId,
-            wallet,
-            assertEligible,
-            now
-          )
-          assertEligible()
-          return proof
+      const execution = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId: plan.checkoutId,
+          planDigest: plan.planDigest,
+          legId: review.legId,
+          actor: "merchant",
+          mode: "advance",
         },
-      })
+        {
+          now,
+          store,
+          assertCurrent: assertEligible,
+          outgoing: provider,
+          credit: {
+            proof,
+            record: (creditPlan, creditProof) =>
+              repository.recordMerchantCredit(
+                creditPlan,
+                creditProof,
+                now(),
+                assertEligible
+              ),
+          },
+          recordPaid: async (target, observed) => {
+            await repository.recordMerchantPayout(
+              plan,
+              target,
+              observed,
+              now(),
+              assertEligible
+            )
+            assertEligible()
+          },
+          // The original buyer snapshot remains available. Merchant-authored
+          // progress additionally uses the existing exact private self-outbox.
+          // Neither relay acceptance nor the local write-ahead is a payment proof.
+          acknowledgeRecoverySnapshot: retainProgress,
+          proveRenewalReturn: async (state, legId) => {
+            await assertDurableState()
+            if (JSON.stringify(state) !== JSON.stringify(expectedState)) {
+              throw new CheckoutSparkSettledRepositoryConflictError()
+            }
+            const proof = await proveMerchantCheckoutSparkReturnedPayout(
+              state,
+              legId,
+              wallet,
+              assertEligible,
+              now
+            )
+            assertEligible()
+            return proof
+          },
+        }
+      )
       assertEligible()
+      if (execution.status !== "outgoing_step")
+        throw new Error("Merchant payout execution changed.")
+      const step = execution.step
       if (step.outcome === "paid" || step.outcome === "already_paid") {
         await retainVerifiedProgress()
       }

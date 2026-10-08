@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -104,7 +105,10 @@ async function commerceQuote(): Promise<CheckoutSparkCommerceQuote> {
     },
     MERCHANT_KEY
   )
-  const product = { ...parseProductEvent(source), sourceEventId: source.id }
+  const product = {
+    ...parseProductEvent(await admitFixture(source)),
+    sourceEventId: source.id,
+  }
   const item = {
     ...createCartItemFromProduct(product),
     familyProductId: product.parentProductId,
@@ -135,7 +139,7 @@ async function commerceQuote(): Promise<CheckoutSparkCommerceQuote> {
   return buildCheckoutSparkCommerceEvidence(authority)
 }
 
-function fiatShippingFixture() {
+async function fiatShippingFixture() {
   const coordinate = getMerchantShippingPolicyCoordinate(MERCHANT)
   const policyEvent = finalizeEvent(
     {
@@ -160,7 +164,7 @@ function fiatShippingFixture() {
     },
     MERCHANT_KEY
   )
-  const parsedOption = parseShippingOptionEvent(policyEvent as never)
+  const parsedOption = parseShippingOptionEvent(await admitFixture(policyEvent))
   if (!parsedOption) throw new Error("Fixture shipping policy failed.")
   const option = {
     ...parsedOption,
@@ -184,7 +188,10 @@ function fiatShippingFixture() {
     },
     MERCHANT_KEY
   )
-  const product = { ...parseProductEvent(source), sourceEventId: source.id }
+  const product = {
+    ...parseProductEvent(await admitFixture(source)),
+    sourceEventId: source.id,
+  }
   const item = { ...createCartItemFromProduct(product), quantity: 1 }
   const reviewedRate = { ...RATE, fetchedAt: NOW - 1_000 }
   const destination = { country: "US", subdivision: "NY", postalCode: "10001" }
@@ -310,7 +317,7 @@ async function preparedPlan() {
 
 describe("authorized fiat checkout integration", () => {
   it("refreshes authenticated rate provenance for unchanged reviewed fiat shipping and retains final signed evidence", async () => {
-    const fixture = fiatShippingFixture()
+    const fixture = await fiatShippingFixture()
     const signed = snapshot()
     const result = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
@@ -358,7 +365,7 @@ describe("authorized fiat checkout integration", () => {
   })
 
   it("requests review for normal exchange-rate movement that changes the displayed SAT price or shipping amount", async () => {
-    const fixture = fiatShippingFixture()
+    const fixture = await fiatShippingFixture()
     const rate = { ...RATE, rate: 125_000 }
     const pricingAuthority = createCheckoutSparkPricingRateAttestation({
       rate,

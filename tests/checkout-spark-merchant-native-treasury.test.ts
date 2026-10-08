@@ -490,7 +490,7 @@ describe("Merchant native treasury continuation", () => {
     try {
       expect((await f.run()).payout).toMatchObject({
         outcome: "wait",
-        reason: "terminal_failure",
+        reason: "provider_evidence_unavailable",
         sendAttempted: false,
       })
       expect(queries).toBe(2)
@@ -502,6 +502,12 @@ describe("Merchant native treasury continuation", () => {
       expect(
         saved.status === "active" && saved.state.treasuryFinalization!.status
       ).toBe("terminal_failure")
+      expect((await f.run()).payout).toMatchObject({
+        outcome: "wait",
+        reason: "provider_evidence_unavailable",
+        sendAttempted: false,
+      })
+      expect(fulfills).toBe(0)
     } finally {
       await f.database.delete()
     }

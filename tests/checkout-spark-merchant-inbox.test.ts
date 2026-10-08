@@ -3606,7 +3606,8 @@ describe("Merchant checkout Spark payout history inspection", () => {
           }
         const result = await test.run()
         expect(result.payout).toMatchObject({
-          outcome: "already_paid",
+          outcome: loseAck ? "wait" : "already_paid",
+          ...(loseAck ? { reason: "recovery_handoff_unavailable" } : {}),
           sendAttempted: false,
         })
         expect(test.provider.sends).toBe(0)
@@ -3633,10 +3634,30 @@ describe("Merchant checkout Spark payout history inspection", () => {
         )
         expect(entries).toHaveLength(1)
         expect(entries[0]!.relayAccepted).toBe(!loseAck)
+        const originalWrap = entries[0]!.record.signedRecipientWrap
         transport.publishFn = publish
         expect((await test.run()).payout?.outcome).toBe("already_paid")
         expect(test.provider.sends).toBe(0)
         expect(test.snapshots).toHaveLength(1)
+        expect(JSON.parse(JSON.stringify(test.published.at(-1)))).toEqual(
+          originalWrap
+        )
+        expect(
+          (
+            await test.progressStore.list(
+              MERCHANT,
+              test.snapshot.plan.checkoutId,
+              test.snapshot.plan.planDigest
+            )
+          ).every((entry) => entry.relayAccepted)
+        ).toBe(true)
+        expect(
+          await repository.loadMerchantSettlement(
+            MERCHANT,
+            test.snapshot.plan.checkoutId,
+            test.snapshot.plan.planDigest
+          )
+        ).toEqual(facts)
       })
     }
   )

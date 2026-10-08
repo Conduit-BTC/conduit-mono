@@ -10,7 +10,11 @@ import {
   getProfiles,
   pubkeyToNpub,
 } from "@conduit/core"
-import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { EventActorName } from "../apps/market/src/components/EventActorIdentity"
 import {
   getEventActorIdentityView,
@@ -19,9 +23,10 @@ import {
   type EventActorIdentityView,
 } from "../apps/market/src/lib/event-actor-identity"
 
-const signedFixture = createEventMarketOrderFixture()
-const handlerPubkey = signedFixture.merchant
-const organizerPubkey = signedFixture.organizer
+const handlerSecret = generateSecretKey()
+const organizerSecret = generateSecretKey()
+const handlerPubkey = getPublicKey(handlerSecret)
+const organizerPubkey = getPublicKey(organizerSecret)
 
 afterEach(() => {
   __resetCommerceTestOverrides()
@@ -63,17 +68,22 @@ describe("Market event actor identity", () => {
         if (authors.some((key) => !/^[0-9a-f]{64}$/.test(key))) return []
         return [handlerPubkey, organizerPubkey]
           .filter((key) => authors.includes(key))
-          .map((pubkey) => ({
-            id: pubkey,
-            pubkey,
-            created_at: 10,
-            kind: 0,
-            content: JSON.stringify({
-              display_name:
-                pubkey === handlerPubkey ? "Pickup handler" : "Event organizer",
-            }),
-            tags: [],
-          })) as never
+          .map((pubkey) =>
+            finalizeEvent(
+              {
+                created_at: 10,
+                kind: 0,
+                content: JSON.stringify({
+                  display_name:
+                    pubkey === handlerPubkey
+                      ? "Pickup handler"
+                      : "Event organizer",
+                }),
+                tags: [],
+              },
+              pubkey === handlerPubkey ? handlerSecret : organizerSecret
+            )
+          ) as never
       },
     })
 

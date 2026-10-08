@@ -5,9 +5,9 @@ import {
   canonicalizeShippingCost,
   getShippingCostSats,
 } from "../pricing"
-import { parseProductEvent } from "./products"
+import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
 import {
-  parseShippingOptionEvent,
+  parseShippingOptionFieldsForPrivateOrder,
   resolveProductFulfillment,
   type ParsedShippingOption,
 } from "./shipping"
@@ -153,7 +153,7 @@ export function resolveCheckoutSparkSignedShipping(input: {
   ) {
     unavailable()
   }
-  const product = parseProductEvent(productEvent)
+  const product = parseCheckoutSparkSignedProductFields(productEvent)
   if (product.id !== line.productCoordinate || product.priceEvidenceMalformed) {
     unavailable()
   }
@@ -194,7 +194,7 @@ export function resolveCheckoutSparkSignedShipping(input: {
   ) {
     unavailable()
   }
-  const option = parseShippingOptionEvent(event)
+  const option = parseShippingOptionFieldsForPrivateOrder(event)
   if (line.shippingPolicy) {
     const policy = shippingPolicyQuoteSchema.parse(line.shippingPolicy.quote)
     const fulfillment = option

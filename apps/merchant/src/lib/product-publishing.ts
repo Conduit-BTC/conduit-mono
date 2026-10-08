@@ -21,6 +21,7 @@ import {
   hasCurrentShippingPolicyEvidence,
   isValidSignedPublicNostrEvent,
   markProductListingDeliveryReady,
+  isVerifiedNostrEvent,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   publishExactProductShippingRelay,
@@ -522,7 +523,7 @@ export async function prepareProductPublicationListings(
     !option.signedEvent ||
     !hasCurrentShippingPolicyEvidence(option) ||
     option.pubkey !== input.merchantPubkey ||
-    !isValidSignedPublicNostrEvent(option.signedEvent)
+    !isVerifiedNostrEvent(option.signedEvent)
   ) {
     throw new Error(
       "The shipping table could not be verified. Check Shipping before publishing."
@@ -1471,7 +1472,7 @@ export async function signAndPublishProductWriteBundle(
     }
     const deletionJob =
       deletionEvent && currentWriteRelayPlan
-        ? prepareProductDeletionDeliveryJob(
+        ? await prepareProductDeletionDeliveryJob(
             {
               signedEvent: deletionEvent,
               currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 import {
   __resetCommerceTestOverrides,
@@ -124,7 +128,6 @@ function finalIoRecorder(openedRelayUrls: string[]) {
         status: "success" as const,
         eventCount: 0,
       })),
-      eventsVerified: true,
     }
   }
 }
@@ -144,7 +147,6 @@ describe("account network read call contract", () => {
             status: "success" as const,
             eventCount: 0,
           })),
-          eventsVerified: true,
         }
       },
     })
@@ -196,7 +198,6 @@ describe("account network read call contract", () => {
           status: "success" as const,
           eventCount: 0,
         })),
-        eventsVerified: true,
       }
     }
 
@@ -274,24 +275,25 @@ describe("account network read call contract", () => {
     let deletionReadObserved = false
     let collectingProductDetail = false
     const productDetailCalls: PublicRelayReadOptions[] = []
-    const merchantPubkey = "b".repeat(64)
+    const merchantSecret = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSecret)
     const productDTag = "removed-relay-product"
     const productAddress = `30402:${merchantPubkey}:${productDTag}`
-    const variableProduct = {
-      id: "c".repeat(64),
-      kind: 30402,
-      pubkey: merchantPubkey,
-      created_at: 100,
-      content: "Variable product",
-      sig: "d".repeat(128),
-      tags: [
-        ["d", productDTag],
-        ["title", "Variable product"],
-        ["price", "1000", "SATS"],
-        ["type", "variable", "physical"],
-        ["image", "https://cdn.conduit.market/product.png"],
-      ],
-    }
+    const variableProduct = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 100,
+        content: "Variable product",
+        tags: [
+          ["d", productDTag],
+          ["title", "Variable product"],
+          ["price", "1000", "SATS"],
+          ["type", "variable", "physical"],
+          ["image", "https://cdn.conduit.market/product.png"],
+        ],
+      },
+      merchantSecret
+    )
 
     __setRelayListTestOverrides({
       loadCached: async (pubkey) => relayList(pubkey),

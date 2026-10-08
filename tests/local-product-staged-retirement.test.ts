@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { IDBFactory as FakeIDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
   finalizeEvent,
@@ -337,7 +338,9 @@ describe("stale signed product staging", () => {
     await setSelectedProduct(dTag, winner)
     await storeAcknowledgedProducts([winner])
     await db.productTombstones.bulkPut(
-      projectSignedProductDeletionForLocalCommit(exactDeletion)
+      projectSignedProductDeletionForLocalCommit(
+        await admitFixture(exactDeletion)
+      )
     )
 
     await expect(
@@ -396,7 +399,7 @@ describe("stale signed product staging", () => {
       },
       { now: () => NOW }
     )
-    const deletionJob = prepareProductDeletionDeliveryJob(
+    const deletionJob = await prepareProductDeletionDeliveryJob(
       {
         signedEvent: deletion,
         companionListingJobId: listingJob.id,
@@ -413,7 +416,7 @@ describe("stale signed product staging", () => {
     await setSelectedProduct(deletionDTag, replacementForDeleted)
     await storeAcknowledgedProducts([winner, replacementForDeleted])
     await db.productTombstones.bulkPut(
-      projectSignedProductDeletionForLocalCommit(deletion)
+      projectSignedProductDeletionForLocalCommit(await admitFixture(deletion))
     )
 
     await expect(
@@ -511,7 +514,7 @@ describe("stale signed product staging", () => {
 
   it("excludes a locally retained retired deletion from pending retry discovery", async () => {
     const deletion = signedDeletion("retired-selector")
-    const prepared = prepareProductDeletionDeliveryJob({
+    const prepared = await prepareProductDeletionDeliveryJob({
       signedEvent: deletion,
       currentWriteRelayUrls: ["wss://relay.example"],
       currentPersonalRelayUrls: ["wss://relay.example"],
@@ -607,7 +610,7 @@ describe("stale signed product staging", () => {
       readyForDelivery: false,
     })
     const deletion = signedDeletion("orphaned-source")
-    const deletionJob = prepareProductDeletionDeliveryJob({
+    const deletionJob = await prepareProductDeletionDeliveryJob({
       signedEvent: deletion,
       companionListingJobId: staged.id,
       currentWriteRelayUrls: ["wss://relay.example"],
@@ -660,7 +663,7 @@ describe("stale signed product staging", () => {
       companionDeletionJobId: deletion.id,
       readyForDelivery: false,
     })
-    const preparedDeletion = prepareProductDeletionDeliveryJob({
+    const preparedDeletion = await prepareProductDeletionDeliveryJob({
       signedEvent: deletion,
       companionListingJobId: listingJob.id,
       currentWriteRelayUrls: ["wss://relay.example"],
@@ -684,7 +687,7 @@ describe("stale signed product staging", () => {
     await setSelectedProduct(listingDTag, winner)
     await setSelectedProduct(deletionDTag, replacement)
     await db.productTombstones.bulkPut(
-      projectSignedProductDeletionForLocalCommit(deletion)
+      projectSignedProductDeletionForLocalCommit(await admitFixture(deletion))
     )
     await storeAcknowledgedProducts([winner, replacement])
 
@@ -731,7 +734,7 @@ describe("stale signed product staging", () => {
       })
     ).rejects.toThrow("Paired product deletion needs manual reconciliation")
 
-    const deletionJob = prepareProductDeletionDeliveryJob({
+    const deletionJob = await prepareProductDeletionDeliveryJob({
       signedEvent: deletion,
       companionListingJobId: `product-listing:${"f".repeat(64)}`,
       currentWriteRelayUrls: ["wss://relay.example"],

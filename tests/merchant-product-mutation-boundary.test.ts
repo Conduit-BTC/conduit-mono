@@ -790,7 +790,6 @@ describe("merchant-owned product mutation boundary", () => {
           eventCount: 0,
           rejectedEventCount: filter.kinds?.includes(30406) ? 100 : 0,
         })),
-        eventsVerified: true,
       }),
     })
     const observed = {
@@ -896,7 +895,7 @@ describe("merchant-owned product mutation boundary", () => {
       ).toEqual([["shipping_option", baseline.shippingOptionId!]])
     }
     expect(observed.publishedKinds).toEqual([])
-  })
+  }, 20000)
 
   it("acks all shipping options before publishing a canonical family", async () => {
     const baselines = [

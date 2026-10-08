@@ -380,7 +380,7 @@ describe("Merchant Spark ciphertext progress outbox", () => {
     }
   })
 
-  it("purges wraps only with successful terminal retirement and keeps its order witness", async () => {
+  it("retains encrypted wraps and its order witness after terminal retirement without reopening the execution queue", async () => {
     const { database, frozen, repository, close } = await harness()
     try {
       const record = delivery(frozen)
@@ -487,7 +487,9 @@ describe("Merchant Spark ciphertext progress outbox", () => {
       const binding = await database.checkoutSparkPlanBindings.get(
         frozen.checkoutId
       )
-      expect(binding?.merchantProgressOutbox).toBeUndefined()
+      expect(binding?.merchantProgressOutbox).toEqual([
+        { record, relayAccepted: false },
+      ])
       expect(binding?.orderWitness).toEqual(witness(frozen))
       expect(binding?.retiredSettlementSummary?.planDigest).toBe(
         frozen.planDigest
@@ -495,6 +497,16 @@ describe("Merchant Spark ciphertext progress outbox", () => {
       expect(
         (await settled.load(frozen.checkoutId, frozen.planDigest)).status
       ).toBe("retired")
+      await expect(
+        repository.list(MERCHANT, frozen.checkoutId, frozen.planDigest)
+      ).rejects.toThrow("plan is not active")
+      await expect(repository.stage(record, () => {})).rejects.toThrow(
+        "plan is not active"
+      )
+      expect(
+        (await database.checkoutSparkPlanBindings.get(frozen.checkoutId))
+          ?.merchantProgressOutbox
+      ).toEqual([{ record, relayAccepted: false }])
     } finally {
       await close()
     }

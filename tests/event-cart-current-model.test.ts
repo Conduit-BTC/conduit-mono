@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import { parseProductEvent, type Product } from "@conduit/core"
 import {
@@ -13,9 +14,14 @@ import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-paym
 import { validatePickupContactFields } from "../apps/market/src/lib/checkout-validation"
 import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 
-function pickup(mode: "merchant_present" | "organizer_handoff", price = 100) {
+async function pickup(
+  mode: "merchant_present" | "organizer_handoff",
+  price = 100
+) {
   const fixture = createEventMarketOrderFixture({ mode, price })
-  const product = parseProductEvent(fixture.fulfillment.product.signedEvent!)!
+  const product = parseProductEvent(
+    await admitFixture(fixture.fulfillment.product.signedEvent!)
+  )!
   const item: CartItem = {
     ...createCartItemFromProduct(product, fixture.fulfillment),
     quantity: 2,
@@ -25,8 +31,8 @@ function pickup(mode: "merchant_present" | "organizer_handoff", price = 100) {
 
 describe("current Event Market cart preserves ordinary and contact pickup", () => {
   for (const mode of ["merchant_present", "organizer_handoff"] as const) {
-    it(`persists and prices standard contact pickup with ${mode}`, () => {
-      const { item } = pickup(mode)
+    it(`persists and prices standard contact pickup with ${mode}`, async () => {
+      const { item } = await pickup(mode)
       expect(isPickupCartItem(item)).toBe(true)
       expect(getCartFulfillmentLane([item])).toBe("pickup")
       const parsed = parsePersistedCart({ version: 2, items: [item] })
@@ -65,8 +71,8 @@ describe("current Event Market cart preserves ordinary and contact pickup", () =
     })
   }
 
-  it("keeps ordinary shipping and digital purchases usable beside event pickup", () => {
-    const { product, item } = pickup("merchant_present")
+  it("keeps ordinary shipping and digital purchases usable beside event pickup", async () => {
+    const { product, item } = await pickup("merchant_present")
     const shippingProduct: Product = {
       ...product,
       shippingCostSats: 25,
@@ -105,8 +111,8 @@ describe("current Event Market cart preserves ordinary and contact pickup", () =
     ).toHaveLength(2)
   })
 
-  it("keeps separate purchases for distinct event dates", () => {
-    const { item } = pickup("merchant_present")
+  it("keeps separate purchases for distinct event dates", async () => {
+    const { item } = await pickup("merchant_present")
     if (item.fulfillment?.type !== "event_market_pickup")
       throw new Error("Missing fixture")
     const otherDate = {
@@ -122,8 +128,8 @@ describe("current Event Market cart preserves ordinary and contact pickup", () =
     expect(groupCartPurchases([item, otherDate])).toHaveLength(2)
   })
 
-  it("accepts zero-cost event pickup without enabling zero-cost ordinary sales", () => {
-    const { item, product } = pickup("organizer_handoff", 0)
+  it("accepts zero-cost event pickup without enabling zero-cost ordinary sales", async () => {
+    const { item, product } = await pickup("organizer_handoff", 0)
     expect(buildCheckoutPricingIntent([item], null)).toMatchObject({
       status: "ok",
       totalSats: 0,
@@ -136,8 +142,8 @@ describe("current Event Market cart preserves ordinary and contact pickup", () =
     ).toBe("error")
   })
 
-  it("drops retired collection pickup without reinterpreting it as shipping", () => {
-    const { item } = pickup("merchant_present")
+  it("drops retired collection pickup without reinterpreting it as shipping", async () => {
+    const { item } = await pickup("merchant_present")
     for (const type of ["pickup", "event_pickup_pending"]) {
       const parsed = parsePersistedCart({
         version: 2,

@@ -8,6 +8,7 @@ import {
   type CheckoutSparkSettledLegPreparationInput,
   type CheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRepositorySnapshot,
+  type CheckoutSparkSettledLegPreparationDependencies as SharedPreparationDependencies,
 } from "@conduit/core"
 
 import { getSparkWalletManager } from "./spark-sdk"
@@ -42,6 +43,17 @@ export async function prepareCheckoutSparkSettledOutgoingLeg(
 ): Promise<
   Extract<CheckoutSparkSettledRepositorySnapshot, { status: "active" }>
 > {
+  return prepareCheckoutSparkSettledOutgoingLegShared(
+    input,
+    createBuyerCheckoutSparkLegPreparationPorts(input, dependencies)
+  )
+}
+
+/** Provider-specific ports; the shared financial workflow owns preparation. */
+export function createBuyerCheckoutSparkLegPreparationPorts(
+  input: CheckoutSparkSettledLegPreparationInput,
+  dependencies: CheckoutSparkSettledLegPreparationDependencies
+): SharedPreparationDependencies {
   let pinnedManager:
     Pick<SparkWalletManager, "estimateCheckoutLightningFee"> | null | undefined
   const requireManager = () => {
@@ -56,7 +68,7 @@ export async function prepareCheckoutSparkSettledOutgoingLeg(
     }
     return pinnedManager
   }
-  return prepareCheckoutSparkSettledOutgoingLegShared(input, {
+  return {
     repository:
       dependencies.repository ?? new DexieCheckoutSparkSettledRepository(),
     estimateFee(request) {
@@ -90,5 +102,5 @@ export async function prepareCheckoutSparkSettledOutgoingLeg(
     },
     acknowledgeRecoverySnapshot: dependencies.acknowledgeRecoverySnapshot,
     nowMs: dependencies.nowMs,
-  })
+  }
 }

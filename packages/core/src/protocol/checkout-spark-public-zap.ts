@@ -148,8 +148,8 @@ function requestTags(
 }
 
 function matchesPolicyTags(
-  tags: string[][],
-  baseTags: string[][],
+  tags: readonly (readonly string[])[],
+  baseTags: readonly (readonly string[])[],
   policy: CheckoutSparkMerchantPublicZapPolicy
 ): boolean {
   if (policy.schemaVersion === 1)

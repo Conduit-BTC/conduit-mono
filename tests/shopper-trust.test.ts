@@ -1117,7 +1117,6 @@ describe("shopper trust evidence", () => {
               status: "success" as const,
               eventCount: 0,
             })),
-            eventsVerified: true,
           }
         },
       }
@@ -1646,7 +1645,6 @@ describe("shopper trust evidence", () => {
           filter.authors?.includes(SHOPPER_PUBKEY) && filterHasKind(filter, 1)
             ? {
                 ...successfulRead([forgedActivity]),
-                eventsVerified: true,
               }
             : successfulRead(),
         now: () => NOW_MS,

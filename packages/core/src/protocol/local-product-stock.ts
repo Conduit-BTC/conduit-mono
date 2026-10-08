@@ -11,7 +11,7 @@ import {
   isProductListingEventReplayEligible,
   isTerminalRecoverableProductListingJob,
 } from "./product-listing-delivery"
-import { parseProductEvent } from "./products"
+import { parsePrivateOrderProductFields } from "./products"
 import { readCurrentProductWriteRevision } from "./local-product-write"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
 import type { SignedPublicNostrEvent } from "./signed-event"
@@ -104,7 +104,7 @@ export async function getLocalProductStockRecoveryForOrder(
           checkpoint.adjustment.sourceEventId !== checkpoint.sourceEventId ||
           checkpoint.adjustment.key !==
             `${encodeURIComponent(orderId)}:${encodeURIComponent(checkpoint.productAddressId)}` ||
-          parseProductEvent(signedEvent).stock !==
+          parsePrivateOrderProductFields(signedEvent).stock !==
             checkpoint.adjustment.nextStock ||
           intents.length !== 1 ||
           !intent ||

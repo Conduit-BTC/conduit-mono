@@ -6,7 +6,6 @@ import {
   assertCheckoutSparkSettledReturnedProof,
   checkoutSparkSettledOutgoingStatusObservation,
   classifyCheckoutSparkSettledExactOutgoingHistory,
-  collectCheckoutSparkNativeRetirementEvidence,
   createCheckoutSparkNativeTreasurySdkAdapter,
   deriveCheckoutSparkNativeTreasuryBudget,
   proveCheckoutSparkNativeTreasuryHistory,
@@ -21,10 +20,10 @@ import {
   proveCheckoutSparkSettledReturnedTransfer,
   proveSparkCheckoutReceiveCredit,
   readExactSparkLightningRecoveredTransfer,
-  recordCheckoutSparkSettledCredit,
   requireCheckoutSparkSettledExactOutgoingRequest,
   restoreCheckoutSparkMerchantOrderWitness,
   runCheckoutSparkSettledOutgoingStep,
+  runCheckoutSparkFinancialWorkflow,
   runWithCheckoutSparkMerchantRecoveryLock,
   verifyExactSparkLightningRequestDebit,
   withMerchantCheckoutSparkRecovery,
@@ -272,6 +271,7 @@ export interface MerchantSparkRecoveryWallet {
   openRetirementReader?(): Promise<{
     reader: CheckoutSparkNativeRetirementReader
     sparkAddress: string
+    cleanup?(): Promise<void>
   }>
   cleanup(): Promise<void>
   /** Absent from inspection-only wallet sessions. */
@@ -568,6 +568,10 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
       }
       return {
         sparkAddress,
+        cleanup: async () => {
+          await retirementReader?.cleanup()
+          retirementReader = undefined
+        },
         reader: {
           getTransfers: async (params) => {
             if (closed || params.sparkAddress !== sparkAddress)
@@ -1218,23 +1222,36 @@ export async function reconcileMerchantCheckoutSparkSettledCredit(
         throw new CheckoutSparkSettledRepositoryConflictError()
       }
       assertCheckoutSparkSettledRecoveryProgression(state, current.state)
-      const next = recordCheckoutSparkSettledCredit(current.state, {
-        requestId: proof.requestId,
-        paymentHash: plan.funding.paymentHash,
-        transferId: proof.transferId,
-        receiverIdentityPublicKey: proof.receiverIdentityPublicKey,
-        grossSats: proof.grossSats,
-        creditedSats: proof.creditedSats,
-        observedAt: now(),
-      })
-      if (current.state.credit === null) {
-        await repository.save(next, current.revision, assertEligible)
-        assertEligible()
-      }
-      // Keep provider proof separate from imported, buyer-signed progress.
-      // The minimal record survives retirement without retaining wallet keys.
-      await repository.recordMerchantCredit(plan, proof, now(), assertEligible)
-      assertEligible()
+      const admitted = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId: plan.checkoutId,
+          planDigest: plan.planDigest,
+          actor: "merchant",
+          mode: "credit",
+        },
+        {
+          store: {
+            load: repository.load.bind(repository),
+            save: (next, revision) =>
+              repository.save(next, revision, assertEligible),
+          },
+          assertCurrent: assertEligible,
+          now,
+          credit: {
+            proof,
+            record: (creditPlan, creditProof) =>
+              repository.recordMerchantCredit(
+                creditPlan,
+                creditProof,
+                now(),
+                assertEligible
+              ),
+          },
+          acknowledgeRecoverySnapshot: async () => {},
+        }
+      )
+      if (admitted.status !== "credited")
+        throw new Error("Merchant credit execution changed.")
       creditStatus = "recorded"
     } finally {
       await wallet.cleanup()
@@ -1437,172 +1454,195 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
             }
           : {}),
       }
-      const identity = (await wallet.getIdentityPublicKey()).toLowerCase()
-      assertEligible()
-      if (identity !== derivedIdentity)
-        throw new Error("Checkout Spark wallet identity changed.")
-      const receive = await observedWallet.getLightningReceiveRequest(
-        plan.funding.requestId
-      )
-      assertEligible()
-      if (
-        !receive ||
-        receive.status !== "TRANSFER_COMPLETED" ||
-        !receive.transfer?.sparkId
-      )
-        return
-      const transfer = await observedWallet.getTransfer(
-        receive.transfer.sparkId
-      )
-      assertEligible()
-      if (!transfer) return
-      const proof = proveSparkCheckoutReceiveCredit({
-        expectedRequest: {
-          id: plan.funding.requestId,
-          network: plan.network,
-          paymentRequest: plan.funding.paymentRequest,
-          paymentHash: plan.funding.paymentHash,
-          grossFundingSats: plan.funding.grossFundingSats,
+      const completed = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId: plan.checkoutId,
+          planDigest: plan.planDigest,
+          actor: "merchant",
+          mode: "retire",
         },
-        expectedReceive: { mode: "ordinary_v3" },
-        walletIdentityPublicKey: identity,
-        receive,
-        transfer,
-      })
-      if (
-        proof.transferId !== state.credit.transferId ||
-        proof.creditedSats !== state.credit.creditedSats
+        {
+          assertCurrent: assertEligible,
+          now,
+          store: {
+            load: (checkoutId, planDigest) =>
+              repository.load(checkoutId, planDigest),
+            save: async () => {
+              throw new Error("Retirement cannot create outgoing state.")
+            },
+          },
+          acknowledgeRecoverySnapshot: async () => {},
+          retirement: {
+            proveSettlement: async (state) => {
+              if (!state.credit) return null
+              const identity = (
+                await wallet.getIdentityPublicKey()
+              ).toLowerCase()
+              assertEligible()
+              if (identity !== derivedIdentity)
+                throw new Error("Checkout Spark wallet identity changed.")
+              const receive = await observedWallet.getLightningReceiveRequest(
+                plan.funding.requestId
+              )
+              assertEligible()
+              if (
+                !receive ||
+                receive.status !== "TRANSFER_COMPLETED" ||
+                !receive.transfer?.sparkId
+              )
+                return null
+              const transfer = await observedWallet.getTransfer(
+                receive.transfer.sparkId
+              )
+              assertEligible()
+              if (!transfer) return null
+              const proof = proveSparkCheckoutReceiveCredit({
+                expectedRequest: {
+                  id: plan.funding.requestId,
+                  network: plan.network,
+                  paymentRequest: plan.funding.paymentRequest,
+                  paymentHash: plan.funding.paymentHash,
+                  grossFundingSats: plan.funding.grossFundingSats,
+                },
+                expectedReceive: { mode: "ordinary_v3" },
+                walletIdentityPublicKey: identity,
+                receive,
+                transfer,
+              })
+              if (
+                proof.transferId !== state.credit.transferId ||
+                proof.creditedSats !== state.credit.creditedSats
+              )
+                return null
+              assertCheckoutSparkMerchantPricingAuthority({
+                plan,
+                fundingProof: proof,
+              })
+              await repository.recordMerchantCredit(
+                plan,
+                proof,
+                now(),
+                assertEligible
+              )
+              assertEligible()
+              const expectedTransferIds = [proof.transferId]
+              for (const leg of state.legs) {
+                const recipient = plan.recipients.find(
+                  (entry) => entry.legId === leg.legId
+                )
+                if (plan.schemaVersion === 4 && recipient?.kind === "conduit")
+                  continue
+                if (!recipient || !leg.intent || leg.allocationSats === null)
+                  return null
+                const target: CheckoutSparkSettledOutgoingTarget = {
+                  walletId: plan.walletId,
+                  network: plan.network,
+                  legId: leg.legId,
+                  recipientId: recipient.recipientId,
+                  allocationSats: leg.allocationSats,
+                  unpaidAllocationSats: leg.allocationSats,
+                  ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+                    ? { generation: 1 as const }
+                    : {}),
+                  intent: leg.intent,
+                }
+                await (
+                  repository.assertInvoiceRecipient ??
+                  repository.assertLocalInvoiceOrigin
+                ).call(repository, plan, target, assertEligible)
+                assertEligible()
+                const observation = await inspectExactMerchantPayout(
+                  plan,
+                  target,
+                  observedWallet,
+                  assertEligible
+                )
+                assertEligible()
+                if (
+                  observation.status !== "paid" ||
+                  observation.finalFeeSats !== leg.finalFeeSats ||
+                  observation.finalDebitSats !== leg.finalDebitSats
+                )
+                  return null
+                await repository.recordMerchantPayout(
+                  plan,
+                  target,
+                  observation,
+                  now(),
+                  assertEligible
+                )
+                assertEligible()
+                expectedTransferIds.push(leg.intent.transferId)
+              }
+              const closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[] =
+                []
+              for (const leg of state.legs) {
+                if (!getCheckoutSparkSettledClosedGeneration(leg)) continue
+                try {
+                  closedReturnedProofs.push(
+                    await proveMerchantCheckoutSparkClosedReturnedPayout(
+                      state,
+                      leg.legId,
+                      wallet,
+                      assertEligible,
+                      now
+                    )
+                  )
+                } catch {
+                  assertEligible()
+                  return null
+                }
+              }
+              if (plan.schemaVersion === 4) {
+                const native = state.treasuryFinalization!
+                if (
+                  !native.intent ||
+                  !native.providerTransferId ||
+                  !wallet.nativeTreasury ||
+                  !repository.recordMerchantTreasury
+                )
+                  return null
+                const observation =
+                  await wallet.nativeTreasury.inspectCheckoutTreasury({
+                    network: plan.network,
+                    nativeTreasury: plan.nativeTreasury!,
+                    amountSats: native.intent.amountSats,
+                    authorizedDebitSats: native.intent.authorizedDebitSats,
+                    providerTransferId: native.providerTransferId,
+                  })
+                assertEligible()
+                if (
+                  observation.status !== "paid" ||
+                  observation.providerTransferId !==
+                    native.providerTransferId ||
+                  observation.finalFeeSats !== native.finalFeeSats ||
+                  observation.finalDebitSats !== native.finalDebitSats
+                )
+                  return null
+                await repository.recordMerchantTreasury(
+                  state,
+                  { ...observation, status: "paid", observedAt: now() },
+                  assertEligible
+                )
+                assertEligible()
+                expectedTransferIds.push(observation.providerTransferId!)
+              }
+
+              return { expectedTransferIds, closedReturnedProofs }
+            },
+            openReader: async () => {
+              const session = await wallet.openRetirementReader!()
+              return {
+                ...session,
+                cleanup: session.cleanup ?? (async () => {}),
+              }
+            },
+            commit: (request) =>
+              repository.retire({ ...request, assertCurrent: assertEligible }),
+          },
+        }
       )
-        return
-      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
-      await repository.recordMerchantCredit(plan, proof, now(), assertEligible)
-      assertEligible()
-      const expectedTransferIds = [proof.transferId]
-      for (const leg of state.legs) {
-        const recipient = plan.recipients.find(
-          (entry) => entry.legId === leg.legId
-        )
-        if (plan.schemaVersion === 4 && recipient?.kind === "conduit") continue
-        if (!recipient || !leg.intent || leg.allocationSats === null) return
-        const target: CheckoutSparkSettledOutgoingTarget = {
-          walletId: plan.walletId,
-          network: plan.network,
-          legId: leg.legId,
-          recipientId: recipient.recipientId,
-          allocationSats: leg.allocationSats,
-          unpaidAllocationSats: leg.allocationSats,
-          ...(getCheckoutSparkSettledLegGeneration(leg) === 1
-            ? { generation: 1 as const }
-            : {}),
-          intent: leg.intent,
-        }
-        await (
-          repository.assertInvoiceRecipient ??
-          repository.assertLocalInvoiceOrigin
-        ).call(repository, plan, target, assertEligible)
-        assertEligible()
-        const observation = await inspectExactMerchantPayout(
-          plan,
-          target,
-          observedWallet,
-          assertEligible
-        )
-        assertEligible()
-        if (
-          observation.status !== "paid" ||
-          observation.finalFeeSats !== leg.finalFeeSats ||
-          observation.finalDebitSats !== leg.finalDebitSats
-        )
-          return
-        await repository.recordMerchantPayout(
-          plan,
-          target,
-          observation,
-          now(),
-          assertEligible
-        )
-        assertEligible()
-        expectedTransferIds.push(leg.intent.transferId)
-      }
-      const closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[] = []
-      for (const leg of state.legs) {
-        if (!getCheckoutSparkSettledClosedGeneration(leg)) continue
-        try {
-          closedReturnedProofs.push(
-            await proveMerchantCheckoutSparkClosedReturnedPayout(
-              state,
-              leg.legId,
-              wallet,
-              assertEligible,
-              now
-            )
-          )
-        } catch {
-          assertEligible()
-          return
-        }
-      }
-      if (plan.schemaVersion === 4) {
-        const native = state.treasuryFinalization!
-        if (
-          !native.intent ||
-          !native.providerTransferId ||
-          !wallet.nativeTreasury ||
-          !repository.recordMerchantTreasury
-        )
-          return
-        const observation = await wallet.nativeTreasury.inspectCheckoutTreasury(
-          {
-            network: plan.network,
-            nativeTreasury: plan.nativeTreasury!,
-            amountSats: native.intent.amountSats,
-            authorizedDebitSats: native.intent.authorizedDebitSats,
-            providerTransferId: native.providerTransferId,
-          }
-        )
-        assertEligible()
-        if (
-          observation.status !== "paid" ||
-          observation.providerTransferId !== native.providerTransferId ||
-          observation.finalFeeSats !== native.finalFeeSats ||
-          observation.finalDebitSats !== native.finalDebitSats
-        )
-          return
-        await repository.recordMerchantTreasury(
-          state,
-          { ...observation, status: "paid", observedAt: now() },
-          assertEligible
-        )
-        assertEligible()
-        expectedTransferIds.push(observation.providerTransferId!)
-      }
-      const session = await wallet.openRetirementReader()
-      assertEligible()
-      const evidence = await collectCheckoutSparkNativeRetirementEvidence({
-        authenticatedReader: session.reader,
-        sparkAddress: session.sparkAddress,
-        walletId: plan.walletId,
-        network: plan.network,
-        stateUpdatedAt: state.updatedAt,
-        expectedTransferIds,
-        ...(plan.schemaVersion === 4
-          ? { requireExactHistoryScope: true as const }
-          : {}),
-        ...(closedReturnedProofs.length > 0 ? { closedReturnedProofs } : {}),
-        now,
-        assertCurrent: assertEligible,
-      })
-      assertEligible()
-      if (!evidence) return
-      await repository.retire({
-        checkoutId: plan.checkoutId,
-        planDigest: plan.planDigest,
-        expectedRevision: saved.revision,
-        evidence,
-        assertCurrent: assertEligible,
-      })
-      assertEligible()
-      retirementStatus = "retired"
+      if (completed.status === "retired") retirementStatus = "retired"
     } finally {
       await wallet.cleanup()
     }

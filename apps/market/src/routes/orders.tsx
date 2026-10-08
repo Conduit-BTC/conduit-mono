@@ -1604,7 +1604,7 @@ function OrderDetail({
   )
 
   async function verifyRetryFreshness(): Promise<void> {
-    assertCreatedEventMarketPickupTerms({
+    await assertCreatedEventMarketPickupTerms({
       id: row.orderId,
       buyerPubkey,
       merchantPubkey: row.merchantPubkey,

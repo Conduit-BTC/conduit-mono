@@ -1,3 +1,7 @@
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import type { Profile } from "../types"
 import type { ProfileFormValues } from "../schemas"
@@ -135,9 +139,9 @@ function parseProfilePublishContent(content: string | null | undefined): {
   }
 }
 
-export function parseProfileEvent(
-  event: Pick<SignedPublicNostrEvent, "content" | "pubkey">
-): Profile {
+export function parseProfileEvent(event: VerifiedNostrEvent): Profile {
+  if (!isVerifiedNostrEvent(event))
+    throw new Error("Profile event must be admitted")
   return projectProfileContent(event.pubkey, event.content)
 }
 
@@ -390,7 +394,7 @@ export async function publishProfileContext(
   })
   assertCurrentSession()
 
-  const publishedProfile = parseProfileEvent({ pubkey, content: event.content })
+  const publishedProfile = projectProfileContent(pubkey, event.content)
 
   // Reconcile against the commit-time frontier so a concurrent tab cannot
   // replace stronger profile evidence with this row after the network step.

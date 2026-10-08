@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -120,7 +121,10 @@ describe("checkout Spark quote authority", () => {
       },
       key
     )
-    const listing = { ...parseProductEvent(event), sourceEventId: event.id }
+    const listing = {
+      ...parseProductEvent(await admitFixture(event)),
+      sourceEventId: event.id,
+    }
     const item = {
       ...createCartItemFromProduct(listing),
       familyProductId: listing.parentProductId,

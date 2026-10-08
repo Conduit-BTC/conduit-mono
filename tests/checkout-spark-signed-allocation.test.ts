@@ -7,7 +7,7 @@ import {
 import {
   assertCheckoutSparkSignedCommerceAllocations,
   deriveCheckoutSparkSignedCommerceObligations,
-  parseProductEvent,
+  parseCheckoutSparkSignedProductFields as parseProductEvent,
   type CheckoutSparkCommerceObligationInput,
   type CheckoutSparkCommerceQuote,
   type CheckoutSparkOrganizerObligationInput,

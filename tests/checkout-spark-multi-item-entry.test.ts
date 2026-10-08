@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
@@ -40,7 +41,7 @@ const MERCHANT_PROFILE = finalizeEvent(
 )
 const BUYER = NDKPrivateKeySigner.generate()
 
-function product(
+async function product(
   id: string,
   price: number,
   tags: string[][] = [],
@@ -61,16 +62,23 @@ function product(
     },
     MERCHANT_SECRET
   )
-  return { ...parseProductEvent(event), sourceEventId: event.id }
+  return {
+    ...parseProductEvent(await admitFixture(event)),
+    sourceEventId: event.id,
+  }
 }
 
-function request(
+async function request(
   guest = false,
-  entries = [
-    { product: product("first", 1_000), quantity: 2 },
-    { product: product("second", 250), quantity: 3 },
+  selectedEntries?: Array<{
+    product: Awaited<ReturnType<typeof product>>
+    quantity: number
+  }>
+): Promise<PrepareCheckoutSparkSettledDigitalOrderInput> {
+  const entries = selectedEntries ?? [
+    { product: await product("first", 1_000), quantity: 2 },
+    { product: await product("second", 250), quantity: 3 },
   ]
-): PrepareCheckoutSparkSettledDigitalOrderInput {
   const products = entries.map((entry) => entry.product)
   const quantities = entries.map((entry) => entry.quantity)
   const pricing = buildCheckoutPricingIntent(
@@ -112,8 +120,8 @@ function request(
 
 describe("same-merchant multi-item settled entry", () => {
   it("prepares a buyer-approved fiat final quote without republishing the unmarked listing", async () => {
-    const listing = product("fiat-entry", 2.5, [], "USD")
-    const input = request()
+    const listing = await product("fiat-entry", 2.5, [], "USD")
+    const input = await request()
     const pricing = buildCheckoutPricingIntent(
       [{ ...createCartItemFromProduct(listing), quantity: 2 }],
       { rate: 100_000, fetchedAt: NOW, source: "mempool" },
@@ -163,7 +171,7 @@ describe("same-merchant multi-item settled entry", () => {
   it.each([false, true])(
     "prepares one combined order and funding plan with guest=%s",
     async (guest) => {
-      const input = request(guest)
+      const input = await request(guest)
       input.quoteAuthority.products = [
         ...input.quoteAuthority.products,
       ].reverse()
@@ -225,7 +233,7 @@ describe("same-merchant multi-item settled entry", () => {
   )
 
   it("snapshots all quote arrays before awaiting a profile read", async () => {
-    const input = request()
+    const input = await request()
     const original = structuredClone(input.quoteAuthority)
     await prepareCheckoutSparkSettledDigitalOrder(input, {
       now: () => NOW,
@@ -291,7 +299,7 @@ describe("same-merchant multi-item settled entry", () => {
   it.each(invalid)(
     "rejects %s before profile, wallet or publication work",
     async (mode) => {
-      const input = request()
+      const input = await request()
       const quote = input.quoteAuthority
       const lines = [...quote.lines]
       const products = [...quote.products]
@@ -415,7 +423,7 @@ describe("signed supplier settled entry", () => {
       signedEvent: structuredClone(profile),
     }
   }
-  function supplierRequest(guest = false) {
+  async function supplierRequest(guest = false) {
     const terms = (recipients: string[]) => [
       ["conduit_supplier_allocation", "1"],
       ...[MERCHANT, ...recipients].map((pubkey) => [
@@ -427,11 +435,14 @@ describe("signed supplier settled entry", () => {
     ]
     return request(guest, [
       {
-        product: product("shared-first", 333, terms([suppliers[0]!])),
+        product: await product("shared-first", 333, terms([suppliers[0]!])),
         quantity: 3,
       },
-      { product: product("shared-second", 101, terms(suppliers)), quantity: 2 },
-      { product: product("unmarked", 100), quantity: 1 },
+      {
+        product: await product("shared-second", 101, terms(suppliers)),
+        quantity: 2,
+      },
+      { product: await product("unmarked", 100), quantity: 1 },
     ])
   }
   const prepared = {
@@ -441,7 +452,7 @@ describe("signed supplier settled entry", () => {
   it.each([false, true])(
     "prepares exact aggregated merchant and supplier legs with guest=%s",
     async (guest) => {
-      const input = supplierRequest(guest)
+      const input = await supplierRequest(guest)
       const reads: string[] = []
       let preparations = 0
       let publications = 0
@@ -519,7 +530,7 @@ describe("signed supplier settled entry", () => {
   )
 
   it("detaches each selected profile and the quote before later recipient reads", async () => {
-    const input = supplierRequest()
+    const input = await supplierRequest()
     const originalQuote = structuredClone(input.quoteAuthority)
     const merchantPayout = payout(MERCHANT)
     const originalProfile = structuredClone(merchantPayout.signedEvent!)
@@ -541,7 +552,7 @@ describe("signed supplier settled entry", () => {
         merchantPayout.lud16 = "updated@example.test"
         merchantPayout.profileEventId = laterProfile.id
         merchantPayout.profileEventCreatedAt = laterProfile.created_at
-        input.quoteAuthority.products = [product("later-quote", 100)]
+        input.quoteAuthority.products = [await product("later-quote", 100)]
         input.quoteAuthority.pricing.items.reverse()
         return payout(recipientPubkey)
       },
@@ -580,7 +591,7 @@ describe("signed supplier settled entry", () => {
       let publishedCalls = 0
       const reads: string[] = []
       await expect(
-        prepareCheckoutSparkSettledDigitalOrder(supplierRequest(), {
+        prepareCheckoutSparkSettledDigitalOrder(await supplierRequest(), {
           now: () => NOW,
           readRecipientPayout: async ({ recipientPubkey }) => {
             reads.push(recipientPubkey)
@@ -626,7 +637,7 @@ describe("signed supplier settled entry", () => {
     let preparedCalls = 0
     let publishedCalls = 0
     await expect(
-      prepareCheckoutSparkSettledDigitalOrder(supplierRequest(), {
+      prepareCheckoutSparkSettledDigitalOrder(await supplierRequest(), {
         now: () => NOW,
         readRecipientPayout: async ({ recipientPubkey }) => {
           const result = payout(recipientPubkey)
@@ -653,7 +664,7 @@ describe("signed supplier settled entry", () => {
   it.each(["account_changed", "guest_expired", "guest_caller_revoked"])(
     "stops subsequent recipient reads and funding after %s",
     async (reason) => {
-      const input = supplierRequest(reason !== "account_changed")
+      const input = await supplierRequest(reason !== "account_changed")
       let now = NOW
       let current = true
       input.shouldContinue = () => current
@@ -727,8 +738,8 @@ describe("settled router cart target", () => {
     { currency: "MSAT", amount: 1_000_000, eligible: false },
   ])(
     "uses the original $currency source, not its canonical SATS projection",
-    ({ currency, amount, eligible }) => {
-      const parsed = product(`source-${currency}`, amount, [], currency)
+    async ({ currency, amount, eligible }) => {
+      const parsed = await product(`source-${currency}`, amount, [], currency)
       const cartItem = createCartItemFromProduct(parsed)
       expect(cartItem.currency).toBe("SATS")
       expect(cartItem.priceSats).toBe(1_000)

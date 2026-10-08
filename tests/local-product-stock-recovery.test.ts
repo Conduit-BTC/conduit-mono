@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { IDBFactory as FakeIDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
   finalizeEvent,
@@ -43,7 +44,9 @@ function signedProduct(stock: number, at: number) {
 async function committedStock() {
   const source = signedProduct(5, createdAt)
   const signedEvent = signedProduct(4, createdAt + 1)
-  await db.products.put(projectSignedProductListingForLocalCommit(source))
+  await db.products.put(
+    projectSignedProductListingForLocalCommit(await admitFixture(source))
+  )
   const listingJob = prepareProductListingDeliveryJob({
     merchantPubkey: merchant,
     signedEvents: [signedEvent],
@@ -248,7 +251,9 @@ describe("committed local stock recovery", () => {
   it("retains history but refuses replay or finalization after a newer observed revision", async () => {
     const committed = await committedStock()
     const newer = signedProduct(8, createdAt + 2)
-    await db.products.put(projectSignedProductListingForLocalCommit(newer))
+    await db.products.put(
+      projectSignedProductListingForLocalCommit(await admitFixture(newer))
+    )
     const history = await getLocalProductStockRecoveryForOrder(
       merchant,
       orderId

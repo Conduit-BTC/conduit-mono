@@ -5,6 +5,7 @@ import {
   getCheckoutSparkSettledLegGeneration,
   renewCheckoutSparkSettledLeg,
   prepareCheckoutSparkSettledLeg,
+  assertCheckoutSparkSettledFundingCoverage,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledRecipient,
@@ -131,6 +132,10 @@ function requireLeg(snapshot: ActiveSnapshot, legId: string) {
   if (leg.status !== "unprepared" && !leg.intent) {
     throw new Error("Checkout Spark payout evidence is incomplete.")
   }
+  assertCheckoutSparkSettledFundingCoverage(
+    snapshot.state.plan,
+    snapshot.state.credit.creditedSats
+  )
   return { leg, recipient }
 }
 

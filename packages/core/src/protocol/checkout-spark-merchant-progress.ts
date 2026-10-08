@@ -250,7 +250,7 @@ export async function openCheckoutSparkMerchantProgressWrap(input: {
       throw new Error("Invalid recipient")
     }
     // The shared plain unwrap verifies the seal afresh without a decrypted cache.
-    const wrapped = wrap
+    const wrapped = { ...wrap, tags: wrap.tags.map((tag) => [...tag]) }
     const rumor = input.giftUnwrap
       ? await input.giftUnwrap(wrapped, input.signer)
       : await unwrapPrivateMessageEnvelope(wrapped, input.signer)

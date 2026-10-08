@@ -66,7 +66,10 @@ async function restoreLocalDeletionEvidence(
   job: ProductDeletionDeliveryJob
 ): Promise<void> {
   await cacheSignedProductDeletionEvent(
-    new NDKEvent(undefined, job.signedEvent)
+    new NDKEvent(undefined, {
+      ...job.signedEvent,
+      tags: job.signedEvent.tags.map((tag) => [...tag]),
+    })
   )
 }
 

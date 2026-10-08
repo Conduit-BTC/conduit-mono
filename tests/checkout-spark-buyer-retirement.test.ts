@@ -23,6 +23,10 @@ import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
 import type { GuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import { retireCheckoutSparkSettledShopper } from "../apps/market/src/lib/checkout-spark-settled-retirement"
+import {
+  getCheckoutSparkSettledPreparation,
+  saveCheckoutSparkSettledPreparation,
+} from "../apps/market/src/lib/checkout-spark-settled-preparation"
 import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
 import {
@@ -398,6 +402,90 @@ async function fixture(options: { feeReserve?: number; guest?: boolean } = {}) {
 }
 
 describe("buyer successful checkout retirement", () => {
+  it("finishes execution cleanup after a terminal commit callback fails without re-inspecting or sending", async () => {
+    await withFixture(async (f) => {
+      const values = new Map<string, string>()
+      const storage = {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          values.set(key, value)
+        },
+        removeItem: (key: string) => {
+          values.delete(key)
+        },
+      }
+      saveCheckoutSparkSettledPreparation(
+        {
+          schemaVersion: 3,
+          checkoutId: f.plan.checkoutId,
+          planDigest: f.plan.planDigest,
+          recoveryHandoffId: null,
+          fundingInvoiceExposedAt: null,
+          fundingSubmissionState: "not_started",
+          savedAt: NOW,
+        },
+        storage
+      )
+      const interrupted = {
+        ...f.dependencies,
+        storage,
+        recoveryStorage: storage,
+        repository: {
+          load: f.repository.load.bind(f.repository),
+          loadBuyerSettlement: f.repository.loadBuyerSettlement.bind(
+            f.repository
+          ),
+          assertLocalInvoiceOrigin: f.repository.assertLocalInvoiceOrigin.bind(
+            f.repository
+          ),
+          recordMerchantCredit: f.repository.recordMerchantCredit.bind(
+            f.repository
+          ),
+          recordMerchantPayout: f.repository.recordMerchantPayout.bind(
+            f.repository
+          ),
+          loadMerchantSettlement: f.repository.loadMerchantSettlement.bind(
+            f.repository
+          ),
+          recordMerchantTreasury: f.repository.recordMerchantTreasury.bind(
+            f.repository
+          ),
+          retire: async (...args: Parameters<typeof f.repository.retire>) => {
+            await f.repository.retire(...args)
+            throw new Error("Synthetic interrupted post-commit callback")
+          },
+        },
+      }
+      expect(
+        await retireCheckoutSparkSettledShopper(f.input, interrupted)
+      ).toEqual({ status: "unavailable" })
+      expect(
+        (await f.repository.load(f.plan.checkoutId, f.plan.planDigest)).status
+      ).toBe("retired")
+      expect(
+        getCheckoutSparkSettledPreparation(f.plan.checkoutId, storage)
+      ).not.toBeNull()
+      const provider = f.control.snapshot()
+      const reads = { ...f.nativeReads }
+      await f.manager.close(WALLET_ID)
+      expect(
+        await retireCheckoutSparkSettledShopper(f.input, {
+          ...f.dependencies,
+          storage,
+          recoveryStorage: storage,
+        })
+      ).toEqual({ status: "retired" })
+      expect(
+        getCheckoutSparkSettledPreparation(f.plan.checkoutId, storage)
+      ).toBeNull()
+      expect(f.nativeReads).toEqual(reads)
+      expect(f.control.snapshot()).toEqual(provider)
+      expect(
+        (await f.repository.load(f.plan.checkoutId, f.plan.planDigest)).status
+      ).toBe("retired")
+    })
+  })
+
   it("bounds a stalled funding attestation and ignores its late result without changing recovery", async () => {
     await withFixture(async (f) => {
       const entered = deferred()

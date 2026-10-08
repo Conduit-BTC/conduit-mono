@@ -3,7 +3,6 @@ import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
-  verifyEvent,
 } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
@@ -12,6 +11,7 @@ import {
   __setCommerceTestOverrides,
   __setRelayListTestOverrides,
   config,
+  admitPublicEvent,
   getProfiles,
   type CachedProfile,
   type CachedRelayList,
@@ -23,6 +23,15 @@ const NOW = 1_790_000_000_000
 const AUTHOR_RELAY = "wss://author-write.conduit.market"
 const originalConfig = structuredClone(config)
 type SignedEvent = ReturnType<typeof finalizeEvent>
+
+async function admitObservedEvents(events: SignedEvent[]) {
+  const admissions = await Promise.all(
+    events.map((event) => admitPublicEvent(structuredClone(event)))
+  )
+  return admissions.flatMap((admission) =>
+    admission.status === "verified" ? [admission.event] : []
+  )
+}
 
 function fixture(
   options: {
@@ -89,11 +98,10 @@ function fixture(
       const failedCount = options.discoveryTimeout ? 1 : 0
       observations.discoverySuccess += relayUrls.length - failedCount
       observations.discoveryFailure += failedCount
+      const events = await admitObservedEvents(observedRelayLists)
       return {
-        events: observedRelayLists.map((event) => structuredClone(event)),
-        eventsVerified: observedRelayLists.every((event) =>
-          verifyEvent(structuredClone(event))
-        ),
+        events,
+        eventsVerified: true,
         admittedRelayUrls: relayUrls,
         relays: relayUrls.map((relayUrl, index) => ({
           relayUrl,
@@ -104,7 +112,7 @@ function fixture(
           eventCount:
             options.discoveryTimeout && index === relayUrls.length - 1
               ? 0
-              : observedRelayLists.length,
+              : events.length,
         })),
       }
     },
@@ -135,11 +143,10 @@ function fixture(
       observations.profileRelayUrls = requestedRelayUrls
       observations.profileAdmittedRelayUrls = relayUrls
       if (relayUrls.includes(AUTHOR_RELAY)) observations.authorReads += 1
+      const events = await admitObservedEvents(observedProfiles)
       return {
-        events: observedProfiles.map((event) => structuredClone(event)),
-        eventsVerified: observedProfiles.every((event) =>
-          verifyEvent(structuredClone(event))
-        ),
+        events,
+        eventsVerified: true,
         admittedRelayUrls: relayUrls,
         relays: relayUrls.map((relayUrl) => {
           const failed =
@@ -149,7 +156,7 @@ function fixture(
           return {
             relayUrl,
             status: failed ? "failed" : "success",
-            eventCount: failed ? 0 : observedProfiles.length,
+            eventCount: failed ? 0 : events.length,
           }
         }),
       }
@@ -386,9 +393,12 @@ describe("checkout recipient ordinary live-read evidence", () => {
     const f = fixture()
     f.observeProfiles([{ ...f.profile, sig: "00".repeat(64) }])
     expect(await f.read()).toEqual({
-      state: "invalid",
-      reason: "profile_frontier_invalid",
+      state: "unavailable",
+      reason: "profile_unavailable",
     })
+    const context = f.profileResults.at(-1)?.profileContexts[f.profile.pubkey]
+    expect(context?.signedEvent).toBeUndefined()
+    expect(context?.frontier).toBeUndefined()
   })
 
   it("uses the canonical signed frontier when equal-timestamp profiles disagree", async () => {

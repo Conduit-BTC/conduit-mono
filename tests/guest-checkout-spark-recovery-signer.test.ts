@@ -201,7 +201,7 @@ function progressPayload(
     receiverIdentityPublicKey: initial.plan.funding.receiverIdentityPublicKey,
     transferId: "guest-router-credit",
     grossSats: 122,
-    creditedSats: 120,
+    creditedSats: 121,
     observedAt: CREATED_AT + 2_000,
   })
   return createCheckoutSparkSettledRecoveryProgressPayload({

@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
+  assertCheckoutSparkSettledFundingCoverage,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
@@ -62,6 +63,131 @@ export interface CheckoutSparkNativeTreasuryFinalization {
   readonly observedAt: number | null
   readonly finalFeeSats: number | null
   readonly finalDebitSats: number | null
+}
+
+declare const nativeCancellationBrand: unique symbol
+/** Non-serializable authority created only after a positively unsent admission. */
+export interface CheckoutSparkNativePreProviderCancellation {
+  readonly [nativeCancellationBrand]: true
+}
+
+interface NativeCancellationAuthority {
+  readonly scope: object
+  readonly state: string
+  readonly revision: number
+  consumed: boolean
+}
+const nativeCancellationAuthorities = new WeakMap<
+  CheckoutSparkNativePreProviderCancellation,
+  NativeCancellationAuthority
+>()
+const nativeCancellationsByScope = new WeakMap<
+  object,
+  Map<string, CheckoutSparkNativePreProviderCancellation>
+>()
+const cancellationKey = (state: CheckoutSparkSettledReconciliation) =>
+  `${state.plan.checkoutId}:${state.plan.planDigest}`
+
+function rememberPreProviderCancellation(
+  scope: object,
+  state: CheckoutSparkSettledReconciliation,
+  revision: number
+): void {
+  const capability = Object.freeze(
+    {}
+  ) as CheckoutSparkNativePreProviderCancellation
+  nativeCancellationAuthorities.set(capability, {
+    scope,
+    state: JSON.stringify(state),
+    revision,
+    consumed: false,
+  })
+  let cancellations = nativeCancellationsByScope.get(scope)
+  if (!cancellations) {
+    cancellations = new Map()
+    nativeCancellationsByScope.set(scope, cancellations)
+  }
+  cancellations.set(cancellationKey(state), capability)
+}
+
+function loadPreProviderCancellation(
+  scope: object | undefined,
+  state: CheckoutSparkSettledReconciliation,
+  revision: number
+): CheckoutSparkNativePreProviderCancellation | undefined {
+  const capability =
+    scope && nativeCancellationsByScope.get(scope)?.get(cancellationKey(state))
+  if (!capability) return undefined
+  const authority = nativeCancellationAuthorities.get(capability)
+  return authority &&
+    !authority.consumed &&
+    authority.revision === revision &&
+    authority.state === JSON.stringify(state)
+    ? capability
+    : undefined
+}
+
+/** Presentation/continuation hint only; the engine and CAS recheck exact proof. */
+export function hasCheckoutSparkNativePreProviderCancellation(
+  scope: object | undefined,
+  state: CheckoutSparkSettledReconciliation,
+  revision: number
+): boolean {
+  return (
+    state.treasuryFinalization?.status === "terminal_failure" &&
+    Boolean(loadPreProviderCancellation(scope, state, revision))
+  )
+}
+
+/** A serialized cancellation label, imported progress, or reload is not proof. */
+export function assertCheckoutSparkNativePreProviderRetry(
+  scope: object,
+  previous: CheckoutSparkSettledReconciliation,
+  next: CheckoutSparkSettledReconciliation,
+  expectedRevision: number,
+  capability: CheckoutSparkNativePreProviderCancellation
+): void {
+  const authority = nativeCancellationAuthorities.get(capability)
+  if (
+    !authority ||
+    authority.consumed ||
+    authority.scope !== scope ||
+    authority.revision !== expectedRevision ||
+    authority.state !== JSON.stringify(previous) ||
+    previous.treasuryFinalization?.status !== "terminal_failure" ||
+    previous.treasuryFinalization.providerTransferId !== null ||
+    next.treasuryFinalization?.status !== "submitted" ||
+    next.treasuryFinalization.providerTransferId !== null ||
+    JSON.stringify(previous.treasuryFinalization.intent) !==
+      JSON.stringify(next.treasuryFinalization.intent)
+  )
+    invalid()
+  // All other monotonic fields are checked by the repository against a synthetic
+  // submitted predecessor. This exception changes no amount, request or identity.
+}
+
+/** Adapter gate for an engine-owned retry; it conveys no cold recovery proof. */
+export function isCheckoutSparkNativePreProviderRetry(
+  capability: CheckoutSparkNativePreProviderCancellation | undefined,
+  target: CheckoutSparkNativeTreasuryTarget
+): boolean {
+  if (!capability) return false
+  const authority = nativeCancellationAuthorities.get(capability)
+  if (!authority || authority.consumed) return false
+  const state = JSON.parse(
+    authority.state
+  ) as CheckoutSparkSettledReconciliation
+  return (
+    state.plan.recipients.find((recipient) => recipient.kind === "conduit")
+      ?.legId === target.legId &&
+    state.plan.planDigest === target.planDigest &&
+    state.plan.walletId === target.walletId &&
+    state.plan.network === target.network &&
+    JSON.stringify(state.plan.nativeTreasury) ===
+      JSON.stringify(target.nativeTreasury) &&
+    JSON.stringify(state.treasuryFinalization?.intent) ===
+      JSON.stringify(target.intent)
+  )
 }
 
 function invalid(): never {
@@ -489,7 +615,8 @@ export interface CheckoutSparkNativeTreasuryProvider {
     target: CheckoutSparkNativeTreasuryTarget
   ): Promise<CheckoutSparkNativeTreasuryObservation>
   preflight(
-    target: CheckoutSparkNativeTreasuryTarget
+    target: CheckoutSparkNativeTreasuryTarget,
+    cancellation?: CheckoutSparkNativePreProviderCancellation
   ): Promise<
     | "ready"
     | "fee_over_cap"
@@ -504,6 +631,13 @@ export interface CheckoutSparkNativeTreasuryProvider {
 }
 
 export interface CheckoutSparkNativeTreasuryStateStore extends CheckoutSparkSettledOutgoingStateStore {
+  /** Stable for this repository process only; never serialized or imported. */
+  readonly nativeAdmissionScope?: object
+  savePreProviderRetry?(
+    state: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    cancellation: CheckoutSparkNativePreProviderCancellation
+  ): Promise<CheckoutSparkSettledRepositorySnapshot>
   savePrepared(
     state: CheckoutSparkSettledReconciliation,
     expectedRevision: number,
@@ -561,13 +695,27 @@ export async function runCheckoutSparkNativeTreasuryStep(
     input.actor === "shopper"
       ? input.now() < state.plan.takeoverAt
       : input.now() >= state.plan.takeoverAt
+  const hasFundingCoverage = () => {
+    try {
+      assertCheckoutSparkSettledFundingCoverage(
+        state.plan,
+        state.credit!.creditedSats
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
   async function persist(
     next: CheckoutSparkSettledReconciliation,
-    settlement?: CheckoutSparkMerchantSettlementRecord
+    settlement?: CheckoutSparkMerchantSettlementRecord,
+    cancellation?: CheckoutSparkNativePreProviderCancellation
   ) {
-    const saved = settlement
-      ? await input.store.savePrepared(next, revision, settlement)
-      : await input.store.save(next, revision)
+    const saved = cancellation
+      ? await input.store.savePreProviderRetry!(next, revision, cancellation)
+      : settlement
+        ? await input.store.savePrepared(next, revision, settlement)
+        : await input.store.save(next, revision)
     if (
       saved.status !== "active" ||
       saved.revision !== revision + 1 ||
@@ -580,15 +728,44 @@ export async function runCheckoutSparkNativeTreasuryStep(
     revision = saved.revision
     state = restoreCheckoutSparkSettledReconciliation(saved.state)
   }
+  async function cancelPreProviderAdmission(): Promise<void> {
+    // Called only while Core has positively not called send, or when the pinned
+    // adapter reports its own positive pre-fulfill cancellation. A throw/timeout
+    // from send never reaches this path. CAS failure creates no retry authority.
+    if (
+      state.treasuryFinalization?.status !== "submitted" ||
+      state.treasuryFinalization.providerTransferId !== null
+    )
+      invalid()
+    await persist(
+      recordCheckoutSparkNativeTreasuryStatus(state, {
+        invoiceId: state.treasuryFinalization.intent!.invoiceId,
+        status: "terminal_failure",
+        observedAt: now(),
+      })
+    )
+    if (input.store.nativeAdmissionScope && input.store.savePreProviderRetry)
+      rememberPreProviderCancellation(
+        input.store.nativeAdmissionScope,
+        state,
+        revision
+      )
+  }
   if (!state.credit) return result("funding_wait")
-  if (state.treasuryFinalization!.status === "paid")
+  if (state.treasuryFinalization!.status === "paid") {
+    if (input.store.nativeAdmissionScope)
+      nativeCancellationsByScope
+        .get(input.store.nativeAdmissionScope)
+        ?.delete(cancellationKey(state))
     return result("already_paid")
+  }
   if (
     state.legs.some((leg) => leg.legId !== input.legId && leg.status !== "paid")
   )
     return result("wait", "prerequisite_unpaid")
   if (!state.treasuryFinalization!.intent) {
     if (input.inspectionOnly) return result("invoice_needed", "inspection_only")
+    if (!hasFundingCoverage()) return result("wait", "funding_shortfall")
     if (!authority())
       return result(
         "wait",
@@ -654,6 +831,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
           : {}),
       })
     )
+    if (observation.status === "paid" && input.store.nativeAdmissionScope)
+      nativeCancellationsByScope
+        .get(input.store.nativeAdmissionScope)
+        ?.delete(cancellationKey(state))
     return observation.status === "paid"
       ? result("paid", undefined, attempted)
       : result(
@@ -674,9 +855,18 @@ export async function runCheckoutSparkNativeTreasuryStep(
   }
   const reconciled = await observe(observation)
   if (reconciled) return reconciled
-  if (state.treasuryFinalization!.status !== "prepared")
+  const cancellation =
+    state.treasuryFinalization!.status === "terminal_failure"
+      ? loadPreProviderCancellation(
+          input.store.nativeAdmissionScope,
+          state,
+          revision
+        )
+      : undefined
+  if (state.treasuryFinalization!.status !== "prepared" && !cancellation)
     return result("wait", "prior_possible_send")
   if (input.inspectionOnly) return result("wait", "inspection_only")
+  if (!hasFundingCoverage()) return result("wait", "funding_shortfall")
   if (!authority())
     return result(
       "wait",
@@ -692,7 +882,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
     return result("wait", "provider_evidence_unavailable")
   }
   try {
-    await input.acknowledgeRecoverySnapshot(state)
+    // The positively unsent terminal marker is device-execution evidence only.
+    // Do not publish it as cross-device proof or roll signed progress back. The
+    // exact fresh submitted snapshot is ACKed below before any provider call.
+    if (!cancellation) await input.acknowledgeRecoverySnapshot(state)
   } catch {
     return result("wait", "recovery_handoff_unavailable")
   }
@@ -700,7 +893,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
     ReturnType<CheckoutSparkNativeTreasuryProvider["preflight"]>
   >
   try {
-    preflight = await input.provider.preflight(target)
+    preflight = await input.provider.preflight(target, cancellation)
   } catch {
     preflight = "unavailable"
   }
@@ -721,11 +914,16 @@ export async function runCheckoutSparkNativeTreasuryStep(
       invoiceId: target.intent.invoiceId,
       status: "submitted",
       observedAt: now(),
-    })
+    }),
+    undefined,
+    cancellation
   )
+  if (cancellation)
+    nativeCancellationAuthorities.get(cancellation)!.consumed = true
   try {
     await input.acknowledgeRecoverySnapshot(state)
   } catch {
+    await cancelPreProviderAdmission()
     return result("wait", "recovery_handoff_unavailable")
   }
   try {
@@ -736,6 +934,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
     )
       invalid()
   } catch {
+    await cancelPreProviderAdmission()
     return result("wait", "provider_evidence_unavailable")
   }
   const beforeSend = await input.store.load(input.checkoutId, input.planDigest)
@@ -745,7 +944,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
     JSON.stringify(beforeSend.state) !== JSON.stringify(state)
   )
     invalid()
-  if (!authority()) return result("send_ambiguous", "prior_possible_send")
+  if (!authority()) {
+    await cancelPreProviderAdmission()
+    return result("wait", "authority_transferred")
+  }
   let sent: Awaited<ReturnType<CheckoutSparkNativeTreasuryProvider["send"]>>
   try {
     sent = await input.provider.send(target)
@@ -753,14 +955,8 @@ export async function runCheckoutSparkNativeTreasuryStep(
     return result("send_ambiguous", undefined, true)
   }
   if (sent.status === "not_sent") {
-    await persist(
-      recordCheckoutSparkNativeTreasuryStatus(state, {
-        invoiceId: target.intent.invoiceId,
-        status: "terminal_failure",
-        observedAt: now(),
-      })
-    )
-    return result("wait", "terminal_failure")
+    await cancelPreProviderAdmission()
+    return result("wait", "provider_evidence_unavailable")
   }
   try {
     observation = await input.provider.reconcile(target)

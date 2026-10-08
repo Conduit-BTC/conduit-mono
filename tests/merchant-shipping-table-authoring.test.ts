@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -36,6 +35,7 @@ import {
 } from "../apps/merchant/src/lib/productVariations"
 import { getMerchantSetupReadiness } from "../apps/merchant/src/lib/readiness"
 import { validateProductPublishForm } from "../apps/merchant/src/lib/productForm"
+import { admitFixture } from "./helpers/public-event"
 import {
   buildShippingPolicyFromDraft,
   changeShippingPolicyOrigin,
@@ -72,7 +72,7 @@ const policy: ShippingPolicy = {
 }
 const draft = buildShippingPolicyEventDraft({ policy })
 const event = finalizeEvent({ ...draft, created_at: 20 }, secret)
-const option = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+const option = parseShippingOptionEvent(await admitFixture(event))!
 option.readSource = "relay"
 option.readCoverage = "complete"
 const product = productSchema.parse({
@@ -331,7 +331,7 @@ describe("merchant shipping table authoring", () => {
   })
   test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "BTC"])(
     "preserves %s prices and thresholds through edit and signed republication",
-    (currency) => {
+    async (currency) => {
       for (const minor of [
         0,
         1,
@@ -373,7 +373,7 @@ describe("merchant shipping table authoring", () => {
           secret
         )
         expect(
-          parseShippingOptionEvent(new NDKEvent(undefined, republished))
+          parseShippingOptionEvent(await admitFixture(republished))
             ?.shippingPolicy
         ).toEqual(rebuilt)
       }
@@ -398,7 +398,7 @@ describe("merchant shipping table authoring", () => {
   })
   test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "CLF", "BTC"])(
     "preserves every accepted %s handling minor unit through signed product parsing and quoting",
-    (currency) => {
+    async (currency) => {
       const digits = getCurrencyFractionDigits(currency)
       const exactText = (minor: number) => {
         const text = String(minor).padStart(digits + 1, "0")
@@ -474,7 +474,7 @@ describe("merchant shipping table authoring", () => {
           },
           secret
         )
-        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        const parsed = parseProductEvent(await admitFixture(signed))!
         expect(
           shippingMoneyToMinorUnits(parsed.shippingHandling!.amount, currency)
         ).toBe(minor)
@@ -484,7 +484,7 @@ describe("merchant shipping table authoring", () => {
           policyEventId: policyEvent.id,
           policyCreatedAt: policyEvent.created_at,
           merchantPubkey: pubkey,
-          policyEvent,
+          policyEvent: await admitFixture(policyEvent),
           destination: { country: "US" },
           rateInput: {
             rate: minor <= 12345 ? 10_000 : 1_000_000_000_000,
@@ -498,7 +498,7 @@ describe("merchant shipping table authoring", () => {
               productId: parsed.id,
               productEventId: signed.id,
               productCreatedAt: signed.created_at,
-              productEvent: signed,
+              productEvent: await admitFixture(signed),
               currency,
               quantity,
               weightGrams: parsed.shippingWeightGrams,
@@ -703,7 +703,7 @@ describe("merchant shipping table authoring", () => {
     })
     const newerEvent = finalizeEvent({ ...draft, created_at: 21 }, secret)
     const newerOption = parseShippingOptionEvent(
-      new NDKEvent(undefined, newerEvent)
+      await admitFixture(newerEvent)
     )!
     newerOption.readSource = "relay"
     newerOption.readCoverage = "complete"
@@ -754,44 +754,45 @@ describe("merchant shipping table authoring", () => {
         { ...buildShippingPolicyEventDraft({ policy: terms }), created_at: 20 },
         secret
       )
-      const current = parseShippingOptionEvent(
-        new NDKEvent(undefined, policyEvent)
-      )!
+      const current = parseShippingOptionEvent(await admitFixture(policyEvent))!
       current.readSource = "relay"
       current.readCoverage = "complete"
-      const records = ["one", "one-small"].map((dTag, index) => {
-        const source = {
-          ...product,
-          id: `30402:${pubkey}:${dTag}`,
-          type: index === 0 ? ("variable" as const) : ("variation" as const),
-          parentProductId: index === 0 ? undefined : `30402:${pubkey}:one`,
-          specifications: index === 0 ? [] : [{ key: "Size", value: "Small" }],
-          price: 1000,
-          currency: "SATS",
-          sourcePrice: undefined,
-          shippingWeightAllowanceGrams: undefined,
-          shippingHandling: undefined,
-          shippingOptionId: tableIntent.policyCoordinate,
-        }
-        const draft = buildProductListingEventDraft({ product: source, dTag })
-        const signed = finalizeEvent(
-          {
-            ...draft,
-            tags: [...draft.tags, ["conduit_shipping_adjustments", "1", "{"]],
-            created_at: 21,
-          },
-          secret
-        )
-        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
-        expect(parsed.shippingAdjustmentsMalformed).toBe(true)
-        return {
-          product: parsed,
-          dTag,
-          addressId: parsed.id,
-          eventId: signed.id,
-          eventCreatedAt: signed.created_at,
-        }
-      })
+      const records = await Promise.all(
+        ["one", "one-small"].map(async (dTag, index) => {
+          const source = {
+            ...product,
+            id: `30402:${pubkey}:${dTag}`,
+            type: index === 0 ? ("variable" as const) : ("variation" as const),
+            parentProductId: index === 0 ? undefined : `30402:${pubkey}:one`,
+            specifications:
+              index === 0 ? [] : [{ key: "Size", value: "Small" }],
+            price: 1000,
+            currency: "SATS",
+            sourcePrice: undefined,
+            shippingWeightAllowanceGrams: undefined,
+            shippingHandling: undefined,
+            shippingOptionId: tableIntent.policyCoordinate,
+          }
+          const draft = buildProductListingEventDraft({ product: source, dTag })
+          const signed = finalizeEvent(
+            {
+              ...draft,
+              tags: [...draft.tags, ["conduit_shipping_adjustments", "1", "{"]],
+              created_at: 21,
+            },
+            secret
+          )
+          const parsed = parseProductEvent(await admitFixture(signed))!
+          expect(parsed.shippingAdjustmentsMalformed).toBe(true)
+          return {
+            product: parsed,
+            dTag,
+            addressId: parsed.id,
+            eventId: signed.id,
+            eventCreatedAt: signed.created_at,
+          }
+        })
+      )
       const family = {
         root: records[0]!,
         variations: records.slice(1),
@@ -843,51 +844,53 @@ describe("merchant shipping table authoring", () => {
         { merchantPubkey: pubkey },
         { ...dependencies, getShippingOptions: async () => [current] }
       )
-      const items = prepared.map((target) => {
-        expect(target.product.shippingAdjustmentsMalformed).toBeUndefined()
-        const signed = finalizeEvent(
-          {
-            ...buildProductListingEventDraft({
-              product: applyProductFulfillmentIntentForPublication({
-                product: target.product,
-                merchantPubkey: pubkey,
-                productDTag: target.dTag,
-                intent: target.fulfillmentIntent,
+      const items = await Promise.all(
+        prepared.map(async (target) => {
+          expect(target.product.shippingAdjustmentsMalformed).toBeUndefined()
+          const signed = finalizeEvent(
+            {
+              ...buildProductListingEventDraft({
+                product: applyProductFulfillmentIntentForPublication({
+                  product: target.product,
+                  merchantPubkey: pubkey,
+                  productDTag: target.dTag,
+                  intent: target.fulfillmentIntent,
+                }),
+                dTag: target.dTag,
               }),
-              dTag: target.dTag,
-            }),
-            created_at: 22,
-          },
-          secret
-        )
-        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
-        expect(parsed.shippingAdjustmentsMalformed).toBeUndefined()
-        expect(parsed.shippingHandling?.amount).toBe(
-          action === "repair" ? 25 : undefined
-        )
-        expect(parsed.shippingWeightAllowanceGrams).toBe(
-          action === "repair" ? 50 : undefined
-        )
-        return {
-          productId: parsed.id,
-          productEventId: signed.id,
-          productCreatedAt: signed.created_at,
-          productEvent: signed,
-          currency: "SATS",
-          quantity: 1,
-          weightGrams: parsed.shippingWeightGrams,
-          shippingWeightAllowanceGrams: parsed.shippingWeightAllowanceGrams,
-          shippingHandling: parsed.shippingHandling,
-          subtotalMinor: 1000,
-        }
-      })
+              created_at: 22,
+            },
+            secret
+          )
+          const parsed = parseProductEvent(await admitFixture(signed))!
+          expect(parsed.shippingAdjustmentsMalformed).toBeUndefined()
+          expect(parsed.shippingHandling?.amount).toBe(
+            action === "repair" ? 25 : undefined
+          )
+          expect(parsed.shippingWeightAllowanceGrams).toBe(
+            action === "repair" ? 50 : undefined
+          )
+          return {
+            productId: parsed.id,
+            productEventId: signed.id,
+            productCreatedAt: signed.created_at,
+            productEvent: await admitFixture(signed),
+            currency: "SATS",
+            quantity: 1,
+            weightGrams: parsed.shippingWeightGrams,
+            shippingWeightAllowanceGrams: parsed.shippingWeightAllowanceGrams,
+            shippingHandling: parsed.shippingHandling,
+            subtotalMinor: 1000,
+          }
+        })
+      )
       const result = quoteShippingPolicy({
         policy: terms,
         policyCoordinate: tableIntent.policyCoordinate,
         policyEventId: policyEvent.id,
         policyCreatedAt: policyEvent.created_at,
         merchantPubkey: pubkey,
-        policyEvent,
+        policyEvent: await admitFixture(policyEvent),
         destination: { country: "US" },
         rateInput: { rate: 10000, fetchedAt: Date.now(), source: "env" },
         items,

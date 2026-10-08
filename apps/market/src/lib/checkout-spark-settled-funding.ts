@@ -1,6 +1,6 @@
 import {
   DexieCheckoutSparkSettledRepository,
-  recordCheckoutSparkSettledCredit,
+  runCheckoutSparkFinancialWorkflow,
   type CheckoutSparkSettledReconciliation,
   type ConduitAppId,
   type WalletPaymentFeeApproval,
@@ -221,7 +221,7 @@ export function createCheckoutSparkSettledFundingBridge(
       return metadata
     }
     readMetadata()
-    let snapshot = await repository.load(checkoutId, plan.planDigest)
+    const snapshot = await repository.load(checkoutId, plan.planDigest)
     assertCurrentBuyer(prepared.recoveryHandoffId)
     if (snapshot.status !== "active") {
       throw new Error("Settled checkout funding state is unavailable.")
@@ -243,26 +243,33 @@ export function createCheckoutSparkSettledFundingBridge(
     }
     assertCurrentBuyer(prepared.recoveryHandoffId)
     if (proof) {
-      // Validate against any imported credit before persisting a provider fact.
-      // A different exact transfer must not verify a conflicting local state.
-      const credited = recordCheckoutSparkSettledCredit(snapshot.state, {
-        ...proof,
-        paymentHash: plan.funding.paymentHash,
-        observedAt: now(),
-      })
-      await repository.recordMerchantCredit(plan, proof, now(), () =>
-        assertCurrentBuyer(prepared.recoveryHandoffId)
+      const admitted = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId,
+          planDigest: plan.planDigest,
+          actor: "shopper",
+          mode: "credit",
+        },
+        {
+          store: repository,
+          assertCurrent: () => assertCurrentBuyer(prepared.recoveryHandoffId),
+          now,
+          credit: {
+            proof,
+            record: (creditPlan, creditProof) =>
+              repository.recordMerchantCredit(
+                creditPlan,
+                creditProof,
+                now(),
+                () => assertCurrentBuyer(prepared.recoveryHandoffId)
+              ),
+          },
+          acknowledgeRecoverySnapshot: async () => {},
+        }
       )
-      assertCurrentBuyer(prepared.recoveryHandoffId)
-      if (snapshot.state.credit) {
-        return { status: "funded", reconciliation: snapshot.state }
-      }
-      snapshot = await repository.save(credited, snapshot.revision)
-      assertCurrentBuyer(prepared.recoveryHandoffId)
-      if (snapshot.status !== "active") {
-        throw new Error("Settled checkout credit was not durably recorded.")
-      }
-      return { status: "funded", reconciliation: snapshot.state }
+      if (admitted.status !== "credited")
+        throw new Error("Settled checkout credit is unavailable.")
+      return { status: "funded", reconciliation: admitted.state }
     }
     if (snapshot.state.credit) {
       // Imported progress is not provider settlement evidence. Keep the
@@ -488,21 +495,33 @@ export function createCheckoutSparkSettledFundingBridge(
     }
     assertCurrentBuyer(prepared.recoveryHandoffId)
     if (proof) {
-      const credited = recordCheckoutSparkSettledCredit(snapshot.state, {
-        ...proof,
-        paymentHash: plan.funding.paymentHash,
-        observedAt: now(),
-      })
-      await repository.recordMerchantCredit(plan, proof, now(), () =>
-        assertCurrentBuyer(prepared.recoveryHandoffId)
+      const admitted = await runCheckoutSparkFinancialWorkflow(
+        {
+          checkoutId,
+          planDigest: plan.planDigest,
+          actor: "shopper",
+          mode: "credit",
+        },
+        {
+          store: repository,
+          assertCurrent: () => assertCurrentBuyer(prepared.recoveryHandoffId),
+          now,
+          credit: {
+            proof,
+            record: (creditPlan, creditProof) =>
+              repository.recordMerchantCredit(
+                creditPlan,
+                creditProof,
+                now(),
+                () => assertCurrentBuyer(prepared.recoveryHandoffId)
+              ),
+          },
+          acknowledgeRecoverySnapshot: async () => {},
+        }
       )
-      assertCurrentBuyer(prepared.recoveryHandoffId)
-      snapshot = await repository.save(credited, snapshot.revision)
-      assertCurrentBuyer(prepared.recoveryHandoffId)
-      if (snapshot.status !== "active") {
-        throw new Error("Settled checkout credit was not durably recorded.")
-      }
-      return { status: "funded", reconciliation: snapshot.state }
+      if (admitted.status !== "credited")
+        throw new Error("Settled checkout credit is unavailable.")
+      return { status: "funded", reconciliation: admitted.state }
     }
     return {
       status: "awaiting_reconciliation",

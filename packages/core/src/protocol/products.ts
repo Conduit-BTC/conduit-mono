@@ -1,10 +1,7 @@
+import type { SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
-import {
-  inheritVerifiedPublicEvent,
-  snapshotSignedPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
 } from "./verified-public-event"
 import {
   EVENT_GUEST_CONTACT_TAG,
@@ -96,7 +93,9 @@ export function canonicalizeProductTags(tags: unknown): string[] {
   return canonicalTags
 }
 
-function parseProductTypeTag(tags: string[][] | undefined): {
+function parseProductTypeTag(
+  tags: readonly (readonly string[])[] | undefined
+): {
   type?: ProductSchema["type"]
   format?: ProductSchema["format"]
 } {
@@ -115,7 +114,7 @@ function parseProductTypeTag(tags: string[][] | undefined): {
 }
 
 function parseProductVisibilityTag(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): ProductSchema["visibility"] | undefined {
   const value = tags
     ?.find((tag) => tag[0] === "visibility")?.[1]
@@ -148,7 +147,7 @@ export function canonicalizeProductSpecifications(
 }
 
 function parseProductSpecifications(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): ProductSchema["specifications"] {
   return canonicalizeProductSpecifications(
     (tags ?? [])
@@ -178,7 +177,7 @@ function normalizeVariationParentProductId(
 }
 
 function parseVariationParentProductId(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   productType: ProductSchema["type"]
 ): string | undefined {
   if (productType !== "variation") return undefined
@@ -512,7 +511,7 @@ export function hasMarketVisibleProductImage(
 }
 
 function getTagValue(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   name: string
 ): string | null {
   if (!tags) return null
@@ -522,7 +521,10 @@ function getTagValue(
   return null
 }
 
-function getTagValues(tags: string[][] | undefined, name: string): string[] {
+function getTagValues(
+  tags: readonly (readonly string[])[] | undefined,
+  name: string
+): string[] {
   if (!tags) return []
   return tags
     .filter((t) => t[0] === name && typeof t[1] === "string")
@@ -629,7 +631,7 @@ function buildShippingOptionTags(
 }
 
 function parseStockTag(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): Pick<ProductSchema, "stock"> {
   if (!tags) return {}
 
@@ -648,7 +650,9 @@ function parseStockTag(
   return {}
 }
 
-function parseProductCollectionRefs(tags: string[][] | undefined): string[] {
+function parseProductCollectionRefs(
+  tags: readonly (readonly string[])[] | undefined
+): string[] {
   return uniqueNonEmptyStrings(
     (tags ?? [])
       .filter((tag) => tag[0] === "a" && tag[1]?.startsWith("30405:"))
@@ -657,7 +661,7 @@ function parseProductCollectionRefs(tags: string[][] | undefined): string[] {
 }
 
 function parseProductPhysicalProperties(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): Pick<ProductSchema, "shippingWeightGrams" | "shippingDimensionsCm"> {
   const weights = (tags ?? []).filter((tag) => tag[0] === "weight")
   const dimensions = (tags ?? []).filter((tag) => tag[0] === "dim")
@@ -705,7 +709,7 @@ function parseProductPhysicalProperties(
 }
 
 function parseProductShippingAdjustments(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   productCurrency: string | undefined
 ): Partial<ProductSchema> {
   const markers = (tags ?? []).filter(
@@ -743,7 +747,9 @@ function parseProductShippingAdjustments(
   }
 }
 
-function parseProductEventMarketRefs(tags: string[][] | undefined): string[] {
+function parseProductEventMarketRefs(
+  tags: readonly (readonly string[])[] | undefined
+): string[] {
   return uniqueNonEmptyStrings(
     (tags ?? [])
       .filter((tag) => tag[0] === "a" && tag[1]?.startsWith("30409:"))
@@ -752,7 +758,7 @@ function parseProductEventMarketRefs(tags: string[][] | undefined): string[] {
 }
 
 function parseProductShippingTags(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   productCurrency: string | undefined
 ): Partial<ProductSchema> {
   const legacyInline = parseLegacyConduitInlineShippingTags(tags)
@@ -794,7 +800,7 @@ type ParsedProductZapMessagePolicy = {
 }
 
 function parseProductPublicZapEnabled(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): ParsedProductPublicZapEnabled {
   const raw =
     getTagValue(tags, PRODUCT_PUBLIC_ZAPS_TAG) ??
@@ -822,7 +828,7 @@ function parseProductPublicZapEnabled(
 }
 
 function parseProductZapMessagePolicy(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): ParsedProductZapMessagePolicy {
   const raw =
     getTagValue(tags, PRODUCT_ZAP_MESSAGE_POLICY_TAG) ??
@@ -847,7 +853,7 @@ function parseProductZapMessagePolicy(
 }
 
 function parseProductZapPolicy(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): Pick<
   ProductSchema,
   "publicZapEnabled" | "zapMessagePolicy" | "publicZapPolicyKnown"
@@ -1104,28 +1110,24 @@ export function normalizeProductSummaryForDisplay(
  * - If content is not a legacy product object, we fall back to fields from
  *   NIP-99/Open Markets tags and Markdown content.
  */
-export function parseProductEvent(
-  event: Pick<
-    SignedPublicNostrEvent,
-    "content" | "pubkey" | "created_at" | "tags" | "id"
-  > &
-    Partial<Pick<SignedPublicNostrEvent, "kind" | "sig">>
-): ProductSchema {
-  const rawEvent = (
-    "rawEvent" in event && typeof event.rawEvent === "function"
-      ? event.rawEvent()
-      : event
-  ) as SignedPublicNostrEvent
-  inheritVerifiedPublicEvent(
-    rawEvent,
-    event as unknown as SignedPublicNostrEvent
-  )
-  const signedProductEvent = isValidSignedPublicNostrEvent(rawEvent)
-    ? snapshotSignedPublicEvent(rawEvent)
-    : undefined
-  if (signedProductEvent)
-    inheritVerifiedPublicEvent(signedProductEvent, rawEvent)
+export function parseProductEvent(event: VerifiedNostrEvent): ProductSchema {
+  if (!isVerifiedNostrEvent(event))
+    throw new Error("Product event must be admitted")
+  return parseProductFields(event, event)
+}
 
+/** Private stored-order schema only, after its independent embedded-signature check.
+ * Produces display/price fields without minting public signed evidence. */
+export function parsePrivateOrderProductFields(
+  event: SignedPublicNostrEvent
+): ProductSchema {
+  return parseProductFields(event)
+}
+
+function parseProductFields(
+  event: SignedPublicNostrEvent,
+  signedProductEvent?: VerifiedNostrEvent
+): ProductSchema {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
   const standardPrice = parsePriceTag(event.tags)

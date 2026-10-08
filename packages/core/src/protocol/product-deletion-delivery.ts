@@ -18,10 +18,11 @@ import {
   getProductListingDeliveryJobId,
   hasCommonAcknowledgedRelay,
 } from "./product-listing-delivery"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeUntrustedRelayHintsForContext,
@@ -62,22 +63,32 @@ export interface PersistProductDeletionDeliveryInput extends ProductDeletionRela
 /** Historical ACKs remain source hints even when a superseded cache row is pruned.
  * They never restore listing authority or confer owner-selected relay access.
  */
-export function collectProductDeletionAcknowledgedSourceRelayUrls(
+export async function collectProductDeletionAcknowledgedSourceRelayUrls(
   signedDeletion: SignedPublicNostrEvent,
   listingJobs: readonly ProductListingDeliveryJob[]
-): string[] {
-  const validated = validateProductDeletionEvent(signedDeletion)
+): Promise<string[]> {
+  // Verification waits outside any persistence transaction. Preserve the ACK
+  // observations while admitting their exact signed historical bytes.
+  const jobs = structuredClone(listingJobs)
+  const deletion = await assertSignedDeletionEvent(signedDeletion)
+  const validated = validateProductDeletionEvent(deletion)
   if (!validated) throw new Error("Product deletion evidence is invalid")
   const relayUrls = new Set<string>()
-  for (const job of listingJobs) {
-    if (job.merchantPubkey !== signedDeletion.pubkey) continue
+  for (const job of jobs) {
+    if (job.merchantPubkey !== deletion.pubkey) continue
     for (const event of job.signedEvents) {
       if (
         event.kind !== EVENT_KINDS.PRODUCT ||
-        event.pubkey !== signedDeletion.pubkey ||
-        !isValidSignedPublicNostrEvent(event)
+        event.pubkey !== deletion.pubkey
       )
         continue
+      const admission = await admitPublicEvent(event)
+      if (
+        admission.status === "unavailable" ||
+        admission.status === "cancelled"
+      )
+        throw new Error("Historical product ACK verification unavailable")
+      if (admission.status !== "verified") continue
       const dTag = event.tags.find(([name]) => name === "d")?.[1]
       if (
         !dTag ||
@@ -181,7 +192,7 @@ export interface ProductDeletionDeliveryOptions {
 }
 
 function cloneSignedEvent(
-  event: SignedPublicNostrEvent
+  event: SignedPublicNostrEvent | VerifiedNostrEvent
 ): SignedPublicNostrEvent {
   return {
     id: event.id,
@@ -416,13 +427,20 @@ export function planProductDeletionRelays(
     }))
 }
 
-function assertSignedDeletionEvent(event: SignedPublicNostrEvent): void {
-  const validated = validateProductDeletionEvent(event)
+async function assertSignedDeletionEvent(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const admission = await admitPublicEvent(event)
+  const validated =
+    admission.status === "verified"
+      ? validateProductDeletionEvent(admission.event)
+      : null
   if (!validated || validated.evidence.length === 0) {
     throw new Error(
       "Product deletion outbox requires a valid signed kind-5 event with a safe product target"
     )
   }
+  return validated.signedEvent
 }
 
 function relayPlanMatches(
@@ -566,19 +584,19 @@ function getDeliveryLeaseMs(options?: ProductDeletionDeliveryOptions): number {
  * calls for the same event are idempotent only when the event and original
  * plan are byte-for-byte equivalent.
  */
-export function prepareProductDeletionDeliveryJob(
+export async function prepareProductDeletionDeliveryJob(
   input: PersistProductDeletionDeliveryInput,
   options: ProductDeletionDeliveryOptions = {}
-): ProductDeletionDeliveryJob {
-  assertSignedDeletionEvent(input.signedEvent)
+): Promise<ProductDeletionDeliveryJob> {
+  const signedEvent = await assertSignedDeletionEvent(input.signedEvent)
   const relayPlan = planProductDeletionRelays(input)
   const companionListingJobId = normalizeCompanionListingJobId(
     input.companionListingJobId
   )
   const createdAt = getNow(options)
   const job: ProductDeletionDeliveryJob = {
-    id: input.signedEvent.id,
-    signedEvent: cloneSignedEvent(input.signedEvent),
+    id: signedEvent.id,
+    signedEvent: cloneSignedEvent(signedEvent),
     relayPlan: cloneRelayPlan(relayPlan),
     relayDelivery: relayPlan.map(({ relayUrl }) => ({
       relayUrl,
@@ -612,7 +630,7 @@ export async function persistProductDeletionDelivery(
   input: PersistProductDeletionDeliveryInput,
   options: ProductDeletionDeliveryOptions = {}
 ): Promise<ProductDeletionDeliveryJob> {
-  const job = prepareProductDeletionDeliveryJob(input, options)
+  const job = await prepareProductDeletionDeliveryJob(input, options)
   const repository = getRepository(options)
   const existing = await repository.get(job.id)
   if (existing) {
@@ -642,17 +660,18 @@ export async function persistProductDeletionDelivery(
  * relay acknowledged every exact, same-author signed listing in that family.
  * Reuse this proof before retrying a companion deletion's exact signed event.
  */
-export function isDeliveredCompanionListingForDeletion(
+export async function isDeliveredCompanionListingForDeletion(
   listing: ProductListingDeliveryJob | undefined,
   deletionJob: ProductDeletionDeliveryJob
-): boolean {
+): Promise<boolean> {
+  listing = listing ? structuredClone(listing) : undefined
+  deletionJob = structuredClone(deletionJob)
   if (
     !listing ||
     !deletionJob.companionListingJobId ||
     listing.id !== deletionJob.companionListingJobId ||
     listing.companionDeletionJobId !== deletionJob.id ||
     deletionJob.id !== deletionJob.signedEvent.id ||
-    !validateProductDeletionEvent(deletionJob.signedEvent)?.evidence.length ||
     listing.merchantPubkey !== deletionJob.signedEvent.pubkey ||
     listing.readyForDelivery === false ||
     listing.state !== "delivered" ||
@@ -660,17 +679,23 @@ export function isDeliveredCompanionListingForDeletion(
   ) {
     return false
   }
+  const deletionAdmission = await admitPublicEvent(deletionJob.signedEvent)
+  if (
+    deletionAdmission.status !== "verified" ||
+    !validateProductDeletionEvent(deletionAdmission.event)?.evidence.length
+  )
+    return false
 
   const eventIds = new Set<string>()
   for (const event of listing.signedEvents) {
     if (
       event.kind !== EVENT_KINDS.PRODUCT ||
       event.pubkey !== listing.merchantPubkey ||
-      !isValidSignedPublicNostrEvent(event) ||
       eventIds.has(event.id)
     ) {
       return false
     }
+    if ((await admitPublicEvent(event)).status !== "verified") return false
     eventIds.add(event.id)
   }
   return (
@@ -974,7 +999,7 @@ async function deliverProductDeletionJobUnlocked(
   ) {
     return cloneJob(stored)
   }
-  assertSignedDeletionEvent(stored.signedEvent)
+  await assertSignedDeletionEvent(stored.signedEvent)
   await retireUnapprovedPersistedRelayTargets(
     repository,
     id,
@@ -996,7 +1021,7 @@ async function deliverProductDeletionJobUnlocked(
   // Revalidate it after the claim and use only its author as the policy account.
   // Active auth may admit that author's exact owner-selected ws:// subset, but
   // cannot replace the author or alter the immutable event and relay plan.
-  assertSignedDeletionEvent(claimed.signedEvent)
+  await assertSignedDeletionEvent(claimed.signedEvent)
   const accountPubkey = claimed.signedEvent.pubkey
 
   const outstandingRelayUrls = claimed.relayDelivery
@@ -1074,7 +1099,7 @@ async function deliverProductDeletionJobUnlocked(
         continue
       }
       const exactSignedEvent = cloneSignedEvent(current.signedEvent)
-      assertSignedDeletionEvent(exactSignedEvent)
+      await assertSignedDeletionEvent(exactSignedEvent)
       if (!signedEventMatches(exactSignedEvent, claimed.signedEvent)) {
         throw new Error(
           "Product deletion delivery job signed event is immutable"

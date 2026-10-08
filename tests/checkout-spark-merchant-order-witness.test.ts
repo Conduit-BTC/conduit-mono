@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
@@ -176,7 +177,7 @@ function witness() {
 describe("authenticated Merchant router-order witness", () => {
   it.each([false, true])(
     "pairs signed fiat source and selected child shipping through the shared parser (%s)",
-    (withVariationShipping) => {
+    async (withVariationShipping) => {
       const merchantSecret = generateSecretKey()
       const merchant = getPublicKey(merchantSecret)
       const shippingEvent = withVariationShipping
@@ -197,7 +198,7 @@ describe("authenticated Merchant router-order witness", () => {
           )
         : undefined
       const shipping = shippingEvent
-        ? parseShippingOptionEvent(shippingEvent)!
+        ? parseShippingOptionEvent(await admitFixture(shippingEvent))!
         : undefined
       const source = finalizeEvent(
         {
@@ -224,7 +225,10 @@ describe("authenticated Merchant router-order witness", () => {
         },
         merchantSecret
       )
-      const product = { ...parseProductEvent(source), sourceEventId: source.id }
+      const product = {
+        ...parseProductEvent(await admitFixture(source)),
+        sourceEventId: source.id,
+      }
       const sourcePrice = product.sourcePrice!
       const pricing = {
         version: 1 as const,

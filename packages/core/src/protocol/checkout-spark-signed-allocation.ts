@@ -8,7 +8,7 @@ import {
   allocateProductSupplierShares,
   parseProductSupplierAllocationTags,
 } from "./product-supplier-allocation"
-import { parseProductEvent } from "./products"
+import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
 import { resolveCheckoutSparkSignedPickup } from "./checkout-spark-pickup-evidence"
 import {
   assertCheckoutSparkCommerceShippingPolicies,
@@ -149,7 +149,7 @@ export function deriveCheckoutSparkSignedCommerceObligations(
     // projection or quote line for the source economic amount. A retained
     // buyer-approved conversion fixes final sats, not exchange-rate authenticity.
     // Organizer fees still require separate signed admission.
-    const signedProduct = parseProductEvent(event)
+    const signedProduct = parseCheckoutSparkSignedProductFields(event)
     if (
       signedProduct.id !== product.id ||
       signedProduct.priceEvidenceMalformed ||

@@ -28,7 +28,7 @@ import {
   createCheckoutSparkSettledReconciliation,
   freezeCheckoutSparkSettledPlan,
 } from "@conduit/core/protocol/checkout-spark-settled-router"
-import { parseProductEvent } from "@conduit/core/protocol/products"
+import { parseCheckoutSparkSignedProductFields as parseProductEvent } from "@conduit/core/protocol/checkout-spark-product-fields"
 import { createCheckoutSparkPickupFixture } from "./support/checkout-spark-pickup-fixture"
 import {
   bolt11PaymentHashField,

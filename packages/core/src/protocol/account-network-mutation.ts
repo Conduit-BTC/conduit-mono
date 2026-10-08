@@ -37,7 +37,11 @@ import {
   type AccountNetworkPreferencesReconciliation,
   type ReconcileAccountNetworkPreferencesOptions,
 } from "./network-preferences"
-import { NostrSignerError, type NostrEventSigner } from "./nostr-event-signer"
+import {
+  NostrSignerError,
+  type NostrEventSigner,
+  type UnsignedNostrEvent,
+} from "./nostr-event-signer"
 import {
   accountNetworkDiscoveryRelayUrls,
   applyOwnerRelayListDistributionOutcomes,
@@ -67,6 +71,11 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  sameSignedPublicEvent,
+} from "./verified-public-event"
 
 const MAX_NETWORK_PREFERENCE_FUTURE_SKEW_SECONDS = 5 * 60
 export const MAX_ACCOUNT_NETWORK_DISTRIBUTION_RELAYS = 8
@@ -266,7 +275,178 @@ function matchingAuthenticatedPubkey(
 function cloneSnapshot(
   snapshot: AccountNetworkMutationSnapshot
 ): AccountNetworkMutationSnapshot {
-  return structuredClone(snapshot)
+  const cloned = structuredClone(snapshot)
+  if (snapshot.ownerRelayList?.current && cloned.ownerRelayList?.current) {
+    cloned.ownerRelayList.current.signedEvent =
+      snapshot.ownerRelayList.current.signedEvent
+  }
+  if (
+    snapshot.ownerRelayList?.lastUsable &&
+    cloned.ownerRelayList?.lastUsable
+  ) {
+    cloned.ownerRelayList.lastUsable.signedEvent =
+      snapshot.ownerRelayList.lastUsable.signedEvent
+  }
+  if (
+    snapshot.ownerRelayList?.pendingDistribution &&
+    cloned.ownerRelayList?.pendingDistribution
+  ) {
+    cloned.ownerRelayList.pendingDistribution.signedEvent =
+      snapshot.ownerRelayList.pendingDistribution.signedEvent
+  }
+  if (snapshot.inboxDeclaration?.current && cloned.inboxDeclaration?.current) {
+    cloned.inboxDeclaration.current.signedEvent =
+      snapshot.inboxDeclaration.current.signedEvent
+  }
+  if (
+    snapshot.inboxDeclaration?.lastUsable &&
+    cloned.inboxDeclaration?.lastUsable
+  ) {
+    cloned.inboxDeclaration.lastUsable.signedEvent =
+      snapshot.inboxDeclaration.lastUsable.signedEvent
+  }
+  if (
+    snapshot.inboxDeclaration?.pendingDistribution &&
+    cloned.inboxDeclaration?.pendingDistribution
+  ) {
+    cloned.inboxDeclaration.pendingDistribution.signedEvent =
+      snapshot.inboxDeclaration.pendingDistribution.signedEvent
+  }
+  return cloned
+}
+
+async function admitStagedCheckpoints(
+  checkpoints: readonly AccountNetworkStagedCheckpoint[]
+): Promise<AccountNetworkStagedCheckpoint[]> {
+  return await Promise.all(
+    checkpoints.map(async (checkpoint) => {
+      const copied = {
+        ...checkpoint,
+        publishRelayUrls: [...checkpoint.publishRelayUrls],
+        confirmationRelayUrls: checkpoint.confirmationRelayUrls
+          ? [...checkpoint.confirmationRelayUrls]
+          : undefined,
+      }
+      const admission = await admitPublicEvent(checkpoint.signedEvent)
+      if (admission.status !== "verified") {
+        throw new AccountNetworkMutationError(
+          admission.status === "invalid"
+            ? "invalid_signature"
+            : "evidence_unavailable",
+          "Signed Network checkpoint could not be verified."
+        )
+      }
+      return { ...copied, signedEvent: admission.event }
+    })
+  )
+}
+
+async function admitMutationSnapshot(
+  snapshot: AccountNetworkMutationSnapshot
+): Promise<AccountNetworkMutationSnapshot> {
+  const admitted = cloneSnapshot(snapshot)
+  const admit = async (event: SignedPublicNostrEvent) => {
+    const result = await admitPublicEvent(event)
+    if (result.status !== "verified") {
+      throw new AccountNetworkMutationError(
+        "evidence_changed",
+        "Retained Network evidence could not be verified."
+      )
+    }
+    return result.event
+  }
+  if (admitted.ownerRelayList?.current) {
+    admitted.ownerRelayList.current.signedEvent = await admit(
+      admitted.ownerRelayList.current.signedEvent
+    )
+  }
+  if (admitted.ownerRelayList?.lastUsable) {
+    admitted.ownerRelayList.lastUsable.signedEvent = await admit(
+      admitted.ownerRelayList.lastUsable.signedEvent
+    )
+  }
+  if (admitted.ownerRelayList?.pendingDistribution) {
+    admitted.ownerRelayList.pendingDistribution.signedEvent = await admit(
+      admitted.ownerRelayList.pendingDistribution.signedEvent
+    )
+  }
+  if (admitted.inboxDeclaration?.current) {
+    admitted.inboxDeclaration.current.signedEvent = await admit(
+      admitted.inboxDeclaration.current.signedEvent
+    )
+  }
+  if (admitted.inboxDeclaration?.lastUsable) {
+    admitted.inboxDeclaration.lastUsable.signedEvent = await admit(
+      admitted.inboxDeclaration.lastUsable.signedEvent
+    )
+  }
+  if (admitted.inboxDeclaration?.pendingDistribution) {
+    admitted.inboxDeclaration.pendingDistribution.signedEvent = await admit(
+      admitted.inboxDeclaration.pendingDistribution.signedEvent
+    )
+  }
+  return admitted
+}
+
+function exactMutationSnapshotEvents(
+  left: AccountNetworkMutationSnapshot,
+  right: AccountNetworkMutationSnapshot
+): boolean {
+  const pairs = [
+    [
+      left.ownerRelayList?.current?.signedEvent,
+      right.ownerRelayList?.current?.signedEvent,
+    ],
+    [
+      left.ownerRelayList?.lastUsable?.signedEvent,
+      right.ownerRelayList?.lastUsable?.signedEvent,
+    ],
+    [
+      left.ownerRelayList?.pendingDistribution?.signedEvent,
+      right.ownerRelayList?.pendingDistribution?.signedEvent,
+    ],
+    [
+      left.inboxDeclaration?.current.signedEvent,
+      right.inboxDeclaration?.current.signedEvent,
+    ],
+    [
+      left.inboxDeclaration?.lastUsable?.signedEvent,
+      right.inboxDeclaration?.lastUsable?.signedEvent,
+    ],
+    [
+      left.inboxDeclaration?.pendingDistribution?.signedEvent,
+      right.inboxDeclaration?.pendingDistribution?.signedEvent,
+    ],
+  ] as const
+  return pairs.every(([a, b]) =>
+    a === undefined || b === undefined ? a === b : sameSignedPublicEvent(a, b)
+  )
+}
+
+/** Retain transaction-current metadata; restore proof only for equal signed bytes. */
+function admitCurrentMutationSnapshot(
+  current: AccountNetworkMutationSnapshot,
+  admittedBefore: AccountNetworkMutationSnapshot
+): AccountNetworkMutationSnapshot {
+  if (!exactMutationSnapshotEvents(current, admittedBefore)) {
+    throw new AccountNetworkMutationError(
+      "evidence_changed",
+      "Durable Network evidence changed while it was being verified."
+    )
+  }
+  const result = cloneSnapshot(current)
+  for (const kind of ["ownerRelayList", "inboxDeclaration"] as const) {
+    for (const field of [
+      "current",
+      "lastUsable",
+      "pendingDistribution",
+    ] as const) {
+      const target = result[kind]?.[field]
+      const source = admittedBefore[kind]?.[field]
+      if (target && source) target.signedEvent = source.signedEvent
+    }
+  }
+  return result
 }
 
 function sameStrings(
@@ -698,7 +878,7 @@ function selectCreatedAt(
 
 function assertValidSignedDraft(input: {
   signedEvent: SignedPublicNostrEvent
-  unsignedEvent: Omit<SignedPublicNostrEvent, "id" | "sig">
+  unsignedEvent: UnsignedNostrEvent
 }): void {
   const { signedEvent, unsignedEvent } = input
   if (
@@ -756,7 +936,7 @@ function checkpointForKind(
   if (!pending?.relayOutcomes) return null
   return {
     kind,
-    signedEvent: structuredClone(pending.signedEvent),
+    signedEvent: pending.signedEvent,
     pending: true,
     relayOutcomes: structuredClone(pending.relayOutcomes),
   }
@@ -780,7 +960,7 @@ function resultFromSnapshot(
         ? [
             {
               kind,
-              signedEvent: structuredClone(evidence),
+              signedEvent: evidence,
               pending: false,
               relayOutcomes: [],
             },
@@ -812,12 +992,9 @@ function applyStageToSnapshot(
       "Durable signed Network evidence changed before staging."
     )
   }
-  let ownerRelayList = snapshot.ownerRelayList
-    ? structuredClone(snapshot.ownerRelayList)
-    : undefined
-  let inboxDeclaration = snapshot.inboxDeclaration
-    ? structuredClone(snapshot.inboxDeclaration)
-    : undefined
+  const copiedEvidence = cloneSnapshot(snapshot)
+  let ownerRelayList = copiedEvidence.ownerRelayList
+  let inboxDeclaration = copiedEvidence.inboxDeclaration
   for (const checkpoint of input.checkpoints) {
     const relayOutcomes = initialRelayOutcomes(checkpoint.publishRelayUrls)
     if (checkpoint.kind === EVENT_KINDS.RELAY_LIST) {
@@ -900,7 +1077,7 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
         db.inboxDeclarationEvidence.get(inboxPubkey),
         db.accountNetworkLocalState.get(normalized),
       ])
-      return cloneSnapshot({
+      return await admitMutationSnapshot({
         ownerRelayList,
         inboxDeclaration,
         localState: normalizeAccountNetworkLocalState(
@@ -910,15 +1087,37 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
     },
     async stage(input) {
       const normalized = normalizePubkey(input.pubkey)
+      const checkpoints = await admitStagedCheckpoints(input.checkpoints)
+      const admittedBeforeTransaction = await this.get(normalized)
       return await db.transaction(
         "rw",
         db.ownerRelayListEvidence,
         db.inboxDeclarationEvidence,
         db.accountNetworkLocalState,
         async () => {
-          const current = await this.get(normalized)
+          const [ownerRelayList, inboxDeclaration, local] = await Promise.all([
+            db.ownerRelayListEvidence.get(
+              normalizeOwnerRelayListPubkey(normalized)!
+            ),
+            db.inboxDeclarationEvidence.get(
+              normalizeInboxDeclarationEvidencePubkey(normalized)!
+            ),
+            db.accountNetworkLocalState.get(normalized),
+          ])
+          const rawCurrent: AccountNetworkMutationSnapshot = {
+            ownerRelayList,
+            inboxDeclaration,
+            localState: normalizeAccountNetworkLocalState(
+              local ?? emptyAccountNetworkLocalState(normalized)
+            ),
+          }
+          const current = admitCurrentMutationSnapshot(
+            rawCurrent,
+            admittedBeforeTransaction
+          )
           const next = applyStageToSnapshot(current, {
             ...input,
+            checkpoints,
             pubkey: normalized,
           })
           if (next.ownerRelayList) {
@@ -940,6 +1139,7 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
     },
     async restageInboxDistribution(input) {
       const normalized = normalizePubkey(input.pubkey)
+      const admittedBeforeTransaction = await this.get(normalized)
       await db.transaction(
         "rw",
         db.inboxDeclarationEvidence,
@@ -957,17 +1157,32 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
               "The retained inbox declaration changed before redistribution."
             )
           }
+          const current = admitCurrentMutationSnapshot(
+            {
+              inboxDeclaration: existing,
+              localState: normalizeAccountNetworkLocalState(
+                storedLocalState ?? emptyAccountNetworkLocalState(normalized)
+              ),
+            },
+            {
+              inboxDeclaration: admittedBeforeTransaction.inboxDeclaration,
+              localState: admittedBeforeTransaction.localState,
+            }
+          )
           const publishRelayUrls = inboxRestageRelayUrls(
             storedLocalState ?? emptyAccountNetworkLocalState(normalized),
             input.publishRelayUrls
           )
-          const next = applyInboxDeclarationDistributionRestage(existing, {
-            ...input,
-            pubkey: normalized,
-            publishRelayUrls,
-            relayOutcomes: initialRelayOutcomes(publishRelayUrls),
-            cachedAt: input.stagedAt,
-          })
+          const next = applyInboxDeclarationDistributionRestage(
+            current.inboxDeclaration!,
+            {
+              ...input,
+              pubkey: normalized,
+              publishRelayUrls,
+              relayOutcomes: initialRelayOutcomes(publishRelayUrls),
+              cachedAt: input.stagedAt,
+            }
+          )
           await db.inboxDeclarationEvidence.put(next)
         }
       )
@@ -975,13 +1190,33 @@ function createDexieAccountNetworkMutationRepository(): AccountNetworkMutationRe
     },
     async recordOutcomes(input) {
       const normalized = normalizePubkey(input.pubkey)
+      const admittedBeforeTransaction = await this.get(normalized)
       return await db.transaction(
         "rw",
         db.ownerRelayListEvidence,
         db.inboxDeclarationEvidence,
         db.accountNetworkLocalState,
         async () => {
-          const current = await this.get(normalized)
+          const [ownerRelayList, inboxDeclaration, local] = await Promise.all([
+            db.ownerRelayListEvidence.get(
+              normalizeOwnerRelayListPubkey(normalized)!
+            ),
+            db.inboxDeclarationEvidence.get(
+              normalizeInboxDeclarationEvidencePubkey(normalized)!
+            ),
+            db.accountNetworkLocalState.get(normalized),
+          ])
+          const rawCurrent: AccountNetworkMutationSnapshot = {
+            ownerRelayList,
+            inboxDeclaration,
+            localState: normalizeAccountNetworkLocalState(
+              local ?? emptyAccountNetworkLocalState(normalized)
+            ),
+          }
+          const current = admitCurrentMutationSnapshot(
+            rawCurrent,
+            admittedBeforeTransaction
+          )
           if (input.kind === EVENT_KINDS.RELAY_LIST) {
             const pending = current.ownerRelayList?.pendingDistribution
             if (pending?.signedEvent.id === input.signedEventId) {
@@ -1035,12 +1270,15 @@ export function createInMemoryAccountNetworkMutationRepository(
   }
   return {
     async get(pubkey) {
-      return getSnapshot(pubkey)
+      return await admitMutationSnapshot(getSnapshot(pubkey))
     },
     async stage(input) {
       const normalized = normalizePubkey(input.pubkey)
-      const next = applyStageToSnapshot(getSnapshot(normalized), {
+      const checkpoints = await admitStagedCheckpoints(input.checkpoints)
+      const current = await admitMutationSnapshot(getSnapshot(normalized))
+      const next = applyStageToSnapshot(current, {
         ...input,
+        checkpoints,
         pubkey: normalized,
       })
       snapshots.set(normalized, cloneSnapshot(next))
@@ -1048,7 +1286,7 @@ export function createInMemoryAccountNetworkMutationRepository(
     },
     async restageInboxDistribution(input) {
       const normalized = normalizePubkey(input.pubkey)
-      const current = getSnapshot(normalized)
+      const current = await admitMutationSnapshot(getSnapshot(normalized))
       if (!current.inboxDeclaration) {
         throw new AccountNetworkMutationError(
           "evidence_changed",
@@ -1074,7 +1312,7 @@ export function createInMemoryAccountNetworkMutationRepository(
     },
     async recordOutcomes(input) {
       const normalized = normalizePubkey(input.pubkey)
-      const current = getSnapshot(normalized)
+      const current = await admitMutationSnapshot(getSnapshot(normalized))
       if (input.kind === EVENT_KINDS.RELAY_LIST) {
         const pending = current.ownerRelayList?.pendingDistribution
         if (pending?.signedEvent.id === input.signedEventId) {
@@ -1335,7 +1573,7 @@ async function deliverPendingKind(input: {
       "No exact signed Network event is waiting for this retry."
     )
   }
-  const signedEvent = structuredClone(pending.signedEvent)
+  const signedEvent = pending.signedEvent
   const pendingPublishRelayUrls = [...pending.publishRelayUrls]
   const pendingInboxDistribution =
     input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
@@ -1472,6 +1710,7 @@ async function deliverPendingKind(input: {
         assertContinue(input.dependencies.shouldContinue)
         const sourceExact = result.events.some(
           (event) =>
+            isVerifiedNostrEvent(event) &&
             sameSignedEvent(event, signedEvent) &&
             (result.eventSourceRelayUrls[event.id] ?? []).includes(relayUrl)
         )
@@ -1480,12 +1719,13 @@ async function deliverPendingKind(input: {
         )
         readbackObservations.push({
           relayUrl,
-          status:
-            sourceExact && result.eventsVerified
-              ? "observed"
-              : relay?.status === "success" && result.eventsVerified
-                ? "absent"
-                : "timed_out",
+          status: sourceExact
+            ? "observed"
+            : relay?.status === "success" &&
+                (relay.rejectedEventCount ?? 0) === 0 &&
+                result.events.every(isVerifiedNostrEvent)
+              ? "absent"
+              : "timed_out",
         })
       } catch (error) {
         assertContinue(input.dependencies.shouldContinue)
@@ -1601,7 +1841,7 @@ async function publishUnderLock(input: {
 
   const unsignedEvents: Array<{
     kind: AccountNetworkSignedKind
-    event: Omit<SignedPublicNostrEvent, "id" | "sig">
+    event: UnsignedNostrEvent
   }> = input.reviewed.changedKinds.map((kind) => ({
     kind,
     event: {
@@ -1636,9 +1876,17 @@ async function publishUnderLock(input: {
     const signedEvent = await input.signer.signEvent(draft.event)
     assertContinue(input.dependencies.shouldContinue)
     assertValidSignedDraft({ signedEvent, unsignedEvent: draft.event })
+    const admission = await admitPublicEvent(signedEvent)
+    assertContinue(input.dependencies.shouldContinue)
+    if (admission.status !== "verified") {
+      throw new AccountNetworkMutationError(
+        "invalid_signature",
+        "The signer returned an event that could not be admitted."
+      )
+    }
     checkpoints.push({
       kind: draft.kind,
-      signedEvent: structuredClone(signedEvent),
+      signedEvent: admission.event,
       publishRelayUrls: [...plans.get(draft.kind)!.publishRelayUrls],
       ...(plans.get(draft.kind)!.confirmationRelayUrls
         ? {
@@ -1828,7 +2076,7 @@ export async function redistributeAccountNetworkInboxDeclaration(input: {
     const existing = await repository.get(pubkey)
     const existingPending = existing.inboxDeclaration?.pendingDistribution
     if (existingPending) {
-      const signedEvent = structuredClone(existingPending.signedEvent)
+      const signedEvent = existingPending.signedEvent
       const existingPublishRelayUrls = [...existingPending.publishRelayUrls]
       let delivered = await deliverPendingKind({
         pubkey,
@@ -1923,7 +2171,7 @@ export async function redistributeAccountNetworkInboxDeclaration(input: {
     dependencies.onPhase?.("staging")
     await repository.restageInboxDistribution({
       pubkey,
-      signedEvent: structuredClone(current.signedEvent),
+      signedEvent: current.signedEvent,
       expectedPublishRelayUrls: [],
       publishRelayUrls: plan.confirmationRelayUrls ?? [],
       stagedAt: (dependencies.now ?? Date.now)(),

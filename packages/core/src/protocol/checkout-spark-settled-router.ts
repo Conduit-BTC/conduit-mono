@@ -1135,12 +1135,30 @@ export function recordCheckoutSparkSettledCredit(
     }
     return current
   }
+  assertCheckoutSparkSettledFundingCoverage(current.plan, credit.creditedSats)
   return freezeState({
     ...current,
     credit,
     legs: allocatedLegs(current.plan, credit.creditedSats),
     updatedAt: Math.max(current.updatedAt, credit.observedAt),
   })
+}
+
+/** A short receive is evidence to reconcile, never approval to reduce payouts. */
+export function assertCheckoutSparkSettledFundingCoverage(
+  plan: CheckoutSparkSettledPlan,
+  creditedSats: number
+): void {
+  const weights = calculateCheckoutSparkAllocationWeights(
+    plan.commerceQuote.commerceTotalSats
+  )
+  if (
+    !Number.isSafeInteger(creditedSats) ||
+    BigInt(creditedSats) <
+      BigInt(weights.commerceWeightSats) + BigInt(weights.conduitWeightSats)
+  ) {
+    throw new Error("Checkout Spark funding shortfall requires reconciliation.")
+  }
 }
 
 function normalizeIntent(
@@ -1226,6 +1244,12 @@ export function prepareCheckoutSparkSettledLeg(
   input: CheckoutSparkSettledLegIntentInput
 ): CheckoutSparkSettledReconciliation {
   const current = restoreCheckoutSparkSettledReconciliation(state)
+  if (current.credit) {
+    assertCheckoutSparkSettledFundingCoverage(
+      current.plan,
+      current.credit.creditedSats
+    )
+  }
   if (
     current.plan.schemaVersion === 4 &&
     current.plan.recipients.find((leg) => leg.legId === input.legId)?.kind ===

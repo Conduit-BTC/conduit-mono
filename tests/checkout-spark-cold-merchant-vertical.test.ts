@@ -141,7 +141,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
     it(`restores before any buyer payout and completes commerce before Conduit without replay (physical=${physical})`, async () => {
       const createdAt = Math.floor(Date.now() / 1_000) * 1_000 - 46 * 60_000
       let now = createdAt + 1_000
-      const fixture = createCheckoutSparkGuestSupplierFixture(
+      const fixture = await createCheckoutSparkGuestSupplierFixture(
         createdAt,
         physical
       )

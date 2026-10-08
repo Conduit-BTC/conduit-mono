@@ -23,6 +23,7 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import { isVerifiedNostrEvent } from "./verified-public-event"
 
 export const PRODUCT_SUPPLIER_ALLOCATION_TAG = "zap"
 export const PRODUCT_SUPPLIER_ALLOCATION_VERSION_TAG =
@@ -417,15 +418,22 @@ export function parseProductSupplierAllocationTags(
     signedRevisionEvent.pubkey.toLowerCase() === merchantPubkey &&
     JSON.stringify(signedRevisionEvent.tags) ===
       JSON.stringify(input.tags ?? []) &&
-    isValidSignedPublicNostrEvent(signedRevisionEvent)
+    // Only the exact opaque admission object can reuse public proof. Raw
+    // private history and copied/persisted events retain independent checks.
+    (isVerifiedNostrEvent(signedRevisionEvent) ||
+      isValidSignedPublicNostrEvent(signedRevisionEvent))
   const signedRevision = hasExactSignedRevision
     ? {
         revisionEventId: signedRevisionEvent.id.toLowerCase(),
         revisionCreatedAt: signedRevisionEvent.created_at,
         revisionEvent: {
-          ...signedRevisionEvent,
+          id: signedRevisionEvent.id,
+          pubkey: signedRevisionEvent.pubkey,
+          created_at: signedRevisionEvent.created_at,
           kind: EVENT_KINDS.PRODUCT,
           tags: signedRevisionEvent.tags.map((tag) => [...tag]),
+          content: signedRevisionEvent.content,
+          sig: signedRevisionEvent.sig,
         },
       }
     : {}

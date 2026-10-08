@@ -124,7 +124,9 @@ export function calculateCheckoutSparkBuyerPrice(input: {
  * the checkout wallet's aggregate balance. The caller must establish that
  * attribution from provider evidence; the frozen invoice gross is a separate
  * upper bound. Floor Conduit's proportional share and give the whole-sat
- * remainder to commerce. This does not authorize either outgoing payment.
+ * remainder to commerce. Historical short-funded projections remain readable
+ * for exact reconciliation, but this arithmetic does not authorize a payout:
+ * new credit admission and dispatch require the full frozen funding weights.
  */
 export function allocateCheckoutSparkSettledSats(input: {
   settledSats: number

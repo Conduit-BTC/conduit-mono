@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   calculateCheckoutSparkInboundNetworkAllowanceSats,
@@ -306,7 +307,10 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function supplierRequest(storage: MemoryStorage, sharedDestination = false) {
+async function supplierRequest(
+  storage: MemoryStorage,
+  sharedDestination = false
+) {
   const input = request(storage)
   const secret = generateSecretKey()
   const supplier = getPublicKey(secret)
@@ -340,7 +344,10 @@ function supplierRequest(storage: MemoryStorage, sharedDestination = false) {
     MERCHANT_SECRET
   )
   input.quoteAuthority.products = [
-    { ...parseProductEvent(product), sourceEventId: product.id },
+    {
+      ...parseProductEvent(await admitFixture(product)),
+      sourceEventId: product.id,
+    },
   ]
   input.quoteAuthority.lines = input.quoteAuthority.lines.map((line) => ({
     ...line,
@@ -370,7 +377,7 @@ function supplierRequest(storage: MemoryStorage, sharedDestination = false) {
   return input
 }
 
-function physicalRequest(storage: MemoryStorage) {
+async function physicalRequest(storage: MemoryStorage) {
   const input = request(storage)
   const original =
     input.quoteAuthority.products[0]!.supplierAllocation!.revisionEvent!
@@ -408,7 +415,10 @@ function physicalRequest(storage: MemoryStorage) {
     MERCHANT_SECRET
   )
   input.quoteAuthority.products = [
-    { ...parseProductEvent(product), sourceEventId: product.id },
+    {
+      ...parseProductEvent(await admitFixture(product)),
+      sourceEventId: product.id,
+    },
   ]
   input.quoteAuthority.pricing.items = input.quoteAuthority.pricing.items.map(
     (item) => ({
@@ -430,7 +440,7 @@ function physicalRequest(storage: MemoryStorage) {
 
 describe("settled Spark pre-funding metadata", () => {
   it("binds exact fixed shipping to recovery before exposing the funding invoice", async () => {
-    const input = physicalRequest(new MemoryStorage())
+    const input = await physicalRequest(new MemoryStorage())
     const { options, calls } = dependencies(true)
     let recoveryShipping = 0
     const prepared = await prepareCheckoutSparkSettledFunding(input, {
@@ -449,7 +459,7 @@ describe("settled Spark pre-funding metadata", () => {
   })
 
   it("rejects missing fixed-shipping authority before metadata or wallet work", async () => {
-    const input = physicalRequest(new MemoryStorage())
+    const input = await physicalRequest(new MemoryStorage())
     input.sourceEvents = input.sourceEvents.filter(
       (event) => event.kind !== 30_406
     )
@@ -471,7 +481,7 @@ describe("settled Spark pre-funding metadata", () => {
   it.each([false, true])(
     "checks each distinct required destination before any wallet work, shared=%s",
     async (shared) => {
-      const input = supplierRequest(new MemoryStorage(), shared)
+      const input = await supplierRequest(new MemoryStorage(), shared)
       const { options, calls } = dependencies(true)
       const reads: string[] = []
       const expected = shared
@@ -590,7 +600,7 @@ describe("settled Spark pre-funding metadata", () => {
   it.each(["account_changed", "guest_expired", "guest_caller_revoked"])(
     "does no wallet work after %s during a held metadata read",
     async (reason) => {
-      const input = supplierRequest(new MemoryStorage())
+      const input = await supplierRequest(new MemoryStorage())
       let clock = NOW
       let active = true
       input.shouldContinue = () => active

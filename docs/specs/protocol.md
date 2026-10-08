@@ -338,6 +338,14 @@ Fresh exact claimed-transfer evidence records the native receipt without a
 Lightning invoice or preimage. The wallet contract specifies residual ownership,
 approval, zero-fee capability, completion and retirement restrictions.
 
+Pre-provider cancellation retry authority is local execution evidence, not a
+new recovery wire field or a transferable signed assertion. The current adapter
+requires durable exact terminal cancellation plus a non-serializable capability
+bound to the live executor and committed revision. Restored/imported failure
+labels and missing provider history remain query-only. Completed queue cleanup
+preserves encrypted recovery/progress evidence and the terminal replay barrier;
+it does not change envelope versions or delete wallet credentials.
+
 The guest exception retains its existing order scope and lifetime. Native
 recovery adds no account credential, signer permission, generic message,
 public event, diagnostic payload or service-operated wallet executor.

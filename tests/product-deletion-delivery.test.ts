@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 
 import {
@@ -28,6 +28,7 @@ import {
 } from "@conduit/core/protocol/product-deletion-delivery"
 import { getProductListingDeliveryJobId } from "@conduit/core/protocol/product-listing-delivery"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { __resetPublicEventVerificationForTests } from "../packages/core/src/protocol/verified-public-event"
 import {
   deliverQueuedProductDeletion,
   productDeletionJobToPublishResult,
@@ -47,6 +48,24 @@ const merchantDeletionDeliverySource = readFileSync(
   ),
   "utf8"
 )
+
+let restoreWorker: () => void
+beforeEach(() => {
+  // These are Node-only durable-history checks. Exercise genuine SSR crypto,
+  // not Bun's browser-worker lifecycle; browser admission has separate tests.
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker")
+  __resetPublicEventVerificationForTests()
+  Object.defineProperty(globalThis, "Worker", {
+    configurable: true,
+    value: undefined,
+  })
+  restoreWorker = () => {
+    __resetPublicEventVerificationForTests()
+    if (descriptor) Object.defineProperty(globalThis, "Worker", descriptor)
+    else Reflect.deleteProperty(globalThis, "Worker")
+  }
+})
+afterEach(() => restoreWorker())
 
 function withEligibleAccountRelays<T extends ProductDeletionDeliveryOptions>(
   options: T
@@ -122,7 +141,7 @@ function companionListingFixture(
 }
 
 describe("durable listing ACK provenance for deletion", () => {
-  it("retains superseded ACK sources without depending on a product cache row", () => {
+  it("retains superseded ACK sources without depending on a product cache row", async () => {
     const job = companionListingFixture("a".repeat(64))
     const listing = job.signedEvents[0]!
     job.localReplaySupersededBy = { [listing.id]: "new-write" }
@@ -138,12 +157,12 @@ describe("durable listing ACK provenance for deletion", () => {
       MERCHANT_SECRET
     )
     expect(
-      collectProductDeletionAcknowledgedSourceRelayUrls(deletion, [job])
+      await collectProductDeletionAcknowledgedSourceRelayUrls(deletion, [job])
     ).toEqual(["wss://historical.example"])
     expect(job.localReplaySupersededBy[listing.id]).toBe("new-write")
   })
 
-  it("does not broaden address deletion beyond its cutoff or claim failed delivery as ACK", () => {
+  it("does not broaden address deletion beyond its cutoff or claim failed delivery as ACK", async () => {
     const job = companionListingFixture("a".repeat(64))
     const listing = job.signedEvents[0]!
     const before = finalizeEvent(
@@ -156,19 +175,19 @@ describe("durable listing ACK provenance for deletion", () => {
       MERCHANT_SECRET
     )
     expect(
-      collectProductDeletionAcknowledgedSourceRelayUrls(before, [job])
+      await collectProductDeletionAcknowledgedSourceRelayUrls(before, [job])
     ).toEqual([])
     const exact = signedDeletionEvent(listing.id)
     expect(
-      collectProductDeletionAcknowledgedSourceRelayUrls(exact, [job])
+      await collectProductDeletionAcknowledgedSourceRelayUrls(exact, [job])
     ).toEqual(["wss://relay.conduit.market"])
     job.relayDelivery[0]!.status = "rejected"
     expect(
-      collectProductDeletionAcknowledgedSourceRelayUrls(exact, [job])
+      await collectProductDeletionAcknowledgedSourceRelayUrls(exact, [job])
     ).toEqual([])
   })
 
-  it("ignores another merchant's event even if an exact event tag names it", () => {
+  it("ignores another merchant's event even if an exact event tag names it", async () => {
     const job = companionListingFixture("a".repeat(64))
     const deletion = finalizeEvent(
       {
@@ -180,7 +199,7 @@ describe("durable listing ACK provenance for deletion", () => {
       generateSecretKey()
     )
     expect(
-      collectProductDeletionAcknowledgedSourceRelayUrls(deletion, [job])
+      await collectProductDeletionAcknowledgedSourceRelayUrls(deletion, [job])
     ).toEqual([])
   })
 })
@@ -340,7 +359,7 @@ describe("product deletion relay plan", () => {
 })
 
 describe("companion listing deletion gate", () => {
-  it("requires a reciprocal, valid same-author family with a common ACK", () => {
+  it("requires a reciprocal, valid same-author family with a common ACK", async () => {
     const signedEvent = signedDeletionEvent()
     const listing = companionListingFixture(signedEvent.id)
     const deletion: ProductDeletionDeliveryJob = {
@@ -356,36 +375,38 @@ describe("companion listing deletion gate", () => {
       updatedAt: NOW,
     }
 
-    expect(isDeliveredCompanionListingForDeletion(listing, deletion)).toBe(true)
-    expect(isDeliveredCompanionListingForDeletion(undefined, deletion)).toBe(
-      false
-    )
     expect(
-      isDeliveredCompanionListingForDeletion(listing, {
+      await isDeliveredCompanionListingForDeletion(listing, deletion)
+    ).toBe(true)
+    expect(
+      await isDeliveredCompanionListingForDeletion(undefined, deletion)
+    ).toBe(false)
+    expect(
+      await isDeliveredCompanionListingForDeletion(listing, {
         ...deletion,
         companionListingJobId: "product-listing:other",
       })
     ).toBe(false)
     expect(
-      isDeliveredCompanionListingForDeletion(
+      await isDeliveredCompanionListingForDeletion(
         { ...listing, companionDeletionJobId: "other" },
         deletion
       )
     ).toBe(false)
     expect(
-      isDeliveredCompanionListingForDeletion(
+      await isDeliveredCompanionListingForDeletion(
         { ...listing, readyForDelivery: false },
         deletion
       )
     ).toBe(false)
     expect(
-      isDeliveredCompanionListingForDeletion(
+      await isDeliveredCompanionListingForDeletion(
         { ...listing, state: "partial" },
         deletion
       )
     ).toBe(false)
     expect(
-      isDeliveredCompanionListingForDeletion(
+      await isDeliveredCompanionListingForDeletion(
         {
           ...listing,
           relayDelivery: listing.relayDelivery.map((delivery, index) => ({
@@ -398,7 +419,7 @@ describe("companion listing deletion gate", () => {
       )
     ).toBe(false)
     expect(
-      isDeliveredCompanionListingForDeletion(
+      await isDeliveredCompanionListingForDeletion(
         {
           ...listing,
           signedEvents: [
@@ -420,7 +441,7 @@ describe("companion listing deletion gate", () => {
       generateSecretKey()
     )
     expect(
-      isDeliveredCompanionListingForDeletion(
+      await isDeliveredCompanionListingForDeletion(
         { ...listing, signedEvents: [listing.signedEvents[0]!, foreignEvent] },
         deletion
       )
@@ -432,7 +453,7 @@ describe("companion listing deletion gate", () => {
       signedEvents: duplicateEvents,
     }
     expect(
-      isDeliveredCompanionListingForDeletion(duplicateListing, {
+      await isDeliveredCompanionListingForDeletion(duplicateListing, {
         ...deletion,
         companionListingJobId: duplicateListing.id,
       })

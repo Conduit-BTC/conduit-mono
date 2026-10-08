@@ -11,9 +11,16 @@ import { fetchSignedEventsFanoutDetailed } from "./relay-reader"
 import { publishWithPlanner } from "./relay-publish"
 import {
   compareReplaceableEventFrontiers,
-  isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  sameSignedPublicEvent,
+  verifySignedEvents,
+  PublicEventVerificationUnavailableError,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 
 export const MERCHANT_SHIPPING_SETTINGS_D_TAG =
@@ -60,7 +67,11 @@ export type MerchantShippingReadResult =
   | { state: "not_found" }
   | {
       state: "unavailable"
-      reason: "relay_read" | "invalid_document" | "evidence_storage"
+      reason:
+        | "relay_read"
+        | "invalid_document"
+        | "evidence_storage"
+        | "verification_unavailable"
     }
 
 interface MerchantShippingReadDependencies {
@@ -173,6 +184,37 @@ export function selectMerchantShippingEvent(
 }
 
 class InvalidMerchantShippingEvidenceError extends Error {}
+class MerchantShippingVerificationUnavailableError extends Error {}
+
+async function admitMerchantShippingEvidence(
+  raw: SignedPublicNostrEvent,
+  owner: string
+): Promise<VerifiedNostrEvent> {
+  const admission = await admitPublicEvent(raw)
+  if (admission.status === "unavailable" || admission.status === "cancelled") {
+    throw new MerchantShippingVerificationUnavailableError()
+  }
+  if (admission.status !== "verified") {
+    throw new InvalidMerchantShippingEvidenceError()
+  }
+  validateMerchantShippingEvidence(admission.event, owner)
+  return admission.event
+}
+
+function shippingEvidenceReadFailure(
+  error: unknown
+): MerchantShippingReadResult {
+  return {
+    state: "unavailable",
+    reason:
+      error instanceof MerchantShippingVerificationUnavailableError ||
+      error instanceof PublicEventVerificationUnavailableError
+        ? "verification_unavailable"
+        : error instanceof InvalidMerchantShippingEvidenceError
+          ? "invalid_document"
+          : "evidence_storage",
+  }
+}
 
 function validateMerchantShippingEvidence(
   event: SignedPublicNostrEvent,
@@ -180,7 +222,7 @@ function validateMerchantShippingEvidence(
 ): void {
   try {
     if (
-      !isValidSignedPublicNostrEvent(event) ||
+      !isVerifiedNostrEvent(event) ||
       selectMerchantShippingEvent([event], owner)?.id !== event.id
     )
       throw new Error("Invalid signed settings")
@@ -198,6 +240,14 @@ async function retainMerchantShippingEvent(
   evidenceDb: ConduitDB
 ): Promise<SignedPublicNostrEvent> {
   validateMerchantShippingEvidence(candidate, owner)
+  // Verify any prior durable event before entering the Dexie transaction.
+  // A changed row inside the transaction fails closed and can be retried by
+  // the next read without keeping a worker promise inside that transaction.
+  const prior = await evidenceDb.merchantShippingSettingsEvidence.get(owner)
+  let priorEvent: SignedPublicNostrEvent | null = null
+  if (prior) {
+    priorEvent = await admitMerchantShippingEvidence(prior.signedEvent, owner)
+  }
   return evidenceDb.transaction(
     "rw",
     evidenceDb.merchantShippingSettingsEvidence,
@@ -205,7 +255,13 @@ async function retainMerchantShippingEvent(
       const stored =
         await evidenceDb.merchantShippingSettingsEvidence.get(owner)
       if (stored) {
-        validateMerchantShippingEvidence(stored.signedEvent, owner)
+        if (
+          !priorEvent ||
+          !sameSignedPublicEvent(priorEvent, stored.signedEvent)
+        )
+          throw new InvalidMerchantShippingEvidenceError(
+            "Stored shipping settings evidence changed during read."
+          )
         if (
           compareReplaceableEventFrontiers(
             { createdAt: candidate.created_at, eventId: candidate.id },
@@ -215,7 +271,11 @@ async function retainMerchantShippingEvent(
             }
           ) <= 0
         )
-          return stored.signedEvent
+          return priorEvent
+      } else if (priorEvent) {
+        throw new InvalidMerchantShippingEvidenceError(
+          "Stored shipping settings evidence changed during read."
+        )
       }
       await evidenceDb.merchantShippingSettingsEvidence.put({
         pubkey: owner,
@@ -251,16 +311,11 @@ export async function fetchMerchantShippingSettings(
   let retained: SignedPublicNostrEvent | null
   try {
     const stored = await evidenceDb.merchantShippingSettingsEvidence.get(owner)
-    retained = stored?.signedEvent ?? null
-    if (retained) validateMerchantShippingEvidence(retained, owner)
+    if (stored) {
+      retained = await admitMerchantShippingEvidence(stored.signedEvent, owner)
+    } else retained = null
   } catch (error) {
-    return {
-      state: "unavailable",
-      reason:
-        error instanceof InvalidMerchantShippingEvidenceError
-          ? "invalid_document"
-          : "evidence_storage",
-    }
+    return shippingEvidenceReadFailure(error)
   }
   const retainedRead = (coverageComplete: boolean) =>
     retained ? shippingReadFromEvent(retained, coverageComplete, true) : null
@@ -333,29 +388,30 @@ export async function fetchMerchantShippingSettings(
         fetchTimeoutMs: 3_000,
       }
     )
-    if (!result.eventsVerified)
-      return (
-        retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
-      )
     const coverageComplete =
       result.relays.length === relayUrls.length &&
       result.relays.every((relay) => relay.status === "success")
-    const latest = selectMerchantShippingEvent(result.events, owner)
+    const admitted = await verifySignedEvents(result.events, {
+      maxEvents: result.events.length,
+    })
+    if (admitted.truncated)
+      return (
+        retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
+      )
+    const latest = selectMerchantShippingEvent(admitted.events, owner)
     if (!latest) {
       // Another tab may have retained a revision while this read was pending.
       try {
         const stored =
           await evidenceDb.merchantShippingSettingsEvidence.get(owner)
-        retained = stored?.signedEvent ?? retained
-        if (retained) validateMerchantShippingEvidence(retained, owner)
-      } catch (error) {
-        return {
-          state: "unavailable",
-          reason:
-            error instanceof InvalidMerchantShippingEvidenceError
-              ? "invalid_document"
-              : "evidence_storage",
+        if (stored) {
+          retained = await admitMerchantShippingEvidence(
+            stored.signedEvent,
+            owner
+          )
         }
+      } catch (error) {
+        return shippingEvidenceReadFailure(error)
       }
       return (
         retainedRead(coverageComplete) ??
@@ -376,17 +432,14 @@ export async function fetchMerchantShippingSettings(
         strongest.id !== latest.id
       )
     } catch (error) {
-      return {
-        state: "unavailable",
-        reason:
-          error instanceof InvalidMerchantShippingEvidenceError
-            ? "invalid_document"
-            : "evidence_storage",
-      }
+      return shippingEvidenceReadFailure(error)
     }
-  } catch {
+  } catch (error) {
     if (dependencies.shouldContinue?.() === false)
       throw new Error("Merchant session changed during shipping settings read")
+    if (error instanceof PublicEventVerificationUnavailableError) {
+      return retainedRead(false) ?? shippingEvidenceReadFailure(error)
+    }
     return retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
   }
 }
@@ -408,6 +461,13 @@ export async function publishMerchantShippingSettings(input: {
       "Connect the matching merchant signer before saving shipping settings"
     )
   const current = await fetchMerchantShippingSettings(owner, input.dependencies)
+  if (
+    current.state === "unavailable" &&
+    current.reason === "verification_unavailable"
+  )
+    throw new Error(
+      "Shipping settings verification is unavailable. Retry before saving."
+    )
   if (current.state === "unavailable" && current.reason === "evidence_storage")
     throw new Error(
       "This device could not retain signed shipping settings. Restore local storage before saving."
@@ -452,7 +512,11 @@ export async function publishMerchantShippingSettings(input: {
     tags: [["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]],
     content: serializeMerchantShippingSettings(input.settings),
   }
-  const event = await signer.signEvent(draft)
+  const signed = await signer.signEvent(draft)
+  const admission = await admitPublicEvent(signed)
+  if (admission.status !== "verified" || admission.event.pubkey !== owner)
+    throw new Error("Signer returned invalid shipping settings evidence.")
+  const event = admission.event
   await (input.dependencies?.publishEvent ?? publishWithPlanner)(event, {
     intent: "author_event",
     authorPubkey: owner,
