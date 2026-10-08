@@ -98,14 +98,15 @@ evidence only; this note claims no physical validation.
 
 ## Retired experiment
 
-[conduit-signer PR #2](https://github.com/Conduit-BTC/conduit-signer/pull/2) is an
-abandoned experiment, never a product dependency. Port mature crypto usage,
-validation, atomic persistence/deletion, revision checks, buffer hygiene and
-meaningful regressions. Simplify lifecycle into direct calls and the existing
-owner. Discard iframe/postMessage, frame/source/channel correlation, parent
-admission, CSP framing, standalone builds and deployment. Close remaining work
-and archive after useful work is preserved in the monorepo PR. Old PRs/Git
-history are the historical record, not an active delivery plan.
+[conduit-signer PR #2](https://github.com/Conduit-BTC/conduit-signer/pull/2) was
+closed unmerged and its repository archived on 2026-10-08. Useful mature crypto
+usage, validation, atomic persistence/deletion, revision checks, buffer hygiene
+and regressions are preserved in
+[monorepo #646](https://github.com/Conduit-BTC/conduit-mono/pull/646).
+Lifecycle uses direct calls and the existing owner. Iframe/postMessage,
+frame/source/channel correlation, parent admission, CSP framing, standalone
+builds and deployment were discarded. There is no runtime or build dependency
+on the experiment. Old PRs/Git history remain the historical record.
 
 ## Public sources
 
