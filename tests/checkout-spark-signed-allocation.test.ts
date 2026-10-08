@@ -338,7 +338,7 @@ describe("signed checkout Spark supplier allocation", () => {
       { source: "unknown" },
       { fetchedAt: CREATED_AT * 1_000 + 0.5 },
       { fiatUsdRates: { usd: 1 } },
-      { fiatUsdRates: { XXX: 1 } },
+      { fiatUsdRates: { XX: 1 } },
     ]) {
       const malformed = structuredClone(quote)
       Object.assign(malformed.pricing!.rate, rateChange)
@@ -351,6 +351,18 @@ describe("signed checkout Spark supplier allocation", () => {
         })
       ).toThrow()
     }
+    // A retained common snapshot can contain a no-longer-offered currency.
+    // Reading its exact conversion is distinct from admitting a new purchase.
+    const retained = structuredClone(quote)
+    retained.pricing!.rate.fiatUsdRates = { BGN: 0.5 }
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: retained,
+        products: [product],
+        merchantPubkey: MERCHANT,
+        acceptedAtMs: CREATED_AT * 1_000,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: MERCHANT, amountSats: 5_000 }])
   })
 
   it("splits quantity-adjusted merchandise and gives all signed fixed shipping to the merchant", () => {
