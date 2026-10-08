@@ -45,37 +45,42 @@ can retire the exact expected credential when metadata verification fails, while
 still reporting failure. Synchronous local and cross-tab authority revocation
 precedes asynchronous cleanup. Cleanup errors cannot install or revive a signer.
 
-## Separate-origin adapter handoff
+## In-process local-key integration handoff
 
-The existing [Conduit Signer operation contract](https://github.com/Conduit-BTC/conduit-signer/blob/2f4439dc09cca227e9c5479f5a85859929dbe213/proof/protocol.ts)
-uses `status`, `signEvent`, `encryptNip44`, `decryptNip44`, `decryptLegacy` and
-`logout`. The subsequent integration should adapt those operations directly to
-`NostrKeySigner`, then bind it with the existing `SessionSigner`:
+The local-key implementation belongs inside `@conduit/core`, directly behind
+`NostrKeySigner`. Bind it with the existing `SessionSigner`; `AuthProvider`
+remains the only account lifecycle owner. There is no standalone signer runtime,
+iframe, cross-origin transport, separately deployed origin or package dependency.
 
-- `status` supplies public `{ pubkey, revision }` binding plus a frame identity.
-  Establish and verify the expected account before installing authority. Never
-  silently adopt a different account from a later status response.
-- Provider revision/frame/channel/request correlation and exact message
-  origin/source validation stay inside the provider. The provider revision is
-  distinct from the app's cross-tab `authClaim`. Fence both before and after
-  asynchronous operations, including reload and provider change notifications.
-- `signEvent` returns complete event evidence. Retain `SessionSigner`'s exact
-  template, hash, signature and principal validation. Map NIP-44 operations
-  directly; legacy decryption is read-only. Preserve typed disconnected,
-  unavailable, timeout, invalid-response and authority-changed outcomes.
-- Split transient close/abandon from explicit `logout`. App unmount or failed
-  restored installation must not delete the signer's durable key. Explicit logout
-  revokes app authority synchronously, then requests signer-owned key deletion
-  and reports any cleanup failure. Pending results must never revive authority.
-- Add a named local-provider metadata variant and fixed connect/restore/cleanup
-  branches in the existing owners. Persist only public identity and non-secret
-  provider references. Do not persist an NSEC, ciphertext plus independently
-  usable unwrapping material, or a key retrieval/export capability in either app.
-- Extend protected-read eligibility only alongside reviewed local-provider
-  installation. Guest/order keys remain ineligible. This PR retains the existing
-  NIP-07/NIP-46 gate and does not impersonate `window.nostr`.
+- The implementation owns existing-NSEC input, NIP-19 decoding/validation,
+  secret-byte storage, key operations and best-effort buffer clearing. Consume
+  and clear import text inside that area; ordinary application code never
+  receives a private key or an NSEC getter/export capability.
+- Persist only public identity and a local credential revision in shared auth
+  metadata. Keep that record revision distinct from the app's `authClaim`.
+  Verify the exact record before and after asynchronous operations; an old
+  session cannot adopt or remove a later import.
+- Implement `signEvent`, `encryptNip44`, `decryptNip44` and the required
+  decrypt-only legacy operation directly using the pinned mature crypto
+  implementation. Preserve `SessionSigner`'s exact-template/signature checks,
+  current foreground/background scheduling and typed failures.
+- Keep transient invalidation separate from durable removal. Failed restoration
+  or app unmount clears accessible key buffers and pending results but preserves
+  the stored record. Explicit logout synchronously revokes account authority,
+  then conditionally deletes the exact local record. Failed deletion remains
+  failed cleanup with a retry path; it never reports successful logout.
+- Add a named local auth method and fixed connect/restore/credential-retirement
+  branches. Extend account eligibility together for protected reads, Network
+  publication and recipient relay AUTH. Guest keys remain purpose-scoped and
+  ineligible. Never impersonate `window.nostr`.
 
-Connection/import UI, approved origins, local activation, policy updates and
-physical-device storage/logout evidence belong to the integration. The signer
-repository's proof transport is not a production deployment contract. Real
-signer/relay delivery and physical PWA persistence require their own evidence.
+Automatic restore without an independent unlock secret gives same-origin code
+significant authority over the signer. Module containment reduces accidental
+secret handling and enables focused review; it is not a separate browser
+security boundary against compromised same-origin application code. Do not
+claim stronger protection through automatically available wrapping material.
+
+Contained import UI, persistence, policy correction, composed Market/Merchant
+coverage and physical-device storage/logout evidence belong to the integration.
+Use the existing publication, NIP-17/NIP-59 and inbox owners. Physical iPhone
+PWA validation and a separate production decision remain activation gates.
