@@ -3615,9 +3615,10 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     page.getByRole("button", { name: "Decline request" })
   ).toBeVisible()
-  const merchantRow = page.locator("div.rounded-xl").filter({
+  const merchantRow = page.getByRole("group").filter({
     has: page.locator(`[id="assignment-${MERCHANT_PUBKEY}"]`),
   })
+  await expect(merchantRow).toBeVisible()
   await merchantRow.getByLabel("Public assignment").fill("Booth 4")
   // The host's own seller row refreshes independently; target only the requester.
   const approveMerchant = merchantRow.getByRole("button", {

@@ -1382,9 +1382,12 @@ function MerchantAuthorityRow({
   }
 
   return (
-    <Card>
+    <Card role="group" aria-labelledby={`merchant-authority-${merchant}`}>
       <CardHeader>
-        <CardTitle className="break-all text-base">
+        <CardTitle
+          id={`merchant-authority-${merchant}`}
+          className="break-all text-base"
+        >
           <span className="flex items-center gap-2">
             <Avatar>
               <AvatarImage src={picture} />
