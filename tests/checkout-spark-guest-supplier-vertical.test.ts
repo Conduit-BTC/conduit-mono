@@ -29,7 +29,7 @@ import {
   listCheckoutSparkRecoveryDeliveries,
   publishCheckoutSparkSettledRecoveryHandoff,
 } from "../apps/market/src/lib/checkout-spark-recovery-handoff"
-import { prepareCheckoutSparkSettledDigitalOrder } from "../apps/market/src/lib/checkout-spark-settled-entry"
+import { prepareCheckoutSparkSettledOrder } from "../apps/market/src/lib/checkout-spark-settled-entry"
 import { createCheckoutSparkSettledFundingBridge } from "../apps/market/src/lib/checkout-spark-settled-funding"
 import { prepareCheckoutSparkSettledOutgoingLeg } from "../apps/market/src/lib/checkout-spark-settled-leg-preparation"
 import { createCheckoutSparkSettledOutgoingProvider } from "../apps/market/src/lib/checkout-spark-settled-outgoing-provider"
@@ -221,7 +221,7 @@ describe("offline guest supplier settled checkout composition", () => {
 
     try {
       const prepare = () =>
-        prepareCheckoutSparkSettledDigitalOrder(
+        prepareCheckoutSparkSettledOrder(
           {
             checkoutId,
             orderId,

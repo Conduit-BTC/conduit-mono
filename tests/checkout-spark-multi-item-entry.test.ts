@@ -18,8 +18,8 @@ import {
 import {
   CheckoutSparkSettledPayoutPreflightError,
   isCheckoutSparkSettledDigitalCart,
-  prepareCheckoutSparkSettledDigitalOrder,
-  type PrepareCheckoutSparkSettledDigitalOrderInput,
+  prepareCheckoutSparkSettledOrder,
+  type PrepareCheckoutSparkSettledOrderInput,
 } from "../apps/market/src/lib/checkout-spark-settled-entry"
 import type { PreparedCheckoutSparkSettledFunding } from "../apps/market/src/lib/checkout-spark-settled-preparation"
 import type { PublishedCheckoutSparkBoundOrder } from "../apps/market/src/lib/checkout-spark-bound-order"
@@ -74,7 +74,7 @@ async function request(
     product: Awaited<ReturnType<typeof product>>
     quantity: number
   }>
-): Promise<PrepareCheckoutSparkSettledDigitalOrderInput> {
+): Promise<PrepareCheckoutSparkSettledOrderInput> {
   const entries = selectedEntries ?? [
     { product: await product("first", 1_000), quantity: 2 },
     { product: await product("second", 250), quantity: 3 },
@@ -141,7 +141,7 @@ describe("same-merchant multi-item settled entry", () => {
       ],
     }
     let publications = 0
-    await prepareCheckoutSparkSettledDigitalOrder(input, {
+    await prepareCheckoutSparkSettledOrder(input, {
       now: () => NOW,
       ndk: getNdk(),
       readRecipientPayout: async () => ({
@@ -179,7 +179,7 @@ describe("same-merchant multi-item settled entry", () => {
       let reads = 0
       let preparations = 0
       let publications = 0
-      await prepareCheckoutSparkSettledDigitalOrder(input, {
+      await prepareCheckoutSparkSettledOrder(input, {
         now: () => NOW,
         ndk: getNdk(),
         readRecipientPayout: async (read) => {
@@ -235,7 +235,7 @@ describe("same-merchant multi-item settled entry", () => {
   it("snapshots all quote arrays before awaiting a profile read", async () => {
     const input = await request()
     const original = structuredClone(input.quoteAuthority)
-    await prepareCheckoutSparkSettledDigitalOrder(input, {
+    await prepareCheckoutSparkSettledOrder(input, {
       now: () => NOW,
       ndk: getNdk(),
       readRecipientPayout: async () => {
@@ -369,7 +369,7 @@ describe("same-merchant multi-item settled entry", () => {
       if (mode === "takeover_overflow") input.nowMs = Number.MAX_SAFE_INTEGER
       let calls = 0
       await expect(
-        prepareCheckoutSparkSettledDigitalOrder(input, {
+        prepareCheckoutSparkSettledOrder(input, {
           now: () => NOW,
           readRecipientPayout: async () => {
             calls++
@@ -461,7 +461,7 @@ describe("signed supplier settled entry", () => {
         [suppliers[0]!, 566], // 499 + 67, aggregated before reading its profile.
         [suppliers[1]!, 67],
       ])
-      await prepareCheckoutSparkSettledDigitalOrder(input, {
+      await prepareCheckoutSparkSettledOrder(input, {
         now: () => NOW,
         ndk: getNdk(),
         readRecipientPayout: async (read) => {
@@ -543,7 +543,7 @@ describe("signed supplier settled entry", () => {
       },
       MERCHANT_SECRET
     )
-    await prepareCheckoutSparkSettledDigitalOrder(input, {
+    await prepareCheckoutSparkSettledOrder(input, {
       now: () => NOW,
       ndk: getNdk(),
       readRecipientPayout: async ({ recipientPubkey }) => {
@@ -591,7 +591,7 @@ describe("signed supplier settled entry", () => {
       let publishedCalls = 0
       const reads: string[] = []
       await expect(
-        prepareCheckoutSparkSettledDigitalOrder(await supplierRequest(), {
+        prepareCheckoutSparkSettledOrder(await supplierRequest(), {
           now: () => NOW,
           readRecipientPayout: async ({ recipientPubkey }) => {
             reads.push(recipientPubkey)
@@ -637,7 +637,7 @@ describe("signed supplier settled entry", () => {
     let preparedCalls = 0
     let publishedCalls = 0
     await expect(
-      prepareCheckoutSparkSettledDigitalOrder(await supplierRequest(), {
+      prepareCheckoutSparkSettledOrder(await supplierRequest(), {
         now: () => NOW,
         readRecipientPayout: async ({ recipientPubkey }) => {
           const result = payout(recipientPubkey)
@@ -680,7 +680,7 @@ describe("signed supplier settled entry", () => {
       const readStarted = new Promise<void>((resolve) => {
         announceRead = resolve
       })
-      const operation = prepareCheckoutSparkSettledDigitalOrder(input, {
+      const operation = prepareCheckoutSparkSettledOrder(input, {
         now: () => now,
         readRecipientPayout: async (read) => {
           reads.push(read.recipientPubkey)

@@ -24,7 +24,6 @@ import {
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
 const MAX_PAIR_DELIVERY_CONCURRENCY = 6
-const MAX_JOB_DELIVERY_CONCURRENCY = 3
 
 async function runWithConcurrency<T>(
   items: readonly T[],
@@ -1239,37 +1238,4 @@ export async function getStagedProductListingDeliveries(
         left.createdAt - right.createdAt || left.id.localeCompare(right.id)
     )
     .map(cloneJob)
-}
-
-/** Retry every due durable family without allowing one job to starve others. */
-export async function deliverPendingProductListings(
-  publisher: ProductListingRelayPublisher,
-  options: ProductListingDeliveryOptions = {}
-): Promise<ProductListingDeliveryJob[]> {
-  const jobs = await getPendingProductListingDeliveries({
-    ...options,
-    dueOnly: true,
-  })
-  const completed: ProductListingDeliveryJob[] = []
-  const completedByIndex: Array<ProductListingDeliveryJob | undefined> = []
-  await runWithConcurrency(
-    jobs,
-    MAX_JOB_DELIVERY_CONCURRENCY,
-    async (job, index) => {
-      try {
-        completedByIndex[index] = await deliverProductListingJob(
-          job.id,
-          publisher,
-          options
-        )
-      } catch {
-        // Keep this family durable and continue. One corrupt/unavailable job
-        // must not starve later exact signed intents.
-      }
-    }
-  )
-  for (const job of completedByIndex) {
-    if (job) completed.push(job)
-  }
-  return completed
 }

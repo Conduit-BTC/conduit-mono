@@ -17,6 +17,44 @@ const base = {
 }
 
 describe("Merchant order payment presentation", () => {
+  it("does not call a missing payment record unpaid or verified", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard {...base} />
+    )
+    expect(html).toContain("Checking payment")
+    expect(html).not.toContain("Payment verified")
+    expect(html).not.toContain("unpaid")
+    expect(html).not.toContain("Continue with fulfillment")
+  })
+
+  it.each([false, true])(
+    "keeps merchant settlement separate from supplier completion and funding proof %s",
+    (creditVerified) => {
+      const html = renderToStaticMarkup(
+        <CheckoutSparkMerchantPaymentCard
+          {...base}
+          projection={{
+            creditVerified,
+            merchantVerified: true,
+            commerceVerified: false,
+            feePending: true,
+            recipientUnverified: false,
+            receiverSettlementObserved: true,
+          }}
+        />
+      )
+      expect(html).toContain("Processing payment")
+      expect(html).not.toContain("Payment verified")
+      expect(html).not.toContain("Continue with fulfillment")
+      if (creditVerified)
+        expect(html).toContain("finishing this order&#x27;s payments")
+      else {
+        expect(html).toContain("exact wallet payment history")
+        expect(html).toContain("Do not request another payment")
+      }
+    }
+  )
+
   it("keeps receiver-only receipts informational until exact checkout wallet history is verified", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard

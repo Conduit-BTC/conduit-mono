@@ -14,16 +14,6 @@ export interface CheckoutSparkSettledAllocation {
   readonly conduitAllocationSats: number
 }
 
-export type CheckoutSparkLightningLegCapacity =
-  | { readonly state: "ready"; readonly maxFeeSats: number }
-  | {
-      readonly state: "pending"
-      readonly reason:
-        | "invoice_exhausts_allocation"
-        | "fee_estimate_unavailable"
-        | "estimated_fee_exceeds_allocation"
-    }
-
 /**
  * Calculate weights for the pre-funding signed plan. Freezing this JS object
  * does not itself authorize the economics; the caller must bind the weights,
@@ -168,39 +158,4 @@ export function allocateCheckoutSparkSettledSats(input: {
     commerceAllocationSats: settledSats - conduitAllocationSats,
     conduitAllocationSats,
   })
-}
-
-/**
- * A fixed Lightning invoice and its estimated aggregate send fee must fit
- * entirely within this recipient's settled allocation. The resulting budget
- * is a pre-send limit, not proof that Spark will honor it on final settlement;
- * the adapter must verify provider behavior before enabling a live payout.
- */
-export function assessCheckoutSparkLightningLegCapacity(input: {
-  allocationSats: number
-  invoiceAmountSats: number
-  estimatedFeeSats: number | null
-}): CheckoutSparkLightningLegCapacity {
-  const { allocationSats, invoiceAmountSats, estimatedFeeSats } = input
-  if (
-    !Number.isSafeInteger(allocationSats) ||
-    allocationSats < 0 ||
-    !Number.isSafeInteger(invoiceAmountSats) ||
-    invoiceAmountSats <= 0 ||
-    (estimatedFeeSats !== null &&
-      (!Number.isSafeInteger(estimatedFeeSats) || estimatedFeeSats < 0))
-  ) {
-    throw new Error("Checkout Spark Lightning leg capacity is invalid.")
-  }
-  if (invoiceAmountSats >= allocationSats) {
-    return { state: "pending", reason: "invoice_exhausts_allocation" }
-  }
-  if (estimatedFeeSats === null) {
-    return { state: "pending", reason: "fee_estimate_unavailable" }
-  }
-  const maxFeeSats = allocationSats - invoiceAmountSats
-  if (estimatedFeeSats > maxFeeSats) {
-    return { state: "pending", reason: "estimated_fee_exceeds_allocation" }
-  }
-  return { state: "ready", maxFeeSats }
 }

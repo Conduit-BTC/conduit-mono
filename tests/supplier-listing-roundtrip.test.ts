@@ -6,11 +6,12 @@ import {
 } from "nostr-tools/pure"
 import {
   allocateProductSupplierShares,
+  admitPublicEvent,
   buildProductListingEventDraft,
   buildProductSupplierAllocation,
   deriveCheckoutSparkSignedCommerceObligations,
-  getProductSupplierAllocationEvidenceState,
   parseProductEvent,
+  parseProductSupplierAllocationTags,
   type ProductSchema,
 } from "@conduit/core"
 import {
@@ -75,9 +76,16 @@ function sign(input: ProductSchema, at = createdAt) {
     dTag: "supplier-item",
   })
   const event = finalizeEvent({ ...draft, created_at: at }, merchantSecret)
+  return admitSignedProduct(event)
+}
+
+async function admitSignedProduct(event: ReturnType<typeof finalizeEvent>) {
+  const admission = await admitPublicEvent(event)
+  if (admission.status !== "verified")
+    throw new Error("Expected verified signed supplier listing fixture")
   return {
     event,
-    parsed: { ...parseProductEvent(event), sourceEventId: event.id },
+    parsed: { ...parseProductEvent(admission.event), sourceEventId: event.id },
   }
 }
 
@@ -133,7 +141,7 @@ function memoryStorage(): Storage {
 }
 
 describe("supplier listing authoring roundtrip", () => {
-  it("retains form terms through draft reload, signed emission and router admission", () => {
+  it("retains form terms through draft reload, signed emission and router admission", async () => {
     const storage = memoryStorage()
     const target = { merchantPubkey: merchant }
     expect(saveProductDraft(target, draftForm(), storage)).toBe(true)
@@ -144,7 +152,7 @@ describe("supplier listing authoring roundtrip", () => {
       merchant
     )
     expect(validation.canPublish).toBe(true)
-    const { event, parsed } = sign({
+    const { event, parsed } = await sign({
       ...product(),
       supplierAllocation: validation.allocation,
       eventMarketRefs: [],
@@ -173,8 +181,8 @@ describe("supplier listing authoring roundtrip", () => {
     expect(parsed.publicZapEnabled).toBe(false)
   })
 
-  it("emits exact public terms without enabling public zap payments", () => {
-    const { event, parsed } = sign(product())
+  it("emits exact public terms without enabling public zap payments", async () => {
+    const { event, parsed } = await sign(product())
     expect(event.tags).toContainEqual(["conduit_supplier_allocation", "1"])
     expect(event.tags.filter(([tag]) => tag === "zap")).toEqual([
       ["zap", merchant, relay + "/", "3"],
@@ -188,7 +196,13 @@ describe("supplier listing authoring roundtrip", () => {
       `30409:${merchant}:synthetic-market`,
     ])
     expect(event.content).toBe(product().summary!)
-    expect(getProductSupplierAllocationEvidenceState(parsed)).toBe("signed")
+    expect(
+      parseProductSupplierAllocationTags({
+        merchantPubkey: merchant,
+        tags: event.tags,
+        signedRevisionEvent: event,
+      })
+    ).toEqual(parsed.supplierAllocation)
     expect(parsed.supplierAllocation?.revisionEventId).toBe(event.id)
     expect(parsed.publicZapEnabled).toBe(false)
     expect(
@@ -199,9 +213,9 @@ describe("supplier listing authoring roundtrip", () => {
     ])
   })
 
-  it("preserves allocation when an unrelated stock revision is signed", () => {
-    const initial = sign(product())
-    const revised = sign({ ...initial.parsed, stock: 4 }, createdAt + 1)
+  it("preserves allocation when an unrelated stock revision is signed", async () => {
+    const initial = await sign(product())
+    const revised = await sign({ ...initial.parsed, stock: 4 }, createdAt + 1)
     expect(revised.event.id).not.toBe(initial.event.id)
     expect(revised.event.tags.filter(([tag]) => tag === "zap")).toEqual(
       initial.event.tags.filter(([tag]) => tag === "zap")
@@ -210,9 +224,26 @@ describe("supplier listing authoring roundtrip", () => {
     expect(revised.parsed.supplierAllocation?.revisionEventId).toBe(
       revised.event.id
     )
-    expect(getProductSupplierAllocationEvidenceState(revised.parsed)).toBe(
-      "signed"
-    )
+    expect(
+      parseProductSupplierAllocationTags({
+        merchantPubkey: merchant,
+        tags: revised.event.tags,
+        signedRevisionEvent: revised.event,
+      })
+    ).toEqual(revised.parsed.supplierAllocation)
+    const tamperedRevision = {
+      ...revised.event,
+      content: "Changed unsigned supplier listing fields",
+    }
+    const tamperedAdmission = await admitPublicEvent(tamperedRevision)
+    expect(tamperedAdmission.status).not.toBe("verified")
+    const tamperedTerms = parseProductSupplierAllocationTags({
+      merchantPubkey: merchant,
+      tags: tamperedRevision.tags,
+      signedRevisionEvent: tamperedRevision,
+    })
+    expect(tamperedTerms.revisionEvent).toBeUndefined()
+    expect(tamperedTerms.revisionEventId).toBeUndefined()
     expect(initial.parsed.supplierAllocation?.revisionEventId).toBe(
       initial.event.id
     )
@@ -235,13 +266,13 @@ describe("supplier listing authoring roundtrip", () => {
     )
   })
 
-  it("rotation and explicit removal produce new revisions without changing prior terms", () => {
-    const initial = sign(product())
-    const rotated = sign(
+  it("rotation and explicit removal produce new revisions without changing prior terms", async () => {
+    const initial = await sign(product())
+    const rotated = await sign(
       { ...initial.parsed, supplierAllocation: allocation(nextSupplier) },
       createdAt + 1
     )
-    const removed = sign(
+    const removed = await sign(
       {
         ...rotated.parsed,
         supplierAllocation: { state: "absent", recipients: [], issues: [] },
@@ -268,9 +299,9 @@ describe("supplier listing authoring roundtrip", () => {
     ).toBe(3)
   })
 
-  it("admits the generated signed revision to private router allocation", () => {
+  it("admits the generated signed revision to private router allocation", async () => {
     // Router admission is distinct from publication or payment settlement.
-    const { event, parsed } = sign({ ...product(), eventMarketRefs: [] })
+    const { event, parsed } = await sign({ ...product(), eventMarketRefs: [] })
     const result = deriveCheckoutSparkSignedCommerceObligations({
       merchantPubkey: merchant,
       quote: {

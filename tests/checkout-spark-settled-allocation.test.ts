@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
   allocateCheckoutSparkSettledSats,
-  assessCheckoutSparkLightningLegCapacity,
   calculateCheckoutSparkAllocationWeights,
   calculateCheckoutSparkInboundNetworkAllowanceSats,
   calculateCheckoutSparkSettledGrossFundingSats,
@@ -174,63 +173,5 @@ describe("checkout Spark settled allocation", () => {
         weights: { commerceWeightSats: 100_000, conduitWeightSats: 2_099 },
       })
     ).toThrow("weights are invalid")
-  })
-
-  it("limits a fixed invoice and its estimated fee to that recipient's own allocation", () => {
-    expect(
-      assessCheckoutSparkLightningLegCapacity({
-        allocationSats: 99_952,
-        invoiceAmountSats: 99_700,
-        estimatedFeeSats: 252,
-      })
-    ).toEqual({ state: "ready", maxFeeSats: 252 })
-    expect(
-      assessCheckoutSparkLightningLegCapacity({
-        allocationSats: 99_952,
-        invoiceAmountSats: 99_700,
-        estimatedFeeSats: 253,
-      })
-    ).toEqual({ state: "pending", reason: "estimated_fee_exceeds_allocation" })
-  })
-
-  it("pauses only the leg whose invoice cannot fit its allocation", () => {
-    const commerce = assessCheckoutSparkLightningLegCapacity({
-      allocationSats: 99_952,
-      invoiceAmountSats: 99_952,
-      estimatedFeeSats: 0,
-    })
-    const conduit = assessCheckoutSparkLightningLegCapacity({
-      allocationSats: 2_098,
-      invoiceAmountSats: 2_090,
-      estimatedFeeSats: 5,
-    })
-    expect(commerce).toEqual({
-      state: "pending",
-      reason: "invoice_exhausts_allocation",
-    })
-    expect(conduit).toEqual({ state: "ready", maxFeeSats: 8 })
-  })
-
-  it("waits when a fee estimate is unavailable and rejects malformed capacity inputs", () => {
-    expect(
-      assessCheckoutSparkLightningLegCapacity({
-        allocationSats: 100,
-        invoiceAmountSats: 90,
-        estimatedFeeSats: null,
-      })
-    ).toEqual({ state: "pending", reason: "fee_estimate_unavailable" })
-    for (const input of [
-      { allocationSats: -1, invoiceAmountSats: 1, estimatedFeeSats: 0 },
-      { allocationSats: 10, invoiceAmountSats: 0, estimatedFeeSats: 0 },
-      { allocationSats: 10, invoiceAmountSats: 1.5, estimatedFeeSats: 0 },
-      { allocationSats: 10, invoiceAmountSats: 1, estimatedFeeSats: -1 },
-      {
-        allocationSats: Number.MAX_SAFE_INTEGER + 1,
-        invoiceAmountSats: 1,
-        estimatedFeeSats: 0,
-      },
-    ]) {
-      expect(() => assessCheckoutSparkLightningLegCapacity(input)).toThrow()
-    }
   })
 })

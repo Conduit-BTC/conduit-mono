@@ -24,8 +24,6 @@ export async function verifySavedMerchantCheckoutSparkRecipients(input: {
   assertCurrent: () => void
   now: () => number
   verifyInvoice?: typeof verifyCheckoutSparkInvoiceRecipient
-  /** @deprecated Receiver qualification is deployment policy, never this flag. */
-  allowProviderCompatibility?: boolean
 }): Promise<"complete" | "unavailable"> {
   const { state, repository, assertCurrent, now } = input
   assertCurrent()

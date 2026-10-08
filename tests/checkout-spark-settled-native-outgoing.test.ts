@@ -494,25 +494,58 @@ describe("native settled Spark outgoing provider", () => {
     expect(reads).toBe(3)
   })
 
-  it("does not send when the current fee exceeds the frozen cap", async () => {
-    const { plan, target } = fixture()
-    let sends = 0
-    const provider = createCheckoutSparkSettledNativeOutgoingProvider({
-      plan,
-      wallet: wallet({
-        estimateFee: async () => 6,
-        sendFrozen: async () => {
-          sends += 1
-        },
-      }),
-      reconcile: async () => observation(target, "not_found"),
-      assertBeforeSend: () => {},
-      now: () => CREATED_AT + 1_000,
-    })
-    expect(await provider.preflight(target)).toBe("fee_over_cap")
-    expect(await provider.send(target)).toEqual({ status: "not_sent" })
-    expect(sends).toBe(0)
-  })
+  it.each([5, 6])(
+    "fits the current fee only inside the recipient's frozen cap: %s",
+    async (feeSats) => {
+      const { plan, target } = fixture()
+      let sends = 0
+      const provider = createCheckoutSparkSettledNativeOutgoingProvider({
+        plan,
+        wallet: wallet({
+          estimateFee: async () => feeSats,
+          sendFrozen: async () => {
+            sends += 1
+          },
+        }),
+        reconcile: async () => observation(target, "not_found"),
+        assertBeforeSend: () => {},
+        now: () => CREATED_AT + 1_000,
+      })
+      expect(await provider.preflight(target)).toBe(
+        feeSats === 5 ? "ready" : "fee_over_cap"
+      )
+      expect((await provider.send(target)).status).toBe(
+        feeSats === 5 ? "pending" : "not_sent"
+      )
+      expect(sends).toBe(feeSats === 5 ? 1 : 0)
+    }
+  )
+
+  it.each([-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, null])(
+    "does not enter the SDK for unavailable or malformed fee estimate %s",
+    async (feeSats) => {
+      const { plan, target } = fixture()
+      let sends = 0
+      const provider = createCheckoutSparkSettledNativeOutgoingProvider({
+        plan,
+        wallet: wallet({
+          estimateFee: async () => {
+            if (feeSats === null) throw new Error("Fee unavailable")
+            return feeSats
+          },
+          sendFrozen: async () => {
+            sends++
+          },
+        }),
+        reconcile: async () => observation(target, "not_found"),
+        assertBeforeSend: () => {},
+        now: () => CREATED_AT + 1_000,
+      })
+      expect(await provider.preflight(target)).toBe("unavailable")
+      expect((await provider.send(target)).status).toBe("not_sent")
+      expect(sends).toBe(0)
+    }
+  )
 
   it("rechecks the invoice window after an asynchronous fee estimate", async () => {
     const { plan, target } = fixture()

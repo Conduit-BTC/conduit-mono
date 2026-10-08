@@ -616,7 +616,3 @@ export async function deliverPendingProductShippingJobs(
   }
   return completed
 }
-
-/** Recover all due exact signed shipping jobs after a reload, one bounded pass. */
-export const resumePendingLocalProductShippingJobs =
-  deliverPendingProductShippingJobs

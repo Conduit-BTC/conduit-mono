@@ -7,7 +7,6 @@ import {
 } from "nostr-tools/pure"
 import {
   buildShippingPolicyEventDraft,
-  admitPublicEvent,
   extractOrderSummary,
   getMerchantShippingPolicyCoordinate,
   orderSchema,
@@ -32,6 +31,7 @@ import {
   getNdk,
 } from "@conduit/core"
 import { plainTestSigner } from "./helpers/plain-signer"
+import { admitFixture } from "./helpers/public-event"
 import { publishCheckoutSparkSettledBoundOrder } from "../apps/market/src/lib/checkout-spark-bound-order"
 import {
   saveCheckoutSparkSettledPreparation,
@@ -99,11 +99,6 @@ const policy: ShippingPolicy = {
     freeShippingThresholdMinor: 5000,
   },
 }
-async function admitted(event: unknown) {
-  const result = await admitPublicEvent(event)
-  if (result.status !== "verified") throw new Error("Invalid signed fixture")
-  return result.event
-}
 async function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
   const event = finalizeEvent(
     {
@@ -112,7 +107,7 @@ async function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
     },
     secret
   )
-  const parsed = parseShippingOptionEvent(await admitted(event))
+  const parsed = parseShippingOptionEvent(await admitFixture(event))
   if (!parsed) throw new Error("Signed policy fixture failed parsing")
   return {
     ...parsed,
@@ -148,7 +143,7 @@ async function product(
     },
     key
   )
-  const parsed = parseProductEvent(await admitted(event))
+  const parsed = parseProductEvent(await admitFixture(event))
   if (!parsed) throw new Error("Signed product fixture failed parsing")
   return { ...parsed, sourceEventId: event.id }
 }
@@ -200,7 +195,7 @@ describe("signed shipping policy composed checkout", () => {
       fetchedAt: 599_000,
       source: "mempool" as const,
     }
-    const inputs = [raw("fiat-table")]
+    const inputs = [await raw("fiat-table")]
     const tableEvent = finalizeEvent(
       {
         ...buildShippingPolicyEventDraft({
@@ -225,7 +220,7 @@ describe("signed shipping policy composed checkout", () => {
       secret
     )
     const table = {
-      ...parseShippingOptionEvent(tableEvent)!,
+      ...parseShippingOptionEvent(await admitFixture(tableEvent))!,
       readSource: "relay" as const,
       readCoverage: "complete" as const,
     }
@@ -239,7 +234,7 @@ describe("signed shipping policy composed checkout", () => {
       mode: "direct_payment",
       rawItems: inputs,
       reviewedItems: prepared,
-      refreshedProducts: [product("fiat-table")],
+      refreshedProducts: [await product("fiat-table")],
       readShippingOptions: async () => [table],
       destination,
       rateInput: rate,
@@ -284,14 +279,14 @@ describe("signed shipping policy composed checkout", () => {
     }
   })
   it("routes the exact whole-line table allocations rather than multiplying them by quantity", async () => {
-    const inputs = [raw("table-a", 2), raw("table-b", 1)]
-    const table = option()
+    const inputs = [await raw("table-a", 2), await raw("table-b", 1)]
+    const table = await option()
     const prepared = prepareCartFulfillment(inputs, [table], destination).items
     const authorization = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
       rawItems: inputs,
       reviewedItems: prepared,
-      refreshedProducts: [product("table-a"), product("table-b")],
+      refreshedProducts: [await product("table-a"), await product("table-b")],
       readShippingOptions: async () => [table],
       destination,
       resolveProductFulfillment: async (product) => ({
@@ -634,7 +629,7 @@ describe("signed shipping policy composed checkout", () => {
       otherSecret
     )
     const otherOption = parseShippingOptionEvent(
-      await admitted(otherPolicyEvent)
+      await admitFixture(otherPolicyEvent)
     )!
     otherOption.readSource = "relay"
     otherOption.readCoverage = "complete"
@@ -665,7 +660,7 @@ describe("signed shipping policy composed checkout", () => {
   it("excludes current signed Event Market pickup and stale table quotes from parcel shipping", async () => {
     const fixture = createEventMarketOrderFixture({ mode: "merchant_present" })
     const signedProduct = fixture.fulfillment.product.signedEvent
-    const listing = parseProductEvent(await admitted(signedProduct))!
+    const listing = parseProductEvent(await admitFixture(signedProduct))!
     const staleTable = prepareCartFulfillment(
       [await raw("stale-table")],
       [await option()],
@@ -1049,7 +1044,7 @@ async function mixedOption(changes: Partial<ShippingPolicy> = {}) {
     secret
   )
   return {
-    ...parseShippingOptionEvent(await admitted(event))!,
+    ...parseShippingOptionEvent(await admitFixture(event))!,
     readSource: "relay" as const,
     readCoverage: "complete" as const,
   }
@@ -1094,7 +1089,7 @@ async function mixedProduct(
     },
     secret
   )
-  const parsed = parseProductEvent(await admitted(event))
+  const parsed = parseProductEvent(await admitFixture(event))
   if (!parsed) throw new Error("Signed mixed currency product did not parse")
   return parsed
 }

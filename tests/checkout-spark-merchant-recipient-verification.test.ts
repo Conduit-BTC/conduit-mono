@@ -176,7 +176,6 @@ function fixture(address = "merchant@receiver.conduit.cash") {
     repository,
     assertCurrent,
     now: () => NOW + 3,
-    allowProviderCompatibility: true,
     verifyInvoice: (request) =>
       verifyCheckoutSparkInvoiceRecipient(request, verificationDependencies),
   }
@@ -231,9 +230,8 @@ describe("merchant saved invoice recipient verification", () => {
     ).toBe(false)
   })
 
-  it("verifies an approved ordinary receiver without the retired compatibility flag", async () => {
+  it("verifies an approved ordinary receiver without mutating payment state", async () => {
     const context = fixture()
-    context.input.allowProviderCompatibility = false
     const original = JSON.stringify(context.input.state)
     expect(
       await verifySavedMerchantCheckoutSparkRecipients(context.input)
@@ -243,20 +241,9 @@ describe("merchant saved invoice recipient verification", () => {
     expect(JSON.stringify(context.input.state)).toBe(original)
   })
 
-  it("verifies an approved ordinary receiver when the retired compatibility flag is omitted", async () => {
-    const context = fixture()
-    delete context.input.allowProviderCompatibility
-    expect(
-      await verifySavedMerchantCheckoutSparkRecipients(context.input)
-    ).toBe("complete")
-    expect(context.fetches()).toBe(1)
-    expect(context.records).toHaveLength(1)
-  })
-
-  it("preserves trusted local recipient records when compatibility lookup is disabled", async () => {
+  it("reuses trusted local recipient records without another provider lookup", async () => {
     const context = fixture()
     await verifySavedMerchantCheckoutSparkRecipients(context.input)
-    context.input.allowProviderCompatibility = false
     expect(
       await verifySavedMerchantCheckoutSparkRecipients(context.input)
     ).toBe("complete")

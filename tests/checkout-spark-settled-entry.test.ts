@@ -16,9 +16,9 @@ import {
   canRetryCheckoutSparkSettledPreparation,
   canRetryCheckoutSparkSettledPayoutPreflight,
   CheckoutSparkSettledPayoutPreflightError,
-  prepareCheckoutSparkSettledDigitalOrder,
+  prepareCheckoutSparkSettledOrder,
 } from "../apps/market/src/lib/checkout-spark-settled-entry"
-import type { PrepareCheckoutSparkSettledDigitalOrderInput } from "../apps/market/src/lib/checkout-spark-settled-entry"
+import type { PrepareCheckoutSparkSettledOrderInput } from "../apps/market/src/lib/checkout-spark-settled-entry"
 import {
   CheckoutSparkSettledFundingMetadataPreflightError,
   type PreparedCheckoutSparkSettledFunding,
@@ -42,7 +42,7 @@ const MERCHANT_PROFILE = finalizeEvent(
 )
 const BUYER = plainTestSigner(NDKPrivateKeySigner.generate())
 
-function request(): PrepareCheckoutSparkSettledDigitalOrderInput {
+function request(): PrepareCheckoutSparkSettledOrderInput {
   const quote = checkoutSparkQuoteFixture(MERCHANT_SECRET)
   return {
     checkoutId: "settled-entry-checkout",
@@ -97,7 +97,7 @@ describe("settled Spark checkout entry", () => {
     const input = guestRequest()
     let preparedCalls = 0
     let publishedCalls = 0
-    await prepareCheckoutSparkSettledDigitalOrder(input, {
+    await prepareCheckoutSparkSettledOrder(input, {
       now: () => NOW + 1_000,
       ndk: getNdk(),
       readRecipientPayout: async (read) => {
@@ -161,7 +161,7 @@ describe("settled Spark checkout entry", () => {
         input.buyer.signer = plainTestSigner(NDKPrivateKeySigner.generate())
       let calls = 0
       await expect(
-        prepareCheckoutSparkSettledDigitalOrder(input, {
+        prepareCheckoutSparkSettledOrder(input, {
           now: () =>
             mode === "expired" && input.buyer.kind === "guest_ephemeral"
               ? input.buyer.expiresAt
@@ -195,7 +195,7 @@ describe("settled Spark checkout entry", () => {
       let preparedCalls = 0
       let publishedCalls = 0
       await expect(
-        prepareCheckoutSparkSettledDigitalOrder(input, {
+        prepareCheckoutSparkSettledOrder(input, {
           now: () => now,
           readRecipientPayout: async () => {
             if (step === "profile") now = expiresAt
@@ -242,7 +242,7 @@ describe("settled Spark checkout entry", () => {
     } as PublishedCheckoutSparkBoundOrder
     let preparedCalls = 0
     let publishedCalls = 0
-    const result = await prepareCheckoutSparkSettledDigitalOrder(input, {
+    const result = await prepareCheckoutSparkSettledOrder(input, {
       readRecipientPayout: async (read) => {
         expect(read.recipientPubkey).toBe(MERCHANT)
         return {
@@ -315,7 +315,7 @@ describe("settled Spark checkout entry", () => {
     let publishedCalls = 0
     let failure: unknown
     try {
-      await prepareCheckoutSparkSettledDigitalOrder(request(), {
+      await prepareCheckoutSparkSettledOrder(request(), {
         readRecipientPayout: async () => ({
           state: "unavailable",
           reason: "read_incomplete",
@@ -444,13 +444,13 @@ describe("settled Spark checkout entry", () => {
       },
     }
     await expect(
-      prepareCheckoutSparkSettledDigitalOrder(input, dependencies)
+      prepareCheckoutSparkSettledOrder(input, dependencies)
     ).rejects.toBeInstanceOf(CheckoutSparkSettledPayoutPreflightError)
     expect(preparedCalls).toBe(0)
     expect(publishedCalls).toBe(0)
 
     await expect(
-      prepareCheckoutSparkSettledDigitalOrder(input, dependencies)
+      prepareCheckoutSparkSettledOrder(input, dependencies)
     ).resolves.toMatchObject({ published: { orderId: input.orderId } })
     expect(profileReads).toBe(2)
     expect(preparedCalls).toBe(1)
@@ -459,7 +459,7 @@ describe("settled Spark checkout entry", () => {
 
   it("distinguishes a missing signed payout address without exposing its value", async () => {
     await expect(
-      prepareCheckoutSparkSettledDigitalOrder(request(), {
+      prepareCheckoutSparkSettledOrder(request(), {
         readRecipientPayout: async () => ({
           state: "unavailable",
           reason: "payment_address_missing",
@@ -476,7 +476,7 @@ describe("settled Spark checkout entry", () => {
   it("does not reconstruct a missing signed profile from its payment projection", async () => {
     let prepared = false
     await expect(
-      prepareCheckoutSparkSettledDigitalOrder(request(), {
+      prepareCheckoutSparkSettledOrder(request(), {
         readRecipientPayout: async () => ({
           state: "ready",
           recipientPubkey: MERCHANT,

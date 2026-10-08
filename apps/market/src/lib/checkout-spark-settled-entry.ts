@@ -82,18 +82,12 @@ export interface PrepareCheckoutSparkSettledOrderInput {
   anonymousPublicZap?: boolean
 }
 
-export type PrepareCheckoutSparkSettledDigitalOrderInput =
-  PrepareCheckoutSparkSettledOrderInput
-
 const HEX_PUBKEY = /^[0-9a-f]{64}$/
 
 export interface PreparedCheckoutSparkSettledOrder {
   prepared: PreparedCheckoutSparkSettledFunding
   published: PublishedCheckoutSparkBoundOrder
 }
-
-export type PreparedCheckoutSparkSettledDigitalOrder =
-  PreparedCheckoutSparkSettledOrder
 
 /** This failure occurs before the checkout wallet or private order exists. */
 export class CheckoutSparkSettledPayoutPreflightError extends Error {
@@ -723,7 +717,3 @@ export async function resumeCheckoutSparkSettledOrder(
     nextStep: walletOpen ? "review_existing_order" : "merchant_recovery",
   }
 }
-
-/** Backward-compatible entry name for existing digital callers. */
-export const prepareCheckoutSparkSettledDigitalOrder =
-  prepareCheckoutSparkSettledOrder

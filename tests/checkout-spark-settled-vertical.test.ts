@@ -37,8 +37,8 @@ import {
 
 import { readCheckoutSparkRecipientPayoutAddress } from "../apps/market/src/lib/checkout-spark-recipient-profile"
 import {
-  prepareCheckoutSparkSettledDigitalOrder,
-  type PrepareCheckoutSparkSettledDigitalOrderInput,
+  prepareCheckoutSparkSettledOrder,
+  type PrepareCheckoutSparkSettledOrderInput,
 } from "../apps/market/src/lib/checkout-spark-settled-entry"
 import { createCheckoutSparkSettledFundingBridge } from "../apps/market/src/lib/checkout-spark-settled-funding"
 import { prepareCheckoutSparkSettledOutgoingLeg } from "../apps/market/src/lib/checkout-spark-settled-leg-preparation"
@@ -285,7 +285,7 @@ function hash(hashByte: number): string {
 
 function entryRequest(
   checkoutId: string
-): PrepareCheckoutSparkSettledDigitalOrderInput {
+): PrepareCheckoutSparkSettledOrderInput {
   const quote = checkoutSparkQuoteFixture(MERCHANT_SECRET)
   return {
     checkoutId,
@@ -439,7 +439,7 @@ function harness(options: {
     })
 
   const prepare = () =>
-    prepareCheckoutSparkSettledDigitalOrder(entryRequest(options.checkoutId), {
+    prepareCheckoutSparkSettledOrder(entryRequest(options.checkoutId), {
       continuationStorage,
       readRecipientPayout,
       prepareFunding: (terms) =>
