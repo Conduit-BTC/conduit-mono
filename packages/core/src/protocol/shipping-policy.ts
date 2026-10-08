@@ -6,6 +6,7 @@
 import { z } from "zod"
 import {
   getCurrencyFractionDigits,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyIdentity,
   type PricingRateInput,
   type SourcePriceQuote,
@@ -297,6 +298,17 @@ export function buildShippingPolicyEventDraft(input: {
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
   const policy = parseShippingPolicy(input.policy)
+  if (!isSupportedCommercePriceCurrency(policy.currency))
+    throw new Error("Unsupported shipping currency.")
+  return buildCanonicalShippingPolicyEventDraft({ ...input, policy })
+}
+
+/** Canonical wire reconstruction also serves retained signed policy parsing. */
+function buildCanonicalShippingPolicyEventDraft(input: {
+  policy: ShippingPolicy
+  clientAppId?: ConduitAppId
+}): ShippingOptionEventDraft {
+  const policy = input.policy
   const rules = [
     ...(policy.domestic?.rules ?? []),
     ...(policy.international?.rules ?? []),
@@ -337,7 +349,7 @@ export function parsePrivateOrderShippingPolicyTags(
   try {
     const policy = parseShippingPolicy(JSON.parse(markers[0][2]!) as unknown)
     if (String(policy.version) !== markers[0]![1]) return null
-    const draft = buildShippingPolicyEventDraft({ policy })
+    const draft = buildCanonicalShippingPolicyEventDraft({ policy })
     const permitted = new Set([
       ...draft.tags.map((tag) => tag[0]),
       "client",
@@ -802,7 +814,8 @@ export const shippingPolicyQuoteSchema = z
         destination: quote.destination,
         rateInput: quote.pricingRate,
       },
-      isValidSignedPublicNostrEvent
+      isValidSignedPublicNostrEvent,
+      true
     )
     // Earlier v2 snapshots converted merchandise even without a threshold.
     // Preserve readback of those exact terms using their retained rate only.
@@ -987,18 +1000,31 @@ export function convertShippingMinor(
 }
 
 /** Same arithmetic as checkout, with no claim that an unpublished draft is signed. */
-export function previewShippingPolicy(input: {
+type ShippingPolicyPreviewInput = {
   policy: ShippingPolicy
   items: readonly ShippingPolicyPreviewItem[]
   destination: ShippingPolicyDestination
   rateInput?: PricingRateInput
-}): ShippingPolicyPreviewResult {
+}
+
+export function previewShippingPolicy(
+  input: ShippingPolicyPreviewInput
+): ShippingPolicyPreviewResult {
+  return previewShippingPolicyWithCurrencyPolicy(input, false)
+}
+
+function previewShippingPolicyWithCurrencyPolicy(
+  input: ShippingPolicyPreviewInput,
+  historical: boolean
+): ShippingPolicyPreviewResult {
   let policy: ShippingPolicy
   try {
     policy = parseShippingPolicy(input.policy)
   } catch {
     return { status: "invalid_policy" }
   }
+  if (!historical && !isSupportedCommercePriceCurrency(policy.currency))
+    return { status: "invalid_policy" }
   if (
     input.rateInput !== undefined &&
     !shippingPricingRateSchema.safeParse(input.rateInput).success
@@ -1011,6 +1037,16 @@ export function previewShippingPolicy(input: {
       item.fulfillmentType !== "digital"
   )
   if (!items.length) return { status: "not_required" }
+  if (
+    !historical &&
+    items.some(
+      (item) =>
+        !isSupportedCommercePriceCurrency(item.currency) ||
+        (item.shippingHandling !== undefined &&
+          !isSupportedCommercePriceCurrency(item.shippingHandling.currency))
+    )
+  )
+    return { status: "invalid_items" }
   if (
     policy.version === 1 &&
     items.some(
@@ -1198,7 +1234,8 @@ type ShippingPolicyQuoteInput = {
 
 function quoteShippingPolicyWithEvidence(
   input: ShippingPolicyQuoteInput,
-  hasSignedEvidence: (event: SignedPublicNostrEvent) => boolean
+  hasSignedEvidence: (event: SignedPublicNostrEvent) => boolean,
+  historical = false
 ): ShippingPolicyQuoteResult {
   let policy: ShippingPolicy
   try {
@@ -1206,6 +1243,8 @@ function quoteShippingPolicyWithEvidence(
   } catch {
     return { status: "invalid_policy" }
   }
+  if (!historical && !isSupportedCommercePriceCurrency(policy.currency))
+    return { status: "invalid_policy" }
   if (!input.policyEvent || !hasSignedEvidence(input.policyEvent))
     return { status: "invalid_policy" }
   const signedPolicy = parsePrivateOrderShippingPolicyTags(
@@ -1285,12 +1324,15 @@ function quoteShippingPolicyWithEvidence(
       return { status: "invalid_items" }
     }
   }
-  const calculation = previewShippingPolicy({
-    policy,
-    items,
-    destination: input.destination,
-    rateInput: input.rateInput,
-  })
+  const calculation = previewShippingPolicyWithCurrencyPolicy(
+    {
+      policy,
+      items,
+      destination: input.destination,
+      rateInput: input.rateInput,
+    },
+    historical
+  )
   if (calculation.status !== "quoted") return calculation
   const { status, amountSats: calculatedSats, ...terms } = calculation
   let amountSats = calculatedSats

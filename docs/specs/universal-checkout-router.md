@@ -83,6 +83,13 @@ they never become public NIP-57 checkout payments.
 
 ## Signed live fiat pricing
 
+New product authoring, shipping quotes and checkout conversion use the shared
+`SUPPORTED_PRODUCT_PRICE_CURRENCIES` commerce allowlist (and existing native
+Bitcoin-unit aliases). A rate from a generic FX provider does not grant commerce
+support. BGN is historical-only following Bulgaria's euro adoption on January 1, 2026. Parsing signed historical listings, rate snapshots and funded plans remains
+independent of the current authoring list: recovery uses their retained currency,
+rate and original signed bytes, never a newly offered currency or live repricing.
+
 Display and checkout share a common bounded currency request and authenticated
 cache from the dedicated rate service, which obtains the existing live price
 feeds with bounded fallback and signs a versioned rate snapshot. Missing an

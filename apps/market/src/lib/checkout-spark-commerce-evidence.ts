@@ -1,11 +1,12 @@
 import {
   isSatsLikeCurrency,
+  isSupportedCommercePriceCurrency,
   type CheckoutSparkCommerceQuote,
 } from "@conduit/core"
 import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
 
 /**
- * Keep the exact signed source IDs beside the final sat-denominated quote.
+ * Admit a new quote and keep its exact signed source IDs beside final sats.
  * Recipient allocations and payment endpoints are intentionally resolved later.
  */
 export function buildCheckoutSparkCommerceEvidence(
@@ -36,6 +37,29 @@ export function buildCheckoutSparkCommerceEvidence(
     if (
       !priced ||
       !product ||
+      [
+        product.currency,
+        product.sourcePrice?.currency,
+        product.sourcePrice?.normalizedCurrency,
+        priced.currency,
+        priced.sourcePrice?.currency,
+        priced.sourcePrice?.normalizedCurrency,
+        priced.sourceShippingCost?.currency,
+        priced.sourceShippingCost?.normalizedCurrency,
+        priced.shippingPolicyQuote?.currency,
+        ...(priced.shippingPolicyQuote?.items.flatMap((quotedItem) => [
+          quotedItem.currency,
+          ...("shippingHandling" in quotedItem && quotedItem.shippingHandling
+            ? [
+                quotedItem.shippingHandling.currency,
+                quotedItem.shippingHandling.normalizedCurrency,
+              ]
+            : []),
+        ]) ?? []),
+      ].some(
+        (currency) =>
+          currency !== undefined && !isSupportedCommercePriceCurrency(currency)
+      ) ||
       product.id !== line.productCoordinate ||
       product.sourceEventId !== line.productEventId ||
       product.pubkey !== line.merchantPubkey ||

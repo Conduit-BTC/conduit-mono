@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { generateSecretKey } from "nostr-tools/pure"
+import { SIGNED_PRICING_FEED_CURRENCIES } from "@conduit/core/pricing/signed-rate-client"
 import {
   parseCheckoutSparkPricingAuthorityPublicKeys,
   verifyCheckoutSparkPricingRateAttestation,
@@ -106,6 +107,62 @@ describe("checkout Spark pricing authority standalone Worker", () => {
       }
     )
     expect(result.status).toBe(503)
+    expect(fetched).toBe(false)
+  })
+
+  it("excludes retired BGN from the common feed and new signed Worker snapshots", async () => {
+    const configuration = env()
+    expect(SIGNED_PRICING_FEED_CURRENCIES).not.toContain("BGN")
+    expect(SIGNED_PRICING_FEED_CURRENCIES).toContain("USD")
+    expect(SIGNED_PRICING_FEED_CURRENCIES).toContain("EUR")
+    const result = await handleCheckoutSparkPricingAuthorityRequest(
+      request(["USD", "EUR"]),
+      configuration,
+      {
+        nowMs: () => NOW_MS,
+        fetchPricingRate: async (options) => {
+          expect(options?.preferredFiatCurrencies).not.toContain("BGN")
+          return {
+            rate: 100_000,
+            fetchedAt: NOW_MS,
+            source: "mempool",
+            fiatUsdRates: { EUR: 1.25, BGN: 0.5 },
+            fiatSource: "mempool",
+            fiatSources: { EUR: "mempool", BGN: "frankfurter" },
+          }
+        },
+      }
+    )
+    expect(result.status).toBe(200)
+    const body = (await result.json()) as {
+      pricing: { version: 1; rate: CheckoutSparkPricingRateAttestation["rate"] }
+      pricingAuthority: CheckoutSparkPricingRateAttestation
+    }
+    expect(body.pricing.rate.fiatUsdRates).toEqual({ EUR: 1.25 })
+    expect(body.pricing.rate.fiatSources).toEqual({ EUR: "mempool" })
+    expect(
+      verifyCheckoutSparkPricingRateAttestation({
+        ...body,
+        attestation: body.pricingAuthority,
+        acceptedAtMs: NOW_MS,
+        nowMs: NOW_MS,
+        trustedPublicKeys: parseCheckoutSparkPricingAuthorityPublicKeys(
+          configuration.CHECKOUT_SPARK_PRICING_PUBLIC_KEYS
+        ),
+      })
+    ).toBe("verified")
+    let fetched = false
+    const unsupported = await handleCheckoutSparkPricingAuthorityRequest(
+      request(["BGN"]),
+      configuration,
+      {
+        fetchPricingRate: async () => {
+          fetched = true
+          throw new Error("Must not fetch unsupported requested currency.")
+        },
+      }
+    )
+    expect(unsupported.status).toBe(400)
     expect(fetched).toBe(false)
   })
 

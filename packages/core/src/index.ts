@@ -127,6 +127,7 @@ export {
   isMsatsLikeCurrency,
   isPricingRateQuoteFresh,
   isSatsLikeCurrency,
+  isSupportedCommercePriceCurrency,
   isSupportedShopperDisplayCurrency,
   isUsdCurrencyCode,
   normalizeCommercePrice,

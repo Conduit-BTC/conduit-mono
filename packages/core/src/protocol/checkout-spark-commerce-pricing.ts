@@ -4,7 +4,7 @@ import {
   normalizeCommercePrice,
   normalizeCurrencyCode,
   isSatsLikeCurrency,
-  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  isFiatCurrencyCode,
   type SourcePriceQuote,
 } from "../pricing"
 import type { Product } from "../types"
@@ -15,7 +15,10 @@ import {
   type CheckoutSparkPricingRateAttestation,
 } from "./checkout-spark-pricing-authority"
 
-/** Buyer-retained conversion evidence, not a merchant-signed exchange-rate oracle. */
+/**
+ * Retained conversion evidence, not a merchant-signed exchange-rate oracle.
+ * Wire reads preserve historical currencies; new admission uses pricing policy.
+ */
 export const checkoutSparkCommercePricingSchema = z
   .object({
     version: z.literal(1),
@@ -29,11 +32,7 @@ export const checkoutSparkCommercePricingSchema = z
             z
               .string()
               .refine(
-                (key) =>
-                  /^[A-Z]{3}$/.test(key) &&
-                  SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
-                    (currency) => currency === key
-                  )
+                (key) => /^[A-Z]{3}$/.test(key) && isFiatCurrencyCode(key)
               ),
             z.number().finite().positive()
           )
@@ -272,7 +271,7 @@ export function matchesCheckoutSparkOrderPrice(
     input.sourcePrice.amount,
     input.sourcePrice.currency,
     pricing?.rate ?? null,
-    { allowZero }
+    { allowZero, currencyPolicy: "historical" }
   )
   return (
     converted.status === "ok" &&
@@ -355,7 +354,8 @@ export function assertCheckoutSparkCommerceProductPrice(input: {
   const conversion = normalizeCommercePrice(
     product.sourcePrice?.amount ?? product.price,
     product.sourcePrice?.currency ?? product.currency,
-    pricing?.rate ?? null
+    pricing?.rate ?? null,
+    { currencyPolicy: "historical" }
   )
   if (
     product.priceEvidenceMalformed ||

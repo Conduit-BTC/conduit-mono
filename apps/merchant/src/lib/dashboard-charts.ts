@@ -1,5 +1,5 @@
 import {
-  convertCommerceAmountToSats,
+  normalizeCommercePrice,
   isExternalPaymentReportMessage,
   isMerchantOrderPaid,
   isPaymentProofEvidenceMessage,
@@ -431,11 +431,13 @@ export function buildDashboardChartData(
       const paymentDay = startOfDay(paidAt)
       const paymentInRange =
         paymentDay >= windowStart && paymentDay <= windowEnd
-      const sats = convertCommerceAmountToSats(
+      const converted = normalizeCommercePrice(
         orderMessage.payload.subtotal,
         orderMessage.payload.currency,
-        rate
+        rate,
+        { currencyPolicy: "historical" }
       )
+      const sats = converted.status === "ok" ? converted.sats : null
       if (sats != null && paymentInRange) {
         hasRevenue = true
         const bucket = findTimeBucket(timeBuckets, paymentDay)

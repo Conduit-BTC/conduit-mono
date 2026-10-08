@@ -23,6 +23,10 @@ creation time. Merchant recovery verifies that original historical rate, not a
 current conversion or buyer timestamp. This supports instant checkout without
 per-order Merchant approval once the separate rate service is activated. See
 [signed live pricing](../specs/universal-checkout-router.md#signed-live-fiat-pricing).
+The shared `SUPPORTED_PRODUCT_PRICE_CURRENCIES` list gates new commerce and
+Worker requests; broader generic FX coverage is not product support. Retired BGN
+prices and older common snapshots containing BGN remain readable and verifiable
+for historical orders, but cannot authorize a new purchase or shipping quote.
 Historical event-pickup plans remain recoverable, but retired pickup snapshots
 are not admitted as new checkouts after the Event Market model cutover.
 Current Event Market pickup requires a separate signed admission extension.

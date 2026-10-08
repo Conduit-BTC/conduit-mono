@@ -222,7 +222,9 @@ export function resolveCheckoutSparkSignedShipping(input: {
     ? canonicalizeShippingCost(option.price, option.currency)
     : undefined
   const converted = source
-    ? getShippingCostSats(source, input.pricing?.rate ?? null)
+    ? getShippingCostSats(source, input.pricing?.rate ?? null, {
+        currencyPolicy: "historical",
+      })
     : null
   if (
     !option ||

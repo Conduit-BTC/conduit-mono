@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { generateSecretKey } from "nostr-tools/pure"
 import { normalizeCommercePrice } from "@conduit/core/pricing"
+import { checkoutSparkCommerceQuoteDigestValue } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
+import { freezeCheckoutSparkCommerceQuote } from "@conduit/core/protocol/checkout-spark-reconciliation"
 import {
   checkoutSparkPricingRateAttestationDigestValue,
   freezeCheckoutSparkPricingRateAttestation,
@@ -85,6 +87,154 @@ describe("checkout Spark pricing authority", () => {
         trustedPublicKeys: publicKeys(),
       })
     ).toBe("verified")
+  })
+
+  it("preserves a historically signed BGN quote and digest without authorizing new BGN commerce", () => {
+    const historicalRate = {
+      ...rate,
+      fiatUsdRates: { ...rate.fiatUsdRates, BGN: 0.5 },
+      fiatSources: {
+        EUR: "mempool" as const,
+        CAD: "mempool" as const,
+        BGN: "frankfurter" as const,
+      },
+    }
+    const signed = createCheckoutSparkPricingRateAttestation({
+      rate: historicalRate,
+      keyId: "fixture-rate",
+      privateKeyHex: FIXTURE_SIGNING_KEY,
+      issuedAtMs: NOW_MS + 1_000,
+    })
+    const merchant = "a".repeat(64)
+    const quote = freezeCheckoutSparkCommerceQuote(
+      {
+        commerceTotalSats: 5_000,
+        lines: [
+          {
+            productCoordinate: `30402:${merchant}:historical-bgn`,
+            productEventId: "b".repeat(64),
+            merchantPubkey: merchant,
+            quantity: 1,
+            unitMerchandiseSats: 5_000,
+            unitShippingSats: 0,
+            sourcePrice: {
+              amount: 10,
+              currency: "BGN",
+              normalizedCurrency: "BGN",
+            },
+          },
+        ],
+        pricing: { version: 1, rate: historicalRate },
+        pricingAuthority: signed,
+      },
+      merchant
+    )
+    const reopened = freezeCheckoutSparkCommerceQuote(
+      JSON.parse(JSON.stringify(quote)),
+      merchant
+    )
+    expect(checkoutSparkCommerceQuoteDigestValue(reopened)).toEqual(
+      checkoutSparkCommerceQuoteDigestValue(quote)
+    )
+    expect(reopened.pricingAuthority?.signature).toBe(signed.signature)
+    expect(reopened.pricing?.rate.fiatUsdRates?.BGN).toBe(0.5)
+    expect(reopened.lines[0]?.sourcePrice?.normalizedCurrency).toBe("BGN")
+    expect(
+      verifyCheckoutSparkPricingRateAttestation({
+        attestation: reopened.pricingAuthority,
+        pricing: reopened.pricing!,
+        acceptedAtMs: NOW_MS + 2_000,
+        trustedPublicKeys: publicKeys(),
+      })
+    ).toBe("verified")
+    expect(
+      normalizeCommercePrice(10, "BGN", reopened.pricing!.rate).status
+    ).toBe("unsupported")
+    expect(
+      normalizeCommercePrice(10, "BGN", reopened.pricing!.rate, {
+        currencyPolicy: "historical",
+      })
+    ).toMatchObject({ status: "ok", sats: 5_000 })
+    const tamperedRate = {
+      ...historicalRate,
+      fiatUsdRates: { ...historicalRate.fiatUsdRates, BGN: 0.6 },
+    }
+    expect(
+      verifyCheckoutSparkPricingRateAttestation({
+        attestation: { ...signed, rate: tamperedRate },
+        pricing: { version: 1, rate: tamperedRate },
+        acceptedAtMs: NOW_MS + 2_000,
+        trustedPublicKeys: publicKeys(),
+      })
+    ).toBe("invalid")
+  })
+
+  it("keeps a retained USD order verifiable when its signed common snapshot includes incidental BGN", () => {
+    const historicalRate = {
+      ...rate,
+      fiatUsdRates: { ...rate.fiatUsdRates, BGN: 0.5 },
+      fiatSources: {
+        EUR: "mempool" as const,
+        CAD: "mempool" as const,
+        BGN: "frankfurter" as const,
+      },
+    }
+    const signed = createCheckoutSparkPricingRateAttestation({
+      rate: historicalRate,
+      keyId: "fixture-rate",
+      privateKeyHex: FIXTURE_SIGNING_KEY,
+      issuedAtMs: NOW_MS + 1_000,
+    })
+    const merchant = "a".repeat(64)
+    const original = freezeCheckoutSparkCommerceQuote(
+      {
+        commerceTotalSats: 10_000,
+        lines: [
+          {
+            productCoordinate: `30402:${merchant}:retained-usd`,
+            productEventId: "b".repeat(64),
+            merchantPubkey: merchant,
+            quantity: 1,
+            unitMerchandiseSats: 10_000,
+            unitShippingSats: 0,
+            sourcePrice: {
+              amount: 10,
+              currency: "USD",
+              normalizedCurrency: "USD",
+            },
+          },
+        ],
+        pricing: { version: 1, rate: historicalRate },
+        pricingAuthority: signed,
+      },
+      merchant
+    )
+    const reopened = freezeCheckoutSparkCommerceQuote(
+      JSON.parse(JSON.stringify(original)),
+      merchant
+    )
+    expect(checkoutSparkCommerceQuoteDigestValue(reopened)).toEqual(
+      checkoutSparkCommerceQuoteDigestValue(original)
+    )
+    expect(reopened.pricingAuthority?.signature).toBe(signed.signature)
+    expect(reopened.pricing!.rate.fiatUsdRates).toEqual(
+      historicalRate.fiatUsdRates
+    )
+    expect(reopened.lines[0]!.sourcePrice?.currency).toBe("USD")
+    expect(
+      verifyCheckoutSparkPricingRateAttestation({
+        attestation: reopened.pricingAuthority,
+        pricing: reopened.pricing!,
+        acceptedAtMs: NOW_MS + 2_000,
+        trustedPublicKeys: publicKeys(),
+      })
+    ).toBe("verified")
+    expect(
+      normalizeCommercePrice(10, "USD", reopened.pricing!.rate)
+    ).toMatchObject({
+      status: "ok",
+      sats: 10_000,
+    })
   })
 
   it("expires a genuine old snapshot for new admission without expiring its anchored prior acceptance", () => {

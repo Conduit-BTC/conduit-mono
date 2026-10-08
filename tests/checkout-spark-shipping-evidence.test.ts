@@ -68,6 +68,70 @@ function fixture(
 }
 
 describe("checkout Spark signed fixed fulfillment", () => {
+  it("verifies retained BGN fixed shipping using its original frozen conversion", () => {
+    const input = fixture({
+      price: 100,
+      productTags: [
+        ["d", "physical"],
+        ["title", "Physical fixture"],
+        ["price", "0.1", "BGN"],
+        ["type", "simple", "physical"],
+        ["shipping_option", COORDINATE],
+      ],
+      shippingTags: [
+        ["d", "physical-shipping-standard"],
+        ["title", "Standard shipping"],
+        ["price", "0.1", "BGN"],
+        ["country", "US", "CA"],
+        ["service", "standard"],
+      ],
+    })
+    const retained = {
+      ...input,
+      line: {
+        ...input.line,
+        sourcePrice: {
+          amount: 0.1,
+          currency: "BGN",
+          normalizedCurrency: "BGN",
+        },
+        sourceShippingCost: {
+          amount: 0.1,
+          currency: "BGN",
+          normalizedCurrency: "BGN",
+        },
+      },
+      pricing: {
+        version: 1 as const,
+        rate: {
+          rate: 50_000,
+          fetchedAt: NOW * 1000,
+          source: "mempool" as const,
+          fiatUsdRates: { BGN: 0.5 },
+          fiatSource: "frankfurter" as const,
+        },
+      },
+      acceptedAtMs: NOW * 1000,
+    }
+    expect(resolveCheckoutSparkSignedShipping(retained)!.eventId).toBe(
+      input.shippingEvents[0]!.id
+    )
+    expect(() =>
+      resolveCheckoutSparkSignedShipping({
+        ...retained,
+        pricing: {
+          ...retained.pricing,
+          rate: { ...retained.pricing.rate, fiatUsdRates: { BGN: 0.25 } },
+        },
+      })
+    ).toThrow("Checkout Spark frozen product pricing is unavailable.")
+    expect(() =>
+      resolveCheckoutSparkSignedShipping({
+        ...retained,
+        line: { ...retained.line, unitShippingSats: 101 },
+      })
+    ).toThrow(UNAVAILABLE)
+  })
   it("does not treat event pickup graph references as fixed-shipping authority", () => {
     const input = fixture()
     const organizer = "f".repeat(64)

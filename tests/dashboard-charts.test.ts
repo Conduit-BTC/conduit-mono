@@ -252,6 +252,39 @@ function routedBinding(
 }
 
 describe("buildDashboardChartData", () => {
+  it("keeps historical BGN paid revenue readable with its available conversion", () => {
+    const historical = withPaymentProof(
+      conversation(
+        "historical-bgn",
+        "paid",
+        NOW - 86_400_000,
+        [{ productId: "historical-product", quantity: 1 }],
+        1
+      )
+    )
+    const order = historical.messages!.find(
+      (message) => message.type === "order"
+    )!
+    if (order.type !== "order") throw new Error("Missing historical order")
+    order.payload.currency = "BGN"
+    order.payload.items[0]!.currency = "BGN"
+    order.payload.items[0]!.priceAtPurchase = 1
+    const data = buildDashboardChartData(
+      [historical],
+      {
+        rate: 100_000,
+        fetchedAt: NOW,
+        source: "env",
+        fiatUsdRates: { BGN: 0.5 },
+      },
+      resolveDashboardPresetRange("30d", NOW)
+    )
+    expect(data.hasRevenue).toBe(true)
+    expect(
+      data.revenueOverTime.reduce((sum, bucket) => sum + bucket.value, 0)
+    ).toBe(500)
+  })
+
   const conversations = [
     conversation(
       "a",

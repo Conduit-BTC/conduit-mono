@@ -9,6 +9,7 @@ import {
 } from "./event-guest-checkout"
 import {
   canonicalizeProductPrice,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   type CommercePriceLike,
@@ -281,6 +282,14 @@ export function buildProductListingEventDraft({
   const sourcePrice = product.sourcePrice
   const priceAmount = sourcePrice?.amount ?? product.price
   const priceCurrency = sourcePrice?.currency ?? product.currency
+  if (
+    [priceCurrency, sourcePrice?.normalizedCurrency].some(
+      (currency) =>
+        currency !== undefined && !isSupportedCommercePriceCurrency(currency)
+    )
+  ) {
+    throw new Error("Product currency is not supported for new commerce")
+  }
   const emittedZapMessagePolicy: ProductZapMessagePolicy =
     product.zapMessagePolicy === "custom" ? "custom" : "generic_only"
   const specifications = canonicalizeProductSpecifications(

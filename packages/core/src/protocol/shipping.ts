@@ -15,6 +15,7 @@ import {
 import {
   canonicalizeShippingCost,
   getShippingCostSats,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   type CommerceShippingCostLike,
@@ -212,6 +213,9 @@ export function compileProductFulfillmentIntent(input: {
 
   const currency = normalizeCurrencyCode(input.currency)
   if (!currency) throw new Error("Fixed shipping currency is required")
+  if (!isSupportedCommercePriceCurrency(currency)) {
+    throw new Error("Fixed shipping currency is not supported for new commerce")
+  }
 
   const countries = Array.from(
     new Set(
@@ -258,6 +262,9 @@ export function buildFixedShippingOptionEventDraft(input: {
   intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
+  if (!isSupportedCommercePriceCurrency(input.intent.currency)) {
+    throw new Error("Fixed shipping currency is not supported for new commerce")
+  }
   let tags: string[][] = [
     ["d", getProductShippingOptionDTag(input.productDTag)],
     ["title", "Standard Shipping"],

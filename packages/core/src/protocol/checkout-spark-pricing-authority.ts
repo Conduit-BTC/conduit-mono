@@ -4,7 +4,7 @@ import { hexToBytes } from "@noble/hashes/utils.js"
 import { z } from "zod"
 import {
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
-  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  isFiatCurrencyCode,
   type BtcUsdRateQuote,
 } from "../pricing"
 
@@ -20,15 +20,15 @@ const publicKeyPattern = /^[0-9a-f]{64}$/
 const timestampSchema = z.number().int().safe().nonnegative()
 const fiatCurrencySchema = z
   .string()
-  .refine((key) =>
-    SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
-      (currency) =>
-        currency !== "SATS" && currency !== "USD" && currency === key
-    )
-  )
+  .regex(/^[A-Z]{3}$/)
+  .refine((key) => key !== "USD" && isFiatCurrencyCode(key))
 const fiatSourceSchema = z.enum(["frankfurter", "exchange-rate-api", "mempool"])
 
-/** A service-owned provider snapshot; browser environment overrides cannot qualify. */
+/**
+ * A service-owned snapshot; browser environment overrides cannot qualify.
+ * The wire schema survives currency retirement. Worker/client requests and
+ * commerce admission apply the current shared allowlist separately.
+ */
 export const checkoutSparkAuthorizedPricingRateSchema = z
   .object({
     rate: z.number().finite().positive(),
@@ -38,11 +38,8 @@ export const checkoutSparkAuthorizedPricingRateSchema = z
       .record(
         z
           .string()
-          .refine((key) =>
-            SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
-              (currency) => currency !== "SATS" && currency === key
-            )
-          ),
+          .regex(/^[A-Z]{3}$/)
+          .refine(isFiatCurrencyCode),
         z.number().finite().positive()
       )
       .optional(),
