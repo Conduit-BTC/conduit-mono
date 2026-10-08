@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   fetchMerchantShippingPolicy,
@@ -45,6 +52,8 @@ import {
 import { ShippingTableEditor } from "./ShippingTableEditor"
 import { ShippingPolicyPreview } from "./ShippingPolicyPreview"
 
+const USShippingStarter = lazy(() => import("./USShippingStarter"))
+
 const countryOptions = SHIPPING_COUNTRIES.map((country) => ({
   value: country.code,
   label: country.name,
@@ -82,6 +91,7 @@ export function MerchantShippingPolicyEditor() {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [withdrawOpen, setWithdrawOpen] = useState(false)
+  const [starterOpen, setStarterOpen] = useState(false)
   const [status, setStatus] = useState<{
     state: "idle" | "success" | "error"
     message?: string
@@ -387,6 +397,28 @@ export function MerchantShippingPolicyEditor() {
               </Select>
             </div>
           </div>
+          {draft.originCountry === "US" && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setStarterOpen(true)}
+              >
+                Use US starter
+              </Button>
+              {starterOpen && (
+                <Suspense fallback={<p role="status">Loading US starter…</p>}>
+                  <USShippingStarter
+                    key={authGeneration}
+                    open={starterOpen}
+                    onOpenChange={setStarterOpen}
+                    draft={draft}
+                    onApply={update}
+                  />
+                </Suspense>
+              )}
+            </>
+          )}
           <div className="grid items-start gap-4 lg:grid-cols-2">
             <ShippingTableEditor
               kind="domestic"

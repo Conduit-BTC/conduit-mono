@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { Plus, Trash2 } from "lucide-react"
 import { SHIPPING_COUNTRIES } from "@conduit/core"
 import {
@@ -43,6 +44,10 @@ export function ShippingTableEditor({
   table: ShippingTableDraft
   onChange: (value: ShippingTableDraft) => void
 }) {
+  const [selectedId, setSelectedId] = useState("")
+  const selectedRule =
+    table.rules.find((rule) => rule.id === selectedId) ?? table.rules[0]
+  const paged = table.rules.length > 8
   const title = kind === "domestic" ? "Domestic" : "International"
   const suffix = currency === "SATS" ? "sats" : currency
   function updateRule(
@@ -65,6 +70,7 @@ export function ShippingTableEditor({
       customArea: true,
       bands: base.bands.map((band) => ({ ...band, id: crypto.randomUUID() })),
     }
+    setSelectedId(rule.id)
     onChange({
       ...table,
       rules: [
@@ -104,7 +110,27 @@ export function ShippingTableEditor({
       </div>
       {table.enabled && (
         <>
+          {paged && (
+            <div className="space-y-1.5">
+              <Label htmlFor={`${kind}-area`}>{title} area to edit</Label>
+              <Combobox
+                id={`${kind}-area`}
+                value={selectedRule?.id ?? ""}
+                options={table.rules.map((rule, index) => ({
+                  value: rule.id,
+                  label: `${rule.country || originCountry} ${rule.subdivision || ""} ${rule.postalPrefix ? `ZIP ${rule.postalPrefix}…` : "all postal codes"} · Area ${index + 1}`,
+                }))}
+                searchPlaceholder="Search postal areas"
+                onValueChange={setSelectedId}
+              />
+              <p className="text-pretty text-sm text-[var(--text-secondary)]">
+                {table.rules.length} destination areas. Choose an area to edit
+                its rates.
+              </p>
+            </div>
+          )}
           {table.rules.map((rule, index) => {
+            if (paged && rule !== selectedRule) return null
             const custom =
               !!rule.customArea || !!rule.subdivision || !!rule.postalPrefix
             const country = kind === "domestic" ? originCountry : rule.country

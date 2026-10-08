@@ -28,30 +28,38 @@ import {
 import { parseProductEvent } from "../packages/core/src/protocol/products"
 import { plainTestSigner } from "./helpers/plain-signer"
 
+import { buildUSShippingStarter } from "../apps/merchant/src/lib/usShippingStarter"
+
 const utf8Bytes = (value: string): number =>
   new TextEncoder().encode(value).length
 
 function shippingOrder(
   productCount: number,
   version: 1 | 2 = 1,
-  productContent = "a".repeat(4096)
+  productContent = "a".repeat(4096),
+  starterPolicy?: ShippingPolicy
 ) {
   const merchantSecret = generateSecretKey()
   const merchantPubkey = getPublicKey(merchantSecret)
   const buyer = NDKPrivateKeySigner.generate()
-  const policy: ShippingPolicy = {
-    version,
-    title: "Shipping",
-    originCountry: "US",
-    currency: version === 1 ? "SATS" : "GBP",
-    ...(version === 1 ? { weightAllowanceGrams: 100, handlingMinor: 7 } : {}),
-    domestic: {
-      rules: [
-        { country: "US", bands: [{ maxWeightGrams: 50_000, priceMinor: 300 }] },
-      ],
-    },
-    international: null,
-  } as ShippingPolicy
+  const policy: ShippingPolicy =
+    starterPolicy ??
+    ({
+      version,
+      title: "Shipping",
+      originCountry: "US",
+      currency: version === 1 ? "SATS" : "GBP",
+      ...(version === 1 ? { weightAllowanceGrams: 100, handlingMinor: 7 } : {}),
+      domestic: {
+        rules: [
+          {
+            country: "US",
+            bands: [{ maxWeightGrams: 50_000, priceMinor: 300 }],
+          },
+        ],
+      },
+      international: null,
+    } as ShippingPolicy)
   const policyCoordinate = getMerchantShippingPolicyCoordinate(merchantPubkey)
   const policyEvent = finalizeEvent(
     {
@@ -157,9 +165,15 @@ async function prepareOrder(
   productCount: number,
   compact = false,
   version: 1 | 2 = 1,
-  productContent?: string
+  productContent?: string,
+  starterPolicy?: ShippingPolicy
 ) {
-  const fixture = shippingOrder(productCount, version, productContent)
+  const fixture = shippingOrder(
+    productCount,
+    version,
+    productContent,
+    starterPolicy
+  )
   const merchant = fixture.merchantSigner
   const buyerUser = await fixture.buyer.user()
   const shippingTotal =
@@ -225,12 +239,15 @@ async function prepareOrder(
 async function encryptedOrder(
   productCount: number,
   compact = false,
-  version: 1 | 2 = 1
+  version: 1 | 2 = 1,
+  starterPolicy?: ShippingPolicy
 ) {
   const { order, rumor, recipient, fixture } = await prepareOrder(
     productCount,
     compact,
-    version
+    version,
+    undefined,
+    starterPolicy
   )
   // Legacy inline fixtures measure the old wire format, including oversize controls.
   const wrapped = compact
@@ -255,6 +272,40 @@ async function encryptedOrder(
 }
 
 describe("shipping order transport", () => {
+  it("quotes, signs, encrypts and restores the resolved US starter without carrier calls or current preset lookup", async () => {
+    const policy = buildUSShippingStarter("94107")
+    for (const count of [1, 2, 6]) {
+      const { order, unwrapped, metrics } = await encryptedOrder(
+        count,
+        true,
+        2,
+        policy
+      )
+      expect(parseOrderRumorEvent(unwrapped)).toEqual(order)
+      expect(order.items[0]!.shippingPolicyQuote!.amountMinor).toBe(
+        { 1: 1225, 2: 1650, 6: 3550 }[count as 1 | 2 | 6]
+      )
+      expect(metrics.relayMessageBytes).toBeLessThan(512 * 1024)
+      expect(order.items[0]!.shippingPolicyQuote!.policyEvent).toBeDefined()
+      expect(unwrapped.content).not.toContain("94107")
+      console.info(
+        `US starter ${count}-item encrypted relay message: ${metrics.relayMessageBytes} bytes`
+      )
+    }
+  }, 30_000)
+  it("transports six signed products using the largest conservative origin table", async () => {
+    const { order, unwrapped, metrics } = await encryptedOrder(
+      6,
+      true,
+      2,
+      buildUSShippingStarter("58701")
+    )
+    expect(parseOrderRumorEvent(unwrapped)).toEqual(order)
+    expect(metrics.relayMessageBytes).toBeLessThan(512 * 1024)
+    console.info(
+      `Largest US starter six-item relay message: ${metrics.relayMessageBytes} bytes`
+    )
+  }, 30_000)
   for (const version of [1, 2] as const) {
     it(`rejects omitted same-table lines in v${version} orders and compact recipient parsing`, async () => {
       const { order, fixture, rumor } = await prepareOrder(2, true, version)
