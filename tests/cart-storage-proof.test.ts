@@ -63,6 +63,77 @@ function runIsolatedCartScenario(scenario: string): {
 }
 
 describe("cart stored product proof", () => {
+  for (const [name, action, remainingQuantity] of [
+    ["decrement", "repo.decrementCartRepositoryItem(identity)", 4],
+    ["remove", "repo.removeCartRepositoryItem(identity)", 3],
+    ["clear", "repo.clearCartRepository()", 3],
+    ["clear purchase", "repo.clearCartRepositoryPurchase(purchaseId)", 3],
+    ["consume captured purchase", "repo.consumeCartPurchase(claim)", 3],
+  ] as const) {
+    it(`allows ${name} during an outage without losing opaque evidence or concurrent additions`, () => {
+      const result = runIsolatedCartScenario(`
+        await core.db.shoppingCarts.put({ id: "market", version: 1, revision: 1,
+          nextSequence: 3, migratedAt: 1, updatedAt: 1,
+          lines: [{ id: "line:1", item, batches: [{ id: "batch:2", quantity: 2 }] }],
+        });
+        await repo.initializeCartRepository();
+        const snapshot = repo.getCartRepositorySnapshot();
+        const identity = snapshot.items[0];
+        const model = await import(${JSON.stringify(new URL("../apps/market/src/lib/cart-model.ts", import.meta.url).href)});
+        const purchaseId = model.groupCartPurchases(snapshot.items)[0].id;
+        const claim = await repo.captureCartPurchase(purchaseId, snapshot.items);
+        proof.__resetPublicEventVerificationForTests();
+        globalThis.Worker = undefined;
+
+        const originalGet = core.db.shoppingCarts.get.bind(core.db.shoppingCarts);
+        let inspected;
+        const inspection = new Promise(resolve => { inspected = resolve; });
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        let intercepted = false;
+        core.db.shoppingCarts.get = async key => {
+          const row = await originalGet(key);
+          if (!intercepted && !core.db.constructor.currentTransaction) {
+            intercepted = true;
+            inspected();
+            await gate;
+          }
+          return row;
+        };
+        const edit = ${action};
+        await inspection;
+        await core.db.transaction("rw", core.db.shoppingCarts, async () => {
+          const concurrent = await originalGet("market");
+          concurrent.lines[0].batches.push({ id: "batch:3", quantity: 3 });
+          concurrent.nextSequence = 4;
+          concurrent.revision += 1;
+          await core.db.shoppingCarts.put(concurrent);
+        });
+        release();
+        const result = await edit;
+        core.db.shoppingCarts.get = originalGet;
+        assert(result.changed, "safe edit was blocked");
+        const stored = await originalGet("market");
+        assert(stored.revision === 3, "edit did not retry against the concurrent revision");
+        assert(stored.lines[0].batches.reduce((sum, batch) => sum + batch.quantity, 0) === ${remainingQuantity}, "concurrent addition was consumed");
+        assert(stored.lines[0].batches.some(batch => batch.id === "batch:3" && batch.quantity === 3), "new batch was changed");
+        assert(JSON.stringify(stored.lines[0].item.signedProductEvent) === JSON.stringify(event), "opaque signed bytes changed");
+        assert(!proof.isVerifiedNostrEvent(repo.getCartRepositorySnapshot().items[0].signedProductEvent), "safe display edit minted proof");
+        assert(repo.getCartRepositorySnapshot().persistenceMode === "persistent", "edit fell back to memory");
+        let blocked = false;
+        try { await repo.captureCartPurchase(purchaseId, result.after); }
+        catch (error) { blocked = error?.name === "CartVerificationUnavailableError"; }
+        assert(blocked, "safe edit enabled checkout during the outage");
+        delete globalThis.window;
+        proof.__resetPublicEventVerificationForTests();
+        await repo.captureCartPurchase(purchaseId, result.after);
+        assert(proof.isVerifiedNostrEvent(repo.getCartRepositorySnapshot().items[0].signedProductEvent), "preserved evidence did not recover");
+      `)
+      expect(result.exitCode, result.output).toBe(0)
+      expect(result.output).toContain("ok")
+    }, 20000)
+  }
+
   it("restores exact signed bytes as immutable action evidence after IDB cloning", () => {
     const result = runIsolatedCartScenario(`
       await core.db.shoppingCarts.put({ id: "market", version: 1, revision: 1,

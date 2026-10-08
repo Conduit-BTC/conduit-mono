@@ -18,6 +18,8 @@ import {
   isVerifiedNostrEvent,
   sameSignedPublicEvent,
   verifySignedEvents,
+  PublicEventVerificationUnavailableError,
+  type VerifiedNostrEvent,
 } from "./verified-public-event"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 
@@ -65,7 +67,11 @@ export type MerchantShippingReadResult =
   | { state: "not_found" }
   | {
       state: "unavailable"
-      reason: "relay_read" | "invalid_document" | "evidence_storage"
+      reason:
+        | "relay_read"
+        | "invalid_document"
+        | "evidence_storage"
+        | "verification_unavailable"
     }
 
 interface MerchantShippingReadDependencies {
@@ -178,6 +184,37 @@ export function selectMerchantShippingEvent(
 }
 
 class InvalidMerchantShippingEvidenceError extends Error {}
+class MerchantShippingVerificationUnavailableError extends Error {}
+
+async function admitMerchantShippingEvidence(
+  raw: SignedPublicNostrEvent,
+  owner: string
+): Promise<VerifiedNostrEvent> {
+  const admission = await admitPublicEvent(raw)
+  if (admission.status === "unavailable" || admission.status === "cancelled") {
+    throw new MerchantShippingVerificationUnavailableError()
+  }
+  if (admission.status !== "verified") {
+    throw new InvalidMerchantShippingEvidenceError()
+  }
+  validateMerchantShippingEvidence(admission.event, owner)
+  return admission.event
+}
+
+function shippingEvidenceReadFailure(
+  error: unknown
+): MerchantShippingReadResult {
+  return {
+    state: "unavailable",
+    reason:
+      error instanceof MerchantShippingVerificationUnavailableError ||
+      error instanceof PublicEventVerificationUnavailableError
+        ? "verification_unavailable"
+        : error instanceof InvalidMerchantShippingEvidenceError
+          ? "invalid_document"
+          : "evidence_storage",
+  }
+}
 
 function validateMerchantShippingEvidence(
   event: SignedPublicNostrEvent,
@@ -209,13 +246,7 @@ async function retainMerchantShippingEvent(
   const prior = await evidenceDb.merchantShippingSettingsEvidence.get(owner)
   let priorEvent: SignedPublicNostrEvent | null = null
   if (prior) {
-    const admission = await admitPublicEvent(prior.signedEvent)
-    if (admission.status !== "verified")
-      throw new InvalidMerchantShippingEvidenceError(
-        "Stored shipping settings evidence is invalid."
-      )
-    priorEvent = admission.event
-    validateMerchantShippingEvidence(priorEvent, owner)
+    priorEvent = await admitMerchantShippingEvidence(prior.signedEvent, owner)
   }
   return evidenceDb.transaction(
     "rw",
@@ -281,22 +312,10 @@ export async function fetchMerchantShippingSettings(
   try {
     const stored = await evidenceDb.merchantShippingSettingsEvidence.get(owner)
     if (stored) {
-      const admission = await admitPublicEvent(stored.signedEvent)
-      if (admission.status !== "verified")
-        throw new InvalidMerchantShippingEvidenceError(
-          "Stored shipping settings evidence is invalid."
-        )
-      retained = admission.event
+      retained = await admitMerchantShippingEvidence(stored.signedEvent, owner)
     } else retained = null
-    if (retained) validateMerchantShippingEvidence(retained, owner)
   } catch (error) {
-    return {
-      state: "unavailable",
-      reason:
-        error instanceof InvalidMerchantShippingEvidenceError
-          ? "invalid_document"
-          : "evidence_storage",
-    }
+    return shippingEvidenceReadFailure(error)
   }
   const retainedRead = (coverageComplete: boolean) =>
     retained ? shippingReadFromEvent(retained, coverageComplete, true) : null
@@ -386,22 +405,13 @@ export async function fetchMerchantShippingSettings(
         const stored =
           await evidenceDb.merchantShippingSettingsEvidence.get(owner)
         if (stored) {
-          const admission = await admitPublicEvent(stored.signedEvent)
-          if (admission.status !== "verified")
-            throw new InvalidMerchantShippingEvidenceError(
-              "Stored shipping settings evidence is invalid."
-            )
-          retained = admission.event
+          retained = await admitMerchantShippingEvidence(
+            stored.signedEvent,
+            owner
+          )
         }
-        if (retained) validateMerchantShippingEvidence(retained, owner)
       } catch (error) {
-        return {
-          state: "unavailable",
-          reason:
-            error instanceof InvalidMerchantShippingEvidenceError
-              ? "invalid_document"
-              : "evidence_storage",
-        }
+        return shippingEvidenceReadFailure(error)
       }
       return (
         retainedRead(coverageComplete) ??
@@ -422,17 +432,14 @@ export async function fetchMerchantShippingSettings(
         strongest.id !== latest.id
       )
     } catch (error) {
-      return {
-        state: "unavailable",
-        reason:
-          error instanceof InvalidMerchantShippingEvidenceError
-            ? "invalid_document"
-            : "evidence_storage",
-      }
+      return shippingEvidenceReadFailure(error)
     }
-  } catch {
+  } catch (error) {
     if (dependencies.shouldContinue?.() === false)
       throw new Error("Merchant session changed during shipping settings read")
+    if (error instanceof PublicEventVerificationUnavailableError) {
+      return retainedRead(false) ?? shippingEvidenceReadFailure(error)
+    }
     return retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
   }
 }
@@ -454,6 +461,13 @@ export async function publishMerchantShippingSettings(input: {
       "Connect the matching merchant signer before saving shipping settings"
     )
   const current = await fetchMerchantShippingSettings(owner, input.dependencies)
+  if (
+    current.state === "unavailable" &&
+    current.reason === "verification_unavailable"
+  )
+    throw new Error(
+      "Shipping settings verification is unavailable. Retry before saving."
+    )
   if (current.state === "unavailable" && current.reason === "evidence_storage")
     throw new Error(
       "This device could not retain signed shipping settings. Restore local storage before saving."

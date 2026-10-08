@@ -319,23 +319,50 @@ async function restoreStoredRecord(
   return parseStoredRecord({ ...value, lines })
 }
 
-/** Verify outside IDB, then commit only against the exact bytes we inspected. */
+/** Prepare outside IDB, then commit only against the exact row we inspected. */
 async function withCanonicalRecord<T>(
-  operation: (record: CanonicalCartRecord) => Promise<T>
+  operation: (
+    record: CanonicalCartRecord,
+    stored: StoredShoppingCart
+  ) => Promise<T>,
+  requireProductEvidence = true
 ): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const stored = await db.shoppingCarts.get(CART_RECORD_ID)
     if (!stored) throw new Error("Canonical cart record is missing")
     const bytes = JSON.stringify(stored)
-    const record = await restoreStoredRecord(stored)
+    const record = requireProductEvidence
+      ? await restoreStoredRecord(stored)
+      : parseStoredRecord(stored)
     const outcome = await db.transaction("rw", db.shoppingCarts, async () => {
       const current = await db.shoppingCarts.get(CART_RECORD_ID)
       if (JSON.stringify(current) !== bytes) return { retry: true } as const
-      return { retry: false, value: await operation(record) } as const
+      return { retry: false, value: await operation(record, stored) } as const
     })
     if (!outcome.retry) return outcome.value
   }
   throw new Error("Cart changed repeatedly during product verification")
+}
+
+/** Safe quantity/removal edits carry opaque signed bytes without trusting them. */
+function preserveStoredProductEvidence(
+  record: CanonicalCartRecord,
+  stored: StoredShoppingCart
+): StoredShoppingCart {
+  const evidence = new Map(
+    stored.lines.flatMap((line) =>
+      isRecord(line) && typeof line.id === "string" && isRecord(line.item)
+        ? [[line.id, line.item.signedProductEvent] as const]
+        : []
+    )
+  )
+  return {
+    ...record,
+    lines: record.lines.map((line) => ({
+      ...line,
+      item: { ...line.item, signedProductEvent: evidence.get(line.id) },
+    })),
+  }
 }
 
 function parseStoredLine(value: unknown): CartLine | null {
@@ -627,7 +654,8 @@ export function subscribeToCartRepository(listener: () => void): () => void {
 }
 
 async function mutateCartWithFactory(
-  createMutation: () => RecordMutation
+  createMutation: () => RecordMutation,
+  requireProductEvidence = true
 ): Promise<CartMutationResult> {
   await initializeCartRepository()
   return enqueue(async () => {
@@ -650,17 +678,22 @@ async function mutateCartWithFactory(
     let changed = false
     try {
       const committed = await withCanonicalRecord(
-        async (record): Promise<CanonicalCartRecord> => {
+        async (record, stored): Promise<CanonicalCartRecord> => {
           before = materializeLines(record.lines)
           changed = mutation(record)
           if (changed) {
             record.revision += 1
             record.updatedAt = Date.now()
-            await db.shoppingCarts.put(record)
+            await db.shoppingCarts.put(
+              requireProductEvidence
+                ? record
+                : preserveStoredProductEvidence(record, stored)
+            )
           }
           after = materializeLines(record.lines)
           return record
-        }
+        },
+        requireProductEvidence
       )
       publishRecord(committed, "persistent")
       return { before, after, changed }
@@ -701,7 +734,7 @@ function mutateObservedCart(
       memoryRecord ??
       createMemoryRecordFromSnapshot(snapshot.items)
   )
-  return mutateCartWithFactory(() => createMutation(observed))
+  return mutateCartWithFactory(() => createMutation(observed), false)
 }
 
 function findLineIndex(
@@ -1293,7 +1326,8 @@ export async function captureCartPurchase(
 export function consumeCartPurchase(
   claim: CartPurchaseClaim
 ): Promise<CartMutationResult> {
-  return mutateCart((record) =>
-    removeAllocatedBatches(record, claim.allocations)
+  return mutateCartWithFactory(
+    () => (record) => removeAllocatedBatches(record, claim.allocations),
+    false
   )
 }

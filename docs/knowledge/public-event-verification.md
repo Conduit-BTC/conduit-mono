@@ -62,6 +62,30 @@ rebuilt from the admitted event, separately from saved source observations.
 Cache transactions compare the exact stored rows after admission and retry a
 concurrent change without holding an IndexedDB transaction open during worker I/O.
 
+Retained follow-list reads expose admitted events, including repeated restores
+and duplicate observations. Metadata merges retain the same immutable event
+object and combine sources separately. Transactions reuse admitted signed bytes
+only after comparing them with the current row; source observations, pending
+state, and timestamps come from that transaction's row. A stable conclusively
+invalid row can be repaired by independently admitted evidence. Unavailable or
+cancelled admission preserves the row and reports incomplete verification,
+including when a bounded relay read completes without a contact list.
+
+Cart removal, quantity decreases, clearing, and consumption of an existing
+purchase claim require no new product authority. They parse a safe display
+projection, compare the complete current row before committing, and carry opaque
+signed bytes through for surviving lines without exposing them as proof.
+Concurrent additions retain their batch identities. Purchase capture, increments,
+and product-authority updates still require signed evidence restoration.
+Shipping settings likewise distinguish verification unavailability from an
+invalid document and preserve durable bytes for recovery.
+
+Composed coverage lives in `tests/cart-storage-proof.test.ts`,
+`tests/follow-shipping-storage-proof.test.ts`, and
+`e2e/market-cart-concurrency.playwright.ts`. The compiler contract also requires
+admitted follow events at public in-memory result interfaces. Wire and database
+records remain raw and must be admitted after restoration.
+
 ## Deliberately separate verification owners
 
 This is public admission closure, not removal of NDK or every cryptographic check.

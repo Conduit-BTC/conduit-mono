@@ -37,6 +37,7 @@ import {
   admitPublicEvent,
   isVerifiedNostrEvent,
   sameSignedPublicEvent,
+  type VerifiedNostrEvent,
 } from "./verified-public-event"
 
 export type FollowListEventLike = {
@@ -77,7 +78,7 @@ export interface FollowListAuthorRead {
    * replacement). Publish flows must honor it even though readers must not.
    */
   ownerSafetySnapshot?: RetainedOwnFollowListSnapshot
-  event?: SignedPublicNostrEvent
+  event?: VerifiedNostrEvent
   eventSourceRelayUrls: string[]
   /** Selected current NIP-65 author hints, before adding an independent base. */
   hintRelayUrls?: string[]
@@ -93,7 +94,7 @@ export interface FollowListAuthorRead {
 }
 
 export interface FollowListReadResult {
-  events: SignedPublicNostrEvent[]
+  events: VerifiedNostrEvent[]
   authors: FollowListAuthorRead[]
   plannedRelayUrls: string[]
   relays: RelayReadSourceStatus[]
@@ -110,7 +111,7 @@ export interface FollowListReadResult {
  */
 export interface RetainedOwnFollowListSnapshot {
   pubkey: string
-  event: SignedPublicNostrEvent
+  event: VerifiedNostrEvent
   sourceRelayUrls: string[]
   state: "observed" | "pending"
 }
@@ -156,12 +157,24 @@ const FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES =
 const MAX_OBSERVED_OWN_FOLLOW_LISTS = 64
 
 type ObservedOwnFollowList = {
-  event: SignedPublicNostrEvent
+  event: VerifiedNostrEvent
   eventSourceRelayUrls: string[]
   state: "observed" | "pending"
 }
 
 const observedOwnFollowLists = new Map<string, ObservedOwnFollowList>()
+
+type AdmittedOwnContactListSnapshot = Omit<
+  CachedOwnContactListSnapshot,
+  "event"
+> & { event: VerifiedNostrEvent }
+
+export class FollowListEvidenceUnavailableError extends Error {
+  constructor() {
+    super("Retained follow-list verification is unavailable. Retry the read.")
+    this.name = "FollowListEvidenceUnavailableError"
+  }
+}
 
 interface FollowListTestOverrides {
   getAccountSigner?: typeof getAccountSigner
@@ -249,13 +262,11 @@ function cloneSignedEvent(
 }
 
 function cloneOwnContactListSnapshot(
-  snapshot: CachedOwnContactListSnapshot
-): CachedOwnContactListSnapshot {
+  snapshot: AdmittedOwnContactListSnapshot
+): AdmittedOwnContactListSnapshot {
   return {
     ...snapshot,
-    event: isVerifiedNostrEvent(snapshot.event)
-      ? snapshot.event
-      : cloneSignedEvent(snapshot.event),
+    event: snapshot.event,
     sourceRelayUrls: [...snapshot.sourceRelayUrls],
   }
 }
@@ -263,19 +274,22 @@ function cloneOwnContactListSnapshot(
 function isValidOwnContactListSnapshot(
   snapshot: CachedOwnContactListSnapshot | undefined,
   pubkey: string
-): snapshot is CachedOwnContactListSnapshot {
+): snapshot is AdmittedOwnContactListSnapshot {
   return !!(
     snapshot &&
     snapshot.pubkey === pubkey &&
+    isVerifiedNostrEvent(snapshot.event) &&
     snapshot.event.pubkey === pubkey &&
     snapshot.event.kind === EVENT_KINDS.CONTACT_LIST &&
     (snapshot.state === "observed" || snapshot.state === "pending") &&
-    isVerifiedNostrEvent(snapshot.event)
+    Array.isArray(snapshot.sourceRelayUrls) &&
+    snapshot.sourceRelayUrls.every((url) => typeof url === "string") &&
+    Number.isFinite(snapshot.cachedAt)
   )
 }
 
 function toRetainedOwnFollowListSnapshot(
-  snapshot: CachedOwnContactListSnapshot
+  snapshot: AdmittedOwnContactListSnapshot
 ): RetainedOwnFollowListSnapshot {
   return {
     pubkey: snapshot.pubkey,
@@ -286,14 +300,14 @@ function toRetainedOwnFollowListSnapshot(
 }
 
 function chooseStrongestOwnContactListSnapshot(
-  left: CachedOwnContactListSnapshot | undefined,
-  right: CachedOwnContactListSnapshot
-): CachedOwnContactListSnapshot {
+  left: AdmittedOwnContactListSnapshot | undefined,
+  right: AdmittedOwnContactListSnapshot
+): AdmittedOwnContactListSnapshot {
   if (!left) return cloneOwnContactListSnapshot(right)
-  if (left.event.id === right.event.id) {
+  if (sameSignedPublicEvent(left.event, right.event)) {
     return {
       pubkey: right.pubkey,
-      event: cloneSignedEvent(right.event),
+      event: right.event,
       sourceRelayUrls: Array.from(
         new Set([...left.sourceRelayUrls, ...right.sourceRelayUrls])
       ),
@@ -309,8 +323,8 @@ function chooseStrongestOwnContactListSnapshot(
 }
 
 function rememberOwnContactListSnapshot(
-  snapshot: CachedOwnContactListSnapshot
-): CachedOwnContactListSnapshot {
+  snapshot: AdmittedOwnContactListSnapshot
+): AdmittedOwnContactListSnapshot {
   const existing = observedOwnFollowLists.get(snapshot.pubkey)
   const chosen = chooseStrongestOwnContactListSnapshot(
     existing
@@ -331,20 +345,18 @@ function rememberOwnContactListSnapshot(
     const oldestKey = observedOwnFollowLists.keys().next().value
     if (oldestKey) observedOwnFollowLists.delete(oldestKey)
   }
-  if (isVerifiedNostrEvent(chosen.event)) {
-    observedOwnFollowLists.set(snapshot.pubkey, {
-      event: chosen.event,
-      eventSourceRelayUrls: [...chosen.sourceRelayUrls],
-      state: chosen.state,
-    })
-  }
+  observedOwnFollowLists.set(snapshot.pubkey, {
+    event: chosen.event,
+    eventSourceRelayUrls: [...chosen.sourceRelayUrls],
+    state: chosen.state,
+  })
   return chosen
 }
 
 async function loadOwnContactListSnapshot(
   pubkey: string,
   signal?: AbortSignal
-): Promise<CachedOwnContactListSnapshot | undefined> {
+): Promise<AdmittedOwnContactListSnapshot | undefined> {
   let stored: CachedOwnContactListSnapshot | undefined
   try {
     stored = followListTestOverrides.loadOwnContactListSnapshot
@@ -358,6 +370,12 @@ async function loadOwnContactListSnapshot(
   if (stored) {
     const admission = await admitPublicEvent(stored.event, { signal })
     throwIfFollowReadAborted(signal)
+    if (
+      admission.status === "unavailable" ||
+      admission.status === "cancelled"
+    ) {
+      throw new FollowListEvidenceUnavailableError()
+    }
     if (admission.status === "verified") {
       stored = { ...stored, event: admission.event }
     }
@@ -382,7 +400,7 @@ async function loadOwnContactListSnapshot(
   const memorySnapshot = isValidOwnContactListSnapshot(memoryCandidate, pubkey)
     ? memoryCandidate
     : undefined
-  const chosen = stored
+  const chosen = isValidOwnContactListSnapshot(stored, pubkey)
     ? chooseStrongestOwnContactListSnapshot(memorySnapshot, stored)
     : memorySnapshot
   return chosen ? rememberOwnContactListSnapshot(chosen) : undefined
@@ -432,13 +450,13 @@ export async function readRetainedOwnFollowListSnapshot(
 }
 
 async function persistOwnContactListSnapshot(
-  snapshot: CachedOwnContactListSnapshot,
+  snapshot: AdmittedOwnContactListSnapshot,
   options: {
     required: boolean
     /** `null` means the complete preflight read established no prior event. */
     expectedBaseEvent?: SignedPublicNostrEvent | null
   }
-): Promise<CachedOwnContactListSnapshot> {
+): Promise<AdmittedOwnContactListSnapshot> {
   const normalized = cloneOwnContactListSnapshot(snapshot)
   const currentBeforeTransaction =
     followListTestOverrides.loadOwnContactListSnapshot
@@ -449,27 +467,35 @@ async function persistOwnContactListSnapshot(
   const currentAdmission = currentBeforeTransaction
     ? await admitPublicEvent(currentBeforeTransaction.event)
     : null
-  const admittedCurrent =
-    currentBeforeTransaction && currentAdmission?.status === "verified"
-      ? { ...currentBeforeTransaction, event: currentAdmission.event }
-      : undefined
   const chooseAfterBaseCheck = (
     current: CachedOwnContactListSnapshot | undefined
-  ): CachedOwnContactListSnapshot => {
-    if (current && !admittedCurrent) {
-      throw new ReplaceablePublishSafetyError(
-        "Refusing to replace unverified retained follow-list evidence."
-      )
-    }
+  ): AdmittedOwnContactListSnapshot => {
     if (
-      current &&
-      admittedCurrent &&
-      !sameSignedPublicEvent(current.event, admittedCurrent.event)
+      !!current !== !!currentBeforeTransaction ||
+      (current &&
+        currentBeforeTransaction &&
+        (currentAdmission?.status === "verified"
+          ? !sameSignedPublicEvent(currentAdmission.event, current.event)
+          : JSON.stringify(current) !==
+            JSON.stringify(currentBeforeTransaction)))
     ) {
       throw new ReplaceablePublishSafetyError(
         "Refusing to replace follow-list evidence changed during verification."
       )
     }
+    if (
+      currentAdmission?.status === "unavailable" ||
+      currentAdmission?.status === "cancelled"
+    ) {
+      throw new FollowListEvidenceUnavailableError()
+    }
+    // Reuse only the admitted signed object. Sources, state, and timestamps
+    // belong to the row inside this transaction, including concurrent commits.
+    // A stable conclusively invalid row can be repaired by valid live evidence.
+    const admittedCurrent =
+      current && currentAdmission?.status === "verified"
+        ? { ...current, event: currentAdmission.event }
+        : undefined
     const validCurrent = isValidOwnContactListSnapshot(
       admittedCurrent,
       normalized.pubkey
@@ -496,7 +522,7 @@ async function persistOwnContactListSnapshot(
   }
 
   try {
-    let chosen: CachedOwnContactListSnapshot
+    let chosen: AdmittedOwnContactListSnapshot
     if (followListTestOverrides.putOwnContactListSnapshot) {
       const current = followListTestOverrides.loadOwnContactListSnapshot
         ? await followListTestOverrides.loadOwnContactListSnapshot(
@@ -531,20 +557,30 @@ async function preserveStrongestOwnFollowList(
   authenticatedPubkey: string | null,
   signal?: AbortSignal,
   observedOwnerFrontier?: {
-    event: SignedPublicNostrEvent
+    event: VerifiedNostrEvent
     sourceRelayUrls: string[]
   },
   now: () => number = Date.now
 ): Promise<FollowListAuthorRead> {
   if (read.pubkey !== authenticatedPubkey) return read
-  const retained = await loadOwnContactListSnapshot(read.pubkey, signal)
+  let retained: AdmittedOwnContactListSnapshot | undefined
+  try {
+    retained = await loadOwnContactListSnapshot(read.pubkey, signal)
+  } catch (error) {
+    if (!(error instanceof FollowListEvidenceUnavailableError)) throw error
+    return {
+      ...read,
+      verificationComplete: false,
+      coverage: read.event ? "limited" : "unavailable",
+    }
+  }
   let retainedWinner = retained
 
   const observedEvent =
     observedOwnerFrontier?.event ??
     (read.event && read.verificationComplete ? read.event : undefined)
   if (observedEvent) {
-    const networkSnapshot: CachedOwnContactListSnapshot = {
+    const networkSnapshot: AdmittedOwnContactListSnapshot = {
       pubkey: read.pubkey,
       event: observedEvent,
       sourceRelayUrls:
@@ -566,7 +602,12 @@ async function preserveStrongestOwnFollowList(
         read.event?.id === observedEvent.id &&
         persisted.event.id === read.event.id
       ) {
-        return { ...read, snapshotState: "network" }
+        return {
+          ...read,
+          event: persisted.event,
+          eventSourceRelayUrls: [...persisted.sourceRelayUrls],
+          snapshotState: "network",
+        }
       }
     }
   }
@@ -1155,7 +1196,7 @@ export function buildContactListUpdateTags({
 export function requirePublishableContactListSnapshot(
   read: FollowListReadResult,
   ownerPubkey: string
-): SignedPublicNostrEvent | null {
+): VerifiedNostrEvent | null {
   const normalizedOwnerPubkey = normalizeHexPubkey(ownerPubkey)
   const author = read.authors.find(
     (candidate) => candidate.pubkey === normalizedOwnerPubkey
@@ -1311,7 +1352,7 @@ export async function publishContactListUpdate({
 
   const publishExact = async (
     event: SignedPublicNostrEvent,
-    snapshot: SignedPublicNostrEvent
+    snapshot: VerifiedNostrEvent
   ): Promise<string[]> => {
     assertCurrentSignerSession()
     assertSafeReplaceablePublish(event, replaceableSafety)
@@ -1393,7 +1434,16 @@ export async function publishContactListUpdate({
   assertCurrentSignerSession()
   const event = await signer.signEvent(draft)
   assertCurrentSignerSession()
-  const signedEvent = event
+  const admission = await admitPublicEvent(event)
+  if (admission.status === "unavailable" || admission.status === "cancelled") {
+    throw new FollowListEvidenceUnavailableError()
+  }
+  if (admission.status !== "verified") {
+    throw new ReplaceablePublishSafetyError(
+      "Signer returned invalid follow-list evidence."
+    )
+  }
+  const signedEvent = admission.event
   assertCurrentSignerSession()
   const retained = await persistOwnContactListSnapshot(
     {
