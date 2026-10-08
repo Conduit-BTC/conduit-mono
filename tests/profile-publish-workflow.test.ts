@@ -15,6 +15,8 @@ import {
   __setRelayListTestOverrides,
   __resetRelayPublishTestOverrides,
   __setRelayPublishTestOverrides,
+  config,
+  createInMemoryOwnerRelayListEvidenceRepository,
   getProfiles,
   loadSelectedProfileContext,
   publishProfileContext,
@@ -22,14 +24,17 @@ import {
   type CachedProfile,
 } from "@conduit/core"
 import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
+import { setAppWritePlanFixture } from "./helpers/app-write-plan"
 
 const SECRET = generateSecretKey()
 const PUBKEY = getPublicKey(SECRET)
-const RELAY = "wss://relay.damus.io"
+const RELAY = "wss://profile-write.fixture.conduit.market"
 const NOW = Math.floor(Date.now() / 1_000)
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 let durable: CachedProfile | undefined
 let events: NDKEvent[]
 let published: Event[]
+let attemptedRelayUrls: string[]
 let failWrites: boolean
 let failReads: boolean
 let failNetwork: boolean
@@ -48,6 +53,7 @@ beforeEach(() => {
   durable = undefined
   events = []
   published = []
+  attemptedRelayUrls = []
   failWrites = false
   failReads = false
   failNetwork = false
@@ -86,7 +92,10 @@ beforeEach(() => {
       }
     },
   })
-  __setRelayPublishTestOverrides({
+  setAppWritePlanFixture({
+    accountNetworkLocalStateRepository: { get: async () => undefined },
+    ownerRelayListEvidenceRepository:
+      createInMemoryOwnerRelayListEvidenceRepository(),
     planPublishRelays: async () => ({
       intent: "author_event",
       primaryRelayUrls: [RELAY],
@@ -95,7 +104,9 @@ beforeEach(() => {
     }),
   })
   __setRelayPublishTestOverrides({
-    publishSignedEventFrameToRelay: async ({ signedEvent }) => {
+    publishSignedEventFrameToRelay: async ({ relayUrl, signedEvent }) => {
+      attemptedRelayUrls.push(relayUrl)
+      if (relayUrl !== RELAY) return "rejected"
       published.push(structuredClone(signedEvent) as Event)
       afterPublish?.()
       return "acked"
@@ -104,6 +115,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetRelayPublishTestOverrides()
@@ -111,6 +123,22 @@ afterEach(() => {
 })
 
 describe("selected profile publish workflow", () => {
+  for (const authenticatedPubkey of [null, PUBKEY]) {
+    it(`publishes to the planned primary relay with ${authenticatedPubkey ? "authenticated" : "anonymous"} context`, async () => {
+      events = [
+        profileEvent(JSON.stringify({ name: "Current", about: "Biography" })),
+      ]
+
+      await publishProfileContext({ displayName: "Edit" }, "market", {
+        authenticatedPubkey,
+      })
+
+      expect(attemptedRelayUrls).toEqual([RELAY])
+      expect(published).toHaveLength(1)
+      expect(verifyEvent(published[0]!)).toBe(true)
+    })
+  }
+
   for (const stored of ["stale", "empty"] as const) {
     it(`publishes from exact observed raw context when writes fail over ${stored} durable storage`, async () => {
       if (stored === "stale")
