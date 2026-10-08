@@ -6,6 +6,7 @@ import {
   type PublishWithPlannerResult,
 } from "./relay-publish"
 import type { SignedPublicNostrEvent } from "./signed-event"
+import { admitPublicEvent } from "./verified-public-event"
 
 interface CalendarRetryDependencies {
   publish: (
@@ -47,9 +48,12 @@ export async function retryEventMarketCalendarDelivery(
   dependencies: CalendarRetryDependencies = defaultDependencies
 ): Promise<PublishWithPlannerResult> {
   const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
+  const admitted = await admitPublicEvent(input.signedEvent)
   const calendar =
-    parseEventMarketCalendarEvent(input.signedEvent) ??
-    parseEventMarketSeriesEvent(input.signedEvent)
+    admitted.status === "verified"
+      ? (parseEventMarketCalendarEvent(admitted.event) ??
+        parseEventMarketSeriesEvent(admitted.event))
+      : null
   if (
     !calendar ||
     ("authorPubkey" in calendar

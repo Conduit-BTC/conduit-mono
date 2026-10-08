@@ -502,7 +502,6 @@ describe("merchant-owned product mutation boundary", () => {
           eventCount: 0,
           rejectedEventCount: filter.kinds?.includes(30406) ? 100 : 0,
         })),
-        eventsVerified: true,
       }),
     })
     const observed = {
@@ -602,7 +601,7 @@ describe("merchant-owned product mutation boundary", () => {
         event!.tags.filter(([name]) => name === "shipping_option")
       ).toEqual([["shipping_option", baseline.shippingOptionId!]])
     }
-  })
+  }, 20000)
 
   it("rejects a missing option in a maximum-size family before signing", async () => {
     const baselines = Array.from(

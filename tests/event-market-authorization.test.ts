@@ -11,6 +11,10 @@ import {
   resolveEventMarketAuthorization,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "@conduit/core/protocol/verified-public-event"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -44,11 +48,31 @@ function resolution(
   })
 }
 
+async function admitted(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error("Signed test fixture was rejected.")
+  return result.event
+}
+
+async function admitMany(
+  events: readonly SignedPublicNostrEvent[]
+): Promise<void> {
+  const admitted = await Promise.all(
+    events.map((event) => admitPublicEvent(event))
+  )
+  if (admitted.some((result) => result.status !== "verified"))
+    throw new Error("Signed test fixture was rejected.")
+}
+
 describe("Event Market causal merchant authorization", () => {
-  it("requires a valid root, descends through revoke and deliberate regrant", () => {
-    const grant = transition("active", 0)
-    const revoke = transition("revoked", 1, [grant])
-    const regrant = transition("active", 2, [revoke])
+  it("requires a valid root, descends through revoke and deliberate regrant", async () => {
+    const grant = await admitted(transition("active", 0))
+    const revoke = await admitted(transition("revoked", 1, [grant]))
+    const regrant = await admitted(transition("active", 2, [revoke]))
+    await admitMany([grant, revoke, regrant])
     expect(parseEventMarketAuthorizationEvent(grant)?.parentIds).toEqual([])
     expect(resolution([grant]).state).toBe("active")
     expect(resolution([grant, revoke]).state).toBe("revoked")
@@ -62,32 +86,39 @@ describe("Event Market causal merchant authorization", () => {
       ])
   })
 
-  it("blocks an identical-state fork until a descendant names both tips", () => {
-    const root = transition("active", 0)
-    const first = transition("active", 1, [root], 101)
-    const second = transition("active", 1, [root], 102)
+  it("blocks an identical-state fork until a descendant names both tips", async () => {
+    const root = await admitted(transition("active", 0))
+    const first = await admitted(transition("active", 1, [root], 101))
+    const second = await admitted(transition("active", 1, [root], 102))
+    await admitMany([root, first, second])
     expect(resolution([root, first, second]).state).toBe("conflicting")
-    const reconcile = transition("active", 2, [first, second], 103)
+    const reconcile = await admitted(
+      transition("active", 2, [first, second], 103)
+    )
+    await admitMany([reconcile])
     expect(resolution([root, first, second, reconcile]).state).toBe("active")
     expect(resolution([reconcile]).state).toBe("missing_parent")
   })
 
-  it("retains deletion as a blocker rather than restoring an old grant", () => {
-    const grant = transition("active", 0)
-    const revoke = transition("revoked", 1, [grant])
-    const deletion = finalizeEvent(
-      {
-        kind: 5,
-        created_at: 103,
-        content: "",
-        tags: [
-          ["e", revoke.id],
-          ["a", marketCoordinate],
-          ["p", merchant],
-        ],
-      },
-      organizerSecret
+  it("retains deletion as a blocker rather than restoring an old grant", async () => {
+    const grant = await admitted(transition("active", 0))
+    const revoke = await admitted(transition("revoked", 1, [grant]))
+    const deletion = await admitted(
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: 103,
+          content: "",
+          tags: [
+            ["e", revoke.id],
+            ["a", marketCoordinate],
+            ["p", merchant],
+          ],
+        },
+        organizerSecret
+      )
     )
+    await admitMany([grant, revoke, deletion])
     expect(resolution([grant, revoke], [deletion]).state).toBe("deleted")
     expect(resolution([grant, revoke]).state).toBe("revoked")
     expect(resolution([grant], [deletion]).state).toBe("deleted")
@@ -97,9 +128,9 @@ describe("Event Market causal merchant authorization", () => {
     })
   })
 
-  it("requires an actual descendant repair for every observed deletion target", () => {
-    const grant = transition("active", 0)
-    const revoke = transition("revoked", 1, [grant])
+  it("requires an actual descendant repair for every observed deletion target", async () => {
+    const grant = await admitted(transition("active", 0))
+    const revoke = await admitted(transition("revoked", 1, [grant]))
     const deletion = finalizeEvent(
       {
         kind: 5,
@@ -129,8 +160,15 @@ describe("Event Market causal merchant authorization", () => {
       { ...repairDraft, created_at: 104 },
       organizerSecret
     )
-    expect(resolution([grant, revoke], [deletion]).state).toBe("deleted")
-    expect(resolution([grant, revoke, repair], [deletion]).state).toBe("active")
+    const admittedDeletion = await admitted(deletion)
+    const admittedRepair = await admitted(repair)
+    await admitMany([grant, revoke, admittedDeletion, admittedRepair])
+    expect(resolution([grant, revoke], [admittedDeletion]).state).toBe(
+      "deleted"
+    )
+    expect(
+      resolution([grant, revoke, admittedRepair], [admittedDeletion]).state
+    ).toBe("active")
     const incompleteDraft = buildEventMarketAuthorizationDraft({
       marketCoordinate,
       merchantPubkey: merchant,
@@ -143,40 +181,48 @@ describe("Event Market causal merchant authorization", () => {
       { ...incompleteDraft, created_at: 105 },
       organizerSecret
     )
-    expect(resolution([grant, revoke, incomplete], [deletion]).state).toBe(
-      "deleted"
-    )
+    const admittedIncomplete = await admitted(incomplete)
+    await admitMany([admittedIncomplete])
+    expect(
+      resolution([grant, revoke, admittedIncomplete], [admittedDeletion]).state
+    ).toBe("deleted")
   })
 
-  it("rejects a wrong organizer, market, sequence, or malformed profile", () => {
-    const root = transition("active", 0)
-    const wrongSequence = transition("revoked", 2, [root])
+  it("rejects a wrong organizer, market, sequence, or malformed profile", async () => {
+    const root = await admitted(transition("active", 0))
+    const wrongSequence = await admitted(transition("revoked", 2, [root]))
+    await admitMany([root, wrongSequence])
     expect(resolution([root, wrongSequence]).state).toBe("malformed")
     const forged = finalizeEvent(
       {
         kind: 3841,
         content: "",
         created_at: 110,
-        tags: root.tags,
+        tags: root.tags.map((tag) => [...tag]),
       },
       generateSecretKey()
     )
-    expect(parseEventMarketAuthorizationEvent(forged)).toBeNull()
+    const admittedForged = await admitted(forged)
+    await admitMany([admittedForged])
+    expect(parseEventMarketAuthorizationEvent(admittedForged)).toBeNull()
     const malformed = finalizeEvent(
       {
         kind: 3841,
         content: "",
         created_at: 111,
-        tags: [...root.tags, ["state", "revoked"]],
+        tags: [...root.tags.map((tag) => [...tag]), ["state", "revoked"]],
       },
       organizerSecret
     )
-    expect(resolution([root, malformed]).state).toBe("malformed")
+    const admittedMalformed = await admitted(malformed)
+    await admitMany([admittedMalformed])
+    expect(resolution([root, admittedMalformed]).state).toBe("malformed")
   })
 
   it("keeps a retained revoke when a relay returns only an older grant", async () => {
-    const grant = transition("active", 0)
-    const revoke = transition("revoked", 1, [grant])
+    const grant = await admitted(transition("active", 0))
+    const revoke = await admitted(transition("revoked", 1, [grant]))
+    await admitMany([grant, revoke])
     const read = await readEventMarketAuthorization(
       {
         marketCoordinate,
@@ -208,9 +254,10 @@ describe("Event Market causal merchant authorization", () => {
   })
 
   it("blocks two live sibling grants even with full relay responses", async () => {
-    const root = transition("active", 0)
-    const first = transition("active", 1, [root], 101)
-    const second = transition("active", 1, [root], 102)
+    const root = await admitted(transition("active", 0))
+    const first = await admitted(transition("active", 1, [root], 101))
+    const second = await admitted(transition("active", 1, [root], 102))
+    await admitMany([root, first, second])
     const read = await readEventMarketAuthorization(
       {
         marketCoordinate,

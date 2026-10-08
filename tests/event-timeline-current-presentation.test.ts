@@ -12,20 +12,25 @@ import {
   getNextEventTimelineLimit,
 } from "../apps/market/src/lib/eventTimeline"
 import { createFakeTimeBoundaryClock } from "./helpers/fake-time-boundary-clock"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
 
-function calendar(input: EventMarketCalendarDraftInput) {
+async function calendar(input: EventMarketCalendarDraftInput) {
   const signed = finalizeEvent(
     { ...buildEventMarketCalendarDraft(input), created_at: 100 },
     generateSecretKey()
   )
-  const parsed = parseEventMarketCalendarEvent(signed)
+  const admission = await admitPublicEvent(signed)
+  expect(admission.status).toBe("verified")
+  if (admission.status !== "verified")
+    throw new Error("Fixture admission failed")
+  const parsed = parseEventMarketCalendarEvent(admission.event)
   expect(parsed).not.toBeNull()
   return parsed!
 }
 
 describe("current Event Market calendar presentation", () => {
-  it("keeps a date-only event active through its whole day and excludes the signed end date", () => {
-    const day = calendar({
+  it("keeps a date-only event active through its whole day and excludes the signed end date", async () => {
+    const day = await calendar({
       kind: 31922,
       dTag: "one-day",
       title: "One day",
@@ -41,7 +46,7 @@ describe("current Event Market calendar presentation", () => {
       paginateEventTimeline([row], { earlier: 12, later: 12 }, day.end).past
     ).toHaveLength(1)
     expect(formatEventTimelineSchedule(day, "en-US")).toBe("2030-06-01")
-    const range = calendar({
+    const range = await calendar({
       kind: 31922,
       dTag: "range",
       title: "Weekend",
@@ -58,8 +63,8 @@ describe("current Event Market calendar presentation", () => {
       year: "2030",
     })
   })
-  it("formats the signed time zone across a daylight-saving boundary", () => {
-    const date = calendar({
+  it("formats the signed time zone across a daylight-saving boundary", async () => {
+    const date = await calendar({
       kind: 31923,
       dTag: "clock-change",
       title: "Sunday event",

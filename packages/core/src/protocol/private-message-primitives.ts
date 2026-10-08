@@ -452,7 +452,9 @@ const DEFAULT_UNWRAP_TIMEOUT_MS = 8_000
 /** Named read-only exception for authenticated client metadata on seals.
  * Canonical writes still emit empty tags. Routing/domain tags never qualify.
  */
-export function acceptsAuthenticatedSealMetadata(tags: string[][]): boolean {
+export function acceptsAuthenticatedSealMetadata(
+  tags: readonly (readonly string[])[]
+): boolean {
   return (
     tags.length === 0 ||
     (tags.length === 1 &&
@@ -535,12 +537,15 @@ export async function wrapPrivateMessage(
   })
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
-  return createWrap(seal, recipient.pubkey)
+  return createWrap(
+    { ...seal, tags: seal.tags.map((tag) => [...tag]) },
+    recipient.pubkey
+  )
 }
 
 /** Validate both envelopes and the unsigned rumor before returning private data. */
 export async function unwrapPrivateMessageEnvelope(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   signer: NostrKeySigner,
   options: { onClientSealMetadataAccepted?: () => void } = {}
 ): Promise<PrivateMessageEvent> {
@@ -601,7 +606,7 @@ export function classifyPrivateMessageKind(
  * the current path; NIP-04 stays in the separate read-only legacy lane.
  */
 export async function unwrapGiftWrap(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   signer: NostrKeySigner,
   options: UnwrapGiftWrapOptions = {}
 ): Promise<UnwrapOutcome> {
@@ -614,7 +619,10 @@ export async function unwrapGiftWrap(
   }> => {
     if (options.giftUnwrap) {
       try {
-        const rumor = await options.giftUnwrap(event, signer)
+        const rumor = await options.giftUnwrap(
+          { ...event, tags: event.tags.map((tag) => [...tag]) },
+          signer
+        )
         return { rumor, reason: rumor ? null : "nip44_failed" }
       } catch {
         return { rumor: null, reason: "nip44_failed" }
@@ -769,7 +777,7 @@ export function createLegacyDmDecrypt(signer: NostrKeySigner): LegacyDmDecrypt {
 }
 
 export async function decryptLegacyDirectMessage(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   principalPubkey: string,
   decrypt: LegacyDmDecrypt,
   options: { timeoutMs?: number } = {}

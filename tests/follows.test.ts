@@ -103,7 +103,7 @@ describe("NIP-02 follow helpers", () => {
                   rejectedEventCount: 0,
                 },
               ],
-              eventsVerified: true,
+              verificationComplete: true,
               coverage: "complete",
               relayListState: "network",
               relayHintTruncated: false,
@@ -113,7 +113,6 @@ describe("NIP-02 follow helpers", () => {
           ],
           plannedRelayUrls: ["wss://owner.example"],
           relays: [],
-          eventsVerified: true,
         }
       }) as never,
       putOwnContactListSnapshot: async () => {

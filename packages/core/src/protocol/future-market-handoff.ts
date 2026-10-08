@@ -11,6 +11,8 @@ import {
   type OrderSchema,
 } from "../schemas"
 import { getEventMarketPrivateMessageList } from "./commerce"
+import { admitEmbeddedEventMarketOrderEvidence } from "./event-market-order-evidence"
+import { verifySignedEvents } from "./verified-public-event"
 import {
   isEventMarketAddressableRevisionDeleted,
   parseEventMarketCalendarEvent,
@@ -325,13 +327,17 @@ export function getFutureMarketClaimRef(input: {
 }
 
 /** Authenticate original organizer approval offline, without reapproving a paid order. */
-export function verifyFutureMarketReceiptAuthority(
-  input: FutureMarketReadyReceiptSchema
-): boolean {
+export async function verifyFutureMarketReceiptAuthority(
+  input: FutureMarketReadyReceiptSchema,
+  options: { signal?: AbortSignal } = {}
+): Promise<boolean> {
   const parsed = futureMarketReadyReceiptSchema.safeParse(input)
   if (!parsed.success || !parsed.data.authorityEvidence) return false
   const receipt = parsed.data
-  const evidence = receipt.authorityEvidence!
+  const rawEvidence = receipt.authorityEvidence!
+  const admission = await verifySignedEvents(rawEvidence, options)
+  if (admission.events.length !== rawEvidence.length) return false
+  const evidence = admission.events
   if (
     evidence.some(
       (event) =>
@@ -396,17 +402,21 @@ export function verifyFutureMarketReceiptAuthority(
 }
 
 /** A merchant alone grants physical release for one paid order. */
-export function buildFutureMarketReadyReceipt(input: {
+export async function buildFutureMarketReadyReceipt(input: {
   order: OrderSchema
   signedOrderEvidence: readonly SignedPublicNostrEvent[]
   paymentAuthenticated: boolean
   releaseConfirmed: boolean
   issuedAt?: number
-}): FutureMarketReadyReceiptSchema {
+}): Promise<FutureMarketReadyReceiptSchema> {
   const order = orderSchema.parse(input.order)
+  const [embedded, fetched] = await Promise.all([
+    admitEmbeddedEventMarketOrderEvidence(order),
+    verifySignedEvents(input.signedOrderEvidence),
+  ])
   const evidence = verifyEventMarketOrderEvidence({
     order,
-    events: input.signedOrderEvidence,
+    events: [...embedded, ...fetched.events],
   })
   if (evidence.status !== "verified" || evidence.mode !== "organizer_handoff")
     throw new Error("Exact signed organizer handoff evidence is required.")
@@ -1445,7 +1455,7 @@ export async function publishFutureMarketReadyReceipt(input: {
     record: FutureMarketPrivateDeliveryRecord
   ) => void | Promise<void>
 }): Promise<PublishPrivateMessageResult> {
-  const payload = buildFutureMarketReadyReceipt(input)
+  const payload = await buildFutureMarketReadyReceipt(input)
   const claimKey = `${FUTURE_DELIVERY_STORAGE_PREFIX}:claim:${payload.merchantPubkey}:${payload.claimRef}`
   if (
     typeof localStorage !== "undefined" &&
@@ -1515,7 +1525,7 @@ export async function publishFutureMarketHandoffAck(input: {
     throw new Error(
       "Exact organizer physical release confirmation is required."
     )
-  if (!verifyFutureMarketReceiptAuthority(input.claim.receipt.payload))
+  if (!(await verifyFutureMarketReceiptAuthority(input.claim.receipt.payload)))
     throw new Error("Original signed organizer handoff approval is required.")
   const merchandise = await getFutureMarketReceiptMerchandise({
     receipt: input.claim.receipt.payload,

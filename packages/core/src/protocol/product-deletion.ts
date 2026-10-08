@@ -1,8 +1,9 @@
 import { EVENT_KINDS } from "./kinds"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 const HEX_64 = /^[0-9a-f]{64}$/i
 
@@ -58,7 +59,7 @@ export type ProductDeletionResolution =
     }>
 
 export type ValidatedProductDeletion = Readonly<{
-  signedEvent: SignedPublicNostrEvent
+  signedEvent: VerifiedNostrEvent
   evidence: readonly ProductDeletionEvidence[]
 }>
 
@@ -173,7 +174,7 @@ export function buildProductDeletionTarget(input: {
 }
 
 function extractProductDeletionEvidence(
-  event: SignedPublicNostrEvent
+  event: VerifiedNostrEvent
 ): readonly ProductDeletionEvidence[] {
   const authorPubkey = event.pubkey.toLowerCase()
   const deletionEventId = event.id.toLowerCase()
@@ -213,50 +214,29 @@ function extractProductDeletionEvidence(
   return Array.from(evidence.values())
 }
 
-function cloneSignedEvent(
-  event: SignedPublicNostrEvent
-): SignedPublicNostrEvent {
-  return {
-    id: event.id,
-    pubkey: event.pubkey,
-    created_at: event.created_at,
-    kind: event.kind,
-    tags: event.tags.map((tag) => [...tag]),
-    content: event.content,
-    sig: event.sig,
-  }
-}
-
 /**
- * Validate and parse one product deletion atomically.
- *
- * Callers that need both the exact signed event and its targets should use this
- * boundary so evidence extraction never repeats the Schnorr verification. The
- * returned event is a defensive clone of the bytes that were validated.
+ * Parse one previously admitted product deletion and its same-author targets.
+ * The trusted event keeps the exact immutable bytes admitted by the public
+ * verification boundary.
  */
 export function validateProductDeletionEvent(
-  event: SignedPublicNostrEvent
+  event: SignedPublicNostrEvent | VerifiedNostrEvent
 ): ValidatedProductDeletion | null {
-  if (
-    event.kind !== EVENT_KINDS.DELETION ||
-    !isValidSignedPublicNostrEvent(event)
-  ) {
+  if (event.kind !== EVENT_KINDS.DELETION || !isVerifiedNostrEvent(event)) {
     return null
   }
 
-  const signedEvent = cloneSignedEvent(event)
   return {
-    signedEvent,
-    evidence: extractProductDeletionEvidence(signedEvent),
+    signedEvent: event,
+    evidence: extractProductDeletionEvidence(event),
   }
 }
 
 /**
- * Safe default for callers that only need evidence. Signature validation is
- * always performed exactly once before any targets are returned.
+ * Safe default for callers that only need evidence from an admitted event.
  */
 export function productDeletionEvidenceFromSignedEvent(
-  event: SignedPublicNostrEvent
+  event: SignedPublicNostrEvent | VerifiedNostrEvent
 ): readonly ProductDeletionEvidence[] | null {
   return validateProductDeletionEvent(event)?.evidence ?? null
 }

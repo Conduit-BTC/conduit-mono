@@ -19,10 +19,8 @@ import { parseProductEvent } from "./products"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+import { type SignedPublicNostrEvent } from "./signed-event"
+import { isVerifiedNostrEvent } from "./verified-public-event"
 
 // Client execution budget; this is not a protocol receipt item limit.
 const MAX_RECEIPT_ITEMS = 64
@@ -178,7 +176,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
       event.pubkey.toLowerCase() === expectedAddress.authorPubkey &&
       actualAddress === expectedAddress.addressId &&
       event.created_at * 1_000 === receiptItem.product.createdAt &&
-      isValidSignedPublicNostrEvent(event)
+      isVerifiedNostrEvent(event)
     if (!validEnvelope) {
       return {
         state: "malformed",

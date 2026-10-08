@@ -37,6 +37,7 @@ import {
   __resetProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
+import { admitFixture } from "./helpers/public-event"
 
 import { MAX_RELAY_MESSAGE_CHARS } from "../packages/core/src/protocol/relay-wire-limits"
 
@@ -1321,7 +1322,7 @@ it("retries exact owner-local self bytes while rejecting the same remote-local d
         relayUrls: ["wss://discovery.relay.dev"],
         evidenceRepository,
         fetchEventsWithDiagnostics: async () => ({
-          events: [declarations.get(recipient)!],
+          events: [await admitFixture(declarations.get(recipient)!)],
           attemptedRelayUrls: ["wss://discovery.relay.dev"],
           successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],
