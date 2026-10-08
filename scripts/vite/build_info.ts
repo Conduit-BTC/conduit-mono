@@ -143,6 +143,18 @@ export function createConduitBuildContract(appDir: string): {
     ),
   }
 
+  // Omit an unset local flag so Vite can load an explicit stop from dotenv.
+  // Managed builds always compile the independent code-owned boolean.
+  if (
+    profile.name !== "local" ||
+    process.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED?.trim()
+  ) {
+    define["import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED"] =
+      JSON.stringify(
+        profile.publicFeatures.quantumRouterExecutionEnabled ? "true" : "false"
+      )
+  }
+
   // Local Vite dotenv settings are loaded after this contract is created.
   // Only managed profiles override treasury variables; staging clears all rails.
   if (profile.name !== "local") {

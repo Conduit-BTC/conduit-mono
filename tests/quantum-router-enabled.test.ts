@@ -2,14 +2,17 @@ import { describe, expect, it } from "bun:test"
 import {
   config,
   isQuantumRouterEnabled,
+  isQuantumRouterExecutionEnabled,
   resolveE2eRelayIsolation,
   resolveQuantumRouterEnabled,
+  resolveQuantumRouterExecutionEnabled,
 } from "../packages/core/src/config"
 import { resolvePlaywrightRouterWebServerTarget } from "../scripts/dev/run_playwright_router_web_server"
 import { resolveDeploymentProfile } from "../scripts/vite/deployment_profile"
 
 const hosted = {
   profileEnabled: true,
+  executionEnabled: true,
   deploymentProfile: "preview",
   lightningNetwork: "mainnet",
   hostname: "router-preview.conduit-market-coo.pages.dev",
@@ -25,6 +28,105 @@ const local = {
 }
 
 describe("Quantum Router capability admission", () => {
+  it("independently stops execution without allowing new admission through it", () => {
+    expect(
+      resolveQuantumRouterEnabled({ ...hosted, executionEnabled: false })
+    ).toBe(false)
+    expect(
+      resolveQuantumRouterExecutionEnabled({ ...hosted, profileEnabled: false })
+    ).toBe(true)
+    expect(
+      resolveQuantumRouterEnabled({ ...hosted, profileEnabled: false })
+    ).toBe(false)
+    expect(
+      resolveQuantumRouterExecutionEnabled({
+        ...hosted,
+        executionEnabled: undefined,
+      })
+    ).toBe(false)
+    expect(
+      resolveQuantumRouterExecutionEnabled({
+        ...hosted,
+        executionEnabled: false,
+      })
+    ).toBe(false)
+  })
+
+  it("inherits local admission only when execution is unset, with an explicit stop overriding rehearsal", () => {
+    expect(resolveQuantumRouterExecutionEnabled(local)).toBe(true)
+    expect(
+      resolveQuantumRouterEnabled({ ...local, executionEnabled: false })
+    ).toBe(false)
+    expect(
+      resolveQuantumRouterExecutionEnabled({
+        ...local,
+        executionEnabled: false,
+      })
+    ).toBe(false)
+    expect(
+      resolveQuantumRouterExecutionEnabled({
+        ...local,
+        localRouterCanaryFlag: undefined,
+        localRehearsalFlag: undefined,
+      })
+    ).toBe(false)
+    expect(
+      resolveQuantumRouterExecutionEnabled({
+        ...local,
+        executionEnabled: true,
+        localRouterCanaryFlag: undefined,
+        localRehearsalFlag: undefined,
+      })
+    ).toBe(true)
+    expect(
+      resolveQuantumRouterEnabled({
+        ...local,
+        executionEnabled: true,
+        localRouterCanaryFlag: undefined,
+        localRehearsalFlag: undefined,
+      })
+    ).toBe(false)
+  })
+
+  it("validates execution independently against every hosted and local boundary", () => {
+    for (const override of [
+      { deploymentProfile: "staging" },
+      { deploymentProfile: "unknown" },
+      { lightningNetwork: "signet" },
+      { lightningNetwork: "testnet" },
+      { lightningNetwork: "mock" },
+      { lightningNetwork: "regtest" },
+      { hostname: "shop.conduit.market" },
+      { hostname: "abc.conduit-market-signet.pages.dev" },
+    ]) {
+      expect(
+        resolveQuantumRouterExecutionEnabled({
+          ...hosted,
+          profileEnabled: false,
+          ...override,
+        })
+      ).toBe(false)
+    }
+    for (const override of [
+      { dev: false },
+      { hostname: hosted.hostname },
+      { lightningNetwork: "mock", e2eRelayIsolationEnabled: false },
+    ]) {
+      expect(
+        resolveQuantumRouterExecutionEnabled({
+          ...local,
+          executionEnabled: true,
+          ...override,
+        })
+      ).toBe(false)
+    }
+    for (const deploymentProfile of ["preview", "production", "staging"]) {
+      expect(
+        resolveQuantumRouterExecutionEnabled({ ...local, deploymentProfile })
+      ).toBe(false)
+    }
+  })
+
   it("admits the dedicated isolated mock router deployment", () => {
     const { env } = resolvePlaywrightRouterWebServerTarget("market", {
       PLAYWRIGHT_RELAY_PORT: "5175",
@@ -244,6 +346,11 @@ describe("Quantum Router capability admission", () => {
   })
 
   it("exposes the same resolved capability to both app admission callers", () => {
-    expect(isQuantumRouterEnabled()).toBe(config.quantumRouterEnabled)
+    expect(isQuantumRouterEnabled()).toBe(
+      config.quantumRouterEnabled && config.quantumRouterExecutionEnabled
+    )
+    expect(isQuantumRouterExecutionEnabled()).toBe(
+      config.quantumRouterExecutionEnabled
+    )
   })
 })

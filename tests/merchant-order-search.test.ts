@@ -116,9 +116,12 @@ describe("Merchant Orders search", () => {
     expect(source).toContain("validateSearch: parseMerchantOrderSearch")
     expect(source).toContain("recovery: recoveryMode")
     expect(source).toMatch(
-      /startAutomatically=\{shouldStartMerchantOrderRecoveryAutomatically\(\s*quantumRouterEnabled,\s*recoveryMode\s*\)\}/
+      /startAutomatically=\{shouldStartMerchantOrderRecoveryAutomatically\(\s*quantumRouterExecutionEnabled,\s*recoveryMode\s*\)\}/
     )
-    expect(source).toContain("allowAutomaticPayouts={quantumRouterEnabled}")
+    expect(source).toContain(
+      "allowAutomaticPayouts={quantumRouterExecutionEnabled}"
+    )
+    expect(source).toContain("executionEnabled={quantumRouterExecutionEnabled}")
     const select = source.slice(
       source.indexOf("const selectConversation ="),
       source.indexOf("const changePhaseTab =")

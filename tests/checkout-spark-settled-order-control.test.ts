@@ -25,6 +25,7 @@ import { CONDUIT_CHECKOUT_FEE_RECIPIENT } from "../packages/core/src/protocol/ch
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
   assessCheckoutSparkSettledOrderControl,
+  readCurrentCheckoutSparkSettledOrderControl,
   matchesCheckoutSparkSettledOrderControl,
 } from "../apps/market/src/lib/checkout-spark-settled-order-control"
 import { advanceCheckoutSparkSettledShopper } from "../apps/market/src/lib/checkout-spark-settled-shopper-advance"
@@ -249,6 +250,44 @@ function nativeFixture(takeoverAt = NOW + 60_000) {
     },
   }
 }
+
+describe("current saved checkout presentation reads", () => {
+  it("reads the bound order without granting or requiring execution", async () => {
+    const { input } = fixture()
+    expect(
+      await readCurrentCheckoutSparkSettledOrderControl({
+        read: async () => input,
+        isCurrent: () => true,
+      })
+    ).toEqual(assessCheckoutSparkSettledOrderControl(input))
+  })
+
+  it.each(["identity", "order", "abort"] as const)(
+    "rejects a late local read after %s revocation",
+    async (revocation) => {
+      const { input } = fixture()
+      const waiting = deferred()
+      const abort = new AbortController()
+      let current = true
+      let selectedOrderId = input.lifecycle.orderId
+      const originalOrderId = selectedOrderId
+      const pending = readCurrentCheckoutSparkSettledOrderControl({
+        read: async () => {
+          await waiting.promise
+          return input
+        },
+        isCurrent: () => current && selectedOrderId === originalOrderId,
+        signal: abort.signal,
+      })
+      void pending.catch(() => undefined)
+      if (revocation === "identity") current = false
+      else if (revocation === "order") selectedOrderId = "different-order"
+      else abort.abort()
+      waiting.resolve()
+      await expect(pending).rejects.toThrow("read cancelled")
+    }
+  )
+})
 
 describe("funding availability is independent of buyer payout takeover", () => {
   it("keeps exact funding available after takeover only while the original wallet remains open", () => {

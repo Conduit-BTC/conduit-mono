@@ -5,6 +5,7 @@ import {
   createMerchantCheckoutSparkAutomaticSession,
 } from "../apps/merchant/src/lib/checkout-spark-automatic-session"
 import { CheckoutSparkRecoveryPanel } from "../apps/merchant/src/components/CheckoutSparkRecoveryPanel"
+import { createMerchantCheckoutSparkPayoutReviewSelection } from "../apps/merchant/src/lib/checkout-spark-payout-review-selection"
 
 function deferred() {
   let resolve!: () => void
@@ -199,6 +200,79 @@ describe("Merchant automatic recovery session activation", () => {
     expect(opened).toBe(false)
   })
 
+  it("execution revocation invalidates held manual work without revoking a local display read", async () => {
+    let executionEnabled = true
+    let executionRevision = 1
+    const capturedRevision = executionRevision
+    const held = deferred()
+    const display = captureMerchantCheckoutSparkRecoveryAction({
+      generation: () => 1,
+      isCurrent: () => true,
+    })
+    const action = captureMerchantCheckoutSparkRecoveryAction({
+      generation: () => 1,
+      isCurrent: () =>
+        executionEnabled && executionRevision === capturedRevision,
+    })
+    let providerCalls = 0
+    const attempt = (async () => {
+      await held.promise
+      action.assertCurrent()
+      providerCalls += 1
+    })()
+    void attempt.catch(() => undefined)
+    executionEnabled = false
+    executionRevision += 1
+    executionEnabled = true
+    held.resolve()
+    await expect(attempt).rejects.toThrow("session changed")
+    expect(providerCalls).toBe(0)
+    expect(display.isCurrent()).toBe(true)
+    expect(action.isCurrent()).toBe(false)
+  })
+
+  it("execution revocation prevents late automatic activation and an already captured phase", async () => {
+    let executionEnabled = true
+    let drain = Promise.resolve()
+    const session = createMerchantCheckoutSparkAutomaticSession({
+      isCurrent: () => executionEnabled,
+      stopAndDrain: () => drain,
+    })
+    await session.change(true)
+    const captured = session.capture()
+    const held = deferred()
+    drain = held.promise
+    const starting = session.change(true)
+    executionEnabled = false
+    expect(captured).toThrow("session changed")
+    held.resolve()
+    expect(await starting).toBe(false)
+    expect(session.capture()).toThrow("session changed")
+  })
+
+  it("changing the selected order during a manual drain revokes execution even when the original order is reselected", async () => {
+    const selection = createMerchantCheckoutSparkPayoutReviewSelection()
+    selection.select("original-order")
+    const isOrderCurrent = selection.capture("original-order")
+    const action = captureMerchantCheckoutSparkRecoveryAction({
+      generation: () => 1,
+      isCurrent: () => isOrderCurrent(),
+    })
+    const held = deferred()
+    let walletOperations = 0
+    const pending = (async () => {
+      await held.promise
+      action.assertCurrent()
+      walletOperations += 1
+    })()
+    void pending.catch(() => undefined)
+    selection.select("different-order")
+    selection.select("original-order")
+    held.resolve()
+    await expect(pending).rejects.toThrow("session changed")
+    expect(walletOperations).toBe(0)
+  })
+
   it.each(["auth", "generation"] as const)(
     "suppresses held local read results after %s revocation",
     async (reason) => {
@@ -254,20 +328,86 @@ describe("Merchant automatic recovery session activation", () => {
     expect(available).not.toContain("Verify recovery key")
   })
 
+  it.each(["complete", "partial", "fee_only"] as const)(
+    "renders saved %s facts with execution disabled and no automatic continuation control",
+    (status) => {
+      const projection = {
+        creditVerified: true,
+        merchantVerified: true,
+        commerceVerified: status !== "partial",
+        feePending: status !== "complete",
+        recipientUnverified: false,
+      }
+      const html = renderToStaticMarkup(
+        <CheckoutSparkRecoveryPanel
+          principalPubkey={"a".repeat(64)}
+          selectedOrderId="saved-order"
+          selectedOrderSettlement={{ orderId: "saved-order", projection }}
+          allowAutomaticPayouts
+          executionEnabled={false}
+          startAutomatically
+          isSessionCurrent={() => true}
+        />
+      )
+      expect(html).toContain(
+        status === "partial" ? "Processing payment" : "Payment verified"
+      )
+      expect(html).not.toContain("Resume payment processing")
+      expect(html).not.toContain("Resume coordination fee")
+      expect(html).not.toContain("Pause coordination fee")
+      expect(html).not.toContain(">Pause<")
+      if (status !== "complete") {
+        expect(html).toContain("Processing is paused in this build")
+        expect(html).toContain("do not request another payment")
+      }
+      if (status !== "partial")
+        expect(html).toContain("Continue with fulfillment")
+    }
+  )
+
+  it("permits an existing bound fee to resume when execution is available independently of checkout admission", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkRecoveryPanel
+        principalPubkey={"a".repeat(64)}
+        selectedOrderId="saved-order"
+        selectedOrderSettlement={{
+          orderId: "saved-order",
+          projection: {
+            creditVerified: true,
+            merchantVerified: true,
+            commerceVerified: true,
+            feePending: true,
+          },
+        }}
+        allowAutomaticPayouts
+        executionEnabled
+        isSessionCurrent={() => true}
+      />
+    )
+    expect(html).toContain("Payment verified")
+    expect(html).toContain("Resume coordination fee")
+    expect(html).not.toContain("Pay for order")
+  })
+
   it("keeps route admission and synchronous manual serialization explicit", async () => {
     const source = await Bun.file(
       "apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx"
     ).text()
     const route = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
     const mounted = route.slice(
-      route.indexOf("{signerConnected && pubkey && quantumRouterEnabled"),
+      route.indexOf("{signerConnected && pubkey && ("),
       route.indexOf(
         "{hasAccount &&",
         route.indexOf("<CheckoutSparkRecoveryPanel")
       )
     )
     expect(mounted).toContain("key={`${pubkey}:${authGeneration}`}")
-    expect(mounted).toContain("allowAutomaticPayouts={quantumRouterEnabled}")
+    expect(mounted).toContain(
+      "allowAutomaticPayouts={quantumRouterExecutionEnabled}"
+    )
+    expect(mounted).toContain(
+      "executionEnabled={quantumRouterExecutionEnabled}"
+    )
     expect(mounted).toContain(
       "isSessionCurrent={() => isAuthGenerationCurrent(authGeneration)}"
     )
@@ -285,12 +425,24 @@ describe("Merchant automatic recovery session activation", () => {
     expect(manual).toContain("void stopDiscovery()")
     expect(manual).toContain("captureMerchantCheckoutSparkRecoveryAction")
     expect(manual).toContain("isCurrent: hasCurrentSession")
+    expect(manual).toContain("reviewSelection.capture(orderId)")
+    expect(manual).toContain("isOrderCurrent()")
     expect(
       source.match(
-        /const current = beginManualAction\((?:reviewed\.)?candidate\.orderId\)/g
+        /const current = beginManualAction\((?:reviewed\.)?candidate\.orderId(?:, true)?\)/g
       )
     ).toHaveLength(8)
-    expect(source).toContain("if (automaticPayouts) assertAutomaticCurrent()")
+    expect(source).toContain("assertAutomaticCurrent()")
+    expect(source).toContain(
+      "executionRevision.current !== actionExecutionRevision"
+    )
+    expect(source).toContain("isDisplayCurrent: display.isCurrent")
+    expect(
+      source.match(
+        /beginManualAction\((?:reviewed\.)?candidate\.orderId, true\)/g
+      )
+    ).toHaveLength(6)
+    expect(source).toContain("observationOnly: true")
     const actions = source.slice(
       source.indexOf("async function refreshVerifiedStatus"),
       source.indexOf("return (", source.indexOf("async function confirmPayout"))

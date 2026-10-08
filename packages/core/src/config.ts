@@ -218,8 +218,10 @@ export interface ConduitConfig {
   dmCompatibilityOrderRelayUrls: string[]
   /** Redeploy-controlled flag for the validated-order compatibility lane. */
   dmCompatibilityOrderRoutingEnabled: boolean
-  /** Compiled capability for supported Quantum Router checkout and recovery. */
+  /** Compiled admission for new supported Quantum Router checkouts. */
   quantumRouterEnabled: boolean
+  /** Compiled execution gate; never authorizes an unbound checkout by itself. */
+  quantumRouterExecutionEnabled: boolean
   zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
@@ -255,6 +257,7 @@ function getViteEnv(): {
   deploymentProfile: string
   dmCompatibilityOrderRouting: string
   quantumRouter: string
+  quantumRouterExecution: string
   localRouterCanary: string
   checkoutSparkRehearsal: string
   nip89RelayHint: string
@@ -288,6 +291,8 @@ function getViteEnv(): {
       dmCompatibilityOrderRouting:
         import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
       quantumRouter: import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "",
+      quantumRouterExecution:
+        import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED ?? "",
       localRouterCanary:
         import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY ?? "",
       checkoutSparkRehearsal:
@@ -325,6 +330,7 @@ function getViteEnv(): {
     deploymentProfile: "",
     dmCompatibilityOrderRouting: "",
     quantumRouter: "",
+    quantumRouterExecution: "",
     localRouterCanary: "",
     checkoutSparkRehearsal: "",
     nip89RelayHint: "",
@@ -521,8 +527,9 @@ export function resolveDmCompatibilityOrderRoutingEnabled(input: {
  * authorize payments. Local rehearsal flags never activate a hosted profile
  * or grant the separate local fee, invoice, or accelerated-timing exceptions.
  */
-export function resolveQuantumRouterEnabled(input: {
+type QuantumRouterCapabilityInput = {
   profileEnabled: boolean
+  executionEnabled?: boolean
   deploymentProfile: string
   lightningNetwork: string
   hostname?: string | null
@@ -530,7 +537,11 @@ export function resolveQuantumRouterEnabled(input: {
   localRouterCanaryFlag?: string
   localRehearsalFlag?: string
   e2eRelayIsolationEnabled?: boolean
-}): boolean {
+}
+
+function resolveQuantumRouterCapability(
+  input: QuantumRouterCapabilityInput
+): boolean {
   const deploymentProfile = input.deploymentProfile.trim().toLowerCase()
   const lightningNetwork = input.lightningNetwork.trim().toLowerCase()
   const hostname = (input.hostname ?? "")
@@ -577,6 +588,30 @@ export function resolveQuantumRouterEnabled(input: {
     return false
   }
   return true
+}
+
+/** Execution is independent of new admission but retains the same boundaries. */
+export function resolveQuantumRouterExecutionEnabled(
+  input: QuantumRouterCapabilityInput
+): boolean {
+  if (input.executionEnabled === undefined) {
+    // Preserve only the explicit local rehearsal's established default.
+    return input.deploymentProfile.trim().toLowerCase() === "local"
+      ? resolveQuantumRouterCapability(input)
+      : false
+  }
+  if (!input.executionEnabled) return false
+  return resolveQuantumRouterCapability({ ...input, profileEnabled: true })
+}
+
+/** New checkouts require both admission and execution, never either alone. */
+export function resolveQuantumRouterEnabled(
+  input: QuantumRouterCapabilityInput
+): boolean {
+  return (
+    resolveQuantumRouterCapability(input) &&
+    resolveQuantumRouterExecutionEnabled(input)
+  )
 }
 
 function getConfiguredRelayUrl(raw: string, fallback: string): string {
@@ -767,10 +802,15 @@ const dmCompatibilityOrderRoutingEnabled =
     runtimeHostname:
       typeof window === "undefined" ? null : window.location.hostname,
   })
-const quantumRouterEnabled = resolveQuantumRouterEnabled({
+const quantumRouterCapabilityInput: QuantumRouterCapabilityInput = {
   profileEnabled: ["1", "true", "on"].includes(
     env.quantumRouter.trim().toLowerCase()
   ),
+  executionEnabled: env.quantumRouterExecution.trim()
+    ? ["1", "true", "on"].includes(
+        env.quantumRouterExecution.trim().toLowerCase()
+      )
+    : undefined,
   deploymentProfile: env.deploymentProfile,
   lightningNetwork: env.lightningNetwork || "mainnet",
   hostname: typeof window === "undefined" ? null : window.location.hostname,
@@ -778,7 +818,13 @@ const quantumRouterEnabled = resolveQuantumRouterEnabled({
   localRouterCanaryFlag: env.localRouterCanary,
   localRehearsalFlag: env.checkoutSparkRehearsal,
   e2eRelayIsolationEnabled: e2eRelayUrls.length === 1,
-})
+}
+const quantumRouterExecutionEnabled = resolveQuantumRouterExecutionEnabled(
+  quantumRouterCapabilityInput
+)
+const quantumRouterEnabled = resolveQuantumRouterEnabled(
+  quantumRouterCapabilityInput
+)
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appCommercePublishRelayUrls,
@@ -818,6 +864,7 @@ const configuredRelayConfig: ConduitConfig = {
   dmCompatibilityOrderRelayUrls,
   dmCompatibilityOrderRoutingEnabled,
   quantumRouterEnabled,
+  quantumRouterExecutionEnabled,
   zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
@@ -957,7 +1004,11 @@ export function isMockPayments(): boolean {
 }
 
 export function isQuantumRouterEnabled(): boolean {
-  return config.quantumRouterEnabled
+  return config.quantumRouterEnabled && config.quantumRouterExecutionEnabled
+}
+
+export function isQuantumRouterExecutionEnabled(): boolean {
+  return config.quantumRouterExecutionEnabled
 }
 
 export function isSignet(): boolean {

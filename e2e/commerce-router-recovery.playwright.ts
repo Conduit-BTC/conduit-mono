@@ -85,6 +85,56 @@ const networkOptions = {
   closeLocalConnections: true,
 }
 
+// Mutate only the shared module in this isolated synthetic browser. This is not
+// a product switch, deployment override or authorization for an unbound plan.
+async function setIsolatedRouterCapabilities(
+  page: Page,
+  admission: boolean,
+  execution: boolean
+): Promise<void> {
+  const modulePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/config.ts", import.meta.url)).replaceAll("\\", "/")}`
+  await page.evaluate(
+    async ({ modulePath, admission, execution }) => {
+      const { config } = await import(/* @vite-ignore */ modulePath)
+      config.quantumRouterEnabled = admission
+      config.quantumRouterExecutionEnabled = execution
+    },
+    { modulePath, admission, execution }
+  )
+}
+
+async function selectIsolatedOrder(page: Page, orderId: string): Promise<void> {
+  // Exercise the actual browser-history/router selection path without a full
+  // reload resetting the intentionally isolated in-memory capability matrix.
+  await page.evaluate((orderId) => {
+    const next = new URL(window.location.href)
+    next.searchParams.set("order", orderId)
+    next.searchParams.set("focus", "payment")
+    window.history.pushState(null, "", next)
+    window.dispatchEvent(new PopStateEvent("popstate"))
+  }, orderId)
+}
+
+async function remountIsolatedSavedOrder(page: Page): Promise<void> {
+  const originalOrderId = new URL(page.url()).searchParams.get("order")
+  if (!originalOrderId)
+    throw new Error("The saved router order is unavailable.")
+  const receipt = page.getByRole("region", {
+    name: "Payment history",
+    includeHidden: true,
+  })
+  // Compiled capabilities are immutable in a real document. Observe each
+  // isolated profile on a fresh keyed OrderDetail mount, not as a reactive
+  // flag API. The unknown focused order must first remove the old receipt.
+  await selectIsolatedOrder(
+    page,
+    await page.evaluate(() => crypto.randomUUID())
+  )
+  await expect(receipt).toHaveCount(0)
+  await selectIsolatedOrder(page, originalOrderId)
+  await expect(receipt).toHaveCount(1)
+}
+
 // Observe local retirement without exposing wallet machinery in the Merchant UI.
 // This helper reads only this isolated fixture's persisted state and returns a
 // small status. It never writes a tombstone or manufactures provider evidence.
@@ -378,7 +428,8 @@ async function rehearseRouter(
     | "supported-setup"
     | "unsupported-merchant"
     | "unsupported-supplier"
-    | null = null
+    | null = null,
+  capabilityRegression = false
 ): Promise<void> {
   test.setTimeout(240_000)
   const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
@@ -966,6 +1017,10 @@ async function rehearseRouter(
     ).toBe(true)
     await page.setViewportSize({ width: 1280, height: 720 })
     const beforeConsent = control().snapshot()
+    if (capabilityRegression) {
+      setStage("bound buyer continues while new router admission is disabled")
+      await setIsolatedRouterCapabilities(page, false, true)
+    }
     await expect(
       page.getByText(/Pay once, then return here to check progress/)
     ).toHaveCount(0)
@@ -1643,6 +1698,75 @@ async function rehearseRouter(
     ).toHaveCount(0)
 
     const pendingNative = control().nativeSnapshot()
+    if (capabilityRegression) {
+      setStage("disabled execution preserves partial saved payment history")
+      setStage("partial execution stop waits for buyer pause")
+      await page
+        .getByRole("button", { name: "Pause payment", exact: true })
+        .click()
+      await expect(
+        page.getByRole("button", { name: "Refresh saved status", exact: true })
+      ).toBeEnabled()
+      await setIsolatedRouterCapabilities(page, false, false)
+      const walletOpensBeforeStop = nativeWalletOpenSuccesses
+      const walletInitializationsBeforeStop = walletInitializations
+      const stopSnapshot = control().snapshot()
+      setStage("partial execution stop mounts disabled saved order")
+      await remountIsolatedSavedOrder(page)
+      setStage("partial execution stop refreshes saved status")
+      await page
+        .getByRole("button", { name: "Refresh saved status", exact: true })
+        .click()
+      setStage("partial execution stop shows paused notice")
+      await expect(
+        page.getByText("Payment processing paused", { exact: true })
+      ).toBeVisible()
+      setStage("partial execution stop disables dispatch controls")
+      await expect(
+        page.getByRole("button", { name: "Resume payment", exact: true })
+      ).toBeDisabled()
+      await expect(
+        page.getByRole("button", {
+          name: "Reopen external invoice",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      setStage("partial execution stop retains recorded receipt")
+      await page
+        .locator("details")
+        .filter({ has: partialReceipt })
+        .locator("summary")
+        .click()
+      await expect(partialReceipt).toBeVisible()
+      await expect(
+        partialReceipt.getByText("Payments are still being completed.", {
+          exact: true,
+        })
+      ).toBeVisible()
+      setStage("partial execution stop preserves verified commerce")
+      await expect(
+        page.getByText("Order payment verified", { exact: true }).first()
+      ).toBeVisible()
+      setStage("partial execution stop preserves provider and wallet counters")
+      expect(control().snapshot()).toEqual(stopSnapshot)
+      expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(
+        pendingNative.nativeSendInvocationCount
+      )
+      expect(nativeWalletOpenSuccesses).toBe(walletOpensBeforeStop)
+      expect(walletInitializations).toBe(walletInitializationsBeforeStop)
+      setStage("partial execution stop restores bound continuation")
+      await setIsolatedRouterCapabilities(page, false, true)
+      await remountIsolatedSavedOrder(page)
+      await page
+        .getByRole("button", { name: "Refresh saved status", exact: true })
+        .click()
+      const resume = page.getByRole("button", {
+        name: "Resume payment",
+        exact: true,
+      })
+      await expect(resume).toBeEnabled()
+      await resume.click()
+    }
     // The same approved foreground run must reconcile this existing send.
     // Completing the oracle must not require a second consent or submission.
     control().setNativeCompletion(true)
@@ -1774,6 +1898,27 @@ async function rehearseRouter(
     })
     await page.getByText("Checkout recovery details", { exact: true }).click()
     await expect(cleanup).toBeEnabled()
+    if (capabilityRegression) {
+      setStage("disabled execution preserves complete saved payment history")
+      await setIsolatedRouterCapabilities(page, false, false)
+      const walletOpensBeforeStop = nativeWalletOpenSuccesses
+      await remountIsolatedSavedOrder(page)
+      await page.getByText("Checkout recovery details", { exact: true }).click()
+      await refresh.click()
+      await expect(refresh).toBeEnabled()
+      await expect(cleanup).toBeDisabled()
+      await expect(
+        page.getByText("Payment recorded", { exact: true })
+      ).toBeVisible()
+      await assertRecordedReceipt()
+      expect(control().snapshot()).toEqual(settled)
+      expect(nativeWalletOpenSuccesses).toBe(walletOpensBeforeStop)
+      await setIsolatedRouterCapabilities(page, false, true)
+      await remountIsolatedSavedOrder(page)
+      await page.getByText("Checkout recovery details", { exact: true }).click()
+      await refresh.click()
+      await expect(cleanup).toBeEnabled()
+    }
     // The runner changes only native owned-funds evidence. It cannot manufacture
     // an application retirement proof or change the persisted checkout state.
     control().setAdditionalOwnedSats(1)
@@ -1831,6 +1976,42 @@ async function rehearseRouter(
     expect((await readTestRelayEvents({ kinds: [9_734] })).length).toBe(0)
     expect((await readTestRelayEvents({ kinds: [9_735] })).length).toBe(0)
     expect(webLnSends).toBe(0)
+    if (capabilityRegression) {
+      setStage("order and account changes hide stale saved payment history")
+      const originalOrderId = new URL(page.url()).searchParams.get("order")!
+      await setIsolatedRouterCapabilities(page, false, false)
+      await remountIsolatedSavedOrder(page)
+      await refresh.click()
+      await expect(refresh).toBeEnabled()
+      await expect(
+        page.getByText("Payment complete", { exact: true })
+      ).toBeVisible()
+      await assertRecordedReceipt()
+      await selectIsolatedOrder(
+        page,
+        await page.evaluate(() => crypto.randomUUID())
+      )
+      await expect(
+        page.getByText("Payment complete", { exact: true })
+      ).toHaveCount(0)
+      await expect(receipt).toHaveCount(0)
+      await selectIsolatedOrder(page, originalOrderId)
+      await expect(
+        page.getByText("Payment complete", { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+      await assertRecordedReceipt()
+      await page
+        .getByRole("button", { name: "Open account menu", exact: true })
+        .click()
+      await page
+        .getByRole("menuitem", { name: "Disconnect", exact: true })
+        .click()
+      await expect(
+        page.getByText("Payment complete", { exact: true })
+      ).toHaveCount(0)
+      await expect(receipt).toHaveCount(0)
+      expect(control().snapshot()).toEqual(settled)
+    }
     // This buyer-led case is not evidence for cold Merchant takeover, browser
     // suspension, real provider fees, or production funded settlement.
     bodyCompleted = true
@@ -1880,6 +2061,10 @@ test("native router cold Merchant independently verifies supported recipients an
 test("native router ordinary guest checkout completes private commerce and native treasury without public zap signing @commerce", async ({
   browser,
 }) => rehearseRouter(browser, "buyer", "guest"))
+
+test("native router execution gates preserve bound continuation and saved payment history without stale order or account display @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "buyer", "signed-in", null, true))
 
 test("receiver setup saves and reads back a supported Merchant payment profile without creating a wallet or invoice @commerce", async ({
   browser,

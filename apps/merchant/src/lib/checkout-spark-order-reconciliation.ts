@@ -49,6 +49,8 @@ interface ReconciliationDependencies {
   notifySuppliers?: typeof queueMerchantCheckoutSparkSupplierNotifications
   verifyRecipients?: typeof verifySavedMerchantCheckoutSparkRecipients
   observeNative?: typeof observeMerchantCheckoutSparkOrder
+  /** Observe exact saved facts without any claim-capable wallet operation. */
+  observationOnly?: boolean
   /** Session/page guard independent of a replaceable recovery candidate. */
   assertNotificationActive?: () => void
   now?: () => number
@@ -174,44 +176,43 @@ async function inspectMerchantCheckoutSparkOrder(
     attributionUnavailable = attribution === "unavailable"
   }
 
-  if (now() < saved.state.plan.takeoverAt) {
+  if (dependencies.observationOnly || now() < saved.state.plan.takeoverAt) {
     // This separate version-pinned adapter queries exact native/SSP evidence
     // without initialize, privacy mutation, claims, or outgoing capabilities.
     // Receiver-only evidence remains informational if that read cannot finish.
+    let observation: "verified" | "pending" | "unavailable" = "pending"
     if (repository.loadMerchantPlanSourceEvents) {
       try {
-        await (dependencies.observeNative ?? observeMerchantCheckoutSparkOrder)(
-          principal,
-          candidate,
-          assertActive,
-          {
-            repository: {
-              load: repository.load.bind(repository),
-              loadMerchantOrderWitness:
-                repository.loadMerchantOrderWitness.bind(repository),
-              loadMerchantPlanSourceEvents:
-                repository.loadMerchantPlanSourceEvents.bind(repository),
-              recordMerchantCredit:
-                repository.recordMerchantCredit.bind(repository),
-              recordMerchantPayout:
-                repository.recordMerchantPayout.bind(repository),
-              loadMerchantSettlement:
-                repository.loadMerchantSettlement.bind(repository),
-            },
-            expectedOrderWitness: witness,
-            now,
-          }
-        )
+        observation = await (
+          dependencies.observeNative ?? observeMerchantCheckoutSparkOrder
+        )(principal, candidate, assertActive, {
+          repository: {
+            load: repository.load.bind(repository),
+            loadMerchantOrderWitness:
+              repository.loadMerchantOrderWitness.bind(repository),
+            loadMerchantPlanSourceEvents:
+              repository.loadMerchantPlanSourceEvents.bind(repository),
+            recordMerchantCredit:
+              repository.recordMerchantCredit.bind(repository),
+            recordMerchantPayout:
+              repository.recordMerchantPayout.bind(repository),
+            loadMerchantSettlement:
+              repository.loadMerchantSettlement.bind(repository),
+          },
+          expectedOrderWitness: witness,
+          now,
+        })
         assertActive()
       } catch {
         assertActive()
+        observation = "unavailable"
         // Failed reads preserve prior facts. They cannot authorize a fallback
         // claim-capable wallet initialization or mark receiver-only facts paid.
       }
     }
-    // Even verified commerce cannot advance fee, preparation or retirement
-    // before takeover; keep this candidate scheduled for its frozen boundary.
-    return "pending"
+    // Observation remains inert after takeover when execution is unavailable.
+    // Before takeover keep this candidate scheduled for its frozen boundary.
+    return dependencies.observationOnly ? observation : "pending"
   }
 
   const readProjection = async () => {

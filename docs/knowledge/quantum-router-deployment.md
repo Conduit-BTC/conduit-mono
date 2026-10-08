@@ -2,10 +2,22 @@
 
 The code-owned mainnet Pages preview and production profiles keep Quantum
 Router inactive until their ordinary receiving endpoints are qualified and
-activation is explicitly approved. Enabling a profile uses the shared
-`isQuantumRouterEnabled()` capability: Market checkout, saved buyer continuation,
-Merchant Orders and Merchant Home use the same resolved setting. An activated
-production deployment needs no localhost host or local rehearsal flags.
+activation is explicitly approved. New preparation uses the shared
+`isQuantumRouterEnabled()` admission capability and requires execution to be
+enabled as well. Existing bound-plan actions use the separate compiled
+`isQuantumRouterExecutionEnabled()` capability. Disabling new admission need
+not stop recovery of an already approved plan; explicitly disabling execution
+pauses funding disclosure/payment, wallet claims, payout preparation/sending
+and retirement for that plan. Neither capability replaces its exact evidence,
+approval, current-session or frozen timing requirements. Current managed
+profiles keep both settings false; this split does not activate routing.
+
+Authenticated existing-order settlement projections and pinned query-only
+observation remain available independently of both settings. They retain paid
+commerce and fulfillment evidence without claim-capable wallet initialization,
+invoice preparation or payout sending, including after takeover. Account/order changes
+discard late read results. An activated production deployment needs no
+localhost host or local rehearsal flags.
 Signet staging remains disabled:
 the current settled Spark plan supports mainnet and regtest, not Signet.
 
@@ -61,6 +73,9 @@ canonical mainnet production fee recipient; native final collection additionally
 requires its frozen Spark destination to remain explicitly approved.
 Historical local-canary records remain
 readable but are not silently rewritten or dispatched.
+An unset local execution setting inherits the resolved local admission for
+compatibility. An explicit execution-off setting overrides every rehearsal
+opt-in; local flags cannot activate a hosted execution profile.
 
 ## Pricing and receiver deployment trust
 
@@ -164,7 +179,8 @@ for the distinct expiry, renewal and attribution boundaries.
 
 ## Verification
 
-Build manifests expose `quantumRouterEnabled` alongside the resolved profile
+Build manifests expose `quantumRouterEnabled` and
+`quantumRouterExecutionEnabled` alongside the resolved profile
 and public configuration digest, which covers the selected network and resolved
 current/retired treasury policy and shared receiver/pricing trust. Raw treasury
 destinations, receiver descriptors and rate keys/URLs are not included in

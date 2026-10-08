@@ -12,6 +12,7 @@ export interface ConduitBuildInfo {
     dmCompatibilityOrderRoutingEnabled: boolean
     livePresenceEnabled: boolean
     quantumRouterEnabled: boolean
+    quantumRouterExecutionEnabled: boolean
   }
 }
 
@@ -30,6 +31,23 @@ export function getCommitUrl(
   if (!info.commitSha) return null
   return `${normalizeRepositoryUrl(info.sourceUrl)}/commit/${info.commitSha}`
 }
+
+const executionFlag = (
+  import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED ?? ""
+)
+  .trim()
+  .toLowerCase()
+const localInheritedExecution =
+  (import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() ===
+    "local" &&
+  (["1", "true", "on"].includes(
+    (import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "").trim().toLowerCase()
+  ) ||
+    (import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY === "true" &&
+      import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true"))
+const compiledExecutionEnabled = executionFlag
+  ? ["1", "true", "on"].includes(executionFlag)
+  : localInheritedExecution
 
 export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
   appVersion: clean(import.meta.env.VITE_APP_VERSION) ?? "0.0.0",
@@ -52,8 +70,11 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
     livePresenceEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_LIVE_PRESENCE_ENABLED ?? "").trim().toLowerCase()
     ),
-    quantumRouterEnabled: ["1", "true", "on"].includes(
-      (import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "").trim().toLowerCase()
-    ),
+    quantumRouterEnabled:
+      compiledExecutionEnabled &&
+      ["1", "true", "on"].includes(
+        (import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "").trim().toLowerCase()
+      ),
+    quantumRouterExecutionEnabled: compiledExecutionEnabled,
   }),
 })

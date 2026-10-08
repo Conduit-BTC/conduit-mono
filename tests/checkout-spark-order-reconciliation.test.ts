@@ -334,6 +334,91 @@ function interruptedNativeFixture(
 }
 
 describe("automatic checkout Spark order reconciliation adapter", () => {
+  it("keeps post-takeover observation query-only when execution is disabled", async () => {
+    const context = fixture()
+    Object.assign(context.repository, {
+      loadMerchantPlanSourceEvents: async () => [],
+      recordMerchantCredit: async () => {},
+      recordMerchantPayout: async () => {},
+    })
+    let observations = 0
+    const noExecution = async () => {
+      throw new Error("Query-only observation cannot open a claiming wallet")
+    }
+    expect(
+      await reconcileMerchantCheckoutSparkOrder(merchant, candidate, () => {}, {
+        repository: context.repository,
+        now: () => 2_000,
+        observationOnly: true,
+        observeNative: async () => {
+          observations += 1
+          context.setRecord(providerRecord(true, [merchantLeg, supplierLeg]))
+          return "verified"
+        },
+        checkCredit: noExecution,
+        inspectPayouts: noExecution,
+        notifySuppliers: () => {},
+      })
+    ).toBe("verified")
+    expect(observations).toBe(1)
+  })
+
+  it("drops a post-takeover query result after session revocation without falling back to wallet execution", async () => {
+    const context = fixture()
+    Object.assign(context.repository, {
+      loadMerchantPlanSourceEvents: async () => [],
+      recordMerchantCredit: async () => {},
+      recordMerchantPayout: async () => {},
+    })
+    let current = true
+    const assertCurrent = () => {
+      if (!current) throw new Error("Observation session revoked")
+    }
+    let resolve!: () => void
+    const held = new Promise<void>((finish) => {
+      resolve = finish
+    })
+    let started!: () => void
+    const observationStarted = new Promise<void>((finish) => {
+      started = finish
+    })
+    let executionCalls = 0
+    const noExecution = async () => {
+      executionCalls += 1
+      throw new Error("No claim-capable fallback")
+    }
+    const pending = reconcileMerchantCheckoutSparkOrder(
+      merchant,
+      candidate,
+      assertCurrent,
+      {
+        repository: context.repository,
+        now: () => 2_000,
+        observationOnly: true,
+        observeNative: async () => {
+          started()
+          await held
+          return "verified"
+        },
+        checkCredit: noExecution,
+        inspectPayouts: noExecution,
+      }
+    )
+    void pending.catch(() => undefined)
+    await observationStarted
+    current = false
+    resolve()
+    await expect(pending).rejects.toThrow("Observation session revoked")
+    expect(executionCalls).toBe(0)
+    expect(
+      await context.repository.loadMerchantSettlement(
+        merchant,
+        candidate.checkoutId,
+        candidate.planDigest
+      )
+    ).toBeNull()
+  })
+
   it("rechecks exact funding after query-only credit when the saved router state has no credit", async () => {
     const context = fixture()
     context.setSavedCredit(null)

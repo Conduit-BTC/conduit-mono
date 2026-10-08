@@ -62,13 +62,24 @@ describe("settled router buyer presentation", () => {
     )
   })
 
-  it("requires the shared deployment capability at route entry and saved-plan actions", () => {
+  it("separates new checkout admission from saved-plan execution and observation", () => {
     for (const route of [checkoutRoute, ordersRoute]) {
-      expect(route).toContain("isQuantumRouterEnabled")
       expect(route).not.toContain("VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL")
       expect(route).not.toContain("canUseCheckoutSparkLocalRouterCanary")
     }
+    expect(checkoutRoute).toContain("isQuantumRouterEnabled")
+    expect(ordersRoute).not.toContain("isQuantumRouterEnabled")
+    expect(ordersRoute).toContain("isQuantumRouterExecutionEnabled")
     expect(checkoutRoute).toContain("!isQuantumRouterEnabled() ||")
+    const savedContinuation = checkoutRoute.slice(
+      checkoutRoute.indexOf("async function continueSavedRouterOrder"),
+      checkoutRoute.indexOf("async function prepareSettledRouterOrder")
+    )
+    expect(savedContinuation).toContain("!isQuantumRouterExecutionEnabled()")
+    expect(savedContinuation).toContain("isQuantumRouterExecutionEnabled() &&")
+    expect(savedContinuation).not.toContain("isQuantumRouterEnabled()")
+    expect(savedContinuation).toContain("resumeCheckoutSparkSettledOrder({")
+    expect(savedContinuation).not.toContain("prepareCheckoutSparkSettled")
     const preparationGuard = checkoutRoute.slice(
       checkoutRoute.indexOf("const canContinueSettledPreparation = () =>"),
       checkoutRoute.indexOf(
@@ -83,7 +94,11 @@ describe("settled router buyer presentation", () => {
       "shouldContinue: canContinueSettledPreparation"
     )
     expect(ordersRoute).toMatch(
-      /function canContinueRouterSession\(\): boolean \{[\s\S]*?isQuantumRouterEnabled\(\)/
+      /function canContinueRouterSession\(\): boolean \{[\s\S]*?isQuantumRouterExecutionEnabled\(\)/
+    )
+    expect(ordersRoute).toContain("{routerBinding && (")
+    expect(ordersRoute).toContain(
+      "enabled: routerBinding !== undefined && isRouterSavedStateCurrent()"
     )
     expect(ordersRoute).toContain("shouldContinue: approvedSessionIsCurrent")
     expect(shopperAdvance).toContain("assertBeforeSend: async (target)")

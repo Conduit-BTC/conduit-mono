@@ -48,7 +48,8 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
         "livePresenceEnabled": true,
-        "quantumRouterEnabled": false
+        "quantumRouterEnabled": false,
+        "quantumRouterExecutionEnabled": false
       }
     },
     "production": {
@@ -57,7 +58,8 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": false,
         "livePresenceEnabled": true,
-        "quantumRouterEnabled": false
+        "quantumRouterEnabled": false,
+        "quantumRouterExecutionEnabled": false
       }
     },
     "staging": {
@@ -66,7 +68,8 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
         "livePresenceEnabled": false,
-        "quantumRouterEnabled": false
+        "quantumRouterEnabled": false,
+        "quantumRouterExecutionEnabled": false
       }
     }
   }

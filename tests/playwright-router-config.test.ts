@@ -79,6 +79,7 @@ describe("isolated router Playwright launcher", () => {
       "native router funding automatically @commerce",
       "native router cold Merchant restores @commerce",
       "native router ordinary guest checkout @commerce",
+      "native router execution gates preserve saved payment history @commerce",
     ])
       expect((config.grep as RegExp).test(title)).toBe(true)
     expect(config.grepInvert).toBeUndefined()

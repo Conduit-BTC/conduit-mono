@@ -69,6 +69,8 @@ interface CheckoutSparkRecoveryPanelProps {
   onSettlementChange?: () => void
   /** Availability only; default activation remains a separate route policy. */
   allowAutomaticPayouts?: boolean
+  /** Separate deployment permission for manual and automatic wallet operations. */
+  executionEnabled?: boolean
   startAutomatically?: boolean
   isSessionCurrent: () => boolean
 }
@@ -103,6 +105,7 @@ export function CheckoutSparkRecoveryPanel({
   container,
   onSettlementChange,
   allowAutomaticPayouts = false,
+  executionEnabled = allowAutomaticPayouts,
   startAutomatically = false,
   isSessionCurrent,
 }: CheckoutSparkRecoveryPanelProps) {
@@ -117,6 +120,7 @@ export function CheckoutSparkRecoveryPanel({
       container={container}
       onSettlementChange={onSettlementChange}
       allowAutomaticPayouts={allowAutomaticPayouts}
+      executionEnabled={executionEnabled}
       startAutomatically={startAutomatically}
       isSessionCurrent={isSessionCurrent}
     />
@@ -133,6 +137,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   container,
   onSettlementChange,
   allowAutomaticPayouts = false,
+  executionEnabled = allowAutomaticPayouts,
   startAutomatically = false,
   isSessionCurrent,
 }: CheckoutSparkRecoveryPanelProps) {
@@ -140,6 +145,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   sessionCurrent.current = isSessionCurrent
   const automaticAllowed = useRef(allowAutomaticPayouts)
   automaticAllowed.current = allowAutomaticPayouts
+  const executionAllowed = useRef(executionEnabled)
+  const executionRevision = useRef(0)
+  if (executionAllowed.current !== executionEnabled) {
+    executionRevision.current += 1
+  }
+  executionAllowed.current = executionEnabled
   const hasCurrentSession = useCallback(() => {
     try {
       return sessionCurrent.current()
@@ -147,6 +158,10 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       return false
     }
   }, [])
+  const hasCurrentExecutionSession = useCallback(
+    () => executionAllowed.current && hasCurrentSession(),
+    [hasCurrentSession]
+  )
   const settlementChanged = useRef(onSettlementChange)
   settlementChanged.current = onSettlementChange
   const generation = useRef(0)
@@ -173,7 +188,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   }, [])
   const [automaticSession] = useState(() =>
     createMerchantCheckoutSparkAutomaticSession({
-      isCurrent: () => automaticAllowed.current && hasCurrentSession(),
+      isCurrent: () => automaticAllowed.current && hasCurrentExecutionSession(),
       stopAndDrain: stopDiscovery,
     })
   )
@@ -237,6 +252,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const candidate = orderCandidates.length === 1 ? orderCandidates[0] : null
   const manualControlsDisabled =
     busy || automaticTransition !== null || !hasCurrentSession()
+  const manualExecutionDisabled =
+    manualControlsDisabled || !hasCurrentExecutionSession()
 
   useEffect(
     () => () => {
@@ -246,6 +263,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     },
     [automaticSession]
   )
+
+  useEffect(() => {
+    if (executionEnabled) return
+    automaticSession.revoke()
+    setAutomaticPayouts(false)
+    setConfirmation(null)
+    void stopDiscovery().catch(() => undefined)
+  }, [executionEnabled, automaticSession, stopDiscovery])
 
   useEffect(() => {
     const timer = window.setInterval(() => setDisplayNowMs(Date.now()), 10_000)
@@ -273,6 +298,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     if (busy || confirmation || automaticTransition) return
     const current = ++discoveryGeneration.current
     const actionGeneration = generation.current
+    const actionExecutionRevision = executionRevision.current
     let verificationRead = 0
     let controller: ReturnType<
       typeof startMerchantCheckoutSparkDiscovery
@@ -317,7 +343,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           async reconcile(candidate, assertWorkerCurrent) {
             const assertActive = () => {
               assertWorkerCurrent()
-              if (automaticPayouts) assertAutomaticCurrent()
+              if (automaticPayouts) {
+                assertAutomaticCurrent()
+                if (executionRevision.current !== actionExecutionRevision) {
+                  throw new Error("Merchant execution permission changed.")
+                }
+              }
               if (!isCurrent() || document.visibilityState === "hidden") {
                 throw new Error("Merchant reconciliation session changed.")
               }
@@ -349,7 +380,11 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                   principalPubkey,
                   candidate,
                   assertActive,
-                  { repository, assertNotificationActive }
+                  {
+                    repository,
+                    assertNotificationActive,
+                    observationOnly: true,
+                  }
                 )
               }
               if (isCurrent()) {
@@ -453,6 +488,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     automaticPayouts,
     automaticTransition,
     automaticSession,
+    executionEnabled,
     hasCurrentSession,
     busy,
     confirmation,
@@ -465,7 +501,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     if (
       next &&
       (!allowAutomaticPayouts ||
-        !hasCurrentSession() ||
+        !hasCurrentExecutionSession() ||
         document.visibilityState === "hidden" ||
         automaticTransitionRef.current !== null)
     )
@@ -502,13 +538,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const changeAutomaticMode = useRef(changeAutomaticPayouts)
   changeAutomaticMode.current = changeAutomaticPayouts
   useEffect(() => {
-    if (!startAutomatically || !allowAutomaticPayouts) return
+    if (!startAutomatically || !allowAutomaticPayouts || !executionEnabled)
+      return
     let requested = false
     const startWhenVisible = () => {
       if (
         requested ||
         document.visibilityState === "hidden" ||
-        !hasCurrentSession()
+        !hasCurrentExecutionSession()
       )
         return
       requested = true
@@ -520,13 +557,19 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     document.addEventListener("visibilitychange", startWhenVisible)
     return () =>
       document.removeEventListener("visibilitychange", startWhenVisible)
-  }, [startAutomatically, allowAutomaticPayouts, hasCurrentSession])
+  }, [
+    startAutomatically,
+    allowAutomaticPayouts,
+    executionEnabled,
+    hasCurrentExecutionSession,
+  ])
 
-  function beginManualAction(orderId: string) {
+  function beginManualAction(orderId: string, requiresExecution = false) {
     if (
       busyRef.current ||
       automaticTransitionRef.current !== null ||
-      !hasCurrentSession()
+      !hasCurrentSession() ||
+      (requiresExecution && !hasCurrentExecutionSession())
     )
       return null
     generation.current += 1
@@ -536,10 +579,22 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     setBusy(true)
     // Revoke before React renders; each action also awaits this same drain.
     void stopDiscovery().catch(() => undefined)
-    return captureMerchantCheckoutSparkRecoveryAction({
+    const capturedExecutionRevision = executionRevision.current
+    const isOrderCurrent = reviewSelection.capture(orderId)
+    const display = captureMerchantCheckoutSparkRecoveryAction({
       generation: () => generation.current,
       isCurrent: hasCurrentSession,
     })
+    const action = captureMerchantCheckoutSparkRecoveryAction({
+      generation: () => generation.current,
+      isCurrent: () =>
+        requiresExecution
+          ? executionRevision.current === capturedExecutionRevision &&
+            isOrderCurrent() &&
+            hasCurrentExecutionSession()
+          : hasCurrentSession(),
+    })
+    return { ...action, isDisplayCurrent: display.isCurrent }
   }
 
   async function refreshVerifiedStatus(
@@ -608,7 +663,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       setResult(null)
       setNotice("Recovery import could not finish. No payout was attempted.")
     } finally {
-      if (current.isCurrent()) setBusy(false)
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -653,7 +708,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         "Recovery access could not be confirmed. No payout was attempted."
       )
     } finally {
-      if (current.isCurrent()) setBusy(false)
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -666,7 +721,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       setNotice("Credit recovery is available after the shopper handoff time.")
       return
     }
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate.orderId, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -703,7 +758,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         "Credit check could not finish. Opening Spark may have claimed inbound funds; no payout was attempted."
       )
     } finally {
-      if (current.isCurrent()) setBusy(false)
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -716,7 +771,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       setNotice("Payout history is available after the shopper handoff time.")
       return
     }
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate.orderId, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -758,7 +813,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         "Payout history check could not finish. Opening Spark may have claimed inbound funds; no payout was attempted."
       )
     } finally {
-      if (current.isCurrent()) setBusy(false)
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -766,7 +821,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy || confirmation) return
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate.orderId, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -822,8 +877,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         // Preparation may have saved positive provider facts before a later
         // delivery failure. Keep them visible without manufacturing success.
         await refreshVerifiedStatus([candidate], current)
-        if (current.isCurrent()) setBusy(false)
       }
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -838,7 +893,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       )
       return
     }
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate.orderId, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -883,7 +938,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         "Native Conduit finalization could not finish. Funds may have moved; inspect exact payout history before trying again."
       )
     } finally {
-      if (current.isCurrent()) setBusy(false)
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -900,7 +955,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       )
       return
     }
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate.orderId, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -925,7 +980,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         "Save this recovery state first, then review its saved payout. No payout was sent."
       )
     } finally {
-      if (current.isCurrent()) setBusy(false)
+      if (current.isDisplayCurrent()) setBusy(false)
     }
   }
 
@@ -950,7 +1005,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       )
       return
     }
-    const current = beginManualAction(reviewed.candidate.orderId)
+    const current = beginManualAction(reviewed.candidate.orderId, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -997,7 +1052,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         "Continuation could not finish. Funds may have moved; inspect exact payout history before trying again."
       )
     } finally {
-      if (current.isCurrent()) {
+      if (current.isDisplayCurrent()) {
         setBusy(false)
         setConfirmation(null)
       }
@@ -1046,11 +1101,18 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             : discoveryStatus === "checking"
         }
         paused={!automaticPayouts && automaticTransition !== "starting"}
-        canContinue={allowAutomaticPayouts}
+        canContinue={allowAutomaticPayouts && executionEnabled}
         transitioning={busy || automaticTransition !== null}
         handoffAt={candidate?.takeoverAt ?? 0}
         nowMs={displayNowMs}
-        notice={noticeOrderId === selectedOrderId ? notice : null}
+        notice={
+          !executionEnabled &&
+          (!projection?.commerceVerified || projection.feePending)
+            ? "Saved payment status remains available. Processing is paused in this build; do not request another payment."
+            : noticeOrderId === selectedOrderId
+              ? notice
+              : null
+        }
         onRetry={inspect}
         onPause={() => void changeAutomaticPayouts(false)}
         onContinue={() => void changeAutomaticPayouts(true)}
@@ -1098,7 +1160,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               <Button
                 type="button"
                 variant="outline"
-                disabled={manualControlsDisabled}
+                disabled={manualExecutionDisabled}
                 onClick={() => void checkCredit(candidate)}
               >
                 Check received payment
@@ -1106,7 +1168,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               <Button
                 type="button"
                 variant="outline"
-                disabled={manualControlsDisabled}
+                disabled={manualExecutionDisabled}
                 onClick={() => void inspectPayoutHistory(candidate)}
               >
                 Inspect exact payout history
@@ -1114,7 +1176,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               <Button
                 type="button"
                 variant="outline"
-                disabled={manualControlsDisabled || confirmation !== null}
+                disabled={manualExecutionDisabled || confirmation !== null}
                 onClick={() => void finalizeNativeTreasury(candidate)}
               >
                 Finalize Conduit payment
@@ -1122,7 +1184,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               <Button
                 type="button"
                 variant="outline"
-                disabled={manualControlsDisabled || confirmation !== null}
+                disabled={manualExecutionDisabled || confirmation !== null}
                 onClick={() => void preparePayout(candidate)}
               >
                 Prepare next payout
@@ -1130,7 +1192,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               <Button
                 type="button"
                 variant="outline"
-                disabled={manualControlsDisabled}
+                disabled={manualExecutionDisabled}
                 onClick={() => void reviewPayout(candidate)}
               >
                 Review saved payout
@@ -1167,7 +1229,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             <Button
               type="button"
               disabled={
-                busy || !confirmationHasTime || !confirmationSelectionCurrent
+                manualExecutionDisabled ||
+                !confirmationHasTime ||
+                !confirmationSelectionCurrent
               }
               onClick={() => void confirmPayout()}
             >

@@ -61,7 +61,12 @@ describe("Merchant saved payout confirmation", () => {
       route.indexOf("/>", route.indexOf("<CheckoutSparkRecoveryPanel"))
     )
     expect(mounted).not.toContain("automaticPayouts=")
-    expect(mounted).toContain("allowAutomaticPayouts={quantumRouterEnabled}")
+    expect(mounted).toContain(
+      "allowAutomaticPayouts={quantumRouterExecutionEnabled}"
+    )
+    expect(mounted).toContain(
+      "executionEnabled={quantumRouterExecutionEnabled}"
+    )
   })
 
   it("shows the exact destination, amount and full allocation limit without recovery material", () => {
@@ -205,9 +210,7 @@ describe("Merchant saved payout confirmation", () => {
     expect(preview).not.toContain("continueMerchantCheckoutSparkSettledPayout")
     expect(source).toContain("shouldContinue: current.isCurrent")
     expect(source).toContain("if (!open && !busy) setConfirmation(null)")
-    expect(source).toContain(
-      "busy || !confirmationHasTime || !confirmationSelectionCurrent"
-    )
+    expect(source).toContain("manualExecutionDisabled ||")
     expect(source).toContain("nowMs={confirmationNowMs}")
     expect(source).toContain("window.clearInterval(timer)")
     const confirm = source.slice(source.indexOf("async function confirmPayout"))
@@ -246,7 +249,7 @@ describe("Merchant saved payout confirmation", () => {
     expect(source).toContain("Prepare next payout")
     expect(source).toContain("onClick={() => void preparePayout(candidate)}")
     expect(source).toContain(
-      "disabled={manualControlsDisabled || confirmation !== null}"
+      "disabled={manualExecutionDisabled || confirmation !== null}"
     )
     expect(source).toContain("recovery_pending:")
     expect(source).toContain("do not assume a recovery copy reached your inbox")
@@ -264,7 +267,7 @@ describe("Merchant saved payout confirmation", () => {
     )
 
     expect(source).toContain("continueMerchantCheckoutSparkNativeTreasury")
-    expect(native).toContain("beginManualAction(candidate.orderId)")
+    expect(native).toContain("beginManualAction(candidate.orderId, true)")
     expect(native).toContain("await stopDiscovery()")
     expect(native).toContain("shouldContinue: current.isCurrent")
     expect(native).toContain("refreshVerifiedStatus([candidate], current)")

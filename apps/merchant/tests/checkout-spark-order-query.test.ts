@@ -174,12 +174,8 @@ describe("local Merchant router settlement queries", () => {
         `apps/merchant/src/routes/${name}.tsx`
       ).text()
       expect(route).toContain("useCheckoutSparkOrderSettlements({")
-      expect(route).toContain(
-        "enabled: quantumRouterEnabled && signerConnected"
-      )
-      expect(route).toContain(
-        "const quantumRouterEnabled = isQuantumRouterEnabled()"
-      )
+      expect(route).toContain("enabled: signerConnected")
+      expect(route).not.toContain("isQuantumRouterEnabled")
       expect(route).not.toContain("isLocalCheckoutSparkRecoveryRehearsal")
       expect(route).toContain("settlement={getOrderSettlement(conversation)}")
     }

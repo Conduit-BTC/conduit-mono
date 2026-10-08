@@ -31,6 +31,7 @@ import {
 } from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
 import { qualifiedReceiverFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 import { observeMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-observation"
+import { reconcileMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
 import type { MerchantSparkObservationWallet } from "../apps/merchant/src/lib/checkout-spark-observation-wallet"
 
 const NOW = 1_800_000_000_000
@@ -437,9 +438,14 @@ describe("immediate read-only Merchant receiver observation", () => {
     }
   })
 
-  it.each([false, true])(
-    "requires exact native credit and every debit before takeover, without advancing saved state (missing supplier debit=%s)",
-    async (missingSupplierDebit) => {
+  it.each([
+    { missingSupplierDebit: false, afterTakeover: false },
+    { missingSupplierDebit: true, afterTakeover: false },
+    { missingSupplierDebit: false, afterTakeover: true },
+    { missingSupplierDebit: true, afterTakeover: true },
+  ])(
+    "requires exact query-only credit and every debit without advancing saved state (scenario=%j)",
+    async ({ missingSupplierDebit, afterTakeover }) => {
       const context = fixture()
       const database = new ConduitDB(
         `native-observation-${crypto.randomUUID()}`,
@@ -504,85 +510,113 @@ describe("immediate read-only Merchant receiver observation", () => {
           paymentPreimage: receiver.preimage,
         }))
         let cleaned = 0
-        const status = await observeMerchantCheckoutSparkOrder(
+        let claimingOperations = 0
+        const observationTime = afterTakeover
+          ? context.plan.takeoverAt + 1
+          : NOW + 5
+        const noClaim = async () => {
+          claimingOperations += 1
+          throw new Error(
+            "Read-only recovery cannot initialize a claiming wallet"
+          )
+        }
+        const status = await reconcileMerchantCheckoutSparkOrder(
           context.merchant,
           candidate,
           () => {},
           {
             repository,
-            expectedOrderWitness: context.witness,
-            now: () => NOW + 5,
-            consumeRecovery: async (_principal, selected, adapter) => {
-              await adapter.consume(payload, () => {})
-              return {
-                status: "consumed",
-                coverage: "complete",
-                discoveryCoverage: "complete",
-                declarationState: "declared",
-                candidate: selected,
-              }
-            },
-            openObservationWallet: async (input) => {
-              expect(NOW + 5).toBeLessThan(candidate.takeoverAt)
-              expect(input.expectedWalletIdentityPubkey).toBe(
-                context.plan.funding.receiverIdentityPublicKey
-              )
-              return {
-                getIdentityPublicKey: async () =>
-                  input.expectedWalletIdentityPubkey,
-                getLightningReceiveRequest: async (id) => ({
-                  id,
-                  status: "TRANSFER_COMPLETED",
-                  network: "MAINNET",
-                  invoice: {
-                    encodedInvoice: context.plan.funding.paymentRequest,
-                    bitcoinNetwork: "MAINNET",
-                    paymentHash: context.plan.funding.paymentHash,
-                    amount: { originalValue: 1_113, originalUnit: "SATOSHI" },
+            observationOnly: true,
+            now: () => observationTime,
+            checkCredit: noClaim,
+            inspectPayouts: noClaim,
+            observeNative: (principal, selected, assertCurrent, options) =>
+              observeMerchantCheckoutSparkOrder(
+                principal,
+                selected,
+                assertCurrent,
+                {
+                  ...options,
+                  consumeRecovery: async (_principal, selected, adapter) => {
+                    await adapter.consume(payload, () => {})
+                    return {
+                      status: "consumed",
+                      coverage: "complete",
+                      discoveryCoverage: "complete",
+                      declarationState: "declared",
+                      candidate: selected,
+                    }
                   },
-                  transfer: {
-                    sparkId: context.state.credit!.transferId,
-                    userRequestId: id,
-                    totalAmount: {
-                      originalValue: 1_111,
-                      originalUnit: "SATOSHI",
-                    },
+                  openObservationWallet: async (input) => {
+                    expect(input.expectedWalletIdentityPubkey).toBe(
+                      context.plan.funding.receiverIdentityPublicKey
+                    )
+                    expect(input.expectedWalletIdentityPubkey).toBe(
+                      context.plan.funding.receiverIdentityPublicKey
+                    )
+                    return {
+                      getIdentityPublicKey: async () =>
+                        input.expectedWalletIdentityPubkey,
+                      getLightningReceiveRequest: async (id) => ({
+                        id,
+                        status: "TRANSFER_COMPLETED",
+                        network: "MAINNET",
+                        invoice: {
+                          encodedInvoice: context.plan.funding.paymentRequest,
+                          bitcoinNetwork: "MAINNET",
+                          paymentHash: context.plan.funding.paymentHash,
+                          amount: {
+                            originalValue: 1_113,
+                            originalUnit: "SATOSHI",
+                          },
+                        },
+                        transfer: {
+                          sparkId: context.state.credit!.transferId,
+                          userRequestId: id,
+                          totalAmount: {
+                            originalValue: 1_111,
+                            originalUnit: "SATOSHI",
+                          },
+                        },
+                      }),
+                      getTransfer: async (id) => ({
+                        id,
+                        status: "TRANSFER_STATUS_COMPLETED",
+                        totalValue: 1_111,
+                        transferDirection: "INCOMING",
+                        receiverIdentityPublicKey:
+                          input.expectedWalletIdentityPubkey,
+                        userRequest: { id: context.plan.funding.requestId },
+                      }),
+                      getTransferFromSsp: async (id) => {
+                        const index = requests.findIndex(
+                          (request) => request.idempotencyKey === id
+                        )
+                        if (index < 0 || (missingSupplierDebit && index === 1))
+                          return undefined
+                        return {
+                          sparkId: id,
+                          totalAmount: {
+                            originalValue: index === 0 ? 750 : 250,
+                            originalUnit: "SATOSHI",
+                          },
+                          userRequest: requests[index]!,
+                        }
+                      },
+                      getLightningSendRequest: async (id) =>
+                        requests.find((request) => request.id === id) ?? null,
+                      cleanup: async () => {
+                        cleaned += 1
+                      },
+                    }
                   },
-                }),
-                getTransfer: async (id) => ({
-                  id,
-                  status: "TRANSFER_STATUS_COMPLETED",
-                  totalValue: 1_111,
-                  transferDirection: "INCOMING",
-                  receiverIdentityPublicKey: input.expectedWalletIdentityPubkey,
-                  userRequest: { id: context.plan.funding.requestId },
-                }),
-                getTransferFromSsp: async (id) => {
-                  const index = requests.findIndex(
-                    (request) => request.idempotencyKey === id
-                  )
-                  if (index < 0 || (missingSupplierDebit && index === 1))
-                    return undefined
-                  return {
-                    sparkId: id,
-                    totalAmount: {
-                      originalValue: index === 0 ? 750 : 250,
-                      originalUnit: "SATOSHI",
-                    },
-                    userRequest: requests[index]!,
-                  }
-                },
-                getLightningSendRequest: async (id) =>
-                  requests.find((request) => request.id === id) ?? null,
-                cleanup: async () => {
-                  cleaned += 1
-                },
-              }
-            },
+                }
+              ),
           }
         )
         expect(status).toBe(missingSupplierDebit ? "pending" : "verified")
         expect(cleaned).toBe(1)
+        expect(claimingOperations).toBe(0)
         expect(
           await repository.load(
             context.plan.checkoutId,

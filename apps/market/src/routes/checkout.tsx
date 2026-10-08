@@ -34,6 +34,7 @@ import {
   BTC_USD_RATE_QUERY_KEY,
   config,
   isQuantumRouterEnabled,
+  isQuantumRouterExecutionEnabled,
   fetchLnurlPayMetadata,
   formatNpub,
   getPriceSats,
@@ -1390,7 +1391,8 @@ function CheckoutPage() {
   useEffect(() => {
     setRouterContinuationError(null)
     setRouterContinuedOrder(null)
-    if (isQuantumRouterEnabled() && !authPending) refreshRouterContinuations()
+    if (isQuantumRouterExecutionEnabled() && !authPending)
+      refreshRouterContinuations()
     else setRouterContinuations([])
     // Restored continuations are buyer-scoped, not derived from the new cart.
   }, [authGeneration, authPending, refreshRouterContinuations])
@@ -2840,7 +2842,7 @@ function CheckoutPage() {
           isAuthGenerationCurrent(authGeneration)
     if (
       paymentInFlightRef.current ||
-      !isQuantumRouterEnabled() ||
+      !isQuantumRouterExecutionEnabled() ||
       !generationCurrent()
     )
       return
@@ -2870,7 +2872,7 @@ function CheckoutPage() {
     }
     const shouldContinue = () =>
       generationCurrent() &&
-      isQuantumRouterEnabled() &&
+      isQuantumRouterExecutionEnabled() &&
       (buyer.kind === "signed_in"
         ? (() => {
             const current = getCheckoutBuyerIdentity()

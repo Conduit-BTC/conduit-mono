@@ -118,6 +118,25 @@ export function canInspectCheckoutSparkSettledSubmittedAttempt(
     : Boolean(leg.intent)
 }
 
+/** Fence local presentation reads; this grants neither funding nor send authority. */
+export async function readCurrentCheckoutSparkSettledOrderControl(input: {
+  read: (
+    assertCurrent: () => void
+  ) => Promise<Parameters<typeof assessCheckoutSparkSettledOrderControl>[0]>
+  isCurrent: () => boolean
+  signal?: AbortSignal
+}): Promise<CheckoutSparkSettledOrderControlState> {
+  const assertCurrent = () => {
+    if (input.signal?.aborted || !input.isCurrent()) {
+      throw new DOMException("Saved checkout read cancelled", "AbortError")
+    }
+  }
+  assertCurrent()
+  const snapshot = await input.read(assertCurrent)
+  assertCurrent()
+  return assessCheckoutSparkSettledOrderControl(snapshot)
+}
+
 /** Read-only presentation; the click handler must reload every authority. */
 export function assessCheckoutSparkSettledOrderControl(input: {
   lifecycle: OrderLifecycle | null | undefined

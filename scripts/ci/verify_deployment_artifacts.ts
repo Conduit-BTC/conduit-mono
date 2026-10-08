@@ -55,6 +55,12 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
   ) {
     throw new Error(`${manifestPath} has mismatched compiled feature flags.`)
   }
+  if (
+    manifest.publicFeatures.quantumRouterExecutionEnabled !==
+    resolvedProfile.publicFeatures.quantumRouterExecutionEnabled
+  ) {
+    throw new Error(`${manifestPath} has mismatched compiled execution flag.`)
+  }
   if (expectedCommit && manifest.commitSha !== expectedCommit) {
     throw new Error(`${manifestPath} has the wrong source commit.`)
   }

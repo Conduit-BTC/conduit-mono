@@ -12,7 +12,7 @@ import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
   config,
-  isQuantumRouterEnabled,
+  isQuantumRouterExecutionEnabled,
   db,
   DexieCheckoutSparkSettledRepository,
   encodeEventMarketNaddr,
@@ -214,7 +214,7 @@ import {
   getCheckoutSparkRecoveryDelivery,
 } from "../lib/checkout-spark-recovery-handoff"
 import {
-  assessCheckoutSparkSettledOrderControl,
+  readCurrentCheckoutSparkSettledOrderControl,
   matchesCheckoutSparkSettledOrderControl,
   type CheckoutSparkSettledOrderControlState,
 } from "../lib/checkout-spark-settled-order-control"
@@ -1047,6 +1047,17 @@ function OrderDetail({
     retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
 
   const routerBinding = row.lifecycle?.checkoutSparkRouterBinding
+  function isRouterSavedStateCurrent(): boolean {
+    return (
+      authGenerationRef.current === authGeneration &&
+      shouldContinueBuyerSession() &&
+      currentViewRef.current.orderId === vm.orderId &&
+      currentViewRef.current.merchantPubkey === row.merchantPubkey &&
+      (guestIdentity
+        ? getCurrentRouterGuestIdentity() !== null
+        : authenticatedPubkey === buyerPubkey)
+    )
+  }
   const settledRouterQuery = useQuery({
     queryKey: [
       "checkout-spark-settled-order-control",
@@ -1055,11 +1066,13 @@ function OrderDetail({
       buyerPubkey,
       authGeneration,
     ],
-    enabled: routerBinding !== undefined && isQuantumRouterEnabled(),
-    queryFn: readSettledRouterControl,
+    enabled: routerBinding !== undefined && isRouterSavedStateCurrent(),
+    queryFn: ({ signal }) => readSettledRouterControl(signal),
     refetchOnWindowFocus: false,
   })
-  const settledRouterControl = settledRouterQuery.data ?? null
+  const settledRouterControl = isRouterSavedStateCurrent()
+    ? (settledRouterQuery.data ?? null)
+    : null
   const settledControlRefreshAt =
     settledRouterControl?.status === "pay_funding"
       ? settledRouterControl.fundingExpiresAt
@@ -1135,44 +1148,55 @@ function OrderDetail({
         )
       : null
 
-  async function readSettledRouterControl() {
-    const lifecycle = await getOrderLifecycle(vm.orderId)
-    const binding = lifecycle?.checkoutSparkRouterBinding
-    const preparation = binding
-      ? getCheckoutSparkSettledPreparation(binding.checkoutId)
-      : null
-    const snapshot = binding
-      ? await new DexieCheckoutSparkSettledRepository().load(
-          binding.checkoutId,
-          binding.planDigest
-        )
-      : ({ status: "absent" } as const)
-    const initialRecovery = preparation?.recoveryHandoffId
-      ? getCheckoutSparkRecoveryDelivery(preparation.recoveryHandoffId)
-      : null
-    const manager = getSparkWalletManager()
-    const currentGuestIdentity = getCurrentRouterGuestIdentity()
-    return assessCheckoutSparkSettledOrderControl({
-      lifecycle,
-      preparation,
-      snapshot,
-      buyerPubkey:
-        currentGuestIdentity || authenticatedPubkey === buyerPubkey
-          ? buyerPubkey
-          : null,
-      guestIdentity: currentGuestIdentity,
-      initialRecoverySenderPubkey: initialRecovery?.record.senderPubkey ?? null,
-      initialRecoveryAcked: Boolean(
-        initialRecovery?.deliveryProgress.acknowledgedRelayRefs.length
-      ),
-      now: Date.now(),
-      routerWalletOpen: Boolean(binding && manager?.isOpen(binding.walletId)),
+  async function readSettledRouterControl(signal?: AbortSignal) {
+    return readCurrentCheckoutSparkSettledOrderControl({
+      signal,
+      isCurrent: isRouterSavedStateCurrent,
+      async read(assertCurrent) {
+        const lifecycle = await getOrderLifecycle(vm.orderId)
+        assertCurrent()
+        const binding = lifecycle?.checkoutSparkRouterBinding
+        const preparation = binding
+          ? getCheckoutSparkSettledPreparation(binding.checkoutId)
+          : null
+        const snapshot = binding
+          ? await new DexieCheckoutSparkSettledRepository().load(
+              binding.checkoutId,
+              binding.planDigest
+            )
+          : ({ status: "absent" } as const)
+        assertCurrent()
+        const initialRecovery = preparation?.recoveryHandoffId
+          ? getCheckoutSparkRecoveryDelivery(preparation.recoveryHandoffId)
+          : null
+        const manager = getSparkWalletManager()
+        const currentGuestIdentity = getCurrentRouterGuestIdentity()
+        return {
+          lifecycle,
+          preparation,
+          snapshot,
+          buyerPubkey:
+            currentGuestIdentity || authenticatedPubkey === buyerPubkey
+              ? buyerPubkey
+              : null,
+          guestIdentity: currentGuestIdentity,
+          initialRecoverySenderPubkey:
+            initialRecovery?.record.senderPubkey ?? null,
+          initialRecoveryAcked: Boolean(
+            initialRecovery?.deliveryProgress.acknowledgedRelayRefs.length
+          ),
+          now: Date.now(),
+          routerWalletOpen: Boolean(
+            binding && manager?.isOpen(binding.walletId)
+          ),
+        }
+      },
     })
   }
 
   function canContinueRouterSession(): boolean {
     return canContinueCheckoutSparkSettledRouteSession({
-      enabled: isQuantumRouterEnabled(),
+      enabled: isQuantumRouterExecutionEnabled(),
       mounted: viewMountedRef.current,
       visible: document.visibilityState === "visible",
       actionsReady,
@@ -1188,7 +1212,7 @@ function OrderDetail({
   function canContinueRouterCleanupSession(): boolean {
     const current = currentViewRef.current
     return (
-      isQuantumRouterEnabled() &&
+      isQuantumRouterExecutionEnabled() &&
       viewMountedRef.current &&
       actionsReady &&
       authGenerationRef.current === authGeneration &&
@@ -2458,19 +2482,16 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {routerBinding && !isQuantumRouterEnabled() && (
-        <StatusNotice
-          variant="warning"
-          title="Private Spark checkout unavailable"
-        >
+      {routerBinding && !isQuantumRouterExecutionEnabled() && (
+        <StatusNotice variant="warning" title="Payment processing paused">
           <p className="text-sm text-[var(--text-secondary)]">
-            This checkout is not available in this build. Do not pay a separate
-            merchant invoice or try a different rail.
+            Saved payment status remains available. Processing is paused in this
+            build; do not pay again or try a different rail.
           </p>
         </StatusNotice>
       )}
 
-      {routerBinding && isQuantumRouterEnabled() && (
+      {routerBinding && (
         <StatusNotice
           variant={
             settledRouterControl?.status === "complete" &&
@@ -2646,6 +2667,7 @@ function OrderDetail({
                 disabled={
                   busy ||
                   !actionsReady ||
+                  !canContinueRouterSession() ||
                   settledRouterQuery.isFetching ||
                   (settledRouterControl.status === "route_payout" &&
                     !settledRouterControl.payoutReview &&
@@ -2692,7 +2714,9 @@ function OrderDetail({
                     variant="outline"
                     className="h-11 px-4 text-sm"
                     disabled={
-                      busy || !actionsReady || settledRouterQuery.isFetching
+                      busy ||
+                      !canContinueRouterSession() ||
+                      settledRouterQuery.isFetching
                     }
                     onClick={() =>
                       void withBusy(() =>
@@ -3724,11 +3748,9 @@ function OrdersPage() {
     }
     return currentIdentity
   }
-  const canReadRouterSettlement =
-    isQuantumRouterEnabled() &&
-    (guestIdentity
-      ? getCurrentSettlementGuestIdentity() !== null
-      : signerConnected && isAuthGenerationCurrent(authGeneration))
+  const canReadRouterSettlement = guestIdentity
+    ? getCurrentSettlementGuestIdentity() !== null
+    : signerConnected && isAuthGenerationCurrent(authGeneration)
   const buyerSettlementsQuery = useQuery(
     getCheckoutSparkBuyerSettlementQueryOptions({
       enabled: canReadRouterSettlement,

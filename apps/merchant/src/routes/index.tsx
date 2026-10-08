@@ -8,7 +8,6 @@ import {
   getCachedMerchantStorefront,
   getMerchantConversationList,
   getMerchantStorefront,
-  isQuantumRouterEnabled,
   selectProtectedReadRows,
   useAuth,
   useProfiles,
@@ -379,10 +378,9 @@ function DashboardPage() {
       cachedConversationsQuery.data?.data
     )
   }, [signerConnected, conversationsQuery.data, cachedConversationsQuery.data])
-  const quantumRouterEnabled = isQuantumRouterEnabled()
   const { bindings: orderSettlementBindings, getOrderSettlement } =
     useCheckoutSparkOrderSettlements({
-      enabled: quantumRouterEnabled && signerConnected,
+      enabled: signerConnected,
       pubkey,
       authGeneration,
       isAuthGenerationCurrent,

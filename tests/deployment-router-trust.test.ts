@@ -56,6 +56,7 @@ async function compiledCore(
   const pricingConfig = resolve(
     "packages/core/src/protocol/checkout-spark-pricing-config.ts"
   )
+  const buildInfo = resolve("packages/core/src/build-info.ts")
   const probe = resolve("scripts/vite/checkout_spark_trust_probe.ts")
   const build = await buildVite({
     configFile: false,
@@ -63,6 +64,15 @@ async function compiledCore(
     define: {
       "import.meta.env": "{}",
       "import.meta.env.VITE_DEPLOYMENT_PROFILE": JSON.stringify(profile.name),
+      "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
+        profile.lightningNetwork
+      ),
+      "import.meta.env.VITE_QUANTUM_ROUTER_ENABLED": JSON.stringify(
+        profile.publicFeatures.quantumRouterEnabled ? "true" : "false"
+      ),
+      "import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED": JSON.stringify(
+        profile.publicFeatures.quantumRouterExecutionEnabled ? "true" : "false"
+      ),
       ...defineCheckoutSparkDeploymentTrust(profile),
     },
     plugins: [
@@ -76,6 +86,7 @@ async function compiledCore(
         load(id) {
           if (id !== "\0checkout-trust") return null
           return `export { config } from ${JSON.stringify(coreConfig)};
+            export { conduitBuildInfo } from ${JSON.stringify(buildInfo)};
             export { getCheckoutSparkPricingConfiguration, getCheckoutSparkPricingAuthorityTrust } from ${JSON.stringify(pricingConfig)};
             export { readCompiledCheckoutSparkPublicTrust } from ${JSON.stringify(probe)};`
         },
@@ -107,7 +118,17 @@ async function compiledCore(
     throw new Error("Compiled public trust fixture failed.")
   }
   return fixtureModule.exports as {
-    config: { checkoutSparkReceiverContracts: string | null }
+    config: {
+      checkoutSparkReceiverContracts: string | null
+      quantumRouterEnabled: boolean
+      quantumRouterExecutionEnabled: boolean
+    }
+    conduitBuildInfo: {
+      publicFeatures: {
+        quantumRouterEnabled: boolean
+        quantumRouterExecutionEnabled: boolean
+      }
+    }
     getCheckoutSparkPricingConfiguration: () => { url: string } | null
     getCheckoutSparkPricingAuthorityTrust: () => ReadonlyMap<
       string,
@@ -118,6 +139,85 @@ async function compiledCore(
 }
 
 describe("managed router public trust configuration", () => {
+  it("evaluates independent execution and admission in the actual compiled Core runtime and build metadata", async () => {
+    const file = retainedTrustProfile()
+    file.quantumRouterTrust.preview.receiverContracts[0] = {
+      ...file.quantumRouterTrust.preview.receiverContracts[0]!,
+      qualification: "accepted",
+    }
+    for (const [admission, execution] of [
+      [false, false],
+      [false, true],
+      [true, false],
+      [true, true],
+    ] as const) {
+      file.profiles.preview.publicFeatures.quantumRouterEnabled = admission
+      file.profiles.preview.publicFeatures.quantumRouterExecutionEnabled =
+        execution
+      const profile = resolveDeploymentProfile(
+        { CONDUIT_DEPLOYMENT_PROFILE: "preview" },
+        file
+      )
+      const runtime = await compiledCore(profile)
+      expect(profile.publicFeatures.quantumRouterEnabled).toBe(
+        admission && execution
+      )
+      expect(runtime.config.quantumRouterEnabled).toBe(admission && execution)
+      expect(runtime.config.quantumRouterExecutionEnabled).toBe(execution)
+      expect(runtime.conduitBuildInfo.publicFeatures.quantumRouterEnabled).toBe(
+        admission && execution
+      )
+      expect(
+        runtime.conduitBuildInfo.publicFeatures.quantumRouterExecutionEnabled
+      ).toBe(execution)
+    }
+  })
+
+  it("qualifies execution-only profiles independently and commits that choice to the public digest", () => {
+    const file = retainedTrustProfile()
+    file.profiles.preview.publicFeatures.quantumRouterExecutionEnabled = true
+    expect(() => parsePagesProfiles(file)).toThrow(
+      "without a qualified private receiver"
+    )
+    file.quantumRouterTrust.preview.receiverContracts[0] = {
+      ...file.quantumRouterTrust.preview.receiverContracts[0]!,
+      qualification: "accepted",
+    }
+    const execution = resolveDeploymentProfile(
+      {
+        CONDUIT_DEPLOYMENT_PROFILE: "preview",
+        VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "false",
+      },
+      file
+    )
+    expect(execution.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(execution.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
+    file.profiles.preview.publicFeatures.quantumRouterExecutionEnabled = false
+    const stopped = resolveDeploymentProfile(
+      {
+        CONDUIT_DEPLOYMENT_PROFILE: "preview",
+        VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "true",
+      },
+      file
+    )
+    expect(stopped.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
+    expect(stopped.configDigest).not.toBe(execution.configDigest)
+    expect(stopped.quantumRouterTrustDigest).toBe(
+      execution.quantumRouterTrustDigest
+    )
+    const manifest = createPublicDeploymentManifest({
+      app: "market",
+      profile: execution,
+      commitSha: "fixture",
+      branch: "fixture",
+      buildTime: "2026-10-08T00:00:00.000Z",
+      sourceUrl: "https://github.com/Conduit-BTC/conduit-mono",
+    })
+    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(manifest.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
+    expect(manifest.publicConfigDigest).toBe(execution.configDigest)
+  })
+
   it("rejects global activation without an accepted ordinary receiver", () => {
     const file = retainedTrustProfile()
     file.profiles.preview.publicFeatures.quantumRouterEnabled = true
@@ -149,6 +249,9 @@ describe("managed router public trust configuration", () => {
       expect(file.profiles[name].publicFeatures.quantumRouterEnabled).toBe(
         false
       )
+      expect(
+        file.profiles[name].publicFeatures.quantumRouterExecutionEnabled
+      ).toBe(false)
       if (name === "preview") {
         expect(policy.pricingUrl).toBe(
           "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing"

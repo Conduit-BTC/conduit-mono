@@ -18,6 +18,7 @@ export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
   livePresenceEnabled: boolean
   quantumRouterEnabled: boolean
+  quantumRouterExecutionEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -156,8 +157,14 @@ function assertProfile(
       `Deployment profile ${name} must explicitly set quantumRouterEnabled.`
     )
   }
+  if (typeof value.publicFeatures.quantumRouterExecutionEnabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set quantumRouterExecutionEnabled.`
+    )
+  }
   if (
-    value.publicFeatures.quantumRouterEnabled &&
+    (value.publicFeatures.quantumRouterEnabled ||
+      value.publicFeatures.quantumRouterExecutionEnabled) &&
     value.lightningNetwork !== "mainnet"
   ) {
     throw new Error(
@@ -250,7 +257,8 @@ export function parsePagesProfiles(value: unknown): PagesProfilesFile {
       value.quantumRouterTrust as PagesProfilesFile["quantumRouterTrust"]
     )[name]
     if (
-      profile.publicFeatures.quantumRouterEnabled &&
+      (profile.publicFeatures.quantumRouterEnabled ||
+        profile.publicFeatures.quantumRouterExecutionEnabled) &&
       !trust.receiverContracts.some(
         (contract) =>
           contract.qualification === "accepted" &&
@@ -347,6 +355,16 @@ export function resolveDeploymentProfile(
         quantumRouterEnabled: ["1", "true", "on"].includes(
           env.VITE_QUANTUM_ROUTER_ENABLED?.trim().toLowerCase() ?? ""
         ),
+        quantumRouterExecutionEnabled:
+          env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED?.trim()
+            ? ["1", "true", "on"].includes(
+                env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED.trim().toLowerCase()
+              )
+            : ["1", "true", "on"].includes(
+                env.VITE_QUANTUM_ROUTER_ENABLED?.trim().toLowerCase() ?? ""
+              ) ||
+              (env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY === "true" &&
+                env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true"),
       },
       quantumRouterTreasury: {
         mainnetAddress: env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS?.trim() || "",
@@ -365,6 +383,8 @@ export function resolveDeploymentProfile(
           env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?.trim() || "",
       },
     }
+    local.publicFeatures.quantumRouterEnabled &&=
+      local.publicFeatures.quantumRouterExecutionEnabled
     return {
       name,
       ...local,
@@ -397,7 +417,12 @@ export function resolveDeploymentProfile(
   const publicConfig = {
     releaseChannel: profile.releaseChannel,
     lightningNetwork: profile.lightningNetwork,
-    publicFeatures: profile.publicFeatures,
+    publicFeatures: {
+      ...profile.publicFeatures,
+      quantumRouterEnabled:
+        profile.publicFeatures.quantumRouterEnabled &&
+        profile.publicFeatures.quantumRouterExecutionEnabled,
+    },
     quantumRouterTreasury: {
       mainnetAddress:
         profile.lightningNetwork === "mainnet"

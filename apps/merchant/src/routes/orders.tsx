@@ -34,7 +34,7 @@ import {
   isInvoiceCompatibleWithCurrentNetwork,
   isValidLud16Address,
   isMerchantOrderPaid,
-  isQuantumRouterEnabled,
+  isQuantumRouterExecutionEnabled,
   normalizeCurrencyAmount,
   normalizeSafeHttpUrl,
   publishMerchantOrderMessage,
@@ -854,14 +854,14 @@ function OrdersWorkspace() {
     () => ordersQuery.data?.data ?? [],
     [ordersQuery.data]
   )
-  const quantumRouterEnabled = isQuantumRouterEnabled()
+  const quantumRouterExecutionEnabled = isQuantumRouterExecutionEnabled()
   const {
     getOrderSettlement,
     refresh: refreshCheckoutSparkProjection,
     isRefreshing: checkoutSparkSettlementRefreshing,
     unavailable: checkoutSparkSettlementUnavailable,
   } = useCheckoutSparkOrderSettlements({
-    enabled: quantumRouterEnabled && signerConnected,
+    enabled: signerConnected,
     pubkey,
     authGeneration,
     isAuthGenerationCurrent,
@@ -3384,7 +3384,7 @@ function OrdersWorkspace() {
         />
       )}
 
-      {signerConnected && pubkey && quantumRouterEnabled && (
+      {signerConnected && pubkey && (
         <CheckoutSparkRecoveryPanel
           key={`${pubkey}:${authGeneration}`}
           principalPubkey={pubkey}
@@ -3405,9 +3405,10 @@ function OrdersWorkspace() {
           onSettlementChange={refreshCheckoutSparkProjection}
           settlementRefreshing={checkoutSparkSettlementRefreshing}
           settlementReadUnavailable={checkoutSparkSettlementUnavailable}
-          allowAutomaticPayouts={quantumRouterEnabled}
+          executionEnabled={quantumRouterExecutionEnabled}
+          allowAutomaticPayouts={quantumRouterExecutionEnabled}
           startAutomatically={shouldStartMerchantOrderRecoveryAutomatically(
-            quantumRouterEnabled,
+            quantumRouterExecutionEnabled,
             recoveryMode
           )}
           isSessionCurrent={() => isAuthGenerationCurrent(authGeneration)}
