@@ -122,6 +122,23 @@ describe("canonical Account Network evidence", () => {
     ).toBe("unavailable")
   })
 
+  it("keeps backfilled admitted candidates in scope without admitting foreign sources", () => {
+    const foreign = "wss://unrequested.synthetic.example"
+    const read = interpretAccountNetworkRead([relay, peer], {
+      events: [],
+      admittedRelayUrls: [peer, foreign],
+      successfulRelayUrls: [peer, foreign],
+    })
+    expect(read.coverage).toBe("complete")
+    expect(read.scopeRelayUrls).toEqual([peer])
+    expect(read.attemptedRelayUrls).toEqual([peer])
+    expect(read.successfulRelayUrls).toEqual([peer])
+    expect(read.sources).toEqual([
+      { relayUrl: relay, availability: "policy_blocked" },
+      { relayUrl: peer, availability: "complete" },
+    ])
+  })
+
   it("separates pending distribution from current, retained and freshness facts", () => {
     for (const coverage of ["complete", "partial", "unavailable"] as const) {
       const facts = interpretAccountNetworkPreference({

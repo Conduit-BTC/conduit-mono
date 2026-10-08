@@ -48,6 +48,11 @@ to those decisions. Their repositories still own atomic persistence and
 causal transitions. A newer signed-empty or malformed media frontier retains
 its exact signed event so restoration cannot resurrect an older server choice.
 
+Read interpretation receives the full requested candidate set, not the
+planner-time capped prefix. Live admission can replace blocked candidates with
+later eligible sources without spending an attempt slot. Coverage follows the
+actual admitted bounded scope while ignoring observations outside the request.
+
 A valid current inbox remains routing authority while its distribution is
 pending. Retained last-usable evidence is not automatically historical recovery.
 Views project `currentUsable` separately from observation coverage and freshness.

@@ -115,13 +115,16 @@ export function mergeAccountNetworkLookup<T extends AccountNetworkLookup>(
   )
 }
 
-/** Only a completed, verified bounded query establishes scoped absence. */
+/**
+ * Interpret the full requested candidates against the actual admitted scope.
+ * Only a completed, verified bounded query establishes scoped absence.
+ */
 export function interpretAccountNetworkRead(
-  plannedRelayUrls: readonly string[],
+  candidateRelayUrls: readonly string[],
   result: ReadObservation | null,
   verificationComplete = result?.events.every(isVerifiedNostrEvent) ?? true
 ): AccountNetworkReadEvidence {
-  const planned = [...new Set(plannedRelayUrls)]
+  const planned = [...new Set(candidateRelayUrls)]
   const byRelay = new Map(
     result?.relays?.map((relay) => [relay.relayUrl, relay])
   )

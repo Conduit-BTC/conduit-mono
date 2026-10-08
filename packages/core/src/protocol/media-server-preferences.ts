@@ -1031,13 +1031,13 @@ export function moveMediaServerPreference(
 }
 
 function readCoverage(
-  plannedRelayUrls: readonly string[],
+  candidateRelayUrls: readonly string[],
   result: SignedEventRelayReadResult | null,
   observedAt: number,
   verificationComplete = true
 ): MediaServerLookupEvidence {
   const evidence = interpretAccountNetworkRead(
-    plannedRelayUrls,
+    candidateRelayUrls,
     result,
     verificationComplete
   )
@@ -1507,7 +1507,7 @@ export async function readMediaServerPreferences(
 
   const plan = resolvedPlan.plan
   const lookup = readCoverage(
-    plan.relayUrls,
+    plan.candidateRelayUrls,
     result,
     observedAt,
     verificationComplete

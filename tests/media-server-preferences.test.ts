@@ -25,6 +25,9 @@ import {
 import { planRelayReads } from "../packages/core/src/protocol/relay-planner"
 import { createRelaySettingsFromPreferences } from "../packages/core/src/protocol/relay-settings"
 import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "../packages/core/src/protocol/owner-relay-list-evidence"
+import { fetchSignedEventsFanoutDetailed } from "../packages/core/src/protocol/relay-reader"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 import { admitFixture } from "./helpers/public-event"
 
@@ -598,6 +601,118 @@ describe("kind 10063 replacement selection and evidence", () => {
     })
     expect(result.sourceRelayUrls).toEqual([admittedRelay])
   })
+
+  for (const outcome of ["empty", "signed", "partial"] as const) {
+    it(`includes admitted App replacements beyond the capped owner prefix for ${outcome} reads`, async () => {
+      const blocked = Array.from(
+        { length: 6 },
+        (_, index) => `wss://owner-${index}.synthetic.example`
+      )
+      const state = emptyAccountNetworkLocalState(OWNER)
+      state.routingPolicy.personalRelaysEnabled = false
+      state.routingPolicy.personalRelaysTouched = true
+      const ownerRelayListEvidenceRepository =
+        createInMemoryOwnerRelayListEvidenceRepository()
+      const ownerRelayList = await admitFixture(
+        event(
+          blocked.map((url) => ["r", url, "read"]),
+          { kind: 10002 }
+        )
+      )
+      await ownerRelayListEvidenceRepository.reconcile({
+        pubkey: OWNER,
+        observations: [
+          {
+            signedEvent: ownerRelayList,
+            sourceRelayUrls: ["wss://discovery.synthetic.example"],
+            observedAt: 100_000,
+            completeObservedAt: 100_000,
+          },
+        ],
+        lookup: {
+          observedAt: 100_000,
+          coverage: "complete",
+          hadEvent: true,
+          eventId: ownerRelayList.id,
+        },
+      })
+      const signed = event([["server", "https://media.conduit.market"]])
+      const opened: string[] = []
+      class Socket {
+        readyState = 0
+        onopen: ((event: Event) => void) | null = null
+        onmessage: ((event: MessageEvent<string>) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+        onclose: ((event: CloseEvent | Event) => void) | null = null
+        constructor(readonly url: string) {
+          opened.push(url)
+          queueMicrotask(() => {
+            this.readyState = 1
+            this.onopen?.(new Event("open"))
+          })
+        }
+        send(payload: string) {
+          const [verb, id] = JSON.parse(payload)
+          if (verb !== "REQ") return
+          queueMicrotask(() => {
+            const emit = (frame: unknown[]) =>
+              this.onmessage?.({
+                data: JSON.stringify(frame),
+              } as MessageEvent<string>)
+            if (outcome === "partial" && this.url === opened[0]) {
+              emit(["CLOSED", id, "error: synthetic read failure"])
+              return
+            }
+            if (outcome === "signed") emit(["EVENT", id, signed])
+            emit(["EOSE", id])
+          })
+        }
+        close() {
+          this.readyState = 3
+        }
+      }
+
+      const resolution = await readMediaServerPreferences(OWNER, {
+        authenticatedPubkey: OWNER,
+        storage: new MemoryStorage(),
+        accountNetworkLocalStateRepository: { get: async () => state },
+        ownerRelayListEvidenceRepository,
+        getRelayLists: async () => new Map(),
+        planReads: (input) => {
+          const plan = planRelayReads(input)
+          expect(plan.relayUrls).toEqual(blocked)
+          expect(plan.candidateRelayUrls.length).toBeGreaterThan(blocked.length)
+          return plan
+        },
+        fetchEvents: (filter, options) =>
+          fetchSignedEventsFanoutDetailed(filter, {
+            ...options,
+            reuseRelayConnections: false,
+            socketScope: { createWebSocket: (url) => new Socket(url) },
+          }),
+      })
+
+      expect(opened.length).toBeGreaterThan(1)
+      expect(opened.some((url) => blocked.includes(url))).toBe(false)
+      expect(resolution.coverage).toBe(
+        outcome === "partial" ? "partial" : "complete"
+      )
+      expect(resolution.lookup.plannedRelayCount).toBe(opened.length)
+      expect(resolution.lookup.successfulRelayCount).toBe(
+        opened.length - (outcome === "partial" ? 1 : 0)
+      )
+      expect(resolution.lookup.failedRelayCount).toBe(
+        outcome === "partial" ? 1 : 0
+      )
+      expect(selectMediaServerPreferenceUse(resolution)).toEqual(
+        outcome === "signed"
+          ? { kind: "configured", serverUrls: ["https://media.conduit.market"] }
+          : { kind: outcome === "empty" ? "fallback" : "incomplete" }
+      )
+      if (outcome === "signed")
+        expect(resolution.sourceRelayUrls.sort()).toEqual([...opened].sort())
+    })
+  }
 
   it("retains stronger published evidence when a later lookup is partial", async () => {
     const storage = new MemoryStorage()
