@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
@@ -20,6 +21,9 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
   browser,
 }, testInfo) => {
   test.setTimeout(180_000)
+  const phase = (phase: string) =>
+    recordSmokeDiagnostic(testInfo, "order-reply", { phase })
+  phase("setup")
   const buyer = createRuntimeSignerIdentity()
   const merchant = createRuntimeSignerIdentity()
   const contextOptions = {
@@ -62,17 +66,20 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         }),
       ])
     )
-    await merchantContext.route(imageUrl, (route) =>
-      route.fulfill({
-        contentType: "image/svg+xml",
-        body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"/>',
-      })
-    )
+    for (const context of [buyerContext, merchantContext]) {
+      await context.route(imageUrl, (route) =>
+        route.fulfill({
+          contentType: "image/svg+xml",
+          body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"/>',
+        })
+      )
+    }
     const buyerPage = await buyerContext.newPage()
     const merchantPage = await merchantContext.newPage()
     await installRealTestSigner(buyerPage, buyer, TEST_RELAY_URL)
     await installRealTestSigner(merchantPage, merchant, TEST_RELAY_URL)
 
+    phase("merchant_catalog")
     await merchantPage.goto(`${merchantUrl}/products`)
     await expect(
       merchantPage.getByRole("heading", { name: "Products" })
@@ -114,9 +121,11 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       exact: true,
     })
     await expect(publishProduct).toBeEnabled()
+    phase("publish_product")
     await publishProduct.click()
     await expect(productDialog).toBeHidden({ timeout: 20_000 })
 
+    phase("buyer_checkout")
     await buyerPage.goto(`${marketUrl}/${nip19.npubEncode(merchant.pubkey)}`)
     const product = buyerPage.getByRole("listitem").filter({ hasText: title })
     await expect(product).toBeVisible({ timeout: 30_000 })
@@ -125,6 +134,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       .getByRole("region", { name: "Cart inventory" })
       .getByRole("link", { name: "Continue to checkout" })
       .click()
+    phase("send_order")
     await expect(
       buyerPage.getByRole("button", { name: "Send order" })
     ).toBeEnabled()
@@ -135,6 +145,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     const orderId = new URL(buyerPage.url()).searchParams.get("order")
     if (!orderId) throw new Error("The order route has no order ID")
 
+    phase("merchant_order")
     await merchantPage.goto(
       `${merchantUrl}/orders?order=${encodeURIComponent(orderId)}`
     )
@@ -144,6 +155,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         .filter({ visible: true })
         .first()
     ).toBeVisible({ timeout: 30_000 })
+    phase("merchant_reply")
     await merchantPage.evaluate((principal) => {
       const provider = (
         window as unknown as {
@@ -195,6 +207,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         },
         { root: protocolRoot, principal, note }
       )
+    phase("merchant_restore")
     await expect
       .poll(() => saved(merchantPage, merchant.pubkey, reply), {
         timeout: 30_000,
@@ -216,6 +229,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         encrypted: true,
       })
 
+    phase("buyer_delivery")
     const recipientWraps = await readAuthenticatedGiftWraps(
       buyer,
       TEST_RELAY_URL
@@ -241,6 +255,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     })
     expect(matchingWraps).toHaveLength(1)
 
+    phase("buyer_reply")
     await buyerPage.reload()
     await expect(buyerPage.getByLabel("Open account menu")).toBeVisible()
     await buyerPage.evaluate((principal) => {
@@ -272,6 +287,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
           "Message was accepted by Nostr delivery relays for merchant pickup and saved locally. Buyer relay backup needs retry.",
       })
     ).toBeVisible({ timeout: 30_000 })
+    phase("buyer_restore")
     await expect
       .poll(() => saved(buyerPage, buyer.pubkey, buyerReply), {
         timeout: 30_000,
@@ -284,6 +300,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         timeout: 30_000,
       })
       .toEqual({ matches: 1, encrypted: true })
+    phase("merchant_delivery")
     const merchantWraps = await readAuthenticatedGiftWraps(
       merchant,
       TEST_RELAY_URL
@@ -309,6 +326,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         )
       })
     ).toHaveLength(1)
+    phase("complete")
   } finally {
     await Promise.allSettled([buyerContext.close(), merchantContext.close()])
     disposeRuntimeSignerIdentity(buyer)
