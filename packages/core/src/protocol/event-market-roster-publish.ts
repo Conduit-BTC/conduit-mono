@@ -24,6 +24,7 @@ import {
   parseEventMarketSeriesEvent,
 } from "./event-market-schedule"
 import { waitForVisibleDocument } from "./interactive-signer"
+import { admitPublicEvent } from "./verified-public-event"
 import { EVENT_KINDS } from "./kinds"
 import { getAccountSigner } from "./session-signer"
 import type { UnsignedNostrEvent } from "./nostr-event-signer"
@@ -36,6 +37,34 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+
+async function parseAdmittedRosterEvent(event: SignedPublicNostrEvent) {
+  const admission = await admitPublicEvent(event)
+  return admission.status === "verified"
+    ? parseEventMarketRosterEvent(admission.event)
+    : null
+}
+
+async function parseAdmittedCalendarEvent(event: SignedPublicNostrEvent) {
+  const admission = await admitPublicEvent(event)
+  return admission.status === "verified"
+    ? parseEventMarketCalendarEvent(admission.event)
+    : null
+}
+
+async function parseAdmittedSeriesEvent(event: SignedPublicNostrEvent) {
+  const admission = await admitPublicEvent(event)
+  return admission.status === "verified"
+    ? parseEventMarketSeriesEvent(admission.event)
+    : null
+}
+
+async function parseAdmittedAuthorizationEvent(event: SignedPublicNostrEvent) {
+  const admission = await admitPublicEvent(event)
+  return admission.status === "verified"
+    ? parseEventMarketAuthorizationEvent(admission.event)
+    : null
+}
 
 interface RosterPublishDependencies {
   read: typeof readEventMarketRoster
@@ -234,7 +263,7 @@ export async function publishEventMarketRoster(
     organizerPubkey,
     shouldContinue: input.shouldContinue,
   })
-  const parsed = parseEventMarketRosterEvent(signedEvent)
+  const parsed = await parseAdmittedRosterEvent(signedEvent)
   if (
     !parsed ||
     JSON.stringify([
@@ -278,7 +307,7 @@ export async function retryEventMarketRosterDelivery(
     "read" | "publish"
   > = defaultDependencies
 ): Promise<PublishWithPlannerResult> {
-  const parsed = parseEventMarketRosterEvent(input.signedEvent)
+  const parsed = await parseAdmittedRosterEvent(input.signedEvent)
   if (
     !parsed ||
     input.authenticatedPubkey?.toLowerCase() !== parsed.organizerPubkey
@@ -373,7 +402,7 @@ export async function publishFutureEventMarketCalendar(input: {
     organizerPubkey,
     shouldContinue: input.shouldContinue,
   })
-  const parsed = parseEventMarketCalendarEvent(signedEvent)
+  const parsed = await parseAdmittedCalendarEvent(signedEvent)
   if (
     !parsed ||
     parsed.coordinate !==
@@ -521,22 +550,40 @@ export async function publishFutureEventMarketSeries(
     [scheduleCoordinate, draft] as const,
   ])
   const saved = new Map<string, SignedPublicNostrEvent>()
-  for (const event of input.savedSignedEvents ?? []) {
-    if (!isValidSignedPublicNostrEvent(event)) continue
-    const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
-    const expected = expectedDrafts.get(coordinate)
-    if (
-      !expected ||
-      JSON.stringify(event.tags) !== JSON.stringify(expected.tags) ||
-      event.content !== expected.content
+  const savedSignedEvents = input.savedSignedEvents ?? []
+  for (let offset = 0; offset < savedSignedEvents.length; offset += 64) {
+    const admissions = await Promise.all(
+      savedSignedEvents
+        .slice(offset, offset + 64)
+        .map((event) => admitPublicEvent(event))
     )
-      continue
-    const prior = saved.get(coordinate)
-    if (prior && prior.id !== event.id)
-      throw new Error(
-        "Multiple saved signatures for one prepared date need organizer review."
+    for (const admission of admissions) {
+      if (admission.status === "invalid") continue
+      if (admission.status === "unavailable")
+        throw new Error(
+          "Saved Event Market signature verification is unavailable."
+        )
+      if (admission.status === "cancelled")
+        throw new DOMException(
+          "Event Market publication was cancelled.",
+          "AbortError"
+        )
+      const event = admission.event
+      const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
+      const expected = expectedDrafts.get(coordinate)
+      if (
+        !expected ||
+        JSON.stringify(event.tags) !== JSON.stringify(expected.tags) ||
+        event.content !== expected.content
       )
-    saved.set(coordinate, event)
+        continue
+      const prior = saved.get(coordinate)
+      if (prior && prior.id !== event.id)
+        throw new Error(
+          "Multiple saved signatures for one prepared date need organizer review."
+        )
+      saved.set(coordinate, event)
+    }
   }
   const occurrences: Array<{
     signedEvent: SignedPublicNostrEvent
@@ -559,7 +606,7 @@ export async function publishFutureEventMarketSeries(
         organizerPubkey,
         shouldContinue: input.shouldContinue,
       }))
-    const parsed = parseEventMarketCalendarEvent(signedEvent)
+    const parsed = await parseAdmittedCalendarEvent(signedEvent)
     if (
       !parsed ||
       parsed.coordinate !== coordinate ||
@@ -622,7 +669,7 @@ export async function publishFutureEventMarketSeries(
       organizerPubkey,
       shouldContinue: input.shouldContinue,
     }))
-  const parsedSchedule = parseEventMarketSeriesEvent(signedSchedule)
+  const parsedSchedule = await parseAdmittedSeriesEvent(signedSchedule)
   if (
     !parsedSchedule ||
     parsedSchedule.coordinate !== scheduleCoordinate ||
@@ -732,7 +779,7 @@ export async function publishFutureEventMarketOccurrenceRevision(input: {
       organizerPubkey,
       shouldContinue: input.shouldContinue,
     }))
-  const parsed = parseEventMarketCalendarEvent(signedEvent)
+  const parsed = await parseAdmittedCalendarEvent(signedEvent)
   if (
     !parsed ||
     parsed.coordinate !== occurrenceCoordinate ||
@@ -795,7 +842,7 @@ const merchantDecisionDependencies: MerchantDecisionDependencies = {
   ...defaultDependencies,
   readAuthorization: readEventMarketAuthorization,
   persist: async (decision) => {
-    const authorization = parseEventMarketAuthorizationEvent(
+    const authorization = await parseAdmittedAuthorizationEvent(
       decision.authorization
     )
     if (!authorization) throw new Error("Signed merchant decision is invalid.")
@@ -980,8 +1027,10 @@ export async function publishEventMarketMerchantDecision(
     organizerPubkey,
     shouldContinue: input.shouldContinue,
   })
-  const parsedRoster = parseEventMarketRosterEvent(roster)
-  const parsedAuth = parseEventMarketAuthorizationEvent(authorization)
+  const [parsedRoster, parsedAuth] = await Promise.all([
+    parseAdmittedRosterEvent(roster),
+    parseAdmittedAuthorizationEvent(authorization),
+  ])
   if (
     !parsedRoster ||
     !parsedAuth ||
@@ -1062,8 +1111,10 @@ export async function retryEventMarketMerchantDecisionDelivery(
   const job = await dependencies.load(input.decisionId)
   if (!job || job.status !== "pending")
     throw new Error("Saved merchant decision is unavailable for retry.")
-  const roster = parseEventMarketRosterEvent(job.roster)
-  const authorization = parseEventMarketAuthorizationEvent(job.authorization)
+  const [roster, authorization] = await Promise.all([
+    parseAdmittedRosterEvent(job.roster),
+    parseAdmittedAuthorizationEvent(job.authorization),
+  ])
   if (
     !roster ||
     !authorization ||

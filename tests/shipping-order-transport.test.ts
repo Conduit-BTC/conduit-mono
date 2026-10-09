@@ -27,11 +27,12 @@ import {
 } from "../packages/core/src/protocol/messaging"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
 import { plainTestSigner } from "./helpers/plain-signer"
+import { admitFixture } from "./helpers/public-event"
 
 const utf8Bytes = (value: string): number =>
   new TextEncoder().encode(value).length
 
-function shippingOrder(
+async function shippingOrder(
   productCount: number,
   version: 1 | 2 = 1,
   productContent = "a".repeat(4096)
@@ -60,73 +61,75 @@ function shippingOrder(
     },
     merchantSecret
   )
-  const quoteItems = Array.from({ length: productCount }, (_, index) => {
-    const summary = "a".repeat(4096)
-    const productEvent = finalizeEvent(
-      {
-        kind: 30402,
-        created_at: 90,
-        content: productContent,
-        tags: [
-          ["d", `product-${index}`],
-          ["title", `Product ${index}`],
-          ["summary", summary],
-          ["type", "simple", "physical"],
-          [
-            "price",
-            version === 1 ? "1000" : "10",
-            version === 1 ? "SATS" : "EUR",
+  const quoteItems = await Promise.all(
+    Array.from({ length: productCount }, async (_, index) => {
+      const summary = "a".repeat(4096)
+      const productEvent = finalizeEvent(
+        {
+          kind: 30402,
+          created_at: 90,
+          content: productContent,
+          tags: [
+            ["d", `product-${index}`],
+            ["title", `Product ${index}`],
+            ["summary", summary],
+            ["type", "simple", "physical"],
+            [
+              "price",
+              version === 1 ? "1000" : "10",
+              version === 1 ? "SATS" : "EUR",
+            ],
+            ["weight", "200", "g"],
+            ["shipping_option", policyCoordinate],
+            ...(version === 2
+              ? [
+                  [
+                    "conduit_shipping_adjustments",
+                    "1",
+                    JSON.stringify({
+                      weightAllowanceGrams: 20,
+                      handling: {
+                        amount: 1,
+                        currency: "EUR",
+                        normalizedCurrency: "EUR",
+                      },
+                    }),
+                  ],
+                ]
+              : []),
           ],
-          ["weight", "200", "g"],
-          ["shipping_option", policyCoordinate],
-          ...(version === 2
-            ? [
-                [
-                  "conduit_shipping_adjustments",
-                  "1",
-                  JSON.stringify({
-                    weightAllowanceGrams: 20,
-                    handling: {
-                      amount: 1,
-                      currency: "EUR",
-                      normalizedCurrency: "EUR",
-                    },
-                  }),
-                ],
-              ]
-            : []),
-        ],
-      },
-      merchantSecret
-    )
-    return {
-      productId: `30402:${merchantPubkey}:product-${index}`,
-      productEventId: productEvent.id,
-      productCreatedAt: 90,
-      productEvent,
-      quantity: 1,
-      weightGrams: 200,
-      currency: version === 1 ? "SATS" : "EUR",
-      subtotalMinor: 1000,
-      ...(version === 2
-        ? {
-            shippingWeightAllowanceGrams: 20,
-            shippingHandling: {
-              amount: 1,
-              currency: "EUR",
-              normalizedCurrency: "EUR",
-            },
-          }
-        : {}),
-    }
-  })
+        },
+        merchantSecret
+      )
+      return {
+        productId: `30402:${merchantPubkey}:product-${index}`,
+        productEventId: productEvent.id,
+        productCreatedAt: 90,
+        productEvent: await admitFixture(productEvent),
+        quantity: 1,
+        weightGrams: 200,
+        currency: version === 1 ? "SATS" : "EUR",
+        subtotalMinor: 1000,
+        ...(version === 2
+          ? {
+              shippingWeightAllowanceGrams: 20,
+              shippingHandling: {
+                amount: 1,
+                currency: "EUR",
+                normalizedCurrency: "EUR",
+              },
+            }
+          : {}),
+      }
+    })
+  )
   const result = quoteShippingPolicy({
     policy,
     policyCoordinate,
     policyEventId: policyEvent.id,
     policyCreatedAt: 100,
     merchantPubkey,
-    policyEvent,
+    policyEvent: await admitFixture(policyEvent),
     items: quoteItems,
     destination: { country: "US", subdivision: "NY", postalCode: "10001" },
     ...(version === 2
@@ -148,6 +151,7 @@ function shippingOrder(
     merchantSigner: new NDKPrivateKeySigner(merchantSecret),
     merchantPubkey,
     quote: result.quote,
+    policyEvent: await admitFixture(policyEvent),
     quoteItems,
     policyCoordinate,
   }
@@ -159,7 +163,7 @@ async function prepareOrder(
   version: 1 | 2 = 1,
   productContent?: string
 ) {
-  const fixture = shippingOrder(productCount, version, productContent)
+  const fixture = await shippingOrder(productCount, version, productContent)
   const merchant = fixture.merchantSigner
   const buyerUser = await fixture.buyer.user()
   const shippingTotal =
@@ -248,7 +252,7 @@ async function encryptedOrder(
       inlineOrderContentBytes: utf8Bytes(JSON.stringify(order)),
       rumorPlaintextBytes: utf8Bytes(JSON.stringify(rumor.rawEvent())),
       relayMessageBytes: utf8Bytes(
-        JSON.stringify(["EVENT", "test-subscription", wrapped.rawEvent()])
+        JSON.stringify(["EVENT", "test-subscription", wrapped])
       ),
     },
   }
@@ -261,6 +265,7 @@ describe("shipping order transport", () => {
       const single = quoteShippingPolicy({
         ...fixture.quote,
         policy: fixture.policy,
+        policyEvent: fixture.policyEvent,
         items: fixture.quoteItems.slice(0, 1),
         rateInput: fixture.quote.pricingRate,
       })
@@ -295,7 +300,7 @@ describe("shipping order transport", () => {
       const second = quoteShippingPolicy({
         ...fixture.quote,
         policy: fixture.policy,
-        policyEvent: nextRevision,
+        policyEvent: await admitFixture(nextRevision),
         policyEventId: nextRevision.id,
         policyCreatedAt: nextRevision.created_at,
         items: fixture.quoteItems.slice(1),
@@ -396,7 +401,7 @@ describe("shipping order transport", () => {
     const signer = plainTestSigner(fixture.buyer)
     const wrapped = await wrapPrivateMessage(rumor, recipient, signer)
     expect(
-      JSON.stringify(["EVENT", "0".repeat(64), wrapped.rawEvent()]).length
+      JSON.stringify(["EVENT", "0".repeat(64), wrapped]).length
     ).toBeLessThan(512 * 1024)
     const unwrapped = await giftUnwrap(
       wrapped,
@@ -440,7 +445,7 @@ describe("shipping order transport", () => {
       expect(
         JSON.stringify(["EVENT", "subscription", source]).length
       ).toBeLessThan(512 * 1024)
-      expect(parseProductEvent(new NDKEvent(undefined, source)).id).toBe(
+      expect(parseProductEvent(await admitFixture(source)).id).toBe(
         fixture.quoteItems[0]!.productId
       )
       expect(orderSchema.parse(order)).toEqual(order)

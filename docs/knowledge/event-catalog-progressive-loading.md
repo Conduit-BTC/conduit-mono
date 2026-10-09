@@ -13,12 +13,20 @@ of 64; 64 is a request size, not an audience limit. Market guests browse kind
 empty Following list remains an empty audience.
 
 Candidate reads run four at a time with a budget of 128 requests per pass.
+The relay planner's distinct admitted-source cap applies to the whole scan,
+including subsequent pages and continuations. Live source-policy admission stays
+in the shared public reader; suppressed candidates do not consume an admitted
+source or request slot, so later eligible sources can fill the plan. Changing the
+plan's cap invalidates its continuation.
 Saturated pages descend by signed creation time, checking the entire final
 timestamp before moving to older records. A saturated same-second range stays
 partial and retryable because NIP-01 offers no event-ID cursor. Partial or failed
 pages retain their position. Exact roster and calendar hydration runs four at a
 time, for up to 128 coordinates per pass. Only discovered or retained coordinates
 need organizer relay planning. Observed relay sources accompany exact reads.
+A new signed revision or newly observed source refreshes exact hydration, even
+when that source delivers an already-seen event ID. Source provenance is separate
+from signed event identity.
 Remaining pages and coordinates are scoped continuations exposed by Market's
 Find more events action. Each pending coordinate keeps its observed relay hints
 through continuation so exact reads prioritize its actual sources within the

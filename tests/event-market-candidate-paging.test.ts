@@ -11,9 +11,205 @@ import {
   scanEventMarketCandidates,
   type EventMarketDiscoveryContinuation,
 } from "../packages/core/src/protocol/event-market-candidates"
-import { fixture } from "./helpers/future-market-discovery-fixture"
+import {
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadSocket,
+} from "../packages/core/src/protocol/relay-reader"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import {
+  deferred,
+  until,
+  fixture,
+} from "./helpers/future-market-discovery-fixture"
 
 describe("event candidate discovery paging", () => {
+  it.each([0, 2])(
+    "bounds distinct admitted discovery relays across pages and continuation with %i suppressed candidates",
+    async (suppressedCount) => {
+      const state = fixture(1)
+      const relays = Array.from(
+        { length: 10 },
+        (_, index) => `wss://bounded-${index}.relay.dev`
+      )
+      const plan = {
+        ...(await state.dependencies.planDiscovery!({})),
+        relayUrls: relays,
+        candidateRelayUrls: relays,
+        maxRelayAttempts: 8,
+      }
+      const contacted = new Set<string>()
+      let suppress = true
+      const input = {
+        authors: Array.from({ length: 1_025 }, (_, index) =>
+          index.toString(16).padStart(64, "0")
+        ),
+        plan,
+        options: {},
+        fetch: async (_filter: unknown, options: { relayUrls?: string[] }) => {
+          const relayUrl = options.relayUrls![0]!
+          if (suppress && relays.indexOf(relayUrl) < suppressedCount)
+            return { events: [], relays: [], admittedRelayUrls: [] }
+          contacted.add(relayUrl)
+          return {
+            events: [],
+            relays: [{ relayUrl, status: "success" as const }],
+            admittedRelayUrls: [relayUrl],
+          }
+        },
+        observe: async () => {},
+        assertCurrent: () => {},
+      }
+      const first = await scanEventMarketCandidates(input)
+      const selected = relays.slice(suppressedCount, suppressedCount + 8)
+      expect([...contacted].sort()).toEqual([...selected].sort())
+      expect(first.pages.length).toBeGreaterThan(0)
+      suppress = false
+      const continuation = JSON.parse(
+        JSON.stringify({ ...first, pendingCoordinates: [] })
+      ) as EventMarketDiscoveryContinuation
+      const next = await scanEventMarketCandidates({ ...input, continuation })
+      expect([...contacted].sort()).toEqual([...selected].sort())
+      expect(next.pages).toEqual([])
+      expect(next.incomplete).toBe(false)
+    }
+  )
+
+  it("backfills only live-policy-admitted sources through the real public reader", async () => {
+    const state = fixture(1)
+    const relays = Array.from(
+      { length: 12 },
+      (_, index) => `wss://admission-${index}.relay.dev`
+    )
+    const owner = "a".repeat(64)
+    const contacted = new Set<string>()
+    const targets = relayTargetsFromUrls(relays.slice(2), {
+      kind: "public_hint",
+      operation: "read",
+    })
+    const scan = await scanEventMarketCandidates({
+      authors: [state.records[0]!.author],
+      accountPubkey: owner,
+      plan: {
+        ...(await state.dependencies.planDiscovery!({})),
+        relayUrls: relays,
+        candidateRelayUrls: relays,
+        relayTargets: targets,
+        maxRelayAttempts: 8,
+      },
+      options: {
+        accountPubkey: owner,
+        authenticatedPubkey: owner,
+        relayTargets: targets,
+        accountNetworkLocalStateRepository: {
+          get: async () => emptyAccountNetworkLocalState(owner),
+        },
+        reuseRelayConnections: false,
+        skipHealthFilter: true,
+        socketScope: {
+          createWebSocket: (url) => {
+            contacted.add(url)
+            const socket: PublicRelayReadSocket = {
+              readyState: 0,
+              onopen: null,
+              onmessage: null,
+              onclose: null,
+              onerror: null,
+              send: (payload) => {
+                const [type, id] = JSON.parse(payload)
+                if (type === "REQ")
+                  queueMicrotask(() =>
+                    socket.onmessage?.({
+                      data: JSON.stringify(["EOSE", id]),
+                    } as MessageEvent<string>)
+                  )
+              },
+              close: () => {
+                socket.readyState = 3
+              },
+            }
+            queueMicrotask(() => {
+              socket.readyState = 1
+              socket.onopen?.(new Event("open"))
+            })
+            return socket
+          },
+        },
+      },
+      fetch: fetchSignedEventsFanoutDetailed,
+      observe: async () => {},
+      assertCurrent: () => {},
+    })
+    expect([...contacted].sort()).toEqual(relays.slice(2, 10).sort())
+    expect(scan.admittedRelayUrls.sort()).toEqual([...contacted].sort())
+    expect(scan.incomplete).toBe(false)
+  })
+
+  it("refreshes completed exact hydration when a duplicate gains a delayed source", async () => {
+    const state = fixture(1)
+    const record = state.records[0]!
+    const relays = ["wss://first.relay.dev", "wss://delayed.relay.dev"]
+    const delayed = deferred<void>()
+    const progress: Array<boolean> = []
+    const basePlan = await state.dependencies.planDiscovery!({})
+    state.dependencies.planDiscovery = async () => ({
+      ...basePlan,
+      relayUrls: relays,
+      candidateRelayUrls: relays,
+      maxRelayAttempts: 2,
+    })
+    state.dependencies.plan = async (input) => ({
+      ...basePlan,
+      relayUrls: input.relayHints?.length
+        ? [...input.relayHints]
+        : [relays[0]!],
+      candidateRelayUrls: input.relayHints?.length
+        ? [...input.relayHints]
+        : [relays[0]!],
+    })
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const sources = options.relayUrls ?? []
+      if (filter.kinds?.includes(30409) && !filter["#d"]) {
+        if (sources.includes(relays[1]!)) await delayed.promise
+        return {
+          events: [record.roster],
+          relays: sources.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+          })),
+        }
+      }
+      const result = await fetch(filter, options)
+      return {
+        events: result.events.filter(
+          (event) => event.kind !== 31923 || sources.includes(relays[1]!)
+        ),
+        relays: sources.map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+        })),
+      }
+    }
+    const result = discoverFutureEventMarkets(
+      {
+        onProgress: (value) =>
+          progress.push(Boolean(value.markets[0]?.calendar)),
+      },
+      state.dependencies
+    )
+    try {
+      await until(() => progress.length > 0)
+      expect(progress).toEqual([false])
+    } finally {
+      delayed.resolve()
+    }
+    const final = await result
+    expect(final.markets[0]?.calendar?.eventId).toBe(record.calendar.id)
+    expect(final.markets[0]?.observedRelayUrls).toContain(relays[1]!)
+    expect(final.coverage).toBe("complete")
+  })
+
   it("hydrates continued coordinates from their observed source beyond the exact relay prefix", async () => {
     const state = fixture(1)
     const record = state.records[0]!
@@ -43,19 +239,20 @@ describe("event candidate discovery paging", () => {
       ...basePlan,
       relayUrls: relays,
       candidateRelayUrls: relays,
+      maxRelayAttempts: 8,
     })
     state.dependencies.plan = getEventMarketReadPlan
     const fetch = state.dependencies.fetch
     state.dependencies.fetch = async (filter, options) => {
-      const attempted = (options.relayUrls ?? []).slice(
-        0,
-        options.maxRelayAttempts ?? Infinity
-      )
+      const attempted = (options.relayUrls ?? [])
+        .filter((relayUrl) => !relays.slice(0, 2).includes(relayUrl))
+        .slice(0, options.maxRelayAttempts ?? Infinity)
       const result = attempted.includes(source)
         ? await fetch(filter, options)
         : { events: [] }
       return {
         events: result.events,
+        admittedRelayUrls: attempted,
         relays: attempted.map((relayUrl) => ({
           relayUrl,
           status: "success" as const,
@@ -71,7 +268,9 @@ describe("event candidate discovery paging", () => {
         relayHints: relays,
       })
       expect(
-        widened.candidateRelayUrls.slice(0, widened.maxRelayAttempts)
+        widened.candidateRelayUrls
+          .filter((relayUrl) => !relays.slice(0, 2).includes(relayUrl))
+          .slice(0, widened.maxRelayAttempts)
       ).not.toContain(source)
       const first = await discoverFutureEventMarkets({}, state.dependencies)
       expect(first.markets).toHaveLength(128)

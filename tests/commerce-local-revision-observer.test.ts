@@ -162,14 +162,19 @@ describe("local product revision evidence", () => {
     const observation = observe([address("coffee")])
     await observation.ready
     let fail!: () => void
+    let started!: () => void
+    const saving = new Promise<void>((resolve) => {
+      started = resolve
+    })
     __setCommerceTestOverrides({
       putCachedProducts: async () =>
         new Promise<void>((_, reject) => {
           fail = () => reject(new Error("unavailable"))
+          started()
         }),
     })
     const writing = cacheSignedProductListingEvent(event("coffee", 300))
-    await Promise.resolve()
+    await saving
     expect(observation.snapshots.at(-1)?.records[0]?.eventCreatedAt).toBe(300)
     observation.stop()
     fail()
@@ -219,7 +224,7 @@ describe("local product revision evidence", () => {
         await cacheSignedProductListingEvent(
           event("coffee", mode === "newer incoming" ? 400 : 200)
         )
-        expect(reads).toBe(1)
+        expect(reads).toBe(2)
         expect(writes).toBe(mode === "no write" ? 0 : 1)
         expect(resumed.snapshots.at(-1)?.records[0]?.eventCreatedAt).toBe(
           mode === "newer incoming" ? 400 : 300
@@ -313,4 +318,23 @@ describe("local product revision evidence", () => {
       []
     )
   })
+})
+
+it("does not promote unsigned display cache timestamps over admitted listing authority", async () => {
+  await cacheSignedProductListingEvent(event("coffee", 100))
+  rows = rows.map((row) => ({
+    ...row,
+    signedProductEvent: undefined,
+    eventCreatedAt: 999,
+    title: "Unsigned projection",
+  }))
+  const current = event("coffee", 200)
+  __setCommerceTestOverrides({
+    fetchPublicEvents: async (filter) =>
+      filter.kinds?.includes(30402) ? [current.rawEvent()] : [],
+  })
+  const result = await getProductsByIds([address("coffee")])
+  expect(result.data[0]?.eventId).toBe(current.id)
+  expect(result.data[0]?.product.title).toBe("coffee")
+  expect(rows[0]?.eventCreatedAt).toBe(200)
 })

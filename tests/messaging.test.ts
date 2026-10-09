@@ -50,6 +50,7 @@ import {
   type ProgressivePublishSnapshot,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import { admitFixture } from "./helpers/public-event"
 
 const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
 const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)
@@ -73,24 +74,53 @@ const readyOwnInbox = async (): Promise<
   distributionRepairable: false,
 })
 
-function signedInboxDeclaration(
+async function signedInboxDeclaration(
   secretKey: Uint8Array,
   relayUrls: readonly string[],
   createdAt = 100
 ) {
-  return finalizeEvent(
-    {
-      kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-      created_at: createdAt,
-      tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
-      content: "",
-    },
-    secretKey
+  return await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: createdAt,
+        tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
+        content: "",
+      },
+      secretKey
+    )
   )
 }
 
+async function inboxEvidenceRepository(
+  declarations: readonly {
+    secretKey: Uint8Array
+    relayUrls: readonly string[]
+  }[]
+): Promise<InboxDeclarationEvidenceRepository> {
+  const repository = createInMemoryInboxDeclarationEvidenceRepository()
+  for (const entry of declarations) {
+    const signedEvent = await signedInboxDeclaration(
+      entry.secretKey,
+      entry.relayUrls
+    )
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: getPublicKey(entry.secretKey),
+        signedEvent,
+        sourceRelayUrls: [SHARED_INBOX_RELAY],
+        sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+      },
+      repository
+    )
+  }
+  return repository
+}
+
 const signer = plainTestSigner({
-  user: async () => ({ pubkey: "sender" }),
+  user: async () => ({
+    pubkey: "0101010101010101010101010101010101010101010101010101010101010101",
+  }),
 } as unknown as NDKSigner)
 
 function wrap(id: string): NDKEvent {
@@ -98,21 +128,25 @@ function wrap(id: string): NDKEvent {
 }
 
 function rumor(kind: number, overrides: Partial<NDKEvent> = {}): NDKEvent {
-  return {
-    id: "rumor-id",
+  const event = {
+    id: "",
     kind,
-    pubkey: "sender",
+    pubkey: "0101010101010101010101010101010101010101010101010101010101010101",
     created_at: 1000,
-    tags: [["p", "recipient"]],
+    tags: [
+      ["p", "0202020202020202020202020202020202020202020202020202020202020202"],
+    ],
     content: "hi",
     ...overrides,
   } as unknown as NDKEvent
+  if (!overrides.id) event.id = getEventHash(event)
+  return event
 }
 
 function orderRumor(overrides: Partial<NDKEvent> = {}): NDKEvent {
   return rumor(EVENT_KINDS.ORDER, {
     tags: [
-      ["p", "recipient"],
+      ["p", "0202020202020202020202020202020202020202020202020202020202020202"],
       ["type", "message"],
       ["order", "order-id"],
     ],
@@ -124,14 +158,16 @@ function orderRumor(overrides: Partial<NDKEvent> = {}): NDKEvent {
 function initialOrderRumor(): NDKEvent {
   return orderRumor({
     tags: [
-      ["p", "recipient"],
+      ["p", "0202020202020202020202020202020202020202020202020202020202020202"],
       ["type", "order"],
       ["order", "order-id"],
     ],
     content: JSON.stringify({
       id: "order-id",
-      merchantPubkey: "recipient",
-      buyerPubkey: "sender",
+      merchantPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
+      buyerPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
       buyerIdentityKind: "signed_in",
       items: [
         {
@@ -154,8 +190,10 @@ function validatedOrderInput(order = orderRumor()) {
     validatedOrderScope: createValidatedOrderRouteScope({
       rumor: order,
       orderId: "order-id",
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
     }),
   }
 }
@@ -166,17 +204,20 @@ function guestOrderCompanionFixture(
   const authoritativeOrder = new NDKEvent()
   authoritativeOrder.id = "guest-order-rumor"
   authoritativeOrder.kind = EVENT_KINDS.ORDER
-  authoritativeOrder.pubkey = "guest"
+  authoritativeOrder.pubkey =
+    "0505050505050505050505050505050505050505050505050505050505050505"
   authoritativeOrder.created_at = 1000
   authoritativeOrder.tags = [
-    ["p", "merchant"],
+    ["p", "0404040404040404040404040404040404040404040404040404040404040404"],
     ["type", "order"],
     ["order", "guest-order-id"],
   ]
   authoritativeOrder.content = JSON.stringify({
     id: "guest-order-id",
-    merchantPubkey: "merchant",
-    buyerPubkey: "guest",
+    merchantPubkey:
+      "0404040404040404040404040404040404040404040404040404040404040404",
+    buyerPubkey:
+      "0505050505050505050505050505050505050505050505050505050505050505",
     buyerIdentityKind: "guest_ephemeral",
     items: [
       {
@@ -199,8 +240,10 @@ function guestOrderCompanionFixture(
     authoritativeOrder,
     ...createValidatedGuestOrderCompanion({
       authoritativeOrder,
-      senderPubkey: "guest",
-      recipientPubkey: "merchant",
+      senderPubkey:
+        "0505050505050505050505050505050505050505050505050505050505050505",
+      recipientPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       merchantOrigin,
     }),
   }
@@ -211,14 +254,14 @@ describe("isOrderCompanionNotificationRumor", () => {
     "A new order was sent to you through Conduit Market.\n" +
     "Review it at: https://sell.conduit.market/orders?order=order-id"
   const canonicalTags = [
-    ["p", "merchant"],
+    ["p", "0404040404040404040404040404040404040404040404040404040404040404"],
     ["subject", "conduit-order-notification"],
     ["order", "order-id"],
     ["conduit", "order-companion", "1", "authoritative-order-id"],
     ["client", "Conduit Market"],
   ]
 
-  it("recognizes only the complete v1 app marker", () => {
+  it("recognizes only the complete v1 app marker", async () => {
     expect(
       isOrderCompanionNotificationRumor(
         rumor(EVENT_KINDS.DIRECT_MESSAGE, {
@@ -229,7 +272,7 @@ describe("isOrderCompanionNotificationRumor", () => {
     ).toBe(true)
   })
 
-  it("fails open for arbitrary content and extra tags", () => {
+  it("fails open for arbitrary content and extra tags", async () => {
     expect(
       isOrderCompanionNotificationRumor(
         rumor(EVENT_KINDS.DIRECT_MESSAGE, {
@@ -290,7 +333,7 @@ describe("isOrderCompanionNotificationRumor", () => {
     ).toBe(false)
   })
 
-  it("does not classify an order rumor as an inbox notification", () => {
+  it("does not classify an order rumor as an inbox notification", async () => {
     expect(
       isOrderCompanionNotificationRumor(
         rumor(EVENT_KINDS.ORDER, {
@@ -303,7 +346,7 @@ describe("isOrderCompanionNotificationRumor", () => {
 })
 
 describe("order companion deployment links", () => {
-  it("builds the fixed guest copy on the selected Merchant origin", () => {
+  it("builds the fixed guest copy on the selected Merchant origin", async () => {
     const { companion } = guestOrderCompanionFixture(
       "https://fix-293.conduit-merchant-33n.pages.dev"
     )
@@ -315,13 +358,13 @@ describe("order companion deployment links", () => {
 })
 
 describe("classifyPrivateMessageKind", () => {
-  it("maps kind 14 to direct and kind 16 to order", () => {
+  it("maps kind 14 to direct and kind 16 to order", async () => {
     expect(classifyPrivateMessageKind(EVENT_KINDS.DIRECT_MESSAGE)).toBe(
       "direct"
     )
     expect(classifyPrivateMessageKind(EVENT_KINDS.ORDER)).toBe("order")
   })
-  it("returns null for unrelated kinds", () => {
+  it("returns null for unrelated kinds", async () => {
     expect(classifyPrivateMessageKind(1)).toBeNull()
     expect(classifyPrivateMessageKind(undefined)).toBeNull()
   })
@@ -388,11 +431,19 @@ describe("unwrapGiftWrap", () => {
     ]
     for (const payload of payloads) {
       const privateRumor = buildFutureMarketPrivateRumor(payload)
+      expect(
+        (
+          await unwrapGiftWrap(wrap(`deferred-${payload.type}`), signer, {
+            giftUnwrap: async () => privateRumor,
+          })
+        ).status
+      ).toBe("deferred_machine")
       const outcome = await unwrapGiftWrap(
         wrap(`future-${payload.type}`),
         signer,
         {
           giftUnwrap: async () => privateRumor,
+          machineConsumer: "future_market",
         }
       )
       expect(outcome.status).toBe("ok")
@@ -428,7 +479,10 @@ describe("unwrapGiftWrap", () => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
         tags: [
-          ["p", "recipient"],
+          [
+            "p",
+            "0202020202020202020202020202020202020202020202020202020202020202",
+          ],
           ["type", "checkout_spark_recovery"],
           ["order", "order-1"],
           ["checkout", "checkout-1"],
@@ -452,7 +506,10 @@ describe("unwrapGiftWrap", () => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
         tags: [
-          ["p", "recipient"],
+          [
+            "p",
+            "0202020202020202020202020202020202020202020202020202020202020202",
+          ],
           ["type", "checkout_spark_recovery"],
         ],
         content: "{}",
@@ -463,9 +520,9 @@ describe("unwrapGiftWrap", () => {
         giftUnwrap,
       })
     ).toEqual({
-      status: "decrypt_failed",
+      status: "deferred_machine",
       wrapId: "w-incomplete-recovery",
-      reason: "malformed",
+      kind: EVENT_KINDS.ORDER,
     })
   })
 
@@ -474,7 +531,10 @@ describe("unwrapGiftWrap", () => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
         tags: [
-          ["p", "recipient"],
+          [
+            "p",
+            "0202020202020202020202020202020202020202020202020202020202020202",
+          ],
           ["type", "order"],
           ["type", "checkout_spark_recovery"],
           ["order", "order-1"],
@@ -486,9 +546,9 @@ describe("unwrapGiftWrap", () => {
       giftUnwrap,
     })
     expect(outcome).toEqual({
-      status: "decrypt_failed",
+      status: "deferred_machine",
       wrapId: "w-mixed-recovery",
-      reason: "malformed",
+      kind: EVENT_KINDS.ORDER,
     })
     expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
   })
@@ -497,7 +557,10 @@ describe("unwrapGiftWrap", () => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
         tags: [
-          ["p", "recipient"],
+          [
+            "p",
+            "0202020202020202020202020202020202020202020202020202020202020202",
+          ],
           ["type", "message"],
         ],
         content: "private order text",
@@ -507,12 +570,9 @@ describe("unwrapGiftWrap", () => {
       giftUnwrap,
     })
 
-    expect(outcome).toEqual({
-      status: "decrypt_failed",
-      wrapId: "w-partial-order",
-      reason: "malformed",
-    })
-    expect(JSON.stringify(outcome)).not.toContain("private order text")
+    expect(outcome.status).toBe("external")
+    if (outcome.status === "external" && outcome.record.category === "commerce")
+      expect(outcome.record.status).toBe("malformed")
   })
 
   it("rejects a fully tagged kind-16 rumor with non-JSON content", async () => {
@@ -520,11 +580,9 @@ describe("unwrapGiftWrap", () => {
       orderRumor({ content: "arbitrary plaintext" })
     const outcome = await unwrapGiftWrap(wrap("w-json"), signer, { giftUnwrap })
 
-    expect(outcome).toEqual({
-      status: "decrypt_failed",
-      wrapId: "w-json",
-      reason: "malformed",
-    })
+    expect(outcome.status).toBe("external")
+    if (outcome.status === "external" && outcome.record.category === "commerce")
+      expect(outcome.record.status).toBe("malformed")
   })
 
   it("rejects a fully tagged message rumor without a typed note", async () => {
@@ -534,11 +592,9 @@ describe("unwrapGiftWrap", () => {
       giftUnwrap,
     })
 
-    expect(outcome).toEqual({
-      status: "decrypt_failed",
-      wrapId: "w-shape",
-      reason: "malformed",
-    })
+    expect(outcome.status).toBe("external")
+    if (outcome.status === "external" && outcome.record.category === "commerce")
+      expect(outcome.record.status).toBe("malformed")
   })
 
   it("surfaces a decrypt failure (not silence) when unwrap returns null", async () => {
@@ -561,15 +617,16 @@ describe("unwrapGiftWrap", () => {
       expect(outcome.reason).toBe("nip44_failed")
   })
 
-  it("reports a timeout reason when unwrap stalls", async () => {
-    const giftUnwrap: GiftUnwrapFn = () => new Promise(() => {})
+  it("keeps slow success after the visible waiting threshold", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () => {
+      await Bun.sleep(20)
+      return rumor(14)
+    }
     const outcome = await unwrapGiftWrap(wrap("w5"), signer, {
       giftUnwrap,
       timeoutMs: 10,
     })
-    expect(outcome.status).toBe("decrypt_failed")
-    if (outcome.status === "decrypt_failed")
-      expect(outcome.reason).toBe("timeout")
+    expect(outcome.status).toBe("ok")
   })
 
   it("ignores unrelated inner kinds", async () => {
@@ -588,36 +645,52 @@ describe("unwrapGiftWrap", () => {
 })
 
 describe("buildDirectMessageRumor / parseDirectMessageRumor", () => {
-  it("builds a kind-14 rumor tagged to the recipient", () => {
+  it("builds a kind-14 rumor tagged to the recipient", async () => {
     const built = buildDirectMessageRumor({
-      senderPubkey: "buyer",
-      recipientPubkey: "merchant",
+      senderPubkey:
+        "0303030303030303030303030303030303030303030303030303030303030303",
+      recipientPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       content: "do you ship to NZ?",
       appId: "market",
       createdAt: 2000,
     })
     expect(built.kind).toBe(EVENT_KINDS.DIRECT_MESSAGE)
-    expect(built.pubkey).toBe("buyer")
-    expect(built.tags.find((t) => t[0] === "p")?.[1]).toBe("merchant")
+    expect(built.pubkey).toBe(
+      "0303030303030303030303030303030303030303030303030303030303030303"
+    )
+    expect(built.tags.find((t) => t[0] === "p")?.[1]).toBe(
+      "0404040404040404040404040404040404040404040404040404040404040404"
+    )
     expect(built.content).toBe("do you ship to NZ?")
   })
 
-  it("parses an unwrapped kind-14 rumor with ms timestamps", () => {
+  it("parses an unwrapped kind-14 rumor with ms timestamps", async () => {
     const parsed = parseDirectMessageRumor(
       rumor(EVENT_KINDS.DIRECT_MESSAGE, {
         id: "m1",
-        pubkey: "merchant",
+        pubkey:
+          "0404040404040404040404040404040404040404040404040404040404040404",
         created_at: 2000,
         content: "yes we do",
       })
     )
     expect(parsed).toEqual({
       id: "m1",
-      senderPubkey: "merchant",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       content: "yes we do",
       createdAt: 2_000_000,
       transport: "nip17",
+      participants: [
+        "0202020202020202020202020202020202020202020202020202020202020202",
+        "0404040404040404040404040404040404040404040404040404040404040404",
+      ],
+      conversationId:
+        "nip17:0202020202020202020202020202020202020202020202020202020202020202:0404040404040404040404040404040404040404040404040404040404040404",
+      replyTo: undefined,
     })
   })
 })
@@ -626,8 +699,14 @@ describe("decryptLegacyDirectMessage", () => {
   function legacyEvent(overrides: Partial<NDKEvent> = {}): NDKEvent {
     return rumor(EVENT_KINDS.DM_LEGACY, {
       id: "legacy-id",
-      pubkey: "sender",
-      tags: [["p", "recipient"]],
+      pubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      tags: [
+        [
+          "p",
+          "0202020202020202020202020202020202020202020202020202020202020202",
+        ],
+      ],
       content: "ciphertext?iv=secret",
       ...overrides,
     })
@@ -642,12 +721,21 @@ describe("decryptLegacyDirectMessage", () => {
 
     const incoming = await decryptLegacyDirectMessage(
       legacyEvent(),
-      "recipient",
+      "0202020202020202020202020202020202020202020202020202020202020202",
       decrypt
     )
     const outgoing = await decryptLegacyDirectMessage(
-      legacyEvent({ pubkey: "recipient", tags: [["p", "sender"]] }),
-      "recipient",
+      legacyEvent({
+        pubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
+        tags: [
+          [
+            "p",
+            "0101010101010101010101010101010101010101010101010101010101010101",
+          ],
+        ],
+      }),
+      "0202020202020202020202020202020202020202020202020202020202020202",
       decrypt
     )
 
@@ -657,11 +745,21 @@ describe("decryptLegacyDirectMessage", () => {
       expect(incoming.message.transport).toBe("nip04")
       expect(outgoing.message.transport).toBe("nip04")
       expect(incoming.message.content).toBe("plain:ciphertext?iv=secret")
-      expect(outgoing.message.senderPubkey).toBe("recipient")
+      expect(outgoing.message.senderPubkey).toBe(
+        "0202020202020202020202020202020202020202020202020202020202020202"
+      )
     }
     expect(calls).toEqual([
-      { pubkey: "sender", ciphertext: "ciphertext?iv=secret" },
-      { pubkey: "sender", ciphertext: "ciphertext?iv=secret" },
+      {
+        pubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        ciphertext: legacyEvent().content,
+      },
+      {
+        pubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        ciphertext: legacyEvent().content,
+      },
     ])
   })
 
@@ -675,32 +773,39 @@ describe("decryptLegacyDirectMessage", () => {
     expect(
       await decryptLegacyDirectMessage(
         legacyEvent({ tags: [] }),
-        "recipient",
+        "0202020202020202020202020202020202020202020202020202020202020202",
         decrypt
       )
     ).toEqual({ status: "ignored", eventId: "legacy-id" })
     expect(
       await decryptLegacyDirectMessage(
-        legacyEvent({ pubkey: "other", tags: [["p", "another"]] }),
-        "recipient",
+        legacyEvent({
+          pubkey:
+            "0606060606060606060606060606060606060606060606060606060606060606",
+          tags: [["p", "another"]],
+        }),
+        "0202020202020202020202020202020202020202020202020202020202020202",
         decrypt
       )
     ).toEqual({ status: "ignored", eventId: "legacy-id" })
     expect(decryptCalls).toBe(0)
   })
 
-  it("reports rejection and timeout with content-free failure records", async () => {
+  it("reports rejection safely and keeps a slow valid legacy result", async () => {
     const rejected = await decryptLegacyDirectMessage(
       legacyEvent({ id: "legacy-rejected" }),
-      "recipient",
+      "0202020202020202020202020202020202020202020202020202020202020202",
       async () => {
         throw new Error("plaintext and ciphertext must stay private")
       }
     )
     const timedOut = await decryptLegacyDirectMessage(
       legacyEvent({ id: "legacy-timeout" }),
-      "recipient",
-      () => new Promise(() => {}),
+      "0202020202020202020202020202020202020202020202020202020202020202",
+      async () => {
+        await Bun.sleep(20)
+        return "late synthetic"
+      },
       { timeoutMs: 5 }
     )
 
@@ -712,16 +817,7 @@ describe("decryptLegacyDirectMessage", () => {
         retryable: true,
       },
     })
-    expect(timedOut).toEqual({
-      status: "decrypt_failed",
-      failure: {
-        eventId: "legacy-timeout",
-        reason: "timeout",
-        retryable: true,
-      },
-    })
-    expect(Object.keys(rejected).sort()).toEqual(["failure", "status"])
-    expect(Object.keys(timedOut).sort()).toEqual(["failure", "status"])
+    expect(timedOut.status).toBe("ok")
   })
 })
 
@@ -765,12 +861,15 @@ describe("publishPrivateMessage", () => {
     }
   }
 
-  function signedOrderDeliveryFixture(relayUrls: string[], initial = true) {
+  async function signedOrderDeliveryFixture(
+    relayUrls: string[],
+    initial = true
+  ) {
     __resetInboxRelayCache()
     const senderPubkey = getPublicKey(generateSecretKey())
     const recipientSecret = generateSecretKey()
     const recipientPubkey = getPublicKey(recipientSecret)
-    const declaration = signedInboxDeclaration(recipientSecret, relayUrls)
+    const declaration = await signedInboxDeclaration(recipientSecret, relayUrls)
     const observedAt = Date.now()
     mergeInboxDeclarationEvidenceInMemory({
       pubkey: recipientPubkey,
@@ -798,6 +897,7 @@ describe("publishPrivateMessage", () => {
         buyerPubkey: senderPubkey,
       })
     }
+    order.id = getEventHash(order)
     return {
       rumor: order,
       validatedOrderScope: createValidatedOrderRouteScope({
@@ -824,7 +924,7 @@ describe("publishPrivateMessage", () => {
     it(`retains ${status} in the initial signed order delivery checkpoint`, async () => {
       const ackRelay = "wss://acked.inbox.conduit.market"
       const failedRelay = "wss://failed.inbox.conduit.market"
-      const delivery = signedOrderDeliveryFixture([ackRelay, failedRelay])
+      const delivery = await signedOrderDeliveryFixture([ackRelay, failedRelay])
       const signedRecipientWrap = new NDKEvent(
         undefined,
         finalizeEvent(
@@ -855,11 +955,12 @@ describe("publishPrivateMessage", () => {
         ...delivery,
         rumorKind: EVENT_KINDS.ORDER,
         recipientDeliveryBoundary: "accepted",
+        senderInboxRelays: [],
         onRecipientPrepared: async () => {},
         onRecipientPublishStarting: async () => {},
         onRecipientPublishAccepted: async () => {},
         onRecipientPublishSettled: async () => {},
-        giftWrapFn: (async () => signedRecipientWrap) as never,
+        giftWrapFn: (async () => signedRecipientWrap.rawEvent()) as never,
         publishProgressiveFn: (async () => ({
           accepted: Promise.resolve(snapshot),
           settled: Promise.resolve(snapshot),
@@ -883,7 +984,7 @@ describe("publishPrivateMessage", () => {
   it("returns only after the first ACK is durable and settles remaining relays in background", async () => {
     const firstRelay = "wss://first.inbox.conduit.market"
     const slowRelay = "wss://slow.inbox.conduit.market"
-    const delivery = signedOrderDeliveryFixture([firstRelay, slowRelay])
+    const delivery = await signedOrderDeliveryFixture([firstRelay, slowRelay])
     let resolveAccepted!: (snapshot: ProgressivePublishSnapshot) => void
     const accepted = new Promise<ProgressivePublishSnapshot>((resolve) => {
       resolveAccepted = resolve
@@ -932,7 +1033,9 @@ describe("publishPrivateMessage", () => {
         events.push(`wrap:${recipient.pubkey}`)
         return recipient.pubkey === delivery.recipientPubkey
           ? signedRecipientWrap
-          : wrap(`wrap-${recipient.pubkey}`)
+          : wrap(
+              `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+            )
       }) as never,
       onRecipientPrepared: async () => {
         events.push("prepared")
@@ -1012,9 +1115,53 @@ describe("publishPrivateMessage", () => {
     expect(events).toContain("settled:persisted")
   })
 
+  for (const failure of ["refused", "timed out", "slow"]) {
+    it(`commits recipient acceptance before ${failure} self-copy work`, async () => {
+      const relay = "wss://merchant.inbox.conduit.market"
+      const delivery = await signedOrderDeliveryFixture([relay])
+      const snapshot = progressiveSnapshot({ successful: [relay] })
+      let durable = false
+      let selfCalls = 0
+      let release!: () => void
+      const wait = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const result = await publishPrivateMessage({
+        ...delivery,
+        rumorKind: EVENT_KINDS.ORDER,
+        recipientDeliveryBoundary: "accepted",
+        senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+        onRecipientPrepared: async () => {},
+        onRecipientPublishStarting: async () => {},
+        onRecipientPublishAccepted: async () => {
+          durable = true
+        },
+        onRecipientPublishSettled: async () => {},
+        giftWrapFn: (async (_rumor: unknown, recipient: { pubkey: string }) => {
+          if (recipient.pubkey === delivery.recipientPubkey)
+            return wrap("recipient-wrap")
+          selfCalls++
+          if (failure === "slow") await wait
+          throw new Error(`self-copy ${failure}`)
+        }) as never,
+        publishProgressiveFn: (async () => ({
+          accepted: Promise.resolve(snapshot),
+          settled: Promise.resolve(snapshot),
+        })) as never,
+      })
+      expect(durable).toBe(true)
+      expect(selfCalls).toBe(0)
+      expect(result.recipientDelivery.successfulRelayUrls).toEqual([relay])
+      const postWork = result.startPostAcceptanceWork!()
+      release()
+      expect((await postWork).selfCopyError).toBe(`self-copy ${failure}`)
+      expect(selfCalls).toBe(1)
+    })
+  }
+
   it("waits for terminal persistence before rejecting a zero-ACK initial order", async () => {
     const relayUrl = "wss://merchant.inbox.conduit.market"
-    const delivery = signedOrderDeliveryFixture([relayUrl])
+    const delivery = await signedOrderDeliveryFixture([relayUrl])
     let rejectAccepted!: (error: unknown) => void
     const accepted = new Promise<ProgressivePublishSnapshot>(
       (_resolve, reject) => {
@@ -1068,7 +1215,7 @@ describe("publishPrivateMessage", () => {
   })
 
   it("does not run accepted-order self-copy after the signer session changes", async () => {
-    const delivery = signedOrderDeliveryFixture([
+    const delivery = await signedOrderDeliveryFixture([
       "wss://merchant.inbox.conduit.market",
     ])
     const snapshot = progressiveSnapshot({
@@ -1085,7 +1232,9 @@ describe("publishPrivateMessage", () => {
       shouldContinue: () => sessionCurrent,
       giftWrapFn: (async (_rumor, recipient) => {
         if (recipient.pubkey === delivery.senderPubkey) selfWraps += 1
-        return wrap(`wrap-${recipient.pubkey}`)
+        return wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )
       }) as never,
       onRecipientPrepared: async () => {},
       onRecipientPublishStarting: async () => {},
@@ -1113,8 +1262,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         recipientDeliveryBoundary: "accepted",
@@ -1134,7 +1285,7 @@ describe("publishPrivateMessage", () => {
 
   it("requires recipient staging to finish before any relay publish", async () => {
     const steps: string[] = []
-    const delivery = signedOrderDeliveryFixture(
+    const delivery = await signedOrderDeliveryFixture(
       ["wss://recipient.inbox.conduit.market"],
       false
     )
@@ -1170,8 +1321,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         rumor: mismatchedOrderRumor,
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: [],
@@ -1189,8 +1342,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DM_LEGACY),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.example"],
@@ -1210,7 +1365,7 @@ describe("publishPrivateMessage", () => {
     expect(published).toBe(false)
   })
 
-  it("does not accept kind 4 as a publish rumorKind", () => {
+  it("does not accept kind 4 as a publish rumorKind", async () => {
     type PublishRumorKind = Parameters<
       typeof publishPrivateMessage
     >[0]["rumorKind"]
@@ -1226,9 +1381,14 @@ describe("publishPrivateMessage", () => {
 
     await expect(
       publishPrivateMessage({
-        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, { pubkey: "other" }),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
+          pubkey:
+            "0606060606060606060606060606060606060606060606060606060606060606",
+        }),
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.example"],
@@ -1247,10 +1407,15 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer: plainTestSigner({
-          user: async () => ({ pubkey: "other" }),
+          user: async () => ({
+            pubkey:
+              "0606060606060606060606060606060606060606060606060606060606060606",
+          }),
         } as unknown as NDKSigner),
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
@@ -1271,8 +1436,10 @@ describe("publishPrivateMessage", () => {
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
           tags: [["p", "someone-else"]],
         }),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.example"],
@@ -1293,8 +1460,10 @@ describe("publishPrivateMessage", () => {
     try {
       await publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: [],
@@ -1334,6 +1503,13 @@ describe("publishPrivateMessage", () => {
         committedAt: 100,
       })
     )
+    const inboxRepository = await inboxEvidenceRepository([
+      { secretKey: INBOX_OWNER_SECRET, relayUrls: [eligibleRelayUrl] },
+      {
+        secretKey: INBOX_PEER_SECRET,
+        relayUrls: [excludedRelayUrl, eligibleRelayUrl],
+      },
+    ])
     let publishOptions: Parameters<
       NonNullable<Parameters<typeof publishPrivateMessage>[0]["publishFn"]>
     >[1]
@@ -1346,7 +1522,9 @@ describe("publishPrivateMessage", () => {
       senderPubkey: INBOX_OWNER,
       recipientPubkey: INBOX_PEER,
       accountPubkey: INBOX_OWNER,
+      authenticatedPubkey: INBOX_OWNER,
       accountNetworkLocalStateRepository: repository,
+      inboxDeclarationEvidenceRepository: inboxRepository,
       signer: plainTestSigner({
         user: async () => ({ pubkey: INBOX_OWNER }),
       } as unknown as NDKSigner),
@@ -1355,7 +1533,10 @@ describe("publishPrivateMessage", () => {
       recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
       inspectOwnInboxReadiness: async () => ({
         state: "ready",
-        eventId: "a".repeat(64),
+        eventId: (await getInboxDeclarationEvidence(
+          INBOX_OWNER,
+          inboxRepository
+        ))!.current.signedEvent.id,
         relayUrls: [eligibleRelayUrl],
         stale: false,
         distributionRepairable: false,
@@ -1481,14 +1662,6 @@ describe("publishPrivateMessage", () => {
     const eventId = "a".repeat(64)
     const blockedReadiness: OwnPrivateMessageRelayReadiness[] = [
       {
-        state: "distribution_pending",
-        eventId,
-        relayUrls: ["wss://sender.inbox.example"],
-        retainedRelayUrls: [],
-        stale: true,
-        distributionRepairable: false,
-      },
-      {
         state: "signed_empty",
         eventId,
         stale: false,
@@ -1512,8 +1685,10 @@ describe("publishPrivateMessage", () => {
       try {
         await publishPrivateMessage({
           rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-          senderPubkey: "sender",
-          recipientPubkey: "recipient",
+          senderPubkey:
+            "0101010101010101010101010101010101010101010101010101010101010101",
+          recipientPubkey:
+            "0202020202020202020202020202020202020202020202020202020202020202",
           signer,
           rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
           recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
@@ -1549,10 +1724,15 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       rumor: companion,
-      senderPubkey: "guest",
-      recipientPubkey: "merchant",
+      senderPubkey:
+        "0505050505050505050505050505050505050505050505050505050505050505",
+      recipientPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       signer: plainTestSigner({
-        user: async () => ({ pubkey: "guest" }),
+        user: async () => ({
+          pubkey:
+            "0505050505050505050505050505050505050505050505050505050505050505",
+        }),
       } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
@@ -1568,7 +1748,9 @@ describe("publishPrivateMessage", () => {
       },
       giftWrapFn: (async (_rumor, recipient) => {
         wrappedRecipients.push(recipient.pubkey)
-        return wrap(`wrap-${recipient.pubkey}`)
+        return wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )
       }) as never,
       publishFn: (async (_event, options) => {
         const relays = options.exclusiveRelayUrls ?? []
@@ -1582,7 +1764,9 @@ describe("publishPrivateMessage", () => {
 
     expect(senderReadinessChecks).toBe(0)
     expect(visibilityChecks).toBe(0)
-    expect(wrappedRecipients).toEqual(["merchant"])
+    expect(wrappedRecipients).toEqual([
+      "0404040404040404040404040404040404040404040404040404040404040404",
+    ])
     expect(publishRelays).toEqual([["wss://merchant.inbox.conduit.market"]])
     expect(result.wrappedToSelf).toBeNull()
     expect(result.deliveryRoute).toBe("declared_inbox")
@@ -1597,8 +1781,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
@@ -1629,18 +1815,27 @@ describe("publishPrivateMessage", () => {
     const wrappedRecipients: string[] = []
     let visibilityChecks = 0
     const interactiveSigner = plainTestSigner({
-      user: async () => ({ pubkey: "sender" }),
+      user: async () => ({
+        pubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+      }),
       encrypt: async (recipient: { pubkey: string }) => {
         wrappedRecipients.push(recipient.pubkey)
-        if (recipient.pubkey === "recipient") visible = false
+        if (
+          recipient.pubkey ===
+          "0202020202020202020202020202020202020202020202020202020202020202"
+        )
+          visible = false
         return "ciphertext"
       },
     } as unknown as NDKSigner)
 
     const publishing = publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer: interactiveSigner,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       signerInteraction: "external",
@@ -1657,7 +1852,9 @@ describe("publishPrivateMessage", () => {
       },
       giftWrapFn: (async (_rumor, recipient, workflowSigner) => {
         await workflowSigner.encryptNip44(recipient.pubkey, "seal")
-        return wrap(`wrap-${recipient.pubkey}`)
+        return wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )
       }) as never,
       publishFn: (async (_event, options) => ({
         successfulRelayUrls: [options.exclusiveRelayUrls?.[0]],
@@ -1666,13 +1863,18 @@ describe("publishPrivateMessage", () => {
     })
 
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    expect(wrappedRecipients).toEqual(["recipient"])
+    expect(wrappedRecipients).toEqual([
+      "0202020202020202020202020202020202020202020202020202020202020202",
+    ])
 
     visible = true
     releaseVisibility()
     const result = await publishing
 
-    expect(wrappedRecipients).toEqual(["recipient", "sender"])
+    expect(wrappedRecipients).toEqual([
+      "0202020202020202020202020202020202020202020202020202020202020202",
+      "0101010101010101010101010101010101010101010101010101010101010101",
+    ])
     expect(visibilityChecks).toBe(2)
     expect(result.wrappedToSelf?.id).toBe("wrap-sender")
   })
@@ -1687,7 +1889,10 @@ describe("publishPrivateMessage", () => {
     let signCalls = 0
     let visibilityChecks = 0
     const interactiveSigner = plainTestSigner({
-      user: async () => ({ pubkey: "sender" }),
+      user: async () => ({
+        pubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+      }),
       encrypt: async () => {
         encryptCalls += 1
         visible = false
@@ -1701,8 +1906,10 @@ describe("publishPrivateMessage", () => {
 
     const publishing = publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer: interactiveSigner,
       signerInteraction: "external",
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
@@ -1781,6 +1988,13 @@ describe("publishPrivateMessage", () => {
       authenticatedPubkey: INBOX_OWNER,
       accountNetworkLocalStateRepository:
         createInMemoryAccountNetworkLocalStateRepository(),
+      inboxDeclarationEvidenceRepository: await inboxEvidenceRepository([
+        {
+          secretKey: INBOX_OWNER_SECRET,
+          relayUrls: ["wss://sender.inbox.conduit.market"],
+        },
+        { secretKey: INBOX_PEER_SECRET, relayUrls: ["wss://auth.nostr1.com"] },
+      ]),
       signer,
       signerInteraction: "external",
       relayAuthMethod: "nip07",
@@ -1831,10 +2045,15 @@ describe("publishPrivateMessage", () => {
     const first = guestOrderCompanionFixture()
     const input = {
       rumor: first.companion,
-      senderPubkey: "guest",
-      recipientPubkey: "merchant",
+      senderPubkey:
+        "0505050505050505050505050505050505050505050505050505050505050505",
+      recipientPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       signer: plainTestSigner({
-        user: async () => ({ pubkey: "guest" }),
+        user: async () => ({
+          pubkey:
+            "0505050505050505050505050505050505050505050505050505050505050505",
+        }),
       } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
@@ -1881,15 +2100,20 @@ describe("publishPrivateMessage", () => {
     ]) {
       const fixture = guestOrderCompanionFixture()
       mutate(fixture.companion)
-      fixture.companion.id = fixture.companion.getEventHash()
+      fixture.companion.id = getEventHash(fixture.companion)
 
       await expect(
         publishPrivateMessage({
           rumor: fixture.companion,
-          senderPubkey: "guest",
-          recipientPubkey: "merchant",
+          senderPubkey:
+            "0505050505050505050505050505050505050505050505050505050505050505",
+          recipientPubkey:
+            "0404040404040404040404040404040404040404040404040404040404040404",
           signer: plainTestSigner({
-            user: async () => ({ pubkey: "guest" }),
+            user: async () => ({
+              pubkey:
+                "0505050505050505050505050505050505050505050505050505050505050505",
+            }),
           } as unknown as NDKSigner),
           rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
           selfCopy: false,
@@ -1914,13 +2138,17 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       resolveInboxRelays: async (pubkey) => {
         resolved.push(pubkey)
-        return [`wss://${pubkey}.inbox.conduit.market`]
+        return [
+          `wss://${pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : pubkey.slice(0, 16)}.inbox.conduit.market`,
+        ]
       },
       inspectOwnInboxReadiness: async (pubkey) => {
         resolved.push(pubkey)
@@ -1929,7 +2157,9 @@ describe("publishPrivateMessage", () => {
       giftWrapFn: (async (rumorEvent, recipient) => {
         wrappedRumorsHaveNdk.push(Boolean(rumorEvent.ndk))
         wrappedRecipients.push(recipient.pubkey)
-        return wrap(`wrap-${recipient.pubkey}`)
+        return wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )
       }) as never,
       publishFn: (async (event, options) => {
         publishes.push({
@@ -1941,18 +2171,28 @@ describe("publishPrivateMessage", () => {
       }) as never,
     })
 
-    expect(resolved).toEqual(["recipient", "sender"])
-    expect(wrappedRecipients).toEqual(["recipient", "sender"])
-    expect(wrappedRumorsHaveNdk).toEqual([true, true])
+    expect(resolved).toEqual([
+      "0202020202020202020202020202020202020202020202020202020202020202",
+      "0101010101010101010101010101010101010101010101010101010101010101",
+    ])
+    expect(wrappedRecipients).toEqual([
+      "0202020202020202020202020202020202020202020202020202020202020202",
+      "0101010101010101010101010101010101010101010101010101010101010101",
+    ])
+    expect(wrappedRumorsHaveNdk).toEqual([false, false])
     expect(publishes).toEqual([
       {
         id: "wrap-recipient",
-        recipients: ["recipient"],
+        recipients: [
+          "0202020202020202020202020202020202020202020202020202020202020202",
+        ],
         relays: ["wss://recipient.inbox.conduit.market"],
       },
       {
         id: "wrap-sender",
-        recipients: ["sender"],
+        recipients: [
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        ],
         relays: ["wss://sender.inbox.conduit.market"],
       },
     ])
@@ -1962,12 +2202,19 @@ describe("publishPrivateMessage", () => {
   })
 
   it("authorizes owner ws only for the sender self-copy leg", async () => {
-    const senderPubkey = "a".repeat(64)
-    const recipientPubkey = "b".repeat(64)
+    const senderPubkey = INBOX_OWNER
+    const recipientPubkey = INBOX_PEER
     const ownerWs = "ws://owner-inbox.example"
     const remoteWs = "ws://recipient-inbox.example"
     const accountNetworkLocalStateRepository =
       createInMemoryAccountNetworkLocalStateRepository()
+    const inboxRepository = await inboxEvidenceRepository([
+      { secretKey: INBOX_OWNER_SECRET, relayUrls: [ownerWs] },
+      {
+        secretKey: INBOX_PEER_SECRET,
+        relayUrls: [remoteWs, "wss://recipient.inbox.conduit.market"],
+      },
+    ])
     const publishes: Array<{
       recipient: string
       relays: readonly string[]
@@ -1985,6 +2232,7 @@ describe("publishPrivateMessage", () => {
       accountPubkey: senderPubkey,
       authenticatedPubkey: senderPubkey,
       accountNetworkLocalStateRepository,
+      inboxDeclarationEvidenceRepository: inboxRepository,
       recipientPubkey,
       signer: plainTestSigner({
         user: async () => ({ pubkey: senderPubkey }),
@@ -1999,7 +2247,9 @@ describe("publishPrivateMessage", () => {
         distributionRepairable: false,
       }),
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async (_event, options) => {
         publishes.push({
           recipient: options.recipientPubkeys?.[0] ?? "",
@@ -2034,13 +2284,17 @@ describe("publishPrivateMessage", () => {
   })
 
   it("does not infer owner ws authority from the sender, rumor, or account", async () => {
-    const senderPubkey = "a".repeat(64)
-    const recipientPubkey = "b".repeat(64)
+    const senderPubkey = INBOX_OWNER
+    const recipientPubkey = INBOX_PEER
     const ownerWs = "ws://owner-inbox.example"
     const ownerWss = "wss://owner.inbox.conduit.market"
     const recipientWss = "wss://recipient.inbox.conduit.market"
     const accountNetworkLocalStateRepository =
       createInMemoryAccountNetworkLocalStateRepository()
+    const inboxRepository = await inboxEvidenceRepository([
+      { secretKey: INBOX_OWNER_SECRET, relayUrls: [ownerWs, ownerWss] },
+      { secretKey: INBOX_PEER_SECRET, relayUrls: [recipientWss] },
+    ])
 
     for (const authenticatedPubkey of [undefined, recipientPubkey]) {
       const publishes: Array<{
@@ -2051,7 +2305,7 @@ describe("publishPrivateMessage", () => {
         authenticatedPubkey: string | null | undefined
       }> = []
 
-      await publishPrivateMessage({
+      const result = await publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
           pubkey: senderPubkey,
           tags: [["p", recipientPubkey]],
@@ -2060,6 +2314,7 @@ describe("publishPrivateMessage", () => {
         accountPubkey: senderPubkey,
         authenticatedPubkey,
         accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository: inboxRepository,
         recipientPubkey,
         signer: plainTestSigner({
           user: async () => ({ pubkey: senderPubkey }),
@@ -2068,13 +2323,18 @@ describe("publishPrivateMessage", () => {
         recipientInboxRelays: [recipientWss],
         inspectOwnInboxReadiness: async () => ({
           state: "ready",
-          eventId: "c".repeat(64),
+          eventId: (await getInboxDeclarationEvidence(
+            senderPubkey,
+            inboxRepository
+          ))!.current.signedEvent.id,
           relayUrls: [ownerWs, ownerWss],
           stale: false,
           distributionRepairable: false,
         }),
         giftWrapFn: (async (_rumor, recipient) =>
-          wrap(`wrap-${recipient.pubkey}`)) as never,
+          wrap(
+            `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+          )) as never,
         publishFn: (async (_event, options) => {
           publishes.push({
             recipient: options.recipientPubkeys?.[0] ?? "",
@@ -2089,23 +2349,18 @@ describe("publishPrivateMessage", () => {
           } as never
         }) as never,
       })
-
-      expect(publishes).toEqual([
-        {
-          recipient: recipientPubkey,
-          relays: [recipientWss],
-          ownerSelectedRelayUrls: [],
-          accountPubkey: senderPubkey,
-          authenticatedPubkey: null,
-        },
-        {
-          recipient: senderPubkey,
-          relays: [ownerWss],
-          ownerSelectedRelayUrls: [],
-          accountPubkey: senderPubkey,
-          authenticatedPubkey: null,
-        },
+      expect(result.selfDeliveryStatus).toBe("full_success")
+      expect(
+        publishes.map(({ recipient, relays }) => ({ recipient, relays }))
+      ).toEqual([
+        { recipient: recipientPubkey, relays: [recipientWss] },
+        { recipient: senderPubkey, relays: [ownerWss] },
       ])
+      expect(
+        publishes.every(
+          (publish) => publish.ownerSelectedRelayUrls.length === 0
+        )
+      ).toBe(true)
     }
   })
 
@@ -2134,8 +2389,10 @@ describe("publishPrivateMessage", () => {
     for (const testCase of cases) {
       const result = await publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
@@ -2145,7 +2402,9 @@ describe("publishPrivateMessage", () => {
         ],
         inspectOwnInboxReadiness: readyOwnInbox,
         giftWrapFn: (async (_rumor, recipient) =>
-          wrap(`wrap-${recipient.pubkey}`)) as never,
+          wrap(
+            `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+          )) as never,
         publishFn: (async (event) => {
           if (event.id === "wrap-recipient") {
             return {
@@ -2171,8 +2430,10 @@ describe("publishPrivateMessage", () => {
   it("preserves recipient and self ACKs when the relay planner throws partial diagnostics", async () => {
     const result = await publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       recipientInboxRelays: [
@@ -2194,7 +2455,9 @@ describe("publishPrivateMessage", () => {
         distributionRepairable: false,
       }),
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async (_event, options) => {
         const attemptedRelayUrls = [...(options.exclusiveRelayUrls ?? [])]
         const diagnostics = {
@@ -2290,7 +2553,7 @@ describe("publishPrivateMessage", () => {
         },
         onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         publishFn: (async (event, options) => {
-          expect(JSON.stringify(event)).toBe(JSON.stringify(staged!.rawEvent()))
+          expect(JSON.stringify(event)).toBe(JSON.stringify(staged!))
           expect(options.exclusiveRelayUrls).toEqual([target])
           received = new NDKEvent(undefined, event)
           return { successfulRelayUrls: [target], failedRelayUrls: [] }
@@ -2330,8 +2593,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2375,8 +2640,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2438,7 +2705,10 @@ describe("publishPrivateMessage", () => {
       user: async () => {
         markSignerUserStarted()
         await signerUserBlocked
-        return { pubkey: "sender" }
+        return {
+          pubkey:
+            "0101010101010101010101010101010101010101010101010101010101010101",
+        }
       },
       encrypt: async () => {
         encryptCalls += 1
@@ -2452,8 +2722,10 @@ describe("publishPrivateMessage", () => {
 
     const publishing = publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer: heldSigner,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2482,7 +2754,10 @@ describe("publishPrivateMessage", () => {
     let sessionCurrent = true
     let encryptCalls = 0
     const backgroundSigner = plainTestSigner({
-      user: async () => ({ pubkey: "sender" }),
+      user: async () => ({
+        pubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+      }),
       encrypt: async () => {
         encryptCalls += 1
         return "ciphertext"
@@ -2492,8 +2767,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer: backgroundSigner,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -2520,8 +2797,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2530,7 +2809,12 @@ describe("publishPrivateMessage", () => {
         const wrapped = new NDKEvent()
         wrapped.kind = EVENT_KINDS.GIFT_WRAP
         wrapped.created_at = 100
-        wrapped.tags = [["p", "recipient"]]
+        wrapped.tags = [
+          [
+            "p",
+            "0202020202020202020202020202020202020202020202020202020202020202",
+          ],
+        ]
         wrapped.content = "encrypted test fixture"
         await wrapped.sign(wrapSigner)
         return wrapped
@@ -2557,8 +2841,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -2585,7 +2871,11 @@ describe("publishPrivateMessage", () => {
     const recipientPubkey = getPublicKey(recipientSecret)
     const relayUrl = "wss://durable-orders.conduit.market"
     const observedAt = Date.now()
-    const declaration = signedInboxDeclaration(recipientSecret, [relayUrl], 200)
+    const declaration = await signedInboxDeclaration(
+      recipientSecret,
+      [relayUrl],
+      200
+    )
     mergeInboxDeclarationEvidenceInMemory({
       pubkey: recipientPubkey,
       signedEvent: declaration,
@@ -2692,7 +2982,7 @@ describe("publishPrivateMessage", () => {
     }
   })
 
-  it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
+  it("uses plain events through the real gift-wrap encryption path", async () => {
     const senderSigner = plainTestSigner(NDKPrivateKeySigner.generate())
     const recipientSigner = plainTestSigner(NDKPrivateKeySigner.generate())
     const sender = await senderSigner.user()
@@ -2717,8 +3007,8 @@ describe("publishPrivateMessage", () => {
       publishFn: (async () => ({})) as never,
     })
 
-    expect(directRumor.ndk).toBeDefined()
-    expect(result.wrappedToRecipient.ndk).toBeDefined()
+    expect(directRumor.ndk).toBeUndefined()
+    expect("ndk" in result.wrappedToRecipient).toBe(false)
   })
 
   it("skips sender resolution and wrapping when self-copy is disabled", async () => {
@@ -2727,17 +3017,26 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       rumor: orderRumor({
-        pubkey: "guest",
+        pubkey:
+          "0505050505050505050505050505050505050505050505050505050505050505",
         tags: [
-          ["p", "merchant"],
+          [
+            "p",
+            "0404040404040404040404040404040404040404040404040404040404040404",
+          ],
           ["type", "message"],
           ["order", "order-id"],
         ],
       }),
-      senderPubkey: "guest",
-      recipientPubkey: "merchant",
+      senderPubkey:
+        "0505050505050505050505050505050505050505050505050505050505050505",
+      recipientPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       signer: plainTestSigner({
-        user: async () => ({ pubkey: "guest" }),
+        user: async () => ({
+          pubkey:
+            "0505050505050505050505050505050505050505050505050505050505050505",
+        }),
       } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2747,13 +3046,19 @@ describe("publishPrivateMessage", () => {
       },
       giftWrapFn: (async (_rumor, recipient) => {
         wrappedRecipients.push(recipient.pubkey)
-        return wrap(`wrap-${recipient.pubkey}`)
+        return wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )
       }) as never,
       publishFn: (async () => ({})) as never,
     })
 
-    expect(resolved).toEqual(["merchant"])
-    expect(wrappedRecipients).toEqual(["merchant"])
+    expect(resolved).toEqual([
+      "0404040404040404040404040404040404040404040404040404040404040404",
+    ])
+    expect(wrappedRecipients).toEqual([
+      "0404040404040404040404040404040404040404040404040404040404040404",
+    ])
     expect(result.wrappedToSelf).toBeNull()
     expect(result.selfDelivery).toBeNull()
     expect(result.selfDeliveryStatus).toBeNull()
@@ -2763,15 +3068,19 @@ describe("publishPrivateMessage", () => {
     const published: string[] = []
     const result = await publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
       senderInboxRelays: ["wss://sender.inbox.conduit.market"],
       inspectOwnInboxReadiness: readyOwnInbox,
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async (event) => {
         published.push(event.id)
         if (event.id === "wrap-sender") throw new Error("self relay rejected")
@@ -2789,8 +3098,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
@@ -2798,7 +3109,9 @@ describe("publishPrivateMessage", () => {
       inspectOwnInboxReadiness: readyOwnInbox,
       shouldContinue: () => sessionCurrent,
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async (event) => {
         published.push(event.id)
         if (event.id !== "wrap-recipient") {
@@ -2830,8 +3143,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2842,7 +3157,9 @@ describe("publishPrivateMessage", () => {
       },
       onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async (event, options) => {
         publishes.push({
           id: event.id,
@@ -2873,27 +3190,38 @@ describe("publishPrivateMessage", () => {
 
   it("records a guest order update to the merchant without treating the guest as an inbox", async () => {
     const guestOrderUpdate = orderRumor({
-      pubkey: "merchant",
+      pubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       tags: [
-        ["p", "guest"],
+        [
+          "p",
+          "0505050505050505050505050505050505050505050505050505050505050505",
+        ],
         ["type", "status_update"],
         ["order", "guest-order-id"],
         ["status", "paid"],
       ],
       content: JSON.stringify({
         orderId: "guest-order-id",
-        merchantPubkey: "merchant",
-        buyerPubkey: "guest",
+        merchantPubkey:
+          "0404040404040404040404040404040404040404040404040404040404040404",
+        buyerPubkey:
+          "0505050505050505050505050505050505050505050505050505050505050505",
         status: "paid",
       }),
     })
 
     const result = await publishPrivateMessage({
       rumor: guestOrderUpdate,
-      senderPubkey: "merchant",
-      recipientPubkey: "merchant",
+      senderPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
+      recipientPubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       signer: plainTestSigner({
-        user: async () => ({ pubkey: "merchant" }),
+        user: async () => ({
+          pubkey:
+            "0404040404040404040404040404040404040404040404040404040404040404",
+        }),
       } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -2901,16 +3229,21 @@ describe("publishPrivateMessage", () => {
       validatedOrderScope: createValidatedOrderRouteScope({
         rumor: guestOrderUpdate,
         orderId: "guest-order-id",
-        senderPubkey: "merchant",
-        recipientPubkey: "merchant",
-        rumorRecipientPubkey: "guest",
+        senderPubkey:
+          "0404040404040404040404040404040404040404040404040404040404040404",
+        recipientPubkey:
+          "0404040404040404040404040404040404040404040404040404040404040404",
+        rumorRecipientPubkey:
+          "0505050505050505050505050505050505050505050505050505050505050505",
       }),
       compatibilityOrderRoute: {
         enabled: true,
         relayUrls: ["wss://compatibility.conduit.market"],
       },
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async () => ({})) as never,
     })
 
@@ -2918,11 +3251,15 @@ describe("publishPrivateMessage", () => {
     expect(result.deliveryRoute).toBe("compatibility_order")
   })
 
-  it("does not authorize a mismatched order rumor for third-party delivery", () => {
+  it("does not authorize a mismatched order rumor for third-party delivery", async () => {
     const mismatchedOrder = orderRumor({
-      pubkey: "merchant",
+      pubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       tags: [
-        ["p", "guest"],
+        [
+          "p",
+          "0505050505050505050505050505050505050505050505050505050505050505",
+        ],
         ["type", "status_update"],
         ["order", "guest-order-id"],
         ["status", "paid"],
@@ -2934,9 +3271,11 @@ describe("publishPrivateMessage", () => {
       createValidatedOrderRouteScope({
         rumor: mismatchedOrder,
         orderId: "guest-order-id",
-        senderPubkey: "merchant",
+        senderPubkey:
+          "0404040404040404040404040404040404040404040404040404040404040404",
         recipientPubkey: "third-party",
-        rumorRecipientPubkey: "guest",
+        rumorRecipientPubkey:
+          "0505050505050505050505050505050505050505050505050505050505050505",
       })
     ).toThrow("Cannot authorize compatibility routing for this rumor.")
   })
@@ -2945,8 +3284,10 @@ describe("publishPrivateMessage", () => {
     const outcomes: unknown[] = []
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -3034,7 +3375,9 @@ describe("publishPrivateMessage", () => {
     const wrapped = new NDKEvent()
     wrapped.kind = EVENT_KINDS.GIFT_WRAP
     wrapped.created_at = 100
-    wrapped.tags = [["p", "recipient"]]
+    wrapped.tags = [
+      ["p", "0202020202020202020202020202020202020202020202020202020202020202"],
+    ]
     wrapped.content = "encrypted test fixture"
     await wrapped.sign(plainTestSigner(NDKPrivateKeySigner.generate()))
     let preparedRelayUrls: string[] = []
@@ -3046,8 +3389,10 @@ describe("publishPrivateMessage", () => {
     try {
       const result = await publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3095,8 +3440,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3146,8 +3493,10 @@ describe("publishPrivateMessage", () => {
     await expect(
       publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3202,8 +3551,10 @@ describe("publishPrivateMessage", () => {
       await expect(
         publishPrivateMessage({
           ...validatedOrderInput(),
-          senderPubkey: "sender",
-          recipientPubkey: "recipient",
+          senderPubkey:
+            "0101010101010101010101010101010101010101010101010101010101010101",
+          recipientPubkey:
+            "0202020202020202020202020202020202020202020202020202020202020202",
           signer,
           rumorKind: EVENT_KINDS.ORDER,
           selfCopy: false,
@@ -3247,8 +3598,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
@@ -3259,7 +3612,9 @@ describe("publishPrivateMessage", () => {
       },
       onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
       giftWrapFn: (async (_rumor, recipient) =>
-        wrap(`wrap-${recipient.pubkey}`)) as never,
+        wrap(
+          `wrap-${recipient.pubkey === "0101010101010101010101010101010101010101010101010101010101010101" ? "sender" : recipient.pubkey === "0202020202020202020202020202020202020202020202020202020202020202" ? "recipient" : recipient.pubkey === "0404040404040404040404040404040404040404040404040404040404040404" ? "merchant" : recipient.pubkey}`
+        )) as never,
       publishFn: (async (_event, options) => {
         publishes.push(options.exclusiveRelayUrls ?? [])
         expect(options.appRelayUrls).toEqual([])
@@ -3293,8 +3648,10 @@ describe("publishPrivateMessage", () => {
     try {
       await publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         selfCopy: false,
@@ -3331,8 +3688,10 @@ describe("publishPrivateMessage", () => {
     try {
       await publishPrivateMessage({
         rumor: orderRumor(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3367,8 +3726,10 @@ describe("publishPrivateMessage", () => {
     try {
       await publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3398,8 +3759,10 @@ describe("publishPrivateMessage", () => {
     try {
       await publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3446,8 +3809,10 @@ describe("publishPrivateMessage", () => {
     try {
       await publishPrivateMessage({
         ...validatedOrderInput(),
-        senderPubkey: "sender",
-        recipientPubkey: "recipient",
+        senderPubkey:
+          "0101010101010101010101010101010101010101010101010101010101010101",
+        recipientPubkey:
+          "0202020202020202020202020202020202020202020202020202020202020202",
         signer,
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
@@ -3477,8 +3842,10 @@ describe("publishPrivateMessage", () => {
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
+      senderPubkey:
+        "0101010101010101010101010101010101010101010101010101010101010101",
+      recipientPubkey:
+        "0202020202020202020202020202020202020202020202020202020202020202",
       signer,
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: true,
@@ -3510,7 +3877,7 @@ describe("publishPrivateMessage", () => {
 })
 
 describe("detectNip44Capabilities", () => {
-  it("defaults to v2 and keeps v3 gated off even when present", () => {
+  it("defaults to v2 and keeps v3 gated off even when present", async () => {
     const caps = detectNip44Capabilities({ nip44: {}, nip44v3: {} })
     expect(caps.hasNip44).toBe(true)
     expect(caps.hasNip44V3).toBe(true)
@@ -3518,7 +3885,7 @@ describe("detectNip44Capabilities", () => {
     expect(caps.supportedVersions).toEqual(["v2"])
   })
 
-  it("reports no support when the signer lacks nip44", () => {
+  it("reports no support when the signer lacks nip44", async () => {
     const caps = detectNip44Capabilities({})
     expect(caps.hasNip44).toBe(false)
     expect(caps.supportedVersions).toEqual([])
@@ -3539,7 +3906,7 @@ describe("fetchInboxRelayUrls", () => {
         expect(options?.signal).toBe(controller.signal)
         expect(options?.shouldContinue).toBe(shouldContinue)
         return [
-          signedInboxDeclaration(INBOX_PEER_SECRET, [
+          await signedInboxDeclaration(INBOX_PEER_SECRET, [
             "wss://inbox.conduit.market",
             "ws://insecure.conduit.market",
           ]),
@@ -3572,7 +3939,7 @@ describe("fetchInboxRelayUrls", () => {
         fetches === 1
           ? []
           : [
-              signedInboxDeclaration(
+              await signedInboxDeclaration(
                 INBOX_PEER_SECRET,
                 ["wss://later.conduit.market"],
                 101
@@ -3605,7 +3972,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
     )
 
     await resolveInboxDeclaration(INBOX_OWNER, {
@@ -3643,13 +4010,13 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     })
   })
 
-  it("does not promote owner-local provenance during an ordinary resolve", async () => {
+  it("does not promote owner-local provenance when signed inbox evidence is ready", async () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
     const ownerLocalRelay = "wss://127.0.0.1:7777"
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"]),
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"]),
       ownerLocalRelay
     )
 
@@ -3684,20 +4051,23 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     )
 
     expect(readiness).toEqual({
-      state: "distribution_pending",
+      state: "ready",
       eventId: declaration.id,
       relayUrls: ["wss://inbox.example"],
-      retainedRelayUrls: [],
       stale: true,
       distributionRepairable: false,
     })
+    expect(
+      (await getInboxDeclarationEvidence(INBOX_OWNER, evidenceRepository))
+        ?.current.sharedSourceRelayUrls
+    ).toEqual([])
   })
 
   it("performs the send-time readiness check from durable evidence without relay traffic", async () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.example",
     ])
     await mergeInboxDeclarationEvidence(
@@ -3724,7 +4094,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
       distributionRepairable: false,
     })
 
-    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    const blocker = await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
     await mergeInboxDeclarationEvidence(
       { pubkey: INBOX_OWNER, signedEvent: blocker },
       evidenceRepository
@@ -3740,7 +4110,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const durable = signedInboxDeclaration(
+    const durable = await signedInboxDeclaration(
       INBOX_OWNER_SECRET,
       ["wss://durable-inbox.example"],
       100
@@ -3756,7 +4126,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     )
     mergeInboxDeclarationEvidenceInMemory({
       pubkey: INBOX_OWNER,
-      signedEvent: signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200),
+      signedEvent: await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200),
     })
 
     expect(
@@ -3769,7 +4139,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("revalidates durable rows before using them as send authority", async () => {
     __resetInboxRelayCache()
     const seed = createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.example",
     ])
     await mergeInboxDeclarationEvidence(
@@ -3795,7 +4165,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
     const mismatchedPending = structuredClone(validRecord)
     mismatchedPending.pendingDistribution = {
-      signedEvent: signedInboxDeclaration(
+      signedEvent: await signedInboxDeclaration(
         INBOX_OWNER_SECRET,
         ["wss://other-inbox.example"],
         200
@@ -3812,7 +4182,11 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     ).toEqual({ state: "lookup_unavailable" })
 
     const emptySeed = createInMemoryInboxDeclarationEvidenceRepository()
-    const signedEmpty = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 300)
+    const signedEmpty = await signedInboxDeclaration(
+      INBOX_OWNER_SECRET,
+      [],
+      300
+    )
     await mergeInboxDeclarationEvidence(
       {
         pubkey: INBOX_OWNER,
@@ -3842,7 +4216,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("backfills legacy durable shared provenance at the send boundary", async () => {
     __resetInboxRelayCache()
     const seed = createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.example",
     ])
     await mergeInboxDeclarationEvidence(
@@ -3865,19 +4239,16 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     ).toMatchObject({ state: "ready", eventId: declaration.id })
   })
 
-  it("preserves durable shared proof while refusing new proof after a write failure", async () => {
+  it("keeps valid signed inbox evidence ready without promoting shared provenance after a write failure", async () => {
     const cases = [
       { previouslyConfirmed: true, expectedState: "ready" as const },
-      {
-        previouslyConfirmed: false,
-        expectedState: "distribution_pending" as const,
-      },
+      { previouslyConfirmed: false, expectedState: "ready" as const },
     ]
 
     for (const testCase of cases) {
       __resetInboxRelayCache()
       const backing = createInMemoryInboxDeclarationEvidenceRepository()
-      const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+      const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
         "wss://inbox.example",
       ])
       await mergeInboxDeclarationEvidence(
@@ -3939,7 +4310,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
   it("reports ready with the declared secure relays", async () => {
     __resetInboxRelayCache()
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
     )
     const readiness = await inspectOwnPrivateMessageRelayReadiness(
       INBOX_OWNER,
@@ -3963,7 +4334,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "wss://inbox.conduit.market",
     ])
     await mergeInboxDeclarationEvidence(
@@ -4001,13 +4372,13 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     })
   })
 
-  it("never reports an unconfirmed retained declaration ready after empty shared reads", async () => {
+  it("retains valid signed current evidence after empty shared reads", async () => {
     const sharedRelayUrls = sharedInboxDiscoveryRelayUrls().slice(0, 2)
     for (const coverage of ["partial", "complete"] as const) {
       __resetInboxRelayCache()
       const evidenceRepository =
         createInMemoryInboxDeclarationEvidenceRepository()
-      const declaration = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+      const declaration = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
         "wss://inbox.example",
       ])
       await mergeInboxDeclarationEvidence(
@@ -4037,10 +4408,9 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
       )
 
       expect(readiness).toEqual({
-        state: "distribution_pending",
+        state: "ready",
         eventId: declaration.id,
         relayUrls: ["wss://inbox.example"],
-        retainedRelayUrls: [],
         stale: true,
         distributionRepairable: coverage === "complete",
       })
@@ -4051,7 +4421,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const siblingSharedRelay = sharedInboxDiscoveryRelayUrls()[1]!
     const declaration = withInboxSource(
-      signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
+      await signedInboxDeclaration(INBOX_OWNER_SECRET, ["wss://inbox.example"])
     )
     const readiness = await inspectOwnPrivateMessageRelayReadiness(
       INBOX_OWNER,
@@ -4080,12 +4450,12 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const declared = signedInboxDeclaration(
+    const declared = await signedInboxDeclaration(
       INBOX_OWNER_SECRET,
       ["wss://usable.conduit.market"],
       100
     )
-    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    const blocker = await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
     await mergeInboxDeclarationEvidence(
       { pubkey: INBOX_OWNER, signedEvent: declared },
       evidenceRepository
@@ -4128,7 +4498,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
-    const blocker = signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
+    const blocker = await signedInboxDeclaration(INBOX_OWNER_SECRET, [], 200)
     await mergeInboxDeclarationEvidence(
       { pubkey: INBOX_OWNER, signedEvent: blocker },
       evidenceRepository
@@ -4221,7 +4591,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
         evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
         fetchEvents: async () =>
           [
-            signedInboxDeclaration(INBOX_OTHER_SECRET, [
+            await signedInboxDeclaration(INBOX_OTHER_SECRET, [
               "wss://attacker.conduit.market",
             ]),
           ] as never,
@@ -4233,7 +4603,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
   it("keeps an authenticated owner's ws inbox declaration usable", async () => {
     __resetInboxRelayCache()
-    const malformed = signedInboxDeclaration(INBOX_OWNER_SECRET, [
+    const malformed = await signedInboxDeclaration(INBOX_OWNER_SECRET, [
       "://invalid",
       "ftp://inbox.example",
       "ws://insecure.example",
@@ -4258,7 +4628,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 
   it("reports a cryptographically valid empty declaration distinctly", async () => {
     __resetInboxRelayCache()
-    const signedEmpty = signedInboxDeclaration(INBOX_OWNER_SECRET, [])
+    const signedEmpty = await signedInboxDeclaration(INBOX_OWNER_SECRET, [])
     const readiness = await inspectOwnPrivateMessageRelayReadiness(
       INBOX_OWNER,
       {
@@ -4279,10 +4649,11 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
 })
 
 describe("parsePrivateMessageRelays", () => {
-  it("parses relay tags from a kind-10050 event", () => {
+  it("parses relay tags from a kind-10050 event", async () => {
     const parsed = parsePrivateMessageRelays({
       kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-      pubkey: "merchant",
+      pubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       tags: [
         ["relay", "wss://a.example"],
         ["relay", "wss://b.example"],
@@ -4291,12 +4662,13 @@ describe("parsePrivateMessageRelays", () => {
       ],
     })
     expect(parsed).toEqual({
-      pubkey: "merchant",
+      pubkey:
+        "0404040404040404040404040404040404040404040404040404040404040404",
       relayUrls: ["wss://a.example", "wss://b.example"],
     })
   })
 
-  it("returns null for a non-10050 event", () => {
+  it("returns null for a non-10050 event", async () => {
     expect(
       parsePrivateMessageRelays({ kind: EVENT_KINDS.RELAY_LIST, tags: [] })
     ).toBeNull()

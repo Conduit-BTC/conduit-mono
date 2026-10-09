@@ -70,6 +70,7 @@ export function fixture(count = 2) {
     plan: async () => ({
       relayUrls: [relay],
       candidateRelayUrls: [relay],
+      relayTargets: [],
       ownerSelectedRelayUrls: [],
       appRelayUrls: [relay],
       personalRelayUrls: [],
@@ -80,6 +81,7 @@ export function fixture(count = 2) {
     planDiscovery: async () => ({
       relayUrls: [relay],
       candidateRelayUrls: [relay],
+      relayTargets: [],
       ownerSelectedRelayUrls: [],
       appRelayUrls: [relay],
       personalRelayUrls: [],

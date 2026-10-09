@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react"
+import { useEffect, useId, useRef, type ReactNode } from "react"
 import { MessageCircle, Send, X } from "lucide-react"
 import type { ParsedOrderMessage } from "@conduit/core"
 import { Button } from "./Button"
@@ -16,6 +16,8 @@ export type OrderMessagesWidgetProps = {
   title?: string
   subtitle?: string
   messages: ParsedOrderMessage[]
+  historyIncomplete?: boolean
+  notice?: ReactNode
   selfPubkey?: string | null
   replyValue: string
   onReplyChange: (value: string) => void
@@ -36,6 +38,8 @@ export function OrderMessagesWidget({
   title = "Messages",
   subtitle,
   messages,
+  historyIncomplete = false,
+  notice,
   selfPubkey,
   replyValue,
   onReplyChange,
@@ -81,7 +85,9 @@ export function OrderMessagesWidget({
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             {messages.length === 0 ? (
               <div className="text-sm text-[var(--text-secondary)]">
-                No messages yet.
+                {historyIncomplete
+                  ? "Order history is incomplete. Refresh the inbox to check for missing updates."
+                  : "No messages yet."}
               </div>
             ) : (
               messages.map((message) => (
@@ -96,6 +102,8 @@ export function OrderMessagesWidget({
             )}
             <div ref={messageEndRef} aria-hidden="true" />
           </div>
+
+          {notice && <div className="px-4 pb-2">{notice}</div>}
 
           {!readOnly && (
             <form

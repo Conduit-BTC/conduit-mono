@@ -62,7 +62,7 @@ export function countMeaningfulProfileFields(
 }
 
 export function countDistinctContactListPubkeys(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): number {
   const pubkeys = new Set<string>()
 
@@ -101,7 +101,7 @@ function normalizeRelayTagUrl(url: string): string | null {
 }
 
 export function countActiveRelayListTags(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): number {
   const relayUrls = new Set<string>()
 
@@ -115,7 +115,7 @@ export function countActiveRelayListTags(
 }
 
 export function countPublishRelayListTags(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): number {
   const relayUrls = new Set<string>()
   for (const tag of tags ?? []) {
@@ -132,7 +132,7 @@ export function assertSafeReplaceablePublish(
   event: {
     kind?: number | null
     content?: string
-    tags?: readonly string[][]
+    tags?: readonly (readonly string[])[]
   },
   options: ReplaceablePublishSafetyOptions = {}
 ): void {

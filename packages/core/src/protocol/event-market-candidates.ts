@@ -1,10 +1,10 @@
 import type { Filter } from "nostr-tools"
 import type { EventMarketReadPlan } from "./event-market"
-import type { PublicRelayReadOptions } from "./relay-reader"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  verifySignedEventBatches,
+  type PublicRelayReadOptions,
+} from "./relay-reader"
+import type { SignedPublicNostrEvent } from "./signed-event"
 
 interface CandidatePage {
   relayUrl: string
@@ -17,8 +17,23 @@ export interface EventMarketDiscoveryContinuation {
   /** Prevent reuse across an audience, account, or selected-relay change. */
   scope: string
   pages: CandidatePage[]
+  /** Keep the same distinct admitted relay budget across continuation. */
+  admittedRelayUrls?: string[]
   /** Coordinate-specific observed sources, retained under the same scope. */
   pendingCoordinates: Array<{ coordinate: string; relayHints: string[] }>
+}
+
+export function getEventMarketDiscoveryScope(input: {
+  authors?: readonly string[]
+  accountPubkey?: string | null
+  plan: EventMarketReadPlan
+}): string {
+  return JSON.stringify([
+    input.accountPubkey ?? null,
+    input.authors ?? null,
+    input.plan.relayUrls,
+    input.plan.maxRelayAttempts ?? null,
+  ])
 }
 
 /** Fair, bounded NIP-01 paging; a full timestamp boundary is never skipped. */
@@ -33,6 +48,7 @@ export async function scanEventMarketCandidates(input: {
     options: PublicRelayReadOptions
   ) => Promise<{
     events: SignedPublicNostrEvent[]
+    admittedRelayUrls?: string[]
     relays: Array<{
       relayUrl: string
       status: "success" | "partial" | "failed"
@@ -43,15 +59,12 @@ export async function scanEventMarketCandidates(input: {
 }): Promise<{
   scope: string
   pages: CandidatePage[]
+  admittedRelayUrls: string[]
   incomplete: boolean
   available: boolean
 }> {
   const relays = input.plan.relayUrls
-  const scope = JSON.stringify([
-    input.accountPubkey ?? null,
-    input.authors ?? null,
-    relays,
-  ])
+  const scope = getEventMarketDiscoveryScope(input)
   const prior =
     input.continuation?.scope === scope ? input.continuation : undefined
   const batches: Array<string[] | undefined> =
@@ -65,6 +78,10 @@ export async function scanEventMarketCandidates(input: {
         relays.map((relayUrl) => ({ relayUrl, authors }))
       )
   const remaining: CandidatePage[] = []
+  const admittedRelays = new Set(prior?.admittedRelayUrls ?? [])
+  const suppressedRelays = new Set<string>()
+  const selecting = new Map<string, Promise<void>>()
+  const maxRelays = input.plan.maxRelayAttempts ?? Infinity
   let requests = 0
   let incomplete =
     input.plan.relayHintTruncated || (batches.length > 0 && relays.length === 0)
@@ -74,6 +91,41 @@ export async function scanEventMarketCandidates(input: {
       while (queue.length && requests < 128) {
         input.assertCurrent()
         const page = queue.shift()!
+        // Reserve distinct first admissions before yielding. The shared reader
+        // decides eligibility; denied candidates release their reservation.
+        let release: (() => void) | undefined
+        while (
+          !admittedRelays.has(page.relayUrl) &&
+          !suppressedRelays.has(page.relayUrl)
+        ) {
+          const selection = selecting.get(page.relayUrl)
+          if (selection) await selection
+          else if (admittedRelays.size + selecting.size < maxRelays) {
+            selecting.set(
+              page.relayUrl,
+              new Promise<void>((resolve) => {
+                release = resolve
+              })
+            )
+            break
+          } else if (selecting.size) await Promise.race(selecting.values())
+          else break
+          input.assertCurrent()
+        }
+        if (
+          suppressedRelays.has(page.relayUrl) ||
+          (!admittedRelays.has(page.relayUrl) && !release)
+        )
+          continue
+        // Other workers may have spent the request budget while admission waited.
+        if (requests >= 128) {
+          if (release) {
+            selecting.delete(page.relayUrl)
+            release()
+          }
+          queue.unshift(page)
+          break
+        }
         const authorSet = page.authors ? new Set(page.authors) : undefined
         requests++
         const limit = page.boundary ? 513 : 129
@@ -85,6 +137,7 @@ export async function scanEventMarketCandidates(input: {
           limit,
         }
         try {
+          input.assertCurrent()
           const result = await input.fetch(filter, {
             ...input.options,
             relayUrls: [page.relayUrl],
@@ -93,17 +146,31 @@ export async function scanEventMarketCandidates(input: {
             fetchTimeoutMs: 2_500,
           })
           input.assertCurrent()
+          // The shared reader performs live policy admission immediately before
+          // I/O. Legacy injected adapters report their attempted relay statuses.
+          const admitted =
+            result.admittedRelayUrls ??
+            result.relays.map((relay) => relay.relayUrl)
+          if (!admitted.includes(page.relayUrl)) {
+            suppressedRelays.add(page.relayUrl)
+            requests--
+            continue
+          }
+          admittedRelays.add(page.relayUrl)
           const status = result.relays.find(
             (relay) => relay.relayUrl === page.relayUrl
           )?.status
           available ||= status === "success" || status === "partial"
-          const events = result.events.filter(
+          const verified = await verifySignedEventBatches(result.events, {
+            signal: input.options.signal,
+          })
+          input.assertCurrent()
+          const events = verified.filter(
             (event) =>
               event.kind === 30409 &&
               (!authorSet || authorSet.has(event.pubkey)) &&
               (page.until === undefined || event.created_at <= page.until) &&
-              (!page.boundary || event.created_at === page.until) &&
-              isValidSignedPublicNostrEvent(event)
+              (!page.boundary || event.created_at === page.until)
           )
           if (events.length !== result.events.length) incomplete = true
           await input.observe(events, page.relayUrl)
@@ -128,13 +195,27 @@ export async function scanEventMarketCandidates(input: {
             queue.push({ ...page, until: page.until! - 1, boundary: false })
           }
         } catch {
+          // With no terminal admission result, conservatively retain the slot.
+          admittedRelays.add(page.relayUrl)
           input.assertCurrent()
           incomplete = true
           remaining.push(page)
+        } finally {
+          if (release) {
+            selecting.delete(page.relayUrl)
+            release()
+          }
         }
       }
     })
   )
   input.assertCurrent()
-  return { scope, pages: [...queue, ...remaining], incomplete, available }
+  incomplete ||= batches.length > 0 && admittedRelays.size === 0
+  return {
+    scope,
+    pages: [...queue, ...remaining],
+    admittedRelayUrls: [...admittedRelays],
+    incomplete,
+    available,
+  }
 }

@@ -718,7 +718,7 @@ export function getRelayInfoDocumentUrl(relayUrl: string): string {
 }
 
 export function parseNip65RelayTags(
-  tags: readonly string[][]
+  tags: readonly (readonly string[])[]
 ): RelayPreference[] {
   const byUrl = new Map<string, RelayPreference>()
 
@@ -780,7 +780,7 @@ export function countActiveNip65RelayTags(
 }
 
 export function countActiveNip65RelayTagsFromTags(
-  tags: readonly string[][]
+  tags: readonly (readonly string[])[]
 ): number {
   return parseNip65RelayTags(tags).filter(
     (preference) => preference.readEnabled || preference.writeEnabled
@@ -797,7 +797,9 @@ export function countWriteNip65Relays(
     .length
 }
 
-export function countWriteNip65RelayTags(tags: readonly string[][]): number {
+export function countWriteNip65RelayTags(
+  tags: readonly (readonly string[])[]
+): number {
   return parseNip65RelayTags(tags).filter(
     (preference) => preference.writeEnabled
   ).length
@@ -817,7 +819,9 @@ export function assertSafeNip65RelayList(
   }
 }
 
-export function assertSafeNip65RelayTags(tags: readonly string[][]): void {
+export function assertSafeNip65RelayTags(
+  tags: readonly (readonly string[])[]
+): void {
   const writeRelayCount = countWriteNip65RelayTags(tags)
   if (writeRelayCount < 1) {
     throw new Error(

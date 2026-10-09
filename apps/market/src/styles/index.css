@@ -17,22 +17,11 @@ body {
   background-color: var(--background);
 }
 
-.brainstorm-score-link {
-  border: 1.5px solid transparent;
-  background:
-    linear-gradient(var(--brainstorm-score-bg), var(--brainstorm-score-bg))
-      padding-box,
-    linear-gradient(
-        90deg,
-        var(--brainstorm-score-border-start),
-        var(--brainstorm-score-border-end)
-      )
-      border-box;
-}
-
-.brainstorm-score-link:hover .brainstorm-score-name {
-  text-decoration: underline;
-  text-underline-offset: 2px;
+.nip05-brainstorm-verified {
+  filter: drop-shadow(
+      0 0 2px color-mix(in srgb, var(--primary-500) 65%, transparent)
+    )
+    drop-shadow(0 0 5px color-mix(in srgb, var(--primary-500) 35%, transparent));
 }
 
 @keyframes market-cart-hud-item-in {

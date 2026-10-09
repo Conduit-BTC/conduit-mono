@@ -94,6 +94,7 @@ export {
   type ConversationMessageBubbleProps,
 } from "./ConversationMessageBubble"
 export { MessageComposer, type MessageComposerProps } from "./MessageComposer"
+export { PrivateSendNotice } from "./PrivateSendNotice"
 export { SearchInput, type SearchInputProps } from "./SearchInput"
 export {
   ConversationCardScroller,
@@ -297,3 +298,9 @@ export {
   type StatusStepperRow,
   type StatusStepperRowStatus,
 } from "./StatusStepper"
+
+export {
+  CommerceInboxRecovery,
+  type CommerceInboxRecoveryProps,
+} from "./CommerceInboxRecovery"
+export { PrivateAttachment } from "./PrivateAttachment"

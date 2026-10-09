@@ -54,6 +54,8 @@ const responsiveCoverageFiles = [
   "**/event-market-discovery.playwright.ts",
   "**/merchant-shipping-tables.playwright.ts",
   "**/merchant-variation-shipping.playwright.ts",
+  "**/commerce-inbox.playwright.ts",
+  "**/merchant-order-inbox.playwright.ts",
   "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",
 ]

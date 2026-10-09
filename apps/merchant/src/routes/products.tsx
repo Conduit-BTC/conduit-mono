@@ -1102,7 +1102,7 @@ async function deleteProduct(
       kind: deletion.kind,
       pubkey: deletion.pubkey,
       created_at: deletion.created_at,
-      tags: deletion.tags,
+      tags: deletion.tags.map((tag) => [...tag]),
       content: deletion.content,
     })
   )

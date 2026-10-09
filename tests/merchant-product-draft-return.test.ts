@@ -37,6 +37,13 @@ class MemoryStorage implements Storage {
 }
 
 describe("merchant product draft return intent", () => {
+  it("continues from canonical current inbox authority without requiring read coverage", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/network.tsx").text()
+    expect(source).toContain("networkSettings.view.inbox.currentUsable")
+    expect(source).not.toContain("networkSettings.view.inbox.coverage")
+    expect(source).not.toContain("networkSettings.view.inbox.stale")
+  })
+
   it("keeps the Network return action touch-sized", async () => {
     const source = await Bun.file("apps/merchant/src/routes/network.tsx").text()
     const returnAction = source.match(

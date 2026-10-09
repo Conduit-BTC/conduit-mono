@@ -1,5 +1,18 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
+import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
+import {
+  applyInboxDeclarationDistributionStage,
+  applyInboxDeclarationDistributionOutcomes,
+  createInMemoryInboxDeclarationEvidenceRepository,
+  INBOX_DECLARATION_CUTOVER_GRACE_MS,
+  INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+} from "@conduit/core/protocol/inbox-declaration-evidence"
+import { hydrateAccountNetworkPreferences } from "@conduit/core/protocol/network-preferences"
+import { buildAccountNetworkSettingsView } from "@conduit/core/protocol/network-settings-view"
+import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
 import type {
   AccountNetworkRelayRowView,
   AccountNetworkSettingsController,
@@ -21,6 +34,7 @@ import {
 
 const EMPTY_FRONTIER = {
   state: "not_observed",
+  currentUsable: false,
   stale: false,
   retained: false,
   coverage: "complete" as const,
@@ -65,6 +79,7 @@ function controller(
     relayList?: AccountNetworkSettingsController["view"]["relayList"]
     inbox?: AccountNetworkSettingsController["view"]["inbox"]
     status?: AccountNetworkSettingsController["status"]
+    operationPhase?: AccountNetworkSettingsController["operation"]["phase"]
     relayInformationRefreshing?: boolean
     appRelays?: AccountNetworkSettingsController["view"]["appRelays"]
     personalRelaysEnabled?: boolean
@@ -88,7 +103,11 @@ function controller(
     status: input.status ?? "ready",
     error: null,
     revision: "test-revision",
-    operation: { kind: null, phase: "idle", message: null },
+    operation: {
+      kind: null,
+      phase: input.operationPhase ?? "idle",
+      message: null,
+    },
     relayInformationRefreshing: input.relayInformationRefreshing ?? false,
     exactInboxRedistributionAvailable:
       input.exactInboxRedistributionAvailable ?? false,
@@ -119,6 +138,74 @@ function controller(
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("keeps roles and review available with five confirmations and two unresolved targets", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [relayRow("wss://relay.example")],
+          pendingExactDeliveries: [
+            {
+              kind: 10002,
+              label: "Read and Publish",
+              eventId: "f".repeat(64),
+              confirmationState: "readback_pending",
+              eligibleTargetCount: 7,
+              exactReadbackCount: 5,
+              unresolvedCount: 2,
+              excludedTargetCount: 0,
+              authRequiredCount: 2,
+              retryAvailable: true,
+            },
+          ],
+        })}
+      />
+    )
+    for (const role of ["Read", "Publish", "Private inbox"]) {
+      const button = markup.match(
+        new RegExp(
+          `<button[^>]*aria-label="Disable ${role} for wss://relay.example"[^>]*>`
+        )
+      )?.[0]
+      expect(button).toBeDefined()
+      expect(button).not.toContain('disabled=""')
+    }
+    const index = markup.indexOf("Review and publish")
+    expect(
+      markup.slice(markup.lastIndexOf("<button", index), index)
+    ).not.toContain('disabled=""')
+    expect(markup).toContain("You can keep editing")
+    expect(markup).toContain("Readback authorization required")
+    expect(markup).toContain("2 readback targets require authorization")
+    expect(markup).toContain("7 distribution targets")
+    expect(markup).not.toContain("7 eligible targets")
+  })
+
+  it("labels pending signed rows by the current operation phase", () => {
+    const pendingRow = relayRow("wss://pending.example", {
+      readState: "pending",
+      publishState: "pending",
+      privateInboxState: null,
+      privateInboxEnabled: false,
+    })
+    const waitingMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel controller={controller({ rows: [pendingRow] })} />
+    )
+    expect(waitingMarkup).toContain("Awaiting confirmation")
+    expect(waitingMarkup).not.toContain(">Publishing<")
+
+    const publishingMarkup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [pendingRow],
+          operationPhase: "publishing",
+        })}
+      />
+    )
+    expect(publishingMarkup).toContain(">Publishing<")
+    expect(publishingMarkup).not.toContain("Awaiting confirmation")
+    expect(publishingMarkup).not.toContain("Recovery read-only")
+  })
+
   it("keeps explicit review available while background discovery is degraded", () => {
     for (const status of ["reconciling", "error"] as const) {
       const markup = renderToStaticMarkup(
@@ -309,11 +396,142 @@ describe("RelaySettingsPanel account Network review", () => {
     )
 
     expect(markup).toContain("Recovery read-only")
-    expect(markup).toContain("7-day recovery window")
+    expect(markup).toContain(
+      "The previous inbox is retained while confirmation is pending."
+    )
+    expect(markup).toContain(
+      "seven-day recovery window starts after confirmation"
+    )
     expect(markup).toContain(
       'aria-label="Remove wss://previous-inbox.example from my whole setup"'
     )
     expect(markup).toContain("ends recovery for this relay immediately")
+  })
+
+  it("renders the persisted millisecond recovery clock through restored evidence and projection", async () => {
+    const observedAt = 1_800_000_000_000
+    const previous = "wss://grace-inbox.example"
+    const signedEvent = await admitFixture(
+      finalizeEvent(
+        {
+          kind: 10050,
+          created_at: observedAt / 1_000,
+          tags: [["relay", "wss://current-inbox.example"]],
+          content: "",
+        },
+        generateSecretKey()
+      )
+    )
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: signedEvent.pubkey,
+      signedEvent,
+      previousRelayUrls: [previous],
+      publishRelayUrls: ["wss://nos.lol"],
+      confirmationRelayUrls: ["wss://nos.lol"],
+      relayOutcomes: [
+        {
+          relayUrl: "wss://nos.lol",
+          publishStatus: "acked",
+          publishAttemptCount: 1,
+          readbackStatus: "pending",
+          readbackAttemptCount: 0,
+        },
+      ],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: observedAt - 1_000,
+    })
+    const renderRecord = async (record: typeof staged) => {
+      const reconciliation = await hydrateAccountNetworkPreferences(
+        signedEvent.pubkey,
+        {
+          inboxDeclaration: {
+            evidenceRepository:
+              createInMemoryInboxDeclarationEvidenceRepository(
+                [record],
+                () => observedAt
+              ),
+            now: () => observedAt,
+          },
+          ownerRelayList: {
+            evidenceRepository:
+              createInMemoryOwnerRelayListEvidenceRepository(),
+            now: () => observedAt,
+          },
+          localStateRepository:
+            createInMemoryAccountNetworkLocalStateRepository(),
+        }
+      )
+      const view = buildAccountNetworkSettingsView({
+        reconciliation,
+        localState: null,
+      })
+      return {
+        view,
+        markup: renderToStaticMarkup(
+          <RelaySettingsPanel controller={{ ...controller(), view }} />
+        ),
+      }
+    }
+    const pending = await renderRecord(staged)
+    expect(
+      pending.view.rows.find((row) => row.url === previous)?.recoveryPhase
+    ).toBe("awaiting_confirmation")
+    expect(
+      pending.view.rows.find((row) => row.url === previous)?.recoveryExpiresAt
+    ).toBeUndefined()
+    const currentInbox = pending.view.rows.find(
+      (row) => row.url === "wss://current-inbox.example"
+    )
+    expect(currentInbox?.privateInboxEnabled).toBe(true)
+    expect(currentInbox?.recoveryReadOnly).not.toBe(true)
+    expect(pending.view.inbox.currentUsable).toBe(true)
+    expect(pending.markup).toContain(
+      "seven-day recovery window starts after confirmation"
+    )
+    const confirmed = applyInboxDeclarationDistributionOutcomes(staged, {
+      readback: [{ relayUrl: "wss://nos.lol", status: "observed" }],
+      observedAt,
+    })
+    const { view, markup: graceMarkup } = await renderRecord(confirmed)
+    const expiresAt = observedAt + INBOX_DECLARATION_CUTOVER_GRACE_MS
+    expect(
+      view.rows.find((row) => row.url === previous)?.recoveryExpiresAt
+    ).toBe(expiresAt)
+    const expectedDate = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(expiresAt))
+    expect(graceMarkup).toContain(
+      "Conduit reads this previous inbox during the seven-day recovery"
+    )
+    expect(graceMarkup).toContain(`through ${expectedDate}`)
+    expect(graceMarkup).not.toContain("confirmation pending")
+  })
+
+  it("presents retained read evidence without implying an active recovery window", () => {
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [
+            relayRow("wss://retained.example", {
+              readEnabled: false,
+              publishEnabled: false,
+              privateInboxEnabled: false,
+              readState: null,
+              publishState: null,
+              privateInboxState: null,
+              retainedReadOnly: true,
+            }),
+          ],
+        })}
+      />
+    )
+    expect(markup).toContain("Saved read evidence")
+    expect(markup).toContain("No recovery window is active.")
+    expect(markup).not.toContain("Recovery read-only")
+    expect(markup).not.toContain("seven-day recovery window")
   })
 
   it("blocks a reviewed change that removes the last usable private inbox", () => {
@@ -475,7 +693,7 @@ describe("RelaySettingsPanel account Network review", () => {
 
     expect(markup).toContain("1 exact readback")
     expect(markup).toContain("2 unresolved")
-    expect(markup).toContain("3 eligible targets")
+    expect(markup).toContain("3 distribution targets")
     expect(markup).toContain("1 excluded")
     expect(markup).toContain("Retry exact signed update")
     expect(markup).not.toContain("accepted")

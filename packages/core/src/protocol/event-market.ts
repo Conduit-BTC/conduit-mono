@@ -11,6 +11,11 @@ import {
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
   getConfiguredIsolatedE2eRelayUrl,
   loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
@@ -18,10 +23,11 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 const HEX_64 = /^[0-9a-f]{64}$/i
 
 const CONTROL_CHARACTER = /\p{Cc}/u
@@ -486,13 +492,19 @@ export function buildEventMarketCalendarDraft(
   }
 }
 
-function tagValues(tags: readonly string[][], name: string): string[] {
+function tagValues(
+  tags: readonly (readonly string[])[],
+  name: string
+): string[] {
   return tags
     .filter((tag) => tag[0] === name && typeof tag[1] === "string")
     .map((tag) => tag[1]!)
 }
 
-function singleTag(tags: readonly string[][], name: string): string | null {
+function singleTag(
+  tags: readonly (readonly string[])[],
+  name: string
+): string | null {
   const values = tagValues(tags, name)
   return values.length === 1 ? values[0]! : null
 }
@@ -510,7 +522,7 @@ function eventCoordinate(
 }
 
 function optionalSingleTag(
-  tags: readonly string[][],
+  tags: readonly (readonly string[])[],
   name: string
 ): string | undefined | null {
   const values = tagValues(tags, name)
@@ -518,17 +530,19 @@ function optionalSingleTag(
   return values[0]
 }
 
-function validSignedKind(
-  event: SignedPublicNostrEvent,
-  kinds: readonly number[]
-): boolean {
-  return kinds.includes(event.kind) && isValidSignedPublicNostrEvent(event)
+export function parseEventMarketCalendarEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketCalendar | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketCalendarFieldsForPrivateOrder(event)
+    : null
 }
 
-export function parseEventMarketCalendarEvent(
+/** Field parser for the private order schema after its own signature refinement. */
+export function parseEventMarketCalendarFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketCalendar | null {
-  if (!validSignedKind(event, EVENT_MARKET_CALENDAR_KINDS)) return null
+  if (!EVENT_MARKET_CALENDAR_KINDS.includes(event.kind as never)) return null
   const coordinate = eventCoordinate(event, EVENT_MARKET_CALENDAR_KINDS)
   const title = singleTag(event.tags, "title")
   const startValue = singleTag(event.tags, "start")
@@ -654,8 +668,7 @@ function validDeletionEvents(
 ): SignedPublicNostrEvent[] {
   return events.filter(
     (event) =>
-      event.kind === EVENT_KINDS.DELETION &&
-      isValidSignedPublicNostrEvent(event)
+      event.kind === EVENT_KINDS.DELETION && isVerifiedNostrEvent(event)
   )
 }
 
@@ -804,6 +817,7 @@ export interface EventMarketReadPlan {
   relayUrls: string[]
   /** Full ordered candidates passed to final source-policy admission. */
   candidateRelayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
@@ -837,6 +851,7 @@ export async function getEventMarketDiscoveryReadPlan(input: {
   return {
     relayUrls: plan.candidateRelayUrls,
     candidateRelayUrls: plan.candidateRelayUrls,
+    relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],
@@ -899,6 +914,7 @@ export async function getEventMarketReadPlan(input: {
   const lookupOptions = {
     signal: input.signal,
     relayUrls: relayListLookupPlan.candidateRelayUrls,
+    relayTargets: relayListLookupPlan.relayTargets,
     maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
@@ -1011,6 +1027,13 @@ export async function getEventMarketReadPlan(input: {
   return {
     relayUrls: selectedRelayUrls,
     candidateRelayUrls: relayUrls,
+    relayTargets: mergeRelayTargets(
+      plan.relayTargets,
+      relayTargetsFromUrls(portableRelayHints, {
+        kind: "public_hint",
+        operation: "read",
+      })
+    ).filter((target) => relayUrls.includes(target.url)),
     maxRelayAttempts: plan.maxRelayAttempts ?? EVENT_MARKET_MAX_RELAY_HINTS,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],

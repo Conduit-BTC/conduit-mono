@@ -3,12 +3,23 @@ import type { Filter } from "nostr-tools"
 import { config } from "../config"
 import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
-import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
+import { filterEligibleAccountRelayTargets } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  selectRelayTargets,
+  type RelayTarget,
+} from "./relay-authority"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchSignedEventsFanoutDetailed,
   type PublicRelayReadResult,
+  verifySignedEvents,
 } from "./relay-reader"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import {
   compareProfileFrontiers,
   projectCachedProfile,
@@ -16,7 +27,6 @@ import {
 } from "./profile-cache"
 import { parseProfileEvent } from "./profiles"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
-import { loadRelaySettingsPlanningSnapshot } from "./relay-settings"
 
 export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 1
 /**
@@ -199,13 +209,14 @@ export interface ProfileSearchDependencies {
     pubkeys: readonly string[]
   ) => Promise<Map<string, CachedProfile>>
   loadSellerPubkeys: (pubkeys: readonly string[]) => Promise<Set<string>>
-  planSearchRelayUrls: (
+  planSearchRelayTargets: (
     authenticatedPubkey: string | null
-  ) => string[] | Promise<string[]>
+  ) => RelayTarget[] | Promise<RelayTarget[]>
   fetchEvents: (
     filter: Filter,
     options: {
       relayUrls: string[]
+      relayTargets: RelayTarget[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
       signal?: AbortSignal
@@ -259,9 +270,9 @@ function eventFrontier(event: SignedPublicNostrEvent): ProfileFrontier {
 }
 
 function pickLatestEventPerPubkey(
-  events: readonly SignedPublicNostrEvent[]
-): SignedPublicNostrEvent[] {
-  const latest = new Map<string, SignedPublicNostrEvent>()
+  events: readonly VerifiedNostrEvent[]
+): VerifiedNostrEvent[] {
+  const latest = new Map<string, VerifiedNostrEvent>()
   for (const event of events) {
     if (event.kind !== EVENT_KINDS.PROFILE || !event.pubkey) continue
     const current = latest.get(event.pubkey)
@@ -305,7 +316,9 @@ export interface ProfileSearchRelaySummary {
  * data this client could not trust.
  */
 export function summarizeProfileSearchRelays(
-  result: Pick<PublicRelayReadResult, "relays" | "eventsVerified">,
+  result: Pick<PublicRelayReadResult, "relays"> & {
+    events?: PublicRelayReadResult["events"]
+  },
   fetchLimit: number = NETWORK_FETCH_LIMIT
 ): Omit<ProfileSearchRelaySummary, "relaysPlanned"> {
   let relaysCompleted = 0
@@ -322,7 +335,7 @@ export function summarizeProfileSearchRelays(
   return {
     relaysCompleted,
     relaysDegraded,
-    verified: result.eventsVerified !== false,
+    verified: result.events?.every(isVerifiedNostrEvent) ?? true,
   }
 }
 
@@ -370,30 +383,53 @@ export function planProfileSearchRelayUrls(
   return planned
 }
 
-async function defaultPlanSearchRelayUrls(
+async function defaultPlanSearchRelayTargets(
   authenticatedPubkey: string | null
-): Promise<string[]> {
-  const snapshot = authenticatedPubkey
-    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
-    : loadRelaySettingsPlanningSnapshot()
-  const personalRelayUrls = snapshot.settings.entries
-    .filter((entry) => entry.readEnabled && entry.capabilities.search)
-    .map((entry) => entry.url)
+): Promise<RelayTarget[]> {
+  const personalRelayUrls = authenticatedPubkey
+    ? (
+        await readDurableAccountRelaySettingsPlanningSnapshot(
+          authenticatedPubkey
+        )
+      ).settings.entries
+        .filter((entry) => entry.readEnabled && entry.capabilities.search)
+        .map((entry) => entry.url)
+    : []
   const candidateRelayUrls = planProfileSearchRelayUrls(
     config.searchIndexRelayUrls,
-    personalRelayUrls,
+    authenticatedPubkey ? personalRelayUrls : [],
     Number.MAX_SAFE_INTEGER
   )
-  const admittedRelayUrls = authenticatedPubkey
-    ? await filterEligibleAccountRelayUrls({
+  const candidateTargets = mergeRelayTargets(
+    relayTargetsFromUrls(config.searchIndexRelayUrls, {
+      kind: "app",
+      operation: "read",
+      bucket: "search_index",
+    }),
+    ...(authenticatedPubkey
+      ? [
+          relayTargetsFromUrls(personalRelayUrls, {
+            kind: "owner_nip65" as const,
+            operation: "read" as const,
+            ownerPubkey: authenticatedPubkey,
+            selection: "read" as const,
+          }),
+        ]
+      : [])
+  )
+  const orderedTargets = selectRelayTargets(
+    candidateTargets,
+    candidateRelayUrls
+  )
+  const admittedTargets = authenticatedPubkey
+    ? await filterEligibleAccountRelayTargets({
         accountPubkey: authenticatedPubkey,
         authenticatedPubkey,
-        candidateRelayUrls,
-        appRelayUrls: config.searchIndexRelayUrls,
-        personalRelayUrls,
+        targets: orderedTargets,
+        operation: "read",
       })
-    : candidateRelayUrls
-  return admittedRelayUrls.slice(0, PROFILE_SEARCH_MAX_RELAYS)
+    : orderedTargets
+  return admittedTargets.slice(0, PROFILE_SEARCH_MAX_RELAYS)
 }
 
 async function defaultLoadSellerPubkeys(
@@ -424,27 +460,11 @@ const defaultDependencies: ProfileSearchDependencies = {
   loadCachedProfiles: () => db.profiles.limit(LOCAL_CACHE_SCAN_LIMIT).toArray(),
   loadCachedProfileRows: defaultLoadCachedProfileRows,
   loadSellerPubkeys: defaultLoadSellerPubkeys,
-  planSearchRelayUrls: defaultPlanSearchRelayUrls,
+  planSearchRelayTargets: defaultPlanSearchRelayTargets,
   fetchEvents: async (filter, options) => {
-    const snapshot = options.authenticatedPubkey
-      ? await readDurableAccountRelaySettingsPlanningSnapshot(
-          options.authenticatedPubkey
-        )
-      : loadRelaySettingsPlanningSnapshot()
-    const appRelaySet = new Set(config.searchIndexRelayUrls)
-    const personalRelaySet = new Set(
-      snapshot.settings.entries
-        .filter((entry) => entry.readEnabled && entry.capabilities.search)
-        .map((entry) => entry.url)
-    )
     return await fetchSignedEventsFanoutDetailed(filter, {
       relayUrls: options.relayUrls,
-      appRelayUrls: options.relayUrls.filter((relayUrl) =>
-        appRelaySet.has(relayUrl)
-      ),
-      personalRelayUrls: options.relayUrls.filter((relayUrl) =>
-        personalRelaySet.has(relayUrl)
-      ),
+      relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       signal: options.signal,
@@ -572,7 +592,7 @@ function summarizeProfileSearchRelayChunks(
   let verified = true
 
   for (const result of results) {
-    if (result?.eventsVerified === false) verified = false
+    if (result && !result.events.every(isVerifiedNostrEvent)) verified = false
   }
 
   for (const relayUrl of relayUrls) {
@@ -592,7 +612,7 @@ function summarizeProfileSearchRelayChunks(
 
       answeredChunks += 1
       if (
-        result?.eventsVerified === false ||
+        (result && !result.events.every(isVerifiedNostrEvent)) ||
         !relayObservationIsComplete(relay, fetchLimit)
       ) {
         allChunksComplete = false
@@ -767,9 +787,10 @@ export async function searchNetworkProfiles(
   if (authorPubkeys?.length === 0) return emptyResult(query)
   const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
-  const relayUrls = await deps.planSearchRelayUrls(
+  const relayTargets = await deps.planSearchRelayTargets(
     input.authenticatedPubkey ?? null
   )
+  const relayUrls = relayTargets.map((target) => target.url)
   let summary: ProfileSearchRelaySummary = {
     relaysPlanned: relayUrls.length,
     relaysCompleted: 0,
@@ -809,6 +830,7 @@ export async function searchNetworkProfiles(
               },
               {
                 relayUrls,
+                relayTargets,
                 accountPubkey: input.authenticatedPubkey ?? null,
                 authenticatedPubkey: input.authenticatedPubkey ?? null,
                 signal: networkController.signal,
@@ -824,12 +846,38 @@ export async function searchNetworkProfiles(
           ? input.signal.reason
           : new DOMException("Aborted", "AbortError")
       }
+      const admittedResults = await Promise.all(
+        chunkResults.map(async (result) => {
+          if (!result) return null
+          const verification = await verifySignedEvents(result.events, {
+            signal: input.signal,
+            maxEvents: NETWORK_FETCH_LIMIT * PROFILE_SEARCH_MAX_RELAYS,
+          })
+          if (
+            verification.truncated ||
+            verification.events.length !== result.events.length
+          ) {
+            summary.verified = false
+          }
+          return { ...result, events: verification.events }
+        })
+      )
+      if (input.signal?.aborted) {
+        throw input.signal.reason instanceof Error
+          ? input.signal.reason
+          : new DOMException("Aborted", "AbortError")
+      }
       summary = {
         ...summary,
-        ...summarizeProfileSearchRelayChunks(chunkResults, relayUrls),
+        ...summarizeProfileSearchRelayChunks(admittedResults, relayUrls),
+        verified:
+          summary.verified &&
+          admittedResults.every(
+            (result) => !result || result.events.every(isVerifiedNostrEvent)
+          ),
       }
       const events = pickLatestEventPerPubkey(
-        chunkResults.flatMap((result) => result?.events ?? [])
+        admittedResults.flatMap((result) => result?.events ?? [])
       ).filter(
         (event) => !authorSet || authorSet.has(event.pubkey.toLowerCase())
       )

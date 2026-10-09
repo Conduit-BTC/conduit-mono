@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -70,10 +71,10 @@ class MemoryStorage {
   }
 }
 
-function relayEvent(
+async function relayEvent(
   createdAt = 100,
   tags: string[][] = [["r", "wss://signed.example"]]
-): SignedPublicNostrEvent {
+): Promise<SignedPublicNostrEvent> {
   const event = finalizeEvent(
     {
       kind: 10002,
@@ -83,7 +84,10 @@ function relayEvent(
     },
     OWNER_SECRET
   )
-  return { ...event, tags: event.tags.map((tag) => [...tag]) }
+  return await admitFixture({
+    ...event,
+    tags: event.tags.map((tag) => [...tag]),
+  })
 }
 
 function ownerResolution(
@@ -112,12 +116,12 @@ function ownerResolution(
   }
 }
 
-function signedRelayListResolution(input: {
+async function signedRelayListResolution(input: {
   state: "declared" | "signed_empty" | "malformed"
   tags: string[][]
   preferences: OwnerRelayListResolution["preferences"]
-}): OwnerRelayListResolution {
-  const signedEvent = relayEvent(100, input.tags)
+}): Promise<OwnerRelayListResolution> {
+  const signedEvent = await relayEvent(100, input.tags)
   return ownerResolution({
     state: input.state,
     preferences: input.preferences,
@@ -140,8 +144,8 @@ function signedRelayListResolution(input: {
   })
 }
 
-function signedOwnerResolution(): OwnerRelayListResolution {
-  return signedRelayListResolution({
+async function signedOwnerResolution(): Promise<OwnerRelayListResolution> {
+  return await signedRelayListResolution({
     state: "declared",
     tags: [["r", "wss://signed.example"]],
     preferences: [
@@ -239,7 +243,7 @@ describe("account Network preferences", () => {
       "wss://signed.example",
     ])
 
-    const signedOwner = signedOwnerResolution()
+    const signedOwner = await signedOwnerResolution()
     const observedSignedOwner: OwnerRelayListResolution = {
       ...signedOwner,
       observation: {
@@ -277,7 +281,7 @@ describe("account Network preferences", () => {
     ])
   })
 
-  it("uses one signed-in scope for Market and Merchant", () => {
+  it("uses one signed-in scope for Market and Merchant", async () => {
     const market = resolveConduitSession({ appId: "market", pubkey: OWNER })
     const merchant = resolveConduitSession({ appId: "merchant", pubkey: OWNER })
     expect(market.relayScope).toBe(ACCOUNT_SCOPE)
@@ -289,7 +293,7 @@ describe("account Network preferences", () => {
     )
   })
 
-  it("emits account settings notifications without persisting unsigned membership", () => {
+  it("emits account settings notifications without persisting unsigned membership", async () => {
     const storage = new MemoryStorage()
     Object.defineProperty(globalThis, "window", {
       value: { localStorage: storage },
@@ -325,13 +329,13 @@ describe("account Network preferences", () => {
     ).toEqual([])
   })
 
-  it("keeps a signed Write-only overlap visible while inbox recovery adds only private Read", () => {
+  it("keeps a signed Write-only overlap visible while inbox recovery adds only private Read", async () => {
     const storage = new MemoryStorage()
     Object.defineProperty(globalThis, "window", {
       value: { localStorage: storage },
       configurable: true,
     })
-    const base = signedOwnerResolution()
+    const base = await signedOwnerResolution()
     const preference = {
       url: "wss://signed.example",
       readEnabled: false,
@@ -393,7 +397,7 @@ describe("account Network preferences", () => {
   })
 
   it("does not infer an inbox route from a signed NIP-65 Read relay", async () => {
-    const signedRead = signedRelayListResolution({
+    const signedRead = await signedRelayListResolution({
       state: "declared",
       tags: [["r", "wss://signed-read.example", "read"]],
       preferences: [
@@ -435,7 +439,7 @@ describe("account Network preferences", () => {
   })
 
   it("keeps signed-empty personal reads empty while the app layer remains available", async () => {
-    const signedEmpty = signedRelayListResolution({
+    const signedEmpty = await signedRelayListResolution({
       state: "signed_empty",
       tags: [],
       preferences: [],
@@ -492,7 +496,7 @@ describe("account Network preferences", () => {
 
   it("keeps a signed Write-only relay list empty for generic reads", async () => {
     const writeOnlyUrl = "wss://write-only.example"
-    const writeOnly = signedRelayListResolution({
+    const writeOnly = await signedRelayListResolution({
       state: "declared",
       tags: [["r", writeOnlyUrl, "write"]],
       preferences: [
@@ -563,8 +567,8 @@ describe("account Network preferences", () => {
   })
 
   it("projects a malformed frontier from its retained last-usable signed preferences", async () => {
-    const declared = signedOwnerResolution()
-    const malformedEvent = relayEvent(101, [["r", "not a relay"]])
+    const declared = await signedOwnerResolution()
+    const malformedEvent = await relayEvent(101, [["r", "not a relay"]])
     const malformed = ownerResolution({
       state: "malformed",
       preferences: declared.preferences,
@@ -639,14 +643,16 @@ describe("account Network preferences", () => {
     ).toEqual(["wss://signed.example"])
   })
 
-  it("projects public and private roles in one deterministic flat list", () => {
+  it("projects public and private roles in one deterministic flat list", async () => {
     const projection = projectAccountNetworkPreferences({
       pubkey: OWNER,
       relayScope: ACCOUNT_SCOPE,
-      ownerRelayList: signedOwnerResolution(),
+      ownerRelayList: await signedOwnerResolution(),
       inboxDeclaration: inboxResolution({
-        state: "distribution_pending",
-        pendingRelayUrls: ["wss://signed.example", "wss://inbox.example"],
+        state: "declared",
+        eventId: "a".repeat(64),
+        relayUrls: ["wss://signed.example", "wss://inbox.example"],
+        pendingPublishRelayUrls: ["wss://discovery.example"],
       }),
     })
     expect(projection.rows).toEqual([
@@ -697,7 +703,7 @@ describe("account Network preferences", () => {
         ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
       })
       relayPlans.push([...(options.relayUrls ?? [])])
-      return signedOwnerResolution()
+      return await signedOwnerResolution()
     }
     const resolveInbox: NonNullable<
       Parameters<typeof reconcileAccountNetworkPreferences>[1]
@@ -797,7 +803,7 @@ describe("account Network preferences", () => {
     expect(withoutEvidence.settings.entries).toEqual([])
     expect(withoutEvidence.signedRelayListAuthoritative).toBe(false)
 
-    const signed = signedOwnerResolution()
+    const signed = await signedOwnerResolution()
     const signedSnapshot =
       await readDurableAccountRelaySettingsPlanningSnapshot(OWNER, {
         evidenceRepository: await retainOwnerResolution(signed),
@@ -828,7 +834,7 @@ describe("account Network preferences", () => {
     )
   })
 
-  it("treats malformed account drafts as neither presentation nor routing state", () => {
+  it("treats malformed account drafts as neither presentation nor routing state", async () => {
     const storage = new MemoryStorage()
     Object.defineProperty(globalThis, "window", {
       value: { localStorage: storage },
@@ -863,7 +869,7 @@ describe("account Network preferences", () => {
     ).toEqual([])
   })
 
-  it("never exposes account A readiness during an A-to-B render transition", () => {
+  it("never exposes account A readiness during an A-to-B render transition", async () => {
     const accountAState = {
       contextKey: OWNER,
       status: "ready" as const,

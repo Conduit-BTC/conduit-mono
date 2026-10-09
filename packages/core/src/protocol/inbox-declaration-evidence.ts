@@ -1,4 +1,10 @@
 import {
+  compareAccountNetworkRevisions,
+  NETWORK_PREFERENCE_READBACK_STATUSES,
+  mergeAccountNetworkLookup,
+  interpretAccountNetworkInboxRecovery,
+} from "./account-network-evidence"
+import {
   db,
   type DeclaredInboxDeclarationEventEvidence,
   type InboxDeclarationEventEvidence,
@@ -19,10 +25,8 @@ import {
   type NetworkPreferenceDistributionOutcomeUpdate,
   type NetworkPreferenceReadbackObservation,
 } from "./network-preference-delivery"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+import { type SignedPublicNostrEvent } from "./signed-event"
+import { admitPublicEvent, isVerifiedNostrEvent } from "./verified-public-event"
 import {
   normalizeOwnerSelectedRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -70,6 +74,7 @@ export interface MergeInboxDeclarationEvidenceInput {
     coverage: InboxDeclarationLookupCoverage
     hadEvent: boolean
     eventId?: string
+    sources?: import("./account-network-evidence").AccountNetworkReadEvidence["sources"]
   }
 }
 
@@ -158,7 +163,7 @@ export function normalizeInboxDeclarationEvidencePubkey(
 }
 
 function cloneSignedEvent<T extends SignedPublicNostrEvent>(event: T): T {
-  return structuredClone(event)
+  return isVerifiedNostrEvent(event) ? event : structuredClone(event)
 }
 
 /**
@@ -173,7 +178,10 @@ function normalizeRetainedRelayUrls(relayUrls: readonly string[]): string[] {
 export function cloneInboxDeclarationEventEvidence<
   T extends InboxDeclarationEventEvidence,
 >(evidence: T): T {
-  return structuredClone(evidence)
+  return {
+    ...structuredClone(evidence),
+    signedEvent: cloneSignedEvent(evidence.signedEvent),
+  }
 }
 
 function assertCanonicalStoredEventEvidence(
@@ -228,6 +236,17 @@ export function cloneInboxDeclarationEvidenceRecord<
   T extends InboxDeclarationEvidenceRecord,
 >(record: T): T {
   const cloned = structuredClone(record)
+  cloned.current.signedEvent = cloneSignedEvent(record.current.signedEvent)
+  if (cloned.lastUsable && record.lastUsable) {
+    cloned.lastUsable.signedEvent = cloneSignedEvent(
+      record.lastUsable.signedEvent
+    )
+  }
+  if (cloned.pendingDistribution && record.pendingDistribution) {
+    cloned.pendingDistribution.signedEvent = cloneSignedEvent(
+      record.pendingDistribution.signedEvent
+    )
+  }
   const pubkey = normalizeInboxDeclarationEvidencePubkey(cloned.pubkey)
   if (!pubkey || pubkey !== cloned.pubkey) {
     throw new Error(
@@ -335,6 +354,7 @@ function createLookupEvidence(
   return {
     observedAt,
     coverage: input.coverage,
+    sources: input.sources,
     hadEvent: input.hadEvent,
     eventId: input.eventId,
   }
@@ -344,8 +364,10 @@ function assertValidDeclarationEvent(
   pubkey: NormalizedInboxDeclarationPubkey,
   event: SignedPublicNostrEvent
 ): void {
-  if (!isValidSignedPublicNostrEvent(event)) {
-    throw new Error("Inbox declaration evidence requires a valid signed event")
+  if (!isVerifiedNostrEvent(event)) {
+    throw new Error(
+      "Inbox declaration evidence requires an admitted signed event"
+    )
   }
   if (
     event.id !== event.id.toLowerCase() ||
@@ -626,12 +648,7 @@ function normalizeRelayOutcomes(
     "policy_blocked",
     "error",
   ])
-  const readbackStatuses = new Set([
-    "pending",
-    "observed",
-    "absent",
-    "timed_out",
-  ])
+  const readbackStatuses = new Set(NETWORK_PREFERENCE_READBACK_STATUSES)
   return outcomes.map((outcome, index) => {
     const normalizedRelayUrl = tryNormalizeRelayUrl(outcome.relayUrl)
     const relayUrl = normalizedRelayUrl.ok ? normalizedRelayUrl.url : undefined
@@ -656,17 +673,6 @@ function normalizeRelayOutcomes(
     }
     return { ...outcome, relayUrl }
   })
-}
-
-function compareReplaceableFrontier(
-  candidate: SignedPublicNostrEvent,
-  current: SignedPublicNostrEvent
-): -1 | 0 | 1 {
-  if (candidate.created_at > current.created_at) return 1
-  if (candidate.created_at < current.created_at) return -1
-  if (candidate.id === current.id) return 0
-  // NIP-01 retains the lexicographically lowest id at equal timestamps.
-  return candidate.id < current.id ? 1 : -1
 }
 
 function mergeRetainedSourceRelayUrls(
@@ -706,7 +712,10 @@ function pendingForCurrent(
   currentEventId: string
 ): PendingInboxDeclarationDistribution | undefined {
   return pending?.signedEvent.id === currentEventId
-    ? structuredClone(pending)
+    ? {
+        ...structuredClone(pending),
+        signedEvent: cloneSignedEvent(pending.signedEvent),
+      }
     : undefined
 }
 
@@ -1261,7 +1270,7 @@ function mergeHistoricalUsableEvidence(
   if (!prior) {
     lastUsable = cloneInboxDeclarationEventEvidence(candidate.current)
   } else {
-    const frontier = compareReplaceableFrontier(
+    const frontier = compareAccountNetworkRevisions(
       candidate.current.signedEvent,
       prior.signedEvent
     )
@@ -1309,7 +1318,7 @@ function applyEventEvidenceMerge(
   candidate: InboxDeclarationEvidenceCandidate
 ): InboxDeclarationEvidenceRecord {
   if (existing) {
-    const frontier = compareReplaceableFrontier(
+    const frontier = compareAccountNetworkRevisions(
       candidate.current.signedEvent,
       existing.current.signedEvent
     )
@@ -1361,39 +1370,9 @@ function mergeLatestLookupEvidence(
   candidate: InboxDeclarationLookupEvidence | undefined,
   currentEventId: string
 ): InboxDeclarationLookupEvidence | undefined {
-  if (!candidate) return existing ? { ...existing } : undefined
-  if (!existing) return { ...candidate }
-  if (candidate.observedAt > existing.observedAt) return { ...candidate }
-  if (candidate.observedAt < existing.observedAt) return { ...existing }
-
-  // Equal wall-clock timestamps can occur across concurrent tabs. Preserve the
-  // more conservative observation so exact evidence is never made fresh by
-  // scheduling order alone.
-  const confirmsCurrent = (lookup: InboxDeclarationLookupEvidence): boolean =>
-    lookup.coverage === "complete" &&
-    lookup.hadEvent &&
-    lookup.eventId === currentEventId
-  const existingConfirms = confirmsCurrent(existing)
-  const candidateConfirms = confirmsCurrent(candidate)
-  if (existingConfirms !== candidateConfirms) {
-    return existingConfirms ? { ...candidate } : { ...existing }
-  }
-  const coverageRank: Record<InboxDeclarationLookupCoverage, number> = {
-    complete: 0,
-    partial: 1,
-    unavailable: 2,
-  }
-  if (coverageRank[candidate.coverage] !== coverageRank[existing.coverage]) {
-    return coverageRank[candidate.coverage] > coverageRank[existing.coverage]
-      ? { ...candidate }
-      : { ...existing }
-  }
-  if (candidate.hadEvent !== existing.hadEvent) {
-    return candidate.hadEvent ? { ...existing } : { ...candidate }
-  }
-  return (candidate.eventId ?? "") < (existing.eventId ?? "")
-    ? { ...candidate }
-    : { ...existing }
+  return candidate
+    ? mergeAccountNetworkLookup(existing, candidate, currentEventId)
+    : existing
 }
 
 function applyEvidenceMerge(
@@ -1749,7 +1728,7 @@ export function applyInboxDeclarationCutoverRecoveryReadback(
   const seen = new Set<string>()
   const observations: Array<{
     relayUrl: string
-    status: "observed" | "absent" | "timed_out"
+    status: NetworkPreferenceReadbackObservation["status"]
   }> = []
   for (const observation of input.readback) {
     const relayUrl = normalizeSecureOrIsolatedE2eRelayUrls([
@@ -1759,7 +1738,7 @@ export function applyInboxDeclarationCutoverRecoveryReadback(
       !relayUrl ||
       policyBlockedRelayUrls.has(relayUrl) ||
       seen.has(relayUrl) ||
-      !["observed", "absent", "timed_out"].includes(observation.status) ||
+      !NETWORK_PREFERENCE_READBACK_STATUSES.includes(observation.status) ||
       !recovery.confirmationAttempts.some((attempt) =>
         attempt.relayUrls.includes(relayUrl)
       )
@@ -1831,12 +1810,8 @@ export function getActiveInboxCutoverRecoveryRelayUrls(
   if (!record) return []
   const recoveries = normalizeCutoverRecoveries(record)
   return normalizeRetainedRelayUrls(
-    recoveries.flatMap((recovery) =>
-      recovery.expiresAt !== undefined && now >= recovery.expiresAt
-        ? []
-        : recovery.relayUrls.filter(
-            (relayUrl) => !recovery.policyBlockedRelayUrls?.includes(relayUrl)
-          )
+    interpretAccountNetworkInboxRecovery(recoveries, now).map(
+      (route) => route.relayUrl
     )
   )
 }
@@ -1870,6 +1845,44 @@ function sameOrderedStrings(
   )
 }
 
+export class InboxDeclarationEvidenceUnavailableError extends Error {
+  readonly code = "evidence_unavailable" as const
+
+  constructor() {
+    super("Retained inbox declaration verification is unavailable")
+    this.name = "InboxDeclarationEvidenceUnavailableError"
+  }
+}
+
+async function admitInboxRecord(
+  record: InboxDeclarationEvidenceRecord | undefined
+): Promise<InboxDeclarationEvidenceRecord | undefined> {
+  if (!record) return undefined
+  const admitted = structuredClone(record)
+  const admit = async (event: SignedPublicNostrEvent) => {
+    const result = await admitPublicEvent(event)
+    if (result.status === "unavailable" || result.status === "cancelled") {
+      throw new InboxDeclarationEvidenceUnavailableError()
+    }
+    if (result.status !== "verified") {
+      throw new Error("Retained inbox declaration evidence is not verified")
+    }
+    return result.event
+  }
+  admitted.current.signedEvent = await admit(admitted.current.signedEvent)
+  if (admitted.lastUsable) {
+    admitted.lastUsable.signedEvent = await admit(
+      admitted.lastUsable.signedEvent
+    )
+  }
+  if (admitted.pendingDistribution) {
+    admitted.pendingDistribution.signedEvent = await admit(
+      admitted.pendingDistribution.signedEvent
+    )
+  }
+  return admitted
+}
+
 function createDexieRepository(
   now: () => number = Date.now
 ): InboxDeclarationEvidenceRepository {
@@ -1880,15 +1893,20 @@ function createDexieRepository(
     if (!pubkey) {
       throw new Error("Inbox declaration evidence requires a valid hex pubkey")
     }
+    const before = await db.inboxDeclarationEvidence.get(pubkey)
+    const admittedBefore = await admitInboxRecord(before)
     return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
       const existing = await db.inboxDeclarationEvidence.get(pubkey)
-      if (!existing) {
+      if (!existing || !admittedBefore) {
         throw new Error(
           "Inbox cutover readback requires an existing locally planned batch"
         )
       }
+      if (JSON.stringify(existing) !== JSON.stringify(before)) {
+        throw new Error("Inbox declaration changed during verification")
+      }
       let finalRecord = applyInboxDeclarationCutoverRecoveryReadback(
-        existing,
+        admittedBefore,
         input
       )
       const pending = finalRecord.pendingDistribution
@@ -1920,11 +1938,22 @@ function createDexieRepository(
     inputs: readonly MergeInboxDeclarationEvidenceInput[]
   ): Promise<InboxDeclarationEvidenceRecord> => {
     const candidates = createMergeCandidates(inputs, now)
+    const before = await db.inboxDeclarationEvidence.get(candidates[0]!.pubkey)
+    let admittedBefore: InboxDeclarationEvidenceRecord | undefined
+    try {
+      admittedBefore = await admitInboxRecord(before)
+    } catch (error) {
+      if (error instanceof InboxDeclarationEvidenceUnavailableError) throw error
+      admittedBefore = undefined
+    }
     return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
       const existing = await db.inboxDeclarationEvidence.get(
         candidates[0]!.pubkey
       )
-      let finalRecord = existing
+      if (JSON.stringify(existing) !== JSON.stringify(before)) {
+        throw new Error("Inbox declaration changed during verification")
+      }
+      let finalRecord = admittedBefore
       for (const candidate of candidates) {
         finalRecord = applyEvidenceMerge(finalRecord, candidate)
       }
@@ -1942,15 +1971,18 @@ function createDexieRepository(
 
   return {
     async get(pubkey) {
-      return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
-        const stored = await db.inboxDeclarationEvidence.get(pubkey)
-        if (!stored) return undefined
-        const canonical = cloneInboxDeclarationEvidenceRecord(stored)
-        if (JSON.stringify(stored) !== JSON.stringify(canonical)) {
-          await db.inboxDeclarationEvidence.put(canonical)
-        }
-        return cloneInboxDeclarationEvidenceRecord(canonical)
-      })
+      const stored = await db.inboxDeclarationEvidence.get(pubkey)
+      if (!stored) return undefined
+      try {
+        const admitted = await admitInboxRecord(stored)
+        return admitted
+          ? cloneInboxDeclarationEvidenceRecord(admitted)
+          : undefined
+      } catch (error) {
+        if (error instanceof InboxDeclarationEvidenceUnavailableError)
+          throw error
+        return undefined
+      }
     },
 
     merge: (input) => mergeBatch([input]),
@@ -1980,7 +2012,13 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
   ): Promise<InboxDeclarationEvidenceRecord> => {
     const candidates = createMergeCandidates(inputs, now)
     const pubkey = candidates[0]!.pubkey
-    let merged = records.get(pubkey)
+    let merged: InboxDeclarationEvidenceRecord | undefined
+    try {
+      merged = await admitInboxRecord(records.get(pubkey))
+    } catch (error) {
+      if (error instanceof InboxDeclarationEvidenceUnavailableError) throw error
+      merged = undefined
+    }
     for (const candidate of candidates) {
       merged = applyEvidenceMerge(merged, candidate)
     }
@@ -1995,7 +2033,7 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
     if (!pubkey) {
       throw new Error("Inbox declaration evidence requires a valid hex pubkey")
     }
-    const existing = records.get(pubkey)
+    const existing = await admitInboxRecord(records.get(pubkey))
     if (!existing) {
       throw new Error(
         "Inbox cutover readback requires an existing locally planned batch"
@@ -2025,7 +2063,16 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
   return {
     async get(pubkey) {
       const record = records.get(pubkey)
-      return record ? cloneInboxDeclarationEvidenceRecord(record) : undefined
+      try {
+        const admitted = await admitInboxRecord(record)
+        return admitted
+          ? cloneInboxDeclarationEvidenceRecord(admitted)
+          : undefined
+      } catch (error) {
+        if (error instanceof InboxDeclarationEvidenceUnavailableError)
+          throw error
+        return undefined
+      }
     },
 
     merge: (input) => mergeBatch([input]),
