@@ -21,7 +21,6 @@ import {
 } from "./account-network-local-state"
 import {
   mergeRelayTargets,
-  relayTargetUrls,
   selectRelayTargets,
   type RelayTarget,
 } from "./relay-authority"
@@ -81,6 +80,23 @@ export async function verifySignedEvents(
     throw error
   }
 }
+/** Admit every observation in bounded batches, preserving order and sources. */
+export async function verifySignedEventBatches(
+  events: readonly unknown[],
+  options: { signal?: AbortSignal; batchSize?: 64 | 512 } = {}
+): Promise<VerifiedNostrEvent[]> {
+  const batchSize = options.batchSize ?? 512
+  const verified: VerifiedNostrEvent[] = []
+  for (let offset = 0; offset < events.length; offset += batchSize) {
+    const batch = await verifySignedEvents(
+      events.slice(offset, offset + batchSize),
+      { signal: options.signal, maxEvents: batchSize }
+    )
+    verified.push(...batch.events)
+  }
+  return verified
+}
+
 export type {
   VerifySignedPublicNostrEventsOptions,
   VerifySignedPublicNostrEventsResult,
@@ -1269,9 +1285,10 @@ async function runBoundedRelayAttempts(
 
 function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
   if (options.accountPubkey !== undefined && options.accountPubkey !== null) {
-    return relayTargetUrls(
-      selectRelayTargets(options.relayTargets ?? [], options.relayUrls)
-    )
+    return selectRelayTargets(
+      options.relayTargets ?? [],
+      options.relayUrls
+    ).map((target) => target.url)
   }
   if (options.relayUrls?.length === 0) return []
 

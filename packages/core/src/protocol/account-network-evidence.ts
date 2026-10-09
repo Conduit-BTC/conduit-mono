@@ -380,12 +380,6 @@ export const NETWORK_PREFERENCE_READBACK_STATUSES: readonly NetworkPreferenceRea
     "cancelled",
   ]
 
-export function isConclusiveAccountNetworkReadback(
-  status: NetworkPreferenceReadbackStatus
-): boolean {
-  return status === "observed" || status === "absent"
-}
-
 export interface AccountNetworkInboxRecovery {
   relayUrl: string
   phase: "awaiting_confirmation" | "grace"

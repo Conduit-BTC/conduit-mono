@@ -139,10 +139,8 @@ function mint(event: SignedPublicNostrEvent): VerifiedNostrEvent {
   rememberVerifiedPublicEvent(event)
   return event as unknown as VerifiedNostrEvent
 }
-function abortError(): Error {
-  const error = new Error("The operation was aborted.")
-  error.name = "AbortError"
-  return error
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError")
 }
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError()

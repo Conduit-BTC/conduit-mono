@@ -6,7 +6,6 @@ import type { Profile } from "../types"
 import { filterEligibleAccountRelayTargets } from "./account-network-local-state"
 import {
   mergeRelayTargets,
-  relayTargetUrls,
   relayTargetsFromUrls,
   selectRelayTargets,
   type RelayTarget,
@@ -791,7 +790,7 @@ export async function searchNetworkProfiles(
   const relayTargets = await deps.planSearchRelayTargets(
     input.authenticatedPubkey ?? null
   )
-  const relayUrls = relayTargetUrls(relayTargets)
+  const relayUrls = relayTargets.map((target) => target.url)
   let summary: ProfileSearchRelaySummary = {
     relaysPlanned: relayUrls.length,
     relaysCompleted: 0,

@@ -35,6 +35,7 @@ import {
 import { parseProductEvent } from "./products"
 import {
   fetchSignedEventsFanoutDetailed,
+  verifySignedEventBatches,
   type PublicRelayReadOptions,
 } from "./relay-reader"
 import {
@@ -44,7 +45,6 @@ import {
 import {
   admitPublicEvent,
   isVerifiedNostrEvent,
-  verifySignedEvents,
   type VerifiedNostrEvent,
 } from "./verified-public-event"
 
@@ -52,14 +52,7 @@ async function admitRows(
   rows: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ): Promise<VerifiedNostrEvent[]> {
-  const verified: VerifiedNostrEvent[] = []
-  for (let offset = 0; offset < rows.length; offset += 64) {
-    const batch = await verifySignedEvents(rows.slice(offset, offset + 64), {
-      signal,
-    })
-    verified.push(...batch.events)
-  }
-  return verified
+  return verifySignedEventBatches(rows, { signal, batchSize: 64 })
 }
 
 async function admitFanout(

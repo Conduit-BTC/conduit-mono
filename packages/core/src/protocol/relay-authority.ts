@@ -133,10 +133,6 @@ export function selectRelayTargets(
   return selected
 }
 
-export function relayTargetUrls(targets: readonly RelayTarget[]): string[] {
-  return targets.map((target) => target.url)
-}
-
 /** A source must be named at construction; an unclassified URL grants nothing. */
 export function relayTargetsFromUrls(
   urls: readonly string[],

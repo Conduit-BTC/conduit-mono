@@ -275,45 +275,23 @@ function matchingAuthenticatedPubkey(
   }
 }
 
+const SNAPSHOT_EVIDENCE_KINDS = ["ownerRelayList", "inboxDeclaration"] as const
+const SNAPSHOT_EVENT_FIELDS = [
+  "current",
+  "lastUsable",
+  "pendingDistribution",
+] as const
+
 function cloneSnapshot(
   snapshot: AccountNetworkMutationSnapshot
 ): AccountNetworkMutationSnapshot {
   const cloned = structuredClone(snapshot)
-  if (snapshot.ownerRelayList?.current && cloned.ownerRelayList?.current) {
-    cloned.ownerRelayList.current.signedEvent =
-      snapshot.ownerRelayList.current.signedEvent
-  }
-  if (
-    snapshot.ownerRelayList?.lastUsable &&
-    cloned.ownerRelayList?.lastUsable
-  ) {
-    cloned.ownerRelayList.lastUsable.signedEvent =
-      snapshot.ownerRelayList.lastUsable.signedEvent
-  }
-  if (
-    snapshot.ownerRelayList?.pendingDistribution &&
-    cloned.ownerRelayList?.pendingDistribution
-  ) {
-    cloned.ownerRelayList.pendingDistribution.signedEvent =
-      snapshot.ownerRelayList.pendingDistribution.signedEvent
-  }
-  if (snapshot.inboxDeclaration?.current && cloned.inboxDeclaration?.current) {
-    cloned.inboxDeclaration.current.signedEvent =
-      snapshot.inboxDeclaration.current.signedEvent
-  }
-  if (
-    snapshot.inboxDeclaration?.lastUsable &&
-    cloned.inboxDeclaration?.lastUsable
-  ) {
-    cloned.inboxDeclaration.lastUsable.signedEvent =
-      snapshot.inboxDeclaration.lastUsable.signedEvent
-  }
-  if (
-    snapshot.inboxDeclaration?.pendingDistribution &&
-    cloned.inboxDeclaration?.pendingDistribution
-  ) {
-    cloned.inboxDeclaration.pendingDistribution.signedEvent =
-      snapshot.inboxDeclaration.pendingDistribution.signedEvent
+  for (const kind of SNAPSHOT_EVIDENCE_KINDS) {
+    for (const field of SNAPSHOT_EVENT_FIELDS) {
+      const source = snapshot[kind]?.[field]
+      const target = cloned[kind]?.[field]
+      if (source && target) target.signedEvent = source.signedEvent
+    }
   }
   return cloned
 }
@@ -358,35 +336,11 @@ async function admitMutationSnapshot(
     }
     return result.event
   }
-  if (admitted.ownerRelayList?.current) {
-    admitted.ownerRelayList.current.signedEvent = await admit(
-      admitted.ownerRelayList.current.signedEvent
-    )
-  }
-  if (admitted.ownerRelayList?.lastUsable) {
-    admitted.ownerRelayList.lastUsable.signedEvent = await admit(
-      admitted.ownerRelayList.lastUsable.signedEvent
-    )
-  }
-  if (admitted.ownerRelayList?.pendingDistribution) {
-    admitted.ownerRelayList.pendingDistribution.signedEvent = await admit(
-      admitted.ownerRelayList.pendingDistribution.signedEvent
-    )
-  }
-  if (admitted.inboxDeclaration?.current) {
-    admitted.inboxDeclaration.current.signedEvent = await admit(
-      admitted.inboxDeclaration.current.signedEvent
-    )
-  }
-  if (admitted.inboxDeclaration?.lastUsable) {
-    admitted.inboxDeclaration.lastUsable.signedEvent = await admit(
-      admitted.inboxDeclaration.lastUsable.signedEvent
-    )
-  }
-  if (admitted.inboxDeclaration?.pendingDistribution) {
-    admitted.inboxDeclaration.pendingDistribution.signedEvent = await admit(
-      admitted.inboxDeclaration.pendingDistribution.signedEvent
-    )
+  for (const kind of SNAPSHOT_EVIDENCE_KINDS) {
+    for (const field of SNAPSHOT_EVENT_FIELDS) {
+      const evidence = admitted[kind]?.[field]
+      if (evidence) evidence.signedEvent = await admit(evidence.signedEvent)
+    }
   }
   return admitted
 }
@@ -395,34 +349,14 @@ function exactMutationSnapshotEvents(
   left: AccountNetworkMutationSnapshot,
   right: AccountNetworkMutationSnapshot
 ): boolean {
-  const pairs = [
-    [
-      left.ownerRelayList?.current?.signedEvent,
-      right.ownerRelayList?.current?.signedEvent,
-    ],
-    [
-      left.ownerRelayList?.lastUsable?.signedEvent,
-      right.ownerRelayList?.lastUsable?.signedEvent,
-    ],
-    [
-      left.ownerRelayList?.pendingDistribution?.signedEvent,
-      right.ownerRelayList?.pendingDistribution?.signedEvent,
-    ],
-    [
-      left.inboxDeclaration?.current.signedEvent,
-      right.inboxDeclaration?.current.signedEvent,
-    ],
-    [
-      left.inboxDeclaration?.lastUsable?.signedEvent,
-      right.inboxDeclaration?.lastUsable?.signedEvent,
-    ],
-    [
-      left.inboxDeclaration?.pendingDistribution?.signedEvent,
-      right.inboxDeclaration?.pendingDistribution?.signedEvent,
-    ],
-  ] as const
-  return pairs.every(([a, b]) =>
-    a === undefined || b === undefined ? a === b : sameSignedPublicEvent(a, b)
+  return SNAPSHOT_EVIDENCE_KINDS.every((kind) =>
+    SNAPSHOT_EVENT_FIELDS.every((field) => {
+      const a = left[kind]?.[field]?.signedEvent
+      const b = right[kind]?.[field]?.signedEvent
+      return a === undefined || b === undefined
+        ? a === b
+        : sameSignedPublicEvent(a, b)
+    })
   )
 }
 
@@ -438,12 +372,8 @@ function admitCurrentMutationSnapshot(
     )
   }
   const result = cloneSnapshot(current)
-  for (const kind of ["ownerRelayList", "inboxDeclaration"] as const) {
-    for (const field of [
-      "current",
-      "lastUsable",
-      "pendingDistribution",
-    ] as const) {
+  for (const kind of SNAPSHOT_EVIDENCE_KINDS) {
+    for (const field of SNAPSHOT_EVENT_FIELDS) {
       const target = result[kind]?.[field]
       const source = admittedBefore[kind]?.[field]
       if (target && source) target.signedEvent = source.signedEvent
