@@ -10,7 +10,7 @@ import { normalizePublicHttpsUrl } from "../network-target-safety"
 import {
   loadMediaServerDraft,
   normalizeBlossomServerRoot,
-  sameOrderedMediaServerList,
+  selectMediaServerPreferenceUse,
   type MediaServerDraftRecord,
   type MediaServerPreferenceResolution,
 } from "./media-server-preferences"
@@ -240,73 +240,19 @@ export function resolveProductImageUploadTarget(input: {
   const resolution = input.resolution
   if (!resolution) return { kind: "pending", reason: "loading" }
 
-  const normalizeServerList = (
-    serverUrls: readonly string[]
-  ): string[] | null => {
-    const normalized = serverUrls.map(normalizeBlossomServerRoot)
-    if (normalized.some((serverUrl) => !serverUrl)) return null
-    const safe = normalized as string[]
-    return new Set(safe).size === safe.length ? safe : null
+  const preference = selectMediaServerPreferenceUse(resolution)
+  if (preference.kind === "configured") {
+    const serverUrl = preference.serverUrls
+      .map(normalizeBlossomServerRoot)
+      .find((server): server is string => !!server)
+    return serverUrl
+      ? { kind: "configured", serverUrl }
+      : { kind: "unavailable", reason: "malformed_preferences" }
   }
-  const localServer = (() => {
-    const draft = input.localDraft
-    const publishedRevision = resolution.publishedRevision
-    if (!draft || !publishedRevision) return null
-    if (draft.baseEventId !== publishedRevision.eventId) return null
-
-    const draftServers = normalizeServerList(draft.serverUrls)
-    const baseServers = normalizeServerList(draft.baseServerUrls)
-    const publishedServers = normalizeServerList(resolution.publishedServerUrls)
-    if (!draftServers || !baseServers || !publishedServers) return null
-    if (!sameOrderedMediaServerList(draftServers, baseServers)) return null
-    if (!sameOrderedMediaServerList(baseServers, publishedServers)) return null
-    return draftServers[0] ?? null
-  })()
-  const publishedServer = resolution.publishedServerUrls
-    .map(normalizeBlossomServerRoot)
-    .find((serverUrl): serverUrl is string => !!serverUrl)
-  const publishedServerIsSupersededByEmpty = (() => {
-    const frontier = resolution.frontier
-    const published = resolution.publishedRevision
-    if (frontier?.state !== "empty") return false
-    if (!published) return true
-    if (frontier.createdAt !== published.createdAt) {
-      return frontier.createdAt > published.createdAt
-    }
-    return frontier.eventId.localeCompare(published.eventId) < 0
-  })()
-  const configuredServer = localServer ?? publishedServer
-  if (
-    configuredServer &&
-    !publishedServerIsSupersededByEmpty &&
-    (resolution.status === "published" ||
-      resolution.status === "lookup_partial" ||
-      resolution.status === "lookup_unavailable" ||
-      resolution.status === "malformed" ||
-      (resolution.status === "not_observed" && resolution.retained))
-  ) {
-    return {
-      kind: "configured",
-      serverUrl: configuredServer,
-    }
-  }
-
-  if (
-    resolution.coverage !== "complete" ||
-    resolution.status === "lookup_partial" ||
-    resolution.status === "lookup_unavailable"
-  ) {
-    return { kind: "pending", reason: "lookup_incomplete" }
-  }
-  if (resolution.status === "malformed") {
+  if (preference.kind === "fallback")
+    return { kind: "fallback", serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER }
+  if (preference.kind === "malformed")
     return { kind: "unavailable", reason: "malformed_preferences" }
-  }
-  if (resolution.status === "not_observed" || resolution.status === "empty") {
-    return {
-      kind: "fallback",
-      serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
-    }
-  }
   return { kind: "pending", reason: "lookup_incomplete" }
 }
 

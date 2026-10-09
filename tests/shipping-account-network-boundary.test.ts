@@ -175,7 +175,7 @@ describe("shipping account network boundary", () => {
     }
   })
 
-  it("admits only the exact authenticated owner's selected ws relay", async () => {
+  it("does not admit a nominated owner ws relay without durable signed proof", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
     const finalReadCalls: PublicRelayReadOptions[] = []
     let authorityReads = 0
@@ -252,8 +252,10 @@ describe("shipping account network boundary", () => {
     for (const call of finalReadCalls) {
       expect(call.accountPubkey).toBe(ACCOUNT)
       expect(call.authenticatedPubkey).toBe(ACCOUNT)
-      expect(call.relayUrls).toContain(OWNER_WS_RELAY)
-      expect(call.ownerSelectedRelayUrls).toEqual([OWNER_WS_RELAY])
+      expect(call.relayUrls).not.toContain(OWNER_WS_RELAY)
+      expect(call.relayTargets?.map((target) => target.url)).not.toContain(
+        OWNER_WS_RELAY
+      )
       expect(call.relayUrls).not.toContain(REMOTE_WS_RELAY)
       expect(call.relayUrls).toContain(RETAINED_RELAY)
     }
@@ -272,7 +274,9 @@ describe("shipping account network boundary", () => {
     expect(relayListCalls[0]?.authenticatedPubkey).toBeUndefined()
     for (const call of finalReadCalls) {
       expect(call.authenticatedPubkey).toBeUndefined()
-      expect(call.ownerSelectedRelayUrls).toEqual([])
+      expect(call.relayTargets?.map((target) => target.url)).not.toContain(
+        OWNER_WS_RELAY
+      )
       expect(call.relayUrls).not.toContain(OWNER_WS_RELAY)
       expect(call.relayUrls).not.toContain(REMOTE_WS_RELAY)
     }

@@ -442,13 +442,6 @@ describe("merchant setup readiness", () => {
         actionRequired: false,
       },
       {
-        status: "distribution_pending",
-        complete: false,
-        pending: false,
-        degraded: false,
-        actionRequired: true,
-      },
-      {
         status: "not_observed",
         complete: false,
         pending: false,

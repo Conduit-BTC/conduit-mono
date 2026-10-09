@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -6,22 +6,31 @@ import {
 } from "nostr-tools/pure"
 import {
   config,
+  EVENT_KINDS,
   emptyAccountNetworkLocalState,
   recordOrderRelayDeliveryOutcomes,
-  resumePendingOrderRelayDeliveries,
-  retryOrderRelayDelivery,
+  resumePendingOrderRelayDeliveries as resumePendingOrderRelayDeliveriesBase,
+  retryOrderRelayDelivery as retryOrderRelayDeliveryBase,
+  selectPrivateMessageDeliveryRoute,
   type OrderLifecycle,
   type OrderRelayDeliveryRepository,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "@conduit/core/protocol/inbox-declaration-evidence"
+import { admitFixture } from "./helpers/public-event"
 import { requiresAcceptedOrderPaymentContinuation } from "../apps/market/src/lib/checkout-order-attempt"
 
 const BUYER = getPublicKey(generateSecretKey())
 const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
 const originalInboxFallbacks = config.commerceDmFallbackRelayUrls
+const originalCompatibilityEnabled = config.dmCompatibilityOrderRoutingEnabled
+beforeEach(() => {
+  config.dmCompatibilityOrderRoutingEnabled = true
+})
 afterEach(() => {
   config.dmCompatibilityOrderRelayUrls = originalCompatibilityRelays
   config.commerceDmFallbackRelayUrls = originalInboxFallbacks
+  config.dmCompatibilityOrderRoutingEnabled = originalCompatibilityEnabled
 })
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
@@ -115,25 +124,287 @@ const allowAllAccountNetworkRepository = {
   get: async () => undefined,
 }
 
-function repository(initial: OrderLifecycle): {
+function repository(
+  initial: OrderLifecycle,
+  historicalDeclaration?: SignedPublicNostrEvent
+): {
   repository: OrderRelayDeliveryRepository
   read: () => OrderLifecycle
 } {
   let value = structuredClone(initial)
-  return {
-    repository: {
-      get: async () => structuredClone(value),
-      list: async () => [structuredClone(value)],
-      update: async (_orderId, updater) => {
-        value = updater(structuredClone(value))
-        return structuredClone(value)
-      },
+  const evidence = createInMemoryInboxDeclarationEvidenceRepository()
+  const authority = value.orderRelayDelivery?.routingAuthority
+  const declaration =
+    historicalDeclaration ??
+    (authority?.pubkey === MERCHANT && authority.kind === 10_050
+      ? finalizeEvent(
+          {
+            created_at: authority.eventCreatedAt,
+            kind: 10_050,
+            tags: authority.relayUrls.map((url) => ["relay", url]),
+            content: "",
+          },
+          MERCHANT_SECRET
+        )
+      : null)
+  if (authority && declaration && !historicalDeclaration)
+    authority.eventId = declaration.id
+  const ready = declaration
+    ? admitFixture(declaration).then((admitted) =>
+        evidence.merge({ pubkey: MERCHANT, signedEvent: admitted })
+      )
+    : Promise.resolve()
+  const store: OrderRelayDeliveryRepository = {
+    get: async () => structuredClone(value),
+    list: async () => [structuredClone(value)],
+    update: async (_orderId, updater) => {
+      value = updater(structuredClone(value))
+      return structuredClone(value)
     },
+  }
+  testEvidence.set(store, { evidence, ready })
+  return {
+    repository: store,
     read: () => structuredClone(value),
   }
 }
 
+const testEvidence = new WeakMap<
+  OrderRelayDeliveryRepository,
+  {
+    evidence: ReturnType<
+      typeof createInMemoryInboxDeclarationEvidenceRepository
+    >
+    ready: Promise<unknown>
+  }
+>()
+
+async function retryOrderRelayDelivery(
+  ...args: Parameters<typeof retryOrderRelayDeliveryBase>
+) {
+  const [orderId, buyer, options] = args
+  const retained = options?.repository && testEvidence.get(options.repository)
+  await retained?.ready
+  return retryOrderRelayDeliveryBase(orderId, buyer, {
+    ...options,
+    inboxDeclarationEvidenceRepository:
+      options?.inboxDeclarationEvidenceRepository ?? retained?.evidence,
+  })
+}
+
+async function resumePendingOrderRelayDeliveries(
+  ...args: Parameters<typeof resumePendingOrderRelayDeliveriesBase>
+) {
+  const [buyer, options] = args
+  const retained = options?.repository && testEvidence.get(options.repository)
+  await retained?.ready
+  return resumePendingOrderRelayDeliveriesBase(buyer, {
+    ...options,
+    inboxDeclarationEvidenceRepository: retained?.evidence,
+  })
+}
+
 describe("order relay delivery retry", () => {
+  function historicalDeclaredDelivery(): OrderLifecycle {
+    const candidate = lifecycle()
+    delete candidate.orderRelayDelivery!.routingAuthority
+    return candidate
+  }
+
+  function signedCurrentInbox(relayUrls: string[]): SignedPublicNostrEvent {
+    return finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: routingDeclaration.created_at + 1,
+        tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+  }
+
+  it("retries a historical exact wrap only on a saved still-current signed inbox target", async () => {
+    const newlyAdded = "wss://new-inbox.conduit.market"
+    const candidate = historicalDeclaredDelivery()
+    const store = repository(
+      candidate,
+      signedCurrentInbox([DEFAULT_RELAY_URLS[1]!, newlyAdded])
+    )
+    const attempts: string[] = []
+
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "historical-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl, signedEvent, relayTarget }) => {
+        attempts.push(relayUrl)
+        expect(signedEvent).toEqual(structuredClone(signedWrap))
+        expect(relayTarget).toEqual({
+          url: DEFAULT_RELAY_URLS[1],
+          grants: [
+            {
+              kind: "recipient_nip17",
+              operation: "write",
+              recipientPubkey: MERCHANT,
+            },
+          ],
+        })
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual([DEFAULT_RELAY_URLS[1]])
+    expect(attempts).not.toContain(newlyAdded)
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { status: "acked", attemptCount: 1 },
+      { status: "acked", attemptCount: 2 },
+    ])
+  })
+
+  it("keeps a modern retry pinned to its saved declaration event ID", async () => {
+    const store = repository(
+      lifecycle(),
+      signedCurrentInbox([...DEFAULT_RELAY_URLS])
+    )
+    const attempts: string[] = []
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "pinned-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+    expect(attempts).toEqual([])
+    expect(store.read().orderRelayDelivery?.relayDelivery[1]?.status).toBe(
+      "timed_out"
+    )
+  })
+
+  it("does not retry a removed or locally excluded historical inbox target", async () => {
+    const removed = repository(
+      historicalDeclaredDelivery(),
+      signedCurrentInbox([DEFAULT_RELAY_URLS[0]!])
+    )
+    const excluded = repository(
+      historicalDeclaredDelivery(),
+      signedCurrentInbox([...DEFAULT_RELAY_URLS])
+    )
+    const accountState = emptyAccountNetworkLocalState(BUYER, () => 1)
+    accountState.exclusions = [
+      {
+        relayUrl: DEFAULT_RELAY_URLS[1]!,
+        committedAt: 1,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+      },
+    ]
+    const attempts: string[] = []
+    for (const [store, accountNetworkLocalStateRepository] of [
+      [removed, allowAllAccountNetworkRepository],
+      [excluded, { get: async () => structuredClone(accountState) }],
+    ] as const) {
+      await retryOrderRelayDelivery("order-id", BUYER, {
+        repository: store.repository,
+        accountNetworkLocalStateRepository,
+        leaseOwner: "historical-blocked-worker",
+        now: () => 100,
+        publisher: async ({ relayUrl }) => {
+          attempts.push(relayUrl)
+          return "acked"
+        },
+      })
+      expect(store.read().orderRelayDelivery?.relayDelivery[1]?.status).toBe(
+        "timed_out"
+      )
+    }
+    expect(attempts).toEqual([])
+  })
+
+  it("does not authorize historical retry from unavailable or unadmitted recipient evidence", async () => {
+    const unavailable = repository(historicalDeclaredDelivery())
+    const admitted = repository(
+      historicalDeclaredDelivery(),
+      signedCurrentInbox([...DEFAULT_RELAY_URLS])
+    )
+    const retained = testEvidence.get(admitted.repository)!
+    await retained.ready
+    const unadmitted = structuredClone((await retained.evidence.get(MERCHANT))!)
+    unadmitted.current.signedEvent.sig = "0".repeat(128)
+    const attempts: string[] = []
+    for (const [store, inboxDeclarationEvidenceRepository] of [
+      [unavailable, { get: async () => undefined }],
+      [admitted, { get: async () => unadmitted }],
+    ] as const) {
+      await retryOrderRelayDelivery("order-id", BUYER, {
+        repository: store.repository,
+        inboxDeclarationEvidenceRepository,
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+        leaseOwner: "historical-unavailable-worker",
+        now: () => 100,
+        publisher: async ({ relayUrl }) => {
+          attempts.push(relayUrl)
+          return "acked"
+        },
+      })
+      expect(store.read().orderRelayDelivery?.relayDelivery[1]?.status).toBe(
+        "timed_out"
+      )
+    }
+    expect(attempts).toEqual([])
+  })
+
+  it("stops new compatibility routes and saved compatibility writes when the lane is disabled", async () => {
+    config.dmCompatibilityOrderRoutingEnabled = false
+    const route = selectPrivateMessageDeliveryRoute({
+      rumorKind: EVENT_KINDS.ORDER,
+      declaration: {
+        pubkey: MERCHANT,
+        state: "not_observed",
+        relayUrls: [],
+        stale: true,
+        fetchedAt: 1,
+      },
+      validatedOrder: true,
+    })
+    expect(route.route).toBe("blocked")
+
+    const relayUrl = config.dmCompatibilityOrderRelayUrls[0]!
+    const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
+    candidate.orderRelayDelivery = {
+      ...candidate.orderRelayDelivery!,
+      route: "compatibility_order",
+      routingAuthority: undefined,
+      compatibilityPlan: { relayUrls: [relayUrl] },
+      relayDelivery: [
+        {
+          relayUrl,
+          source: "compatibility_registry",
+          status: "timed_out",
+          attemptCount: 1,
+        },
+      ],
+    }
+    const store = repository(candidate)
+    const attempts: string[] = []
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      now: () => 100,
+      publisher: async ({ relayUrl: attempted }) => {
+        attempts.push(attempted)
+        return "acked"
+      },
+    })
+    expect(attempts).toEqual([])
+    expect(store.read().orderRelayDelivery?.relayDelivery[0]?.status).toBe(
+      "timed_out"
+    )
+  })
+
   it("keeps direct payment available after zero-ACK exact-wrap recovery", async () => {
     const initial = lifecycle({
       checkoutMode: "private_checkout",
@@ -189,7 +460,7 @@ describe("order relay delivery retry", () => {
     expect(attempts).toEqual(DEFAULT_RELAY_URLS)
   })
 
-  it("resumes a base-schema record on only saved, currently eligible targets", async () => {
+  it("leaves a legacy record without signed routing authority pending", async () => {
     const eligibleRelay = "wss://eligible.conduit.market"
     const excludedRelay = "wss://excluded.conduit.market"
     const candidate = lifecycle()
@@ -239,12 +510,12 @@ describe("order relay delivery retry", () => {
       },
     })
 
-    expect(attempts).toEqual([eligibleRelay])
+    expect(attempts).toEqual([])
     expect(store.read().orderRelayDelivery?.expiresAt).toBe(10_000)
     expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
       { status: "acked" },
       { relayUrl: excludedRelay, status: "timed_out" },
-      { relayUrl: eligibleRelay, status: "acked" },
+      { relayUrl: eligibleRelay, status: "timed_out" },
     ])
 
     const widened = structuredClone(candidate)
@@ -265,7 +536,7 @@ describe("order relay delivery retry", () => {
         return "acked"
       },
     })
-    expect(attempts).toEqual([eligibleRelay])
+    expect(attempts).toEqual([])
 
     const unsafe = structuredClone(candidate)
     unsafe.orderRelayDelivery!.relayDelivery[2]!.relayUrl =
@@ -280,7 +551,7 @@ describe("order relay delivery retry", () => {
         return "acked"
       },
     })
-    expect(attempts).toEqual([eligibleRelay])
+    expect(attempts).toEqual([])
   })
 
   it("replays the exact wrap only to non-ACKed targets and converges", async () => {
@@ -353,8 +624,16 @@ describe("order relay delivery retry", () => {
       publisher: async (input) => {
         attempts.push(input.relayUrl)
         expect(input.signedEvent).toEqual(structuredClone(signedWrap))
-        expect(input.appRelayUrls).toEqual([relayUrls[1]])
-        expect(input.independentRelayUrls).toEqual([])
+        expect(input.relayTarget).toEqual({
+          url: relayUrls[1],
+          grants: [
+            {
+              kind: "compatibility",
+              operation: "write",
+              policy: "order_delivery",
+            },
+          ],
+        })
         return "acked"
       },
     })
@@ -705,7 +984,17 @@ describe("order relay delivery retry", () => {
       expect(attempts).toEqual(
         route === "compatibility_order"
           ? []
-          : [expect.objectContaining({ relayUrl, appRelayUrls: [] })]
+          : [
+              expect.objectContaining({
+                relayUrl,
+                relayTarget: {
+                  url: relayUrl,
+                  grants: [
+                    expect.objectContaining({ kind: "recipient_nip17" }),
+                  ],
+                },
+              }),
+            ]
       )
     }
   })

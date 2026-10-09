@@ -1,4 +1,16 @@
 import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+  type RelayOperation,
+} from "./relay-authority"
+import {
+  classifyAccountNetworkReadback,
+  ownerRelayListEvidenceFacts,
+  inboxDeclarationEvidenceFacts,
+} from "./account-network-evidence"
+import type { NetworkPreferenceReadbackObservation } from "./network-preference-delivery"
+import {
   db,
   type AccountNetworkFrontierReference,
   type AccountNetworkLocalState,
@@ -12,7 +24,7 @@ import {
   type AccountNetworkLocalStateRepository,
   dexieAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   normalizeAccountNetworkLocalState,
   replaceAccountNetworkPreferredRelayOrder,
   replaceAccountNetworkRelayScans,
@@ -73,7 +85,6 @@ import {
 } from "./signed-event"
 import {
   admitPublicEvent,
-  isVerifiedNostrEvent,
   sameSignedPublicEvent,
 } from "./verified-public-event"
 
@@ -217,15 +228,7 @@ export interface AccountNetworkMutationDependencies {
     pubkey: string
     kind: AccountNetworkSignedKind
     desiredPublishRelayUrls: readonly string[]
-  }) => Promise<readonly string[]> | readonly string[]
-  filterEligibleRelayUrls?: (
-    pubkey: string,
-    relayUrls: readonly string[],
-    ownerSelectedRelayUrls: readonly string[],
-    authenticatedPubkey: string | null,
-    appRelayUrls: readonly string[],
-    personalRelayUrls: readonly string[]
-  ) => Promise<string[]>
+  }) => Promise<readonly RelayTarget[]> | readonly RelayTarget[]
   publishToRelay?: typeof publishSignedEventToRelay
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
   shouldContinue?: () => boolean
@@ -389,21 +392,6 @@ function sameStrings(
   )
 }
 
-function sameSignedEvent(
-  left: SignedPublicNostrEvent,
-  right: SignedPublicNostrEvent
-): boolean {
-  return (
-    left.id === right.id &&
-    left.pubkey === right.pubkey &&
-    left.created_at === right.created_at &&
-    left.kind === right.kind &&
-    left.content === right.content &&
-    left.sig === right.sig &&
-    JSON.stringify(left.tags) === JSON.stringify(right.tags)
-  )
-}
-
 function frontierReference(
   event: SignedPublicNostrEvent | undefined
 ): AccountNetworkFrontierReference {
@@ -452,13 +440,6 @@ function currentInboxRelayUrls(
   accountPubkey: string,
   resolution: InboxDeclarationResolution
 ): string[] {
-  if (resolution.state === "distribution_pending") {
-    return normalizeAuthenticatedOwnerInboxRelayUrls(
-      accountPubkey,
-      resolution,
-      resolution.pendingRelayUrls ?? []
-    )
-  }
   return resolution.state === "declared"
     ? normalizeAuthenticatedOwnerInboxRelayUrls(
         accountPubkey,
@@ -650,31 +631,17 @@ function reviewFrontier(input: {
 function hasCompleteScopedOwnerRelayListAbsence(
   reconciliation: AccountNetworkPreferencesReconciliation
 ): boolean {
-  const resolution = reconciliation.ownerRelayList
-  return (
-    resolution.state === "not_observed" &&
-    resolution.lookup.coverage === "complete" &&
-    !resolution.current &&
-    !resolution.lastUsable &&
-    !resolution.pendingDistribution
-  )
+  return ownerRelayListEvidenceFacts(reconciliation.ownerRelayList).scopedAbsent
 }
 
 function hasCompleteScopedInboxDeclarationAbsence(
   reconciliation: AccountNetworkPreferencesReconciliation
 ): boolean {
-  const resolution = reconciliation.inboxDeclaration
   return (
-    resolution.state === "not_observed" &&
-    resolution.observation?.coverage === "complete" &&
-    resolution.eventId === undefined &&
-    resolution.eventCreatedAt === undefined &&
-    resolution.relayUrls.length === 0 &&
-    (resolution.retainedReadRelayUrls?.length ?? 0) === 0 &&
-    (resolution.cutoverRecoveryRelayUrls?.length ?? 0) === 0 &&
-    (resolution.pendingRelayUrls?.length ?? 0) === 0 &&
-    (resolution.pendingPublishRelayUrls?.length ?? 0) === 0 &&
-    (resolution.pendingRelayOutcomes?.length ?? 0) === 0
+    inboxDeclarationEvidenceFacts(reconciliation.inboxDeclaration)
+      .scopedAbsent &&
+    (reconciliation.inboxDeclaration.cutoverRecoveryRelayUrls?.length ?? 0) ===
+      0
   )
 }
 
@@ -735,8 +702,7 @@ export function reviewAccountNetworkMutation(
       normalizedPreferenceSemantics(desiredRelayPreferences)
   const inboxChanged =
     (desiredInbox.length > 0 &&
-      reconciliation.inboxDeclaration.state !== "declared" &&
-      reconciliation.inboxDeclaration.state !== "distribution_pending") ||
+      reconciliation.inboxDeclaration.state !== "declared") ||
     !sameInboxSemantics(currentInbox, desiredInbox)
   const changedKinds: AccountNetworkSignedKind[] = []
   if (relayListChanged) changedKinds.push(EVENT_KINDS.RELAY_LIST)
@@ -1288,75 +1254,76 @@ async function withAccountMutationLock<T>(
   }
 }
 
-async function eligibleRelayUrls(
-  pubkey: string,
-  authenticatedPubkey: string | null,
-  relayUrls: readonly string[],
-  ownerSelectedRelayUrls: readonly string[],
-  appRelayUrls: readonly string[],
-  personalRelayUrls: readonly string[],
-  dependencies: AccountNetworkMutationDependencies
-): Promise<string[]> {
-  const authorizedOwnerSelectedRelayUrls =
-    authenticatedPubkey === pubkey ? ownerSelectedRelayUrls : []
-  if (dependencies.filterEligibleRelayUrls) {
-    return await dependencies.filterEligibleRelayUrls(
-      pubkey,
-      relayUrls,
-      authorizedOwnerSelectedRelayUrls,
-      authenticatedPubkey,
-      appRelayUrls,
-      personalRelayUrls
+function distributionRelayTargets(input: {
+  pubkey: string
+  kind: AccountNetworkSignedKind
+  signedEvent: SignedPublicNostrEvent
+  relayUrls: readonly string[]
+  ownerWriteRelayUrls: readonly string[]
+  operation: RelayOperation
+}): RelayTarget[] {
+  const selected =
+    input.kind === EVENT_KINDS.RELAY_LIST
+      ? parseNip65RelayTags(input.signedEvent.tags).flatMap((preference) =>
+          preference.writeEnabled ? [preference.url] : []
+        )
+      : input.signedEvent.tags.flatMap((tag) =>
+          tag[0] === "relay" && tag[1] ? [tag[1]] : []
+        )
+  const urls = new Set(input.relayUrls)
+  return mergeRelayTargets(
+    relayTargetsFromUrls(input.relayUrls, {
+      kind: "discovery",
+      operation: input.operation,
+      registry: input.kind === 10002 ? "owner_10002" : "inbox_10050",
+    }),
+    relayTargetsFromUrls(
+      selected.filter((url) => urls.has(url)),
+      {
+        kind: "owner_selection",
+        operation: input.operation,
+        ownerPubkey: input.pubkey,
+        eventKind: input.kind,
+        eventId: input.signedEvent.id,
+      }
+    ),
+    relayTargetsFromUrls(
+      input.ownerWriteRelayUrls.filter((url) => urls.has(url)),
+      {
+        kind: "owner_nip65",
+        operation: input.operation,
+        ownerPubkey: input.pubkey,
+        selection: "write",
+      }
     )
-  }
-  return await filterEligibleAccountRelayUrls({
-    accountPubkey: pubkey,
-    authenticatedPubkey,
-    candidateRelayUrls: relayUrls,
-    ownerSelectedRelayUrls: authorizedOwnerSelectedRelayUrls,
-    appRelayUrls,
-    personalRelayUrls,
-    repository: dexieAccountNetworkLocalStateRepository,
-  })
+  )
 }
 
-function distributionRelaySources(input: {
-  kind: AccountNetworkSignedKind
-  signedEvent?: SignedPublicNostrEvent
-  relayUrls: readonly string[]
-  desiredPublishRelayUrls?: readonly string[]
-  sharedRelayUrls?: readonly string[]
-  ownerSelectedRelayUrls?: readonly string[]
-}): { appRelayUrls: string[]; personalRelayUrls: string[] } {
-  const relayUrlSet = new Set(input.relayUrls)
-  if (input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) {
-    return {
-      // Publishing and confirming the owner's declaration uses Conduit's
-      // shared discovery registry plus the owner's NIP-65 Publish relays. Keep
-      // those sources independent so either live layer can retain an overlap
-      // without relabeling a Personal-only target as App-owned. Runtime reads
-      // from relays declared by kind 10050 remain independent of both toggles.
-      appRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
-        input.sharedRelayUrls ?? []
-      ).filter((relayUrl) => relayUrlSet.has(relayUrl)),
-      personalRelayUrls: normalizeOwnerSelectedRelayUrls(
-        input.ownerSelectedRelayUrls ?? []
-      ).filter((relayUrl) => relayUrlSet.has(relayUrl)),
-    }
-  }
-
-  const personalCandidates = input.signedEvent
-    ? parseNip65RelayTags(input.signedEvent.tags).flatMap((preference) =>
-        preference.writeEnabled ? [preference.url] : []
-      )
-    : (input.desiredPublishRelayUrls ?? [])
-  const appRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
-    accountNetworkDiscoveryRelayUrls()
-  ).filter((relayUrl) => relayUrlSet.has(relayUrl))
-  const personalRelayUrls = normalizeOwnerSelectedRelayUrls(
-    personalCandidates
-  ).filter((relayUrl) => relayUrlSet.has(relayUrl))
-  return { appRelayUrls, personalRelayUrls }
+async function eligibleDistributionTargets(input: {
+  pubkey: string
+  authenticatedPubkey: string | null
+  targets: RelayTarget[]
+  operation: RelayOperation
+  dependencies: AccountNetworkMutationDependencies
+  repository: AccountNetworkMutationRepository
+}): Promise<RelayTarget[]> {
+  return filterEligibleAccountRelayTargets({
+    accountPubkey: input.pubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    targets: input.targets,
+    operation: input.operation,
+    repository: {
+      get: async () => (await input.repository.get(input.pubkey)).localState,
+    },
+    ownerRelayListEvidenceRepository: {
+      get: async () =>
+        (await input.repository.get(input.pubkey)).ownerRelayList,
+    },
+    inboxDeclarationEvidenceRepository: {
+      get: async () =>
+        (await input.repository.get(input.pubkey)).inboxDeclaration,
+    },
+  })
 }
 
 async function resolveDistributionPlan(input: {
@@ -1370,18 +1337,44 @@ async function resolveDistributionPlan(input: {
   publishRelayUrls: string[]
   confirmationRelayUrls?: string[]
 }> {
-  const plannedRelayUrls = input.dependencies.resolveRelayPlan
+  const plannedTargets = input.dependencies.resolveRelayPlan
     ? await input.dependencies.resolveRelayPlan({
         pubkey: input.pubkey,
         kind: input.kind,
         desiredPublishRelayUrls: input.desiredPublishRelayUrls,
       })
-    : input.kind === EVENT_KINDS.RELAY_LIST
-      ? [
-          ...input.desiredPublishRelayUrls,
-          ...accountNetworkDiscoveryRelayUrls(),
-        ]
+    : relayTargetsFromUrls(
+        input.kind === EVENT_KINDS.RELAY_LIST
+          ? accountNetworkDiscoveryRelayUrls()
+          : sharedInboxDiscoveryRelayUrls(),
+        {
+          kind: "discovery",
+          operation: "write",
+          registry:
+            input.kind === EVENT_KINDS.RELAY_LIST
+              ? "owner_10002"
+              : "inbox_10050",
+        }
+      )
+  const configuredDiscovery = new Set(
+    input.kind === EVENT_KINDS.RELAY_LIST
+      ? accountNetworkDiscoveryRelayUrls()
       : sharedInboxDiscoveryRelayUrls()
+  )
+  const discoveryUrls = plannedTargets.flatMap((target) =>
+    configuredDiscovery.has(target.url) &&
+    target.grants.some(
+      (grant) =>
+        grant.kind === "discovery" &&
+        grant.operation === "write" &&
+        grant.registry ===
+          (input.kind === EVENT_KINDS.RELAY_LIST
+            ? "owner_10002"
+            : "inbox_10050")
+    )
+      ? [target.url]
+      : []
+  )
   const excluded = new Set(
     normalizeOwnerSelectedRelayUrls(input.excludedRelayUrls)
   )
@@ -1390,33 +1383,23 @@ async function resolveDistributionPlan(input: {
   )
   const sharedRelayUrls =
     input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
-      ? normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls).filter(
+      ? normalizePublicOrIsolatedE2eRelayHints(discoveryUrls).filter(
           (relayUrl) => !excluded.has(relayUrl)
         )
       : []
   const remoteOrCodeOwnedRelayUrls =
     input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
       ? sharedRelayUrls
-      : normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls)
+      : normalizePublicOrIsolatedE2eRelayHints(discoveryUrls)
   const requested = Array.from(
     new Set([...remoteOrCodeOwnedRelayUrls, ...ownerSelectedRelayUrls])
   ).filter((relayUrl) => !excluded.has(relayUrl))
-  const relaySources = distributionRelaySources({
-    kind: input.kind,
-    relayUrls: requested,
-    desiredPublishRelayUrls: input.desiredPublishRelayUrls,
-    sharedRelayUrls,
-    ownerSelectedRelayUrls,
-  })
-  const eligible = await eligibleRelayUrls(
-    input.pubkey,
-    input.authenticatedPubkey,
-    requested,
-    ownerSelectedRelayUrls,
-    relaySources.appRelayUrls,
-    relaySources.personalRelayUrls,
-    input.dependencies
-  )
+  // Preparing a signed owner selection performs no network I/O. The exact
+  // staged event and fresh local policy are revalidated at every final attempt.
+  const eligible =
+    input.authenticatedPubkey === input.pubkey
+      ? requested
+      : remoteOrCodeOwnedRelayUrls.filter((relayUrl) => !excluded.has(relayUrl))
   const eligibleSet = new Set(
     Array.from(
       new Set([
@@ -1505,26 +1488,25 @@ async function deliverPendingKind(input: {
   }
   const signedEvent = pending.signedEvent
   const pendingPublishRelayUrls = [...pending.publishRelayUrls]
-  const pendingInboxDistribution =
-    input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
-      ? snapshot.inboxDeclaration?.pendingDistribution
-      : undefined
-  const ownerSelectedRelayUrls =
-    input.authenticatedPubkey === input.pubkey
-      ? ownerSelectedRelayUrlsFromSnapshot(input.pubkey, snapshot)
-      : []
-  const relaySources = distributionRelaySources({
+  const ownerWriteRelayUrls = ownerSelectedRelayUrlsFromSnapshot(
+    input.pubkey,
+    snapshot
+  )
+  const publicationTargets = distributionRelayTargets({
+    pubkey: input.pubkey,
     kind: input.kind,
     signedEvent,
     relayUrls: pendingPublishRelayUrls,
-    sharedRelayUrls:
-      input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
-        ? (pendingInboxDistribution?.confirmationRelayUrls ??
-          normalizePublicOrIsolatedE2eRelayHints(
-            sharedInboxDiscoveryRelayUrls()
-          ).filter((relayUrl) => pendingPublishRelayUrls.includes(relayUrl)))
-        : [],
-    ownerSelectedRelayUrls,
+    ownerWriteRelayUrls,
+    operation: "write",
+  })
+  const confirmationTargets = distributionRelayTargets({
+    pubkey: input.pubkey,
+    kind: input.kind,
+    signedEvent,
+    relayUrls: pendingPublishRelayUrls,
+    ownerWriteRelayUrls,
+    operation: "read",
   })
   const publishTargets = unresolvedNetworkPreferencePublishRelayUrls(
     pending.relayOutcomes
@@ -1539,17 +1521,16 @@ async function deliverPendingKind(input: {
       input.dependencies.publishToRelay ?? publishSignedEventToRelay
     for (const relayUrl of publishTargets) {
       assertContinue(input.dependencies.shouldContinue)
-      const eligible = await eligibleRelayUrls(
-        input.pubkey,
-        input.authenticatedPubkey,
-        [relayUrl],
-        ownerSelectedRelayUrls,
-        relaySources.appRelayUrls,
-        relaySources.personalRelayUrls,
-        input.dependencies
-      )
+      const eligible = await eligibleDistributionTargets({
+        ...input,
+        operation: "write",
+        targets: publicationTargets.filter((target) => target.url === relayUrl),
+      })
       assertContinue(input.dependencies.shouldContinue)
-      if (eligible[0] !== relayUrl) continue
+      if (!eligible.length) {
+        publishObservations.push({ relayUrl, status: "policy_blocked" })
+        continue
+      }
       let status: ExclusiveRelayPublishStatus
       try {
         status = await publishToRelay({
@@ -1558,9 +1539,19 @@ async function deliverPendingKind(input: {
           authorPubkey: input.pubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           accountPubkey: input.pubkey,
-          ownerSelectedRelayUrls,
-          appRelayUrls: relaySources.appRelayUrls,
-          personalRelayUrls: relaySources.personalRelayUrls,
+          relayTarget: eligible[0],
+          accountNetworkLocalStateRepository: {
+            get: async () =>
+              (await input.repository.get(input.pubkey)).localState,
+          },
+          ownerRelayListEvidenceRepository: {
+            get: async () =>
+              (await input.repository.get(input.pubkey)).ownerRelayList,
+          },
+          inboxDeclarationEvidenceRepository: {
+            get: async () =>
+              (await input.repository.get(input.pubkey)).inboxDeclaration,
+          },
           shouldContinue: input.dependencies.shouldContinue,
         })
       } catch (error) {
@@ -1595,27 +1586,25 @@ async function deliverPendingKind(input: {
   const readbackTargets = unresolvedNetworkPreferenceReadbackRelayUrls(
     pending.relayOutcomes
   )
-  const readbackObservations: Array<{
-    relayUrl: string
-    status: "observed" | "absent" | "timed_out"
-  }> = []
+  const readbackObservations: NetworkPreferenceReadbackObservation[] = []
   if (readbackTargets.length > 0) {
     input.dependencies.onPhase?.("confirming")
     const fetchEvents =
       input.dependencies.fetchEvents ?? fetchSignedEventsFanoutDetailed
     for (const relayUrl of readbackTargets) {
       assertContinue(input.dependencies.shouldContinue)
-      const eligible = await eligibleRelayUrls(
-        input.pubkey,
-        input.authenticatedPubkey,
-        [relayUrl],
-        ownerSelectedRelayUrls,
-        relaySources.appRelayUrls,
-        relaySources.personalRelayUrls,
-        input.dependencies
-      )
+      const eligible = await eligibleDistributionTargets({
+        ...input,
+        operation: "read",
+        targets: confirmationTargets.filter(
+          (target) => target.url === relayUrl
+        ),
+      })
       assertContinue(input.dependencies.shouldContinue)
-      if (eligible[0] !== relayUrl) continue
+      if (!eligible.length) {
+        readbackObservations.push({ relayUrl, status: "policy_blocked" })
+        continue
+      }
       try {
         const result = await fetchEvents(
           {
@@ -1631,31 +1620,30 @@ async function deliverPendingKind(input: {
             skipHealthFilter: true,
             accountPubkey: input.pubkey,
             authenticatedPubkey: input.authenticatedPubkey,
-            ownerSelectedRelayUrls,
-            appRelayUrls: relaySources.appRelayUrls,
-            personalRelayUrls: relaySources.personalRelayUrls,
+            relayTargets: eligible,
+            accountNetworkLocalStateRepository: {
+              get: async () =>
+                (await input.repository.get(input.pubkey)).localState,
+            },
+            ownerRelayListEvidenceRepository: {
+              get: async () =>
+                (await input.repository.get(input.pubkey)).ownerRelayList,
+            },
+            inboxDeclarationEvidenceRepository: {
+              get: async () =>
+                (await input.repository.get(input.pubkey)).inboxDeclaration,
+            },
             shouldContinue: input.dependencies.shouldContinue,
           }
         )
         assertContinue(input.dependencies.shouldContinue)
-        const sourceExact = result.events.some(
-          (event) =>
-            isVerifiedNostrEvent(event) &&
-            sameSignedEvent(event, signedEvent) &&
-            (result.eventSourceRelayUrls[event.id] ?? []).includes(relayUrl)
-        )
-        const relay = result.relays.find(
-          (candidate) => candidate.relayUrl === relayUrl
-        )
         readbackObservations.push({
           relayUrl,
-          status: sourceExact
-            ? "observed"
-            : relay?.status === "success" &&
-                (relay.rejectedEventCount ?? 0) === 0 &&
-                result.events.every(isVerifiedNostrEvent)
-              ? "absent"
-              : "timed_out",
+          status: classifyAccountNetworkReadback({
+            relayUrl,
+            signedEvent,
+            result,
+          }),
         })
       } catch (error) {
         assertContinue(input.dependencies.shouldContinue)
@@ -1665,7 +1653,7 @@ async function deliverPendingKind(input: {
         ) {
           throw error
         }
-        readbackObservations.push({ relayUrl, status: "timed_out" })
+        readbackObservations.push({ relayUrl, status: "unavailable" })
       }
     }
     if (readbackObservations.length > 0) {
@@ -2070,7 +2058,7 @@ export async function redistributeAccountNetworkInboxDeclaration(input: {
     const inbox = reconciliation.inboxDeclaration
     if (
       inbox.observation?.coverage !== "complete" ||
-      (inbox.state !== "declared" && inbox.state !== "distribution_pending") ||
+      inbox.state !== "declared" ||
       !inbox.eventId
     ) {
       throw new AccountNetworkMutationError(

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -20,8 +19,16 @@ import {
   resolveEventMarketOrganizerInbox,
   type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
-import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import {
+  createInMemoryInboxDeclarationEvidenceRepository,
+  mergeInboxDeclarationEvidence,
+} from "@conduit/core/protocol/inbox-declaration-evidence"
+import {
+  getCachedInboxDeclarationEvidence,
+  primeInboxDeclarationEvidence,
+  sharedInboxDiscoveryRelayUrls,
+} from "@conduit/core/protocol/private-message-routing"
 import { admitFixture } from "./helpers/public-event"
 import {
   __resetProtectedReadSigner,
@@ -390,6 +397,61 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     ).toBe(true)
     expect(owner.getSnapshot().externalRecords).toEqual([])
     expect(owner.getSnapshot().orderMessages).toEqual([])
+  })
+
+  it("keeps complete signed-current handoff history usable during partial declaration discovery", async () => {
+    const relay = "wss://organizer.inbox.relay.dev"
+    const declaration = await admitFixture(
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+          created_at: ISSUED_AT,
+          tags: [["relay", relay]],
+          content: "",
+        },
+        ORGANIZER_SECRET
+      )
+    )
+    const source = sharedInboxDiscoveryRelayUrls()[0]!
+    const evidence = await mergeInboxDeclarationEvidence(
+      {
+        pubkey: ORGANIZER,
+        signedEvent: declaration,
+        sourceRelayUrls: [source],
+        sharedSourceRelayUrls: [source],
+      },
+      createInMemoryInboxDeclarationEvidenceRepository()
+    )
+    primeInboxDeclarationEvidence(evidence)
+    const owner = recoveryOwner()
+    const ready = buildFutureMarketPrivateRumor(readyPayload())
+    const { read } = recoveryRead(
+      new Map([[relay, [encryptedRecoveryWrap(ready)]]])
+    )
+    __setCommerceTestOverrides({
+      getCommerceInbox: () => owner,
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
+        const relayUrls = options?.relayUrls ?? []
+        return {
+          events: [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls.slice(0, 1),
+          failedRelayUrls: relayUrls.slice(1),
+        }
+      },
+      readProtectedInbox: read,
+    })
+
+    const result = await readCurrentClaims({
+      organizerPubkey: ORGANIZER,
+      marketCoordinate: MARKET,
+    })
+    expect(
+      getCachedInboxDeclarationEvidence(ORGANIZER)?.latestLookup?.coverage
+    ).toBe("partial")
+    expect(result.data[0]?.state).toBe("ready_for_pickup")
+    expect(result.inbox?.coverage).toBe("complete")
+    expect(result.stale).toBe(false)
   })
 
   it("retains a late revocation past a bounded page without certifying the stitched history", async () => {

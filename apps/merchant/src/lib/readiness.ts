@@ -91,7 +91,6 @@ export function getMerchantPrivateInboxReadinessPresentation(
   if (
     readiness.privateInboxStale &&
     (readiness.privateInboxStatus === "ready" ||
-      readiness.privateInboxStatus === "distribution_pending" ||
       readiness.privateInboxStatus === "signed_empty" ||
       readiness.privateInboxStatus === "malformed")
   ) {
@@ -103,8 +102,6 @@ export function getMerchantPrivateInboxReadinessPresentation(
       return { label: "Ready", variant: "success" }
     case "loading":
       return { label: "Checking", variant: "info" }
-    case "distribution_pending":
-      return { label: "Distribution pending", variant: "warning" }
     case "not_observed":
       return { label: "Needs setup", variant: "warning" }
     case "signed_empty":

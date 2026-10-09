@@ -1,5 +1,6 @@
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import { relayTargetsFromUrls } from "./relay-authority"
 import { type AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import {
@@ -106,6 +107,10 @@ export interface RetryOrderRelayDeliveryOptions {
   leaseOwner?: string
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  inboxDeclarationEvidenceRepository?: Pick<
+    import("./inbox-declaration-evidence").InboxDeclarationEvidenceRepository,
     "get"
   >
   /** Explicit foreground recovery may replay a same-session guest wrap. */
@@ -746,6 +751,10 @@ export async function retryOrderRelayDelivery(
 
   if (
     !claimed?.orderRelayDelivery ||
+    !hasValidOrderRelayRoutingAuthority(
+      claimed.orderRelayDelivery,
+      claimed.merchantPubkey
+    ) ||
     claimed.orderRelayDelivery.deliveryLeaseOwner !== leaseOwner
   ) {
     return claimed
@@ -768,6 +777,26 @@ export async function retryOrderRelayDelivery(
         recipientPubkey: claimed.merchantPubkey,
         event: signedEvent,
         relayUrls: outstanding.map((target) => target.relayUrl),
+        relayTargets: relayTargetsFromUrls(
+          outstanding.map((target) => target.relayUrl),
+          claimed.orderRelayDelivery.route === "compatibility_order"
+            ? {
+                kind: "compatibility",
+                operation: "write",
+                policy: "order_delivery",
+              }
+            : {
+                kind: "recipient_nip17",
+                operation: "write",
+                recipientPubkey: claimed.merchantPubkey,
+                ...(claimed.orderRelayDelivery.routingAuthority
+                  ? {
+                      eventId:
+                        claimed.orderRelayDelivery.routingAuthority.eventId,
+                    }
+                  : {}),
+              }
+        ),
         ownerSelectedRelayUrls: [],
         compatibility:
           claimed.orderRelayDelivery.route === "compatibility_order",
@@ -778,6 +807,8 @@ export async function retryOrderRelayDelivery(
       shouldContinue: options.shouldContinue,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      inboxDeclarationEvidenceRepository:
+        options.inboxDeclarationEvidenceRepository,
       beforePublish: async (relayUrl) => {
         const begun = await beginOrderRelayDeliveryAttempt(
           {

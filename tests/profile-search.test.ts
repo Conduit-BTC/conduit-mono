@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { admitFixture } from "./helpers/public-event"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import { config } from "../packages/core/src/config"
 import {
   normalizeProfileSearchText,
   rankProfileSearchMatches,
@@ -103,6 +104,33 @@ function result(
   }
 }
 
+function searchIndexTargets(urls: readonly string[]) {
+  return urls.map((url) => ({
+    url,
+    grants: [
+      {
+        kind: "app" as const,
+        operation: "read" as const,
+        bucket: "search_index" as const,
+      },
+    ],
+  }))
+}
+
+function ownerSearchTargets(urls: readonly string[], ownerPubkey: string) {
+  return urls.map((url) => ({
+    url,
+    grants: [
+      {
+        kind: "owner_nip65" as const,
+        operation: "read" as const,
+        ownerPubkey,
+        selection: "read" as const,
+      },
+    ],
+  }))
+}
+
 function deps(
   overrides: Partial<ProfileSearchDependencies> = {}
 ): Partial<ProfileSearchDependencies> {
@@ -110,7 +138,7 @@ function deps(
     loadCachedProfiles: async () => [],
     loadCachedProfileRows: async () => new Map(),
     loadSellerPubkeys: async () => new Set(),
-    planSearchRelayUrls: () => ["wss://search.example"],
+    planSearchRelayTargets: () => searchIndexTargets(["wss://search.example"]),
     fetchEvents: async () => ({
       events: [],
       relays: [
@@ -304,12 +332,14 @@ describe("profile search relay plan", () => {
     const result = await searchNetworkProfiles(
       { query: "alice" },
       deps({
-        planSearchRelayUrls: () =>
-          planProfileSearchRelayUrls(
-            [],
-            Array.from(
-              { length: 12 },
-              (_, index) => `wss://relay-${index}.example`
+        planSearchRelayTargets: () =>
+          searchIndexTargets(
+            planProfileSearchRelayUrls(
+              [],
+              Array.from(
+                { length: 12 },
+                (_, index) => `wss://relay-${index}.example`
+              )
             )
           ),
         fetchEvents: async (_filter, options) => {
@@ -479,7 +509,8 @@ describe("profile search author transport chunks", () => {
     const result = await searchNetworkProfiles(
       { query: "alice", authorPubkeys: authorPubkeys(65) },
       deps({
-        planSearchRelayUrls: () => ["wss://one.example", "wss://two.example"],
+        planSearchRelayTargets: () =>
+          searchIndexTargets(["wss://one.example", "wss://two.example"]),
         fetchEvents: async () => {
           attempt += 1
           return {
@@ -601,9 +632,11 @@ describe("account-scoped search plan", () => {
     const attempted: string[][] = []
     const scopedDeps = (accountRelay: string) =>
       deps({
-        planSearchRelayUrls: (authenticatedPubkey) => {
+        planSearchRelayTargets: (authenticatedPubkey) => {
           scopes.push(authenticatedPubkey)
-          return authenticatedPubkey ? [accountRelay] : ["wss://search.example"]
+          return authenticatedPubkey
+            ? ownerSearchTargets([accountRelay], authenticatedPubkey)
+            : searchIndexTargets(["wss://search.example"])
         },
         fetchEvents: async (_filter, options) => {
           attempted.push(options.relayUrls)
@@ -639,18 +672,52 @@ describe("account-scoped search plan", () => {
       "packages/core/src/protocol/profile-search.ts",
       "utf8"
     )
-    expect(source).toContain(
-      "await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)"
-    )
     expect(source).toMatch(
-      /authenticatedPubkey\s*\?[\s\S]{0,120}: loadRelaySettingsPlanningSnapshot\(\)/
+      /await readDurableAccountRelaySettingsPlanningSnapshot\(\s*authenticatedPubkey\s*\)/
     )
+    expect(source).toContain(": []")
+    expect(source).not.toContain("loadRelaySettingsPlanningSnapshot()")
+  })
+
+  it("preserves the owner's typed grant through fetch without inferring grants from URL equality", async () => {
+    const url = config.searchIndexRelayUrls[0]!
+    const expectedTargets = ownerSearchTargets([url], ALICE)
+    let observed: typeof expectedTargets | undefined
+
+    await searchNetworkProfiles(
+      { query: "alice", authenticatedPubkey: ALICE },
+      deps({
+        planSearchRelayTargets: () => expectedTargets,
+        fetchEvents: async (_filter, options) => {
+          observed = options.relayTargets
+          return {
+            events: [],
+            relays: options.relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+          }
+        },
+      })
+    )
+
+    expect(observed).toEqual(expectedTargets)
+    expect(observed?.[0]?.grants).toEqual([
+      {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: ALICE,
+        selection: "read",
+      },
+    ])
   })
 
   it("carries the active account to the final relay admission boundary", async () => {
     const attempts: Array<{
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
+      relayTargets: Array<{ url: string; grants: Array<{ kind: string }> }>
     }> = []
 
     await searchNetworkProfiles(
@@ -660,6 +727,7 @@ describe("account-scoped search plan", () => {
           attempts.push({
             accountPubkey: options.accountPubkey,
             authenticatedPubkey: options.authenticatedPubkey,
+            relayTargets: options.relayTargets,
           })
           return {
             events: [],
@@ -674,7 +742,11 @@ describe("account-scoped search plan", () => {
     )
 
     expect(attempts).toEqual([
-      { accountPubkey: ALICE, authenticatedPubkey: ALICE },
+      {
+        accountPubkey: ALICE,
+        authenticatedPubkey: ALICE,
+        relayTargets: searchIndexTargets(["wss://search.example"]),
+      },
     ])
   })
 })
@@ -947,7 +1019,8 @@ describe("profile search phase integration", () => {
     const result = await runProfileSearch(
       { query: "alice" },
       deps({
-        planSearchRelayUrls: () => ["wss://one.example", "wss://two.example"],
+        planSearchRelayTargets: () =>
+          searchIndexTargets(["wss://one.example", "wss://two.example"]),
         fetchEvents: async () => ({
           events: [],
           relays: [
@@ -1377,9 +1450,9 @@ describe("profile search device reads and retirement", () => {
           cachedAt: 1,
         },
       ],
-      planSearchRelayUrls: () => {
+      planSearchRelayTargets: () => {
         planned += 1
-        return ["wss://search.example"]
+        return searchIndexTargets(["wss://search.example"])
       },
       fetchEvents: async () => {
         fetched += 1

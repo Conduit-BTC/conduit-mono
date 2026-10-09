@@ -20,6 +20,11 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
@@ -706,6 +711,7 @@ function hasCommerceFetchTestOverride(): boolean {
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
+  relayTargets: RelayTarget[]
   /** Ordered candidates retained until the final live-policy admission gate. */
   candidateRelayUrls: string[]
   /** Maximum candidates that may reach relay I/O after policy filtering. */
@@ -841,6 +847,7 @@ async function planCommerceReadRelayPlan(input: {
           hasCommerceFetchTestOverride()
             ? {
                 cacheOnly: true,
+                relayTargets: relayListLookupPlan.relayTargets,
                 allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
@@ -856,6 +863,7 @@ async function planCommerceReadRelayPlan(input: {
               }
             : {
                 relayUrls: relayListLookupRelayUrls,
+                relayTargets: relayListLookupPlan.relayTargets,
                 allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
@@ -897,8 +905,13 @@ async function planCommerceReadRelayPlan(input: {
 
   const preservesPublicCommerceDiscovery =
     input.intent === "commerce_products" || input.intent === "author_products"
+  const protectedInboxIntent =
+    input.intent === "legacy_dm" || input.intent === "dm_inbox"
   const fallbackRelayUrls = (() => {
     if (preservesPublicCommerceDiscovery) return commerceFallbackRelayUrls()
+    // Protected inbox reads have their own bounded compatibility and signed
+    // owner sources. Generic public fallback relays cannot authorize them.
+    if (protectedInboxIntent) return []
     if (settingsSnapshot.signedRelayListAuthoritative) return []
     return config.corePublicFallbackRelayUrls.length > 0
       ? config.corePublicFallbackRelayUrls
@@ -939,6 +952,33 @@ async function planCommerceReadRelayPlan(input: {
     : plannedRelayUrls
   const executableRelayUrls = clampRelayFanout(candidateRelayUrls)
   const candidateRelayUrlSet = new Set(candidateRelayUrls)
+  const candidateRelayTargets = mergeRelayTargets(
+    plan.relayTargets,
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) =>
+        config.commerceDiscoveryRelayUrls.includes(url)
+      ),
+      {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "commerce_discovery",
+      }
+    ),
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) =>
+        config.corePublicFallbackRelayUrls.includes(url)
+      ),
+      { kind: "public_fallback", operation: "read", bucket: "core_public" }
+    ),
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) => config.defaultRelays.includes(url)),
+      { kind: "public_fallback", operation: "read", bucket: "default" }
+    ),
+    relayTargetsFromUrls(publicExternalRelayHints, {
+      kind: "public_hint",
+      operation: "read",
+    })
+  ).filter((target) => candidateRelayUrlSet.has(target.url))
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
   const policyAccount = accountPubkey?.trim().toLowerCase()
   const includesAuthenticatedOwner = Boolean(
@@ -969,12 +1009,14 @@ async function planCommerceReadRelayPlan(input: {
 
   if (
     config.e2eRelayIsolationEnabled ||
+    protectedInboxIntent ||
     executableRelayUrls.length > 0 ||
     (settingsSnapshot.signedRelayListAuthoritative &&
       !preservesPublicCommerceDiscovery)
   ) {
     return {
       relayUrls: executableRelayUrls,
+      relayTargets: candidateRelayTargets,
       candidateRelayUrls,
       ...(effectiveMaxRelays > 0
         ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1004,6 +1046,11 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
+        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+          kind: "public_fallback",
+          operation: "read",
+          bucket: "commerce_discovery",
+        }),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1025,6 +1072,11 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
+        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+          kind: "public_fallback",
+          operation: "read",
+          bucket: "default",
+        }),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1516,11 +1568,8 @@ async function streamProductRecordChunks(input: {
   baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
-  ownerSelectedRelayUrls: string[]
-  appRelayUrls: string[]
-  personalRelayUrls: string[]
-  independentRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
   signal?: AbortSignal
@@ -1662,11 +1711,8 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            relayTargets: input.relayTargets,
             maxRelayAttempts: input.maxRelayAttempts,
-            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-            appRelayUrls: input.appRelayUrls,
-            personalRelayUrls: input.personalRelayUrls,
-            independentRelayUrls: input.independentRelayUrls,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
@@ -4085,6 +4131,29 @@ async function fetchProductDeletionTimestamps(
         ...config.appBackplaneRelayUrls,
         ...deletionRelayPlan.relayUrls,
       ])
+      const deletionRelayTargets = mergeRelayTargets(
+        deletionRelayPlan.relayTargets,
+        relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
+          kind: "public_hint",
+          operation: "read",
+        }),
+        relayTargetsFromUrls(
+          config.commerceDiscoveryRelayUrls.filter((url) =>
+            preferredDeletionRelayUrls.includes(url)
+          ),
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "commerce_discovery",
+          }
+        ),
+        relayTargetsFromUrls(
+          config.corePublicFallbackRelayUrls.filter((url) =>
+            preferredDeletionRelayUrls.includes(url)
+          ),
+          { kind: "public_fallback", operation: "read", bucket: "core_public" }
+        )
+      )
       options.onSkippedRelayUrls?.(
         deletionRelayPlan.parkedRelayUrls.filter(
           (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
@@ -4109,10 +4178,9 @@ async function fetchProductDeletionTimestamps(
             async (relayUrls) =>
               await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
-                ownerSelectedRelayUrls:
-                  deletionRelayPlan.ownerSelectedRelayUrls.filter((relayUrl) =>
-                    relayUrls.includes(relayUrl)
-                  ),
+                relayTargets: deletionRelayTargets.filter((target) =>
+                  relayUrls.includes(target.url)
+                ),
                 accountPubkey:
                   options.accountPubkey ?? options.authenticatedPubkey,
                 authenticatedPubkey: options.authenticatedPubkey,
@@ -4442,6 +4510,11 @@ async function fetchPublicProductRecords(query: {
   const relayPlan = query.searchText
     ? {
         candidateRelayUrls: productSearchRelayUrls,
+        relayTargets: relayTargetsFromUrls(productSearchRelayUrls, {
+          kind: "app",
+          operation: "read",
+          bucket: "search_index",
+        }),
         maxRelayAttempts: productSearchRelayUrls.length,
         ownerSelectedRelayUrls: [],
         appRelayUrls: productSearchRelayUrls,
@@ -4469,11 +4542,8 @@ async function fetchPublicProductRecords(query: {
 
   const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls: relayPlan.candidateRelayUrls,
+    relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
-    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-    appRelayUrls: relayPlan.appRelayUrls,
-    personalRelayUrls: relayPlan.personalRelayUrls,
-    independentRelayUrls: relayPlan.independentRelayUrls,
     accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
     authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4593,11 +4663,8 @@ async function fetchPublicProductRecordsProgressive(
     baseFilter: filter,
     authorChunks,
     relayUrls: relayPlan.candidateRelayUrls,
+    relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
-    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-    appRelayUrls: relayPlan.appRelayUrls,
-    personalRelayUrls: relayPlan.personalRelayUrls,
-    independentRelayUrls: relayPlan.independentRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
@@ -4622,19 +4689,10 @@ async function fetchPublicProductRecordsProgressive(
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      relayTargets: expandedRelayPlan.relayTargets.filter((target) =>
+        expansionRelayUrlSet.has(target.url)
+      ),
       maxRelayAttempts: expandedRelayPlan.maxRelayAttempts,
-      ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
-      appRelayUrls: expandedRelayPlan.appRelayUrls.filter((relayUrl) =>
-        expansionRelayUrlSet.has(relayUrl)
-      ),
-      personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
-      independentRelayUrls: expandedRelayPlan.independentRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
@@ -5857,11 +5915,8 @@ async function fetchVariationGroupRecordBatch(
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
         relayUrls: relayPlan.candidateRelayUrls,
+        relayTargets: relayPlan.relayTargets,
         maxRelayAttempts: relayPlan.maxRelayAttempts,
-        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-        appRelayUrls: relayPlan.appRelayUrls,
-        personalRelayUrls: relayPlan.personalRelayUrls,
-        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
@@ -7008,11 +7063,8 @@ async function readPreparedProductTargets(
             },
             {
               relayUrls: relayPlan.candidateRelayUrls,
+              relayTargets: relayPlan.relayTargets,
               maxRelayAttempts: relayPlan.maxRelayAttempts,
-              ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-              appRelayUrls: relayPlan.appRelayUrls,
-              personalRelayUrls: relayPlan.personalRelayUrls,
-              independentRelayUrls: relayPlan.independentRelayUrls,
               accountPubkey:
                 options.accountPubkey ?? options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
@@ -7760,11 +7812,8 @@ export async function getProfiles(
     }
     const fanoutOptions = {
       relayUrls: relayPlan.candidateRelayUrls,
+      relayTargets: relayPlan.relayTargets,
       maxRelayAttempts: relayPlan.maxRelayAttempts,
-      ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-      appRelayUrls: relayPlan.appRelayUrls,
-      personalRelayUrls: relayPlan.personalRelayUrls,
-      independentRelayUrls: relayPlan.independentRelayUrls,
       accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
@@ -8152,15 +8201,15 @@ async function fetchEventMarketPrivateMessagesStrict(
               range.status === "source_eose" &&
               range.pageCount === 1
           )
-        ) &&
-        !declaration.stale &&
-        !evidence.unresolved
+        ) && !evidence.unresolved
       ? "complete"
       : "partial"
   return {
     messages: evidence.messages,
     authenticatedWraps: evidence.authenticatedWraps,
-    stale: declaration.stale || unavailable || evidence.unresolved,
+    // A partial declaration lookup does not invalidate the retained signed
+    // current inbox or a complete read of its selected relay history.
+    stale: unavailable || evidence.unresolved,
     decryptFailures: evidence.decryptFailures,
     inbox: {
       declarationState: declaration.state,
@@ -8727,7 +8776,6 @@ async function inspectMerchantCheckoutSparkRecoveries(
           row.pageCount === 1
       )
     ) &&
-    !declaration.stale &&
     !malformedCount &&
     !decryptFailureCount &&
     !conflictingCheckouts.size
@@ -8842,8 +8890,11 @@ export async function withMerchantCheckoutSparkRecovery(
   const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
     principalPubkey: principal,
     relayUrls,
-    ownerSelectedRelayUrls: relayUrls,
-    appRelayUrls: [],
+    relayTargets: relayTargetsFromUrls(relayUrls, {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey: principal,
+    }),
     eventId: wrapId,
     limit: 2,
     authorization,
@@ -8876,7 +8927,7 @@ export async function withMerchantCheckoutSparkRecovery(
     candidate: null,
   })
   if (read.coverage === "unavailable") return incomplete("unavailable")
-  if (!relayComplete || declaration.stale) return incomplete("partial")
+  if (!relayComplete) return incomplete("partial")
   if (read.events.length === 0) {
     return {
       status: "missing",

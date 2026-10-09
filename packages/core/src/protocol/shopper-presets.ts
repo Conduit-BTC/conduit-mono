@@ -24,7 +24,12 @@ import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { NostrSignerError } from "./nostr-event-signer"
 import { getRelayLists } from "./relay-list"
-import { planRelayReads } from "./relay-planner"
+import { planPublicEventReadbackTargets, planRelayReads } from "./relay-planner"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
 import {
   publishWithPlanner,
   type PublishWithPlannerResult,
@@ -217,6 +222,7 @@ export type ShopperPresetsProtocolDependencies = {
   /** Injectable durable owner-authority reader for deterministic tests. */
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   readRelayUrls?: readonly string[]
+  readRelayTargets?: readonly RelayTarget[]
   now?: () => number
   randomBytes?: (length: number) => Uint8Array
   waitForConvergenceRetry?: () => Promise<void>
@@ -578,6 +584,7 @@ export async function fetchShopperPresets(
   const relayLists = await resolveRelayLists([owner], {
     cacheOnly: false,
     relayUrls: relayListReadPlan.candidateRelayUrls,
+    relayTargets: relayListReadPlan.relayTargets,
     maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
     accountPubkey: owner,
     authenticatedPubkey: authenticatedOwnerPubkey,
@@ -616,22 +623,31 @@ export async function fetchShopperPresets(
     ownerSelectedRelayUrls
   )
   const executableRelaySet = new Set(relayUrls)
-  const executableOwnerSelectedRelayUrls = ownerSelectedRelayUrls.filter(
-    (relayUrl) => executableRelaySet.has(relayUrl)
-  )
-  const appRelaySet = new Set([
-    ...config.appWriteRelayUrls,
-    ...config.corePublicFallbackRelayUrls,
-    ...(plan.appRelayUrls ?? []),
-  ])
-  const personalRelaySet = new Set([
-    ...ownerSelectedRelayUrls,
-    ...(plan.personalRelayUrls ?? []),
-    ...getCommerceWriteRelayUrls({
-      settings: ownerSettingsSnapshot?.settings,
+  const relayTargets = mergeRelayTargets(
+    plan.relayTargets,
+    dependencies.readRelayTargets ?? [],
+    relayTargetsFromUrls(config.appWriteRelayUrls, {
+      kind: "app",
+      operation: "read",
+      bucket: "author_readback",
     }),
-  ])
-  const independentRelaySet = new Set(plan.independentRelayUrls ?? [])
+    relayTargetsFromUrls(config.corePublicFallbackRelayUrls, {
+      kind: "public_fallback",
+      operation: "read",
+      bucket: "core_public",
+    }),
+    relayTargetsFromUrls(
+      getCommerceWriteRelayUrls({
+        settings: ownerSettingsSnapshot?.settings,
+      }),
+      {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: owner,
+        selection: "write",
+      }
+    )
+  ).filter((target) => executableRelaySet.has(target.url))
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
@@ -647,17 +663,10 @@ export async function fetchShopperPresets(
   try {
     result = await fetchEvents(filter, {
       relayUrls,
+      relayTargets,
       maxRelayAttempts: SHOPPER_PRESETS_MAX_READ_RELAYS,
       accountPubkey: owner,
       authenticatedPubkey: authenticatedOwnerPubkey,
-      ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-      appRelayUrls: relayUrls.filter((relayUrl) => appRelaySet.has(relayUrl)),
-      personalRelayUrls: relayUrls.filter((relayUrl) =>
-        personalRelaySet.has(relayUrl)
-      ),
-      independentRelayUrls: relayUrls.filter((relayUrl) =>
-        independentRelaySet.has(relayUrl)
-      ),
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       shouldContinue: dependencies.shouldContinue,
@@ -711,7 +720,7 @@ async function verifyShopperPresetsConvergence({
   eventId,
   createdAt,
   relayUrls,
-  ownerSelectedRelayUrls,
+  relayTargets,
   fetchEvents,
   accountNetworkLocalStateRepository,
   shouldContinue,
@@ -721,7 +730,7 @@ async function verifyShopperPresetsConvergence({
   eventId: string
   createdAt: number
   relayUrls: readonly string[]
-  ownerSelectedRelayUrls: readonly string[]
+  relayTargets: readonly RelayTarget[]
   fetchEvents: typeof fetchSignedEventsFanoutDetailed
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
@@ -751,9 +760,11 @@ async function verifyShopperPresetsConvergence({
         },
         {
           relayUrls: targets,
+          relayTargets: mergeRelayTargets(relayTargets).filter((target) =>
+            targets.includes(normalizeRelayUrl(target.url))
+          ),
           accountPubkey: owner,
           authenticatedPubkey: owner,
-          ownerSelectedRelayUrls,
           accountNetworkLocalStateRepository,
           shouldContinue,
           connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
@@ -916,22 +927,24 @@ export async function publishShopperPresets({
     shouldContinue: dependencies.shouldContinue,
   })
 
-  const ownerSettingsSnapshot = await readShopperRelayAuthority(
-    owner,
-    authenticatedDependencies
+  const convergenceRelayUrlSet = new Set(
+    publish.successfulRelayUrls.map((relayUrl) => normalizeRelayUrl(relayUrl))
   )
-  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
-    ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
-      entry.readEnabled || entry.writeEnabled ? [entry.url] : []
-    ) ?? []
+  const convergenceRelayTargets = mergeRelayTargets(
+    publish.plan.primaryRelayTargets,
+    publish.plan.broadcastRelayTargets
+  ).filter((target) =>
+    convergenceRelayUrlSet.has(normalizeRelayUrl(target.url))
   )
-
+  const convergenceReadTargets = planPublicEventReadbackTargets(
+    convergenceRelayTargets
+  )
   const convergence = await verifyShopperPresetsConvergence({
     owner,
     eventId: event.id,
     createdAt,
     relayUrls: publish.successfulRelayUrls,
-    ownerSelectedRelayUrls,
+    relayTargets: convergenceReadTargets,
     fetchEvents: dependencies.fetchEvents ?? fetchSignedEventsFanoutDetailed,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,

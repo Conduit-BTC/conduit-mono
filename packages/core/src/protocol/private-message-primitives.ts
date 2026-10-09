@@ -1,3 +1,4 @@
+import { inboxDeclarationEvidenceFacts } from "./account-network-evidence"
 import { getEventHash } from "nostr-tools"
 import { v2 as nip44 } from "nostr-tools/nip44"
 import { createWrap } from "nostr-tools/nip59"
@@ -966,6 +967,8 @@ export interface FetchInboxRelayOptions {
   fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   relayUrls?: string[]
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  /** Read-only durable evidence for callers that cannot mutate declarations. */
+  durableEvidenceRepository?: Pick<InboxDeclarationEvidenceRepository, "get">
   /** Account whose durable whole-relay exclusions govern declaration lookup. */
   requestingAccountPubkey?: string | null
   /** Active authenticated account for owner-selected ws:// read authority. */
@@ -986,14 +989,6 @@ export type OwnPrivateMessageRelayReadiness =
       eventId: string
       relayUrls: string[]
       stale: boolean
-      distributionRepairable: boolean
-    }
-  | {
-      state: "distribution_pending"
-      eventId: string
-      relayUrls: string[]
-      retainedRelayUrls: string[]
-      stale: true
       distributionRepairable: boolean
     }
   | {
@@ -1021,47 +1016,18 @@ function projectOwnPrivateMessageRelayReadiness(
     distributionRepairable?: boolean
   } = {}
 ): OwnPrivateMessageRelayReadiness {
-  const sharedPlanRelayUrlSet = new Set(
-    normalizeSecureOrIsolatedE2eRelayUrls(
-      options.sharedPlanRelayUrls ?? sharedInboxDiscoveryRelayUrls()
-    )
-  )
   const distributionRepairable = options.distributionRepairable ?? false
-  switch (resolution.state) {
+  const facts = inboxDeclarationEvidenceFacts(resolution)
+  switch (facts.state) {
     case "declared":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
-      if (
-        !normalizeSecureOrIsolatedE2eRelayUrls(
-          resolution.sharedSourceRelayUrls ?? []
-        ).some((relayUrl) => sharedPlanRelayUrlSet.has(relayUrl))
-      ) {
-        return {
-          state: "distribution_pending",
-          eventId: resolution.eventId,
-          relayUrls: resolution.relayUrls,
-          retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
-          stale: true,
-          distributionRepairable,
-        }
-      }
       return {
         state: "ready",
         eventId: resolution.eventId,
         relayUrls: resolution.relayUrls,
-        stale: resolution.stale,
-        distributionRepairable,
-      }
-    case "distribution_pending":
-      if (!resolution.eventId) return { state: "lookup_unavailable" }
-      return {
-        state: "distribution_pending",
-        eventId: resolution.eventId,
-        relayUrls: resolution.pendingRelayUrls ?? [],
-        retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
-        stale: true,
+        stale: facts.stale,
         distributionRepairable:
-          (resolution.pendingPublishRelayUrls?.length ?? 0) > 0 ||
-          distributionRepairable,
+          facts.distributionPending || distributionRepairable,
       }
     case "signed_empty":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
@@ -1096,7 +1062,10 @@ function projectOwnPrivateMessageRelayReadiness(
  */
 export async function inspectRetainedOwnPrivateMessageRelayReadiness(
   pubkey: string,
-  options: Pick<FetchInboxRelayOptions, "evidenceRepository"> = {}
+  options: Pick<
+    FetchInboxRelayOptions,
+    "evidenceRepository" | "durableEvidenceRepository"
+  > = {}
 ): Promise<OwnPrivateMessageRelayReadiness> {
   try {
     const resolution = await readRetainedInboxDeclaration(pubkey, options)
@@ -1168,7 +1137,6 @@ export async function fetchInboxRelayUrls(
   switch (resolution.state) {
     case "declared":
       return resolution.relayUrls
-    case "distribution_pending":
     case "signed_empty":
     case "not_observed":
     case "malformed":
