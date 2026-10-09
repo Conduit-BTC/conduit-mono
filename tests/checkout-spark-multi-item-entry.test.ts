@@ -732,22 +732,25 @@ describe("settled router cart target", () => {
     ).toBe(true)
   })
   it.each([
-    { currency: "SAT", amount: 1_000, eligible: true },
-    { currency: "SATS", amount: 1_000, eligible: true },
-    { currency: "BTC", amount: 0.00001, eligible: false },
-    { currency: "MSAT", amount: 1_000_000, eligible: false },
+    { currency: "SAT", amount: 1_000, satsLike: true },
+    { currency: "SATS", amount: 1_000, satsLike: true },
+    { currency: "BTC", amount: 0.00001, satsLike: false },
+    { currency: "XBT", amount: 0.00001, satsLike: false },
+    { currency: "MSAT", amount: 1_000_000, satsLike: false },
+    { currency: "MSATS", amount: 1_000_000, satsLike: false },
   ])(
     "uses the original $currency source, not its canonical SATS projection",
-    async ({ currency, amount, eligible }) => {
+    async ({ currency, amount, satsLike }) => {
       const parsed = await product(`source-${currency}`, amount, [], currency)
       const cartItem = createCartItemFromProduct(parsed)
       expect(cartItem.currency).toBe("SATS")
       expect(cartItem.priceSats).toBe(1_000)
+      expect(cartItem.sourcePrice?.currency).toBe(currency)
       expect(
         isSatsLikeCurrency(cartItem.sourcePrice?.normalizedCurrency ?? "")
-      ).toBe(eligible)
-      expect(isCheckoutSparkSettledDigitalCart([cartItem])).toBe(eligible)
-      expect(isCheckoutSparkSettledDigitalCart([item, cartItem])).toBe(eligible)
+      ).toBe(satsLike)
+      expect(isCheckoutSparkSettledDigitalCart([cartItem])).toBe(true)
+      expect(isCheckoutSparkSettledDigitalCart([item, cartItem])).toBe(true)
     }
   )
   it("keeps empty, physical, unsupported currency, event and multi-merchant carts out while admitting fiat", () => {

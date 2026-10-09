@@ -1,8 +1,6 @@
 import {
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
-  normalizeCurrencyCode,
-  isSatsLikeCurrency,
-  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  isSupportedCommercePriceCurrency,
   parseShippingOptionAddress,
 } from "@conduit/core"
 import { getMixedFulfillmentBlockingMessage, type CartItem } from "./cart-model"
@@ -13,14 +11,8 @@ function hasSupportedPrice(item: {
   currency: string
   sourcePrice?: { currency: string }
 }): boolean {
-  const currency = normalizeCurrencyCode(
+  return isSupportedCommercePriceCurrency(
     item.sourcePrice?.currency ?? item.currency
-  )
-  return (
-    isSatsLikeCurrency(currency) ||
-    SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
-      (supported) => supported === currency
-    )
   )
 }
 

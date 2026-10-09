@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { PreparedProductFulfillment } from "@conduit/core"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 import { assessCheckoutSparkCheckoutAdmission } from "../apps/market/src/lib/checkout-spark-checkout-admission"
+import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
 
 const merchant = "1".repeat(64)
 const digital: CartItem = {
@@ -39,6 +40,70 @@ describe("required checkout routing is separate from readiness", () => {
       ready: true,
     })
   })
+
+  test.each([
+    ["BTC", 0.00001],
+    ["XBT", 0.00001],
+    ["MSAT", 1_000_000],
+    ["MSATS", 1_000_000],
+  ])(
+    "routes deterministic %s prices without a fiat rate",
+    (currency, price) => {
+      const item = { ...digital, currency, price }
+      const pricing = buildCheckoutPricingIntent([item], null)
+      expect(pricing.status).toBe("ok")
+      if (pricing.status !== "ok") throw new Error("Deterministic price failed")
+      expect(pricing.totalSats).toBe(1_000)
+      expect(pricing.quote).toBeUndefined()
+      expect(assess([item])).toEqual({ mode: "router", ready: true })
+    }
+  )
+
+  test.each([
+    ["BTC", 0.00001],
+    ["XBT", 0.00001],
+    ["MSAT", 1_000_000],
+    ["MSATS", 1_000_000],
+  ])(
+    "retains deterministic %s source prices on projected SAT carts",
+    (currency, amount) => {
+      const item = {
+        ...digital,
+        sourcePrice: { amount, currency, normalizedCurrency: currency },
+      }
+      const pricing = buildCheckoutPricingIntent([item], null)
+      expect(pricing.status).toBe("ok")
+      if (pricing.status !== "ok") throw new Error("Deterministic price failed")
+      expect(pricing.totalSats).toBe(1_000)
+      expect(pricing.quote).toBeUndefined()
+      expect(assess([item])).toEqual({ mode: "router", ready: true })
+    }
+  )
+
+  test.each(["BGN", "XYZ"])(
+    "keeps unsupported %s prices blocked instead of authorizing direct fallback",
+    (currency) => {
+      const nowMs = 1_800_000_000_000
+      const quote = {
+        rate: 100_000,
+        fetchedAt: nowMs,
+        source: "mempool" as const,
+        fiatUsdRates: { [currency]: 1 },
+      }
+      for (const item of [
+        { ...digital, currency, price: 1 },
+        {
+          ...digital,
+          sourcePrice: { amount: 1, currency, normalizedCurrency: currency },
+        },
+      ]) {
+        expect(assess([item])).toEqual({ mode: "router", ready: false })
+        expect(buildCheckoutPricingIntent([item], quote, nowMs).status).toBe(
+          "error"
+        )
+      }
+    }
+  )
 
   test("unsupported or unresolved upfront shipping cannot fall back to direct payment", () => {
     const item = { ...physical, shippingOptionId: `30406:${merchant}:pending` }

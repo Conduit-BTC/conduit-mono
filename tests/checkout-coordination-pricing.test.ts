@@ -6,6 +6,7 @@ import {
 } from "@conduit/core"
 import {
   getCartCoordinationEstimate,
+  canEstimateCheckoutCoordinationListing,
   getCheckoutCoordinationPriceEstimate,
   getFeeInclusiveListingPriceDisplay,
 } from "../apps/market/src/lib/checkout-coordination-pricing"
@@ -104,6 +105,78 @@ describe("buyer coordination pricing", () => {
 })
 
 describe("fee-inclusive listing estimates", () => {
+  it.each([
+    ["BTC", 0.00001],
+    ["XBT", 0.00001],
+    ["MSAT", 1_000_000],
+    ["MSATS", 1_000_000],
+  ])(
+    "includes fees for deterministic %s listings without a fiat rate",
+    (currency, price) => {
+      const product = Object.freeze({ price, currency, format: "digital" })
+      const display = getFeeInclusiveListingPriceDisplay(
+        product,
+        preference,
+        null,
+        true
+      )
+      expect(display.sats).toBe(1_113)
+      expect(display.feeEstimateIncluded).toBe(true)
+      expect(product).toEqual({ price, currency, format: "digital" })
+    }
+  )
+
+  it.each([
+    ["BTC", 0.00001],
+    ["XBT", 0.00001],
+    ["MSAT", 1_000_000],
+    ["MSATS", 1_000_000],
+  ])(
+    "includes fees for retained deterministic %s source prices",
+    (currency, amount) => {
+      const sourcePrice = Object.freeze({
+        amount,
+        currency,
+        normalizedCurrency: currency,
+      })
+      const product = Object.freeze({
+        price: 1_000,
+        priceSats: 1_000,
+        currency: "SATS",
+        sourcePrice,
+        format: "digital",
+      })
+      const display = getFeeInclusiveListingPriceDisplay(
+        product,
+        preference,
+        null,
+        true
+      )
+      expect(display.sats).toBe(1_113)
+      expect(display.feeEstimateIncluded).toBe(true)
+      expect(product.sourcePrice).toBe(sourcePrice)
+      expect(product.priceSats).toBe(1_000)
+    }
+  )
+
+  it.each(["BGN", "XYZ"])(
+    "does not estimate fees from unsupported %s behind cached SAT prices",
+    (currency) => {
+      const product = {
+        price: 1_000,
+        priceSats: 1_000,
+        currency: "SATS",
+        sourcePrice: { amount: 1, currency, normalizedCurrency: currency },
+        format: "digital",
+      }
+      expect(canEstimateCheckoutCoordinationListing(product)).toBe(false)
+      expect(
+        getFeeInclusiveListingPriceDisplay(product, preference, null, true)
+          .feeEstimateIncluded
+      ).toBe(false)
+    }
+  )
+
   it("adds fees to presentation only and preserves the signed/cart base price", () => {
     const product = Object.freeze({
       price: 1_000,
