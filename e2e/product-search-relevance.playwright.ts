@@ -493,7 +493,9 @@ for (const path of ["cart", "merchants"]) {
     relay.state.catalogProducts = [best]
     await page.goto(`${marketUrl}/${path}`)
     if (path === "merchants")
-      await expect(page.getByText("1 of 1", { exact: true })).toBeVisible()
+      await expect(
+        page.getByText("1 of 1 merchants", { exact: true })
+      ).toBeVisible()
     const commerceUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url))}`
     await page.evaluate(
       async ({ moduleUrl, event }) => {

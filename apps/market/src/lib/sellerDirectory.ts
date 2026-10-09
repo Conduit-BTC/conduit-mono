@@ -5,6 +5,7 @@ import {
   type CommerceFreshnessMeta,
   type Product,
   type ProfileSearchMatch,
+  type ProfileSearchEvidence,
 } from "@conduit/core"
 import type { MerchantIdentityView } from "./marketBrowseModel"
 import type { ProductCatalogSourceMode } from "./productCatalogRead"
@@ -17,6 +18,59 @@ export interface DiscoveredSeller {
 
 export type SellerEligibilityState =
   "loading" | "ready" | "partial" | "unavailable"
+
+/** Search absence is bounded to the completed relay scope, not the catalog. */
+export function getMerchantNameSearchFeedback(input: {
+  evidence: ProfileSearchEvidence | undefined
+  isFetching: boolean
+  matchCount: number
+}): { incomplete: boolean; message: string | undefined } {
+  const incomplete =
+    input.evidence === undefined ||
+    input.evidence === "not_queried" ||
+    input.evidence === "lookup_partial" ||
+    input.evidence === "lookup_unavailable"
+  if (input.isFetching) {
+    return { incomplete, message: "Searching merchant names..." }
+  }
+  switch (input.evidence) {
+    case "absent_within_scope":
+      return {
+        incomplete: false,
+        message: "No matching merchant names found on the searched relays.",
+      }
+    case "present_current":
+      return {
+        incomplete: false,
+        message:
+          input.matchCount === 0
+            ? "No matching merchants found in this catalog."
+            : undefined,
+      }
+    case "lookup_unavailable":
+      return {
+        incomplete: true,
+        message:
+          "Search relays are unavailable. Merchant name results may be incomplete.",
+      }
+    case "lookup_partial":
+      return {
+        incomplete: true,
+        message: "Merchant name results may be incomplete.",
+      }
+    case "not_queried":
+      return {
+        incomplete: true,
+        message:
+          "Only names on this device have been searched. Merchant name results may be incomplete.",
+      }
+    default:
+      return {
+        incomplete: true,
+        message: "Merchant name results may be incomplete.",
+      }
+  }
+}
 
 export function getSellerEligibilityState(input: {
   authorPubkeys: readonly string[] | undefined

@@ -9,6 +9,7 @@ import {
   Badge,
   Button,
   Input,
+  ScrollLoadMore,
 } from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
@@ -26,6 +27,7 @@ import {
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import { MERCHANT_PAGE_SIZE } from "../lib/clientHydration"
+import { getMerchantNameSearchFeedback } from "../lib/sellerDirectory"
 
 export interface MerchantsSearch {
   source?: ProductCatalogSourceMode
@@ -110,7 +112,19 @@ function MerchantsPage() {
       network: directory.accountSearch.isNetworkFetching,
     })
   const visibleSellers = directory.filteredSellers.slice(0, visibleSellerCount)
-  const hasMoreToCheck = directory.sellers.length > visibleSellerCount
+  const hasMoreSellers = directory.filteredSellers.length > visibleSellerCount
+  const nameSearchFeedback = getMerchantNameSearchFeedback({
+    evidence: directory.accountSearch.data?.evidence,
+    isFetching: directory.accountSearch.isFetching,
+    matchCount: directory.filteredSellers.length,
+  })
+  const hasMoreNamesToCheck =
+    !!directory.query &&
+    nameSearchFeedback.incomplete &&
+    directory.sellers.length > visibleSellerCount
+  const loadMoreSellers = useCallback(() => {
+    setVisibleSellerCount(visibleSellerCount + MERCHANT_PAGE_SIZE)
+  }, [visibleSellerCount])
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
@@ -153,7 +167,8 @@ function MerchantsPage() {
               : "Discovered merchants"}
           </h1>
           <span className="text-sm tabular-nums text-[var(--text-muted)]">
-            {visibleSellers.length} of {directory.sellers.length}
+            {visibleSellers.length} of {directory.filteredSellers.length}{" "}
+            merchants
             {directory.isFetching ? " · updating" : ""}
           </span>
         </div>
@@ -173,14 +188,15 @@ function MerchantsPage() {
             </Button>
           </div>
         ) : directory.filteredSellers.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
+          <p
+            role="status"
+            className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-pretty text-sm text-[var(--text-muted)]"
+          >
             {directory.sellers.length === 0
               ? directory.isFetching
                 ? "Loading listings from your perspective..."
                 : "No merchants have been discovered from this perspective yet."
-              : directory.query && hasMoreToCheck
-                ? "No checked merchant name matches yet. More merchant names can be checked below."
-                : "No discovered merchant name matches this search. Some profiles may still be unavailable."}
+              : nameSearchFeedback.message}
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -195,22 +211,24 @@ function MerchantsPage() {
             ))}
           </ul>
         )}
-        {hasMoreToCheck ? (
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() =>
-              setVisibleSellerCount((count) => count + MERCHANT_PAGE_SIZE)
-            }
-          >
-            {directory.query
-              ? "Check more merchant names"
-              : "Show more merchants"}
+        {hasMoreSellers ? (
+          <ScrollLoadMore
+            label="Load more merchants"
+            onLoadMore={loadMoreSellers}
+          />
+        ) : hasMoreNamesToCheck ? (
+          <Button type="button" variant="outline" onClick={loadMoreSellers}>
+            Check more merchant names
           </Button>
         ) : null}
-        {directory.query && hasMoreToCheck ? (
-          <p className="text-sm text-[var(--text-muted)]">
-            More discovered merchants have names that have not been checked.
+        {directory.query &&
+        directory.filteredSellers.length > 0 &&
+        nameSearchFeedback.message ? (
+          <p
+            role="status"
+            className="text-pretty text-sm text-[var(--text-muted)]"
+          >
+            {nameSearchFeedback.message}
           </p>
         ) : null}
       </section>

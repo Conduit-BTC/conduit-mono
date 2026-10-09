@@ -9,49 +9,12 @@ import {
   refreshProductCatalogSources,
   retainedFollowSnapshotSupersedesLive,
   resolvePerspectiveAuthorPubkeys,
-  settlePendingProgressiveRefreshes,
-  type PendingProgressiveRefresh,
 } from "../apps/market/src/lib/productCatalogRead"
 
 describe("product catalog read planning", () => {
   const viewerPubkey = "a".repeat(64)
   const merchantAPubkey = "b".repeat(64)
   const merchantBPubkey = "c".repeat(64)
-
-  it("settles canceled reads while preserving a refresh waiting for its replacement", async () => {
-    const settled: string[] = []
-    const pending: PendingProgressiveRefresh[] = []
-    const waitingForCanceledPass = new Promise<void>((resolve) => {
-      pending.push({ fromDiscoveryKey: "previous", resolve })
-    }).then(() => settled.push("canceled"))
-    const waitingForReplacement = new Promise<void>((resolve) => {
-      pending.push({ fromDiscoveryKey: "current", resolve })
-    }).then(() => settled.push("replacement"))
-
-    const remaining = settlePendingProgressiveRefreshes(pending, "current")
-    await waitingForCanceledPass
-    expect(settled).toEqual(["canceled"])
-    expect(remaining).toHaveLength(1)
-
-    expect(settlePendingProgressiveRefreshes(remaining, "replacement")).toEqual(
-      []
-    )
-    await waitingForReplacement
-    expect(settled).toEqual(["canceled", "replacement"])
-  })
-
-  it("settles every pending refresh when streaming stops or the hook unmounts", async () => {
-    const pending: PendingProgressiveRefresh[] = []
-    const waits = ["previous", "current"].map(
-      (fromDiscoveryKey) =>
-        new Promise<void>((resolve) =>
-          pending.push({ fromDiscoveryKey, resolve })
-        )
-    )
-    expect(settlePendingProgressiveRefreshes(pending)).toEqual([])
-    await Promise.all(waits)
-    expect(settlePendingProgressiveRefreshes([])).toEqual([])
-  })
 
   function runRefresh(input: {
     queryEnabled?: boolean

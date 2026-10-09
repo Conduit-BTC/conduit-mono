@@ -5,7 +5,6 @@ export type ListingAvailabilityState = "active" | "hidden" | "unsupported"
 
 export interface ListingAvailabilityReason {
   code: "merchant_hidden" | "missing_market_image" | "unsupported_product_type"
-  label: string
   detail: string
   merchantAction: string
 }
@@ -41,7 +40,6 @@ export function evaluateListingAvailability(
   if (product.visibility !== "public") {
     reasons.push({
       code: "merchant_hidden",
-      label: "Hidden by merchant",
       detail: "This listing is not marked public by the merchant.",
       merchantAction: "Publish the listing as public to include it in Market.",
     })
@@ -49,7 +47,6 @@ export function evaluateListingAvailability(
   if (!context.hasGroupImage && !hasMarketVisibleListingImage(product)) {
     reasons.push({
       code: "missing_market_image",
-      label: "Missing Market image",
       detail:
         "Market listings need at least one usable http or https image URL.",
       merchantAction:
@@ -62,7 +59,6 @@ export function evaluateListingAvailability(
   if (product.type !== "simple" && !supportedVariationGroupRole) {
     reasons.push({
       code: "unsupported_product_type",
-      label: "Unsupported listing structure",
       detail:
         "This listing needs a supported product type or a complete variation group.",
       merchantAction:

@@ -27,7 +27,6 @@ import {
 } from "./relay-authority"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
-import { normalizePublicMediaUrl } from "../network-target-safety"
 import {
   checkoutRecoveryPayloadDigest,
   openCheckoutSparkRecoveryWrap,
@@ -77,6 +76,7 @@ import {
 } from "./messaging"
 import {
   evaluateListingAvailability,
+  hasMarketVisibleListingImage,
   isMerchantHiddenOnlyListingAvailable,
   isListingMarketVisible,
   type ListingAvailabilityContext,
@@ -1832,16 +1832,6 @@ function sortProducts(
   }
 }
 
-function isValidProductImageUrl(url: string | undefined): boolean {
-  return normalizePublicMediaUrl(url) !== null
-}
-
-export function hasMarketProductImage(
-  product: Pick<Product, "images">
-): boolean {
-  return product.images.some((image) => isValidProductImageUrl(image.url))
-}
-
 function withListingAvailability(
   record: Omit<CommerceProductRecord, "availability"> & {
     availability?: ListingAvailabilityEvaluation
@@ -1890,9 +1880,9 @@ function prepareVariationGroups(
       )
     )
     const hasGroupImage =
-      hasMarketProductImage(parent.product) ||
+      hasMarketVisibleListingImage(parent.product) ||
       eligibleVariationRecords.some((variation) =>
-        hasMarketProductImage(variation.product)
+        hasMarketVisibleListingImage(variation.product)
       )
     const variations = eligibleVariationRecords
       .filter((variation) =>
@@ -2158,9 +2148,9 @@ function prepareMerchantHiddenExactRecords(
         isMerchantHiddenExactRecordAllowed(child, ownImageChildContext)
     )
     const hasGroupImage =
-      (parentAllowed && hasMarketProductImage(parent.product)) ||
+      (parentAllowed && hasMarketVisibleListingImage(parent.product)) ||
       structurallyAllowedChildren.some((child) =>
-        hasMarketProductImage(child.product)
+        hasMarketVisibleListingImage(child.product)
       )
     const childContext: ListingAvailabilityContext = {
       variationGroupRole: "variation",
@@ -3277,8 +3267,8 @@ export function reconcileProductRecordsWithDeletions(
     const children = record.family.children.filter((child) => !deleted(child))
     if (children.length === record.family.children.length) return [record]
     const hasGroupImage =
-      hasMarketProductImage(record.family.parent.product) ||
-      children.some((child) => hasMarketProductImage(child.product))
+      hasMarketVisibleListingImage(record.family.parent.product) ||
+      children.some((child) => hasMarketVisibleListingImage(child.product))
     const parent = {
       ...record.family.parent,
       family: undefined,
