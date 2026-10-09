@@ -1,3 +1,10 @@
+import { config } from "../config"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import { inboxDeclarationEvidenceFacts } from "./account-network-evidence"
 import {
   accountNetworkDiscoveryRelayUrls,
   dexieOwnerRelayListEvidenceRepository,
@@ -129,7 +136,9 @@ function relaySettingsFromOwnerEvidence(
  */
 export async function readDurableAccountRelaySettingsPlanningSnapshot(
   pubkey: string,
-  options: { evidenceRepository?: OwnerRelayListEvidenceRepository } = {}
+  options: {
+    evidenceRepository?: Pick<OwnerRelayListEvidenceRepository, "get">
+  } = {}
 ): Promise<RelaySettingsPlanningSnapshot> {
   const normalizedPubkey = normalizeOwnerRelayListPubkey(pubkey)
   if (!normalizedPubkey) {
@@ -141,7 +150,7 @@ export async function readDurableAccountRelaySettingsPlanningSnapshot(
   let retained: OwnerRelayListResolution | null = null
   try {
     retained = await readRetainedOwnerRelayList(normalizedPubkey, {
-      evidenceRepository: options.evidenceRepository,
+      durableEvidenceRepository: options.evidenceRepository,
       durableOnly: true,
     })
   } catch {
@@ -164,16 +173,13 @@ function inboxMembership(resolution: InboxDeclarationResolution): {
   membership: NetworkRoleMembership
   relayUrls: string[]
 } {
-  if (resolution.state === "declared") {
-    return { membership: "published", relayUrls: resolution.relayUrls }
-  }
-  if (resolution.state === "distribution_pending") {
-    return {
-      membership: "pending",
-      relayUrls: resolution.pendingRelayUrls ?? [],
-    }
-  }
-  return { membership: null, relayUrls: [] }
+  const facts = inboxDeclarationEvidenceFacts(resolution)
+  return facts.currentUsable
+    ? {
+        membership: facts.distributionPending ? "pending" : "published",
+        relayUrls: resolution.relayUrls,
+      }
+    : { membership: null, relayUrls: [] }
 }
 
 export function projectAccountNetworkPreferences(input: {
@@ -486,4 +492,55 @@ export async function reconcileAccountNetworkPreferences(
     inboxDeclaration,
     localExcludedRelayUrls,
   }
+}
+
+/** Inspection composes the same authorities as routing; row labels grant nothing. */
+export function planAccountNetworkInspectionTargets(
+  input: AccountNetworkPreferencesReconciliation
+): RelayTarget[] {
+  const ownerPubkey = input.projection.pubkey
+  const inbox = input.inboxDeclaration
+  return mergeRelayTargets(
+    relayTargetsFromUrls(
+      config.appRelayDefinitions.map((definition) => definition.url),
+      { kind: "app", operation: "read", bucket: "diagnostic_read" }
+    ),
+    ...input.ownerRelayList.preferences.flatMap((preference) => [
+      ...(preference.readEnabled
+        ? [
+            relayTargetsFromUrls([preference.url], {
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey,
+              selection: "read",
+            }),
+          ]
+        : []),
+      ...(preference.writeEnabled
+        ? [
+            relayTargetsFromUrls([preference.url], {
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey,
+              selection: "write",
+            }),
+          ]
+        : []),
+    ]),
+    relayTargetsFromUrls(inbox.state === "declared" ? inbox.relayUrls : [], {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey,
+    }),
+    relayTargetsFromUrls(inbox.cutoverRecoveryRelayUrls ?? [], {
+      kind: "recovery",
+      operation: "read",
+      ownerPubkey,
+    }),
+    relayTargetsFromUrls(inbox.retainedReadRelayUrls ?? [], {
+      kind: "retained_inbox",
+      operation: "read",
+      ownerPubkey,
+    })
+  )
 }

@@ -528,7 +528,7 @@ describe("network settings view", () => {
           },
         ],
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: [personalRelayUrl],
           eventId: null,
@@ -588,11 +588,49 @@ describe("network settings view", () => {
       observedAt: 20_000,
     })
     expect(view.inbox).toMatchObject({
+      currentUsable: true,
       stale: true,
       retained: true,
       coverage: "partial",
       observedAt: null,
     })
+  })
+
+  it("projects current inbox authority independently of observation coverage", () => {
+    for (const coverage of ["complete", "partial", "unavailable"] as const) {
+      const view = buildAccountNetworkSettingsView({
+        reconciliation: reconciliation({
+          inbox: {
+            stale: coverage !== "complete",
+            pendingPublishRelayUrls: ["wss://source.example"],
+            observation: {
+              coverage,
+              attemptedRelayUrls: ["wss://source.example"],
+              successfulRelayUrls: [],
+              failedRelayUrls: ["wss://source.example"],
+              eventSourceRelayUrls: [],
+            },
+          },
+        }),
+        localState: localState(),
+      })
+
+      expect(view.inbox.currentUsable).toBe(true)
+      expect(view.inbox.coverage).toBe(coverage)
+    }
+
+    const unknown = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        inbox: {
+          state: "lookup_unavailable",
+          eventId: undefined,
+          relayUrls: [],
+          observation: undefined,
+        },
+      }),
+      localState: localState(),
+    })
+    expect(unknown.inbox.currentUsable).toBe(false)
   })
 
   it("summarizes both exact pending deliveries and excludes removed targets", () => {
@@ -633,7 +671,7 @@ describe("network settings view", () => {
           },
         },
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: ["wss://first.example", "wss://second.example"],
           pendingPublishRelayUrls: [
@@ -718,7 +756,7 @@ describe("network settings view", () => {
           },
         },
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: ["wss://removed.example"],
           pendingPublishRelayUrls: ["wss://removed.example"],
@@ -791,7 +829,7 @@ describe("network settings view", () => {
           },
         },
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: ["wss://observed.example"],
           pendingPublishRelayUrls: [

@@ -124,13 +124,9 @@ function NetworkPage() {
   }, [accountPubkey, navigate])
 
   useEffect(() => {
-    const setupConfirmed =
-      networkSettings.view.inbox.state === "declared" &&
-      networkSettings.view.inbox.coverage === "complete" &&
-      !networkSettings.view.inbox.stale
     if (
       !hasProductDraftReturn ||
-      !setupConfirmed ||
+      !networkSettings.view.inbox.currentUsable ||
       hasUnpublishedRelayChanges ||
       networkOperationInProgress
     ) {
@@ -142,9 +138,7 @@ function NetworkPage() {
     hasProductDraftReturn,
     hasUnpublishedRelayChanges,
     networkOperationInProgress,
-    networkSettings.view.inbox.coverage,
-    networkSettings.view.inbox.stale,
-    networkSettings.view.inbox.state,
+    networkSettings.view.inbox.currentUsable,
     returnToProductDraft,
   ])
 

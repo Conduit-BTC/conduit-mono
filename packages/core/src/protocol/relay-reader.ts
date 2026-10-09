@@ -16,10 +16,15 @@ import {
   recordRelaySuccess,
 } from "./relay-health"
 import {
-  filterEligibleAccountRelayUrls,
-  orderEquivalentAccountRelayOperations,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  relayTargetUrls,
+  selectRelayTargets,
+  type RelayTarget,
+} from "./relay-authority"
 import { NostrSignerError } from "./nostr-event-signer"
 import {
   verifySignedEvents as admitSignedEvents,
@@ -104,8 +109,10 @@ export interface PublicRelayReadOptions {
   maxEventsPerRelay?: number
   maxBytesPerRelay?: number
 
-  /** Omit for configured defaults; pass an empty array for no relay traffic. */
+  /** Ordered operation priority. Omit for target order/defaults; empty means no I/O. */
   relayUrls?: string[]
+  /** Exact, additive authority for account-scoped reads. */
+  relayTargets?: readonly RelayTarget[]
   /**
    * Bound actual relay attempts after the live account source-policy check.
    * Policy-suppressed, throttled, and durably excluded candidates do not consume
@@ -123,22 +130,17 @@ export interface PublicRelayReadOptions {
    * an owner-selected ws:// target can reach final I/O.
    */
   authenticatedPubkey?: string | null
-  /**
-   * Exact read-target subset selected by that authenticated account owner.
-   * Remote/discovered relay hints must never populate this field.
-   */
-  ownerSelectedRelayUrls?: readonly string[]
-  /** Exact candidates contributed by Conduit's app-owned relay layer. */
-  appRelayUrls?: readonly string[]
-  /** Exact candidates contributed by the owner's NIP-65 relay layer. */
-  personalRelayUrls?: readonly string[]
-  /** Exact candidates independently authorized outside the local source layers. */
-  independentRelayUrls?: readonly string[]
   /** Injectable durable-state reader for deterministic boundary tests. */
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["ownerRelayListEvidenceRepository"]
+  inboxDeclarationEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["inboxDeclarationEvidenceRepository"]
   /** Live caller authority, rechecked immediately before final relay I/O. */
   shouldContinue?: () => boolean
   connectTimeoutMs?: number
@@ -972,12 +974,11 @@ async function fetchEventsFromRelay(
   } & Pick<
     PublicRelayReadOptions,
     | "accountPubkey"
+    | "relayTargets"
     | "authenticatedPubkey"
-    | "ownerSelectedRelayUrls"
-    | "appRelayUrls"
-    | "personalRelayUrls"
-    | "independentRelayUrls"
     | "accountNetworkLocalStateRepository"
+    | "ownerRelayListEvidenceRepository"
+    | "inboxDeclarationEvidenceRepository"
     | "shouldContinue"
     | "signal"
     | "preserveEventOrder"
@@ -999,20 +1000,23 @@ async function fetchEventsFromRelay(
       admittedRelayUrl =
         normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0] ?? null
     } else {
-      const eligibleRelayUrls = await awaitReadPolicy(
-        filterEligibleAccountRelayUrls({
+      const eligibleRelayTargets = await awaitReadPolicy(
+        filterEligibleAccountRelayTargets({
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
-          candidateRelayUrls: [relayUrl],
-          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-          appRelayUrls: options.appRelayUrls,
-          personalRelayUrls: options.personalRelayUrls,
-          independentRelayUrls: options.independentRelayUrls,
+          targets: mergeRelayTargets(options.relayTargets ?? []).filter(
+            (target) => target.url === relayUrl
+          ),
+          operation: "read",
           repository: options.accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository:
+            options.ownerRelayListEvidenceRepository,
+          inboxDeclarationEvidenceRepository:
+            options.inboxDeclarationEvidenceRepository,
         }),
         options.signal
       )
-      admittedRelayUrl = eligibleRelayUrls[0] ?? null
+      admittedRelayUrl = eligibleRelayTargets[0]?.url ?? null
     }
     // Eligibility is re-read only after this attempt owns an execution slot.
     // Once admitted, an in-flight socket may finish even if another tab commits
@@ -1264,6 +1268,11 @@ async function runBoundedRelayAttempts(
 }
 
 function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
+  if (options.accountPubkey !== undefined && options.accountPubkey !== null) {
+    return relayTargetUrls(
+      selectRelayTargets(options.relayTargets ?? [], options.relayUrls)
+    )
+  }
   if (options.relayUrls?.length === 0) return []
 
   if (config.e2eRelayIsolationEnabled) {
@@ -1275,8 +1284,10 @@ function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
     options.relayUrls ??
     getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
   )
-    .map((url) => url.trim())
-    .filter(Boolean)
+    .flatMap((url) => {
+      const normalized = tryNormalizeRelayUrl(url)
+      return normalized.ok ? [normalized.url] : []
+    })
     .filter((url, index, all) => all.indexOf(url) === index)
 
   if (options.skipHealthFilter) return dedupedUrls
@@ -1313,33 +1324,11 @@ function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
   )
 }
 
-async function orderAccountRelayFanout(
-  relayUrls: readonly string[],
-  options: Pick<
-    PublicRelayReadOptions,
-    "accountPubkey" | "accountNetworkLocalStateRepository"
-  >
-): Promise<string[]> {
-  if (options.accountPubkey === undefined || options.accountPubkey === null) {
-    return [...relayUrls]
-  }
-  const ordered = await orderEquivalentAccountRelayOperations({
-    accountPubkey: options.accountPubkey,
-    operations: relayUrls.map((relayUrl) => ({
-      relayUrl,
-      equivalenceKey: "final-read-fanout",
-      value: relayUrl,
-    })),
-    repository: options.accountNetworkLocalStateRepository,
-  })
-  return ordered.map((operation) => operation.value)
-}
-
 async function resolveFanoutRelayPlan(options: PublicRelayReadOptions) {
-  const ordered = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  // Planning owns evidence/source priority and any proven-equivalent local
+  // ordering. Final admission preserves it rather than assuming all sources
+  // are equivalent merely because they share one fanout.
+  const ordered = resolveFanoutRelayUrls(options)
   const rateLimitedRelayUrls = new Set(
     ordered.filter((url) => isRelayRateLimited(url))
   )

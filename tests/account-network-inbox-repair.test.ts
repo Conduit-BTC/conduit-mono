@@ -79,7 +79,8 @@ describe("account Network inbox repair representation", () => {
     ).text()
 
     expect(panel).toContain("Recovery read-only")
-    expect(panel).toContain("7-day recovery window")
+    expect(panel).toContain("seven-day recovery")
+    expect(panel).toContain("starts after confirmation")
     expect(panel).toContain("exact readback")
     expect(panel).toContain("unresolved")
     expect(panel).toContain("excluded")
@@ -91,7 +92,6 @@ describe("account Network inbox repair representation", () => {
     expect(toMessagingReadinessNoticeState("loading")).toBeNull()
     for (const state of [
       "not_observed",
-      "distribution_pending",
       "signed_empty",
       "malformed",
       "lookup_failed",

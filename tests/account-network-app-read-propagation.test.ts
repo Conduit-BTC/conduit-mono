@@ -203,7 +203,7 @@ describe("app account-network read propagation", () => {
 
     expect(hook).toContain("const controller = new AbortController()")
     expect(hook).toContain("signal: controller.signal")
-    expect(hook).toContain("controller.abort()")
+    expect(hook).toContain("reconciliationControllerRef.current?.abort()")
     expect(reconciliation.match(/signal: options\.signal/g)).toHaveLength(2)
     expect(ownerEvidence).toContain("signal: options.signal")
     expect(inboxEvidence).toContain("signal: input.signal")

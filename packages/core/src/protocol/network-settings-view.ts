@@ -1,3 +1,10 @@
+import {
+  summarizeAccountNetworkReadback,
+  hasCompleteAccountNetworkSetupAbsence,
+  ownerRelayListEvidenceFacts,
+  inboxDeclarationEvidenceFacts,
+  type AccountNetworkPreferenceFacts,
+} from "./account-network-evidence"
 import { config } from "../config"
 import type { AccountNetworkLocalState } from "./account-network-local-state"
 import type { AccountNetworkPreferencesReconciliation } from "./network-preferences"
@@ -44,12 +51,18 @@ export interface AccountNetworkRelayRowView {
   candidate: boolean
   /** Hidden previous inbox used only for account-owned recovery reads. */
   recoveryReadOnly?: boolean
+  retainedReadOnly?: boolean
+  recoveryPhase?: "awaiting_confirmation" | "grace"
+  /** Persisted recovery observation-clock deadline, in milliseconds. */
+  recoveryExpiresAt?: number
   reachability: AccountNetworkRelayReachability
   capability: AccountNetworkRelayCapabilityView
 }
 
 export interface AccountNetworkFrontierView {
-  state: string
+  state: AccountNetworkPreferenceFacts["state"] | "not_checked"
+  /** Admitted current signed authority, independent of lookup/readback coverage. */
+  currentUsable: boolean
   stale: boolean
   retained: boolean
   coverage: "complete" | "partial" | "unavailable" | "not_checked"
@@ -72,6 +85,7 @@ export interface AccountNetworkPendingExactDeliveryView {
   exactReadbackCount: number
   unresolvedCount: number
   excludedTargetCount: number
+  authRequiredCount?: number
   retryAvailable: boolean
 }
 
@@ -300,6 +314,10 @@ function appRelayDisableWarning(
   }
   const missing: string[] = []
   const unverified: string[] = []
+  const ownerFacts = ownerRelayListEvidenceFacts(reconciliation.ownerRelayList)
+  const inboxFacts = inboxDeclarationEvidenceFacts(
+    reconciliation.inboxDeclaration
+  )
   const publishedRelays = personalRows.filter(
     (row) => row.publishEnabled && row.publishState === "published"
   )
@@ -313,7 +331,7 @@ function appRelayDisableWarning(
   ) {
     const commerceFindings =
       publishedRelays.length > 0 ||
-      reconciliation.ownerRelayList.lookup.coverage !== "complete"
+      !(ownerFacts.scopedAbsent || ownerFacts.state === "signed_empty")
         ? unverified
         : missing
     commerceFindings.push("a commerce-qualified Publish relay")
@@ -322,13 +340,12 @@ function appRelayDisableWarning(
     !personalRows.some(
       (row) =>
         row.privateInboxEnabled &&
-        row.privateInboxState === "published" &&
-        reconciliation.inboxDeclaration.state === "declared" &&
+        inboxFacts.currentUsable &&
         currentInboxRelayUrls.has(row.url)
     )
   ) {
     const inboxFindings =
-      reconciliation.inboxDeclaration.observation?.coverage === "complete"
+      inboxFacts.scopedAbsent || inboxFacts.state === "signed_empty"
         ? missing
         : unverified
     inboxFindings.push("a current Private inbox")
@@ -350,24 +367,9 @@ function appRelayDisableWarning(
 function hasCompleteScopedNetworkSetupAbsence(
   reconciliation: AccountNetworkPreferencesReconciliation
 ): boolean {
-  const owner = reconciliation.ownerRelayList
-  const inbox = reconciliation.inboxDeclaration
-  return (
-    owner.state === "not_observed" &&
-    owner.lookup.coverage === "complete" &&
-    !owner.current &&
-    !owner.lastUsable &&
-    !owner.pendingDistribution &&
-    inbox.state === "not_observed" &&
-    inbox.observation?.coverage === "complete" &&
-    !inbox.eventId &&
-    inbox.eventCreatedAt === undefined &&
-    inbox.relayUrls.length === 0 &&
-    (inbox.retainedReadRelayUrls?.length ?? 0) === 0 &&
-    (inbox.cutoverRecoveryRelayUrls?.length ?? 0) === 0 &&
-    (inbox.pendingRelayUrls?.length ?? 0) === 0 &&
-    (inbox.pendingPublishRelayUrls?.length ?? 0) === 0 &&
-    (inbox.pendingRelayOutcomes?.length ?? 0) === 0
+  return hasCompleteAccountNetworkSetupAbsence(
+    reconciliation.ownerRelayList,
+    reconciliation.inboxDeclaration
   )
 }
 
@@ -526,13 +528,22 @@ export function buildAccountNetworkSettingsView(input: {
   }
 
   const inbox = input.reconciliation.inboxDeclaration
-  for (const relayUrl of [
-    ...(inbox.retainedReadRelayUrls ?? []),
-    ...(inbox.cutoverRecoveryRelayUrls ?? []),
-  ]) {
+  for (const relayUrl of inbox.retainedReadRelayUrls ?? []) {
+    const row = ensureRow(relayUrl)
+    if (row && !row.privateInboxEnabled) {
+      row.retainedReadOnly = true
+      row.candidate = false
+    }
+  }
+  for (const relayUrl of inbox.cutoverRecoveryRelayUrls ?? []) {
     const row = ensureRow(relayUrl)
     if (!row) continue
-    row.recoveryReadOnly = true
+    row.recoveryReadOnly = !row.privateInboxEnabled
+    const recovery = inbox.recovery?.find(
+      (route) => route.relayUrl === relayUrl
+    )
+    row.recoveryPhase = recovery?.phase ?? "awaiting_confirmation"
+    row.recoveryExpiresAt = recovery?.expiresAt
     row.candidate = false
   }
 
@@ -603,71 +614,52 @@ export function buildAccountNetworkSettingsView(input: {
   )
   const owner = input.reconciliation.ownerRelayList
   const pendingExactDeliveries: AccountNetworkPendingExactDeliveryView[] = []
-  if (owner.pendingDistribution) {
-    const targets = new Set(owner.pendingDistribution.publishRelayUrls)
-    const eligibleTargets = [...targets].filter((url) => !excluded.has(url))
-    const exactSources = new Set(
-      owner.pendingDistribution.relayOutcomes.flatMap((outcome) =>
-        outcome.readbackStatus === "observed" ? [outcome.relayUrl] : []
-      )
+  const addPending = (
+    kind: 10002 | 10050,
+    label: "Read and Publish" | "Private inbox",
+    eventId: string,
+    urls: readonly string[],
+    outcomes: readonly import("../db").NetworkPreferenceRelayOutcome[]
+  ) => {
+    const byUrl = new Map(
+      outcomes.map((outcome) => [outcome.relayUrl, outcome])
     )
-    const exactReadbackCount = eligibleTargets.filter((url) =>
-      exactSources.has(url)
-    ).length
-    const unresolvedCount = eligibleTargets.length - exactReadbackCount
-    const excludedTargetCount = targets.size - eligibleTargets.length
+    const summary = summarizeAccountNetworkReadback(
+      urls.map((relayUrl) => ({
+        relayUrl,
+        readbackStatus: byUrl.get(relayUrl)?.readbackStatus ?? "pending",
+      })),
+      [...excluded]
+    )
+    const { confirmed, absentCount, authRequiredCount, ...progress } = summary
     pendingExactDeliveries.push({
-      kind: 10002,
-      label: "Read and Publish",
-      eventId: owner.pendingDistribution.signedEvent.id,
-      confirmationState:
-        eligibleTargets.length === 0 ||
-        (unresolvedCount === 0 && excludedTargetCount > 0)
-          ? "policy_blocked"
-          : unresolvedCount === 0
-            ? "exact_confirmed"
-            : "readback_pending",
-      eligibleTargetCount: eligibleTargets.length,
-      exactReadbackCount,
-      unresolvedCount,
-      excludedTargetCount,
-      retryAvailable: unresolvedCount > 0,
+      kind,
+      label,
+      eventId,
+      ...progress,
+      ...(authRequiredCount > 0 ? { authRequiredCount } : {}),
+      retryAvailable:
+        progress.unresolvedCount > 0 ||
+        (absentCount > 0 && !confirmed && progress.excludedTargetCount === 0),
     })
   }
-  if (
-    inbox.state === "distribution_pending" &&
-    inbox.eventId &&
-    (inbox.pendingPublishRelayUrls?.length ?? 0) > 0
-  ) {
-    const targets = new Set(inbox.pendingPublishRelayUrls ?? [])
-    const eligibleTargets = [...targets].filter((url) => !excluded.has(url))
-    const exactSources = new Set(
-      inbox.pendingRelayOutcomes?.flatMap((outcome) =>
-        outcome.readbackStatus === "observed" ? [outcome.relayUrl] : []
-      ) ?? []
+  if (owner.pendingDistribution) {
+    addPending(
+      10002,
+      "Read and Publish",
+      owner.pendingDistribution.signedEvent.id,
+      owner.pendingDistribution.publishRelayUrls,
+      owner.pendingDistribution.relayOutcomes
     )
-    const exactReadbackCount = eligibleTargets.filter((url) =>
-      exactSources.has(url)
-    ).length
-    const unresolvedCount = eligibleTargets.length - exactReadbackCount
-    const excludedTargetCount = targets.size - eligibleTargets.length
-    pendingExactDeliveries.push({
-      kind: 10050,
-      label: "Private inbox",
-      eventId: inbox.eventId,
-      confirmationState:
-        eligibleTargets.length === 0 ||
-        (unresolvedCount === 0 && excludedTargetCount > 0)
-          ? "policy_blocked"
-          : unresolvedCount === 0
-            ? "exact_confirmed"
-            : "readback_pending",
-      eligibleTargetCount: eligibleTargets.length,
-      exactReadbackCount,
-      unresolvedCount,
-      excludedTargetCount,
-      retryAvailable: unresolvedCount > 0,
-    })
+  }
+  if (inbox.eventId && (inbox.pendingPublishRelayUrls?.length ?? 0) > 0) {
+    addPending(
+      10050,
+      "Private inbox",
+      inbox.eventId,
+      inbox.pendingPublishRelayUrls ?? [],
+      inbox.pendingRelayOutcomes ?? []
+    )
   }
 
   return {
@@ -700,6 +692,7 @@ export function buildAccountNetworkSettingsView(input: {
       : {}),
     relayList: {
       state: owner.state,
+      currentUsable: ownerRelayListEvidenceFacts(owner).currentUsable,
       stale: owner.stale,
       retained: Boolean(owner.current && owner.stale),
       coverage: owner.lookup.coverage,
@@ -709,6 +702,7 @@ export function buildAccountNetworkSettingsView(input: {
     },
     inbox: {
       state: inbox.state,
+      currentUsable: inboxDeclarationEvidenceFacts(inbox).currentUsable,
       stale: inbox.stale,
       retained: Boolean(inbox.eventId && inbox.stale),
       coverage: inbox.observation?.coverage ?? "not_checked",
@@ -760,15 +754,7 @@ function currentActiveInboxUrls(
   reconciliation: AccountNetworkPreferencesReconciliation
 ): string[] {
   const inbox = reconciliation.inboxDeclaration
-  return [
-    ...new Set(
-      inbox.state === "declared"
-        ? inbox.relayUrls
-        : inbox.state === "distribution_pending"
-          ? (inbox.pendingRelayUrls ?? [])
-          : []
-    ),
-  ]
+  return [...new Set(inbox.state === "declared" ? inbox.relayUrls : [])]
 }
 
 function currentRecoveryOnlyInboxUrls(

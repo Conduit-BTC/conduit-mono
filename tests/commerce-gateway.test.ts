@@ -6730,7 +6730,7 @@ describe("commerce gateway", () => {
     const readOnlyRelayUrl = "ws://read-only-owner.example:4848"
     const writeOnlyRelayUrl = "ws://write-only-owner.example:4848"
     const genericReadRelayPlans: string[][] = []
-    const genericReadOwnerSelections: string[][] = []
+    const genericReadOwnerTargetSelections: boolean[] = []
     const genericReadAuthenticatedPubkeys: Array<string | null | undefined> = []
     let productReadRelayPlan: string[] = []
 
@@ -6748,9 +6748,18 @@ describe("commerce gateway", () => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
           genericReadRelayPlans.push(relayUrls)
-          genericReadOwnerSelections.push([
-            ...(options?.ownerSelectedRelayUrls ?? []),
-          ])
+          genericReadOwnerTargetSelections.push(
+            Boolean(
+              options?.relayTargets?.some(
+                (target) =>
+                  target.url === readOnlyRelayUrl &&
+                  target.grants.some(
+                    (grant) =>
+                      grant.kind === "owner_nip65" && grant.operation === "read"
+                  )
+              )
+            )
+          )
           genericReadAuthenticatedPubkeys.push(options?.authenticatedPubkey)
         }
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
@@ -6790,10 +6799,7 @@ describe("commerce gateway", () => {
       [writeOnlyRelayUrl, readOnlyRelayUrl, ...generalAppRelayUrls],
     ])
     expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
-    expect(genericReadOwnerSelections).toEqual([
-      [],
-      [readOnlyRelayUrl, writeOnlyRelayUrl],
-    ])
+    expect(genericReadOwnerTargetSelections).toEqual([false, true])
     expect(genericReadAuthenticatedPubkeys).toEqual([
       MERCHANT_A_PUBKEY,
       MERCHANT_A_PUBKEY,

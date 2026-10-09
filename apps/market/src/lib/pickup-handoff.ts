@@ -42,8 +42,6 @@ export function getOrganizerInboxBlockingMessage(
   switch (resolution.reason) {
     case "not_observed":
       return "Organizer pickup is unavailable because no usable private inbox declaration was found for the event organizer on the relays checked. Retry discovery, or ask the organizer to confirm current kind-10050 inbox relays, before checkout continues."
-    case "distribution_pending":
-      return "Organizer pickup is unavailable while the organizer's private inbox declaration is still being distributed. Retry after relay propagation completes."
     case "signed_empty":
       return "Organizer pickup is unavailable because the organizer's signed private inbox declaration has no relay targets. They must configure inbox relays before checkout can continue."
     case "malformed":

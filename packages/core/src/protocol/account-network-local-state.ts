@@ -1,4 +1,5 @@
 import { liveQuery } from "dexie"
+import { config } from "../config"
 import {
   db,
   type AccountNetworkFrontierReference,
@@ -14,16 +15,21 @@ import {
 } from "./account-network-routing-policy"
 import { EVENT_KINDS } from "./kinds"
 import {
-  getConfiguredIsolatedE2eRelayUrl,
   normalizeOwnerSelectedRelayUrls,
+  normalizeSecureOrIsolatedE2eRelayUrls,
   normalizeRelaySettingsState,
   RELAY_SETTINGS_STORAGE_VERSION,
-  tryNormalizeRelayUrl,
   type RelayScanResult,
   type RelaySettingsState,
 } from "./relay-settings"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { isVerifiedNostrEvent } from "./verified-public-event"
+import {
+  mergeRelayTargets,
+  type RelayGrant,
+  type RelayOperation,
+  type RelayTarget,
+} from "./relay-authority"
 
 export type {
   AccountNetworkFrontierReference,
@@ -141,31 +147,6 @@ function normalizeRelayUrlsStrict(value: unknown, label: string): string[] {
     }
     seen.add(relayUrl)
     normalized.push(relayUrl)
-  }
-  return normalized
-}
-
-function normalizeCandidateRelayUrls(
-  relayUrls: readonly string[],
-  ownerSelectedRelayUrls: readonly string[] = []
-): string[] {
-  const ownerSelected = new Set(
-    normalizeOwnerSelectedRelayUrls(ownerSelectedRelayUrls)
-  )
-  const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
-  const seen = new Set<string>()
-  const normalized: string[] = []
-  for (const relayUrl of relayUrls) {
-    const candidate = tryNormalizeRelayUrl(relayUrl)
-    if (!candidate.ok) continue
-    const accepted = candidate.url
-    const isSecure = accepted.startsWith("wss://")
-    const isIsolatedE2eRelay = accepted === isolatedRelayUrl
-    const isOwnerSelected = ownerSelected.has(accepted)
-    if (!isSecure && !isIsolatedE2eRelay && !isOwnerSelected) continue
-    if (seen.has(accepted)) continue
-    seen.add(accepted)
-    normalized.push(accepted)
   }
   return normalized
 }
@@ -765,97 +746,334 @@ export function replaceAccountNetworkRelayScans(
   })
 }
 
-export async function filterEligibleAccountRelayUrls(input: {
+function configuredGrantRelayUrls(grant: RelayGrant): readonly string[] {
+  if (grant.kind === "discovery") {
+    return grant.registry === "owner_10002"
+      ? [...config.dmDeclarationDiscoveryRelayUrls, ...config.defaultRelays]
+      : config.dmDeclarationDiscoveryRelayUrls
+  }
+  if (grant.kind === "app") {
+    switch (grant.bucket) {
+      case "general_read":
+        return config.appReadRelayUrls
+      case "commerce_read":
+        return config.appCommerceRelayUrls
+      case "general_write":
+        return config.appWriteRelayUrls
+      case "commerce_write":
+        return config.commerceRelayUrls
+      case "recipient_delivery":
+        return config.dmInboxDefaultRelayUrls.length > 0
+          ? config.dmInboxDefaultRelayUrls
+          : config.appReadRelayUrls
+      case "recipient_fallback":
+        return config.commerceDmFallbackRelayUrls
+      case "core_public_write":
+        return config.corePublicFallbackRelayUrls
+      case "commerce_discovery_write":
+        return config.commerceDiscoveryRelayUrls
+      case "search_index":
+        return config.searchIndexRelayUrls
+      case "inbox_read":
+        return config.appRelayDefinitions
+          .filter((definition) => definition.privateInbox)
+          .map((definition) => definition.url)
+      case "author_readback":
+        return [...config.appWriteRelayUrls, ...config.commerceRelayUrls]
+      case "diagnostic_read":
+        return config.appRelayDefinitions.map((definition) => definition.url)
+    }
+  }
+  if (grant.kind === "public_fallback") {
+    switch (grant.bucket) {
+      case "core_public":
+        return config.corePublicFallbackRelayUrls
+      case "commerce_discovery":
+        return config.commerceDiscoveryRelayUrls
+      case "search_index":
+        return config.searchIndexRelayUrls
+      case "zap_public":
+        return config.zapRelayUrls
+      case "default":
+        return config.defaultRelays
+    }
+  }
+  if (grant.kind === "compatibility") {
+    return grant.policy === "order_delivery"
+      ? config.dmCompatibilityOrderRelayUrls
+      : config.commerceDmFallbackRelayUrls
+  }
+  return []
+}
+
+/**
+ * Resolve own signed selection through the existing admitted evidence owners.
+ * This performs no relay I/O. A URL supplied by a caller is never proof.
+ */
+async function currentOwnerGrantSelection(
+  pubkey: string,
+  grant: Extract<
+    RelayGrant,
+    {
+      kind:
+        | "owner_nip65"
+        | "owner_nip17"
+        | "owner_selection"
+        | "recovery"
+        | "retained_inbox"
+    }
+  >,
+  relayUrl: string,
+  repositories?: {
+    owner?: Pick<
+      import("./owner-relay-list-evidence").OwnerRelayListEvidenceRepository,
+      "get"
+    >
+    inbox?: Pick<
+      import("./inbox-declaration-evidence").InboxDeclarationEvidenceRepository,
+      "get"
+    >
+  }
+): Promise<boolean> {
+  if (grant.ownerPubkey.trim().toLowerCase() !== pubkey) return false
+  if (
+    grant.kind === "owner_nip65" ||
+    (grant.kind === "owner_selection" && grant.eventKind === 10002)
+  ) {
+    const { readRetainedOwnerRelayList } =
+      await import("./owner-relay-list-evidence")
+    const retained = await readRetainedOwnerRelayList(pubkey, {
+      durableOnly: true,
+      durableEvidenceRepository: repositories?.owner,
+    })
+    const current = retained?.current
+    if (!current) return false
+    if (
+      grant.kind === "owner_selection" &&
+      current.signedEvent.id !== grant.eventId
+    ) {
+      return false
+    }
+    if (grant.kind === "owner_selection" && current.state !== "declared")
+      return false
+    if (
+      grant.kind === "owner_nip65" &&
+      current.state !== "declared" &&
+      (current.state !== "malformed" ||
+        retained.lastUsable?.state !== "declared")
+    ) {
+      return false
+    }
+    const selection = grant.kind === "owner_nip65" ? grant.selection : "write"
+    const preferences =
+      grant.kind === "owner_nip65" ? retained.preferences : current.preferences
+    return preferences.some(
+      (preference) =>
+        preference.url === relayUrl &&
+        (selection === "read"
+          ? preference.readEnabled
+          : preference.writeEnabled)
+    )
+  }
+  const [
+    { readRetainedInboxDeclarationEvidence },
+    { getActiveInboxCutoverRecoveryRelayUrls },
+  ] = await Promise.all([
+    import("./private-message-routing"),
+    import("./inbox-declaration-evidence"),
+  ])
+  const retained = await readRetainedInboxDeclarationEvidence(pubkey, {
+    durableEvidenceRepository: repositories?.inbox,
+  })
+  if (!retained) return false
+  if (grant.kind === "recovery") {
+    if (
+      grant.replacementEventId &&
+      !retained.cutoverRecoveries?.some(
+        (recovery) =>
+          recovery.replacementEventId === grant.replacementEventId &&
+          recovery.relayUrls.includes(relayUrl) &&
+          !recovery.policyBlockedRelayUrls?.includes(relayUrl) &&
+          (recovery.expiresAt === undefined || Date.now() < recovery.expiresAt)
+      )
+    )
+      return false
+    return getActiveInboxCutoverRecoveryRelayUrls(retained).includes(relayUrl)
+  }
+  if (grant.kind === "retained_inbox") {
+    return retained.lastUsable?.secureRelayUrls.includes(relayUrl) === true
+  }
+  if (retained.current.state !== "declared") return false
+  if (
+    grant.kind === "owner_selection" &&
+    retained.current.signedEvent.id !== grant.eventId
+  )
+    return false
+  return retained.current.secureRelayUrls.includes(relayUrl)
+}
+
+/** Final account contact admission: every URL needs a live, applicable grant. */
+export async function filterEligibleAccountRelayTargets(input: {
   accountPubkey: string
-  /** Active authenticated account. Required to admit owner-selected ws://. */
   authenticatedPubkey?: string | null
-  candidateRelayUrls: readonly string[]
-  /**
-   * Exact candidate subset whose provenance is the authenticated owner's
-   * explicit Network selection. Never populate this from remote relay hints.
-   */
-  ownerSelectedRelayUrls?: readonly string[]
-  /** Exact candidates whose provenance includes Conduit's app-owned layer. */
-  appRelayUrls?: readonly string[]
-  /** Exact candidates whose provenance includes the owner's NIP-65 layer. */
-  personalRelayUrls?: readonly string[]
-  /**
-   * Exact candidates with authority independent from both local source
-   * switches, such as a remote author's signed NIP-65 hint or retained public
-   * event-source provenance.
-   */
-  independentRelayUrls?: readonly string[]
+  targets: readonly RelayTarget[]
+  operation: RelayOperation
   repository?: Pick<AccountNetworkLocalStateRepository, "get">
-  /** Publication needs local error evidence distinct from a policy exclusion. */
+  ownerRelayListEvidenceRepository?: Pick<
+    import("./owner-relay-list-evidence").OwnerRelayListEvidenceRepository,
+    "get"
+  >
+  inboxDeclarationEvidenceRepository?: Pick<
+    import("./inbox-declaration-evidence").InboxDeclarationEvidenceRepository,
+    "get"
+  >
   propagatePolicyReadErrors?: boolean
-}): Promise<string[]> {
+}): Promise<RelayTarget[]> {
   const accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
   if (!accountPubkey) return []
   const authenticatedPubkey = input.authenticatedPubkey
     ? normalizeAccountNetworkPubkey(input.authenticatedPubkey)
     : null
-  const ownerSelectedRelayUrls =
-    authenticatedPubkey === accountPubkey
-      ? input.ownerSelectedRelayUrls
-      : undefined
   const repository = input.repository ?? dexieAccountNetworkLocalStateRepository
-
   try {
-    // This is intentionally a fresh durable read on every admission attempt.
     const stored = await repository.get(accountPubkey)
     const state = stored
       ? normalizeAccountNetworkLocalState(stored, accountPubkey)
       : undefined
-    const routingPolicy =
+    const policy =
       state?.routingPolicy ?? createDefaultAccountNetworkRoutingPolicy()
     const excluded = new Set(
-      state?.exclusions.map((exclusion) => exclusion.relayUrl) ?? []
+      state?.exclusions.map((item) => item.relayUrl) ?? []
     )
-    const candidates = normalizeCandidateRelayUrls(
-      input.candidateRelayUrls,
-      ownerSelectedRelayUrls
-    )
-    if (
-      input.appRelayUrls === undefined &&
-      input.personalRelayUrls === undefined
-    ) {
-      return candidates.filter((relayUrl) => !excluded.has(relayUrl))
-    }
-
-    const appRelayUrls = new Set(
-      normalizeCandidateRelayUrls(input.appRelayUrls ?? [])
-    )
-    const personalRelayUrls = new Set(
-      normalizeCandidateRelayUrls(
-        input.personalRelayUrls ?? [],
-        ownerSelectedRelayUrls
-      )
-    )
-    const independentRelayUrls = new Set(
-      normalizeCandidateRelayUrls(input.independentRelayUrls ?? [])
-    )
-    const appEnabled = isAccountNetworkRoutingSourceEnabled(
-      routingPolicy,
-      "app"
-    )
-    const personalEnabled = isAccountNetworkRoutingSourceEnabled(
-      routingPolicy,
-      "personal"
-    )
-    return candidates.filter((relayUrl) => {
-      if (excluded.has(relayUrl)) return false
-      const isAppRelay = appRelayUrls.has(relayUrl)
-      const isPersonalRelay = personalRelayUrls.has(relayUrl)
-      if (
-        independentRelayUrls.has(relayUrl) ||
-        (!isAppRelay && !isPersonalRelay)
-      ) {
-        return true
+    const result: RelayTarget[] = []
+    for (const target of mergeRelayTargets(input.targets)) {
+      if (excluded.has(target.url)) continue
+      const secure = normalizeSecureOrIsolatedE2eRelayUrls([
+        target.url,
+      ]).includes(target.url)
+      const admitted: RelayGrant[] = []
+      for (const grant of target.grants) {
+        if (grant.operation !== input.operation) continue
+        if (
+          !secure &&
+          ![
+            "owner_nip65",
+            "owner_nip17",
+            "owner_selection",
+            "recovery",
+            "retained_inbox",
+          ].includes(grant.kind)
+        )
+          continue
+        if (grant.kind === "app" || grant.kind === "public_fallback") {
+          const bucketOperation =
+            grant.kind === "public_fallback"
+              ? "read"
+              : grant.bucket === "general_write" ||
+                  grant.bucket === "commerce_write" ||
+                  grant.bucket === "recipient_delivery" ||
+                  grant.bucket === "recipient_fallback" ||
+                  grant.bucket === "core_public_write" ||
+                  grant.bucket === "commerce_discovery_write"
+                ? "write"
+                : "read"
+          if (
+            grant.operation === bucketOperation &&
+            isAccountNetworkRoutingSourceEnabled(policy, "app") &&
+            configuredGrantRelayUrls(grant).includes(target.url)
+          )
+            admitted.push(grant)
+          continue
+        }
+        if (grant.kind === "discovery") {
+          if (configuredGrantRelayUrls(grant).includes(target.url))
+            admitted.push(grant)
+          continue
+        }
+        if (grant.kind === "compatibility") {
+          if (
+            configuredGrantRelayUrls(grant).includes(target.url) &&
+            (grant.operation === "read" ||
+              (config.dmCompatibilityOrderRoutingEnabled &&
+                isAccountNetworkRoutingSourceEnabled(policy, "app")))
+          ) {
+            admitted.push(grant)
+          }
+          continue
+        }
+        if (
+          grant.kind === "owner_nip65" ||
+          grant.kind === "owner_nip17" ||
+          grant.kind === "owner_selection" ||
+          grant.kind === "recovery" ||
+          grant.kind === "retained_inbox"
+        ) {
+          if (
+            authenticatedPubkey === accountPubkey &&
+            (grant.kind !== "owner_nip65" ||
+              isAccountNetworkRoutingSourceEnabled(policy, "personal"))
+          ) {
+            try {
+              if (
+                await currentOwnerGrantSelection(
+                  accountPubkey,
+                  grant,
+                  target.url,
+                  {
+                    owner: input.ownerRelayListEvidenceRepository,
+                    inbox: input.inboxDeclarationEvidenceRepository,
+                  }
+                )
+              )
+                admitted.push(grant)
+            } catch {
+              // An unavailable signed-evidence store denies this owner grant,
+              // without vetoing an independent grant on the same target.
+            }
+          }
+          continue
+        }
+        if (
+          secure &&
+          grant.kind === "recipient_nip17" &&
+          /^[0-9a-f]{64}$/.test(grant.recipientPubkey.trim().toLowerCase())
+        ) {
+          try {
+            const { readRetainedInboxDeclaration } =
+              await import("./private-message-routing")
+            const declaration = await readRetainedInboxDeclaration(
+              grant.recipientPubkey,
+              {
+                durableEvidenceRepository:
+                  input.inboxDeclarationEvidenceRepository,
+              }
+            )
+            if (
+              declaration?.state === "declared" &&
+              declaration.relayUrls.includes(target.url) &&
+              (!grant.eventId || grant.eventId === declaration.eventId)
+            ) {
+              admitted.push(grant)
+            }
+          } catch {
+            // Inconclusive recipient evidence denies only this declaration grant.
+          }
+          continue
+        }
+        if (
+          secure &&
+          (grant.kind === "remote_nip65" ||
+            grant.kind === "public_hint" ||
+            grant.kind === "source_delivery")
+        ) {
+          admitted.push(grant)
+        }
       }
-      return (isAppRelay && appEnabled) || (isPersonalRelay && personalEnabled)
-    })
+      if (admitted.length > 0)
+        result.push({ url: target.url, grants: admitted })
+    }
+    return result
   } catch (error) {
-    // Durable local policy is the authority for whole-relay contact cutoffs.
     if (input.propagatePolicyReadErrors) throw error
     return []
   }
