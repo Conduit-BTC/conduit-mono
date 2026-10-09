@@ -7,6 +7,7 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import { db } from "../packages/core/src/db"
+import { config } from "../packages/core/src/config"
 import { buildProductListingEventDraft } from "../packages/core/src/protocol/products"
 import {
   commitLocalProductWrite,
@@ -28,12 +29,17 @@ import {
 const secret = generateSecretKey()
 const merchant = getPublicKey(secret)
 const createdAt = 1_800_000_000
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 const address = (dTag: string) => `30402:${merchant}:${dTag}`
-const target = (name: string) => ({
-  relayUrl: `wss://${name}.example`,
-  ownerSelected: false,
-  personalRelay: true,
-})
+const target = (name: string) => {
+  const relayUrl = `wss://${name}.example`
+  // Register the injected route as current App authority without changing its
+  // retained personal-layer provenance or bypassing shared admission.
+  config.commerceRelayUrls = [
+    ...new Set([...config.commerceRelayUrls, relayUrl]),
+  ]
+  return { relayUrl, ownerSelected: false, personalRelay: true }
+}
 
 it("accepts an ordinary edit after exact legacy recovery without ancestral relay coverage", async () => {
   const first = product("recovered", createdAt)
@@ -208,7 +214,10 @@ beforeEach(() => {
     else Reflect.deleteProperty(globalThis, "navigator")
   }
 })
-afterEach(() => restore?.())
+afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
+  restore?.()
+})
 
 it("keeps an ordinary newer listing authoritative after an older in-flight ACK", async () => {
   const first = product("late-ack", createdAt)

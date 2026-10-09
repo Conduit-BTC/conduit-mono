@@ -27,6 +27,12 @@ import {
   recordCheckoutSparkSettledCredit,
 } from "../packages/core/src/protocol/checkout-spark-settled-router"
 import { getNdk } from "../packages/core/src/protocol/ndk"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import {
+  __resetRelayPublishTestOverrides,
+  __setRelayPublishTestOverrides,
+} from "../packages/core/src/protocol/relay-publish"
+import { admitFixture } from "./helpers/public-event"
 import {
   makeSignedBolt11Fixture,
   bolt11PaymentSecretField,
@@ -45,6 +51,34 @@ const INBOX = "wss://merchant.inbox.relay.dev"
 const OTHER_INBOX = "wss://merchant.backup.relay.dev"
 const ROGUE = "wss://unplanned.relay.dev"
 const networkState = { get: async () => undefined }
+const fixtureInboxRepository =
+  createInMemoryInboxDeclarationEvidenceRepository()
+const fixtureInboxReady = admitFixture(
+  finalizeEvent(
+    {
+      kind: 10050,
+      created_at: CREATED_AT / 1_000,
+      content: "",
+      tags: [
+        ["relay", INBOX],
+        ["relay", OTHER_INBOX],
+      ],
+    },
+    MERCHANT_SECRET
+  )
+).then((signedEvent) =>
+  fixtureInboxRepository.merge({
+    pubkey: MERCHANT,
+    signedEvent,
+    observedAt: CREATED_AT,
+  })
+)
+const fixtureInboxEvidence = {
+  get: async (pubkey: Parameters<typeof fixtureInboxRepository.get>[0]) => {
+    await fixtureInboxReady
+    return fixtureInboxRepository.get(pubkey)
+  },
+}
 
 function signer(pubkey = MERCHANT): NostrKeySigner {
   return {
@@ -235,6 +269,96 @@ function memoryStore(
 }
 
 describe("Merchant Spark progress exact ciphertext delivery", () => {
+  for (const { revokeBeforeSend, resolveRetained } of [
+    { revokeBeforeSend: false, resolveRetained: false },
+    { revokeBeforeSend: true, resolveRetained: false },
+    { revokeBeforeSend: false, resolveRetained: true },
+  ]) {
+    it(`uses live owner NIP-17 admission for a stored self-wrap${revokeBeforeSend ? " and retains it when revoked before send" : resolveRetained ? " resolved from genuine durable evidence" : " without widening its target scope"}`, async () => {
+      const evidence = createInMemoryInboxDeclarationEvidenceRepository()
+      const retainDeclaration = async (relayUrls: string[], revision: number) =>
+        evidence.merge({
+          pubkey: MERCHANT,
+          signedEvent: await admitFixture(
+            finalizeEvent(
+              {
+                kind: 10050,
+                created_at: CREATED_AT / 1_000 + revision,
+                content: "",
+                tags: relayUrls.map((url) => ["relay", url]),
+              },
+              MERCHANT_SECRET
+            )
+          ),
+          observedAt: CREATED_AT,
+          completeObservedAt: CREATED_AT,
+        })
+      await retainDeclaration(
+        resolveRetained ? [INBOX] : [INBOX, OTHER_INBOX],
+        0
+      )
+      const expected = payload()
+      const record = parseMerchantCheckoutSparkProgressDeliveryRecord({
+        schemaVersion: 1,
+        merchantPubkey: MERCHANT,
+        checkoutId: expected.state.plan.checkoutId,
+        planDigest: expected.state.plan.planDigest,
+        snapshotId: expected.snapshotId,
+        initialHandoffId: expected.initialHandoffId,
+        rumorId: "f".repeat(64),
+        signedRecipientWrap: signedWrap(MERCHANT).rawEvent(),
+        recordedAt: expected.recordedAt,
+      })
+      const store = memoryStore()
+      await store.stage(record, () => {})
+      let wireAdmissions = 0
+      const writes: string[] = []
+      __setRelayPublishTestOverrides({
+        inboxDeclarationEvidenceRepository: evidence,
+        publishSignedEventFrameToRelay: async (input) => {
+          wireAdmissions += 1
+          expect(input.relayUrl).toBe(INBOX)
+          expect(
+            JSON.stringify(input.signedEvent) ===
+              JSON.stringify(record.signedRecipientWrap)
+          ).toBe(true)
+          if (revokeBeforeSend) await retainDeclaration([], 1)
+          expect(input.beforeSend).toBeDefined()
+          const admitted = await input.beforeSend!()
+          expect(admitted).toBe(!revokeBeforeSend)
+          if (!admitted) return "policy_blocked"
+          writes.push(input.relayUrl)
+          return "acked"
+        },
+      })
+      try {
+        const result = await retryMerchantCheckoutSparkProgress({
+          record,
+          signer: signer(),
+          store,
+          shouldContinue: () => true,
+          transport: {
+            accountNetworkLocalStateRepository: networkState,
+            inboxDeclarationEvidenceRepository: evidence,
+            recipientInboxRelays: resolveRetained ? undefined : [INBOX, ROGUE],
+          },
+        })
+        expect(wireAdmissions).toBe(1)
+        expect(writes).toEqual(revokeBeforeSend ? [] : [INBOX])
+        expect(result.relayAccepted).toBe(!revokeBeforeSend)
+        expect(
+          JSON.stringify(store.entries.get(record.snapshotId)?.record) ===
+            JSON.stringify(record)
+        ).toBe(true)
+        expect(store.entries.get(record.snapshotId)?.relayAccepted).toBe(
+          !revokeBeforeSend
+        )
+      } finally {
+        __resetRelayPublishTestOverrides()
+      }
+    })
+  }
+
   it("stages the one signed self-addressed wrap before the first relay write", async () => {
     const calls: string[] = []
     const store = memoryStore(calls)
@@ -246,6 +370,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
       shouldContinue: () => true,
       transport: {
         accountNetworkLocalStateRepository: networkState,
+        inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
         recipientInboxRelays: [INBOX],
         giftWrapFn: (async (_rumor, recipient) => {
           calls.push("wrap")
@@ -284,6 +409,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
     let firstWrapId = ""
     const transport = {
       accountNetworkLocalStateRepository: networkState,
+      inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
       recipientInboxRelays: [INBOX],
       giftWrapFn: (async (_rumor: NDKEvent, recipient: NDKUser) => {
         wraps += 1
@@ -337,6 +463,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
     let writes = 0
     const transport = {
       accountNetworkLocalStateRepository: networkState,
+      inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
       recipientInboxRelays: [INBOX],
       giftWrapFn: (async (_rumor: NDKEvent, recipient: NDKUser) => {
         wraps += 1
@@ -398,6 +525,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
       shouldContinue: () => true,
       transport: {
         accountNetworkLocalStateRepository: networkState,
+        inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
         recipientInboxRelays: [INBOX],
         giftWrapFn: (async () => {
           throw new Error("must not wrap")
@@ -453,6 +581,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
       shouldContinue: () => current,
       transport: {
         accountNetworkLocalStateRepository: networkState,
+        inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
         resolveInboxRelays: async () => {
           relayStarted.resolve()
           return relayGate.promise
@@ -478,6 +607,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
     let writes = 0
     const transport = {
       accountNetworkLocalStateRepository: networkState,
+      inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
       recipientInboxRelays: [INBOX],
       giftWrapFn: (async (_rumor: NDKEvent, recipient: NDKUser) => {
         wraps += 1
@@ -549,6 +679,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
           shouldContinue: () => true,
           transport: {
             accountNetworkLocalStateRepository: networkState,
+            inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
             recipientInboxRelays: [INBOX],
             giftWrapFn: (async (_rumor, recipient) =>
               signedWrap(recipient.pubkey)) as never,
@@ -573,6 +704,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
     let writes = 0
     const transport = {
       accountNetworkLocalStateRepository: networkState,
+      inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
       recipientInboxRelays: [INBOX],
       giftWrapFn: (async (_rumor: NDKEvent, recipient: NDKUser) => {
         wraps += 1
@@ -663,6 +795,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
       shouldContinue: () => true,
       transport: {
         accountNetworkLocalStateRepository: networkState,
+        inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
         recipientInboxRelays: [INBOX, OTHER_INBOX],
         giftWrapFn: (async (_rumor, recipient) =>
           signedWrap(recipient.pubkey)) as never,
@@ -680,6 +813,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
       shouldContinue: () => true,
       transport: {
         accountNetworkLocalStateRepository: networkState,
+        inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
         recipientInboxRelays: [INBOX, OTHER_INBOX],
         publishFn: (async () => {
           writes += 1
@@ -725,6 +859,7 @@ describe("Merchant Spark progress exact ciphertext delivery", () => {
           shouldContinue: () => true,
           transport: {
             accountNetworkLocalStateRepository: networkState,
+            inboxDeclarationEvidenceRepository: fixtureInboxEvidence,
             recipientInboxRelays: [INBOX],
             publishFn: (async () => {
               writes += 1

@@ -1,6 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
+  createInMemoryInboxDeclarationEvidenceRepository,
+  mergeInboxDeclarationEvidence,
+  type InboxDeclarationEvidenceRepository,
+  type MergeInboxDeclarationEvidenceInput,
+} from "../packages/core/src/protocol/inbox-declaration-evidence"
+import { EVENT_KINDS } from "../packages/core/src/protocol/kinds"
+import {
+  mergeInboxDeclarationEvidenceInMemory,
+  readRetainedInboxDeclaration,
+  sharedInboxDiscoveryRelayUrls,
+} from "../packages/core/src/protocol/private-message-routing"
+import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
@@ -35,6 +47,7 @@ import {
   __setRelayPublishTestOverrides,
 } from "../packages/core/src/protocol/relay-publish"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
+import { admitFixture } from "./helpers/public-event"
 import {
   createMerchantInvoiceModule,
   type MerchantInvoiceDependencies,
@@ -44,6 +57,7 @@ import {
 const RECIPIENT_RELAY = "wss://recipient.inbox.conduit.market"
 const SELF_RELAY = "wss://sender.inbox.conduit.market"
 const fixtures: Array<{ database: ConduitDB; signer: SessionSigner }> = []
+const declarationUpdatedAt = new Map<string, number>()
 
 function keySigner(secret: Uint8Array): NostrKeySigner {
   const pubkey = getPublicKey(secret)
@@ -60,7 +74,37 @@ function keySigner(secret: Uint8Array): NostrKeySigner {
   }
 }
 
-function setup(
+async function signedInboxEvidenceRepository(
+  declarations: readonly { secret: Uint8Array; relays: readonly string[] }[]
+): Promise<InboxDeclarationEvidenceRepository> {
+  const repository = createInMemoryInboxDeclarationEvidenceRepository()
+  const discoveryRelay = sharedInboxDiscoveryRelayUrls()[0]!
+  for (const { secret, relays } of declarations) {
+    const signedEvent = await admitFixture(
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+          created_at: 1_700_000_000,
+          tags: relays.map((relay) => ["relay", relay]),
+          content: "",
+        },
+        secret
+      )
+    )
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: getPublicKey(secret),
+        signedEvent,
+        sourceRelayUrls: [discoveryRelay],
+        sharedSourceRelayUrls: [discoveryRelay],
+      },
+      repository
+    )
+  }
+  return repository
+}
+
+async function setup(
   options: {
     selfEncrypt?: (plaintext: string) => Promise<string>
     selfSign?: () => Promise<void>
@@ -116,15 +160,23 @@ function setup(
   )
   const accountNetworkLocalStateRepository =
     createInMemoryAccountNetworkLocalStateRepository()
+  const inboxDeclarationEvidenceRepository =
+    await signedInboxEvidenceRepository([
+      { secret: senderSecret, relays: [SELF_RELAY] },
+      { secret: recipientSecret, relays: [RECIPIENT_RELAY] },
+    ])
   fixtures.push({ database, signer })
   return {
     sender,
     recipient,
+    senderSecret,
+    recipientSecret,
     signer,
     recipientSigner: keySigner(recipientSecret),
     store,
     database,
     accountNetworkLocalStateRepository,
+    inboxDeclarationEvidenceRepository,
     signCalls: () => signCalls,
   }
 }
@@ -169,17 +221,26 @@ function sendInput(
     authenticatedPubkey: fixture.sender,
     accountNetworkLocalStateRepository:
       fixture.accountNetworkLocalStateRepository,
+    inboxDeclarationEvidenceRepository:
+      fixture.inboxDeclarationEvidenceRepository,
     signer: fixture.signer,
     rumorKind: kind,
     recipientInboxRelays: [RECIPIENT_RELAY],
     senderInboxRelays: [SELF_RELAY],
-    inspectOwnInboxReadiness: async () => ({
-      state: "ready",
-      eventId: "a".repeat(64),
-      relayUrls: [SELF_RELAY],
-      stale: false,
-      distributionRepairable: false,
-    }),
+    inspectOwnInboxReadiness: async (pubkey) => {
+      const declaration = await readRetainedInboxDeclaration(pubkey, {
+        durableEvidenceRepository: fixture.inboxDeclarationEvidenceRepository,
+      })
+      if (declaration?.state !== "declared")
+        return { state: "lookup_unavailable" }
+      return {
+        state: "ready",
+        eventId: declaration.eventId,
+        relayUrls: declaration.relayUrls,
+        stale: false,
+        distributionRepairable: false,
+      }
+    },
     deliveryStore: fixture.store,
   }
 }
@@ -199,6 +260,103 @@ async function stageFailedRecipientWrap(fixture: ReturnType<typeof setup>) {
   return { id, wrap: job.legs[0]!.event }
 }
 
+type DeliveryFixture = Awaited<ReturnType<typeof setup>>
+
+async function prepareInboxDeclaration(
+  secret: Uint8Array,
+  relayUrls: readonly string[]
+): Promise<MergeInboxDeclarationEvidenceInput> {
+  const pubkey = getPublicKey(secret)
+  const createdAt = Math.max(
+    Math.floor(Date.now() / 1000),
+    (declarationUpdatedAt.get(pubkey) ?? 1_700_000_000) + 1
+  )
+  declarationUpdatedAt.set(pubkey, createdAt)
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: createdAt,
+        tags: relayUrls.map((relay) => ["relay", relay]),
+        content: "",
+      },
+      secret
+    )
+  )
+  const discoveryRelay = sharedInboxDiscoveryRelayUrls()[0]!
+  return {
+    pubkey,
+    signedEvent,
+    sourceRelayUrls: [discoveryRelay],
+    sharedSourceRelayUrls: [discoveryRelay],
+  }
+}
+
+async function applyInboxDeclaration(
+  fixture: DeliveryFixture,
+  evidence: MergeInboxDeclarationEvidenceInput
+): Promise<void> {
+  mergeInboxDeclarationEvidenceInMemory(evidence)
+  await mergeInboxDeclarationEvidence(
+    evidence,
+    fixture.inboxDeclarationEvidenceRepository
+  )
+}
+
+async function updateInboxDeclaration(
+  fixture: DeliveryFixture,
+  secret: Uint8Array,
+  relayUrls: readonly string[]
+): Promise<void> {
+  await applyInboxDeclaration(
+    fixture,
+    await prepareInboxDeclaration(secret, relayUrls)
+  )
+}
+
+function resolveFixtureDeclaration(fixture: DeliveryFixture) {
+  return async (pubkey: string) => {
+    const declaration = await readRetainedInboxDeclaration(pubkey, {
+      durableEvidenceRepository: fixture.inboxDeclarationEvidenceRepository,
+    })
+    return (
+      declaration ?? {
+        pubkey,
+        state: "not_observed" as const,
+        relayUrls: [],
+        stale: false,
+        fetchedAt: Date.now(),
+      }
+    )
+  }
+}
+
+function retryForFixture(
+  fixture: DeliveryFixture,
+  ...args: Parameters<typeof retryPrivateDeliveries>
+) {
+  const [
+    principal,
+    publisher,
+    onlyId,
+    suppliedStore,
+    resolveDeclaration,
+    options,
+  ] = args
+  return retryPrivateDeliveries(
+    principal,
+    publisher,
+    onlyId,
+    suppliedStore,
+    resolveDeclaration ?? resolveFixtureDeclaration(fixture),
+    {
+      ...options,
+      inboxDeclarationEvidenceRepository:
+        fixture.inboxDeclarationEvidenceRepository,
+    }
+  )
+}
+
 function acknowledged(relay: string) {
   return {
     successfulRelayUrls: [relay],
@@ -211,7 +369,7 @@ function acknowledged(relay: string) {
 
 describe("private delivery composed contract", () => {
   it("prevents staging and relay I/O when the caller attempt fence fails", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const input = sendInput(fixture, 16)
     input.selfCopy = false
     let publications = 0
@@ -230,7 +388,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("fences accepted saved-send recovery without wrapping or publishing again", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const input = sendInput(fixture, 16)
     input.selfCopy = false
     let publications = 0
@@ -260,7 +418,13 @@ describe("private delivery composed contract", () => {
     "keeps an invoice retryable after actual pre-stage %s failure",
     async (failure) => {
       let failing = true
-      const fixture = setup()
+      const fixture = await setup()
+      // Verify the fixture outside Bun's expected-rejection await; apply the
+      // exact signed-empty evidence only at the original publish boundary.
+      const readinessDeclaration =
+        failure === "readiness"
+          ? await prepareInboxDeclaration(fixture.recipientSecret, [])
+          : null
       const scope = {
         merchantPubkey: fixture.sender,
         buyerPubkey: fixture.recipient,
@@ -311,8 +475,10 @@ describe("private delivery composed contract", () => {
           })
           input.onRecipientDeliveryStarting =
             invoiceInput.onRecipientDeliveryStarting
-          if (failing && failure === "readiness")
+          if (failing && readinessDeclaration) {
+            await applyInboxDeclaration(fixture, readinessDeclaration)
             input.recipientInboxRelays = []
+          }
           if (failing && failure === "session")
             input.shouldContinue = () => false
           input.giftWrapFn = async (...args) => {
@@ -370,6 +536,9 @@ describe("private delivery composed contract", () => {
       const reloaded = createMerchantInvoiceModule(dependencies)
       expect(await reloaded.getStatus(scope)).toEqual({ state: "pending" })
       failing = false
+      await updateInboxDeclaration(fixture, fixture.recipientSecret, [
+        RECIPIENT_RELAY,
+      ])
       await reloaded.retryDelivery(scope)
       expect(invoiceCreations).toBe(1)
       expect(publications).toBe(1)
@@ -378,7 +547,7 @@ describe("private delivery composed contract", () => {
   )
   for (const kind of [16, 14, 15] as const) {
     it(`preserves recipient success for kind ${kind} when optional self delivery fails`, async () => {
-      const fixture = setup()
+      const fixture = await setup()
       const published: Array<{ id: string; targets: readonly string[] }> = []
       const input = sendInput(fixture, kind)
       if (kind === 15) {
@@ -435,7 +604,7 @@ describe("private delivery composed contract", () => {
     for (const failure of ["refusal", "provider_loss", "timeout"] as const) {
       it(`keeps kind ${kind} recipient ACK before optional self-wrap ${failure}`, async () => {
         let recipientAccepted = false
-        const fixture = setup({
+        const fixture = await setup({
           selfEncrypt: async () => {
             expect(recipientAccepted).toBe(true)
             if (failure === "timeout")
@@ -485,7 +654,8 @@ describe("private delivery composed contract", () => {
     }
   }
   it("keeps recipient acceptance when the optional sender route is unavailable", async () => {
-    const fixture = setup()
+    const fixture = await setup()
+    await updateInboxDeclaration(fixture, fixture.senderSecret, [])
     const published: string[] = []
     const result = await publishPrivateMessage({
       ...sendInput(fixture, 16),
@@ -503,7 +673,7 @@ describe("private delivery composed contract", () => {
 
   for (const kind of [16, 14, 15] as const) {
     it(`does not stage kind ${kind} when the caller rejects wrapped persistence`, async () => {
-      const fixture = setup()
+      const fixture = await setup()
       let publishes = 0
       await expect(
         publishPrivateMessage({
@@ -519,7 +689,8 @@ describe("private delivery composed contract", () => {
       ).rejects.toThrow("local persistence failed")
       expect(publishes).toBe(0)
       expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
-      await retryPrivateDeliveries(
+      await retryForFixture(
+        fixture,
         fixture.sender,
         (async () => {
           publishes++
@@ -532,7 +703,7 @@ describe("private delivery composed contract", () => {
     })
   }
   it("retries the persisted signed wrap on original targets after transport failure", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     let persistedWrapId = ""
     let failedWrap = ""
     const input = sendInput(fixture, 14)
@@ -561,7 +732,8 @@ describe("private delivery composed contract", () => {
     expect(job.legs[0]?.relayUrls).toEqual([RECIPIENT_RELAY])
     const signCallsBeforeRetry = fixture.signCalls()
     let retryCount = 0
-    await retryPrivateDeliveries(
+    await retryForFixture(
+      fixture,
       fixture.sender,
       (async () => {
         retryCount++
@@ -581,7 +753,8 @@ describe("private delivery composed contract", () => {
     expect(
       (await fixture.database.commerceInboxDeliveries.get(rows[0]!.id))?.state
     ).toBe("failed")
-    await retryPrivateDeliveries(
+    await retryForFixture(
+      fixture,
       fixture.sender,
       (async (event, options) => {
         retryCount++
@@ -607,7 +780,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("passes foreground NIP-42 capability for the exact saved wrap after visibility", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const { id, wrap } = await stageFailedRecipientWrap(fixture)
     const signsBeforeRetry = fixture.signCalls()
     let visibilityEntered!: () => void
@@ -619,7 +792,8 @@ describe("private delivery composed contract", () => {
       resumeVisibility = resolve
     })
     let publishes = 0
-    const retry = retryPrivateDeliveries(
+    const retry = retryForFixture(
+      fixture,
       fixture.sender,
       (async (event, options) => {
         publishes++
@@ -678,7 +852,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("answers a relay NIP-42 challenge on foreground retry of the saved wrap", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const { id, wrap } = await stageFailedRecipientWrap(fixture)
     __setRelayPublishTestOverrides({
       accountNetworkLocalStateRepository:
@@ -750,7 +924,8 @@ describe("private delivery composed contract", () => {
       value: ChallengingSocket,
     })
     try {
-      const attempts = await retryPrivateDeliveries(
+      const attempts = await retryForFixture(
+        fixture,
         fixture.sender,
         undefined,
         id,
@@ -798,7 +973,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("rejects mismatched foreground methods before replay and background retry stays prompt-free", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const { id, wrap } = await stageFailedRecipientWrap(fixture)
     const signsBeforeRetry = fixture.signCalls()
     let publishes = 0
@@ -816,7 +991,8 @@ describe("private delivery composed contract", () => {
       fetchedAt: Date.now(),
     })
     await expect(
-      retryPrivateDeliveries(
+      retryForFixture(
+        fixture,
         fixture.sender,
         publisher,
         id,
@@ -831,7 +1007,8 @@ describe("private delivery composed contract", () => {
       )
     ).rejects.toThrow(/active account signer/)
     expect(publishes).toBe(0)
-    await retryPrivateDeliveries(
+    await retryForFixture(
+      fixture,
       fixture.sender,
       publisher,
       id,
@@ -843,12 +1020,13 @@ describe("private delivery composed contract", () => {
   })
 
   it("drops foreground AUTH when the account session revokes during visibility", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const { id } = await stageFailedRecipientWrap(fixture)
     const signsBeforeRetry = fixture.signCalls()
     let publishes = 0
     await expect(
-      retryPrivateDeliveries(
+      retryForFixture(
+        fixture,
         fixture.sender,
         (async (_event, options) => {
           publishes++
@@ -881,11 +1059,16 @@ describe("private delivery composed contract", () => {
 
   for (const kind of [16, 14, 15] as const) {
     it(`retries kind ${kind} only on the unacknowledged overlap after relay rotation`, async () => {
-      const fixture = setup()
+      const fixture = await setup()
       const removed = "wss://removed.inbox.conduit.market"
       const alreadyAccepted = "wss://accepted.inbox.conduit.market"
       const newlyAdded = "wss://added.inbox.conduit.market"
       const savedTargets = [removed, RECIPIENT_RELAY, alreadyAccepted]
+      await updateInboxDeclaration(
+        fixture,
+        fixture.recipientSecret,
+        savedTargets
+      )
       const input = sendInput(fixture, kind)
       input.selfCopy = false
       input.recipientInboxRelays = savedTargets
@@ -899,7 +1082,13 @@ describe("private delivery composed contract", () => {
       const signs = fixture.signCalls()
       const id = `delivery:${input.rumor.id}`
       const targets: string[] = []
-      await retryPrivateDeliveries(
+      await updateInboxDeclaration(fixture, fixture.recipientSecret, [
+        RECIPIENT_RELAY,
+        alreadyAccepted,
+        newlyAdded,
+      ])
+      await retryForFixture(
+        fixture,
         fixture.sender,
         (async (event, options) => {
           expect(JSON.stringify(event)).toBe(signedBytes)
@@ -908,13 +1097,7 @@ describe("private delivery composed contract", () => {
         }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
         id,
         fixture.store,
-        async () => ({
-          pubkey: fixture.recipient,
-          state: "declared",
-          relayUrls: [RECIPIENT_RELAY, alreadyAccepted, newlyAdded],
-          stale: false,
-          fetchedAt: Date.now(),
-        })
+        resolveFixtureDeclaration(fixture)
       )
       expect(targets).toEqual([RECIPIENT_RELAY])
       expect(fixture.signCalls()).toBe(signs)
@@ -932,7 +1115,7 @@ describe("private delivery composed contract", () => {
   }
 
   it("explicit domain replay republishes accepted exact wraps while resume skips them", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const input = sendInput(fixture, 14)
     input.publishFn = (async (_event, options) =>
       acknowledged(options.exclusiveRelayUrls![0]!)) as NonNullable<
@@ -949,7 +1132,8 @@ describe("private delivery composed contract", () => {
       ])
       return acknowledged(self ? SELF_RELAY : RECIPIENT_RELAY)
     }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
-    await retryPrivateDeliveries(
+    await retryForFixture(
+      fixture,
       fixture.sender,
       publisher,
       undefined,
@@ -962,6 +1146,8 @@ describe("private delivery composed contract", () => {
       recipientPubkey: fixture.recipient,
       accountPubkey: fixture.sender,
       authenticatedPubkey: fixture.sender,
+      inboxDeclarationEvidenceRepository:
+        fixture.inboxDeclarationEvidenceRepository,
       wrappedToRecipient: published.wrappedToRecipient,
       wrappedToSelf: published.wrappedToSelf!,
       deliveryStore: fixture.store,
@@ -1000,7 +1186,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("uses the conversation adapter for an ordinary reply and kind-15 file", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const seenKinds: number[] = []
     const send = async (input: PublishPrivateMessageInput) => {
       const result = await publishPrivateMessage({
@@ -1008,6 +1194,8 @@ describe("private delivery composed contract", () => {
         deliveryStore: fixture.store,
         accountNetworkLocalStateRepository:
           fixture.accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository:
+          fixture.inboxDeclarationEvidenceRepository,
         recipientInboxRelays: [RECIPIENT_RELAY],
         senderInboxRelays: [SELF_RELAY],
         inspectOwnInboxReadiness: sendInput(fixture, 14)
@@ -1062,7 +1250,7 @@ describe("private delivery composed contract", () => {
   for (const kind of [14, 15] as const) {
     for (const failure of ["self_wrap", "self_sign", "self_publish"] as const) {
       it(`retains an accepted kind ${kind} sender projection after ${failure} failure`, async () => {
-        const fixture = setup(
+        const fixture = await setup(
           failure === "self_sign"
             ? {
                 selfSign: async () => {
@@ -1107,6 +1295,8 @@ describe("private delivery composed contract", () => {
                 deliveryStore: fixture.store,
                 accountNetworkLocalStateRepository:
                   fixture.accountNetworkLocalStateRepository,
+                inboxDeclarationEvidenceRepository:
+                  fixture.inboxDeclarationEvidenceRepository,
                 recipientInboxRelays: [RECIPIENT_RELAY],
                 senderInboxRelays: [SELF_RELAY],
                 inspectOwnInboxReadiness: sendInput(fixture, kind)
@@ -1184,7 +1374,7 @@ describe("private delivery composed contract", () => {
     }
 
     it(`reports unavailable local history after an accepted kind ${kind} send`, async () => {
-      const fixture = setup()
+      const fixture = await setup()
       const wire =
         kind === 15
           ? buildPrivateFileRumor({
@@ -1215,6 +1405,8 @@ describe("private delivery composed contract", () => {
               deliveryStore: fixture.store,
               accountNetworkLocalStateRepository:
                 fixture.accountNetworkLocalStateRepository,
+              inboxDeclarationEvidenceRepository:
+                fixture.inboxDeclarationEvidenceRepository,
               recipientInboxRelays: [RECIPIENT_RELAY],
               senderInboxRelays: [SELF_RELAY],
               inspectOwnInboxReadiness: sendInput(fixture, kind)
@@ -1249,7 +1441,7 @@ describe("private delivery composed contract", () => {
 
   for (const kind of [14, 15] as const) {
     it(`keeps an accepted kind ${kind} send when the ACK checkpoint write fails`, async () => {
-      const fixture = setup()
+      const fixture = await setup()
       const wire =
         kind === 15
           ? buildPrivateFileRumor({
@@ -1283,6 +1475,8 @@ describe("private delivery composed contract", () => {
               deliveryStore: fixture.store,
               accountNetworkLocalStateRepository:
                 fixture.accountNetworkLocalStateRepository,
+              inboxDeclarationEvidenceRepository:
+                fixture.inboxDeclarationEvidenceRepository,
               recipientInboxRelays: [RECIPIENT_RELAY],
               senderInboxRelays: [SELF_RELAY],
               inspectOwnInboxReadiness: sendInput(fixture, kind)
@@ -1322,7 +1516,7 @@ describe("private delivery composed contract", () => {
   }
 
   it("preserves accepted order updates when the delivery checkpoint write fails", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
       if ("state" in changes && changes.state === "accepted")
         throw new Error("simulated order ACK checkpoint failure")
@@ -1349,7 +1543,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("reports a failed post-ACK callback without revoking recipient acceptance", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const result = await publishPrivateMessage({
       ...sendInput(fixture, 14),
       onRecipientAccepted: async () => {
@@ -1371,7 +1565,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("keeps a zero-ACK conversation send rejected when checkpoint storage fails", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
       if (changes.state === "failed")
         throw new Error("simulated checkpoint write failure")
@@ -1390,7 +1584,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("keeps order checkpoint persistence mandatory without an accepted-result owner", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     fixture.database.commerceInboxDeliveries.hook("updating", (changes) => {
       if (changes.state === "accepted")
         throw new Error("simulated ACK checkpoint write failure")
@@ -1406,7 +1600,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("keeps recipient acceptance when the session guard throws during optional self-copy", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     let recipientPublishes = 0
     const result = await sendAccountInboxRumor(
       {
@@ -1425,6 +1619,8 @@ describe("private delivery composed contract", () => {
             deliveryStore: fixture.store,
             accountNetworkLocalStateRepository:
               fixture.accountNetworkLocalStateRepository,
+            inboxDeclarationEvidenceRepository:
+              fixture.inboxDeclarationEvidenceRepository,
             recipientInboxRelays: [RECIPIENT_RELAY],
             senderInboxRelays: [SELF_RELAY],
             inspectOwnInboxReadiness: sendInput(fixture, 14)
@@ -1457,7 +1653,7 @@ describe("private delivery composed contract", () => {
   })
 
   it("rejects extra conversation participants before signing or publishing", async () => {
-    const fixture = setup()
+    const fixture = await setup()
     const third = getPublicKey(generateSecretKey())
     let publishes = 0
     await expect(

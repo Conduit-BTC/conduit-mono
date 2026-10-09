@@ -98,20 +98,19 @@ async function publishProductListingRelay(
   }
   const requiresAuthenticatedOwnerAuthority =
     !config.e2eRelayIsolationEnabled &&
-    !normalizePublicWebSocketUrl(input.relayUrl)
+    (!normalizePublicWebSocketUrl(input.relayUrl) ||
+      input.relayTarget.grants.every((grant) => grant.kind === "owner_nip65"))
 
   const status = await publishSignedEventToRelay({
     signedEvent: input.signedEvent,
     relayUrl: input.relayUrl,
+    relayTarget: input.relayTarget,
     authorPubkey: input.signedEvent.pubkey,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey,
-    ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-    appRelayUrls: input.appRelayUrls,
-    personalRelayUrls: input.personalRelayUrls,
-    independentRelayUrls: input.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,
     shouldContinue:
       requiresAuthenticatedOwnerAuthority && authenticatedPubkey
         ? () =>
@@ -414,6 +413,9 @@ export function productListingJobToPublishResult(
   return {
     plan: {
       intent: "commerce_author_event",
+      // This delivery summary cannot be replayed as an executable grant plan.
+      primaryRelayTargets: [],
+      broadcastRelayTargets: [],
       primaryRelayUrls: job.relayTargets.map((target) => target.relayUrl),
       broadcastRelayUrls: [],
       parkedRelayUrls: [],

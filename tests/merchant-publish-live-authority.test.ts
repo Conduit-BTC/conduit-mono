@@ -53,6 +53,14 @@ describe("Merchant publish live account authority", () => {
     expect(delivery).toContain("requiresAuthenticatedOwnerAuthority")
     expect(delivery).toContain("!normalizePublicWebSocketUrl(input.relayUrl)")
     expect(delivery).toContain("status: await publishSignedEventToRelay({")
+    expect(delivery).toContain("relayTarget: input.relayTarget ?? undefined,")
+    expect(delivery).toContain("accountPubkey: input.accountPubkey,")
+    expect(delivery).toMatch(
+      /accountNetworkLocalStateRepository:\s*input\.accountNetworkLocalStateRepository,/
+    )
+    expect(delivery).toContain(
+      "ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,"
+    )
     expect(delivery).toMatch(
       /shouldContinue:\s*requiresAuthenticatedOwnerAuthority && authenticatedPubkey\s*\? \(\) =>\s*input\.isAuthenticatedPubkeyCurrent\?\.\(authenticatedPubkey\) !==\s*false/
     )

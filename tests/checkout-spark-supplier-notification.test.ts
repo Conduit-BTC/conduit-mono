@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import { ConduitDB } from "@conduit/core/db"
 import {
@@ -44,6 +48,12 @@ import {
 } from "../packages/core/src/protocol/protected-read-authorization"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import {
+  __resetRelayPublishTestOverrides,
+  __setRelayPublishTestOverrides,
+} from "../packages/core/src/protocol/relay-publish"
+import { admitFixture } from "./helpers/public-event"
 import {
   makeSignedBolt11Fixture,
   bolt11PaymentSecretField,
@@ -288,14 +298,43 @@ function memoryStore() {
 }
 
 function transport(
-  publishFn: NonNullable<
+  publishFn?: NonNullable<
     CheckoutSparkSupplierNotificationTransport["publishFn"]
   >
 ): CheckoutSparkSupplierNotificationTransport {
+  const evidence = createInMemoryInboxDeclarationEvidenceRepository()
+  const ready = Promise.all(
+    [
+      { secret: merchantSecret, relay: MERCHANT_INBOX },
+      { secret: supplierSecret, relay: SUPPLIER_INBOX },
+    ].map(async ({ secret, relay }) =>
+      evidence.merge({
+        pubkey: getPublicKey(secret),
+        signedEvent: await admitFixture(
+          finalizeEvent(
+            {
+              kind: 10050,
+              created_at: NOW / 1_000,
+              content: "",
+              tags: [["relay", relay]],
+            },
+            secret
+          )
+        ),
+        observedAt: NOW,
+      })
+    )
+  )
   return {
     recipientInboxRelays: [SUPPLIER_INBOX],
     senderInboxRelays: [MERCHANT_INBOX],
     accountNetworkLocalStateRepository: { get: async () => undefined },
+    inboxDeclarationEvidenceRepository: {
+      get: async (pubkey) => {
+        await ready
+        return evidence.get(pubkey)
+      },
+    },
     inspectOwnInboxReadiness: async () => ({
       state: "ready",
       eventId: "e".repeat(64),
@@ -317,6 +356,116 @@ function delivery(targets: readonly string[], success = true) {
 }
 
 describe("verified supplier payment notifications", () => {
+  for (const revokeSupplierBeforeSend of [false, true]) {
+    it(`uses live recipient and owner NIP-17 admission for exact saved notification copies${revokeSupplierBeforeSend ? " and retains a revoked recipient copy for retry" : " without adding undeclared targets"}`, async () => {
+      const f = await fixture()
+      const { store, entries } = memoryStore()
+      const evidence = createInMemoryInboxDeclarationEvidenceRepository()
+      const retainDeclaration = async (
+        secret: Uint8Array,
+        relayUrls: string[],
+        revision: number
+      ) =>
+        evidence.merge({
+          pubkey: getPublicKey(secret),
+          signedEvent: await admitFixture(
+            finalizeEvent(
+              {
+                kind: 10050,
+                created_at: NOW / 1_000 + revision,
+                content: "",
+                tags: relayUrls.map((url) => ["relay", url]),
+              },
+              secret
+            )
+          ),
+          observedAt: NOW,
+          completeObservedAt: NOW,
+        })
+      await retainDeclaration(merchantSecret, [MERCHANT_INBOX], 0)
+      await retainDeclaration(supplierSecret, [SUPPLIER_INBOX], 0)
+      const writes: string[] = []
+      let wireAdmissions = 0
+      let revoke = revokeSupplierBeforeSend
+      __setRelayPublishTestOverrides({
+        inboxDeclarationEvidenceRepository: evidence,
+        publishSignedEventFrameToRelay: async (input) => {
+          wireAdmissions += 1
+          const staged = [...entries.values()][0]!.record
+          const recipientCopy = input.relayUrl === SUPPLIER_INBOX
+          expect(
+            JSON.stringify(input.signedEvent) ===
+              JSON.stringify(
+                recipientCopy
+                  ? staged.signedRecipientWrap
+                  : staged.signedSenderWrap
+              )
+          ).toBe(true)
+          if (recipientCopy && revoke)
+            await retainDeclaration(supplierSecret, [], 1)
+          expect(input.beforeSend).toBeDefined()
+          const admitted = await input.beforeSend!()
+          expect(admitted).toBe(!(recipientCopy && revoke))
+          if (!admitted) return "policy_blocked"
+          writes.push(input.relayUrl)
+          return "acked"
+        },
+      })
+      const io: CheckoutSparkSupplierNotificationTransport = {
+        ...transport(),
+        inboxDeclarationEvidenceRepository: evidence,
+        senderInboxRelays: undefined,
+        recipientInboxRelays: [
+          SUPPLIER_INBOX,
+          "wss://undeclared.inbox.relay.dev",
+        ],
+      }
+      try {
+        const result = await publishCheckoutSparkSupplierPaymentNotification({
+          ...f,
+          signer,
+          store,
+          shouldContinue: () => true,
+          transport: io,
+        })
+        expect(wireAdmissions).toBe(2)
+        expect(result).toBe(
+          revokeSupplierBeforeSend ? "pending" : "relay_accepted"
+        )
+        expect(writes).toEqual(
+          revokeSupplierBeforeSend
+            ? [MERCHANT_INBOX]
+            : [SUPPLIER_INBOX, MERCHANT_INBOX]
+        )
+        const staged = [...entries.values()][0]!
+        expect(staged.senderAccepted).toBe(true)
+        expect(staged.recipientAccepted).toBe(!revokeSupplierBeforeSend)
+        const exactRecord = structuredClone(staged.record)
+        if (revokeSupplierBeforeSend) {
+          revoke = false
+          await retainDeclaration(supplierSecret, [SUPPLIER_INBOX], 2)
+          expect(
+            await retryCheckoutSparkSupplierNotification({
+              record: exactRecord,
+              signer,
+              store,
+              shouldContinue: () => true,
+              transport: io,
+            })
+          ).toBe("relay_accepted")
+          expect(wireAdmissions).toBe(3)
+          expect(writes).toEqual([MERCHANT_INBOX, SUPPLIER_INBOX])
+          expect(
+            JSON.stringify([...entries.values()][0]!.record) ===
+              JSON.stringify(exactRecord)
+          ).toBe(true)
+        }
+      } finally {
+        __resetRelayPublishTestOverrides()
+      }
+    })
+  }
+
   for (const authMethod of ["nip07", "nip46"] as const) {
     it(`enables account-bound NIP-42 writes for the active ${authMethod} signer`, async () => {
       const f = await fixture()

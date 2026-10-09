@@ -23,6 +23,10 @@ import {
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
+  createInMemoryInboxDeclarationEvidenceRepository,
+  mergeInboxDeclarationEvidence,
+  EVENT_KINDS,
+  sharedInboxDiscoveryRelayUrls,
 } from "@conduit/core"
 import { ConduitDB } from "../packages/core/src/db"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
@@ -32,6 +36,8 @@ import type {
   SignedNostrEvent,
 } from "../packages/core/src/protocol/nostr-event-signer"
 import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
+import { readRetainedInboxDeclaration } from "../packages/core/src/protocol/private-message-routing"
+import { admitFixture } from "./helpers/public-event"
 import {
   __resetProtectedReadSigner,
   getProtectedReadAuthorization,
@@ -116,6 +122,36 @@ let decryptCalls = 0
 let rejectAuthentication = false
 let challengeAuthentication = true
 const sockets: CommerceProtectedRelaySocket[] = []
+const protectedReadPlans: Array<{
+  transport: string | undefined
+  relayUrls: string[]
+}> = []
+let inboxDeclarationEvidenceRepository =
+  createInMemoryInboxDeclarationEvidenceRepository()
+
+async function seedInboxDeclaration(key: Uint8Array): Promise<void> {
+  const discoveryRelay = sharedInboxDiscoveryRelayUrls()[0]!
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: 1_700_000_000,
+        tags: [["relay", RELAY_URL]],
+        content: "",
+      },
+      key
+    )
+  )
+  await mergeInboxDeclarationEvidence(
+    {
+      pubkey: getPublicKey(key),
+      signedEvent,
+      sourceRelayUrls: [discoveryRelay],
+      sharedSourceRelayUrls: [discoveryRelay],
+    },
+    inboxDeclarationEvidenceRepository
+  )
+}
 
 class CommerceProtectedRelaySocket {
   static CONNECTING = 0
@@ -272,7 +308,7 @@ function installAccount(
 
 const originalWebSocket = globalThis.WebSocket
 
-beforeEach(() => {
+beforeEach(async () => {
   paginatedWraps = null
   __resetFutureMarketHandoffTestState()
   rejectAuthentication = false
@@ -282,17 +318,33 @@ beforeEach(() => {
   signCalls = 0
   decryptCalls = 0
   sockets.splice(0)
+  protectedReadPlans.splice(0)
   __resetCommerceTestOverrides()
   const accountNetworkLocalStateRepository =
     createInMemoryAccountNetworkLocalStateRepository()
+  inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await seedInboxDeclaration(BUYER_KEY)
+  await seedInboxDeclaration(MERCHANT_KEY)
   __setCommerceTestOverrides({
     accountNetworkLocalStateRepository,
-    readProtectedInbox: (options) =>
-      readProtectedInbox({
+    readProtectedInbox: (options) => {
+      protectedReadPlans.push({
+        transport: options.transport,
+        relayUrls: [...options.relayUrls],
+      })
+      return readProtectedInbox({
         ...options,
         accountNetworkLocalStateRepository,
-      }),
-    resolveInboxRelayUrls: async () => [RELAY_URL],
+        inboxDeclarationEvidenceRepository,
+      })
+    },
+    resolveInboxRelayUrls: async (principal) =>
+      (
+        await readRetainedInboxDeclaration(principal, {
+          durableEvidenceRepository: inboxDeclarationEvidenceRepository,
+        })
+      )?.relayUrls ?? [],
     getCommerceInbox: (principal) => {
       const owner = accounts.get(principal)?.owner
       if (!owner) throw new Error("Missing synthetic inbox owner")
@@ -357,6 +409,16 @@ describe("Market and Merchant protected inbox integration", () => {
       expect(result.meta.inbox?.coverage).toBe("complete")
       expect(result.meta.inbox?.authentication?.state).toBe("not_challenged")
     }
+    const legacyPlans = protectedReadPlans.filter((plan) =>
+      plan.transport?.startsWith("nip04")
+    )
+    expect(legacyPlans.length).toBeGreaterThan(0)
+    expect(legacyPlans.flatMap((plan) => plan.relayUrls)).not.toContain(
+      "wss://nos.lol"
+    )
+    expect(legacyPlans.flatMap((plan) => plan.relayUrls)).not.toContain(
+      "wss://relay.primal.net"
+    )
     expect(signCalls).toBe(0)
     expect(decryptCalls).toBe(4)
     expect(merchantSockets.every((socket) => socket.closed)).toBe(true)

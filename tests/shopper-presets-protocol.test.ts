@@ -27,6 +27,7 @@ import {
   type ShopperPresetsValue,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 
 const nowMs = 1_770_000_000_000
 const password = "correct horse battery staple 7"
@@ -94,11 +95,21 @@ function publishResult(input: {
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
 }) {
+  const primaryRelayUrls = input.primaryRelayUrls ?? []
+  const broadcastRelayUrls = input.broadcastRelayUrls ?? []
   return {
     plan: {
       intent: "author_event" as const,
-      primaryRelayUrls: input.primaryRelayUrls ?? [],
-      broadcastRelayUrls: input.broadcastRelayUrls ?? [],
+      primaryRelayUrls,
+      primaryRelayTargets: relayTargetsFromUrls(primaryRelayUrls, {
+        kind: "source_delivery",
+        operation: "write",
+      }),
+      broadcastRelayUrls,
+      broadcastRelayTargets: relayTargetsFromUrls(broadcastRelayUrls, {
+        kind: "source_delivery",
+        operation: "write",
+      }),
       parkedRelayUrls: [],
       hintRelayUrls: [],
     },
@@ -311,7 +322,7 @@ describe("NIP-78 shopper presets", () => {
     const ownerRelay = "ws://owner-network.example:4848"
     const remoteRelay = "ws://remote-hint.example:4848"
     let observedRelayUrls: readonly string[] = []
-    let observedOwnerSelectedRelayUrls: readonly string[] = []
+    let observedReadTargets: readonly { url: string; grants: unknown[] }[] = []
     let observedRelayListAuthenticatedPubkey: string | null | undefined
     let observedFetchAuthenticatedPubkey: string | null | undefined
 
@@ -352,7 +363,7 @@ describe("NIP-78 shopper presets", () => {
       },
       fetchEvents: async (_filter, options) => {
         observedRelayUrls = options.relayUrls ?? []
-        observedOwnerSelectedRelayUrls = options.ownerSelectedRelayUrls ?? []
+        observedReadTargets = options.relayTargets ?? []
         observedFetchAuthenticatedPubkey = options.authenticatedPubkey
         return relayResult(
           [],
@@ -367,7 +378,19 @@ describe("NIP-78 shopper presets", () => {
 
     expect(result).toEqual({ state: "not_found" })
     expect(observedRelayUrls).toEqual([ownerRelay])
-    expect(observedOwnerSelectedRelayUrls).toEqual([ownerRelay])
+    expect(observedReadTargets).toEqual([
+      {
+        url: ownerRelay,
+        grants: [
+          {
+            kind: "owner_nip65",
+            operation: "read",
+            ownerPubkey: pubkey,
+            selection: "read",
+          },
+        ],
+      },
+    ])
     expect(observedRelayListAuthenticatedPubkey).toBe(pubkey)
     expect(observedFetchAuthenticatedPubkey).toBe(pubkey)
   })

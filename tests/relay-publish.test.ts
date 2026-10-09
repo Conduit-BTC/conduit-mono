@@ -27,6 +27,7 @@ import {
   publishSignedEventToRelay,
   RelayPublishDiagnosticsError,
   publishWithPlanner,
+  relayTargetsFromUrls,
   setActiveRelaySettingsScope,
   type PublishWithPlannerInput,
   type RelayList,
@@ -38,6 +39,7 @@ import {
   refreshNdkRelaySettings,
 } from "../packages/core/src/protocol/ndk"
 import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import { setAppWritePlanFixture } from "./helpers/app-write-plan"
 import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
@@ -107,6 +109,15 @@ function accountNetworkState(
   }
 }
 
+function ownerWriteTargets(relayUrls: readonly string[]) {
+  return relayTargetsFromUrls(relayUrls, {
+    kind: "owner_nip65",
+    operation: "write",
+    ownerPubkey: AUTHOR_PUBKEY,
+    selection: "write",
+  })
+}
+
 function signedTestEvent(input: {
   kind?: number
   tags?: string[][]
@@ -151,7 +162,7 @@ function signedRawTestEvent(
   )
 }
 
-function authenticatedPublishInput(
+async function authenticatedPublishInput(
   relayUrls: readonly string[],
   overrides: {
     event?: NDKEvent
@@ -159,7 +170,11 @@ function authenticatedPublishInput(
       Omit<PublishWithPlannerInput, "intent" | "exclusiveRelayUrls">
     >
   } = {}
-): { event: NDKEvent; input: PublishWithPlannerInput } {
+): Promise<{ event: NDKEvent; input: PublishWithPlannerInput }> {
+  const ownerRelayListEvidenceRepository =
+    await durableOwnerRelayListRepository(
+      relayUrls.map((relayUrl) => ["r", relayUrl, "write"])
+    )
   return {
     event:
       overrides.event ??
@@ -175,6 +190,13 @@ function authenticatedPublishInput(
       accountNetworkLocalStateRepository: {
         get: async (pubkey) => accountNetworkState(pubkey, []),
       },
+      ownerRelayListEvidenceRepository,
+      relayTargets: relayTargetsFromUrls(relayUrls, {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: AUTHOR_PUBKEY,
+        selection: "write",
+      }),
       recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
       exclusiveRelayUrls: relayUrls,
       deliveryMode: "critical",
@@ -362,6 +384,8 @@ describe("planPublishRelays", () => {
   it("admits only an explicitly owner-selected ws target in an exclusive plan", async () => {
     const ownerWs = "ws://owner-inbox.fixture.conduit.market"
     const remoteWs = "ws://remote-inbox.fixture.conduit.market"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", ownerWs, "write"]])
 
     expect(
       await planPublishRelays({
@@ -371,6 +395,13 @@ describe("planPublishRelays", () => {
         accountPubkey: AUTHOR_PUBKEY,
         exclusiveRelayUrls: [ownerWs, remoteWs],
         ownerSelectedRelayUrls: [ownerWs],
+        ownerRelayListEvidenceRepository,
+        relayTargets: relayTargetsFromUrls([ownerWs], {
+          kind: "owner_nip65",
+          operation: "write",
+          ownerPubkey: AUTHOR_PUBKEY,
+          selection: "write",
+        }),
       })
     ).toMatchObject({ primaryRelayUrls: [ownerWs] })
     expect(
@@ -388,7 +419,7 @@ describe("planPublishRelays", () => {
     const relayUrl = "wss://auth.nostr1.com"
     let ndkPublishCalls = 0
     let exactWriteCalls = 0
-    const fixture = authenticatedPublishInput([relayUrl], {
+    const fixture = await authenticatedPublishInput([relayUrl], {
       event: signedTestEvent({
         kind: EVENT_KINDS.GIFT_WRAP,
         publish: async () => {
@@ -428,28 +459,31 @@ describe("planPublishRelays", () => {
     })
 
     try {
-      const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
-        input: {
-          relayAuthentication: {
-            expectedPubkey: AUTHOR_PUBKEY,
-            sessionScope: {},
-            signer: {
-              authMethod: "nip07",
-              getPublicKey: async () => AUTHOR_PUBKEY,
-              signEvent: async (event) =>
-                finalizeEvent(
-                  {
-                    kind: event.kind,
-                    created_at: event.created_at,
-                    tags: event.tags,
-                    content: event.content,
-                  },
-                  AUTHOR_SECRET
-                ),
+      const fixture = await authenticatedPublishInput(
+        [firstRelay, secondRelay],
+        {
+          input: {
+            relayAuthentication: {
+              expectedPubkey: AUTHOR_PUBKEY,
+              sessionScope: {},
+              signer: {
+                authMethod: "nip07",
+                getPublicKey: async () => AUTHOR_PUBKEY,
+                signEvent: async (event) =>
+                  finalizeEvent(
+                    {
+                      kind: event.kind,
+                      created_at: event.created_at,
+                      tags: event.tags,
+                      content: event.content,
+                    },
+                    AUTHOR_SECRET
+                  ),
+              },
             },
           },
-        },
-      })
+        }
+      )
 
       __setRelayPublishTestOverrides({
         publishSignedEventFrameToRelay: undefined,
@@ -467,7 +501,10 @@ describe("planPublishRelays", () => {
   it("retains an exact relay rejection after another authenticated target ACKs", async () => {
     const acceptedRelay = "wss://accepted-auth-write.fixture.conduit.market"
     const rejectedRelay = "wss://rejected-auth-write.fixture.conduit.market"
-    const fixture = authenticatedPublishInput([acceptedRelay, rejectedRelay])
+    const fixture = await authenticatedPublishInput([
+      acceptedRelay,
+      rejectedRelay,
+    ])
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl }) =>
         relayUrl === acceptedRelay ? "acked" : "rejected",
@@ -486,7 +523,7 @@ describe("planPublishRelays", () => {
   it("does not repeat an auth-capable exact write after its bounded timeout", async () => {
     const relayUrl = "wss://auth.nostr1.com"
     let exactWriteCalls = 0
-    const fixture = authenticatedPublishInput([relayUrl])
+    const fixture = await authenticatedPublishInput([relayUrl])
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async () => {
         exactWriteCalls += 1
@@ -505,7 +542,7 @@ describe("planPublishRelays", () => {
     const firstRelay = "wss://first-auth-prompt.fixture.conduit.market"
     const secondRelay = "wss://second-auth-prompt.fixture.conduit.market"
     const attempts: string[] = []
-    const fixture = authenticatedPublishInput([firstRelay, secondRelay])
+    const fixture = await authenticatedPublishInput([firstRelay, secondRelay])
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async (input) => {
         attempts.push(input.relayUrl)
@@ -525,7 +562,7 @@ describe("planPublishRelays", () => {
 
   it("rejects relay authentication without matching foreground account authority", async () => {
     let exactWriteCalls = 0
-    const fixture = authenticatedPublishInput(["wss://auth.nostr1.com"], {
+    const fixture = await authenticatedPublishInput(["wss://auth.nostr1.com"], {
       input: { authenticatedPubkey: OTHER_AUTHOR_PUBKEY },
     })
     __setRelayPublishTestOverrides({
@@ -550,9 +587,12 @@ describe("planPublishRelays", () => {
       get: async (pubkey) =>
         accountNetworkState(pubkey, exclusionCommitted ? [excludedRelay] : []),
     }
-    const fixture = authenticatedPublishInput([firstRelay, excludedRelay], {
-      input: { accountNetworkLocalStateRepository: repository },
-    })
+    const fixture = await authenticatedPublishInput(
+      [firstRelay, excludedRelay],
+      {
+        input: { accountNetworkLocalStateRepository: repository },
+      }
+    )
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl }) => {
         attempts.push(relayUrl)
@@ -582,7 +622,7 @@ describe("planPublishRelays", () => {
     const secondRelay = "wss://second-auth-session.fixture.conduit.market"
     const attempts: string[] = []
     let current = true
-    const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+    const fixture = await authenticatedPublishInput([firstRelay, secondRelay], {
       input: { shouldContinue: () => current },
     })
     __setRelayPublishTestOverrides({
@@ -617,7 +657,7 @@ describe("planPublishRelays", () => {
         return accountNetworkState(pubkey, [])
       },
     }
-    const fixture = authenticatedPublishInput([firstRelay, secondRelay], {
+    const fixture = await authenticatedPublishInput([firstRelay, secondRelay], {
       input: { accountNetworkLocalStateRepository: repository },
     })
     __setRelayPublishTestOverrides({
@@ -869,7 +909,7 @@ describe("planPublishRelays", () => {
       ...rawEvent,
       sig: "0".repeat(128),
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => {
         planned = true
         return {
@@ -904,7 +944,7 @@ describe("planPublishRelays", () => {
         AUTHOR_SECRET
       )
     )
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => {
         planned = true
         return {
@@ -933,7 +973,7 @@ describe("planPublishRelays", () => {
   it("applies the author signature fence to commerce author events", async () => {
     let planned = false
     const event = signedTestEvent({ publish: async () => new Set() })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => {
         planned = true
         return {
@@ -987,7 +1027,7 @@ describe("planPublishRelays", () => {
   it("uses the app write relay for NIP-65 publishes without a planner target", async () => {
     const publishAttempts: string[][] = []
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [],
@@ -1027,7 +1067,7 @@ describe("planPublishRelays", () => {
 
   it("keeps commerce fallback writes within commerce-qualified App roles", async () => {
     const publishAttempts: string[][] = []
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "commerce_author_event",
         primaryRelayUrls: [],
@@ -1065,7 +1105,7 @@ describe("planPublishRelays", () => {
 
   it("refuses tiny contact-list publishes before planning relays", async () => {
     let planned = false
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => {
         planned = true
         return {
@@ -1096,7 +1136,7 @@ describe("planPublishRelays", () => {
   it("cancels before relay publication when the signer session changes", async () => {
     let current = true
     let publishes = 0
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => {
         current = false
         return {
@@ -1146,7 +1186,9 @@ describe("planPublishRelays", () => {
         intent: "author_event",
         signedRelayListAuthoritative: true,
         primaryRelayUrls: [relayUrl],
+        primaryRelayTargets: ownerWriteTargets([relayUrl]),
         broadcastRelayUrls: [],
+        broadcastRelayTargets: [],
         parkedRelayUrls: [],
       }),
     })
@@ -1179,7 +1221,7 @@ describe("planPublishRelays", () => {
     const attempts: string[][] = []
     let current = true
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [primaryRelay],
@@ -1230,7 +1272,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [primaryRelay],
@@ -1262,7 +1304,7 @@ describe("planPublishRelays", () => {
       let primaryAcked = false
       let current = true
       const attempted: string[] = []
-      __setRelayPublishTestOverrides({
+      setAppWritePlanFixture({
         planPublishRelays: async () => ({
           intent: "author_event",
           primaryRelayUrls: [primaryRelay],
@@ -1334,7 +1376,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [primaryRelay],
@@ -1367,7 +1409,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [primaryRelay],
@@ -1405,7 +1447,7 @@ describe("planPublishRelays", () => {
         return new Set(relayUrls.map((url) => ({ url })))
       },
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: ["wss://planner-bypass.fixture.conduit.market"],
@@ -1433,6 +1475,10 @@ describe("planPublishRelays", () => {
   it("preserves a private extra hint already selected for the authenticated user", async () => {
     const recipientRelay = "wss://recipient.conduit.market"
     const authenticatedLocalRelay = "wss://127.0.0.1:7447"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([
+        ["r", authenticatedLocalRelay, "write"],
+      ])
     const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
         const relayUrls = [
@@ -1444,13 +1490,17 @@ describe("planPublishRelays", () => {
     })
 
     __setRelayPublishTestOverrides({
-      ownerRelayListEvidenceRepository: await durableOwnerRelayListRepository([
-        ["r", authenticatedLocalRelay, "write"],
-      ]),
+      ownerRelayListEvidenceRepository,
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [recipientRelay],
+        primaryRelayTargets: relayTargetsFromUrls([recipientRelay], {
+          kind: "recipient_nip17",
+          operation: "write",
+          recipientPubkey: OTHER_AUTHOR_PUBKEY,
+        }),
         broadcastRelayUrls: [authenticatedLocalRelay],
+        broadcastRelayTargets: ownerWriteTargets([authenticatedLocalRelay]),
         parkedRelayUrls: [],
       }),
     })
@@ -1460,9 +1510,12 @@ describe("planPublishRelays", () => {
       authorPubkey: AUTHOR_PUBKEY,
       authenticatedPubkey: AUTHOR_PUBKEY,
       accountPubkey: AUTHOR_PUBKEY,
-      accountNetworkLocalStateRepository: { get: async () => undefined },
-      recipientPubkeys: ["bob"],
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) => accountNetworkState(pubkey, []),
+      },
+      recipientPubkeys: [OTHER_AUTHOR_PUBKEY],
       extraRelayUrls: [authenticatedLocalRelay],
+      relayTargets: ownerWriteTargets([authenticatedLocalRelay]),
     })
 
     expect(result.plan.primaryRelayUrls).toEqual([
@@ -1565,6 +1618,8 @@ describe("planPublishRelays", () => {
   it("cancels an exact owner-selected publish when account policy loading changes the session", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "ws://owner-exact-publish.fixture.conduit.market"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", relayUrl, "write"]])
     const signedEvent = signedRawTestEvent({ kind: EVENT_KINDS.DELETION })
     let current = true
     let durableReads = 0
@@ -1583,9 +1638,11 @@ describe("planPublishRelays", () => {
           relayUrl,
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
+          relayTarget: ownerWriteTargets([relayUrl])[0],
           ownerSelectedRelayUrls: [relayUrl],
           accountPubkey: AUTHOR_PUBKEY,
           accountNetworkLocalStateRepository: repository,
+          ownerRelayListEvidenceRepository,
           shouldContinue: () => current,
         })
       ).rejects.toThrow("signer session changed")
@@ -1642,7 +1699,7 @@ describe("planPublishRelays", () => {
         return new Set(relayUrls.map((url) => ({ url })))
       },
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [relayUrl],
@@ -1762,6 +1819,8 @@ describe("planPublishRelays", () => {
   it("preserves an authenticated author's exact local relay target", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "ws://owner-selected.fixture.conduit.market"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", relayUrl, "write"]])
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => accountNetworkState(pubkey, []),
     }
@@ -1774,8 +1833,10 @@ describe("planPublishRelays", () => {
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
           accountPubkey: AUTHOR_PUBKEY,
+          relayTarget: ownerWriteTargets([relayUrl])[0],
           ownerSelectedRelayUrls: [relayUrl],
           accountNetworkLocalStateRepository: repository,
+          ownerRelayListEvidenceRepository,
         })
       ).resolves.toBe("acked")
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
@@ -1894,6 +1955,8 @@ describe("planPublishRelays", () => {
   it("preserves an authenticated author's exact private WSS target", async () => {
     const fakeWebSocket = installRelayPublishWebSocket()
     const relayUrl = "wss://127.0.0.1:7447"
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", relayUrl, "write"]])
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => accountNetworkState(pubkey, []),
     }
@@ -1906,8 +1969,10 @@ describe("planPublishRelays", () => {
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
           accountPubkey: AUTHOR_PUBKEY,
+          relayTarget: ownerWriteTargets([relayUrl])[0],
           ownerSelectedRelayUrls: [relayUrl],
           accountNetworkLocalStateRepository: repository,
+          ownerRelayListEvidenceRepository,
         })
       ).resolves.toBe("acked")
       expect(fakeWebSocket.openedUrls).toEqual([relayUrl])
@@ -2048,7 +2113,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [primaryRelay],
@@ -2089,7 +2154,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         signedRelayListAuthoritative: true,
@@ -2132,7 +2197,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [primaryRelay],
@@ -2155,7 +2220,7 @@ describe("planPublishRelays", () => {
 
   it("redacts attempt identifiers from a failed private gift-wrap publication", async () => {
     const relayUrl = "wss://private-diagnostic.fixture.conduit.market"
-    const fixture = authenticatedPublishInput([relayUrl])
+    const fixture = await authenticatedPublishInput([relayUrl])
     __resetRelayPublishTestOverrides()
     const wire = installRelayPublishWebSocket({
       accepted: false,
@@ -2193,7 +2258,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [primaryRelay],
@@ -2231,7 +2296,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [primaryRelay],
@@ -2273,7 +2338,7 @@ describe("planPublishRelays", () => {
       },
     })
 
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [primaryRelay],
@@ -2302,6 +2367,9 @@ describe("planPublishRelays", () => {
     const personalRelayUrl =
       "wss://personal-disabled-write.fixture.conduit.market"
     const appRelayUrl = "wss://app-enabled-write.fixture.conduit.market"
+    config.appWriteRelayUrls = [...config.appWriteRelayUrls, appRelayUrl]
+    const ownerRelayListEvidenceRepository =
+      await durableOwnerRelayListRepository([["r", personalRelayUrl, "write"]])
     const attempts: string[][] = []
     const event = signedTestEvent({
       publish: async (relaySet: unknown) => {
@@ -2313,11 +2381,19 @@ describe("planPublishRelays", () => {
         return new Set(relayUrls.map((url) => ({ url })))
       },
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         signedRelayListAuthoritative: true,
         primaryRelayUrls: [personalRelayUrl],
+        primaryRelayTargets: [
+          ...ownerWriteTargets([personalRelayUrl]),
+          ...relayTargetsFromUrls([appRelayUrl], {
+            kind: "app",
+            operation: "write",
+            bucket: "general_write",
+          }),
+        ],
         primaryCandidateRelayUrls: [personalRelayUrl, appRelayUrl],
         maxPrimaryRelayAttempts: 1,
         broadcastRelayUrls: [],
@@ -2337,6 +2413,7 @@ describe("planPublishRelays", () => {
         authorPubkey: AUTHOR_PUBKEY,
         authenticatedPubkey: AUTHOR_PUBKEY,
         accountPubkey: AUTHOR_PUBKEY,
+        ownerRelayListEvidenceRepository,
         accountNetworkLocalStateRepository: {
           get: async (pubkey) =>
             accountNetworkState(pubkey, [], {
@@ -2374,7 +2451,7 @@ describe("planPublishRelays", () => {
         return new Set(relayUrls.map((url) => ({ url })))
       },
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         signedRelayListAuthoritative: true,
@@ -2451,7 +2528,7 @@ describe("planPublishRelays", () => {
         return new Set(relayUrls.map((url) => ({ url })))
       },
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [primaryRelay],
@@ -2548,7 +2625,7 @@ describe("planPublishRelays", () => {
         throw new Error("primary failed after local removal committed")
       },
     })
-    __setRelayPublishTestOverrides({
+    setAppWritePlanFixture({
       planPublishRelays: async () => ({
         intent: "recipient_event",
         primaryRelayUrls: [primaryRelay],

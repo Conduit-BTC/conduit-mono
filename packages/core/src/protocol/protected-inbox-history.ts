@@ -10,6 +10,7 @@ import {
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import type { RelayTarget } from "./relay-authority"
 
 const PAGE_LIMIT = 50
 const BOUNDARY_LIMIT = 512
@@ -53,6 +54,7 @@ export interface VisitProtectedInboxHistoryPageOptions {
   relayUrl: string
   /** Current authorized read plan, including permitted recovery relays. */
   authorizedRelayUrls?: readonly string[]
+  relayTargets?: readonly RelayTarget[]
   /** Owner-selected inbox subset; also the dedicated-consumer history API. */
   declaredRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
@@ -66,6 +68,8 @@ export interface VisitProtectedInboxHistoryPageOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: ReadProtectedInboxOptions["ownerRelayListEvidenceRepository"]
+  inboxDeclarationEvidenceRepository?: ReadProtectedInboxOptions["inboxDeclarationEvidenceRepository"]
   signal?: AbortSignal
   /** Test seam; production uses the authenticated protected inbox reader. */
   read?: (
@@ -170,7 +174,6 @@ export async function visitProtectedInboxHistoryPage(
   assertCurrent()
   const allowedRelays =
     options.authorizedRelayUrls ?? options.declaredRelayUrls ?? []
-  const declaredRelayUrls = options.declaredRelayUrls ?? []
   if (!allowedRelays.includes(relayUrl)) {
     throw new Error("Protected inbox history relay is not authorized.")
   }
@@ -196,14 +199,17 @@ export async function visitProtectedInboxHistoryPage(
       principalPubkey: principal,
       transport: options.transport,
       relayUrls: [relayUrl],
-      ownerSelectedRelayUrls: declaredRelayUrls,
-      appRelayUrls: options.appRelayUrls ?? [],
-      personalRelayUrls: options.personalRelayUrls,
-      independentRelayUrls: options.independentRelayUrls,
+      relayTargets: options.relayTargets?.filter(
+        (target) => target.url === relayUrl
+      ),
       limit,
       authorization: options.authorization,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      ownerRelayListEvidenceRepository:
+        options.ownerRelayListEvidenceRepository,
+      inboxDeclarationEvidenceRepository:
+        options.inboxDeclarationEvidenceRepository,
       signal: options.signal,
       connectTimeoutMs: 4_000,
       queryTimeoutMs: 12_000,

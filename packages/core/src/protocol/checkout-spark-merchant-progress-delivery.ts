@@ -12,6 +12,7 @@ import type { NostrKeySigner } from "./nostr-event-signer"
 import { waitForVisibleDocument } from "./interactive-signer"
 import {
   MAX_DECLARED_INBOX_WRITE_RELAYS,
+  readRetainedInboxDeclaration,
   resolveInboxDeclaration,
 } from "./private-message-routing"
 import {
@@ -20,6 +21,7 @@ import {
   type PublishWithPlannerResult,
 } from "./relay-publish"
 import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
+import { relayTargetsFromUrls } from "./relay-authority"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -73,6 +75,7 @@ export type MerchantCheckoutSparkProgressTransport = Pick<
   | "giftWrapFn"
   | "publishFn"
   | "accountNetworkLocalStateRepository"
+  | "inboxDeclarationEvidenceRepository"
   | "relayAuthMethod"
   | "waitForSignerVisibility"
   | "deliveryStore"
@@ -197,13 +200,23 @@ async function publishStoredMerchantCheckoutSparkProgress(input: {
   else if (transport?.resolveInboxRelays)
     relays = await transport.resolveInboxRelays(record.merchantPubkey)
   else {
-    const declaration = await resolveInboxDeclaration(record.merchantPubkey, {
-      requestingAccountPubkey: record.merchantPubkey,
-      authenticatedPubkey: record.merchantPubkey,
-      accountNetworkLocalStateRepository:
-        transport?.accountNetworkLocalStateRepository,
-      shouldContinue: input.shouldContinue,
-    })
+    const retained = transport?.inboxDeclarationEvidenceRepository
+      ? await readRetainedInboxDeclaration(record.merchantPubkey, {
+          durableEvidenceRepository:
+            transport.inboxDeclarationEvidenceRepository,
+        })
+      : null
+    assertCurrent()
+    const declaration =
+      retained && !retained.stale
+        ? retained
+        : await resolveInboxDeclaration(record.merchantPubkey, {
+            requestingAccountPubkey: record.merchantPubkey,
+            authenticatedPubkey: record.merchantPubkey,
+            accountNetworkLocalStateRepository:
+              transport?.accountNetworkLocalStateRepository,
+            shouldContinue: input.shouldContinue,
+          })
     assertCurrent()
     if (declaration.state !== "declared")
       throw new Error("Merchant private inbox is not currently usable.")
@@ -227,11 +240,18 @@ async function publishStoredMerchantCheckoutSparkProgress(input: {
         accountPubkey: record.merchantPubkey,
         recipientPubkeys: [record.merchantPubkey],
         exclusiveRelayUrls: relayUrls,
+        relayTargets: relayTargetsFromUrls(relayUrls, {
+          kind: "owner_nip17",
+          operation: "write",
+          ownerPubkey: record.merchantPubkey,
+        }),
         appRelayUrls: [],
         personalRelayUrls: [],
         independentRelayUrls: relayUrls,
         accountNetworkLocalStateRepository:
           transport?.accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository:
+          transport?.inboxDeclarationEvidenceRepository,
         shouldContinue: input.shouldContinue,
         deliveryMode: "critical",
         ...(transport?.relayAuthMethod &&

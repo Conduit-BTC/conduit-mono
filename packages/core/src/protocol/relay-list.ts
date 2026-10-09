@@ -4,6 +4,11 @@ import { db, type CachedRelayList } from "../db"
 import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
 import {
+  compareAccountNetworkRevisions,
+  reconcileAccountNetworkReadDiagnostics,
+} from "./account-network-evidence"
+import type { RelayTarget } from "./relay-authority"
+import {
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
   verifySignedEvents,
@@ -62,6 +67,8 @@ export interface RelayListLookupOptions {
   cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
   relayUrls?: readonly string[]
+  /** Exact authority supplied by the lookup planner. */
+  relayTargets?: readonly RelayTarget[]
   /** Bound admitted relay attempts after live source-policy filtering. */
   maxRelayAttempts?: number
   /**
@@ -314,12 +321,7 @@ export function pickLatestRelayListEvent<
   let latest: T | undefined
   for (const event of events) {
     if (event.pubkey !== pubkey) continue
-    const candidateTs = event.created_at ?? 0
-    if (
-      !latest ||
-      candidateTs > (latest.created_at ?? 0) ||
-      (candidateTs === (latest.created_at ?? 0) && event.id < latest.id)
-    ) {
+    if (!latest || compareAccountNetworkRevisions(event, latest) > 0) {
       latest = event
     }
   }
@@ -412,6 +414,7 @@ async function runFetch(
   options: Pick<
     RelayListLookupOptions,
     | "accountPubkey"
+    | "relayTargets"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
@@ -427,12 +430,9 @@ async function runFetch(
   const impl = testOverrides.fetchPublicEvents ?? fetchPublicEvents
   return (await impl(filter, {
     relayUrls: [...relayUrls],
+    relayTargets: options.relayTargets,
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
-    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-    appRelayUrls: options.appRelayUrls,
-    personalRelayUrls: options.personalRelayUrls,
-    independentRelayUrls: options.independentRelayUrls,
     maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
@@ -449,6 +449,7 @@ async function runFetchDetailed(
   options: Pick<
     RelayListLookupOptions,
     | "accountPubkey"
+    | "relayTargets"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
@@ -466,12 +467,9 @@ async function runFetchDetailed(
   if (testOverrides.fetchSignedEventsFanoutDetailed) {
     return await testOverrides.fetchSignedEventsFanoutDetailed(filter, {
       relayUrls: [...relayUrls],
+      relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
-      ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-      appRelayUrls: options.appRelayUrls,
-      personalRelayUrls: options.personalRelayUrls,
-      independentRelayUrls: options.independentRelayUrls,
       maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
@@ -485,12 +483,9 @@ async function runFetchDetailed(
   if (testOverrides.fetchPublicEvents) {
     const events = await testOverrides.fetchPublicEvents(filter, {
       relayUrls: [...relayUrls],
+      relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
-      ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-      appRelayUrls: options.appRelayUrls,
-      personalRelayUrls: options.personalRelayUrls,
-      independentRelayUrls: options.independentRelayUrls,
       maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
@@ -511,12 +506,9 @@ async function runFetchDetailed(
   }
   return await fetchSignedEventsFanoutDetailed(filter, {
     relayUrls: [...relayUrls],
+    relayTargets: options.relayTargets,
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
-    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-    appRelayUrls: options.appRelayUrls,
-    personalRelayUrls: options.personalRelayUrls,
-    independentRelayUrls: options.independentRelayUrls,
     maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
@@ -693,13 +685,6 @@ export async function getRelayListsDetailed(
       opts
     )
     throwIfLookupAborted(opts.signal)
-    const statusByRelay = new Map(
-      result.relays.map((relay) => [relay.relayUrl, relay.status] as const)
-    )
-    const admittedRelayUrls = result.admittedRelayUrls ?? relayUrls
-    const requiredRelayUrls = opts.requireAllRequestedRelays
-      ? relayUrls
-      : admittedRelayUrls
     const verification = await verifySignedEvents(result.events, {
       signal: opts.signal,
       maxEvents: result.events.length,
@@ -708,18 +693,27 @@ export async function getRelayListsDetailed(
     const verified =
       !verification.truncated &&
       verification.events.length === result.events.length
+    const readEvidence = reconcileAccountNetworkReadDiagnostics(
+      verified
+        ? { ...result, events: verification.events }
+        : {
+            ...result,
+            events: verification.events,
+            relays: result.relays.map((relay) => ({
+              ...relay,
+              outcome: "verification_failed" as const,
+            })),
+          },
+      relayUrls
+    )
     const transportComplete =
-      verified &&
-      requiredRelayUrls.length > 0 &&
-      requiredRelayUrls.every(
-        (relayUrl) => statusByRelay.get(relayUrl) === "success"
-      )
+      readEvidence.coverage === "complete" &&
+      (!opts.requireAllRequestedRelays ||
+        readEvidence.sources.every(
+          (source) => source.availability === "complete"
+        ))
     const transportUsable =
-      verified &&
-      admittedRelayUrls.some((relayUrl) => {
-        const status = statusByRelay.get(relayUrl)
-        return status === "success" || status === "partial"
-      })
+      readEvidence.coverage === "partial" || transportComplete
 
     for (const pubkey of missing) {
       const latest = pickLatestRelayListEvent(verification.events, pubkey)

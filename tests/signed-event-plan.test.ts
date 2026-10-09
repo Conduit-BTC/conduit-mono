@@ -9,6 +9,7 @@ import {
   publishSignedEventToRelay,
   publishWithPlanner,
   publishWithPlannerProgressive,
+  relayTargetsFromUrls,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { publishSignedEventFrameToRelay } from "../packages/core/src/protocol/relay-writer"
@@ -28,6 +29,13 @@ function event(kind = 1): SignedPublicNostrEvent {
     },
     generateSecretKey()
   )
+}
+
+function explicitWriteTargets(relayUrls: readonly string[]) {
+  return relayTargetsFromUrls(relayUrls, {
+    kind: "source_delivery",
+    operation: "write",
+  })
 }
 
 afterEach(() => {
@@ -274,6 +282,9 @@ describe("composed plain signed-event target plan", () => {
         const resultPromise = publishSignedEventPlan({
           event: signed,
           relayUrls: ["wss://stall.fixture.conduit.market"],
+          relayTargets: explicitWriteTargets([
+            "wss://stall.fixture.conduit.market",
+          ]),
           timeoutMs: 1_000,
           requiredRelayCount: 1,
           accountPubkey: signed.pubkey,
@@ -350,20 +361,20 @@ describe("composed plain signed-event target plan", () => {
       try {
         for (let attempt = 0; attempt < 2; attempt++) {
           connected = false
-          let reads = 0
+          let planRead = false
           const result = await publishSignedEventPlan({
             event: signed,
             relayUrls: [target],
-            independentRelayUrls: [target],
+            relayTargets: explicitWriteTargets([target]),
             timeoutMs: 150,
             requiredRelayCount: 1,
             accountPubkey: signed.pubkey,
             accountNetworkLocalStateRepository: {
               get: async (pubkey) => {
-                reads++
                 // Initial plan succeeds; the live target refresh fails.
-                if (phase === "before connection" ? reads > 2 : connected)
+                if (phase === "before connection" ? planRead : connected)
                   throw new Error("synthetic local policy read failure")
+                planRead = true
                 return emptyAccountNetworkLocalState(pubkey)
               },
             },
@@ -407,6 +418,7 @@ describe("composed plain signed-event target plan", () => {
       const status = await publishSignedEventToRelay({
         signedEvent: signed,
         relayUrl: target,
+        relayTarget: explicitWriteTargets([target])[0],
         authorPubkey: signed.pubkey,
         accountPubkey: signed.pubkey,
         accountNetworkLocalStateRepository: {
@@ -501,6 +513,7 @@ describe("composed plain signed-event target plan", () => {
         "ws://remote.fixture.conduit.market",
         "wss://127.0.0.1",
       ],
+      relayTargets: explicitWriteTargets(["wss://fast.fixture.conduit.market"]),
       timeoutMs: 150,
       requiredRelayCount: 1,
       accountPubkey: signed.pubkey,

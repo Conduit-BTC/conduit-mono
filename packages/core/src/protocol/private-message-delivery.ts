@@ -1,3 +1,4 @@
+import { relayTargetsFromUrls, type RelayTarget } from "./relay-authority"
 import type {
   OrderDeliveryRoute,
   OrderRelayCompatibilityPlan,
@@ -14,7 +15,7 @@ import {
   type Nip17CompatibilityResultTelemetryInput,
 } from "../telemetry-event-properties"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   normalizeAccountNetworkPubkey,
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
@@ -31,6 +32,7 @@ import {
   createPrivateMessageRumor,
   inspectRetainedOwnPrivateMessageRelayReadiness,
   wrapPrivateMessage,
+  type FetchInboxRelayOptions,
   type OwnPrivateMessageRelayReadiness,
   type PrivateMessageEvent,
   type ValidatedGuestOrderCompanionScope,
@@ -75,6 +77,7 @@ export interface PrivateDeliveryLeg {
   relayUrls: string[]
   ownerSelectedRelayUrls: string[]
   compatibility: boolean
+  relayTargets?: RelayTarget[]
   relaySources?: Record<string, "declared" | CompatibilityOrderRelaySource>
   truncated?: boolean
   acknowledged: string[]
@@ -274,6 +277,7 @@ export async function retryPrivateDeliveries(
   options: {
     replayAcknowledged?: boolean
     shouldContinue?: () => boolean
+    inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
     foregroundRelayAuthentication?: {
       signer: AccountSigner
       method: "nip07" | "nip46"
@@ -358,6 +362,8 @@ export async function retryPrivateDeliveries(
           senderPubkey: principal,
           accountPubkey: principal,
           authenticatedPubkey: principal,
+          inboxDeclarationEvidenceRepository:
+            options.inboxDeclarationEvidenceRepository,
           shouldContinue: () => {
             assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
             assertForegroundAuthority()
@@ -501,6 +507,7 @@ export interface PublishPrivateMessageInput {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
   /** Live caller authority for recipient and sender declaration reads. */
   shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signer: NostrKeySigner
@@ -569,7 +576,15 @@ export interface PublishPrivateMessageInput {
   resolveInboxRelays?: (pubkey: string) => Promise<string[]>
   /** Controlled readiness seam for the sender-side kind-14 safety gate. */
   inspectOwnInboxReadiness?: (
-    pubkey: string
+    pubkey: string,
+    options?: Pick<
+      FetchInboxRelayOptions,
+      | "durableEvidenceRepository"
+      | "requestingAccountPubkey"
+      | "authenticatedPubkey"
+      | "accountNetworkLocalStateRepository"
+      | "shouldContinue"
+    >
   ) => Promise<OwnPrivateMessageRelayReadiness>
   /**
    * One-use capability for a recipient-only guest-order notification. It may
@@ -766,7 +781,6 @@ export type PrivateMessageRelayReadinessReason =
   | "recipient_not_ready"
   | "recipient_relays_excluded"
   | "recipient_lookup_failed"
-  | "recipient_declaration_distribution_pending"
   | "recipient_declaration_signed_empty"
   | "recipient_declaration_malformed"
 
@@ -778,8 +792,6 @@ const READINESS_MESSAGES: Record<PrivateMessageRelayReadinessReason, string> = {
   recipient_relays_excluded:
     "Recipient inbox relays are excluded by your Network settings.",
   recipient_lookup_failed: "Recipient inbox relay discovery failed.",
-  recipient_declaration_distribution_pending:
-    "Recipient inbox declaration has not been confirmed on discovery relays.",
   recipient_declaration_signed_empty:
     "Recipient's signed inbox declaration lists no relays.",
   recipient_declaration_malformed:
@@ -1010,14 +1022,16 @@ export async function publishPrivateMessage(
     accountPubkey,
     authenticatedOwnerPubkey,
     input.accountNetworkLocalStateRepository,
-    input.shouldContinue
+    input.shouldContinue,
+    input.inboxDeclarationEvidenceRepository
   )
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
     resolvedRecipientDeclaration,
     accountPubkey,
     authenticatedOwnerPubkey,
-    input.accountNetworkLocalStateRepository
+    input.accountNetworkLocalStateRepository,
+    input.inboxDeclarationEvidenceRepository
   )
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   if (
@@ -1058,9 +1072,7 @@ export async function publishPrivateMessage(
         ? "recipient_declaration_malformed"
         : recipientRoute.blockedReason === "declaration_signed_empty"
           ? "recipient_declaration_signed_empty"
-          : recipientRoute.blockedReason === "declaration_distribution_pending"
-            ? "recipient_declaration_distribution_pending"
-            : (recipientRoute.blockedReason ?? "recipient_not_ready")
+          : (recipientRoute.blockedReason ?? "recipient_not_ready")
     recordValidatedOrderCompatibilityOutcome(input, validatedOrder, {
       declarationClass: recipientDeclaration.state,
       deliveryRoute: "blocked",
@@ -1098,38 +1110,52 @@ export async function publishPrivateMessage(
   }
 
   let senderReadyRelays: string[] | null = null
+  let senderReadyDeclaration: InboxDeclarationResolution | null = null
   if (input.rumorKind !== EVENT_KINDS.ORDER && !validatedGuestOrderCompanion) {
     const senderReadiness = await (
       input.inspectOwnInboxReadiness ??
       inspectRetainedOwnPrivateMessageRelayReadiness
-    )(senderPubkey)
+    )(senderPubkey, {
+      durableEvidenceRepository: input.inboxDeclarationEvidenceRepository,
+      requestingAccountPubkey: accountPubkey,
+      authenticatedPubkey: authenticatedOwnerPubkey,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
+      shouldContinue: input.shouldContinue,
+    })
     if (senderReadiness.state !== "ready") {
       throw new PrivateMessageRelayReadinessError("sender_not_ready")
     }
-    const senderRelayUrls = await filterRelayUrlsForAccount(
-      senderReadiness.relayUrls,
+    const senderDeclaration: InboxDeclarationResolution = {
+      pubkey: senderPubkey,
+      state: "declared",
+      eventId: senderReadiness.eventId,
+      relayUrls: senderReadiness.relayUrls,
+      stale: senderReadiness.stale,
+      fetchedAt: Date.now(),
+    }
+    const senderRelayUrls = await filterDeclarationRelayUrlsForAccount(
+      senderDeclaration,
       accountPubkey,
       authenticatedOwnerPubkey,
       input.accountNetworkLocalStateRepository,
-      senderReadiness.relayUrls
+      input.inboxDeclarationEvidenceRepository
     )
     if (senderRelayUrls.length === 0) {
       throw new PrivateMessageRelayReadinessError("sender_not_ready")
     }
     senderReadyRelays = senderRelayUrls
+    senderReadyDeclaration = {
+      ...senderDeclaration,
+      relayUrls: senderRelayUrls,
+    }
   }
   const resolveSenderRoute =
     async (): Promise<DeliveryRouteSelection | null> => {
       if (senderReadyRelays)
         return selectPrivateMessageDeliveryRoute({
           rumorKind: 14,
-          declaration: {
-            pubkey: senderPubkey,
-            state: "declared",
-            relayUrls: senderReadyRelays,
-            stale: false,
-            fetchedAt: Date.now(),
-          },
+          declaration: senderReadyDeclaration!,
           validatedOrder: false,
           authenticatedOwnerPubkey,
           ownerSelectedRelayUrls: senderReadyRelays,
@@ -1144,7 +1170,8 @@ export async function publishPrivateMessage(
         accountPubkey,
         authenticatedOwnerPubkey,
         input.accountNetworkLocalStateRepository,
-        input.shouldContinue
+        input.shouldContinue,
+        input.inboxDeclarationEvidenceRepository
       )
       // The compatibility lane is recipient-only: the non-critical sender self-copy
       // stays strict and fails soft instead of writing to compatibility relays.
@@ -1511,7 +1538,8 @@ async function resolveDeclarationForSend(
     AccountNetworkLocalStateRepository,
     "get"
   >,
-  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"],
+  evidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
 ): Promise<InboxDeclarationResolution> {
   const key = pubkey.trim().toLowerCase()
   if (knownRelayUrls) {
@@ -1520,6 +1548,12 @@ async function resolveDeclarationForSend(
   if (legacySeam) {
     return resolveDeclarationViaSeam(pubkey, legacySeam, allowLocalRelayUrls)
   }
+  const retained = evidenceRepository
+    ? await readRetainedInboxDeclaration(pubkey, {
+        durableEvidenceRepository: evidenceRepository,
+      })
+    : null
+  if (retained && !retained.stale) return retained
   return resolveInboxDeclaration(pubkey, {
     allowLocalRelayUrlsForPubkey: allowLocalRelayUrls ? pubkey : null,
     requestingAccountPubkey,
@@ -1529,38 +1563,59 @@ async function resolveDeclarationForSend(
   })
 }
 
-async function filterRelayUrlsForAccount(
-  relayUrls: readonly string[],
+async function filterDeclarationRelayUrlsForAccount(
+  declaration: InboxDeclarationResolution,
   accountPubkey: string | null,
   authenticatedPubkey: string | null,
   repository?: Pick<AccountNetworkLocalStateRepository, "get">,
-  ownerSelectedRelayUrls: readonly string[] = []
+  evidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
 ): Promise<string[]> {
-  return accountPubkey
-    ? await filterEligibleAccountRelayUrls({
-        accountPubkey,
-        authenticatedPubkey,
-        candidateRelayUrls: relayUrls,
-        ownerSelectedRelayUrls,
-        repository,
-      })
-    : [...relayUrls]
+  if (!accountPubkey) return publicRelayHintUrls(declaration.relayUrls)
+  const owner =
+    authenticatedPubkey === accountPubkey &&
+    declaration.pubkey === accountPubkey
+  return (
+    await filterEligibleAccountRelayTargets({
+      accountPubkey,
+      authenticatedPubkey,
+      targets: relayTargetsFromUrls(
+        declaration.relayUrls,
+        owner
+          ? {
+              kind: "owner_nip17",
+              operation: "write",
+              ownerPubkey: accountPubkey,
+            }
+          : {
+              kind: "recipient_nip17",
+              operation: "write",
+              recipientPubkey: declaration.pubkey,
+              ...(declaration.eventId ? { eventId: declaration.eventId } : {}),
+            }
+      ),
+      operation: "write",
+      repository,
+      inboxDeclarationEvidenceRepository: evidenceRepository,
+    })
+  ).map((target) => target.url)
 }
 
 async function applyAccountRelayEligibilityToDeclaration(
   declaration: InboxDeclarationResolution,
   accountPubkey: string | null,
   authenticatedPubkey: string | null,
-  repository?: Pick<AccountNetworkLocalStateRepository, "get">
+  repository?: Pick<AccountNetworkLocalStateRepository, "get">,
+  evidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
 ): Promise<InboxDeclarationResolution> {
   if (declaration.state !== "declared" || !accountPubkey) return declaration
   return {
     ...declaration,
-    relayUrls: await filterRelayUrlsForAccount(
-      declaration.relayUrls,
+    relayUrls: await filterDeclarationRelayUrlsForAccount(
+      declaration,
       accountPubkey,
       authenticatedPubkey,
-      repository
+      repository,
+      evidenceRepository
     ),
   }
 }
@@ -1632,6 +1687,7 @@ function deliveryLeg(
     relayUrls: [...route.relayUrls],
     ownerSelectedRelayUrls: [...route.ownerSelectedRelayUrls],
     compatibility: route.route === "compatibility_order",
+    relayTargets: route.relayTargets,
     relaySources: { ...route.relaySources },
     truncated: route.truncated,
     acknowledged: [],
@@ -1644,6 +1700,7 @@ type PrivateDeliveryContext = Pick<
   | "accountPubkey"
   | "authenticatedPubkey"
   | "accountNetworkLocalStateRepository"
+  | "inboxDeclarationEvidenceRepository"
   | "shouldContinue"
   | "refreshRelayLists"
   | "publishFn"
@@ -1677,8 +1734,32 @@ export async function publishPrivateDeliveryLeg(
     authenticatedPubkey: input.authenticatedPubkey,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
+    inboxDeclarationEvidenceRepository:
+      input.inboxDeclarationEvidenceRepository,
     recipientPubkeys: [leg.recipientPubkey],
     exclusiveRelayUrls: leg.relayUrls,
+    relayTargets:
+      leg.relayTargets ??
+      relayTargetsFromUrls(
+        leg.relayUrls,
+        leg.compatibility
+          ? {
+              kind: "compatibility",
+              operation: "write",
+              policy: "order_delivery",
+            }
+          : leg.recipientPubkey === input.authenticatedPubkey
+            ? {
+                kind: "owner_nip17",
+                operation: "write",
+                ownerPubkey: leg.recipientPubkey,
+              }
+            : {
+                kind: "recipient_nip17",
+                operation: "write",
+                recipientPubkey: leg.recipientPubkey,
+              }
+      ),
     ownerSelectedRelayUrls: leg.ownerSelectedRelayUrls,
     appRelayUrls: leg.compatibility ? leg.relayUrls : [],
     personalRelayUrls: [],
@@ -1773,23 +1854,37 @@ async function privateDeliveryRetryTargets(
   const { leg } = input
   const targets = leg.relayUrls.filter((url) => !leg.acknowledged.includes(url))
   if (!targets.length) return []
-  const declaration = await (
-    input.resolveDeclaration ?? resolveInboxDeclaration
-  )(leg.recipientPubkey, {
-    requestingAccountPubkey: input.accountPubkey,
-    authenticatedPubkey: input.authenticatedPubkey,
-    allowLocalRelayUrlsForPubkey: input.authenticatedPubkey,
-    accountNetworkLocalStateRepository:
-      input.accountNetworkLocalStateRepository,
-    shouldContinue: input.shouldContinue,
-  })
+  const declaration = input.resolveDeclaration
+    ? await input.resolveDeclaration(leg.recipientPubkey, {
+        requestingAccountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.authenticatedPubkey,
+        allowLocalRelayUrlsForPubkey: input.authenticatedPubkey,
+        accountNetworkLocalStateRepository:
+          input.accountNetworkLocalStateRepository,
+        shouldContinue: input.shouldContinue,
+      })
+    : input.inboxDeclarationEvidenceRepository
+      ? ((await readRetainedInboxDeclaration(leg.recipientPubkey, {
+          durableEvidenceRepository: input.inboxDeclarationEvidenceRepository,
+        })) ??
+        (await resolveInboxDeclaration(leg.recipientPubkey, {
+          requestingAccountPubkey: input.accountPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          allowLocalRelayUrlsForPubkey: input.authenticatedPubkey,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
+        })))
+      : await resolveInboxDeclaration(leg.recipientPubkey, {
+          requestingAccountPubkey: input.accountPubkey,
+          authenticatedPubkey: input.authenticatedPubkey,
+          allowLocalRelayUrlsForPubkey: input.authenticatedPubkey,
+          accountNetworkLocalStateRepository:
+            input.accountNetworkLocalStateRepository,
+          shouldContinue: input.shouldContinue,
+        })
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
-  if (
-    ["signed_empty", "malformed", "distribution_pending"].includes(
-      declaration.state
-    )
-  )
-    return []
+  if (["signed_empty", "malformed"].includes(declaration.state)) return []
   if (leg.compatibility && !isApprovedCompatibilityOrderRelayPlan(targets))
     return []
   if (!leg.compatibility && declaration.state === "declared")
@@ -1863,7 +1958,12 @@ export async function retryPrivateMessageWraps(
                 ...input.inboxDeclarationOptions,
                 ...options,
               }),
-        { replayAcknowledged, shouldContinue: input.shouldContinue }
+        {
+          replayAcknowledged,
+          shouldContinue: input.shouldContinue,
+          inboxDeclarationEvidenceRepository:
+            input.inboxDeclarationEvidenceRepository,
+        }
       )
       if (replayAcknowledged) {
         const delivery = attempts.get(event.id)
@@ -1892,9 +1992,16 @@ export async function retryPrivateMessageWraps(
             input.accountPubkey ?? null,
             input.authenticatedPubkey ?? null,
             input.accountNetworkLocalStateRepository,
-            input.shouldContinue
+            input.shouldContinue,
+            input.inboxDeclarationEvidenceRepository
           )
-        : await resolveInboxDeclaration(recipient, {
+        : ((input.inboxDeclarationEvidenceRepository
+            ? await readRetainedInboxDeclaration(recipient, {
+                durableEvidenceRepository:
+                  input.inboxDeclarationEvidenceRepository,
+              })
+            : null) ??
+          (await resolveInboxDeclaration(recipient, {
             ...input.inboxDeclarationOptions,
             requestingAccountPubkey: input.accountPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
@@ -1904,7 +2011,7 @@ export async function retryPrivateMessageWraps(
             shouldContinue:
               input.shouldContinue ??
               input.inboxDeclarationOptions?.shouldContinue,
-          })
+          })))
     assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
     const route = selectPrivateMessageDeliveryRoute({
       rumorKind: 14,
@@ -1957,6 +2064,8 @@ function accumulatedDelivery(
 }
 
 export type PrivateDeliveryTargetPublisher = (input: {
+  relayTarget?: RelayTarget
+  inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
   accountPubkey: string
@@ -1977,6 +2086,7 @@ export async function retryPrivateDeliveryTargets<Checkpoint>(input: {
   leg: PrivateDeliveryLeg
   senderPubkey: string
   accountPubkey: string
+  inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -2022,15 +2132,30 @@ export async function retryPrivateDeliveryTargets<Checkpoint>(input: {
   })
   for (const { value: relayUrl } of operations) {
     if (input.shouldContinue?.() === false) break
-    const appRelayUrls = leg.compatibility ? [relayUrl] : []
-    const independentRelayUrls = leg.compatibility ? [] : [relayUrl]
-    const eligible = await filterEligibleAccountRelayUrls({
+    const relayTarget = (
+      leg.relayTargets ??
+      relayTargetsFromUrls(
+        leg.relayUrls,
+        leg.compatibility
+          ? {
+              kind: "compatibility",
+              operation: "write",
+              policy: "order_delivery",
+            }
+          : {
+              kind: "recipient_nip17",
+              operation: "write",
+              recipientPubkey: leg.recipientPubkey,
+            }
+      )
+    ).find((target) => target.url === relayUrl)
+    const eligible = await filterEligibleAccountRelayTargets({
       accountPubkey: input.accountPubkey,
-      candidateRelayUrls: [relayUrl],
-      appRelayUrls,
-      personalRelayUrls: [],
-      independentRelayUrls,
+      targets: relayTarget ? [relayTarget] : [],
+      operation: "write",
       repository: input.accountNetworkLocalStateRepository,
+      inboxDeclarationEvidenceRepository:
+        input.inboxDeclarationEvidenceRepository,
     })
     if (!eligible.length || input.shouldContinue?.() === false) continue
     const checkpoint = await input.beforePublish(relayUrl)
@@ -2048,9 +2173,9 @@ export async function retryPrivateDeliveryTargets<Checkpoint>(input: {
         relayUrl,
         signedEvent: leg.event,
         accountPubkey: input.accountPubkey,
-        appRelayUrls,
-        personalRelayUrls: [],
-        independentRelayUrls,
+        relayTarget,
+        inboxDeclarationEvidenceRepository:
+          input.inboxDeclarationEvidenceRepository,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,

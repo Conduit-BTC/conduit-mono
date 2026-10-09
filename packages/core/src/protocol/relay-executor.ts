@@ -53,6 +53,8 @@ export type RelayQuery = RelayRequest
 
 export interface RelayExecutionOptions {
   signal?: AbortSignal
+  /** Recheck account relay authority immediately before obtaining a socket. */
+  admitRelay?: (relayUrl: string) => Promise<boolean>
   authorization?: ProtectedReadAuthorization
   /** Validated protected events; early only after this socket has authenticated. */
   onProtectedEvent?: (event: SignedNostrEvent) => void
@@ -1546,6 +1548,19 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     }
     let connection: RelayConnection
     try {
+      if (options.admitRelay && !(await options.admitRelay(relayUrl))) {
+        observe({ type: "auth", relayIndex, state: "authority_changed" })
+        return {
+          relayIndex,
+          status: "failed",
+          auth: "authority_changed",
+          eventCount: 0,
+          duplicateCount: 0,
+          malformedCount: 0,
+          unusableCount: 0,
+          failure: "authority_changed",
+        }
+      }
       connection = await this.getConnection(
         relayUrl,
         authorization,

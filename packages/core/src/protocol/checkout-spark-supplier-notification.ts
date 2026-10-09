@@ -33,9 +33,11 @@ import {
 } from "./protected-read-authorization"
 import {
   resolveInboxDeclaration,
+  readRetainedInboxDeclaration,
   MAX_DECLARED_INBOX_WRITE_RELAYS,
 } from "./private-message-routing"
 import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
+import { relayTargetsFromUrls } from "./relay-authority"
 import {
   publishWithPlanner,
   RelayPublishDiagnosticsError,
@@ -104,6 +106,7 @@ export type CheckoutSparkSupplierNotificationTransport = Pick<
   | "deliveryStore"
   | "publishFn"
   | "accountNetworkLocalStateRepository"
+  | "inboxDeclarationEvidenceRepository"
   | "relayAuthMethod"
   | "waitForSignerVisibility"
 >
@@ -475,13 +478,23 @@ export async function retryCheckoutSparkSupplierNotification(input: {
       if (!relays && input.transport?.resolveInboxRelays)
         relays = await input.transport.resolveInboxRelays(recipient)
       if (!relays) {
-        const declaration = await resolveInboxDeclaration(recipient, {
-          requestingAccountPubkey: notification.merchantPubkey,
-          authenticatedPubkey: notification.merchantPubkey,
-          accountNetworkLocalStateRepository:
-            input.transport?.accountNetworkLocalStateRepository,
-          shouldContinue: input.shouldContinue,
-        })
+        const retained = input.transport?.inboxDeclarationEvidenceRepository
+          ? await readRetainedInboxDeclaration(recipient, {
+              durableEvidenceRepository:
+                input.transport.inboxDeclarationEvidenceRepository,
+            })
+          : null
+        assertCurrent()
+        const declaration =
+          retained && !retained.stale
+            ? retained
+            : await resolveInboxDeclaration(recipient, {
+                requestingAccountPubkey: notification.merchantPubkey,
+                authenticatedPubkey: notification.merchantPubkey,
+                accountNetworkLocalStateRepository:
+                  input.transport?.accountNetworkLocalStateRepository,
+                shouldContinue: input.shouldContinue,
+              })
         assertCurrent()
         if (declaration.state !== "declared") continue
         relays = declaration.relayUrls
@@ -503,11 +516,27 @@ export async function retryCheckoutSparkSupplierNotification(input: {
             accountPubkey: notification.merchantPubkey,
             recipientPubkeys: [recipient],
             exclusiveRelayUrls: targets,
+            relayTargets: relayTargetsFromUrls(
+              targets,
+              copy === "sender"
+                ? {
+                    kind: "owner_nip17",
+                    operation: "write",
+                    ownerPubkey: notification.merchantPubkey,
+                  }
+                : {
+                    kind: "recipient_nip17",
+                    operation: "write",
+                    recipientPubkey: notification.supplierPubkey,
+                  }
+            ),
             independentRelayUrls: targets,
             appRelayUrls: [],
             personalRelayUrls: [],
             accountNetworkLocalStateRepository:
               input.transport?.accountNetworkLocalStateRepository,
+            inboxDeclarationEvidenceRepository:
+              input.transport?.inboxDeclarationEvidenceRepository,
             shouldContinue: input.shouldContinue,
             deliveryMode: "critical",
             ...(input.transport?.relayAuthMethod &&

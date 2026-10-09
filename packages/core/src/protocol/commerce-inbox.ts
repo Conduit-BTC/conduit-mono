@@ -1,3 +1,4 @@
+import type { RelayTarget } from "./relay-authority"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -71,11 +72,8 @@ import {
 import { getAccountSigner, SessionSigner } from "./session-signer"
 
 interface InboxReadRelayPlan {
+  relayTargets: RelayTarget[]
   relayUrls: string[]
-  ownerSelectedRelayUrls: readonly string[]
-  appRelayUrls: readonly string[]
-  personalRelayUrls?: readonly string[]
-  independentRelayUrls?: readonly string[]
 }
 
 async function transportReadPlans(
@@ -95,11 +93,9 @@ async function transportReadPlans(
     }
   > = [
     {
-      ...secure,
+      relayTargets: secure.relayTargets,
+      relayUrls: secure.relayUrls,
       transport: "nip17",
-      appRelayUrls: secure.relayUrls.filter(
-        (url) => secure.relaySources[url] === "compatibility"
-      ),
     },
   ]
   if (includeLegacy) {
@@ -820,15 +816,8 @@ export class CommerceInbox {
             transport,
             authorization: this.authorization,
             relayUrls: [relayUrl],
-            ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls.filter(
-              (url) => url === relayUrl
-            ),
-            appRelayUrls: plan.appRelayUrls.filter((url) => url === relayUrl),
-            personalRelayUrls: plan.personalRelayUrls?.filter(
-              (url) => url === relayUrl
-            ),
-            independentRelayUrls: plan.independentRelayUrls?.filter(
-              (url) => url === relayUrl
+            relayTargets: plan.relayTargets.filter(
+              (target) => target.url === relayUrl
             ),
             limit: 50,
             onEvent: (event) => {
@@ -977,13 +966,8 @@ export class CommerceInbox {
           transport,
           relayUrl,
           authorizedRelayUrls: plan.relayUrls,
-          declaredRelayUrls: plan.ownerSelectedRelayUrls,
-          appRelayUrls: plan.appRelayUrls.filter((url) => url === relayUrl),
-          personalRelayUrls: plan.personalRelayUrls?.filter(
-            (url) => url === relayUrl
-          ),
-          independentRelayUrls: plan.independentRelayUrls?.filter(
-            (url) => url === relayUrl
+          relayTargets: plan.relayTargets.filter(
+            (target) => target.url === relayUrl
           ),
           authorization: this.authorization,
           read: options.read,

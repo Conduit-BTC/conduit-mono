@@ -8,9 +8,15 @@ import {
   type ProductListingRelayTarget,
 } from "../db"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import { EVENT_KINDS } from "./kinds"
 import { readCurrentProductWriteRevision } from "./local-product-coordinate-lock"
 import {
@@ -76,8 +82,13 @@ export type ProductListingRelayPublisher = (input: {
   appRelayUrls: string[]
   personalRelayUrls: string[]
   independentRelayUrls: string[]
+  relayTarget: RelayTarget
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: Pick<
+    OwnerRelayListEvidenceRepository,
     "get"
   >
 }) => Promise<ProductListingPublisherResult>
@@ -114,6 +125,10 @@ export interface ProductListingDeliveryOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: Pick<
+    OwnerRelayListEvidenceRepository,
+    "get"
+  >
   now?: () => number
   retryDelayMs?: number
   isCompanionDeletionDurable?: (
@@ -125,6 +140,35 @@ export interface ProductListingDeliveryOptions {
     listingJobId: string,
     relayUrl: string
   ) => Promise<boolean>
+}
+
+/**
+ * A saved author-write target bounds the exact URL, not its current authority.
+ * Historical layer flags remain provenance; the final gate proves surviving
+ * configured App buckets or this author's current signed NIP-65 write choice.
+ */
+export function getProductListingDeliveryRelayTarget(
+  target: ProductListingRelayTarget,
+  accountPubkey: string
+): RelayTarget {
+  return mergeRelayTargets(
+    relayTargetsFromUrls([target.relayUrl], {
+      kind: "app",
+      operation: "write",
+      bucket: "commerce_write",
+    }),
+    relayTargetsFromUrls([target.relayUrl], {
+      kind: "app",
+      operation: "write",
+      bucket: "general_write",
+    }),
+    relayTargetsFromUrls([target.relayUrl], {
+      kind: "owner_nip65",
+      operation: "write",
+      ownerPubkey: accountPubkey,
+      selection: "write",
+    })
+  )[0]!
 }
 
 function cloneSignedEvent(
@@ -985,17 +1029,21 @@ async function deliverProductListingJobUnlocked(
         target.personalRelay === true ? [target.relayUrl] : []
       const independentRelayUrls =
         target.independentRelay === true ? [target.relayUrl] : []
-      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+      const relayTarget = getProductListingDeliveryRelayTarget(
+        target,
+        stored.merchantPubkey
+      )
+      const eligibleTargets = await filterEligibleAccountRelayTargets({
         accountPubkey: stored.merchantPubkey,
         authenticatedPubkey,
-        candidateRelayUrls: [target.relayUrl],
-        ownerSelectedRelayUrls,
-        appRelayUrls,
-        personalRelayUrls,
-        independentRelayUrls,
+        targets: [relayTarget],
+        operation: "write",
         repository: options.accountNetworkLocalStateRepository,
+        ownerRelayListEvidenceRepository:
+          options.ownerRelayListEvidenceRepository,
       })
-      if (eligibleRelayUrls.length === 0) return
+      const admittedTarget = eligibleTargets[0]
+      if (!admittedTarget) return
 
       const current = await markDeliveryAttemptStarted(
         repository,
@@ -1046,19 +1094,21 @@ async function deliverProductListingJobUnlocked(
             appRelayUrls,
             personalRelayUrls,
             independentRelayUrls,
+            relayTarget: admittedTarget,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
           })
         } catch {
-          const stillEligible = await filterEligibleAccountRelayUrls({
+          const stillEligible = await filterEligibleAccountRelayTargets({
             accountPubkey: stored.merchantPubkey,
             authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
-            candidateRelayUrls: [target.relayUrl],
-            ownerSelectedRelayUrls,
-            appRelayUrls,
-            personalRelayUrls,
-            independentRelayUrls,
+            targets: [relayTarget],
+            operation: "write",
             repository: options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
           })
           if (stillEligible.length === 0) return
           outcome = { status: "timed_out" }

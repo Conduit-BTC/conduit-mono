@@ -21,6 +21,7 @@ import {
   type RelayListResolutionState,
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
+import { mergeRelayTargets } from "./relay-authority"
 import { publishWithPlanner } from "./relay-publish"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import {
@@ -770,6 +771,7 @@ export async function readLatestFollowLists(
   })
   const relayLookupOptions = {
     relayUrls: relayListReadPlan.candidateRelayUrls,
+    relayTargets: relayListReadPlan.relayTargets,
     maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
     accountPubkey: normalizedAccountPubkey,
     authenticatedPubkey: normalizedAuthenticatedPubkey,
@@ -873,31 +875,6 @@ export async function readLatestFollowLists(
         ])
       )
       const candidateRelaySet = new Set(candidateRelayUrls)
-      const plannedOwnerSelectedRelayUrls = Array.from(
-        new Set([
-          ...(authorPlan.ownerSelectedRelayUrls ?? []),
-          ...(basePlan.ownerSelectedRelayUrls ?? []),
-        ])
-      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
-      const plannedAppRelayUrls = Array.from(
-        new Set([
-          ...(authorPlan.appRelayUrls ?? []),
-          ...(basePlan.appRelayUrls ?? []),
-        ])
-      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
-      const plannedPersonalRelayUrls = Array.from(
-        new Set([
-          ...(authorPlan.personalRelayUrls ?? []),
-          ...(basePlan.personalRelayUrls ?? []),
-        ])
-      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
-      const plannedIndependentRelayUrls = Array.from(
-        new Set([
-          ...(authorPlan.independentRelayUrls ?? []),
-          ...(basePlan.independentRelayUrls ?? []),
-        ])
-      ).filter((relayUrl) => candidateRelaySet.has(relayUrl))
-
       if (candidateRelayUrls.length === 0) {
         return await preserveStrongestOwnFollowList(
           {
@@ -930,13 +907,13 @@ export async function readLatestFollowLists(
           },
           {
             relayUrls: candidateRelayUrls,
+            relayTargets: mergeRelayTargets(
+              authorPlan.relayTargets,
+              basePlan.relayTargets
+            ).filter((target) => candidateRelaySet.has(target.url)),
             maxRelayAttempts: maxRelays,
             accountPubkey: normalizedAccountPubkey,
             authenticatedPubkey: normalizedAuthenticatedPubkey,
-            ownerSelectedRelayUrls: plannedOwnerSelectedRelayUrls,
-            appRelayUrls: plannedAppRelayUrls,
-            personalRelayUrls: plannedPersonalRelayUrls,
-            independentRelayUrls: plannedIndependentRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             shouldContinue: options.shouldContinue,

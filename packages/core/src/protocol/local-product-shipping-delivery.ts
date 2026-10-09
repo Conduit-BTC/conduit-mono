@@ -8,7 +8,7 @@ import {
   type ProductListingRelayTarget,
 } from "../db"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
@@ -23,10 +23,13 @@ import {
 } from "./signed-event"
 import {
   getProductListingDeliveryJobId,
+  getProductListingDeliveryRelayTarget,
   isProductListingEventReplayEligible,
 } from "./product-listing-delivery"
 import { readCurrentProductWriteRevision } from "./local-product-write"
 import { publishSignedEventToRelay } from "./relay-publish"
+import type { RelayTarget } from "./relay-authority"
+import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 
 const DEFAULT_MAX_RELAY_ATTEMPTS = 6
 const DEFAULT_MAX_JOBS = 8
@@ -74,8 +77,14 @@ export type ProductShippingRelayPublisher = (input: {
   appRelayUrls: string[]
   personalRelayUrls: string[]
   independentRelayUrls: string[]
+  /** Exact saved target with independently admitted current write grants. */
+  relayTarget: RelayTarget
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: Pick<
+    OwnerRelayListEvidenceRepository,
     "get"
   >
 }) => Promise<{ status: "acked" | "rejected" | "timed_out" }>
@@ -83,23 +92,36 @@ export type ProductShippingRelayPublisher = (input: {
 /** Core's exact-frame edge adapter; unlike listing delivery, it never caches 30406 as 30402. */
 export const publishExactProductShippingRelay: ProductShippingRelayPublisher =
   async (input) => {
-    const authenticatedPubkey = input.authenticatedPubkey
+    let authenticatedPubkey = input.authenticatedPubkey
+    try {
+      if (
+        authenticatedPubkey &&
+        input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) === false
+      ) {
+        authenticatedPubkey = null
+      }
+    } catch {
+      authenticatedPubkey = null
+    }
+    const needsAuthenticatedOwner = input.relayTarget.grants.every(
+      (grant) => grant.kind === "owner_nip65"
+    )
     const status = await publishSignedEventToRelay({
       relayUrl: input.relayUrl,
       signedEvent: input.signedEvent,
       authorPubkey: input.signedEvent.pubkey,
       accountPubkey: input.accountPubkey,
       authenticatedPubkey,
-      ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-      appRelayUrls: input.appRelayUrls,
-      personalRelayUrls: input.personalRelayUrls,
-      independentRelayUrls: input.independentRelayUrls,
+      relayTarget: input.relayTarget,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
-      shouldContinue: authenticatedPubkey
-        ? () =>
-            input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) !== false
-        : undefined,
+      ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,
+      shouldContinue:
+        needsAuthenticatedOwner && authenticatedPubkey
+          ? () =>
+              input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) !==
+              false
+          : undefined,
     })
     // Authentication defers this exact frame; it is not a terminal rejection.
     return {
@@ -114,6 +136,10 @@ export interface ProductShippingDeliveryOptions {
   isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: Pick<
+    OwnerRelayListEvidenceRepository,
     "get"
   >
   /** One invocation sends each target at most once; callers schedule later retries. */
@@ -513,21 +539,35 @@ export async function deliverProductShippingJob(
       )
       if (current.acknowledgedRelayUrls.includes(target.relayUrl)) continue
 
-      const authenticatedPubkey = activeAuthenticatedPubkey(options)
+      let authenticatedPubkey = activeAuthenticatedPubkey(options)
       const sources = {
         ownerSelectedRelayUrls: target.ownerSelected ? [target.relayUrl] : [],
         appRelayUrls: target.appRelay ? [target.relayUrl] : [],
         personalRelayUrls: target.personalRelay ? [target.relayUrl] : [],
         independentRelayUrls: target.independentRelay ? [target.relayUrl] : [],
       }
-      const eligible = await filterEligibleAccountRelayUrls({
-        accountPubkey: current.merchantPubkey,
-        authenticatedPubkey,
-        candidateRelayUrls: [target.relayUrl],
-        ...sources,
-        repository: options.accountNetworkLocalStateRepository,
-      })
-      if (!eligible.includes(target.relayUrl)) continue
+      const relayTarget = getProductListingDeliveryRelayTarget(
+        target,
+        current.merchantPubkey
+      )
+      const admission = () =>
+        filterEligibleAccountRelayTargets({
+          accountPubkey: current.merchantPubkey,
+          authenticatedPubkey,
+          targets: [relayTarget],
+          operation: "write",
+          repository: options.accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository:
+            options.ownerRelayListEvidenceRepository,
+        })
+      let eligible = await admission()
+      const currentAuthenticatedPubkey = activeAuthenticatedPubkey(options)
+      if (currentAuthenticatedPubkey !== authenticatedPubkey) {
+        authenticatedPubkey = currentAuthenticatedPubkey
+        eligible = await admission()
+      }
+      const admittedTarget = eligible.find(({ url }) => url === target.relayUrl)
+      if (!admittedTarget) continue
       let outcome: Awaited<ReturnType<ProductShippingRelayPublisher>>
       try {
         outcome = await publisher({
@@ -537,8 +577,11 @@ export async function deliverProductShippingJob(
           authenticatedPubkey,
           isAuthenticatedPubkeyCurrent: options.isAuthenticatedPubkeyCurrent,
           ...sources,
+          relayTarget: admittedTarget,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository:
+            options.ownerRelayListEvidenceRepository,
         })
       } catch {
         // An unavailable relay is not an ACK. Keep the exact job for repair.

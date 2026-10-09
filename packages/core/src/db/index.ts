@@ -506,6 +506,7 @@ export type OwnerRelayListLookupCoverage =
   "complete" | "partial" | "unavailable"
 
 export interface OwnerRelayListLookupEvidence {
+  sources?: import("../protocol/account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: OwnerRelayListLookupCoverage
   /** True only when this lookup returned a valid, owner-authored kind-10002. */
@@ -546,7 +547,15 @@ export type NetworkPreferencePublishStatus =
   | "error"
 
 export type NetworkPreferenceReadbackStatus =
-  "pending" | "observed" | "absent" | "timed_out"
+  | "pending"
+  | "observed"
+  | "absent"
+  | "timed_out"
+  | "auth_required"
+  | "verification_unavailable"
+  | "unavailable"
+  | "policy_blocked"
+  | "cancelled"
 
 /** Content-free delivery evidence for one immutable signed-event target. */
 export interface NetworkPreferenceRelayOutcome {
@@ -597,6 +606,7 @@ export type InboxDeclarationLookupCoverage =
  * observation cannot disappear after a process restart.
  */
 export interface InboxDeclarationLookupEvidence {
+  sources?: import("../protocol/account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: InboxDeclarationLookupCoverage
   /** True when the lookup returned an event, including unusable evidence. */

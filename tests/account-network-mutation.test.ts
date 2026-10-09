@@ -24,7 +24,7 @@ import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   orderEquivalentAccountRelayOperations,
 } from "@conduit/core/protocol/account-network-local-state"
 import {
@@ -34,6 +34,10 @@ import {
   INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
 } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { EVENT_KINDS } from "@conduit/core/protocol/kinds"
+import {
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "@conduit/core/protocol/relay-authority"
 import type { AccountNetworkPreferencesReconciliation } from "@conduit/core/protocol/network-preferences"
 import { NostrSignerError } from "@conduit/core/protocol/nostr-event-signer"
 import {
@@ -52,8 +56,8 @@ const RELAY_B = "wss://nos.lol"
 const INBOX_A = "wss://relay.primal.net"
 const INBOX_B = "wss://relay.ditto.pub"
 const INBOX_C = "wss://inbox.nostr.wine"
-const PLAN_A = "wss://purplepag.es"
-const PLAN_B = "wss://relay.nostr.band"
+const PLAN_A = "wss://conduit-congee.fly.dev"
+const PLAN_B = "wss://relay.ditto.pub"
 const OBSERVED_AT = 150_000
 const MUTATION_AT = 200_000
 
@@ -349,13 +353,6 @@ interface ExecutionOptions {
     attempt: number
     shouldContinue?: () => boolean
   }) => ReadbackBehavior
-  filterEligibleRelayUrls?: (
-    relayUrls: readonly string[],
-    ownerSelectedRelayUrls: readonly string[],
-    authenticatedPubkey: string | null,
-    appRelayUrls: readonly string[],
-    personalRelayUrls: readonly string[]
-  ) => string[]
   stageError?: Error
 }
 
@@ -367,18 +364,14 @@ interface ExecutionHarness {
   publishCalls: Array<{
     relayUrl: string
     signedEvent: SignedPublicNostrEvent
-    ownerSelectedRelayUrls: readonly string[]
-    appRelayUrls: readonly string[]
-    personalRelayUrls: readonly string[]
+    relayTarget?: RelayTarget
     authenticatedPubkey: string | null
   }>
   readbackCalls: Array<{
     relayUrl: string
     eventId: string
     kind: number
-    ownerSelectedRelayUrls: readonly string[]
-    appRelayUrls: readonly string[]
-    personalRelayUrls: readonly string[]
+    relayTargets: RelayTarget[]
     authenticatedPubkey: string | null
   }>
   restageInputs: Array<{
@@ -428,22 +421,13 @@ function createExecutionHarness(
   const dependencies: AccountNetworkMutationDependencies = {
     repository,
     reconcile: async () => structuredClone(fixture.reconciliation),
-    resolveRelayPlan: ({ kind }) => options.planForKind?.(kind) ?? [PLAN_A],
-    filterEligibleRelayUrls: async (
-      _pubkey,
-      relayUrls,
-      ownerSelectedRelayUrls,
-      authenticatedPubkey,
-      appRelayUrls,
-      personalRelayUrls
-    ) =>
-      options.filterEligibleRelayUrls?.(
-        relayUrls,
-        ownerSelectedRelayUrls,
-        authenticatedPubkey,
-        appRelayUrls,
-        personalRelayUrls
-      ) ?? [...relayUrls],
+    resolveRelayPlan: ({ kind }) =>
+      relayTargetsFromUrls(options.planForKind?.(kind) ?? [PLAN_A], {
+        kind: "discovery",
+        operation: "write",
+        registry:
+          kind === EVENT_KINDS.RELAY_LIST ? "owner_10002" : "inbox_10050",
+      }),
     publishToRelay: async (input) => {
       const key = `${input.signedEvent.kind}:${input.relayUrl}`
       const attempt = (publishAttempts.get(key) ?? 0) + 1
@@ -452,9 +436,9 @@ function createExecutionHarness(
       publishCalls.push({
         relayUrl: input.relayUrl,
         signedEvent: structuredClone(input.signedEvent),
-        ownerSelectedRelayUrls: [...(input.ownerSelectedRelayUrls ?? [])],
-        appRelayUrls: [...(input.appRelayUrls ?? [])],
-        personalRelayUrls: [...(input.personalRelayUrls ?? [])],
+        relayTarget: input.relayTarget
+          ? structuredClone(input.relayTarget)
+          : undefined,
         authenticatedPubkey: input.authenticatedPubkey ?? null,
       })
       publishedById.set(
@@ -489,9 +473,7 @@ function createExecutionHarness(
         relayUrl,
         eventId,
         kind,
-        ownerSelectedRelayUrls: [...(readOptions.ownerSelectedRelayUrls ?? [])],
-        appRelayUrls: [...(readOptions.appRelayUrls ?? [])],
-        personalRelayUrls: [...(readOptions.personalRelayUrls ?? [])],
+        relayTargets: structuredClone(readOptions.relayTargets ?? []),
         authenticatedPubkey: readOptions.authenticatedPubkey ?? null,
       })
       const behavior =
@@ -562,6 +544,7 @@ describe("account network mutation", () => {
       expect(reviewed.signerRequestCount).toBe(testCase.expectedKinds)
       const result = await publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         ...(testCase.expectedKinds > 0 ? { signer: signer.signer } : {}),
         dependencies: execution.dependencies,
       })
@@ -590,6 +573,7 @@ describe("account network mutation", () => {
 
     const result = await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -658,6 +642,7 @@ describe("account network mutation", () => {
 
     const result = await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -706,6 +691,7 @@ describe("account network mutation", () => {
       expect(reviewed.changedKinds).toEqual([EVENT_KINDS.RELAY_LIST])
       await publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -723,6 +709,7 @@ describe("account network mutation", () => {
       )
       await publishAccountNetworkMutation({
         reviewed: inboxReviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: inboxSigner.signer,
         dependencies: withInbox.dependencies,
       })
@@ -749,6 +736,7 @@ describe("account network mutation", () => {
 
     const result = await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -890,18 +878,9 @@ describe("account network mutation", () => {
       fixture.reconciliation,
       action(relays)
     )
-    const seenOwnerSubsets: string[][] = []
     const execution = createExecutionHarness(fixture, {
       planForKind: (kind) =>
         kind === EVENT_KINDS.RELAY_LIST ? [ownerWs, PLAN_A] : [PLAN_A],
-      filterEligibleRelayUrls: (relayUrls, ownerSelectedRelayUrls) => {
-        seenOwnerSubsets.push([...ownerSelectedRelayUrls])
-        return relayUrls.filter(
-          (relayUrl) =>
-            relayUrl.startsWith("wss://") ||
-            ownerSelectedRelayUrls.includes(relayUrl)
-        )
-      },
     })
     const signer = createSignerHarness({ log: execution.log })
 
@@ -923,14 +902,31 @@ describe("account network mutation", () => {
     expect(
       execution.publishCalls
         .filter((call) => call.relayUrl === ownerWs)
-        .every((call) => call.ownerSelectedRelayUrls.includes(ownerWs))
+        .every((call) =>
+          call.relayTarget?.grants.some(
+            (grant) =>
+              grant.kind === "owner_selection" &&
+              grant.eventKind === 10002 &&
+              grant.ownerPubkey === ACCOUNT &&
+              grant.eventId === call.signedEvent.id
+          )
+        )
     ).toBe(true)
     expect(
       execution.readbackCalls
         .filter((call) => call.relayUrl === ownerWs)
-        .every((call) => call.ownerSelectedRelayUrls.includes(ownerWs))
+        .every((call) =>
+          call.relayTargets.some((target) =>
+            target.grants.some(
+              (grant) =>
+                grant.kind === "owner_selection" &&
+                grant.eventKind === 10002 &&
+                grant.ownerPubkey === ACCOUNT &&
+                grant.eventId === call.eventId
+            )
+          )
+        )
     ).toBe(true)
-    expect(seenOwnerSubsets.some((urls) => urls.includes(ownerWs))).toBe(true)
     expect(
       [...execution.publishCalls, ...execution.readbackCalls]
         .filter((call) => call.relayUrl === ownerWs)
@@ -956,12 +952,6 @@ describe("account network mutation", () => {
         kind === EVENT_KINDS.RELAY_LIST
           ? [ownerWs, remoteWs, PLAN_A]
           : [PLAN_A],
-      filterEligibleRelayUrls: (relayUrls, ownerSelectedRelayUrls) =>
-        relayUrls.filter(
-          (relayUrl) =>
-            relayUrl.startsWith("wss://") ||
-            ownerSelectedRelayUrls.includes(relayUrl)
-        ),
       publishBehavior: ({ kind, relayUrl }) =>
         kind === EVENT_KINDS.RELAY_LIST &&
         relayUrl === ownerWs &&
@@ -1006,14 +996,32 @@ describe("account network mutation", () => {
       expect.objectContaining({
         relayUrl: ownerWs,
         signedEvent: exactSignedBytes,
-        ownerSelectedRelayUrls: [ownerWs],
+        relayTarget: expect.objectContaining({
+          url: ownerWs,
+          grants: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "owner_selection",
+              eventId: exactSignedBytes.id,
+            }),
+          ]),
+        }),
       }),
     ])
     expect(execution.readbackCalls).toEqual([
       expect.objectContaining({
         relayUrl: ownerWs,
         eventId: exactSignedBytes.id,
-        ownerSelectedRelayUrls: [ownerWs],
+        relayTargets: expect.arrayContaining([
+          expect.objectContaining({
+            url: ownerWs,
+            grants: expect.arrayContaining([
+              expect.objectContaining({
+                kind: "owner_selection",
+                eventId: exactSignedBytes.id,
+              }),
+            ]),
+          }),
+        ]),
       }),
     ])
     expect(
@@ -1024,31 +1032,16 @@ describe("account network mutation", () => {
     expect(signer.signedDrafts).toHaveLength(1)
   })
 
-  it("rechecks staged Network distribution against current source toggles", async () => {
+  it("keeps reviewed owner selection independent of runtime layer toggles", async () => {
     const fixture = await createFixture()
     const appRelayUrl = accountNetworkDiscoveryRelayUrls()[0]
     const personalOnlyRelayUrl = "wss://personal-only-network.example"
     if (!appRelayUrl) throw new Error("Expected one app discovery relay")
-    let appEnabled = true
-    let personalEnabled = true
     const execution = createExecutionHarness(fixture, {
       planForKind: (kind) =>
         kind === EVENT_KINDS.RELAY_LIST
           ? [personalOnlyRelayUrl, RELAY_B, appRelayUrl]
           : [appRelayUrl],
-      filterEligibleRelayUrls: (
-        relayUrls,
-        _ownerSelectedRelayUrls,
-        _authenticatedPubkey,
-        appRelayUrls,
-        personalRelayUrls
-      ) =>
-        relayUrls.filter((relayUrl) => {
-          const app = appRelayUrls.includes(relayUrl)
-          const personal = personalRelayUrls.includes(relayUrl)
-          if (!app && !personal) return true
-          return (app && appEnabled) || (personal && personalEnabled)
-        }),
       publishBehavior: () => "timed_out",
       readbackBehavior: () => "timed_out",
     })
@@ -1078,8 +1071,6 @@ describe("account network mutation", () => {
       personalOnlyRelayUrl,
     ])
 
-    appEnabled = true
-    personalEnabled = false
     execution.publishCalls.splice(0)
     execution.readbackCalls.splice(0)
     await retryAccountNetworkMutation({
@@ -1090,22 +1081,30 @@ describe("account network mutation", () => {
     })
 
     for (const calls of [execution.publishCalls, execution.readbackCalls]) {
-      expect(calls.map((call) => call.relayUrl)).toEqual([RELAY_B, appRelayUrl])
-      expect(calls.some((call) => call.relayUrl === personalOnlyRelayUrl)).toBe(
-        false
+      expect(calls.map((call) => call.relayUrl)).toEqual([
+        RELAY_B,
+        appRelayUrl,
+        personalOnlyRelayUrl,
+      ])
+      const ownerTarget = calls.find(
+        (call) => call.relayUrl === personalOnlyRelayUrl
       )
-      for (const call of calls) {
-        expect(call.appRelayUrls).toEqual(
-          expect.arrayContaining([appRelayUrl, RELAY_B])
-        )
-        expect(call.personalRelayUrls).toEqual(
-          expect.arrayContaining([RELAY_B, personalOnlyRelayUrl])
-        )
-      }
+      const grants =
+        "relayTarget" in (ownerTarget ?? {})
+          ? ownerTarget?.relayTarget?.grants
+          : ownerTarget?.relayTargets?.[0]?.grants
+      expect(grants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "owner_selection",
+            ownerPubkey: ACCOUNT,
+          }),
+        ])
+      )
     }
   })
 
-  it("does not record durable owner ws attempts when authority changes during eligibility or publication", async () => {
+  it("does not record durable owner ws attempts when authority changes before retry or during publication", async () => {
     const fixture = await createFixture()
     const ownerWs = "ws://owner-eligibility-race.example"
     const relays = baselineRoles()
@@ -1116,20 +1115,11 @@ describe("account network mutation", () => {
         publish: true,
         privateInbox: false,
       })
-    let shouldFlipAuthority = false
     let authorityCurrent = true
     let cancelInsidePublisher = false
     const execution = createExecutionHarness(fixture, {
       planForKind: (kind) =>
         kind === EVENT_KINDS.RELAY_LIST ? [ownerWs] : [PLAN_A],
-      filterEligibleRelayUrls: (relayUrls, ownerSelectedRelayUrls) => {
-        if (shouldFlipAuthority) authorityCurrent = false
-        return relayUrls.filter(
-          (relayUrl) =>
-            relayUrl.startsWith("wss://") ||
-            ownerSelectedRelayUrls.includes(relayUrl)
-        )
-      },
       publishBehavior: ({ shouldContinue }) => {
         if (cancelInsidePublisher) {
           authorityCurrent = false
@@ -1163,7 +1153,7 @@ describe("account network mutation", () => {
 
     execution.publishCalls.splice(0)
     execution.readbackCalls.splice(0)
-    shouldFlipAuthority = true
+    authorityCurrent = false
     execution.dependencies.shouldContinue = () => authorityCurrent
 
     await expect(
@@ -1179,7 +1169,6 @@ describe("account network mutation", () => {
     expect(execution.readbackCalls).toHaveLength(0)
     expect(await execution.baseRepository.get(ACCOUNT)).toEqual(beforeRetry)
 
-    shouldFlipAuthority = false
     authorityCurrent = true
     cancelInsidePublisher = true
 
@@ -1214,12 +1203,6 @@ describe("account network mutation", () => {
     const execution = createExecutionHarness(fixture, {
       planForKind: (kind) =>
         kind === EVENT_KINDS.RELAY_LIST ? [ownerWs] : [PLAN_A],
-      filterEligibleRelayUrls: (relayUrls, ownerSelectedRelayUrls) =>
-        relayUrls.filter(
-          (relayUrl) =>
-            relayUrl.startsWith("wss://") ||
-            ownerSelectedRelayUrls.includes(relayUrl)
-        ),
       publishBehavior: () => "acked",
       readbackBehavior: () => {
         if (readbackRound === 2) {
@@ -1315,17 +1298,6 @@ describe("account network mutation", () => {
         kind === EVENT_KINDS.RELAY_LIST
           ? [ownerWs, remoteWs, PLAN_A]
           : [PLAN_A],
-      filterEligibleRelayUrls: (
-        relayUrls,
-        ownerSelectedRelayUrls,
-        authenticatedPubkey
-      ) =>
-        relayUrls.filter(
-          (relayUrl) =>
-            relayUrl.startsWith("wss://") ||
-            (authenticatedPubkey === ACCOUNT &&
-              ownerSelectedRelayUrls.includes(relayUrl))
-        ),
       publishBehavior: () => (deliveryRound === 1 ? "timed_out" : "acked"),
       readbackBehavior: () => (deliveryRound === 1 ? "timed_out" : "observed"),
     })
@@ -1360,7 +1332,11 @@ describe("account network mutation", () => {
       expect.objectContaining({
         relayUrl: PLAN_A,
         signedEvent: exactSignedBytes,
-        ownerSelectedRelayUrls: [],
+        relayTarget: expect.objectContaining({
+          grants: expect.arrayContaining([
+            expect.objectContaining({ kind: "discovery" }),
+          ]),
+        }),
         authenticatedPubkey: null,
       }),
     ])
@@ -1368,7 +1344,13 @@ describe("account network mutation", () => {
       expect.objectContaining({
         relayUrl: PLAN_A,
         eventId: exactSignedBytes.id,
-        ownerSelectedRelayUrls: [],
+        relayTargets: [
+          expect.objectContaining({
+            grants: expect.arrayContaining([
+              expect.objectContaining({ kind: "discovery" }),
+            ]),
+          }),
+        ],
         authenticatedPubkey: null,
       }),
     ])
@@ -1515,6 +1497,7 @@ describe("account network mutation", () => {
 
     await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -1539,6 +1522,7 @@ describe("account network mutation", () => {
 
     await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -1571,8 +1555,6 @@ describe("account network mutation", () => {
     const execution = createExecutionHarness(fixture, {
       planForKind: (kind) =>
         kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS ? shared : [PLAN_A],
-      filterEligibleRelayUrls: (relayUrls) =>
-        relayUrls.filter((relayUrl) => relayUrl !== ineligibleOwnerTarget),
       readbackBehavior: ({ kind, relayUrl }) =>
         kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
           ? "observed"
@@ -1590,6 +1572,7 @@ describe("account network mutation", () => {
 
     await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -1598,7 +1581,8 @@ describe("account network mutation", () => {
     const pending = retained.inboxDeclaration?.pendingDistribution
     expect(pending?.publishRelayUrls).toHaveLength(8)
     expect(pending?.publishRelayUrls.slice(0, 2)).toEqual(shared)
-    expect(pending?.publishRelayUrls).not.toContain(ineligibleOwnerTarget)
+    expect(pending?.publishRelayUrls).toContain(ineligibleOwnerTarget)
+    expect(pending?.publishRelayUrls).not.toContain(ownerTargets[7])
     expect(pending?.confirmationRelayUrls).toEqual([...shared].sort())
     expect(
       retained.inboxDeclaration?.cutoverRecoveries?.[0]
@@ -1620,17 +1604,13 @@ describe("account network mutation", () => {
 
   it("keeps disabled personal NIP-65 relays out of kind-10050 delivery", async () => {
     const fixture = await createFixture()
+    fixture.snapshot.localState.routingPolicy.personalRelaysEnabled = false
+    fixture.snapshot.localState.routingPolicy.personalRelaysTouched = true
     const execution = createExecutionHarness(fixture, {
       planForKind: (kind) =>
         kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
           ? [PLAN_A, RELAY_A]
           : [PLAN_A],
-      filterEligibleRelayUrls: (
-        relayUrls,
-        _ownerSelectedRelayUrls,
-        _authenticatedPubkey,
-        appRelayUrls
-      ) => relayUrls.filter((relayUrl) => appRelayUrls.includes(relayUrl)),
     })
     const signer = createSignerHarness({ log: execution.log })
     const reviewed = reviewAccountNetworkMutation(
@@ -1647,45 +1627,21 @@ describe("account network mutation", () => {
 
     expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_A,
+      RELAY_B,
     ])
     expect(execution.readbackCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_A,
+      RELAY_B,
     ])
     expect(
-      [...execution.publishCalls, ...execution.readbackCalls]
-        .filter((call) => call.relayUrl === RELAY_A)
-        .every(
-          (call) =>
-            call.appRelayUrls.includes(RELAY_A) &&
-            call.personalRelayUrls.includes(RELAY_A)
-        )
-    ).toBe(true)
-    expect(
-      [...execution.publishCalls, ...execution.readbackCalls].some(
-        (call) => call.relayUrl === RELAY_B
-      )
+      execution.publishCalls.some((call) => call.relayUrl === RELAY_A)
     ).toBe(false)
   })
 
-  it("stops kind-10050 retries to personal-only relays after Your Relays is disabled", async () => {
+  it("keeps exact staged inbox retries independent of the personal NIP-65 switch", async () => {
     const fixture = await createFixture()
-    let personalEnabled = true
     const execution = createExecutionHarness(fixture, {
       planForKind: () => [PLAN_A],
-      filterEligibleRelayUrls: (
-        relayUrls,
-        _ownerSelectedRelayUrls,
-        _authenticatedPubkey,
-        appRelayUrls,
-        personalRelayUrls
-      ) =>
-        relayUrls.filter(
-          (relayUrl) =>
-            appRelayUrls.includes(relayUrl) ||
-            (personalEnabled && personalRelayUrls.includes(relayUrl))
-        ),
       publishBehavior: ({ relayUrl }) =>
         relayUrl === RELAY_B ? "timed_out" : "acked",
       readbackBehavior: ({ relayUrl }) =>
@@ -1708,7 +1664,6 @@ describe("account network mutation", () => {
         ?.pendingDistribution?.publishRelayUrls
     ).toContain(RELAY_B)
 
-    personalEnabled = false
     execution.publishCalls.splice(0)
     execution.readbackCalls.splice(0)
     await retryAccountNetworkMutation({
@@ -1718,8 +1673,12 @@ describe("account network mutation", () => {
       dependencies: execution.dependencies,
     })
 
-    expect(execution.publishCalls).toHaveLength(0)
-    expect(execution.readbackCalls).toHaveLength(0)
+    expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
+      RELAY_B,
+    ])
+    expect(execution.readbackCalls.map((call) => call.relayUrl)).toEqual([
+      RELAY_B,
+    ])
   })
 
   it("does no I/O or durable write when the second signature is cancelled", async () => {
@@ -1738,6 +1697,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -1762,6 +1722,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -1790,6 +1751,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -1811,6 +1773,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -1837,6 +1800,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -1865,6 +1829,7 @@ describe("account network mutation", () => {
 
     const result = await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -1875,7 +1840,7 @@ describe("account network mutation", () => {
       retained.ownerRelayList?.pendingDistribution?.relayOutcomes[0]
     ).toMatchObject({
       publishStatus: "timed_out",
-      readbackStatus: "timed_out",
+      readbackStatus: "unavailable",
     })
     expect(retained.inboxDeclaration?.pendingDistribution).toBeUndefined()
     expect(
@@ -1926,6 +1891,7 @@ describe("account network mutation", () => {
 
     const firstResult = await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: execution.dependencies,
     })
@@ -1941,6 +1907,7 @@ describe("account network mutation", () => {
     execution.readbackCalls.splice(0)
     const retryResult = await retryAccountNetworkMutation({
       pubkey: ACCOUNT,
+      authenticatedPubkey: ACCOUNT,
       kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
       dependencies: execution.dependencies,
     })
@@ -2005,10 +1972,10 @@ describe("account network mutation", () => {
         },
         inboxDeclaration: {
           ...fixture.reconciliation.inboxDeclaration,
-          state: "distribution_pending" as const,
+          state: "declared" as const,
           eventId: inbox.signedEvent.id,
           eventCreatedAt: inbox.signedEvent.created_at,
-          relayUrls: [],
+          relayUrls: [INBOX_B],
           pendingRelayUrls: [INBOX_B],
           pendingPublishRelayUrls: inbox.publishRelayUrls,
           pendingRelayOutcomes: inbox.relayOutcomes,
@@ -2027,6 +1994,7 @@ describe("account network mutation", () => {
     const signer = createSignerHarness({ log: second.log })
     const result = await publishAccountNetworkMutation({
       reviewed: review,
+      authenticatedPubkey: ACCOUNT,
       signer: signer.signer,
       dependencies: second.dependencies,
     })
@@ -2057,6 +2025,7 @@ describe("account network mutation", () => {
     )
     const firstResult = await publishAccountNetworkMutation({
       reviewed: firstReviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: firstSigner.signer,
       dependencies: firstExecution.dependencies,
     })
@@ -2074,8 +2043,8 @@ describe("account network mutation", () => {
         ...structuredClone(fixture.reconciliation),
         inboxDeclaration: {
           pubkey: ACCOUNT,
-          state: "distribution_pending" as const,
-          relayUrls: [],
+          state: "declared" as const,
+          relayUrls: [INBOX_B],
           retainedReadRelayUrls: [INBOX_A],
           cutoverRecoveryRelayUrls: [INBOX_A],
           stale: false,
@@ -2113,6 +2082,7 @@ describe("account network mutation", () => {
     const secondSigner = createSignerHarness({ log: secondExecution.log })
     const secondResult = await publishAccountNetworkMutation({
       reviewed: secondReviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: secondSigner.signer,
       dependencies: secondExecution.dependencies,
     })
@@ -2248,7 +2218,7 @@ describe("account network mutation", () => {
         ...fixture.snapshot,
         inboxDeclaration: stagedInbox,
       },
-      planForKind: () => [PLAN_B, RELAY_A],
+      planForKind: () => [PLAN_B, RELAY_B],
       publishBehavior: ({ relayUrl }) =>
         relayUrl === PLAN_A ? "timed_out" : "acked",
       readbackBehavior: ({ relayUrl }) =>
@@ -2278,16 +2248,16 @@ describe("account network mutation", () => {
     expect(execution.restageInputs).toEqual([
       expect.objectContaining({
         expectedPublishRelayUrls: [PLAN_A],
-        publishRelayUrls: [RELAY_A, PLAN_B],
+        publishRelayUrls: [RELAY_B, PLAN_B],
       }),
     ])
     expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_A,
+      RELAY_B,
     ])
     expect(execution.readbackCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_A,
+      RELAY_B,
     ])
     expect(recovery?.confirmationAttempts).toEqual([
       {
@@ -2295,9 +2265,9 @@ describe("account network mutation", () => {
         stagedAt: OBSERVED_AT + 1,
       },
       {
-        relayUrls: [RELAY_A],
-        completedRelayUrls: [RELAY_A],
-        observedRelayUrls: [RELAY_A],
+        relayUrls: [RELAY_B],
+        completedRelayUrls: [RELAY_B],
+        observedRelayUrls: [RELAY_B],
         stagedAt: MUTATION_AT,
       },
     ])
@@ -2525,6 +2495,7 @@ describe("account network mutation", () => {
     expect(reviewed.signerRequestCount).toBe(0)
     const result = await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       dependencies: {
         ...execution.dependencies,
       },
@@ -2551,11 +2522,19 @@ describe("account network mutation", () => {
     const localStateRepository =
       createInMemoryAccountNetworkLocalStateRepository([retained.localState])
     expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: ACCOUNT,
-        candidateRelayUrls: [removedRelayUrl, RELAY_A],
-        repository: localStateRepository,
-      })
+      (
+        await filterEligibleAccountRelayTargets({
+          accountPubkey: ACCOUNT,
+          operation: "read",
+          targets: [removedRelayUrl, RELAY_A].map((url) => ({
+            url,
+            grants: [
+              { kind: "public_hint" as const, operation: "read" as const },
+            ],
+          })),
+          repository: localStateRepository,
+        })
+      ).map((target) => target.url)
     ).toEqual([RELAY_A])
   })
 
@@ -2574,6 +2553,7 @@ describe("account network mutation", () => {
     const staleSigner = createSignerHarness({ log: staleExecution.log })
     await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: staleSigner.signer,
       dependencies: staleExecution.dependencies,
     })
@@ -2591,6 +2571,7 @@ describe("account network mutation", () => {
     const frontierSigner = createSignerHarness({ log: frontierExecution.log })
     await publishAccountNetworkMutation({
       reviewed,
+      authenticatedPubkey: ACCOUNT,
       signer: frontierSigner.signer,
       dependencies: frontierExecution.dependencies,
     })
@@ -2628,6 +2609,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })
@@ -2669,6 +2651,7 @@ describe("account network mutation", () => {
     await expect(
       publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: ACCOUNT,
         signer: signer.signer,
         dependencies: execution.dependencies,
       })

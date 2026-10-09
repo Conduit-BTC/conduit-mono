@@ -4,6 +4,7 @@ import {
   resetFixturePublishers,
 } from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
+import { setAppWritePlanFixture as __setRelayPublishTestOverrides } from "./helpers/app-write-plan"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
@@ -28,8 +29,8 @@ const {
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setShippingTestOverrides,
-  __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
+  config,
   db,
   EVENT_KINDS,
   getProductShippingOptionAddress,
@@ -60,6 +61,7 @@ const SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(SECRET)
 const ORGANIZER = "b".repeat(64)
 const START = 1_800_000_000_000
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 
 function product(
   dTag = "listing",
@@ -305,6 +307,11 @@ async function attemptProductPublication(input: {
   const relayUrl = input.durableBaselines
     ? "wss://relay.conduit.market"
     : "wss://relay.example"
+  // The injected exact listing plan is an App fixture, not signed owner
+  // authority. Register it so the real last-mile grant gate remains active.
+  config.commerceRelayUrls = [
+    ...new Set([...config.commerceRelayUrls, relayUrl]),
+  ]
   setSigner(new NDKPrivateKeySigner(SECRET))
   __setCommerceTestOverrides({
     now: () => input.now ?? START,
@@ -317,7 +324,7 @@ async function attemptProductPublication(input: {
     accountNetworkLocalStateRepository: { get: async () => undefined },
     planPublishRelays: async () => ({
       intent: "author_event",
-      primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
+      primaryRelayUrls: [relayUrl],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
     }),
@@ -462,6 +469,7 @@ async function attemptPreservedPublication(input: {
 }
 
 afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   resetFixturePublishers()
   __resetRelayPublishTestOverrides()

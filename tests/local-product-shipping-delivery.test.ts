@@ -1,10 +1,14 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { config } from "../packages/core/src/config"
 import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
 import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
+import { setAccountNetworkRoutingSourceEnabled } from "../packages/core/src/protocol/account-network-routing-policy"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "../packages/core/src/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
 import { withLocalProductCoordinateLocks } from "../packages/core/src/protocol/local-product-coordinate-lock"
 import type {
   LocalProductShippingJob,
@@ -32,9 +36,47 @@ const SECRET = generateSecretKey()
 const PUBKEY = getPublicKey(SECRET)
 const RELAY_A = "wss://relay.conduit.market"
 const RELAY_B = "wss://relay.damus.io"
+let restoreConfiguredCommerceRelays: () => void
+beforeEach(() => {
+  const existing = [...config.commerceRelayUrls]
+  config.commerceRelayUrls = [...new Set([...existing, RELAY_A, RELAY_B])]
+  restoreConfiguredCommerceRelays = () => {
+    config.commerceRelayUrls = existing
+  }
+})
+afterEach(() => {
+  restoreConfiguredCommerceRelays()
+  __resetRelayPublishTestOverrides()
+})
+
+async function ownerEvidenceFor(relayUrl: string) {
+  const repository = createInMemoryOwnerRelayListEvidenceRepository()
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: 1_700_000_000,
+        tags: [["r", relayUrl, "write"]],
+        content: "",
+      },
+      SECRET
+    )
+  )
+  await repository.reconcile({
+    pubkey: PUBKEY,
+    observations: [{ signedEvent }],
+    lookup: {
+      observedAt: 1_700_000_000_000,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: signedEvent.id,
+    },
+  })
+  return repository
+}
 
 function signed(kind: number, dTag: string, extraTags: string[][] = []) {
-  return finalizeEvent(
+  const event = finalizeEvent(
     {
       kind,
       created_at: 1_700_000_000,
@@ -43,6 +85,15 @@ function signed(kind: number, dTag: string, extraTags: string[][] = []) {
     },
     SECRET
   )
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
+  }
 }
 
 function committedContext(
@@ -175,6 +226,195 @@ const requestCoordinateLock = async <T>(
 ): Promise<T> => operation()
 
 describe("durable local product shipping delivery", () => {
+  it("does not promote an arbitrary saved independent URL into current write authority", async () => {
+    const relayUrl = "wss://unqualified-shipping.example"
+    const context = committedContext([
+      { relayUrl, ownerSelected: false, independentRelay: true },
+    ])
+    const repository = new MemoryOutbox(context)
+    let publishes = 0
+    const result = await deliverProductShippingJob(
+      context.shippingJob.id,
+      async () => {
+        publishes += 1
+        return { status: "acked" }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository: policyRepository,
+        requestCoordinateLock,
+      }
+    )
+    expect(publishes).toBe(0)
+    expect(result).toEqual(context.shippingJob)
+    expect(await repository.getCommitted(context.shippingJob.id)).toEqual(
+      context
+    )
+  })
+
+  it("admits a current signed owner grant despite historical App-only provenance", async () => {
+    const relayUrl = "wss://current-owner-shipping.example"
+    const context = committedContext([
+      { relayUrl, ownerSelected: false, appRelay: true },
+    ])
+    const repository = new MemoryOutbox(context)
+    const ownerRelayListEvidenceRepository = await ownerEvidenceFor(relayUrl)
+    const appDisabled = emptyAccountNetworkLocalState(PUBKEY)
+    appDisabled.routingPolicy = setAccountNetworkRoutingSourceEnabled(
+      appDisabled.routingPolicy,
+      "app",
+      false
+    )
+    const sent: Parameters<ProductShippingRelayPublisher>[0][] = []
+    const result = await deliverProductShippingJob(
+      context.shippingJob.id,
+      async (input) => {
+        sent.push(input)
+        return { status: "acked" }
+      },
+      {
+        repository,
+        authenticatedPubkey: PUBKEY,
+        ownerRelayListEvidenceRepository,
+        accountNetworkLocalStateRepository: { get: async () => appDisabled },
+        requestCoordinateLock,
+      }
+    )
+    expect(result.acknowledgedRelayUrls).toEqual([relayUrl])
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.relayTarget).toEqual({
+      url: relayUrl,
+      grants: [
+        {
+          kind: "owner_nip65",
+          operation: "write",
+          ownerPubkey: PUBKEY,
+          selection: "write",
+        },
+      ],
+    })
+    expect(sent[0]?.signedEvent).toEqual(context.shippingJob.signedEvent)
+    expect(sent[0]?.ownerRelayListEvidenceRepository).toBe(
+      ownerRelayListEvidenceRepository
+    )
+  })
+
+  it("requires current signed evidence for a saved owner-selected ws target", async () => {
+    const relayUrl = "ws://current-owner-shipping.example"
+    const context = committedContext([
+      { relayUrl, ownerSelected: true, personalRelay: true },
+    ])
+    const repository = new MemoryOutbox(context)
+    let publishes = 0
+    const publisher: ProductShippingRelayPublisher = async () => {
+      publishes += 1
+      return { status: "acked" }
+    }
+    const options = {
+      repository,
+      authenticatedPubkey: PUBKEY,
+      accountNetworkLocalStateRepository: policyRepository,
+      requestCoordinateLock,
+      ownerRelayListEvidenceRepository:
+        createInMemoryOwnerRelayListEvidenceRepository(),
+    }
+    expect(
+      (
+        await deliverProductShippingJob(
+          context.shippingJob.id,
+          publisher,
+          options
+        )
+      ).acknowledgedRelayUrls
+    ).toEqual([])
+    expect(publishes).toBe(0)
+    options.ownerRelayListEvidenceRepository = await ownerEvidenceFor(relayUrl)
+    expect(
+      (
+        await deliverProductShippingJob(
+          context.shippingJob.id,
+          publisher,
+          options
+        )
+      ).acknowledgedRelayUrls
+    ).toEqual([relayUrl])
+    expect(publishes).toBe(1)
+  })
+
+  it("rechecks owner authority after the evidence read before invoking a shipping publisher", async () => {
+    const relayUrl = "wss://revoked-owner-shipping.example"
+    const context = committedContext([
+      { relayUrl, ownerSelected: true, personalRelay: true },
+    ])
+    const repository = new MemoryOutbox(context)
+    const evidence = await ownerEvidenceFor(relayUrl)
+    let current = true
+    let publishes = 0
+    const result = await deliverProductShippingJob(
+      context.shippingJob.id,
+      async () => {
+        publishes += 1
+        return { status: "acked" }
+      },
+      {
+        repository,
+        authenticatedPubkey: PUBKEY,
+        isAuthenticatedPubkeyCurrent: () => current,
+        ownerRelayListEvidenceRepository: {
+          get: async (pubkey) => {
+            const retained = await evidence.get(pubkey)
+            current = false
+            return retained
+          },
+        },
+        accountNetworkLocalStateRepository: policyRepository,
+        requestCoordinateLock,
+      }
+    )
+    expect(publishes).toBe(0)
+    expect(result).toEqual(context.shippingJob)
+  })
+
+  it("rechecks an owner-only secure grant in the final shipping writer across awaits", async () => {
+    const relayUrl = "wss://final-owner-shipping.example"
+    const context = committedContext([
+      { relayUrl, ownerSelected: true, personalRelay: true },
+    ])
+    const repository = new MemoryOutbox(context)
+    const evidence = await ownerEvidenceFor(relayUrl)
+    let current = true
+    let evidenceReads = 0
+    let frames = 0
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        frames += 1
+        return "acked"
+      },
+    })
+    const result = await deliverProductShippingJob(
+      context.shippingJob.id,
+      publishExactProductShippingRelay,
+      {
+        repository,
+        authenticatedPubkey: PUBKEY,
+        isAuthenticatedPubkeyCurrent: () => current,
+        ownerRelayListEvidenceRepository: {
+          get: async (pubkey) => {
+            const retained = await evidence.get(pubkey)
+            evidenceReads += 1
+            if (evidenceReads > 1) current = false
+            return retained
+          },
+        },
+        accountNetworkLocalStateRepository: policyRepository,
+        requestCoordinateLock,
+      }
+    )
+    expect(evidenceReads).toBeGreaterThan(1)
+    expect(frames).toBe(0)
+    expect(result).toEqual(context.shippingJob)
+  })
+
   it("refuses relay IO without a committed product intent", async () => {
     const context = committedContext()
     context.intent.shippingEventIds = []

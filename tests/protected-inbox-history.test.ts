@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { createInMemoryAccountNetworkLocalStateRepository } from "../packages/core/src/protocol/account-network-local-state"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import { admitFixture } from "./helpers/public-event"
 import {
   bindProtectedInboxHistoryCursor,
   visitProtectedInboxHistoryPage,
@@ -323,6 +326,23 @@ class Socket implements RelayWebSocket {
 it("streams a signed recipient wrapper after NIP-42 auth and before EOSE", async () => {
   const auth = authorization()
   const event = wrap(1, 1_700_000_000)
+  const inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await inboxDeclarationEvidenceRepository.merge({
+    pubkey: ACCOUNT,
+    signedEvent: await admitFixture(
+      finalizeEvent(
+        {
+          kind: 10050,
+          created_at: 1_699_999_998,
+          tags: [["relay", RELAY]],
+          content: "",
+        },
+        ACCOUNT_KEY
+      )
+    ),
+    observedAt: Date.now(),
+  })
   let socket: Socket | null = null
   const executor = new WebSocketCommerceRelayExecutor({
     createWebSocket: () => {
@@ -338,7 +358,12 @@ it("streams a signed recipient wrapper after NIP-42 auth and before EOSE", async
     const read = await readProtectedInbox({
       principalPubkey: ACCOUNT,
       relayUrls: [RELAY],
-      ownerSelectedRelayUrls: [RELAY],
+      relayTargets: relayTargetsFromUrls([RELAY], {
+        kind: "owner_nip17",
+        operation: "read",
+        ownerPubkey: ACCOUNT,
+      }),
+      inboxDeclarationEvidenceRepository,
       limit: 10,
       since: 1_699_999_999,
       until: 1_700_000_001,

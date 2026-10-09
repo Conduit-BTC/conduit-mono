@@ -1,5 +1,12 @@
 import { readFileSync } from "node:fs"
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "bun:test"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 
 import {
@@ -29,6 +36,8 @@ import {
 import { getProductListingDeliveryJobId } from "@conduit/core/protocol/product-listing-delivery"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 import { __resetPublicEventVerificationForTests } from "../packages/core/src/protocol/verified-public-event"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
 import {
   deliverQueuedProductDeletion,
   productDeletionJobToPublishResult,
@@ -36,11 +45,42 @@ import {
 } from "../apps/merchant/src/lib/product-deletion-delivery"
 import { buildProductDeliveryNotice } from "../apps/merchant/src/lib/product-delivery"
 
-const MERCHANT_SECRET = new Uint8Array(32).fill(7)
+const MERCHANT_SECRET = generateSecretKey()
 const NOW = 1_700_000_000_000
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
 }
+const ownerEvidenceRepository = createInMemoryOwnerRelayListEvidenceRepository()
+beforeAll(async () => {
+  const ownerSelection = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: 1_700_000_000,
+        tags: [
+          "ws://owner-selected.example",
+          "ws://a.owner-selected.example",
+          "ws://b.owner-selected.example",
+          "wss://personal-delete.example",
+          "wss://overlap-delete.example",
+          "wss://relay.ditto.pub",
+        ].map((url) => ["r", url, "write"]),
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+  )
+  await ownerEvidenceRepository.reconcile({
+    pubkey: ownerSelection.pubkey,
+    observations: [{ signedEvent: ownerSelection }],
+    lookup: {
+      observedAt: NOW,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: ownerSelection.id,
+    },
+  })
+})
 const merchantDeletionDeliverySource = readFileSync(
   new URL(
     "../apps/merchant/src/lib/product-deletion-delivery.ts",
@@ -50,7 +90,26 @@ const merchantDeletionDeliverySource = readFileSync(
 )
 
 let restoreWorker: () => void
+let restoreConfiguredCommerceRelays: () => void
 beforeEach(() => {
+  // These exact controlled App endpoints back the saved author-write fixtures;
+  // a historical URL or provenance flag alone is not current relay authority.
+  const commerceRelays = [...config.commerceRelayUrls]
+  const generalRelays = [...config.appWriteRelayUrls]
+  config.commerceRelayUrls = [
+    ...new Set([
+      ...commerceRelays,
+      "wss://relay.conduit.market",
+      "wss://write.example",
+    ]),
+  ]
+  config.appWriteRelayUrls = [
+    ...new Set([...generalRelays, "wss://relay.conduit.market"]),
+  ]
+  restoreConfiguredCommerceRelays = () => {
+    config.commerceRelayUrls = commerceRelays
+    config.appWriteRelayUrls = generalRelays
+  }
   // These are Node-only durable-history checks. Exercise genuine SSR crypto,
   // not Bun's browser-worker lifecycle; browser admission has separate tests.
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker")
@@ -65,7 +124,10 @@ beforeEach(() => {
     else Reflect.deleteProperty(globalThis, "Worker")
   }
 })
-afterEach(() => restoreWorker())
+afterEach(() => {
+  restoreWorker()
+  restoreConfiguredCommerceRelays()
+})
 
 function withEligibleAccountRelays<T extends ProductDeletionDeliveryOptions>(
   options: T
@@ -73,6 +135,7 @@ function withEligibleAccountRelays<T extends ProductDeletionDeliveryOptions>(
   return {
     accountNetworkLocalStateRepository:
       allowAllAccountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository: ownerEvidenceRepository,
     authenticatedPubkey: signedDeletionEvent().pubkey,
     ...options,
   }
@@ -278,10 +341,10 @@ describe("product deletion relay plan", () => {
           "ws://insecure.example",
           "wss://relay.example",
           "wss://source.example/products/",
-          "wss://relay.conduit.market/",
+          "wss://conduit-congee.fly.dev/",
           "not a url",
         ],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       })
     ).toEqual([
       {
@@ -297,7 +360,7 @@ describe("product deletion relay plan", () => {
         roles: ["author_write", "source"],
       },
       {
-        relayUrl: "wss://relay.conduit.market",
+        relayUrl: "wss://conduit-congee.fly.dev",
         roles: ["source", "conduit"],
       },
       {
@@ -625,14 +688,15 @@ describe("durable product deletion delivery", () => {
       {
         signedEvent: event,
         currentWriteRelayUrls: [ownerRelayUrl],
+        currentPersonalRelayUrls: [ownerRelayUrl],
         sourceRelayUrls: [remoteRelayUrl],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
     expect(job.relayPlan).toEqual([
-      { relayUrl: ownerRelayUrl, roles: ["author_write"] },
-      { relayUrl: "wss://relay.conduit.market", roles: ["conduit"] },
+      { relayUrl: ownerRelayUrl, roles: ["author_write"], personalRelay: true },
+      { relayUrl: "wss://conduit-congee.fly.dev", roles: ["conduit"] },
     ])
 
     const publisherInputs: Parameters<ProductDeletionRelayPublisher>[0][] = []
@@ -653,7 +717,7 @@ describe("durable product deletion delivery", () => {
     ).toEqual([
       { relayUrl: ownerRelayUrl, ownerSelectedRelayUrls: [ownerRelayUrl] },
       {
-        relayUrl: "wss://relay.conduit.market",
+        relayUrl: "wss://conduit-congee.fly.dev",
         ownerSelectedRelayUrls: [],
       },
     ])
@@ -673,7 +737,7 @@ describe("durable product deletion delivery", () => {
           signedEvent: invalidEvent,
           currentWriteRelayUrls: ["wss://write.example"],
           sourceRelayUrls: [],
-          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+          canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
         },
         { repository }
       )
@@ -699,7 +763,7 @@ describe("durable product deletion delivery", () => {
           signedEvent: signed,
           currentWriteRelayUrls: [],
           sourceRelayUrls: [],
-          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+          canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
         },
         { repository }
       )
@@ -715,7 +779,7 @@ describe("durable product deletion delivery", () => {
         signedEvent: event,
         currentWriteRelayUrls: [],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       withEligibleAccountRelays({ repository, now: () => NOW })
     )
@@ -752,12 +816,12 @@ describe("durable product deletion delivery", () => {
       withEligibleAccountRelays({ repository, now: () => NOW })
     )
 
-    expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(attemptedRelayUrls).toEqual(["wss://conduit-congee.fly.dev"])
     expect(result.relayPlan.map(({ relayUrl }) => relayUrl)).toEqual([
-      "wss://relay.conduit.market",
+      "wss://conduit-congee.fly.dev",
     ])
     expect(result.relayDelivery.map(({ relayUrl }) => relayUrl)).toEqual([
-      "wss://relay.conduit.market",
+      "wss://conduit-congee.fly.dev",
     ])
     expect(result.state).toBe("delivered")
 
@@ -769,7 +833,7 @@ describe("durable product deletion delivery", () => {
       },
       withEligibleAccountRelays({ repository, now: () => NOW })
     )
-    expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(attemptedRelayUrls).toEqual(["wss://conduit-congee.fly.dev"])
     expect(await getPendingProductDeletionDeliveries({ repository })).toEqual(
       []
     )
@@ -836,9 +900,9 @@ describe("durable product deletion delivery", () => {
     const job = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://write.conduit.market"],
+        currentWriteRelayUrls: ["wss://relay.ditto.pub"],
         sourceRelayUrls: ["wss://source.conduit.market"],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now }
     )
@@ -855,7 +919,7 @@ describe("durable product deletion delivery", () => {
         persisted.relayPlan.length === 3
       expect(signedEvent).toEqual(event)
 
-      if (relayUrl === "wss://write.conduit.market") return { status: "acked" }
+      if (relayUrl === "wss://relay.ditto.pub") return { status: "acked" }
       if (relayUrl === "wss://source.conduit.market") {
         return { status: "rejected" }
       }
@@ -881,9 +945,9 @@ describe("durable product deletion delivery", () => {
         result.relayDelivery.map(({ relayUrl, status }) => [relayUrl, status])
       )
     ).toEqual({
-      "wss://relay.conduit.market": "timed_out",
+      "wss://conduit-congee.fly.dev": "timed_out",
       "wss://source.conduit.market": "rejected",
-      "wss://write.conduit.market": "acked",
+      "wss://relay.ditto.pub": "acked",
     })
     expect(
       result.relayDelivery.every(
@@ -898,7 +962,7 @@ describe("durable product deletion delivery", () => {
     ).toBeNumber()
     expect(
       result.relayDelivery.find(
-        ({ relayUrl }) => relayUrl === "wss://relay.conduit.market"
+        ({ relayUrl }) => relayUrl === "wss://conduit-congee.fly.dev"
       )?.timedOutAt
     ).toBeNumber()
 
@@ -1298,7 +1362,7 @@ describe("durable product deletion delivery", () => {
     expect(delivered.state).toBe("delivered")
   })
 
-  it("lets whole-relay removal cut off an owner-selected ws target immediately", async () => {
+  it("lets whole-relay removal cut off a historical unflagged owner target immediately", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()
     const excludedRelayUrl = "ws://owner-selected.example"
@@ -1318,11 +1382,20 @@ describe("durable product deletion delivery", () => {
       {
         signedEvent: event,
         currentWriteRelayUrls: [excludedRelayUrl],
+        currentPersonalRelayUrls: [excludedRelayUrl],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
+    const historicalJob = await repository.update(job.id, (current) => ({
+      ...current,
+      relayPlan: current.relayPlan.map((target) =>
+        target.relayUrl === excludedRelayUrl
+          ? { relayUrl: target.relayUrl, roles: [...target.roles] }
+          : target
+      ),
+    }))
     const publisherInputs: Parameters<ProductDeletionRelayPublisher>[0][] = []
 
     const result = await deliverProductDeletionJob(
@@ -1345,14 +1418,14 @@ describe("durable product deletion delivery", () => {
       }))
     ).toEqual([
       {
-        relayUrl: "wss://relay.conduit.market",
+        relayUrl: "wss://conduit-congee.fly.dev",
         accountPubkey: event.pubkey,
       },
     ])
     expect(publisherInputs[0]?.accountNetworkLocalStateRepository).toBe(
       accountNetworkLocalStateRepository
     )
-    expect(result.relayPlan).toEqual(job.relayPlan)
+    expect(result.relayPlan).toEqual(historicalJob.relayPlan)
     expect(
       result.relayDelivery.find(({ relayUrl }) => relayUrl === excludedRelayUrl)
     ).toEqual({
@@ -1370,9 +1443,9 @@ describe("durable product deletion delivery", () => {
     const job = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -1407,7 +1480,7 @@ describe("durable product deletion delivery", () => {
   it("re-reads account eligibility before each pending relay attempt", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()
-    const removedAfterFirstAttempt = "wss://write.conduit.market"
+    const removedAfterFirstAttempt = "wss://relay.ditto.pub"
     const accountNetworkLocalStateRepository =
       createInMemoryAccountNetworkLocalStateRepository([
         emptyAccountNetworkLocalState(event.pubkey, () => NOW),
@@ -1417,7 +1490,7 @@ describe("durable product deletion delivery", () => {
         signedEvent: event,
         currentWriteRelayUrls: [removedAfterFirstAttempt],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -1446,7 +1519,7 @@ describe("durable product deletion delivery", () => {
       }
     )
 
-    expect(attemptedRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(attemptedRelayUrls).toEqual(["wss://conduit-congee.fly.dev"])
     expect(
       result.relayDelivery.find(
         ({ relayUrl }) => relayUrl === removedAfterFirstAttempt
@@ -1459,9 +1532,9 @@ describe("durable product deletion delivery", () => {
   })
 
   it("preserves source provenance so retries honor current layer toggles", async () => {
-    const appRelayUrl = "wss://app-delete.conduit.market"
+    const appRelayUrl = config.appWriteRelayUrls[0]!
     const personalRelayUrl = "wss://personal-delete.example"
-    const overlapRelayUrl = "wss://overlap-delete.example"
+    const overlapRelayUrl = config.appWriteRelayUrls[1]!
     const independentSourceRelayUrl = "wss://source-delete.nostr.com"
     const cases = [
       {
@@ -1524,6 +1597,7 @@ describe("durable product deletion delivery", () => {
           repository,
           authenticatedPubkey: event.pubkey,
           accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository: ownerEvidenceRepository,
           now: tickingClock(),
         }
       )
@@ -1532,7 +1606,7 @@ describe("durable product deletion delivery", () => {
     }
   })
 
-  it("preserves both possible sources for ambiguous legacy App overlaps", async () => {
+  it("keeps App provenance while allowing an independently current owner grant", async () => {
     const legacyAppRelayUrl = "wss://relay.ditto.pub"
     const cases = [
       {
@@ -1575,7 +1649,7 @@ describe("durable product deletion delivery", () => {
           signedEvent: event,
           currentWriteRelayUrls: [legacyAppRelayUrl],
           sourceRelayUrls: [],
-          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+          canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
         },
         { repository, now: () => NOW }
       )
@@ -1584,6 +1658,7 @@ describe("durable product deletion delivery", () => {
       ).toEqual({
         relayUrl: legacyAppRelayUrl,
         roles: ["author_write"],
+        appRelay: true,
       })
       const attemptedRelayUrls: string[] = []
 
@@ -1597,6 +1672,7 @@ describe("durable product deletion delivery", () => {
           repository,
           authenticatedPubkey: event.pubkey,
           accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository: ownerEvidenceRepository,
           now: tickingClock(),
         }
       )
@@ -1605,8 +1681,359 @@ describe("durable product deletion delivery", () => {
         testCase.expectedAttempt
       )
       if (!testCase.appEnabled && testCase.personalEnabled) {
-        expect(attemptedRelayUrls).not.toContain("wss://relay.conduit.market")
+        expect(attemptedRelayUrls).not.toContain("wss://conduit-congee.fly.dev")
       }
+    }
+  })
+
+  it("retries a historical unflagged author target through its signed owner grant", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent("9".repeat(64))
+    const relayUrl = "wss://personal-delete.example"
+    const created = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [relayUrl],
+        currentPersonalRelayUrls: [relayUrl],
+        sourceRelayUrls: ["wss://unsigned-new.example"],
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
+      },
+      { repository, now: () => NOW }
+    )
+    const originalTargetUrls = created.relayPlan.map(
+      (target) => target.relayUrl
+    )
+    await repository.update(created.id, (current) => ({
+      ...current,
+      relayPlan: current.relayPlan.map((target) =>
+        target.relayUrl === relayUrl
+          ? { relayUrl: target.relayUrl, roles: [...target.roles] }
+          : target
+      ),
+    }))
+    const publisherInputs: Parameters<ProductDeletionRelayPublisher>[0][] = []
+
+    const result = await deliverProductDeletionJob(
+      created.id,
+      async (input) => {
+        publisherInputs.push(input)
+        return { status: "acked" }
+      },
+      withEligibleAccountRelays({ repository, now: tickingClock() })
+    )
+
+    expect(
+      publisherInputs.find((input) => input.relayUrl === relayUrl)?.relayTarget
+        ?.grants
+    ).toContainEqual({
+      kind: "owner_nip65",
+      operation: "write",
+      ownerPubkey: event.pubkey,
+      selection: "write",
+    })
+    expect(
+      publisherInputs.find((input) => input.relayUrl === relayUrl)?.signedEvent
+    ).toEqual(event)
+    expect(result.relayPlan.map((target) => target.relayUrl)).toEqual(
+      originalTargetUrls
+    )
+    expect(result.relayPlan.map((target) => target.relayUrl)).not.toContain(
+      "wss://unsigned-new.example"
+    )
+  })
+
+  it("admits historical App and owner overlap through whichever current switch is enabled", async () => {
+    const relayUrl = "wss://relay.ditto.pub"
+    const cases = [
+      {
+        roleShape: "author_write",
+        provenance: "unflagged",
+        appEnabled: true,
+        personalEnabled: false,
+        expectedGrant: "app",
+      },
+      {
+        roleShape: "author_write",
+        provenance: "unflagged",
+        appEnabled: false,
+        personalEnabled: true,
+        expectedGrant: "owner_nip65",
+      },
+      {
+        roleShape: "author_write_conduit",
+        provenance: "unflagged",
+        appEnabled: true,
+        personalEnabled: false,
+        expectedGrant: "app",
+      },
+      {
+        roleShape: "author_write_conduit",
+        provenance: "unflagged",
+        appEnabled: false,
+        personalEnabled: true,
+        expectedGrant: "owner_nip65",
+      },
+      {
+        roleShape: "author_write",
+        provenance: "app",
+        appEnabled: false,
+        personalEnabled: true,
+        expectedGrant: "owner_nip65",
+      },
+      {
+        roleShape: "author_write",
+        provenance: "personal",
+        appEnabled: true,
+        personalEnabled: false,
+        expectedGrant: "app",
+      },
+    ] as const
+
+    for (const [index, testCase] of cases.entries()) {
+      const repository = new MemoryProductDeletionOutbox()
+      const event = signedDeletionEvent(
+        String(index + 6)
+          .slice(-1)
+          .repeat(64)
+      )
+      const state = emptyAccountNetworkLocalState(event.pubkey, () => NOW)
+      const accountNetworkLocalStateRepository =
+        createInMemoryAccountNetworkLocalStateRepository([
+          {
+            ...state,
+            routingPolicy: {
+              ...state.routingPolicy,
+              appRelaysEnabled: testCase.appEnabled,
+              personalRelaysEnabled: testCase.personalEnabled,
+              appRelaysTouched: true,
+              personalRelaysTouched: true,
+            },
+          },
+        ])
+      const created = await persistProductDeletionDelivery(
+        {
+          signedEvent: event,
+          currentWriteRelayUrls: [relayUrl],
+          sourceRelayUrls: [],
+          canonicalConduitRelayUrl:
+            testCase.roleShape === "author_write_conduit"
+              ? relayUrl
+              : "wss://conduit-congee.fly.dev",
+        },
+        { repository, now: () => NOW }
+      )
+      await repository.update(created.id, (current) => ({
+        ...current,
+        relayPlan: current.relayPlan.map((target) =>
+          target.relayUrl === relayUrl
+            ? {
+                relayUrl: target.relayUrl,
+                roles:
+                  testCase.roleShape === "author_write_conduit"
+                    ? ["author_write" as const, "conduit" as const]
+                    : ["author_write" as const],
+                ...(testCase.provenance === "app" ? { appRelay: true } : {}),
+                ...(testCase.provenance === "personal"
+                  ? { personalRelay: true }
+                  : {}),
+              }
+            : target
+        ),
+      }))
+      const publisherInputs: Parameters<ProductDeletionRelayPublisher>[0][] = []
+
+      await deliverProductDeletionJob(
+        created.id,
+        async (input) => {
+          publisherInputs.push(input)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          authenticatedPubkey: event.pubkey,
+          accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository: ownerEvidenceRepository,
+          now: tickingClock(),
+        }
+      )
+
+      const admitted = publisherInputs.find(
+        (input) => input.relayUrl === relayUrl
+      )
+      expect(admitted).toBeDefined()
+      expect(
+        admitted?.relayTarget?.grants.some(
+          (grant) => grant.kind === testCase.expectedGrant
+        )
+      ).toBe(true)
+      expect(
+        admitted?.relayTarget?.grants.every(
+          (grant) => grant.operation === "write"
+        )
+      ).toBe(true)
+    }
+  })
+
+  it("does not let an unflagged historical target invent signed owner or App authority", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const event = signedDeletionEvent("8".repeat(64))
+    const relayUrl = "wss://unsigned-new.example"
+    const created = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: [relayUrl],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
+      },
+      { repository, now: () => NOW }
+    )
+    await repository.update(created.id, (current) => ({
+      ...current,
+      relayPlan: current.relayPlan.map((target) =>
+        target.relayUrl === relayUrl
+          ? { relayUrl: target.relayUrl, roles: [...target.roles] }
+          : target
+      ),
+    }))
+    const attempts: string[] = []
+
+    const result = await deliverProductDeletionJob(
+      created.id,
+      async ({ relayUrl: attemptedRelay }) => {
+        attempts.push(attemptedRelay)
+        return { status: "acked" }
+      },
+      withEligibleAccountRelays({ repository, now: tickingClock() })
+    )
+
+    expect(attempts).not.toContain(relayUrl)
+    expect(result.relayPlan.map((target) => target.relayUrl)).toEqual(
+      created.relayPlan.map((target) => target.relayUrl)
+    )
+    expect(
+      result.relayDelivery.find((delivery) => delivery.relayUrl === relayUrl)
+    ).toEqual({
+      relayUrl,
+      status: "pending",
+      attemptCount: 0,
+    })
+  })
+
+  it("restores historical jobs through the production adapter and final writer under current independent switches", async () => {
+    const relayUrl = "wss://relay.ditto.pub"
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
+    const opened: string[] = []
+    const sent: SignedPublicNostrEvent[] = []
+    class Socket {
+      readyState = 0
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      constructor(url: string) {
+        opened.push(url)
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send(payload: string) {
+        const frame = JSON.parse(payload) as [string, SignedPublicNostrEvent]
+        if (frame[0] !== "EVENT") return
+        sent.push(frame[1])
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: JSON.stringify(["OK", frame[1].id, true, ""]),
+          } as MessageEvent<string>)
+        )
+      }
+      close() {
+        this.readyState = 3
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: Socket,
+    })
+    try {
+      for (const testCase of [
+        { provenance: "app", app: false, personal: true, eligible: true },
+        { provenance: "personal", app: true, personal: false, eligible: true },
+        { provenance: "unflagged", app: false, personal: true, eligible: true },
+        { provenance: "unflagged", app: true, personal: false, eligible: true },
+        {
+          provenance: "unflagged",
+          app: false,
+          personal: false,
+          eligible: false,
+        },
+      ]) {
+        opened.length = 0
+        sent.length = 0
+        const storage = new Map<string, ProductDeletionDeliveryJob>()
+        const repository = new MemoryProductDeletionOutbox(storage)
+        const event = signedDeletionEvent()
+        const created = await persistProductDeletionDelivery(
+          {
+            signedEvent: event,
+            currentWriteRelayUrls: [relayUrl],
+            sourceRelayUrls: [],
+            canonicalConduitRelayUrl: relayUrl,
+          },
+          { repository, now: () => NOW }
+        )
+        await repository.update(created.id, (current) => ({
+          ...current,
+          relayPlan: current.relayPlan.map((target) => ({
+            relayUrl: target.relayUrl,
+            roles: ["author_write", "conduit"],
+            ...(testCase.provenance === "app" ? { appRelay: true } : {}),
+            ...(testCase.provenance === "personal"
+              ? { personalRelay: true }
+              : {}),
+          })),
+        }))
+        const state = emptyAccountNetworkLocalState(event.pubkey, () => NOW)
+        state.routingPolicy = {
+          ...state.routingPolicy,
+          appRelaysEnabled: testCase.app,
+          personalRelaysEnabled: testCase.personal,
+          appRelaysTouched: true,
+          personalRelaysTouched: true,
+        }
+        const localStateRepository =
+          createInMemoryAccountNetworkLocalStateRepository([state])
+        // New repository instances model restart. Neither the adapter nor the
+        // exact publisher is replaced; only the raw socket and storage are.
+        const restored = new MemoryProductDeletionOutbox(storage)
+        const result = await deliverQueuedProductDeletion(created.id, {
+          repository: restored,
+          authenticatedPubkey: event.pubkey,
+          accountNetworkLocalStateRepository: localStateRepository,
+          ownerRelayListEvidenceRepository: ownerEvidenceRepository,
+          now: tickingClock(NOW + 20_000),
+          restoreLocalEvidence: async (job) => {
+            expect(job.signedEvent).toEqual(event)
+          },
+        })
+        expect(opened).toEqual(testCase.eligible ? [relayUrl] : [])
+        expect(sent).toEqual(testCase.eligible ? [event] : [])
+        expect(result.successfulRelayUrls).toEqual(
+          testCase.eligible ? [relayUrl] : []
+        )
+        const saved = await restored.get(created.id)
+        expect(saved?.signedEvent).toEqual(event)
+        expect(saved?.relayPlan.map((target) => target.relayUrl)).toEqual([
+          relayUrl,
+        ])
+        expect(saved?.relayDelivery[0]?.attemptCount).toBe(
+          testCase.eligible ? 1 : 0
+        )
+      }
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
+      else Reflect.deleteProperty(globalThis, "WebSocket")
     }
   })
 
@@ -1631,7 +2058,7 @@ describe("durable product deletion delivery", () => {
         currentWriteRelayUrls: [overlapRelayUrl],
         currentAppRelayUrls: [overlapRelayUrl],
         sourceRelayUrls: [overlapRelayUrl],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -1667,9 +2094,9 @@ describe("durable product deletion delivery", () => {
     const job = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -1710,9 +2137,9 @@ describe("durable product deletion delivery", () => {
     const created = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: tickingClock() }
     )
@@ -1751,9 +2178,9 @@ describe("durable product deletion delivery", () => {
     const created = await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://write.conduit.market"],
+        currentWriteRelayUrls: ["wss://relay.ditto.pub"],
         sourceRelayUrls: ["wss://source.conduit.market"],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository: beforeReload, now: firstNow }
     )
@@ -1761,7 +2188,7 @@ describe("durable product deletion delivery", () => {
     await deliverProductDeletionJob(
       created.id,
       async ({ relayUrl }) =>
-        relayUrl === "wss://write.conduit.market"
+        relayUrl === "wss://relay.ditto.pub"
           ? { status: "acked" }
           : relayUrl === "wss://source.conduit.market"
             ? { status: "rejected" }
@@ -1799,7 +2226,7 @@ describe("durable product deletion delivery", () => {
     )
 
     expect(retriedRelayUrls).toEqual([
-      "wss://relay.conduit.market",
+      "wss://conduit-congee.fly.dev",
       "wss://source.conduit.market",
     ])
     expect(retriedEvents).toEqual([event, event])
@@ -1816,9 +2243,9 @@ describe("durable product deletion delivery", () => {
         ])
       )
     ).toEqual({
-      "wss://relay.conduit.market": 2,
+      "wss://conduit-congee.fly.dev": 2,
       "wss://source.conduit.market": 2,
-      "wss://write.conduit.market": 1,
+      "wss://relay.ditto.pub": 1,
     })
   })
 
@@ -1828,11 +2255,12 @@ describe("durable product deletion delivery", () => {
     const event = signedDeletionEvent()
     const ownerRelayUrl = "ws://owner-selected.example"
     const remoteRelayUrl = "ws://remote-source.example"
-    const canonicalRelayUrl = "wss://relay.conduit.market"
+    const canonicalRelayUrl = "wss://conduit-congee.fly.dev"
     const created = await persistProductDeletionDelivery(
       {
         signedEvent: event,
         currentWriteRelayUrls: [ownerRelayUrl],
+        currentPersonalRelayUrls: [ownerRelayUrl],
         sourceRelayUrls: [],
         canonicalConduitRelayUrl: canonicalRelayUrl,
       },
@@ -1942,11 +2370,12 @@ describe("durable product deletion delivery", () => {
     const event = signedDeletionEvent()
     const firstOwnerRelayUrl = "ws://a.owner-selected.example"
     const secondOwnerRelayUrl = "ws://b.owner-selected.example"
-    const canonicalRelayUrl = "wss://relay.conduit.market"
+    const canonicalRelayUrl = "wss://conduit-congee.fly.dev"
     const job = await persistProductDeletionDelivery(
       {
         signedEvent: event,
         currentWriteRelayUrls: [firstOwnerRelayUrl, secondOwnerRelayUrl],
+        currentPersonalRelayUrls: [firstOwnerRelayUrl, secondOwnerRelayUrl],
         sourceRelayUrls: [],
         canonicalConduitRelayUrl: canonicalRelayUrl,
       },
@@ -1986,9 +2415,9 @@ describe("durable product deletion delivery", () => {
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://write.conduit.market"],
+        currentWriteRelayUrls: ["wss://relay.ditto.pub"],
         sourceRelayUrls: ["wss://source.conduit.market"],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => timestamp }
     )
@@ -1996,7 +2425,7 @@ describe("durable product deletion delivery", () => {
     await deliverProductDeletionJob(
       event.id,
       async ({ relayUrl }) =>
-        relayUrl === "wss://relay.conduit.market"
+        relayUrl === "wss://conduit-congee.fly.dev"
           ? { status: "acked" }
           : { status: "timed_out" },
       withEligibleAccountRelays({
@@ -2022,14 +2451,14 @@ describe("durable product deletion delivery", () => {
     )
 
     expect(retried).toEqual([
+      "wss://relay.ditto.pub",
       "wss://source.conduit.market",
-      "wss://write.conduit.market",
     ])
-    expect(retried).not.toContain("wss://relay.conduit.market")
+    expect(retried).not.toContain("wss://conduit-congee.fly.dev")
     expect(result.state).toBe("delivered")
     expect(
       result.relayDelivery.find(
-        ({ relayUrl }) => relayUrl === "wss://relay.conduit.market"
+        ({ relayUrl }) => relayUrl === "wss://conduit-congee.fly.dev"
       )?.attemptCount
     ).toBe(1)
   })
@@ -2043,9 +2472,9 @@ describe("durable product deletion delivery", () => {
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository: firstTab, now: () => timestamp }
     )
@@ -2104,7 +2533,7 @@ describe("durable product deletion delivery", () => {
         signedEvent: event,
         currentWriteRelayUrls: ["wss://write.example"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -2146,9 +2575,9 @@ describe("durable product deletion delivery", () => {
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -2188,11 +2617,12 @@ describe("durable product deletion delivery", () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()
     const ownerRelayUrl = "ws://owner-selected.example"
-    const publicRelayUrl = "wss://relay.conduit.market"
+    const publicRelayUrl = "wss://conduit-congee.fly.dev"
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
         currentWriteRelayUrls: [ownerRelayUrl],
+        currentPersonalRelayUrls: [ownerRelayUrl],
         sourceRelayUrls: [],
         canonicalConduitRelayUrl: publicRelayUrl,
       },
@@ -2205,6 +2635,7 @@ describe("durable product deletion delivery", () => {
       repository,
       accountNetworkLocalStateRepository:
         allowAllAccountNetworkLocalStateRepository,
+      ownerRelayListEvidenceRepository: ownerEvidenceRepository,
       authenticatedPubkey: event.pubkey,
       shouldContinue: () => sessionCurrent,
       now: tickingClock(),
@@ -2236,9 +2667,9 @@ describe("durable product deletion delivery", () => {
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
         sourceRelayUrls: [],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now: () => NOW }
     )
@@ -2265,7 +2696,7 @@ describe("durable product deletion delivery", () => {
       })
     )
 
-    expect(result.successfulRelayUrls).toEqual(["wss://relay.conduit.market"])
+    expect(result.successfulRelayUrls).toEqual(["wss://conduit-congee.fly.dev"])
     expect(result.failedRelayUrls).toEqual([])
     expect(restored).toEqual([event.id])
     expect(republished).toEqual([])
@@ -2279,9 +2710,9 @@ describe("durable product deletion delivery", () => {
       await persistProductDeletionDelivery(
         {
           signedEvent: event,
-          currentWriteRelayUrls: ["wss://relay.conduit.market"],
+          currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
           sourceRelayUrls: [],
-          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+          canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
         },
         { repository, now: () => NOW }
       )
@@ -2334,9 +2765,9 @@ describe("durable product deletion delivery", () => {
       await persistProductDeletionDelivery(
         {
           signedEvent: event,
-          currentWriteRelayUrls: ["wss://relay.conduit.market"],
+          currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
           sourceRelayUrls: [],
-          canonicalConduitRelayUrl: "wss://relay.conduit.market",
+          canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
         },
         { repository: baseRepository, now: () => NOW }
       )
@@ -2368,9 +2799,9 @@ describe("durable product deletion delivery", () => {
     await persistProductDeletionDelivery(
       {
         signedEvent: event,
-        currentWriteRelayUrls: ["wss://relay.conduit.market"],
-        sourceRelayUrls: ["wss://relay.conduit.market"],
-        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        currentWriteRelayUrls: ["wss://conduit-congee.fly.dev"],
+        sourceRelayUrls: ["wss://conduit-congee.fly.dev"],
+        canonicalConduitRelayUrl: "wss://conduit-congee.fly.dev",
       },
       { repository, now }
     )
@@ -2383,13 +2814,14 @@ describe("durable product deletion delivery", () => {
 
     expect(result.relayPlan).toEqual([
       {
-        relayUrl: "wss://relay.conduit.market",
+        relayUrl: "wss://conduit-congee.fly.dev",
         roles: ["author_write", "source", "conduit"],
+        appRelay: true,
       },
     ])
     expect(result.relayDelivery).toEqual([
       {
-        relayUrl: "wss://relay.conduit.market",
+        relayUrl: "wss://conduit-congee.fly.dev",
         status: "acked",
         attemptCount: 1,
         lastAttemptAt: expect.any(Number),

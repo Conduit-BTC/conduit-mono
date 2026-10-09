@@ -11,16 +11,22 @@ import {
   __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
   commitLocalProductWrite,
+  config,
+  createInMemoryAccountNetworkLocalStateRepository,
+  applyAccountNetworkRelayExclusion,
   db,
   getProductListingDelivery,
   prepareProductListingDeliveryJob,
 } from "@conduit/core"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "../packages/core/src/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
 import { deliverQueuedProductListings } from "../apps/merchant/src/lib/product-listing-delivery"
 
 const secret = generateSecretKey()
 const merchant = getPublicKey(secret)
 const createdAt = 1_800_000_000
 const relayUrl = "wss://relay.conduit.market"
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 const address = (dTag: string) => `30402:${merchant}:${dTag}`
 const deliveryOptions = {
   authenticatedPubkey: merchant,
@@ -50,17 +56,23 @@ function product(dTag: string, timestamp: number) {
   return finalizeEvent({ ...draft, created_at: timestamp }, secret)
 }
 
-function job(events: ReturnType<typeof product>[]) {
+function job(
+  events: ReturnType<typeof product>[],
+  target = { relayUrl, ownerSelected: false, personalRelay: true }
+) {
   return prepareProductListingDeliveryJob({
     merchantPubkey: merchant,
     signedEvents: events,
-    relayTargets: [{ relayUrl, ownerSelected: false, personalRelay: true }],
+    relayTargets: [target],
     readyForDelivery: false,
   })
 }
 
 let restore: (() => void) | undefined
 beforeEach(() => {
+  config.commerceRelayUrls = [
+    ...new Set([...originalCommerceRelayUrls, relayUrl]),
+  ]
   const dependencies = (
     db as unknown as {
       _deps: { indexedDB?: IDBFactory; IDBKeyRange?: typeof IDBKeyRange }
@@ -108,9 +120,208 @@ beforeEach(() => {
   }
 })
 afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   __resetRelayPublishTestOverrides()
   restore?.()
+})
+
+async function retainOwnerWriteSelection(
+  evidence: ReturnType<typeof createInMemoryOwnerRelayListEvidenceRepository>,
+  urls: string[],
+  timestamp = createdAt
+) {
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: timestamp,
+        tags: urls.map((url) => ["r", url, "write"]),
+        content: "",
+      },
+      secret
+    )
+  )
+  await evidence.reconcile({
+    pubkey: merchant,
+    observations: [{ signedEvent }],
+    lookup: {
+      observedAt: timestamp * 1000,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: signedEvent.id,
+    },
+  })
+}
+
+it("rechecks the exact secure owner target against current signed write evidence", async () => {
+  const ownerUrl = "wss://owner-listing.example"
+  const evidence = createInMemoryOwnerRelayListEvidenceRepository()
+  await retainOwnerWriteSelection(evidence, [ownerUrl])
+  const signedEvent = product("owner-current", createdAt)
+  const original = job([signedEvent], {
+    relayUrl: ownerUrl,
+    ownerSelected: false,
+    personalRelay: true,
+  })
+  await commitLocalProductWrite({
+    intentId: "owner-current",
+    merchantPubkey: merchant,
+    expectedRevisions: [{ addressId: address("owner-current"), eventId: null }],
+    listingJob: original,
+  })
+  const published: unknown[] = []
+  __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: async ({ signedEvent: wire }) => {
+      published.push(JSON.parse(JSON.stringify(wire)))
+      return "timed_out"
+    },
+  })
+  const options = {
+    ...deliveryOptions,
+    ownerRelayListEvidenceRepository: evidence,
+  }
+  await deliverQueuedProductListings(original.id, options)
+  expect(published).toEqual([JSON.parse(JSON.stringify(signedEvent))])
+  await retainOwnerWriteSelection(evidence, [], createdAt + 1)
+  await deliverQueuedProductListings(original.id, options)
+  expect(published).toHaveLength(1)
+  const retained = await getProductListingDelivery(original.id)
+  expect(retained?.signedEvents).toEqual(original.signedEvents)
+  expect(retained?.relayTargets).toEqual(original.relayTargets)
+  expect(retained?.relayDelivery[0]?.attemptCount).toBe(1)
+  expect(retained?.relayDelivery[0]?.status).toBe("timed_out")
+})
+
+it("does not turn an unproved historical independent URL into publication authority", async () => {
+  const signedEvent = product("unproved-authority", createdAt)
+  const original = prepareProductListingDeliveryJob({
+    merchantPubkey: merchant,
+    signedEvents: [signedEvent],
+    relayTargets: [
+      {
+        relayUrl: "wss://unproved-listing.example",
+        ownerSelected: false,
+        independentRelay: true,
+      },
+    ],
+    readyForDelivery: false,
+  })
+  await commitLocalProductWrite({
+    intentId: "unproved-authority",
+    merchantPubkey: merchant,
+    expectedRevisions: [
+      { addressId: address("unproved-authority"), eventId: null },
+    ],
+    listingJob: original,
+  })
+  let writes = 0
+  __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: async () => {
+      writes++
+      return "acked"
+    },
+  })
+  await deliverQueuedProductListings(original.id, deliveryOptions)
+  expect(writes).toBe(0)
+  const retained = await getProductListingDelivery(original.id)
+  expect(retained?.signedEvents).toEqual(original.signedEvents)
+  expect(retained?.relayTargets).toEqual(original.relayTargets)
+  expect(retained?.relayDelivery[0]?.attemptCount).toBe(0)
+})
+
+it("rechecks whole-relay exclusion at final I/O and retains the exact retry after re-add", async () => {
+  const signedEvent = product("last-mile-exclusion", createdAt)
+  const original = job([signedEvent])
+  await commitLocalProductWrite({
+    intentId: "last-mile-exclusion",
+    merchantPubkey: merchant,
+    expectedRevisions: [
+      { addressId: address("last-mile-exclusion"), eventId: null },
+    ],
+    listingJob: original,
+  })
+  const state = createInMemoryAccountNetworkLocalStateRepository()
+  let reads = 0
+  const repository = {
+    async get(pubkey: string) {
+      if (++reads === 2) {
+        await state.update(pubkey, (current) =>
+          applyAccountNetworkRelayExclusion(current, {
+            relayUrl,
+            committedAt: createdAt * 1000,
+          })
+        )
+      }
+      return state.get(pubkey)
+    },
+  }
+  const published: unknown[] = []
+  __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: async ({ signedEvent: wire }) => {
+      published.push(JSON.parse(JSON.stringify(wire)))
+      return "acked"
+    },
+  })
+  await deliverQueuedProductListings(original.id, {
+    ...deliveryOptions,
+    accountNetworkLocalStateRepository: repository,
+  })
+  expect(reads).toBeGreaterThanOrEqual(2)
+  expect(published).toEqual([])
+  expect((await getProductListingDelivery(original.id))?.relayTargets).toEqual(
+    original.relayTargets
+  )
+  await deliverQueuedProductListings(original.id, deliveryOptions)
+  expect(published).toEqual([JSON.parse(JSON.stringify(signedEvent))])
+  const retained = await getProductListingDelivery(original.id)
+  expect(retained?.signedEvents).toEqual(original.signedEvents)
+  expect(retained?.relayTargets).toEqual(original.relayTargets)
+  expect(retained?.relayDelivery[0]?.status).toBe("acked")
+})
+
+it("revokes secure owner-only publication across final signed-evidence awaits", async () => {
+  const ownerUrl = "wss://revocable-owner-listing.example"
+  const evidence = createInMemoryOwnerRelayListEvidenceRepository()
+  await retainOwnerWriteSelection(evidence, [ownerUrl])
+  const signedEvent = product("owner-revoked", createdAt)
+  const original = job([signedEvent], {
+    relayUrl: ownerUrl,
+    ownerSelected: false,
+    personalRelay: true,
+  })
+  await commitLocalProductWrite({
+    intentId: "owner-revoked",
+    merchantPubkey: merchant,
+    expectedRevisions: [{ addressId: address("owner-revoked"), eventId: null }],
+    listingJob: original,
+  })
+  let current = true
+  let reads = 0
+  let writes = 0
+  __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: async () => {
+      writes++
+      return "acked"
+    },
+  })
+  await deliverQueuedProductListings(original.id, {
+    ...deliveryOptions,
+    isAuthenticatedPubkeyCurrent: () => current,
+    ownerRelayListEvidenceRepository: {
+      async get(pubkey) {
+        const retained = await evidence.get(pubkey)
+        if (++reads === 2) current = false
+        return retained
+      },
+    },
+  })
+  expect(reads).toBeGreaterThanOrEqual(2)
+  expect(writes).toBe(0)
+  const retained = await getProductListingDelivery(original.id)
+  expect(retained?.signedEvents).toEqual(original.signedEvents)
+  expect(retained?.relayTargets).toEqual(original.relayTargets)
+  expect(retained?.relayDelivery[0]?.status).not.toBe("acked")
 })
 
 for (const pruneChangedCache of [true, false]) {
