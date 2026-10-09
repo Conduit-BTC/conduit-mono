@@ -8,11 +8,15 @@ import {
 } from "nostr-tools/pure"
 import { decrypt, encrypt, getConversationKey } from "nostr-tools/nip44"
 
+import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+import { buildEventMarketRosterDraft } from "@conduit/core/protocol/event-market-roster"
+
 import type { Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
 import {
   TEST_RELAY_URL,
   readTestRelayEvents,
   seedTestRelayIdentity,
+  publishTestRelayEvents,
 } from "./helpers/auth"
 
 const merchantUrl =
@@ -693,5 +697,124 @@ test("a different signer starts a fresh merchant workspace after verified recove
   } finally {
     harnessA.close()
     harnessB.close()
+  }
+})
+
+test("a recoverable remote signer error keeps the signed-in event audience @market", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const remoteSignerSecret = generateSecretKey()
+  const buyerSecret = generateSecretKey()
+  const organizerSecret = generateSecretKey()
+  const buyerPubkey = getPublicKey(buyerSecret)
+  const organizerPubkey = getPublicKey(organizerSecret)
+  const harness = await startRemoteSignerHarness(
+    remoteSignerSecret,
+    buyerSecret
+  )
+  const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+  const requests: Array<string[] | undefined> = []
+  let recoveryStarted = false
+  page.on("websocket", (socket) =>
+    socket.on("framesent", ({ payload }) => {
+      const frame = JSON.parse(String(payload))
+      if (!recoveryStarted || frame[0] !== "REQ") return
+      for (const filter of frame.slice(2))
+        if (filter.kinds?.includes(30409) && !filter["#d"])
+          requests.push(filter.authors)
+    })
+  )
+  try {
+    await seedTestRelayIdentity(buyerSecret)
+    const created_at = Math.floor(Date.now() / 1_000)
+    const title = "Retained Following audience fixture"
+    await publishTestRelayEvents([
+      finalizeEvent(
+        { kind: 3, created_at, tags: [["p", organizerPubkey]], content: "" },
+        buyerSecret
+      ),
+      finalizeEvent(
+        {
+          ...buildEventMarketCalendarDraft({
+            kind: 31922,
+            dTag: "recovery-date",
+            title,
+            start: new Date(Date.now() + 7 * 86_400_000)
+              .toISOString()
+              .slice(0, 10),
+          }),
+          created_at,
+        },
+        organizerSecret
+      ),
+      finalizeEvent(
+        {
+          ...buildEventMarketRosterDraft({
+            organizerPubkey,
+            dTag: "recovery-audience",
+            calendarCoordinate: `31922:${organizerPubkey}:recovery-date`,
+            state: "open",
+            merchants: [],
+          }),
+          created_at,
+        },
+        organizerSecret
+      ),
+    ])
+    await installSignerRelayAlias(page)
+    await page.goto(marketUrl + "/events?source=following")
+    await page.getByRole("button", { name: "Connect", exact: true }).click()
+    await connectRemoteSigner(page, getPublicKey(remoteSignerSecret))
+    await expect(page.getByText(title, { exact: true })).toBeVisible({
+      timeout: 20_000,
+    })
+    await expect(
+      page.getByRole("button", { name: "Refresh events", exact: true })
+    ).toBeEnabled()
+    recoveryStarted = true
+    const retainedSession = await page.evaluate(() => {
+      const raw = localStorage.getItem("conduit:auth")
+      if (!raw) throw new Error("Missing retained remote account")
+      const oldValue = localStorage.getItem("conduit:auth:revision")
+      const newValue = `${oldValue}:other-tab`
+      localStorage.setItem("conduit:auth:revision", newValue)
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "conduit:auth:revision",
+          oldValue,
+          newValue,
+          url: window.location.href,
+        })
+      )
+      return raw
+    })
+    expect(JSON.parse(retainedSession).userPubkey).toBe(buyerPubkey)
+    await expect(
+      page.getByRole("button", { name: "Connect", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Refresh events", exact: true })
+    ).toBeEnabled()
+    await page
+      .getByRole("button", { name: "Refresh events", exact: true })
+      .click()
+    await expect(
+      page.getByRole("button", { name: "Refresh events", exact: true })
+    ).toBeEnabled()
+    await expect(page.getByText(title, { exact: true })).toBeVisible()
+    await expect(
+      page.getByText("Browsing public events from your selected relays.")
+    ).toHaveCount(0)
+    expect(requests.length).toBeGreaterThan(0)
+    expect(
+      requests.every((authors) => authors?.includes(organizerPubkey))
+    ).toBe(true)
+    expect(
+      await page.evaluate(() => localStorage.getItem("conduit:auth"))
+    ).toBe(retainedSession)
+    expect(harness.responseErrors()).toEqual([])
+  } finally {
+    harness.close()
   }
 })

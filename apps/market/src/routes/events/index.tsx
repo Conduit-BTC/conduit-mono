@@ -1,6 +1,6 @@
 import { useCallback } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { normalizePubkey, pubkeyToNpub, useAuth } from "@conduit/core"
+import { normalizePubkey, pubkeyToNpub, useConduitSession } from "@conduit/core"
 import {
   MARKET_SOURCE_OPTIONS,
   MarketBrowseNavigation,
@@ -36,10 +36,10 @@ export const Route = createFileRoute("/events/")({
 function EventsTimelinePage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-  const { status } = useAuth()
-  const connected = status === "connected"
+  const session = useConduitSession()
+  const signedIn = session.mode === "signed_in"
   const requestedSource = search.source ?? DEFAULT_MARKET_CATALOG_SOURCE
-  const effectiveSource = connected ? requestedSource : "conduit"
+  const effectiveSource = signedIn ? requestedSource : "conduit"
 
   const updateSearch = useCallback(
     (nextSearch: EventTimelineSearch) => {
@@ -66,7 +66,7 @@ function EventsTimelinePage() {
       <MarketBrowseNavigation
         active="events"
         source={effectiveSource}
-        connected={connected}
+        connected={signedIn}
         onSelectSource={(source) =>
           updateSearch({
             ...search,

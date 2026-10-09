@@ -403,6 +403,113 @@ describe("event candidate discovery paging", () => {
     expect(switched.pages).toEqual([])
   })
 
+  it.each([false, true])(
+    "reaches older signed records while keeping a rejected page retryable (boundary rejection: %s)",
+    async (rejectBoundary) => {
+      const state = fixture(1)
+      const record = state.records[0]!
+      const relayUrl = "wss://degraded.relay.dev"
+      const plan = {
+        ...(await state.dependencies.planDiscovery!({})),
+        relayUrls: [relayUrl],
+        candidateRelayUrls: [relayUrl],
+        relayTargets: relayTargetsFromUrls([relayUrl], {
+          kind: "public_hint",
+          operation: "read",
+        }),
+      }
+      const records = [100, 99, 98].map((created_at) =>
+        finalizeEvent(
+          {
+            kind: 30409,
+            created_at,
+            tags: [["d", `older-${created_at}`]],
+            content: "",
+          },
+          record.secret
+        )
+      )
+      const rejected = { ...records[0]!, sig: "0".repeat(128) }
+      const seen = new Set<string>()
+      const filters: Array<{ since?: number; until?: number }> = []
+      const input = {
+        plan,
+        options: {
+          reuseRelayConnections: false,
+          skipHealthFilter: true,
+          socketScope: {
+            createWebSocket: () => {
+              const socket: PublicRelayReadSocket = {
+                readyState: 0,
+                onopen: null,
+                onmessage: null,
+                onclose: null,
+                onerror: null,
+                send: (payload) => {
+                  const [type, id, filter] = JSON.parse(payload)
+                  if (type !== "REQ") return
+                  filters.push(filter)
+                  const events =
+                    filter.until === undefined || filter.since === 100
+                      ? [records[0]!]
+                      : records.filter(
+                          (event) => event.created_at <= filter.until
+                        )
+                  if (
+                    filter.until === undefined ||
+                    (rejectBoundary && filter.since === 100)
+                  )
+                    events.unshift(rejected)
+                  queueMicrotask(() => {
+                    for (const event of events)
+                      socket.onmessage?.({
+                        data: JSON.stringify(["EVENT", id, event]),
+                      } as MessageEvent<string>)
+                    socket.onmessage?.({
+                      data: JSON.stringify(["EOSE", id]),
+                    } as MessageEvent<string>)
+                  })
+                },
+                close: () => {
+                  socket.readyState = 3
+                },
+              }
+              queueMicrotask(() => {
+                socket.readyState = 1
+                socket.onopen?.(new Event("open"))
+              })
+              return socket
+            },
+          },
+        },
+        fetch: fetchSignedEventsFanoutDetailed,
+        observe: async (events: typeof records) => {
+          events.forEach((event) => seen.add(event.id))
+        },
+        assertCurrent: () => {},
+      }
+      const first = await scanEventMarketCandidates(input)
+      expect(seen.size).toBe(3)
+      expect(first.incomplete).toBe(true)
+      expect(first.pages).toContainEqual({ relayUrl, authors: undefined })
+      expect(first.pages.some((page) => page.boundary === true)).toBe(
+        rejectBoundary
+      )
+      expect(filters).toContainEqual(
+        expect.objectContaining({ since: 100, until: 100 })
+      )
+      expect(filters).toContainEqual(expect.objectContaining({ until: 99 }))
+      const continuation = JSON.parse(
+        JSON.stringify({ ...first, pendingCoordinates: [] })
+      ) as EventMarketDiscoveryContinuation
+      const next = await scanEventMarketCandidates({ ...input, continuation })
+      expect(seen.size).toBe(3)
+      expect(next.incomplete).toBe(true)
+      expect(next.pages).toHaveLength(first.pages.length)
+      expect(filters.length).toBeLessThan(10)
+    }
+  )
+
   it("retains failed pages and rejects malformed records while healthy relays keep painting", async () => {
     const state = fixture(1)
     const plan = await state.dependencies.planDiscovery!({})

@@ -10,7 +10,10 @@ Timeline discovery starts with retained signed headers and one shared public
 relay plan. Following and curated perspectives scan every organizer in batches
 of 64; 64 is a request size, not an audience limit. Market guests browse kind
 30409 candidates without an author filter on the selected public relays. An
-empty Following list remains an empty audience.
+empty Following list remains an empty audience. Established session identity owns
+that audience even while a remote signer is recovering. Only a settled guest
+session uses author-free discovery and public-browsing messaging; signer readiness
+does not turn a retained account into a guest.
 
 Candidate reads run four at a time with a budget of 128 requests per pass.
 The relay planner's distinct admitted-source cap applies to the whole scan,
@@ -21,7 +24,10 @@ plan's cap invalidates its continuation.
 Saturated pages descend by signed creation time, checking the entire final
 timestamp before moving to older records. A saturated same-second range stays
 partial and retryable because NIP-01 offers no event-ID cursor. Partial or failed
-pages retain their position. Exact roster and calendar hydration runs four at a
+pages retain their position. Verified observations on an incomplete page can
+also advance through its final timestamp to older records without clearing the
+retryable range or claiming complete coverage. Duplicate cursors share one
+request in a pass. Exact roster and calendar hydration runs four at a
 time, for up to 128 coordinates per pass. Only discovered or retained coordinates
 need organizer relay planning. Observed relay sources accompany exact reads.
 A new signed revision or newly observed source refreshes exact hydration, even

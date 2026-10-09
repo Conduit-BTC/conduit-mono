@@ -77,6 +77,20 @@ export async function scanEventMarketCandidates(input: {
     : batches.flatMap((authors) =>
         relays.map((relayUrl) => ({ relayUrl, authors }))
       )
+  const pageKey = (page: CandidatePage) =>
+    JSON.stringify([
+      page.relayUrl,
+      page.authors ?? null,
+      page.until ?? null,
+      !!page.boundary,
+    ])
+  const scheduledPages = new Set(queue.map(pageKey))
+  const enqueue = (page: CandidatePage) => {
+    const key = pageKey(page)
+    if (scheduledPages.has(key)) return
+    scheduledPages.add(key)
+    queue.push(page)
+  }
   const remaining: CandidatePage[] = []
   const admittedRelays = new Set(prior?.admittedRelayUrls ?? [])
   const suppressedRelays = new Set<string>()
@@ -178,9 +192,22 @@ export async function scanEventMarketCandidates(input: {
           if (status !== "success" || events.length !== result.events.length) {
             incomplete = true
             remaining.push(page)
+            // Rejected or unavailable evidence cannot establish completion, but
+            // verified timestamps can still lead to older records. Retry the
+            // incomplete range while progressing, without duplicating cursors.
+            if (events.length) {
+              if (!page.boundary)
+                enqueue({
+                  ...page,
+                  until: Math.min(...events.map((event) => event.created_at)),
+                  boundary: true,
+                })
+              else if (page.until! > 0)
+                enqueue({ ...page, until: page.until! - 1, boundary: false })
+            }
           } else if (result.events.length >= limit - 1) {
             if (!page.boundary && events.length)
-              queue.push({
+              enqueue({
                 ...page,
                 until: Math.min(...events.map((event) => event.created_at)),
                 boundary: true,
@@ -192,7 +219,7 @@ export async function scanEventMarketCandidates(input: {
               remaining.push(page)
             }
           } else if (page.boundary && page.until! > 0) {
-            queue.push({ ...page, until: page.until! - 1, boundary: false })
+            enqueue({ ...page, until: page.until! - 1, boundary: false })
           }
         } catch {
           // With no terminal admission result, conservatively retain the slot.
