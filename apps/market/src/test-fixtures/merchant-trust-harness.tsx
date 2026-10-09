@@ -48,7 +48,6 @@ export function mountMerchantTrustHarness(
           status: "failed" as const,
           eventCount: 0,
         })),
-        eventsVerified: true,
       }),
     })
   }

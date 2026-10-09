@@ -1,11 +1,11 @@
 import {
   EVENT_KINDS,
   isValidSignedPublicNostrEvent,
-  parseProductEvent,
   type CommerceProductRecord,
   type ProductFamilyInventorySummary,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { parsePrivateOrderProductFields } from "@conduit/core/protocol/products"
 
 export const LOW_STOCK_THRESHOLD = 5
 
@@ -295,7 +295,7 @@ function parsePendingProductStockDelivery(
   }
 
   try {
-    const signedProduct = parseProductEvent(delivery.signedEvent)
+    const signedProduct = parsePrivateOrderProductFields(delivery.signedEvent)
     if (
       signedProduct.id !== adjustment.addressId ||
       signedProduct.stock !== adjustment.nextStock

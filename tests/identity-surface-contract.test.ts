@@ -89,8 +89,8 @@ describe("identity surface contracts", () => {
     expect(content).toContain("CircleAlert")
     expect(content).toContain("text-[var(--warning)]")
     expect(content).toContain('display?: "full" | "icon"')
-    expect(content).toContain("aria-label={`${label}: ${displayLabel}`}")
-    expect(content).toContain("title={`${label}: ${displayLabel}`}")
+    expect(content).toContain("aria-label={tooltip}")
+    expect(content).toContain("title={tooltip}")
     expect(content).not.toContain("text-secondary-400")
   })
 

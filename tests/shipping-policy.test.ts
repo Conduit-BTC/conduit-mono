@@ -13,6 +13,7 @@ import {
   __resetShippingTestOverrides,
   __setShippingTestOverrides,
   buildProductListingEventDraft,
+  admitPublicEvent,
   parseProductEvent,
   buildShippingPolicyEventDraft,
   fetchMerchantShippingPolicy,
@@ -44,6 +45,7 @@ import {
   type MerchantShippingPolicyReadResult,
 } from "@conduit/core"
 import type { publishWithPlanner } from "../packages/core/src/protocol/relay-publish"
+import { parseShippingPolicyEventTags } from "../packages/core/src/protocol/shipping-policy"
 
 const secret = generateSecretKey()
 const merchant = getPublicKey(secret)
@@ -114,24 +116,36 @@ function signedPolicy(value = policy, created_at = 10): SignedPublicNostrEvent {
     secret
   )
 }
-function quote(
+async function admitSigned(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified") throw new Error("Expected signed fixture")
+  return result.event
+}
+
+async function admitIfValid(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  return result.status === "verified" ? result.event : event
+}
+
+async function quote(
   value = policy,
   overrides: Record<string, unknown> = {}
 ): ShippingPolicyQuote {
   const event = signedPolicy(value)
+  const productEvent = signedProduct(value.currency)
   const result = quoteShippingPolicy({
     policy: value,
     policyCoordinate: coordinate,
     policyEventId: event.id,
     policyCreatedAt: event.created_at,
     merchantPubkey: merchant,
-    policyEvent: event,
+    policyEvent: await admitSigned(event),
     items: [
       {
         productId,
-        productEventId: signedProduct(value.currency).id,
+        productEventId: productEvent.id,
         productCreatedAt: 2,
-        productEvent: signedProduct(value.currency),
+        productEvent: await admitSigned(productEvent),
         quantity: 2,
         weightGrams: 200,
         currency: value.currency,
@@ -144,6 +158,9 @@ function quote(
     ],
     destination: { country: "US", subdivision: "NY", postalCode: "10001" },
     ...overrides,
+    policyEvent: await admitIfValid(
+      (overrides.policyEvent as SignedPublicNostrEvent | undefined) ?? event
+    ),
   })
   if (result.status !== "quoted") throw new Error(result.status)
   return result.quote
@@ -197,7 +214,6 @@ function fanoutResult(
 ) {
   return {
     events: events.map((event) => new NDKEvent(undefined, event)),
-    eventsVerified: true,
     eventSourceRelayUrls: {},
     relays: (options.relayUrls ?? []).map((relayUrl) => ({
       relayUrl,
@@ -548,7 +564,7 @@ describe("shipping policy arithmetic", () => {
 })
 
 describe("shipping signed terms and product wire tags", () => {
-  it("does not offer a fixed amount to readers that ignore table extensions", () => {
+  it("does not offer a fixed amount to readers that ignore table extensions", async () => {
     const event = signedPolicy()
     const standardNames = new Set([
       "d",
@@ -564,34 +580,39 @@ describe("shipping signed terms and product wire tags", () => {
       tags: event.tags.filter((tag) => standardNames.has(tag[0]!)),
     } as never)
     expect(standardView).toBeNull()
-    const product = parseProductEvent(new NDKEvent(undefined, signedProduct()))!
+    const product = parseProductEvent(await admitSigned(signedProduct()))!
     expect(
       resolveProductFulfillment(product, standardView ? [standardView] : [])
     ).toMatchObject({
       status: "order_first",
       reason: "unresolved",
     })
-    const awareView = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+    const awareView = parseShippingOptionEvent(await admitSigned(event))!
     expect(resolveProductFulfillment(product, [awareView])).toMatchObject({
       intent: "weight_table",
       status: "ready",
     })
-    expect(quote().amountMinor).toBe(550)
+    expect((await quote()).amountMinor).toBe(550)
     expect(event.tags.some((tag) => tag[0] === "price")).toBe(false)
   })
-  it("uses human content and an explicit table capability without a fixed price", () => {
+  it("uses human content and an explicit table capability without a fixed price", async () => {
     const draft = buildShippingPolicyEventDraft({ policy })
     expect(draft.content.startsWith("{")).toBe(false)
     expect(draft.tags).toContainEqual(["d", "conduit-shipping-policy"])
     expect(draft.tags.some((tag) => tag[0] === "price")).toBe(false)
     const event = signedPolicy()
-    const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+    expect(parseShippingOptionEvent(event as never)).toBeNull()
+    expect(parseShippingPolicyEventTags(event as never)).toBeNull()
+    const parsed = parseShippingOptionEvent(await admitSigned(event))!
     expect(parsed.shippingPolicy).toEqual(policy)
+    expect(parseShippingPolicyEventTags(await admitSigned(event))).toEqual(
+      policy
+    )
     expect(parsed.signedEvent).toEqual(JSON.parse(JSON.stringify(event)))
     // The old fixed-only supported-tag set rejects this marker.
     expect(parsed.launchUnsupportedTags).toContain("conduit_shipping_table")
   })
-  it("rejects missing, duplicated, unsupported, and contradictory extension metadata", () => {
+  it("rejects missing, duplicated, unsupported, and contradictory extension metadata", async () => {
     const event = signedPolicy()
     for (const tags of [
       [...event.tags, ["price", "0", "USD"]],
@@ -606,11 +627,11 @@ describe("shipping signed terms and product wire tags", () => {
     ])
       expect(
         parseShippingOptionEvent(
-          new NDKEvent(undefined, finalizeEvent({ ...event, tags }, secret))
+          await admitSigned(finalizeEvent({ ...event, tags }, secret))
         )
       ).toBeNull()
   })
-  it("preserves historical signed table revisions with the old price summary", () => {
+  it("preserves historical signed table revisions with the old price summary", async () => {
     const version2: ShippingPolicyV2 = {
       version: 2,
       title: policy.title,
@@ -629,9 +650,9 @@ describe("shipping signed terms and product wire tags", () => {
         },
         secret
       )
-      const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+      const parsed = parseShippingOptionEvent(await admitSigned(event))!
       expect(parsed.shippingPolicy).toEqual(parseShippingPolicy(value))
-      const historical = quote(value, {
+      const historical = await quote(value, {
         policyEvent: event,
         policyEventId: event.id,
         rateInput: 50_000,
@@ -640,8 +661,8 @@ describe("shipping signed terms and product wire tags", () => {
       expect(historical.policyEvent).toEqual(JSON.parse(JSON.stringify(event)))
     }
   })
-  it("retains exact policy and product revisions and rejects forged result fields", () => {
-    const snapshot = quote()
+  it("retains exact policy and product revisions and rejects forged result fields", async () => {
+    const snapshot = await quote()
     expect(shippingPolicyQuoteSchema.safeParse(snapshot).success).toBe(true)
     expect(
       hasSameShippingPolicyQuote(
@@ -673,7 +694,7 @@ describe("shipping signed terms and product wire tags", () => {
       })
     ).toEqual({ status: "invalid_policy" })
   })
-  it("round-trips weight and advisory dimensions and ignores malformed duplicated weight", () => {
+  it("round-trips weight and advisory dimensions and ignores malformed duplicated weight", async () => {
     const product: ProductSchema = {
       id: productId,
       pubkey: merchant,
@@ -699,15 +720,14 @@ describe("shipping signed terms and product wire tags", () => {
     expect(draft.tags).toContainEqual(["weight", "200", "g"])
     expect(draft.tags).toContainEqual(["dim", "10x20x30", "cm"])
     const event = finalizeEvent({ ...draft, created_at: 2 }, secret)
-    expect(parseProductEvent(new NDKEvent(undefined, event))).toMatchObject({
+    expect(parseProductEvent(await admitSigned(event))).toMatchObject({
       sourceEventId: event.id,
       shippingWeightGrams: 200,
       shippingDimensionsCm: product.shippingDimensionsCm,
     })
     expect(
       parseProductEvent(
-        new NDKEvent(
-          undefined,
+        await admitSigned(
           finalizeEvent(
             { ...event, tags: [...event.tags, ["weight", "500", "g"]] },
             secret
@@ -717,12 +737,12 @@ describe("shipping signed terms and product wire tags", () => {
     ).toBeUndefined()
     expect(
       resolveProductFulfillment(product, [
-        parseShippingOptionEvent(new NDKEvent(undefined, signedPolicy()))!,
+        parseShippingOptionEvent(await admitSigned(signedPolicy()))!,
       ])
     ).toMatchObject({ intent: "weight_table", status: "ready" })
   })
-  it("adds allocated line shipping once and treats missing allocation as manual", () => {
-    const snapshot = quote()
+  it("adds allocated line shipping once and treats missing allocation as manual", async () => {
+    const snapshot = await quote()
     expect(
       resolveCartShippingCost([
         {
@@ -739,8 +759,8 @@ describe("shipping signed terms and product wire tags", () => {
       ])
     ).toMatchObject({ totalSats: 0, status: "manual" })
   })
-  it("binds immutable quote groups to order items, destination, and totals", () => {
-    const snapshot = quote(policy, { rateInput: 1_000_000 })
+  it("binds immutable quote groups to order items, destination, and totals", async () => {
+    const snapshot = await quote(policy, { rateInput: 1_000_000 })
     const order = {
       id: "order",
       merchantPubkey: merchant,
@@ -777,7 +797,7 @@ describe("shipping signed terms and product wire tags", () => {
     }
     expect(orderSchema.safeParse(order).success).toBe(true)
     for (const currency of ["BTC", "MSATS"]) {
-      const native = quote({
+      const native = await quote({
         ...policy,
         currency,
         handlingMinor: 0,
@@ -826,7 +846,7 @@ describe("shipping signed terms and product wire tags", () => {
         items: [{ ...order.items[0], shippingAllocatedCostSats: 1 }],
       }).success
     ).toBe(false)
-    const legacy = quote()
+    const legacy = await quote()
     expect(shippingPolicyQuoteSchema.safeParse(legacy).success).toBe(true)
     expect(
       orderSchema.safeParse({
@@ -1006,17 +1026,30 @@ describe("shipping policy read evidence", () => {
     })
   })
 
-  it("rejects same-timestamp conflicts while accepting duplicate evidence and ignoring foreign-author deletion", () => {
+  it("rejects same-timestamp conflicts while accepting duplicate evidence and ignoring foreign-author deletion", async () => {
     const first = signedPolicy(policy, 10)
     const second = signedPolicy({ ...policy, handlingMinor: 0 }, 10)
     const foreign = finalizeEvent(
       { kind: 5, created_at: 11, content: "", tags: [["a", coordinate]] },
       generateSecretKey()
     )
-    expect(selectLatestShippingOptions([first, second], [foreign])).toEqual([])
-    expect(selectLatestShippingOptions([second, first])).toEqual([])
+    const admittedFirst = await admitSigned(first)
+    const admittedSecond = await admitSigned(second)
+    const admittedForeign = await admitSigned(foreign)
     expect(
-      selectLatestShippingOptions([first, first], [foreign])[0]?.eventId
+      selectLatestShippingOptions(
+        [admittedFirst, admittedSecond],
+        [admittedForeign]
+      )
+    ).toEqual([])
+    expect(
+      selectLatestShippingOptions([admittedSecond, admittedFirst])
+    ).toEqual([])
+    expect(
+      selectLatestShippingOptions(
+        [admittedFirst, admittedFirst],
+        [admittedForeign]
+      )[0]?.eventId
     ).toBe(first.id)
   })
 })
@@ -1121,7 +1154,9 @@ describe("shipping policy publication", () => {
     })
     expect(published?.kind).toBe(30406)
     expect(revision).toEqual({ eventId: published!.id, createdAt: 20 })
-    expect(parseShippingOptionEvent(published!)?.shippingPolicy).toEqual(policy)
+    expect(
+      parseShippingOptionEvent(await admitSigned(published!))?.shippingPolicy
+    ).toEqual(policy)
   })
   it("rejects revision changes, incomplete reads, wrong signer, and zero ACK", async () => {
     cacheOverrides()
@@ -1209,7 +1244,10 @@ describe("shipping policy publication", () => {
     })
     expect(published?.created_at).toBe(31)
     expect(
-      selectLatestShippingOptions([published!], [deletion])[0]?.eventId
+      selectLatestShippingOptions(
+        [await admitSigned(published!)],
+        [await admitSigned(deletion)]
+      )[0]?.eventId
     ).toBe(published!.id)
   })
 
@@ -1340,7 +1378,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       shippingHandling: handling,
     }
   }
-  function v2Quote(
+  async function v2Quote(
     value = v2,
     rateInput: BtcUsdRateQuote | number | null = rates,
     items = [
@@ -1349,45 +1387,48 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
     ]
   ) {
     const event = signedPolicy(value)
+    const admittedItems = await Promise.all(
+      items.map(async (item) => ({
+        ...item,
+        productEvent: await admitIfValid(item.productEvent),
+      }))
+    )
     return quoteShippingPolicy({
       policy: value,
       policyCoordinate: coordinate,
       policyEventId: event.id,
       policyCreatedAt: event.created_at,
       merchantPubkey: merchant,
-      policyEvent: event,
-      items,
+      policyEvent: await admitSigned(event),
+      items: admittedItems,
       destination: { country: "US", postalCode: "10001" },
       rateInput,
     })
   }
-  it("emits v2 detection and rejects legacy buffers on v2", () => {
+  it("emits v2 detection and rejects legacy buffers on v2", async () => {
     const draft = buildShippingPolicyEventDraft({ policy: v2 })
     expect(
       draft.tags.find((tag) => tag[0] === "conduit_shipping_table")?.[1]
     ).toBe("2")
     expect(
-      parseShippingOptionEvent({ ...signedPolicy(v2) } as never)?.shippingPolicy
-        ?.version
+      parseShippingOptionEvent(await admitSigned(signedPolicy(v2)))
+        ?.shippingPolicy?.version
     ).toBe(2)
     expect(() => parseShippingPolicy({ ...v2, handlingMinor: 0 })).toThrow()
     const unsupported = structuredClone(draft)
     unsupported.tags.find((tag) => tag[0] === "conduit_shipping_table")![1] =
       "3"
     expect(
-      parseShippingOptionEvent({
-        ...unsupported,
-        id: "f".repeat(64),
-        pubkey: merchant,
-        created_at: 10,
-      } as never)
+      parseShippingOptionEvent(
+        await admitSigned(
+          finalizeEvent({ ...unsupported, created_at: 10 }, secret)
+        )
+      )
     ).toBeNull()
   })
-  it("round-trips explicit per-product adjustment metadata and refuses malformed or foreign-currency terms", () => {
+  it("round-trips explicit per-product adjustment metadata and refuses malformed or foreign-currency terms", async () => {
     const item = adjustedItem("one", "EUR", 10, 1, 50, 0.01)
-    const parsed = parseProductEvent(
-      new NDKEvent(undefined, item.productEvent)
-    )!
+    const parsed = parseProductEvent(await admitSigned(item.productEvent))!
     expect(parsed).toMatchObject({
       shippingWeightAllowanceGrams: 50,
       shippingHandling: {
@@ -1413,11 +1454,11 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       body.tags.push(tag)
       const event = finalizeEvent(body, secret)
       expect(
-        parseProductEvent(new NDKEvent(undefined, event))
+        parseProductEvent(await admitSigned(event))
           ?.shippingAdjustmentsMalformed
       ).toBe(true)
       expect(
-        v2Quote(v2, rates, [
+        await v2Quote(v2, rates, [
           { ...item, productEvent: event, productEventId: event.id },
         ])
       ).toEqual({ status: "invalid_items" })
@@ -1435,7 +1476,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       secret
     )
     expect(
-      parseProductEvent(new NDKEvent(undefined, duplicate))
+      parseProductEvent(await admitSigned(duplicate))
         ?.shippingAdjustmentsMalformed
     ).toBe(true)
     expect(() =>
@@ -1452,7 +1493,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       })
     ).toThrow()
   })
-  it("multiplies per-product weight and handling by quantity then converts each line once", () => {
+  it("multiplies per-product weight and handling by quantity then converts each line once", async () => {
     // 3 × (200+50) + 2 × 200 = 1150; use a matching bound.
     const value = {
       ...v2,
@@ -1462,7 +1503,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
         ],
       },
     }
-    const result = v2Quote(value)
+    const result = await v2Quote(value)
     expect(result.status).toBe("quoted")
     if (result.status !== "quoted" || result.quote.version !== 2)
       throw new Error(result.status)
@@ -1517,7 +1558,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
     ])
       expect(shippingPolicyQuoteSchema.safeParse(forged).success).toBe(false)
   })
-  it("uses converted shipped subtotal at inclusive free threshold and waives all handling", () => {
+  it("uses converted shipped subtotal at inclusive free threshold and waives all handling", async () => {
     const value = {
       ...v2,
       domestic: {
@@ -1527,7 +1568,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
         ],
       },
     }
-    expect(v2Quote(value)).toMatchObject({
+    expect(await v2Quote(value)).toMatchObject({
       status: "quoted",
       quote: {
         freeShippingApplied: true,
@@ -1538,7 +1579,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       },
     })
     expect(
-      v2Quote({
+      await v2Quote({
         ...value,
         domestic: { ...value.domestic, freeShippingThresholdMinor: 1601 },
       })
@@ -1547,7 +1588,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       quote: { freeShippingApplied: false, amountMinor: 502 },
     })
     expect(
-      v2Quote({
+      await v2Quote({
         ...value,
         domestic: {
           ...value.domestic,
@@ -1561,9 +1602,9 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       })
     ).toEqual({ status: "overweight" })
   })
-  it("requires captured exchange rates, preserves old snapshots and fails unavailable conversions", () => {
+  it("requires captured exchange rates, preserves old snapshots and fails unavailable conversions", async () => {
     const one = [adjustedItem("eu", "EUR", 10, 1, 50, 0.01)]
-    expect(v2Quote(v2, null, one)).toEqual({ status: "rate_required" })
+    expect(await v2Quote(v2, null, one)).toEqual({ status: "rate_required" })
     expect(
       previewShippingPolicy({
         policy: v2,
@@ -1583,25 +1624,27 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       amountSats: undefined,
     })
     expect(
-      v2Quote(v2, null, [adjustedItem("usd", "USD", 20, 1, 0, 1)])
+      await v2Quote(v2, null, [adjustedItem("usd", "USD", 20, 1, 0, 1)])
     ).toEqual({ status: "rate_required" })
-    expect(v2Quote(v2, 50_000, one)).toEqual({ status: "rate_required" })
-    expect(v2Quote(v2, { ...rates, fiatUsdRates: {} }, one)).toEqual({
+    expect(await v2Quote(v2, 50_000, one)).toEqual({ status: "rate_required" })
+    expect(await v2Quote(v2, { ...rates, fiatUsdRates: {} }, one)).toEqual({
       status: "rate_required",
     })
     expect(
-      v2Quote(v2, rates, [{ ...one[0]!, shippingWeightAllowanceGrams: 51 }])
+      await v2Quote(v2, rates, [
+        { ...one[0]!, shippingWeightAllowanceGrams: 51 },
+      ])
     ).toEqual({ status: "invalid_items" })
-    const original = v2Quote(v2, rates, one)
+    const original = await v2Quote(v2, rates, one)
     if (original.status !== "quoted") throw new Error(original.status)
     expect(shippingPolicyQuoteSchema.parse(original.quote)).toEqual(
       original.quote
     )
-    expect(v2Quote(v2, { ...rates, rate: 100_000 }, one)).toMatchObject({
+    expect(await v2Quote(v2, { ...rates, rate: 100_000 }, one)).toMatchObject({
       status: "quoted",
       quote: { amountSats: 5010 },
     })
-    expect(quote()).toMatchObject({
+    expect(await quote()).toMatchObject({
       version: 1,
       combinedWeightGrams: 500,
       amountMinor: 550,
@@ -1621,7 +1664,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       })
     ).toEqual({ status: "invalid_items" })
   })
-  it("rounds decimal rates half up without intermediate sats rounding and omits unnecessary rate snapshots", () => {
+  it("rounds decimal rates half up without intermediate sats rounding and omits unnecessary rate snapshots", async () => {
     expect(convertShippingMinor(1, "EUR", "USD", rates)).toBe(1)
     expect(convertShippingMinor(3, "EUR", "USD", rates)).toBe(2)
     expect(convertShippingMinor(500, "MSATS", "SATS")).toBe(1)
@@ -1629,7 +1672,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
     expect(convertShippingMinor(1, "SATS", "USD", 500_000)).toBe(1)
     expect(convertShippingMinor(1, "USD", "JPY", rates)).toBe(1)
     const native = { ...v2, currency: "SATS" }
-    const result = v2Quote(native, rates, [
+    const result = await v2Quote(native, rates, [
       adjustedItem("sat", "SATS", 1000, 1, 0, 7),
     ])
     expect(result).toMatchObject({
@@ -1637,8 +1680,8 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       quote: { amountMinor: 507, amountSats: 507, pricingRate: null },
     })
   })
-  it("binds mixed-currency order source terms and the exact converted group allocation", () => {
-    const result = v2Quote(v2, rates, [
+  it("binds mixed-currency order source terms and the exact converted group allocation", async () => {
+    const result = await v2Quote(v2, rates, [
       adjustedItem("eu", "EUR", 10, 1, 50, 0.01),
     ])
     if (result.status !== "quoted" || result.quote.version !== 2)

@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -15,6 +14,7 @@ import {
   readFutureMarketHandoffAcks,
   resolveInboxDeclaration,
   retryFutureMarketPrivateDelivery,
+  admitPublicEvent,
 } from "@conduit/core"
 
 const ORGANIZER = "a".repeat(64)
@@ -48,6 +48,9 @@ describe("future market private read cancellation", () => {
     let declarationReads = 0
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
+      // Cancellation occurs during declaration lookup, before ciphertext work.
+      getCommerceInbox: () =>
+        ({ initialize: async () => {}, authorization: null }) as never,
       getAccountSigner: () => ({}) as never,
       resolveInboxRelayUrls: async () => {
         declarationReads += 1
@@ -97,10 +100,13 @@ describe("future market private read cancellation", () => {
         },
         secret
       )
+      const admission = await admitPublicEvent(declaration)
+      if (admission.status !== "verified")
+        throw new Error(`Fixture admission failed: ${admission.status}`)
       const resolution = await resolveInboxDeclaration(declaration.pubkey, {
         relayUrls: [discoveryRelay],
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration)],
+          events: [admission.event],
           attemptedRelayUrls: [discoveryRelay],
           successfulRelayUrls: [discoveryRelay],
           failedRelayUrls: [],

@@ -22,6 +22,8 @@ import {
   getEventSourceRelayUrls,
   type PublicRelayReadOptions,
 } from "./relay-reader"
+import { relayTargetsFromUrls } from "./relay-authority"
+import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
 
 // ─── LNURL / Zap helpers ──────────────────────────────────────────────────────
 
@@ -331,7 +333,9 @@ export type OmfZapoutReceiptAuthorityVerificationResult =
   | { status: "invalid"; receipt: null }
   | { status: "authority_unavailable"; receipt: OmfZapoutReceipt }
 
-export function hasOmfZapoutMarker(tags: readonly string[][]): boolean {
+export function hasOmfZapoutMarker(
+  tags: readonly (readonly string[])[]
+): boolean {
   return tags.some(
     (tag) =>
       tag.length === OMF_ZAPOUT_MARKER_TAG.length &&
@@ -1208,7 +1212,7 @@ export function validateLightningInvoiceForPayment({
 }
 
 function getSingleTagValue(
-  tags: readonly string[][],
+  tags: readonly (readonly string[])[],
   name: string
 ): string | null {
   const matches = tags.filter((tag) => tag[0] === name)
@@ -1636,6 +1640,19 @@ export async function waitForZapReceipt({
 }): Promise<SignedPublicNostrEvent | null> {
   const startedAt = Date.now()
   const stopAt = startedAt + Math.max(0, timeoutMs)
+  // Receipt hints may come from a provider. Bound and secure them before
+  // granting an account-scoped public observation read; receipt matching below
+  // remains the payment proof boundary.
+  const receiptRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    relayUrls
+  ).slice(0, 12)
+  const receiptRelayTargets =
+    accountPubkey === undefined || accountPubkey === null
+      ? undefined
+      : relayTargetsFromUrls(receiptRelayUrls, {
+          kind: "public_hint",
+          operation: "read",
+        })
 
   do {
     const events = (await fetchPublicEvents(
@@ -1649,7 +1666,8 @@ export async function waitForZapReceipt({
           : {}),
       },
       {
-        relayUrls,
+        relayUrls: receiptRelayUrls,
+        relayTargets: receiptRelayTargets,
         accountPubkey,
         accountNetworkLocalStateRepository,
         shouldContinue,

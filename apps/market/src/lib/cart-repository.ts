@@ -1,4 +1,5 @@
 import {
+  admitPublicEvent,
   compareReplaceableEventFrontiers,
   db,
   isFiatCurrencyCode,
@@ -274,6 +275,96 @@ function createMemoryRecordFromSnapshot(
   return record
 }
 
+class CartVerificationUnavailableError extends Error {
+  constructor() {
+    super(
+      "Cart product verification is unavailable. Retry before checking out."
+    )
+    this.name = "CartVerificationUnavailableError"
+  }
+}
+
+/** Re-establish process-local proof before a persisted display row is parsed. */
+async function restoreCartItemEvidence(value: unknown): Promise<unknown> {
+  if (!isRecord(value) || value.signedProductEvent === undefined) return value
+  const result = await admitPublicEvent(value.signedProductEvent)
+  if (result.status === "unavailable" || result.status === "cancelled") {
+    throw new CartVerificationUnavailableError()
+  }
+  return {
+    ...value,
+    signedProductEvent: result.status === "verified" ? result.event : undefined,
+  }
+}
+
+async function restoreStoredRecord(
+  value: StoredShoppingCart
+): Promise<CanonicalCartRecord> {
+  if (!Array.isArray(value.lines)) return parseStoredRecord(value)
+  const lines: unknown[] = []
+  // Bound concurrent admission independently of the size of a legacy cart.
+  for (let offset = 0; offset < value.lines.length; offset += 16) {
+    lines.push(
+      ...(await Promise.all(
+        value.lines
+          .slice(offset, offset + 16)
+          .map(async (line) =>
+            isRecord(line)
+              ? { ...line, item: await restoreCartItemEvidence(line.item) }
+              : line
+          )
+      ))
+    )
+  }
+  return parseStoredRecord({ ...value, lines })
+}
+
+/** Prepare outside IDB, then commit only against the exact row we inspected. */
+async function withCanonicalRecord<T>(
+  operation: (
+    record: CanonicalCartRecord,
+    stored: StoredShoppingCart
+  ) => Promise<T>,
+  requireProductEvidence = true
+): Promise<T> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const stored = await db.shoppingCarts.get(CART_RECORD_ID)
+    if (!stored) throw new Error("Canonical cart record is missing")
+    const bytes = JSON.stringify(stored)
+    const record = requireProductEvidence
+      ? await restoreStoredRecord(stored)
+      : parseStoredRecord(stored)
+    const outcome = await db.transaction("rw", db.shoppingCarts, async () => {
+      const current = await db.shoppingCarts.get(CART_RECORD_ID)
+      if (JSON.stringify(current) !== bytes) return { retry: true } as const
+      return { retry: false, value: await operation(record, stored) } as const
+    })
+    if (!outcome.retry) return outcome.value
+  }
+  throw new Error("Cart changed repeatedly during product verification")
+}
+
+/** Safe quantity/removal edits carry opaque signed bytes without trusting them. */
+function preserveStoredProductEvidence(
+  record: CanonicalCartRecord,
+  stored: StoredShoppingCart
+): StoredShoppingCart {
+  const evidence = new Map(
+    stored.lines.flatMap((line) =>
+      isRecord(line) && typeof line.id === "string" && isRecord(line.item)
+        ? [[line.id, line.item.signedProductEvent] as const]
+        : []
+    )
+  )
+  return {
+    ...record,
+    lines: record.lines.map((line) => ({
+      ...line,
+      item: { ...line.item, signedProductEvent: evidence.get(line.id) },
+    })),
+  }
+}
+
 function parseStoredLine(value: unknown): CartLine | null {
   if (!isRecord(value) || typeof value.id !== "string") return null
   if (!Array.isArray(value.batches) || value.batches.length === 0) return null
@@ -347,7 +438,13 @@ function parseStoredRecord(value: StoredShoppingCart): CanonicalCartRecord {
 }
 
 function cloneRecord(record: CanonicalCartRecord): CanonicalCartRecord {
-  return structuredClone(record)
+  const clone = structuredClone(record)
+  // The frozen proof is safe to share; cloning it would erase admission.
+  for (let index = 0; index < record.lines.length; index += 1) {
+    clone.lines[index]!.item.signedProductEvent =
+      record.lines[index]!.item.signedProductEvent
+  }
+  return clone
 }
 
 function notify(): void {
@@ -400,14 +497,33 @@ function isLegacyCutoverMarker(value: unknown): boolean {
   )
 }
 
-function readLegacyCart(): LegacyCartRead {
+async function readLegacyCart(): Promise<LegacyCartRead> {
   if (typeof window === "undefined") return { status: "readable", items: [] }
   try {
     const raw = window.localStorage.getItem(LEGACY_CART_STORAGE_KEY)
     if (!raw) return { status: "readable", items: [] }
     const value: unknown = JSON.parse(raw)
     if (isLegacyCutoverMarker(value)) return { status: "cutover", items: [] }
-    const parsed = parsePersistedCart(value)
+    let restored = value
+    if (isRecord(value) && Array.isArray(value.items)) {
+      const items: unknown[] = []
+      try {
+        for (let offset = 0; offset < value.items.length; offset += 16) {
+          items.push(
+            ...(await Promise.all(
+              value.items
+                .slice(offset, offset + 16)
+                .map(restoreCartItemEvidence)
+            ))
+          )
+        }
+      } catch {
+        // Keep the legacy bytes for a later retry instead of migrating an empty cart.
+        return { status: "unsupported", items: [] }
+      }
+      restored = { ...value, items }
+    }
+    const parsed = parsePersistedCart(restored)
     if (!parsed.writable) return { status: "unsupported", items: [] }
     return {
       status: "readable",
@@ -437,7 +553,7 @@ function markLegacyCutover(migratedAt: number): void {
 async function loadCanonicalRecord(): Promise<CanonicalCartRecord> {
   const stored = await db.shoppingCarts.get(CART_RECORD_ID)
   if (!stored) throw new Error("Canonical cart record is missing")
-  return parseStoredRecord(stored)
+  return restoreStoredRecord(stored)
 }
 
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -471,7 +587,7 @@ function installResumeListeners(): void {
 }
 
 async function initialize(): Promise<void> {
-  const legacy = readLegacyCart()
+  const legacy = await readLegacyCart()
   if (typeof window === "undefined") {
     memoryRecord = createRecordFromLegacy(legacy.items)
     publishRecord(memoryRecord, "memory")
@@ -482,9 +598,9 @@ async function initialize(): Promise<void> {
     const record = await db.transaction(
       "rw",
       db.shoppingCarts,
-      async (): Promise<CanonicalCartRecord | null> => {
+      async (): Promise<StoredShoppingCart | null> => {
         const stored = await db.shoppingCarts.get(CART_RECORD_ID)
-        if (stored) return parseStoredRecord(stored)
+        if (stored) return stored
         if (legacy.status === "unsupported") return null
         const migrated = createRecordFromLegacy(legacy.items)
         await db.shoppingCarts.put(migrated)
@@ -496,7 +612,15 @@ async function initialize(): Promise<void> {
       publishRecord(memoryRecord, "memory")
       return
     }
-    publishRecord(record, "persistent")
+    let restored: CanonicalCartRecord
+    try {
+      restored = await restoreStoredRecord(record)
+    } catch (error) {
+      if (!(error instanceof CartVerificationUnavailableError)) throw error
+      // Keep the cart visible, with no action proof. Resume refresh can retry.
+      restored = parseStoredRecord(record)
+    }
+    publishRecord(restored, "persistent")
     if (legacy.status !== "unsupported") {
       markLegacyCutover(record.migratedAt)
     }
@@ -530,7 +654,8 @@ export function subscribeToCartRepository(listener: () => void): () => void {
 }
 
 async function mutateCartWithFactory(
-  createMutation: () => RecordMutation
+  createMutation: () => RecordMutation,
+  requireProductEvidence = true
 ): Promise<CartMutationResult> {
   await initializeCartRepository()
   return enqueue(async () => {
@@ -552,27 +677,28 @@ async function mutateCartWithFactory(
     let after: CartItem[] = []
     let changed = false
     try {
-      const committed = await db.transaction(
-        "rw",
-        db.shoppingCarts,
-        async (): Promise<CanonicalCartRecord> => {
-          const stored = await db.shoppingCarts.get(CART_RECORD_ID)
-          if (!stored) throw new Error("Canonical cart record is missing")
-          const record = parseStoredRecord(stored)
+      const committed = await withCanonicalRecord(
+        async (record, stored): Promise<CanonicalCartRecord> => {
           before = materializeLines(record.lines)
           changed = mutation(record)
           if (changed) {
             record.revision += 1
             record.updatedAt = Date.now()
-            await db.shoppingCarts.put(record)
+            await db.shoppingCarts.put(
+              requireProductEvidence
+                ? record
+                : preserveStoredProductEvidence(record, stored)
+            )
           }
           after = materializeLines(record.lines)
           return record
-        }
+        },
+        requireProductEvidence
       )
       publishRecord(committed, "persistent")
       return { before, after, changed }
-    } catch {
+    } catch (error) {
+      if (error instanceof CartVerificationUnavailableError) throw error
       // Keep the cart usable in this tab without representing the fallback as
       // durable or cross-tab safe.
       unsubscribeFromCanonical?.()
@@ -608,7 +734,7 @@ function mutateObservedCart(
       memoryRecord ??
       createMemoryRecordFromSnapshot(snapshot.items)
   )
-  return mutateCartWithFactory(() => createMutation(observed))
+  return mutateCartWithFactory(() => createMutation(observed), false)
 }
 
 function findLineIndex(
@@ -870,10 +996,7 @@ export async function installCheckoutIntentPurchase(
       return { status: "invalid_purchase" }
     }
     try {
-      const outcome = await db.transaction("rw", db.shoppingCarts, async () => {
-        const stored = await db.shoppingCarts.get(CART_RECORD_ID)
-        if (!stored) throw new Error("Canonical cart record is missing")
-        const record = parseStoredRecord(stored)
+      const outcome = await withCanonicalRecord(async (record) => {
         if (record.revision !== expectedRevision)
           return { status: "revision_conflict" } as const
         const merchant = incoming[0]!.merchantPubkey
@@ -1150,7 +1273,8 @@ async function readCurrentRecord(): Promise<CanonicalCartRecord> {
   }
   try {
     return await loadCanonicalRecord()
-  } catch {
+  } catch (error) {
+    if (error instanceof CartVerificationUnavailableError) throw error
     unsubscribeFromCanonical?.()
     unsubscribeFromCanonical = null
     memoryRecord = createMemoryRecordFromSnapshot(snapshot.items)
@@ -1202,7 +1326,8 @@ export async function captureCartPurchase(
 export function consumeCartPurchase(
   claim: CartPurchaseClaim
 ): Promise<CartMutationResult> {
-  return mutateCart((record) =>
-    removeAllocatedBatches(record, claim.allocations)
+  return mutateCartWithFactory(
+    () => (record) => removeAllocatedBatches(record, claim.allocations),
+    false
   )
 }

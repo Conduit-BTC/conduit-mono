@@ -21,8 +21,11 @@ Portable/Connected model without changing this terminology.
 
 ## Ownership and key boundary
 
-Nostr authentication remains external-signer-only. Market must never request,
-derive, persist, or transmit an account `nsec`.
+Nostr authentication follows the signer boundary in `protocol.md`: NIP-07 and
+NIP-46 remain available, and the optional installed-PWA existing-NSEC path keeps
+the account key exclusively in the separate signer origin. Market must never
+receive, derive, persist, or transmit the raw account `nsec`. The wallet provider
+boundary does not authorize account-key import or generation.
 
 A Portable Wallet seed is a separate wallet credential. It may be created or
 restored by a client-side provider adapter only when:

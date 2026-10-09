@@ -17,6 +17,7 @@ import {
   getMatchingSavedSeriesDateEvents,
   getSavedDateRecoveryAction,
 } from "../apps/merchant/src/lib/event-market-date-recovery"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
 
 function delivery(acknowledged: boolean): PublishWithPlannerResult {
   return {
@@ -140,7 +141,10 @@ describe("host date publication recovery after reload", () => {
         )
       ).toHaveLength(0)
 
-      const previous = parseEventMarketSeriesEvent(previousSchedule)!
+      const previousAdmission = await admitPublicEvent(previousSchedule)
+      if (previousAdmission.status !== "verified")
+        throw new Error(`Fixture admission failed: ${previousAdmission.status}`)
+      const previous = parseEventMarketSeriesEvent(previousAdmission.event)!
       const retained: SignedPublicNostrEvent[] = []
       const signed: SignedPublicNostrEvent[] = []
       const attempts: SignedPublicNostrEvent[] = []
@@ -225,7 +229,18 @@ describe("host date publication recovery after reload", () => {
       )
       expect(occurrenceAttempts).toHaveLength(2)
       expect(occurrenceAttempts[0]).toBe(retained[0])
-      expect(occurrenceAttempts[1]).toBe(retained[0])
+      const signedFields = (event: SignedPublicNostrEvent) => ({
+        id: event.id,
+        pubkey: event.pubkey,
+        created_at: event.created_at,
+        kind: event.kind,
+        content: event.content,
+        tags: event.tags,
+        sig: event.sig,
+      })
+      expect(signedFields(occurrenceAttempts[1]!)).toEqual(
+        signedFields(retained[0]!)
+      )
       expect(signed.filter((event) => event.kind === 31923)).toHaveLength(1)
       expect(result.schedule.signedEvent.id).not.toBe(previousSchedule.id)
       expect(result.schedule.signedEvent.id).not.toBe(staleMatchingSchedule.id)

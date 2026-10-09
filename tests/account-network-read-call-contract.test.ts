@@ -1,11 +1,15 @@
-import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import { config } from "../packages/core/src/config"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
-  getEventMarketPrivateMessageList,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
   getMerchantStorefront,
@@ -15,7 +19,7 @@ import {
 } from "../packages/core/src/protocol/commerce"
 import {
   emptyAccountNetworkLocalState,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
 import {
@@ -49,8 +53,13 @@ import {
 import { planPublishRelays } from "../packages/core/src/protocol/relay-publish"
 import {
   __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
+import { visitProtectedInboxHistoryPage } from "../packages/core/src/protocol/protected-inbox-history"
+import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
+import type { SignedNostrEvent } from "../packages/core/src/protocol/nostr-event-signer"
+import type { CommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
 import { fetchShopperPresets } from "../packages/core/src/protocol/shopper-presets"
 import { getShopperTrustEvidence } from "../packages/core/src/protocol/shopper-trust"
 import { futureMarketReadyReceiptSchema } from "../packages/core/src/schemas"
@@ -105,13 +114,15 @@ function finalIoRecorder(openedRelayUrls: string[]) {
   return async (_filter: unknown, options: PublicRelayReadOptions = {}) => {
     const candidates = options.relayUrls ?? []
     const admitted = options.accountPubkey
-      ? await filterEligibleAccountRelayUrls({
-          accountPubkey: options.accountPubkey,
-          authenticatedPubkey: options.authenticatedPubkey,
-          candidateRelayUrls: candidates,
-          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-          repository: options.accountNetworkLocalStateRepository,
-        })
+      ? (
+          await filterEligibleAccountRelayTargets({
+            accountPubkey: options.accountPubkey,
+            authenticatedPubkey: options.authenticatedPubkey,
+            targets: options.relayTargets ?? [],
+            operation: "read",
+            repository: options.accountNetworkLocalStateRepository,
+          })
+        ).map((target) => target.url)
       : [...candidates]
     openedRelayUrls.push(...admitted)
     return {
@@ -121,7 +132,6 @@ function finalIoRecorder(openedRelayUrls: string[]) {
         status: "success" as const,
         eventCount: 0,
       })),
-      eventsVerified: true,
     }
   }
 }
@@ -141,7 +151,6 @@ describe("account network read call contract", () => {
             status: "success" as const,
             eventCount: 0,
           })),
-          eventsVerified: true,
         }
       },
     })
@@ -193,7 +202,6 @@ describe("account network read call contract", () => {
           status: "success" as const,
           eventCount: 0,
         })),
-        eventsVerified: true,
       }
     }
 
@@ -271,24 +279,25 @@ describe("account network read call contract", () => {
     let deletionReadObserved = false
     let collectingProductDetail = false
     const productDetailCalls: PublicRelayReadOptions[] = []
-    const merchantPubkey = "b".repeat(64)
+    const merchantSecret = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSecret)
     const productDTag = "removed-relay-product"
     const productAddress = `30402:${merchantPubkey}:${productDTag}`
-    const variableProduct = {
-      id: "c".repeat(64),
-      kind: 30402,
-      pubkey: merchantPubkey,
-      created_at: 100,
-      content: "Variable product",
-      sig: "d".repeat(128),
-      tags: [
-        ["d", productDTag],
-        ["title", "Variable product"],
-        ["price", "1000", "SATS"],
-        ["type", "variable", "physical"],
-        ["image", "https://cdn.conduit.market/product.png"],
-      ],
-    }
+    const variableProduct = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 100,
+        content: "Variable product",
+        tags: [
+          ["d", productDTag],
+          ["title", "Variable product"],
+          ["price", "1000", "SATS"],
+          ["type", "variable", "physical"],
+          ["image", "https://cdn.conduit.market/product.png"],
+        ],
+      },
+      merchantSecret
+    )
 
     __setRelayListTestOverrides({
       loadCached: async (pubkey) => relayList(pubkey),
@@ -312,13 +321,15 @@ describe("account network read call contract", () => {
           guestDirectPlan ??= [...candidates]
         }
         const admitted = options.accountPubkey
-          ? await filterEligibleAccountRelayUrls({
-              accountPubkey: options.accountPubkey,
-              authenticatedPubkey: options.authenticatedPubkey,
-              candidateRelayUrls: candidates,
-              ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-              repository: options.accountNetworkLocalStateRepository,
-            })
+          ? (
+              await filterEligibleAccountRelayTargets({
+                accountPubkey: options.accountPubkey,
+                authenticatedPubkey: options.authenticatedPubkey,
+                targets: options.relayTargets ?? [],
+                operation: "read",
+                repository: options.accountNetworkLocalStateRepository,
+              })
+            ).map((target) => target.url)
           : [...candidates]
         if (options.accountPubkey) openedRelayUrls.push(...admitted)
         const events =
@@ -394,13 +405,15 @@ describe("account network read call contract", () => {
           guestPlan = [...candidates]
         }
         const admitted = options.accountPubkey
-          ? await filterEligibleAccountRelayUrls({
-              accountPubkey: options.accountPubkey,
-              authenticatedPubkey: options.authenticatedPubkey,
-              candidateRelayUrls: candidates,
-              ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-              repository: options.accountNetworkLocalStateRepository,
-            })
+          ? (
+              await filterEligibleAccountRelayTargets({
+                accountPubkey: options.accountPubkey,
+                authenticatedPubkey: options.authenticatedPubkey,
+                targets: options.relayTargets ?? [],
+                operation: "read",
+                repository: options.accountNetworkLocalStateRepository,
+              })
+            ).map((target) => target.url)
           : [...candidates]
         if (options.accountPubkey) openedRelayUrls.push(...admitted)
         return []
@@ -604,82 +617,168 @@ describe("account network read call contract", () => {
     })
   })
 
-  it("carries account policy through every event-market page and boundary read", async () => {
-    const calls: PublicRelayReadOptions[] = []
-    const liveAuthorityChecks: Array<() => boolean> = []
-    const wrap = new NDKEvent()
-    wrap.id = "1".repeat(64)
-    wrap.pubkey = "b".repeat(64)
-    wrap.kind = 1059
-    wrap.created_at = 100
-    wrap.tags = [["p", ACCOUNT]]
-    wrap.content = "ciphertext"
-
-    installProtectedReadSigner(
-      {
-        authMethod: "nip07",
-        getPublicKey: async () => ACCOUNT,
-        signEvent: async () => {
-          throw new Error("not used")
+  it("checks account relay admission on each history page and timestamp boundary", async () => {
+    const historyRelayUrl = config.commerceDmFallbackRelayUrls[0]!
+    const secret = generateSecretKey()
+    const wraps: SignedNostrEvent[] = Array.from({ length: 50 }, (_, index) =>
+      finalizeEvent(
+        {
+          kind: 1_059,
+          created_at: 100 + index,
+          tags: [["p", ACCOUNT]],
+          content: `synthetic-wrap-${index}`,
         },
-      },
-      ACCOUNT,
-      () => true
+        secret
+      )
     )
-    __setCommerceTestOverrides({
-      accountNetworkLocalStateRepository: repository,
-      getAccountSigner: () => plainTestSigner({} as NDKSigner as never),
-      resolveInboxRelayUrls: async () => [RELAY_URL],
-      fetchPublicEventsWithDiagnostics: async (filter, options = {}) => {
-        calls.push(options)
-        expect(options.shouldContinue?.()).toBe(true)
-        liveAuthorityChecks.push(options.shouldContinue!)
-        if (filter.since === 100 && filter.until === 100) {
-          return {
-            events: [wrap],
-            attemptedRelayUrls: [RELAY_URL],
-            successfulRelayUrls: [RELAY_URL],
-            failedRelayUrls: [],
-            cappedRelayUrls: [],
-          }
-        }
-        if (calls.length === 1) {
-          return {
-            events: [wrap],
-            attemptedRelayUrls: [RELAY_URL],
-            successfulRelayUrls: [RELAY_URL],
-            failedRelayUrls: [],
-            cappedRelayUrls: [RELAY_URL],
-          }
-        }
+    const signer = {
+      authMethod: "nip07" as const,
+      getPublicKey: async () => ACCOUNT,
+      signEvent: async () => {
+        throw new Error("unused signer")
+      },
+    }
+    installProtectedReadSigner(signer, ACCOUNT, () => true)
+    const authorization = getProtectedReadAuthorization(ACCOUNT)
+    if (!authorization) throw new Error("Expected protected authorization")
+    let excluded = false
+    const policy: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) =>
+        excluded
+          ? {
+              ...emptyAccountNetworkLocalState(pubkey),
+              exclusions: [
+                {
+                  relayUrl: historyRelayUrl,
+                  committedAt: 1,
+                  relayListFrontier: { eventId: null, createdAt: null },
+                  inboxDeclarationFrontier: { eventId: null, createdAt: null },
+                },
+              ],
+            }
+          : undefined,
+    }
+    const opened: Array<{ since?: number; until?: number; limit?: number }> = []
+    const executor: CommerceRelayExecutor = {
+      req: async function* () {},
+      query: async (request) => {
+        const filter = request.filters[0]!
+        opened.push({
+          since: filter.since,
+          until: filter.until,
+          limit: filter.limit,
+        })
+        const events = wraps
+          .filter(
+            (event) =>
+              (filter.since === undefined ||
+                event.created_at >= filter.since) &&
+              (filter.until === undefined || event.created_at <= filter.until)
+          )
+          .sort((left, right) => right.created_at - left.created_at)
+          .slice(0, filter.limit)
         return {
-          events: [],
-          attemptedRelayUrls: [RELAY_URL],
-          successfulRelayUrls: [RELAY_URL],
-          failedRelayUrls: [],
-          cappedRelayUrls: [],
+          status: "success",
+          events,
+          observations: [{ type: "eose", relayIndex: 0 }],
+          relays: [
+            {
+              relayIndex: 0,
+              status: "success",
+              auth: "not_challenged",
+              eventCount: events.length,
+              duplicateCount: 0,
+              malformedCount: 0,
+              unusableCount: 0,
+            },
+          ],
+          attemptedCount: 1,
+          completedCount: 1,
+          failedCount: 0,
+          authoritativeEmpty: events.length === 0,
         }
       },
-      giftUnwrap: async () => null,
-    })
-
-    await getEventMarketPrivateMessageList(ACCOUNT)
-
-    expect(calls.length).toBeGreaterThanOrEqual(3)
-    calls.forEach(expectAccountPolicy)
-    installProtectedReadSigner(
-      {
-        authMethod: "nip07",
-        getPublicKey: async () => ACCOUNT,
-        signEvent: async () => {
-          throw new Error("not used")
-        },
+    }
+    const read = (options: Parameters<typeof readProtectedInbox>[0]) =>
+      readProtectedInbox({ ...options, executor })
+    const visits: string[] = []
+    const options = {
+      principalPubkey: ACCOUNT,
+      relayUrl: historyRelayUrl,
+      declaredRelayUrls: [historyRelayUrl],
+      relayTargets: relayTargetsFromUrls([historyRelayUrl], {
+        kind: "compatibility",
+        operation: "read",
+        policy: "inbox_read",
+      }),
+      authorization,
+      accountNetworkLocalStateRepository: policy,
+      read,
+      visit: async (event: SignedNostrEvent, assertCurrent: () => void) => {
+        assertCurrent()
+        visits.push(event.id)
       },
-      ACCOUNT,
-      () => true
-    )
-    liveAuthorityChecks.forEach((shouldContinue) => {
-      expect(shouldContinue()).toBe(false)
+    }
+
+    const first = await visitProtectedInboxHistoryPage(options)
+    expect(first.status).toBe("advanced")
+    expect(first.visitedCount).toBe(50)
+    expect(first.nextCursor?.until).toBe(99)
+    expect(opened).toEqual([
+      { since: undefined, until: undefined, limit: 50 },
+      { since: 100, until: 100, limit: 512 },
+    ])
+    expect(new Set(visits).size).toBe(50)
+
+    excluded = true
+    const denied = await visitProtectedInboxHistoryPage({
+      ...options,
+      cursor: first.nextCursor!,
     })
+    expect(denied.status).toBe("unavailable")
+    expect(denied.nextCursor).toEqual(first.nextCursor)
+    expect(opened).toHaveLength(2)
+
+    excluded = false
+    const older = await visitProtectedInboxHistoryPage({
+      ...options,
+      cursor: first.nextCursor!,
+    })
+    expect(older.status).toBe("source_eose")
+    expect(older.range).toMatchObject({
+      relayUrl: historyRelayUrl,
+      until: 99,
+      eose: true,
+      observedCount: 0,
+    })
+    expect(opened).toHaveLength(3)
+
+    installProtectedReadSigner(signer, ACCOUNT, () => true)
+    await expect(
+      visitProtectedInboxHistoryPage({ ...options, cursor: first.nextCursor! })
+    ).rejects.toThrow("authority is unavailable")
+    expect(opened).toHaveLength(3)
+
+    const currentAuthorization = getProtectedReadAuthorization(ACCOUNT)
+    if (!currentAuthorization)
+      throw new Error("Expected replacement authorization")
+    const boundaryRevokeRead = async (
+      readOptions: Parameters<typeof readProtectedInbox>[0]
+    ) => {
+      const response = await read(readOptions)
+      if (readOptions.since === 100 && readOptions.until === 100) {
+        installProtectedReadSigner(signer, ACCOUNT, () => true)
+      }
+      return response
+    }
+    await expect(
+      visitProtectedInboxHistoryPage({
+        ...options,
+        authorization: currentAuthorization,
+        read: boundaryRevokeRead,
+      })
+    ).rejects.toThrow("authority is unavailable")
+    expect(opened).toHaveLength(5)
+    expect(visits).toHaveLength(50)
   })
 })

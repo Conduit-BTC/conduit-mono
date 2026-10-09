@@ -1,4 +1,5 @@
 /** Public reads own isolated sockets, bounded verification and source coverage. */
+import type { SignedPublicNostrEvent } from "./signed-event"
 import { matchFilter, validateEvent, type Filter } from "nostr-tools"
 import { config } from "../config"
 import {
@@ -15,24 +16,90 @@ import {
   recordRelaySuccess,
 } from "./relay-health"
 import {
-  filterEligibleAccountRelayUrls,
-  orderEquivalentAccountRelayOperations,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  selectRelayTargets,
+  type RelayTarget,
+} from "./relay-authority"
 import { NostrSignerError } from "./nostr-event-signer"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
-import {
-  hasVerifiedPublicEvent,
-  rememberVerifiedPublicEvent,
-  clearVerifiedPublicEvents,
-  inheritVerifiedPublicEvent,
+  verifySignedEvents as admitSignedEvents,
+  __resetPublicEventVerificationForTests,
+  __setPublicEventVerifyTimeoutMsForTests,
   sameSignedPublicEvent,
-  signedPublicEventProofKey,
   snapshotSignedPublicEvent,
-  signedPublicEventChars,
+  signedPublicEventProofKey,
+  PublicEventVerificationUnavailableError,
+  type VerifiedNostrEvent,
+  type VerifySignedPublicNostrEventsOptions,
+} from "./verified-public-event"
+export async function verifySignedEvents(
+  events: readonly unknown[],
+  options: VerifySignedPublicNostrEventsOptions = {}
+) {
+  // Bind each observation to its original bytes before admission yields. Index
+  // only sources with metadata, avoiding a quadratic scan of every event batch.
+  const sources = new Map<
+    string,
+    { event: SignedPublicNostrEvent; urls: string[] }[]
+  >()
+  const limit = Math.min(512, Math.max(0, Math.floor(options.maxEvents ?? 512)))
+  for (const raw of events.slice(0, limit)) {
+    if (!raw || typeof raw !== "object") continue
+    const urls = getEventSourceRelayUrls(raw)
+    if (!urls.length) continue
+    try {
+      const event = snapshotSignedPublicEvent(raw as SignedPublicNostrEvent)
+      const key = signedPublicEventProofKey(event)
+      const bucket = sources.get(key) ?? []
+      bucket.push({ event, urls })
+      sources.set(key, bucket)
+    } catch {
+      // A malformed envelope cannot contribute admitted source evidence.
+    }
+  }
+  const restoreSources = (admitted: readonly VerifiedNostrEvent[]) => {
+    for (const event of admitted) {
+      for (const source of sources.get(signedPublicEventProofKey(event)) ??
+        []) {
+        if (sameSignedPublicEvent(event, source.event))
+          for (const url of source.urls) attachEventSourceRelayUrl(event, url)
+      }
+    }
+  }
+  try {
+    const result = await admitSignedEvents(events, options)
+    restoreSources(result.events)
+    return result
+  } catch (error) {
+    if (error instanceof PublicEventVerificationUnavailableError)
+      restoreSources(error.events)
+    throw error
+  }
+}
+/** Admit every observation in bounded batches, preserving order and sources. */
+export async function verifySignedEventBatches(
+  events: readonly unknown[],
+  options: { signal?: AbortSignal; batchSize?: 64 | 512 } = {}
+): Promise<VerifiedNostrEvent[]> {
+  const batchSize = options.batchSize ?? 512
+  const verified: VerifiedNostrEvent[] = []
+  for (let offset = 0; offset < events.length; offset += batchSize) {
+    const batch = await verifySignedEvents(
+      events.slice(offset, offset + batchSize),
+      { signal: options.signal, maxEvents: batchSize }
+    )
+    verified.push(...batch.events)
+  }
+  return verified
+}
+
+export type {
+  VerifySignedPublicNostrEventsOptions,
+  VerifySignedPublicNostrEventsResult,
 } from "./verified-public-event"
 
 export interface PublicRelayReadSocket {
@@ -58,8 +125,10 @@ export interface PublicRelayReadOptions {
   maxEventsPerRelay?: number
   maxBytesPerRelay?: number
 
-  /** Omit for configured defaults; pass an empty array for no relay traffic. */
+  /** Ordered operation priority. Omit for target order/defaults; empty means no I/O. */
   relayUrls?: string[]
+  /** Exact, additive authority for account-scoped reads. */
+  relayTargets?: readonly RelayTarget[]
   /**
    * Bound actual relay attempts after the live account source-policy check.
    * Policy-suppressed, throttled, and durably excluded candidates do not consume
@@ -77,22 +146,17 @@ export interface PublicRelayReadOptions {
    * an owner-selected ws:// target can reach final I/O.
    */
   authenticatedPubkey?: string | null
-  /**
-   * Exact read-target subset selected by that authenticated account owner.
-   * Remote/discovered relay hints must never populate this field.
-   */
-  ownerSelectedRelayUrls?: readonly string[]
-  /** Exact candidates contributed by Conduit's app-owned relay layer. */
-  appRelayUrls?: readonly string[]
-  /** Exact candidates contributed by the owner's NIP-65 relay layer. */
-  personalRelayUrls?: readonly string[]
-  /** Exact candidates independently authorized outside the local source layers. */
-  independentRelayUrls?: readonly string[]
   /** Injectable durable-state reader for deterministic boundary tests. */
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["ownerRelayListEvidenceRepository"]
+  inboxDeclarationEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["inboxDeclarationEvidenceRepository"]
   /** Live caller authority, rechecked immediately before final relay I/O. */
   shouldContinue?: () => boolean
   connectTimeoutMs?: number
@@ -110,8 +174,8 @@ export interface PublicRelayReadOptions {
 
 export interface PublicRelayReadProgress {
   relayUrl: string
-  events: SignedPublicNostrEvent[]
-  mergedEvents: SignedPublicNostrEvent[]
+  events: VerifiedNostrEvent[]
+  mergedEvents: VerifiedNostrEvent[]
   status?: PublicRelayReadSourceStatus["status"]
   result?: PublicRelayReadResult
 }
@@ -147,7 +211,7 @@ export interface PublicRelayReadSourceStatus {
 }
 
 export interface PublicRelayReadResult {
-  events: SignedPublicNostrEvent[]
+  events: VerifiedNostrEvent[]
   relays: PublicRelayReadSourceStatus[]
   eventSourceRelayUrls?: Record<string, string[]>
   /** Actual I/O attempts, distinct from policy/health-suppressed candidates. */
@@ -171,21 +235,10 @@ export interface PublicRelayReadResult {
    * True only when every returned event completed id and Schnorr verification
    * through this module's bounded worker-backed pipeline.
    */
-  eventsVerified?: boolean
-}
-
-export interface VerifySignedPublicNostrEventsOptions {
-  signal?: AbortSignal
-  maxEvents?: number
-}
-
-export interface VerifySignedPublicNostrEventsResult {
-  events: SignedPublicNostrEvent[]
-  truncated: boolean
 }
 
 export interface PublicRelayReadDiagnosticsResult extends Partial<PublicRelayReadResult> {
-  events: SignedPublicNostrEvent[]
+  events: VerifiedNostrEvent[]
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
@@ -196,20 +249,6 @@ export interface PublicRelayReadDiagnosticsResult extends Partial<PublicRelayRea
 // Provenance is local evidence, never a field supplied on the wire. Object
 // identity also prevents proof-cache hits from borrowing previous-read sources.
 const eventSourceRelayUrls = new WeakMap<object, string[]>()
-
-function copySignedEvent(
-  event: SignedPublicNostrEvent
-): SignedPublicNostrEvent {
-  return {
-    id: event.id,
-    pubkey: event.pubkey,
-    created_at: event.created_at,
-    kind: event.kind,
-    tags: event.tags.map((tag) => [...tag]),
-    content: event.content,
-    sig: event.sig,
-  }
-}
 
 function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
@@ -239,9 +278,6 @@ export function mergeEventSourceRelayUrls(
 }
 
 const MAX_CONCURRENT_RELAY_READS = 8
-// One posted batch; bound both queued batches and retained signed text.
-const MAX_PENDING_VERIFY_WORKER_BATCHES = 128
-const MAX_PENDING_VERIFY_CHARS = 8 * 1024 * 1024
 const MAX_QUEUED_RELAY_READS = 128
 let activeRelayReads = 0
 let relaySettingsRefreshPending = false
@@ -366,32 +402,6 @@ type RawNostrEvent = {
   sig: string
 }
 
-const HEX_64 = /^[0-9a-f]{64}$/
-const HEX_128 = /^[0-9a-f]{128}$/
-
-function isCanonicalSignedPublicNostrEvent(
-  event: RawNostrEvent
-): event is SignedPublicNostrEvent {
-  return (
-    HEX_64.test(event.id) &&
-    HEX_64.test(event.pubkey) &&
-    HEX_128.test(event.sig) &&
-    Number.isSafeInteger(event.created_at) &&
-    event.created_at > 0 &&
-    Number.isSafeInteger(event.kind) &&
-    event.kind >= 0 &&
-    event.kind <= 65_535 &&
-    typeof event.content === "string" &&
-    Array.isArray(event.tags) &&
-    event.tags.every(
-      (tag) =>
-        Array.isArray(tag) &&
-        tag.length > 0 &&
-        tag.every((value) => typeof value === "string")
-    )
-  )
-}
-
 function requestedEventLimit(filter: Filter | Filter[]): number | null {
   if (Array.isArray(filter)) {
     const limits = filter.map(requestedEventLimit)
@@ -416,426 +426,18 @@ const MAX_RELAY_CONNECTION_FRAMES = 10_000
 const MAX_RELAY_CONNECTION_CHARS = 16 * 1024 * 1024
 const MAX_SIGNATURES_PER_RELAY_READ = 512
 
-type SchnorrItem = SignedPublicNostrEvent
-
-function checkEventId(
-  event: RawNostrEvent
-): "cached" | "needs-schnorr" | "invalid" {
-  if (!isCanonicalSignedPublicNostrEvent(event)) return "invalid"
-  // First-time canonical hashing and Schnorr are both owned by the worker.
-  return hasVerifiedPublicEvent(event) ? "cached" : "needs-schnorr"
-}
-
-function verifySchnorrSync(items: SchnorrItem[]): boolean[] {
-  return items.map(isValidSignedPublicNostrEvent)
-}
-
-async function verifySchnorrChunked(
-  items: SchnorrItem[],
-  signal?: AbortSignal
-): Promise<boolean[]> {
-  const valid: boolean[] = []
-  const chunkSize = 16
-  for (let index = 0; index < items.length; index += chunkSize) {
-    throwIfAborted(signal)
-    valid.push(...verifySchnorrSync(items.slice(index, index + chunkSize)))
-    if (index + chunkSize < items.length) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0))
-    }
-  }
-  throwIfAborted(signal)
-  return valid
-}
-
-// Offload schnorr verification to a worker so the crypto never blocks the main
-// thread. When Workers are unavailable (SSR/tests), verify in bounded chunks
-// with cancellation points. Active worker failures reject their batches.
-let verifyWorker: Worker | null | undefined
-let verifyReqId = 0
-const DEFAULT_VERIFY_WORKER_TIMEOUT_MS = 8_000
-let verifyWorkerTimeoutMs = DEFAULT_VERIFY_WORKER_TIMEOUT_MS
-type PendingVerifyBatch = {
-  items: SchnorrItem[]
-  resolve: (valid: boolean[]) => void
-  reject: (reason: unknown) => void
-  timer?: ReturnType<typeof setTimeout>
-  posted: boolean
-  retries: number
-  chars: number
-  workerIndexes?: number[]
-  signal?: AbortSignal
-  onAbort?: () => void
-}
-const pendingVerify = new Map<number, PendingVerifyBatch>()
-let verifyWorkerRestartScheduled = false
-let pendingVerifyChars = 0
-
-function clearPendingVerifyBatch(
-  reqId: number
-): PendingVerifyBatch | undefined {
-  const pending = pendingVerify.get(reqId)
-  if (!pending) return undefined
-
-  pendingVerify.delete(reqId)
-  pendingVerifyChars -= pending.chars
-  clearTimeout(pending.timer)
-  if (pending.signal && pending.onAbort) {
-    pending.signal.removeEventListener("abort", pending.onAbort)
-  }
-  return pending
-}
-
-function resolvePendingVerifyBatch(reqId: number, valid: boolean[]): void {
-  const pending = clearPendingVerifyBatch(reqId)
-  if (!pending) return
-
-  if (pending.signal?.aborted) {
-    pending.reject(abortError())
-    pumpVerifyQueue()
-    return
-  }
-  const verdicts = pending.items.map((_, index) => {
-    const workerIndex = pending.workerIndexes?.[index] ?? index
-    return workerIndex === -1 || valid[workerIndex] === true
-  })
-  for (let index = 0; index < pending.items.length; index++) {
-    if (verdicts[index]) rememberVerifiedPublicEvent(pending.items[index])
-  }
-  pending.resolve(verdicts)
-  pumpVerifyQueue()
-}
-
-function rejectPendingVerifyBatch(reqId: number, reason: unknown): void {
-  clearPendingVerifyBatch(reqId)?.reject(reason)
-}
-
-function recoverTimedOutVerifyBatch(reqId: number): void {
-  const pending = pendingVerify.get(reqId)
-  if (!pending) return
-  clearTimeout(pending.timer)
-  pending.timer = undefined
-  pending.posted = false
-  if (pending.retries++ >= 1) {
-    // A persistently stalled worker must not impose its timeout on every
-    // queued read in succession, or move the work onto the browser UI thread.
-    if (verifyWorker) failVerifyWorker(verifyWorker)
-    else
-      for (const id of [...pendingVerify.keys()]) {
-        rejectPendingVerifyBatch(
-          id,
-          new Error("Signature verification worker timed out.")
-        )
-      }
-    return
-  }
-  scheduleVerifyWorkerRestart()
-}
-
-function scheduleVerifyWorkerRestart(): void {
-  if (verifyWorkerRestartScheduled) return
-  verifyWorkerRestartScheduled = true
-  queueMicrotask(() => {
-    verifyWorkerRestartScheduled = false
-    const worker = verifyWorker
-    verifyWorker = undefined
-    if (worker) {
-      worker.onmessage = null
-      worker.onerror = null
-      try {
-        worker.terminate()
-      } catch {
-        /* already stopped */
-      }
-    }
-    for (const [reqId, pending] of [...pendingVerify.entries()]) {
-      clearTimeout(pending.timer)
-      pending.timer = undefined
-      pending.posted = false
-      if (pending.signal?.aborted) rejectPendingVerifyBatch(reqId, abortError())
-    }
-    pumpVerifyQueue()
-  })
-}
-
-function pumpVerifyQueue(): void {
-  if (
-    verifyWorkerRestartScheduled ||
-    [...pendingVerify.values()].some((batch) => batch.posted)
-  )
-    return
-  const first = pendingVerify.entries().next().value
-  if (!first) return
-  const [reqId, pending] = first
-  if (pending.signal?.aborted) {
-    rejectPendingVerifyBatch(reqId, abortError())
-    pumpVerifyQueue()
-    return
-  }
-  const worker = getVerifyWorker()
-  if (!worker) {
-    for (const id of [...pendingVerify.keys()])
-      rejectPendingVerifyBatch(
-        id,
-        new Error("Signature verification worker is unavailable.")
-      )
-    return
-  }
-  const work: SchnorrItem[] = []
-  const byProof = new Map<string, number>()
-  pending.workerIndexes = pending.items.map((event) => {
-    if (hasVerifiedPublicEvent(event)) return -1
-    const key = signedPublicEventProofKey(event)
-    const existing = byProof.get(key)
-    if (existing !== undefined && sameSignedPublicEvent(work[existing], event))
-      return existing
-    const index = work.length
-    byProof.set(key, index)
-    work.push(event)
-    return index
-  })
-  if (work.length === 0) {
-    resolvePendingVerifyBatch(reqId, [])
-    return
-  }
-  pending.posted = true
-  try {
-    worker.postMessage({ reqId, items: work })
-    // The execution deadline excludes time waiting in our bounded queue and
-    // synchronous structured cloning while posting the complete signed batch.
-    if (pendingVerify.get(reqId) === pending && pending.posted) {
-      pending.timer = setTimeout(
-        () => recoverTimedOutVerifyBatch(reqId),
-        verifyWorkerTimeoutMs
-      )
-    }
-  } catch {
-    failVerifyWorker(worker)
-  }
-}
-
-function cancelPendingVerifyBatch(reqId: number): void {
-  const pending = clearPendingVerifyBatch(reqId)
-  if (!pending) return
-  pending.reject(abortError())
-  // A Web Worker cannot remove an already-posted message from its queue.
-  // Restarting clears stale crypto work; non-cancelled batches are re-posted.
-  if (pending.posted) scheduleVerifyWorkerRestart()
-  else pumpVerifyQueue()
-}
-
-function failVerifyWorker(worker: Worker): void {
-  if (verifyWorker !== worker) return
-  verifyWorker = null
-  worker.onmessage = null
-  worker.onerror = null
-  try {
-    worker.terminate()
-  } catch {
-    // ignore teardown errors
-  }
-
-  for (const reqId of [...pendingVerify.keys()]) {
-    rejectPendingVerifyBatch(
-      reqId,
-      new Error("Signature verification worker failed.")
-    )
-  }
-}
-
-export function __setPublicReaderVerifyTimeoutMsForTests(
-  timeoutMs: number
-): void {
-  verifyWorkerTimeoutMs = Math.max(1, Math.floor(timeoutMs))
-}
-
+export const __setPublicReaderVerifyTimeoutMsForTests =
+  __setPublicEventVerifyTimeoutMsForTests
 export function __resetPublicReaderTestState(): void {
   closePublicRelayConnections()
-  if (verifyWorker) {
-    verifyWorker.onmessage = null
-    verifyWorker.onerror = null
-    try {
-      verifyWorker.terminate()
-    } catch {
-      // ignore teardown errors
-    }
-  }
-  verifyWorker = undefined
-  verifyWorkerRestartScheduled = false
-  verifyWorkerTimeoutMs = DEFAULT_VERIFY_WORKER_TIMEOUT_MS
-  for (const reqId of [...pendingVerify.keys()]) {
-    clearPendingVerifyBatch(reqId)?.reject(abortError())
-  }
-  clearVerifiedPublicEvents()
-  pendingVerifyChars = 0
+  __resetPublicEventVerificationForTests()
   for (const waiter of relayReadWaiters.splice(0)) {
-    if (waiter.signal && waiter.onAbort) {
+    if (waiter.signal && waiter.onAbort)
       waiter.signal.removeEventListener("abort", waiter.onAbort)
-    }
     waiter.reject(abortError())
   }
   activeRelayReads = 0
   publicReadOperations.clear()
-}
-
-function getVerifyWorker(): Worker | null {
-  if (verifyWorker !== undefined) return verifyWorker
-  try {
-    if (typeof Worker === "undefined") {
-      verifyWorker = null
-      return null
-    }
-    const worker = new Worker(new URL("./verify-worker.ts", import.meta.url), {
-      type: "module",
-    })
-    worker.onmessage = (
-      event: MessageEvent<{ reqId: number; valid: boolean[] }>
-    ) => {
-      if (verifyWorker !== worker) return
-      const data = event.data
-      const pending = data && pendingVerify.get(data.reqId)
-      if (!pending) return
-      const expected = Math.max(-1, ...(pending.workerIndexes ?? [])) + 1
-      if (
-        !pending.posted ||
-        !Array.isArray(data.valid) ||
-        data.valid.length !== expected ||
-        data.valid.some((value) => typeof value !== "boolean")
-      ) {
-        failVerifyWorker(worker)
-        return
-      }
-      resolvePendingVerifyBatch(event.data.reqId, event.data.valid)
-    }
-    worker.onerror = () => {
-      failVerifyWorker(worker)
-    }
-    verifyWorker = worker
-  } catch {
-    verifyWorker = null
-  }
-  return verifyWorker
-}
-
-function verifySchnorrBatch(
-  items: SchnorrItem[],
-  signal?: AbortSignal
-): Promise<boolean[]> {
-  throwIfAborted(signal)
-  if (items.length === 0) return Promise.resolve([])
-  const worker = getVerifyWorker()
-  if (!worker) {
-    // SSR/test runtimes retain verification. Browser unavailability must never
-    // shift catalog crypto onto its UI thread.
-    if (typeof window === "undefined")
-      return verifySchnorrChunked(items, signal)
-    return Promise.reject(
-      new Error("Signature verification worker is unavailable.")
-    )
-  }
-  const immutableItems = items.map(snapshotSignedPublicEvent)
-  const chars = immutableItems.reduce(
-    (sum, event) => sum + signedPublicEventChars(event),
-    0
-  )
-  if (
-    pendingVerify.size >= MAX_PENDING_VERIFY_WORKER_BATCHES ||
-    pendingVerifyChars + chars > MAX_PENDING_VERIFY_CHARS
-  ) {
-    return Promise.reject(new Error("Signature verification queue is full."))
-  }
-  return new Promise((resolve, reject) => {
-    const reqId = ++verifyReqId
-    const pending: PendingVerifyBatch = {
-      items: immutableItems,
-      resolve: (valid) => {
-        for (let index = 0; index < immutableItems.length; index++) {
-          if (valid[index])
-            inheritVerifiedPublicEvent(items[index], immutableItems[index])
-        }
-        resolve(valid)
-      },
-      reject,
-      signal,
-      posted: false,
-      retries: 0,
-      chars,
-    }
-    if (signal) {
-      pending.onAbort = () => cancelPendingVerifyBatch(reqId)
-      signal.addEventListener("abort", pending.onAbort, { once: true })
-    }
-    pendingVerify.set(reqId, pending)
-    pendingVerifyChars += chars
-    pumpVerifyQueue()
-  })
-}
-
-/**
- * Verify a bounded collection of already-parsed public events without running
- * Schnorr work on the browser's main thread. This is used for signed events
- * embedded inside other protocol payloads and for injectable fetch seams that
- * cannot attest to the fanout reader's verification pipeline.
- */
-export async function verifySignedEvents(
-  events: readonly SignedPublicNostrEvent[],
-  options: VerifySignedPublicNostrEventsOptions = {}
-): Promise<VerifySignedPublicNostrEventsResult> {
-  throwIfAborted(options.signal)
-  const requestedMax =
-    options.maxEvents === undefined
-      ? MAX_SIGNATURES_PER_RELAY_READ
-      : Math.floor(options.maxEvents)
-  const maxEvents = Number.isFinite(requestedMax)
-    ? Math.max(0, Math.min(MAX_SIGNATURES_PER_RELAY_READ, requestedMax))
-    : 0
-  const boundedInputs = events.slice(0, maxEvents)
-  // Snapshot before verification yields. Neither unsigned metadata nor caller
-  // mutation may change the event whose proof is returned.
-  const boundedEvents = boundedInputs.map((event) => {
-    try {
-      if (!validateEvent(event) || !isCanonicalSignedPublicNostrEvent(event))
-        return null
-      const snapshot = copySignedEvent(event)
-      mergeEventSourceRelayUrls(snapshot, event)
-      inheritVerifiedPublicEvent(snapshot, event)
-      return snapshot
-    } catch {
-      return null
-    }
-  })
-  const accepted = new Array<boolean>(boundedEvents.length).fill(false)
-  const schnorrItems: SchnorrItem[] = []
-  const schnorrIndexes: number[] = []
-
-  for (let index = 0; index < boundedEvents.length; index += 1) {
-    throwIfAborted(options.signal)
-    const event = boundedEvents[index]
-    if (!event) continue
-    const state = checkEventId(event)
-    if (state === "invalid") continue
-    if (state === "cached") {
-      accepted[index] = true
-      continue
-    }
-    schnorrItems.push(event)
-    schnorrIndexes.push(index)
-  }
-
-  const schnorrValid = await verifySchnorrBatch(schnorrItems, options.signal)
-  throwIfAborted(options.signal)
-  for (let index = 0; index < schnorrIndexes.length; index += 1) {
-    if (!schnorrValid[index]) continue
-    const eventIndex = schnorrIndexes[index]
-    accepted[eventIndex] = hasVerifiedPublicEvent(boundedEvents[eventIndex]!)
-  }
-
-  return {
-    events: boundedEvents.filter(
-      (event, index): event is SignedPublicNostrEvent =>
-        event !== null && accepted[index]
-    ),
-    truncated: events.length > boundedInputs.length,
-  }
 }
 
 // One shared WebSocket per relay, with REQs multiplexed by subId across
@@ -1368,7 +970,7 @@ interface FetchEventsFromRelayResult {
   duplicateEventCount?: number
   eoseReceived?: boolean
   relayUrl: string
-  events: SignedPublicNostrEvent[]
+  events: VerifiedNostrEvent[]
   status: PublicRelayReadSourceStatus["status"]
   rejectedEventCount: number
   failureReason?: "rate_limited"
@@ -1388,12 +990,11 @@ async function fetchEventsFromRelay(
   } & Pick<
     PublicRelayReadOptions,
     | "accountPubkey"
+    | "relayTargets"
     | "authenticatedPubkey"
-    | "ownerSelectedRelayUrls"
-    | "appRelayUrls"
-    | "personalRelayUrls"
-    | "independentRelayUrls"
     | "accountNetworkLocalStateRepository"
+    | "ownerRelayListEvidenceRepository"
+    | "inboxDeclarationEvidenceRepository"
     | "shouldContinue"
     | "signal"
     | "preserveEventOrder"
@@ -1415,20 +1016,23 @@ async function fetchEventsFromRelay(
       admittedRelayUrl =
         normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0] ?? null
     } else {
-      const eligibleRelayUrls = await awaitReadPolicy(
-        filterEligibleAccountRelayUrls({
+      const eligibleRelayTargets = await awaitReadPolicy(
+        filterEligibleAccountRelayTargets({
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
-          candidateRelayUrls: [relayUrl],
-          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-          appRelayUrls: options.appRelayUrls,
-          personalRelayUrls: options.personalRelayUrls,
-          independentRelayUrls: options.independentRelayUrls,
+          targets: mergeRelayTargets(options.relayTargets ?? []).filter(
+            (target) => target.url === relayUrl
+          ),
+          operation: "read",
           repository: options.accountNetworkLocalStateRepository,
+          ownerRelayListEvidenceRepository:
+            options.ownerRelayListEvidenceRepository,
+          inboxDeclarationEvidenceRepository:
+            options.inboxDeclarationEvidenceRepository,
         }),
         options.signal
       )
-      admittedRelayUrl = eligibleRelayUrls[0] ?? null
+      admittedRelayUrl = eligibleRelayTargets[0]?.url ?? null
     }
     // Eligibility is re-read only after this attempt owns an execution slot.
     // Once admitted, an in-flight socket may finish even if another tab commits
@@ -1481,52 +1085,43 @@ async function fetchEventsFromRelay(
           }
           return left.id.localeCompare(right.id)
         })
-    // Reuse exact proofs; both canonical hashing and Schnorr run in the worker.
-    const accepted = new Array<boolean>(orderedEvents.length).fill(false)
-    const schnorrItems: SchnorrItem[] = []
-    const schnorrIndex: number[][] = []
-    const pendingProofIndexes = new Map<string, number>()
-    let verificationTruncated = false
-    for (let i = 0; i < orderedEvents.length; i++) {
-      if (i > 0 && i % 64 === 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0))
-        throwIfAborted(options.signal)
+    const uniqueCandidates: RawNostrEvent[] = []
+    const byClaim = new Map<string, number[]>()
+    const indexes = orderedEvents.map((raw) => {
+      const key = `${raw.id}:${raw.sig}`
+      const existing = byClaim.get(key) ?? []
+      const match = existing.find((index) =>
+        sameSignedPublicEvent(uniqueCandidates[index], raw)
+      )
+      if (match !== undefined) return match
+      const index = uniqueCandidates.length
+      uniqueCandidates.push(raw)
+      byClaim.set(key, [...existing, index])
+      return index
+    })
+    let verificationUnavailable = false
+    const admission = await verifySignedEvents(uniqueCandidates, {
+      signal: options.signal,
+      maxEvents: MAX_SIGNATURES_PER_RELAY_READ,
+    }).catch((error: unknown) => {
+      if (!(error instanceof PublicEventVerificationUnavailableError))
+        throw error
+      verificationUnavailable = true
+      return {
+        events: error.events,
+        truncated: uniqueCandidates.length > MAX_SIGNATURES_PER_RELAY_READ,
       }
-      const raw = orderedEvents[i]
-      const state = checkEventId(raw)
-      if (state === "invalid") continue
-      if (state === "cached") {
-        accepted[i] = true
-        continue
-      }
-      const proofKey = signedPublicEventProofKey(raw)
-      const pendingIndex = pendingProofIndexes.get(proofKey)
-      if (
-        pendingIndex !== undefined &&
-        sameSignedPublicEvent(schnorrItems[pendingIndex], raw)
-      ) {
-        schnorrIndex[pendingIndex].push(i)
-        continue
-      }
-      if (schnorrItems.length >= MAX_SIGNATURES_PER_RELAY_READ) {
-        verificationTruncated = true
-        continue
-      }
-      pendingProofIndexes.set(proofKey, schnorrItems.length)
-      schnorrItems.push(raw)
-      schnorrIndex.push([i])
-    }
-
-    const schnorrValid = await verifySchnorrBatch(schnorrItems, options.signal)
+    })
     throwIfAborted(options.signal)
-    for (let j = 0; j < schnorrIndex.length; j++) {
-      if (!schnorrValid[j]) continue
-      const indexes = schnorrIndex[j]
-      for (const index of indexes) {
-        inheritVerifiedPublicEvent(orderedEvents[index], schnorrItems[j])
-        accepted[index] = hasVerifiedPublicEvent(orderedEvents[index])
-      }
-    }
+    const admittedByClaim = new Map(
+      admission.events.map((event) => [`${event.id}:${event.sig}`, event])
+    )
+    const verifiedEvents = indexes.flatMap((index) => {
+      const raw = uniqueCandidates[index]
+      const event = admittedByClaim.get(`${raw.id}:${raw.sig}`)
+      return event && sameSignedPublicEvent(event, raw) ? [event] : []
+    })
+    const verificationTruncated = admission.truncated
 
     // A filter's limit belongs to that filter, not to a global bag. Select
     // the union of its ordered distinct matches; copies stay in observations.
@@ -1537,12 +1132,10 @@ async function fetchEventsFromRelay(
         ids: new Set<string>(),
       })
     )
-    const verified: SignedPublicNostrEvent[] = []
+    const verified: VerifiedNostrEvent[] = []
     const uniqueIds = new Set<string>()
     let duplicateEventCount = 0
-    for (let i = 0; i < orderedEvents.length; i++) {
-      if (!accepted[i]) continue
-      const raw = orderedEvents[i]
+    for (const raw of verifiedEvents) {
       if (uniqueIds.has(raw.id)) {
         duplicateEventCount += 1
         continue
@@ -1551,34 +1144,41 @@ async function fetchEventsFromRelay(
       for (const selection of selections) {
         if (selection.limit !== null && selection.ids.size >= selection.limit)
           continue
-        if (!matchFilter(selection.filter, raw)) continue
+        if (
+          !matchFilter(selection.filter, {
+            ...raw,
+            tags: raw.tags.map((tag) => [...tag]),
+          })
+        )
+          continue
         selection.ids.add(raw.id)
         selected = true
       }
       if (!selected) continue
-      const event = copySignedEvent(raw)
-      inheritVerifiedPublicEvent(event, raw)
+      const event = raw
       uniqueIds.add(event.id)
       attachEventSourceRelayUrl(event, admittedRelayUrl)
       verified.push(event)
     }
-    const rejectedEventCount = accepted.reduce(
-      (count, isAccepted) => count + (isAccepted ? 0 : 1),
-      0
-    )
+    const rejectedEventCount = verificationUnavailable
+      ? 0
+      : orderedEvents.length - verifiedEvents.length
 
     const status: PublicRelayReadSourceStatus["status"] =
-      truncated ||
-      verificationTruncated ||
-      rejectedEventCount > 0 ||
-      malformedEventCount > 0 ||
-      unusableEventCount > 0
-        ? "partial"
-        : complete
-          ? "success"
-          : verified.length > 0
-            ? "partial"
-            : "failed"
+      verificationUnavailable && verified.length === 0
+        ? "failed"
+        : verificationUnavailable ||
+            truncated ||
+            verificationTruncated ||
+            rejectedEventCount > 0 ||
+            malformedEventCount > 0 ||
+            unusableEventCount > 0
+          ? "partial"
+          : complete
+            ? "success"
+            : verified.length > 0
+              ? "partial"
+              : "failed"
 
     if (status === "success") recordRelaySuccess(admittedRelayUrl)
     else if (!failureReason) recordRelayFailure(admittedRelayUrl)
@@ -1592,13 +1192,15 @@ async function fetchEventsFromRelay(
       unusableEventCount,
       duplicateEventCount,
       eoseReceived: complete,
-      outcome: verificationTruncated
-        ? "resource_limit"
-        : rejectedEventCount > 0
-          ? "verification_failed"
-          : malformedEventCount > 0
-            ? "malformed"
-            : outcome,
+      outcome: verificationUnavailable
+        ? "unavailable"
+        : verificationTruncated
+          ? "resource_limit"
+          : rejectedEventCount > 0
+            ? "verification_failed"
+            : malformedEventCount > 0
+              ? "malformed"
+              : outcome,
       ...(failureReason ? { failureReason } : {}),
     }
   } catch (error) {
@@ -1682,6 +1284,12 @@ async function runBoundedRelayAttempts(
 }
 
 function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
+  if (options.accountPubkey !== undefined && options.accountPubkey !== null) {
+    return selectRelayTargets(
+      options.relayTargets ?? [],
+      options.relayUrls
+    ).map((target) => target.url)
+  }
   if (options.relayUrls?.length === 0) return []
 
   if (config.e2eRelayIsolationEnabled) {
@@ -1693,8 +1301,10 @@ function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
     options.relayUrls ??
     getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
   )
-    .map((url) => url.trim())
-    .filter(Boolean)
+    .flatMap((url) => {
+      const normalized = tryNormalizeRelayUrl(url)
+      return normalized.ok ? [normalized.url] : []
+    })
     .filter((url, index, all) => all.indexOf(url) === index)
 
   if (options.skipHealthFilter) return dedupedUrls
@@ -1731,33 +1341,11 @@ function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
   )
 }
 
-async function orderAccountRelayFanout(
-  relayUrls: readonly string[],
-  options: Pick<
-    PublicRelayReadOptions,
-    "accountPubkey" | "accountNetworkLocalStateRepository"
-  >
-): Promise<string[]> {
-  if (options.accountPubkey === undefined || options.accountPubkey === null) {
-    return [...relayUrls]
-  }
-  const ordered = await orderEquivalentAccountRelayOperations({
-    accountPubkey: options.accountPubkey,
-    operations: relayUrls.map((relayUrl) => ({
-      relayUrl,
-      equivalenceKey: "final-read-fanout",
-      value: relayUrl,
-    })),
-    repository: options.accountNetworkLocalStateRepository,
-  })
-  return ordered.map((operation) => operation.value)
-}
-
 async function resolveFanoutRelayPlan(options: PublicRelayReadOptions) {
-  const ordered = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  // Planning owns evidence/source priority and any proven-equivalent local
+  // ordering. Final admission preserves it rather than assuming all sources
+  // are equivalent merely because they share one fanout.
+  const ordered = resolveFanoutRelayUrls(options)
   const rateLimitedRelayUrls = new Set(
     ordered.filter((url) => isRelayRateLimited(url))
   )
@@ -1773,8 +1361,8 @@ async function resolveFanoutRelayPlan(options: PublicRelayReadOptions) {
 }
 
 function mergeEventsInto(
-  merged: Map<string, SignedPublicNostrEvent>,
-  events: SignedPublicNostrEvent[]
+  merged: Map<string, VerifiedNostrEvent>,
+  events: VerifiedNostrEvent[]
 ): void {
   for (const event of events) {
     const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
@@ -1793,7 +1381,7 @@ function mergeEventsInto(
 export async function fetchPublicEvents(
   filter: Filter,
   options: PublicRelayReadOptions = {}
-): Promise<SignedPublicNostrEvent[]> {
+): Promise<VerifiedNostrEvent[]> {
   return (await fetchSignedEventsFanoutDetailed(filter, options)).events
 }
 
@@ -1831,7 +1419,7 @@ export async function fetchSignedEventsFanoutDetailed(
       ? new Map<string, RelayConnection>()
       : sharedConnections
   let relayUrls: string[] = []
-  const merged = new Map<string, SignedPublicNostrEvent>()
+  const merged = new Map<string, VerifiedNostrEvent>()
   const results: FetchEventsFromRelayResult[] = []
   const attempted = new Set<string>()
   const admitted = new Set<string>()
@@ -1886,7 +1474,6 @@ export async function fetchSignedEventsFanoutDetailed(
       requestedRelayUrls: [...(options.relayUrls ?? relayUrls)],
       admittedRelayUrls: [...admitted],
       attemptedRelayUrls: [...attempted],
-      eventsVerified: true,
       readCoverage: coverage,
       phase,
       startedAt,
@@ -2017,7 +1604,7 @@ export async function fetchPublicEventsProgressive(
   filter: Filter,
   options: PublicRelayReadOptions = {},
   onProgress: (progress: PublicRelayReadProgress) => void | Promise<void>
-): Promise<SignedPublicNostrEvent[]> {
+): Promise<VerifiedNostrEvent[]> {
   return (
     await fetchSignedEventsFanoutDetailed(filter, {
       ...options,

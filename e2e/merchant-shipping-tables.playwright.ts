@@ -11,6 +11,7 @@ import {
   seedTestRelayIdentity,
   TEST_RELAY_URL,
 } from "./helpers/auth"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -623,9 +624,72 @@ for (const [viewportName, width, height] of [
           path: testInfo.outputPath("shipping-product-mobile.png"),
         })
       }
-      await expect(
-        dialog.getByRole("button", { name: "Publish product", exact: true })
-      ).toBeEnabled()
+      const submit = dialog.getByRole("button", {
+        name: "Publish product",
+        exact: true,
+      })
+      try {
+        await expect(submit).toBeEnabled()
+      } catch (error) {
+        const state = await dialog.evaluate((element) => {
+          const button = element.querySelector<HTMLButtonElement>(
+            'button[type="submit"]'
+          )
+          const actionText = button?.textContent?.trim()
+          const status = Array.from(
+            element.querySelectorAll('[aria-live="polite"]')
+          )
+            .map((node) => node.textContent ?? "")
+            .join(" ")
+          const validation = status.includes(
+            "Publish this product to add it to your store."
+          )
+            ? "ready"
+            : status.includes("Add a product title.")
+              ? "title"
+              : /image|Image/.test(status)
+                ? "images"
+                : /tag/.test(status)
+                  ? "tags"
+                  : /Price|price/.test(status)
+                    ? "price"
+                    : /stock|Stock/.test(status)
+                      ? "stock"
+                      : status.includes("Publish your shipping table")
+                        ? "shipping_table"
+                        : /weight|dimensions/.test(status)
+                          ? "measurements"
+                          : "other"
+          return {
+            present: !!button,
+            enabled: !!button && !button.disabled,
+            invalidControls: element.querySelectorAll(
+              '[aria-invalid="true"], input:invalid'
+            ).length,
+            action:
+              actionText === "Publish product"
+                ? "publish"
+                : actionText === "Waiting for signer..."
+                  ? "waiting_signer"
+                  : actionText === "Uploading images..."
+                    ? "uploading"
+                    : actionText === "Reconnect signer to continue"
+                      ? "reconnect"
+                      : "other",
+            validation,
+          }
+        })
+        const signerAvailable = await page.evaluate(async (root) => {
+          const { getAccountSigner } = await import(`${root}/session-signer.ts`)
+          return !!getAccountSigner()
+        }, `/@fs${process.cwd()}/packages/core/src/protocol`)
+        recordSmokeDiagnostic(testInfo, "product-submit", {
+          ...state,
+          signerAvailable,
+          phase: index === 1 ? "first_product" : "second_product",
+        })
+        throw error
+      }
       await dialog
         .getByRole("button", { name: "Publish product", exact: true })
         .click()

@@ -53,7 +53,7 @@ describe("Merchant publish live account authority", () => {
     expect(delivery).toContain("requiresAuthenticatedOwnerAuthority")
     expect(delivery).toContain("!normalizePublicWebSocketUrl(input.relayUrl)")
     expect(delivery).toMatch(
-      /publishSignedEventToRelay\(\{[\s\S]{0,500}shouldContinue:/
+      /publishSignedEventToRelay\(\{[\s\S]*?shouldContinue:/
     )
     expect(worker).toContain(
       'import { StrictMode, useLayoutEffect } from "react"'

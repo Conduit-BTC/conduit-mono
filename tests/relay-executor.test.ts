@@ -21,6 +21,9 @@ import {
   type RelayWebSocket,
 } from "../packages/core/src/protocol/relay-executor"
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import { admitFixture } from "./helpers/public-event"
 import {
   refreshNdkRelaySettingsWhenIdle,
   disconnectNdk,
@@ -37,6 +40,38 @@ const PUBKEY_B = getPublicKey(PRIVATE_KEY_B)
 
 function emptyAccountNetworkPolicy() {
   return createInMemoryAccountNetworkLocalStateRepository()
+}
+
+async function ownerInboxReadAuthority(
+  selectedRelayUrls: readonly string[],
+  candidateRelayUrls: readonly string[] = selectedRelayUrls
+) {
+  const event = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10050,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: selectedRelayUrls.map((url) => ["relay", url]),
+        content: "",
+      },
+      PRIVATE_KEY_A
+    )
+  )
+  const inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await inboxDeclarationEvidenceRepository.merge({
+    pubkey: PUBKEY_A,
+    signedEvent: event,
+    observedAt: Date.now(),
+  })
+  return {
+    relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey: PUBKEY_A,
+    }),
+    inboxDeclarationEvidenceRepository,
+  }
 }
 
 type RelayFrame = unknown[]
@@ -950,6 +985,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: ["wss://protected.example"],
+      ...(await ownerInboxReadAuthority(["wss://protected.example"])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
@@ -988,6 +1024,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: [removedRelayUrl, retainedRelayUrl],
+      ...(await ownerInboxReadAuthority([removedRelayUrl, retainedRelayUrl])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: repository,
@@ -1015,7 +1052,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: [ownerWs, remoteWs],
-      ownerSelectedRelayUrls: [ownerWs],
+      ...(await ownerInboxReadAuthority([ownerWs], [ownerWs, remoteWs])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
@@ -1986,6 +2023,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: ["wss://protected.example"],
+      ...(await ownerInboxReadAuthority(["wss://protected.example"])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
@@ -2559,6 +2597,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: ["wss://protected.example"],
+      ...(await ownerInboxReadAuthority(["wss://protected.example"])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),

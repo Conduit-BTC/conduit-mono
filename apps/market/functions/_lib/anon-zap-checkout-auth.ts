@@ -1,10 +1,14 @@
 import {
+  verifySignedEvents,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "@conduit/core/protocol/verified-public-event"
+import {
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_ZAP_PUBLIC_RELAYS,
 } from "@conduit/core/config"
 import {
   authorizeAnonZapCheckout,
-  isValidSignedPublicNostrEvent,
   parseAnonZapCheckoutIntent,
   type AnonZapSigningAuthorization,
   type SignedPublicNostrEvent,
@@ -181,16 +185,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function getRequiredPricingCurrencies(
   intent: { merchantPubkey: string; items: Array<{ productAddress: string }> },
-  productEvents: SignedPublicNostrEvent[],
-  shippingEvents: SignedPublicNostrEvent[],
-  deletionEvents: SignedPublicNostrEvent[]
+  productEvents: VerifiedNostrEvent[],
+  shippingEvents: VerifiedNostrEvent[],
+  deletionEvents: VerifiedNostrEvent[]
 ): string[] {
   const currencies = new Set<string>()
   const validProducts = productEvents.filter(
     (event) =>
       event.kind === 30402 &&
       event.pubkey === intent.merchantPubkey &&
-      isValidSignedPublicNostrEvent(event)
+      isVerifiedNostrEvent(event)
   )
   for (const item of intent.items) {
     const dTag = item.productAddress.split(":").slice(2).join(":")
@@ -220,13 +224,13 @@ function getRequiredPricingCurrencies(
       (event) =>
         event.kind === 30406 &&
         event.pubkey === intent.merchantPubkey &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     ),
     deletionEvents.filter(
       (event) =>
         event.kind === 5 &&
         event.pubkey === intent.merchantPubkey &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     )
   )
   for (const option of activeShippingOptions) {
@@ -239,19 +243,19 @@ function getRequiredPricingCurrencies(
 
 function getRequestedShippingCoordinates(
   intent: { merchantPubkey: string; items: Array<{ productAddress: string }> },
-  productEvents: SignedPublicNostrEvent[]
+  productEvents: VerifiedNostrEvent[]
 ): string[] {
   const requestedDTags = new Set(
     intent.items.map((item) =>
       item.productAddress.split(":").slice(2).join(":")
     )
   )
-  const candidatesByDTag = new Map<string, SignedPublicNostrEvent[]>()
+  const candidatesByDTag = new Map<string, VerifiedNostrEvent[]>()
   for (const event of productEvents) {
     if (
       event.kind !== 30402 ||
       event.pubkey !== intent.merchantPubkey ||
-      !isValidSignedPublicNostrEvent(event)
+      !isVerifiedNostrEvent(event)
     ) {
       continue
     }
@@ -976,11 +980,11 @@ function exactDraftMatch(
   return isRecord(actual) && JSON.stringify(actual) === JSON.stringify(expected)
 }
 
-function requireCompletePublicRead(
+async function requireCompletePublicRead(
   result: AnonZapPublicReadResult,
   configuredRelayUrls: readonly string[],
   queryLimit: number
-): SignedPublicNostrEvent[] {
+): Promise<VerifiedNostrEvent[]> {
   const statuses = new Map(
     result.relays.map((relay) => [relay.relayUrl, relay.status])
   )
@@ -998,7 +1002,10 @@ function requireCompletePublicRead(
   ) {
     throw new Error("Checkout public relay reads are temporarily unavailable.")
   }
-  return result.events
+  const admitted = await verifySignedEvents(result.events)
+  if (admitted.truncated || admitted.events.length !== result.events.length)
+    throw new Error("Checkout public relay reads are temporarily unavailable.")
+  return admitted.events
 }
 
 export async function authorizeAnonZapRequest(
@@ -1060,7 +1067,7 @@ export async function authorizeAnonZapRequest(
         commerceRelays
       ),
     ])
-    const productEvents = requireCompletePublicRead(
+    const productEvents = await requireCompletePublicRead(
       productRead,
       commerceRelays,
       100
@@ -1083,7 +1090,7 @@ export async function authorizeAnonZapRequest(
     )
     const shippingEvents =
       shippingDTags.length > 0
-        ? requireCompletePublicRead(
+        ? await requireCompletePublicRead(
             await dependencies.fetchPublicEvents(
               {
                 kinds: [30406],
@@ -1097,12 +1104,12 @@ export async function authorizeAnonZapRequest(
             100
           )
         : []
-    const profileEvents = requireCompletePublicRead(
+    const profileEvents = await requireCompletePublicRead(
       profileRead,
       commerceRelays,
       10
     )
-    const addressDeletionEvents = requireCompletePublicRead(
+    const addressDeletionEvents = await requireCompletePublicRead(
       addressDeletionRead,
       commerceRelays,
       300
@@ -1112,7 +1119,7 @@ export async function authorizeAnonZapRequest(
     )
     const eventDeletionEvents =
       productEventIds.length > 0
-        ? requireCompletePublicRead(
+        ? await requireCompletePublicRead(
             await dependencies.fetchPublicEvents(
               {
                 kinds: [5],
@@ -1128,7 +1135,7 @@ export async function authorizeAnonZapRequest(
         : []
     const shippingAddressDeletionEvents =
       shippingCoordinates.length > 0
-        ? requireCompletePublicRead(
+        ? await requireCompletePublicRead(
             await dependencies.fetchPublicEvents(
               {
                 kinds: [5],
@@ -1147,7 +1154,7 @@ export async function authorizeAnonZapRequest(
     )
     const shippingEventDeletionEvents =
       shippingEventIds.length > 0
-        ? requireCompletePublicRead(
+        ? await requireCompletePublicRead(
             await dependencies.fetchPublicEvents(
               {
                 kinds: [5],

@@ -249,6 +249,12 @@ describe("product image upload target resolution", () => {
                   : "complete",
             retained: true,
             publishedServerUrls: [CONFIGURED_SERVER],
+            publishedRevision: { eventId: "b".repeat(64), createdAt: 100 },
+            frontier: {
+              eventId: "b".repeat(64),
+              createdAt: 100,
+              state: "valid",
+            },
           }),
         })
       ).toMatchObject({
@@ -333,7 +339,14 @@ describe("product image upload target resolution", () => {
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
         signerAvailable: true,
-        resolution: resolution({ status: "malformed" }),
+        resolution: resolution({
+          status: "malformed",
+          frontier: {
+            eventId: "c".repeat(64),
+            createdAt: 100,
+            state: "malformed",
+          },
+        }),
       })
     ).toEqual({ kind: "unavailable", reason: "malformed_preferences" })
   })

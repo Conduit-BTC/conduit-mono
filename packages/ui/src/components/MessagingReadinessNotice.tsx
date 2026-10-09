@@ -6,8 +6,6 @@ import { Button } from "./Button"
  * Typed NIP-17 inbox readiness states (CND-208).
  * - not_observed: no kind-10050 declaration was observed on the bounded
  *   discovery set; setup happens in Network.
- * - distribution_pending: an exact signed declaration is locally durable but
- *   has not been confirmed on shared discovery relays.
  * - signed_empty: the current signed declaration intentionally lists no
  *   relays; restore it from Network settings.
  * - malformed: a signed declaration has relay tags but none are usable;
@@ -17,7 +15,6 @@ import { Button } from "./Button"
  */
 export type MessagingReadinessState =
   | "not_observed"
-  | "distribution_pending"
   | "signed_empty"
   | "malformed"
   | "lookup_failed"
@@ -35,7 +32,6 @@ export function toMessagingReadinessNoticeState(
     case "ready":
       return null
     case "not_observed":
-    case "distribution_pending":
     case "signed_empty":
     case "malformed":
     case "lookup_failed":
@@ -60,12 +56,6 @@ const COPY: Record<
   not_observed: {
     title: "Private messages may not reach you",
     body: "Choose an inbox in Network settings before relying on this inbox for new orders or messages.",
-    actionLabel: "Open Network settings",
-    setup: true,
-  },
-  distribution_pending: {
-    title: "Private inbox setup is still publishing",
-    body: "New messages may not reliably reach you yet. Finish setup in Network settings before sending a general direct message. Validated order replies can still deliver.",
     actionLabel: "Open Network settings",
     setup: true,
   },

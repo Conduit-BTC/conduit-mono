@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   encodeEventMarketNaddr,
-  isValidSignedPublicNostrEvent,
+  admitPublicEvent,
   loadRetainedSignedEventMarketEvidence,
   parseEventMarketRosterEvent,
   publishEventMarketRoster,
@@ -11,6 +11,7 @@ import {
   summarizeEventMarketPublishDelivery,
   type EventMarketCalendarDraftInput,
   type SignedPublicNostrEvent,
+  type VerifiedNostrEvent,
   useAuth,
 } from "@conduit/core"
 import {
@@ -167,10 +168,10 @@ function preparedCalendarDraft(
       }
 }
 
-function signedRecordsForDraft(
+async function signedRecordsForDraft(
   events: readonly SignedPublicNostrEvent[],
   draft: FrozenSeriesDraft
-): SignedPublicNostrEvent[] {
+): Promise<VerifiedNostrEvent[]> {
   const expectedKinds = new Map<string, number>([
     [draft.marketDTag, 30409],
     [draft.scheduleDTag, 31924],
@@ -179,14 +180,31 @@ function signedRecordsForDraft(
       draft.form.calendarType === "timed" ? 31923 : 31922,
     ]),
   ])
-  const matching = events.filter(
+  const admitted: VerifiedNostrEvent[] = []
+  for (let offset = 0; offset < events.length; offset += 64) {
+    const results = await Promise.all(
+      events.slice(offset, offset + 64).map((event) => admitPublicEvent(event))
+    )
+    for (const result of results) {
+      if (result.status === "verified") admitted.push(result.event)
+      else if (result.status === "unavailable")
+        throw new Error(
+          "Saved Event Market signature verification is unavailable."
+        )
+      else if (result.status === "cancelled")
+        throw new DOMException(
+          "Event Market creation was cancelled.",
+          "AbortError"
+        )
+    }
+  }
+  const matching = admitted.filter(
     (event) =>
-      isValidSignedPublicNostrEvent(event) &&
       event.pubkey === draft.organizerPubkey &&
       expectedKinds.get(event.tags.find((tag) => tag[0] === "d")?.[1] ?? "") ===
         event.kind
   )
-  const byCoordinate = new Map<string, SignedPublicNostrEvent>()
+  const byCoordinate = new Map<string, VerifiedNostrEvent>()
   for (const event of matching) {
     const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
     const previous = byCoordinate.get(coordinate)
@@ -329,12 +347,9 @@ function FutureEventMarketCreateForm({
         setRepeatMode("custom")
         const marketCoordinate = `30409:${organizerPubkey}:${saved.marketDTag}`
         void loadRetainedSignedEventMarketEvidence(marketCoordinate)
-          .then((events) => {
-            if (active) {
-              setSavedSignatureCount(
-                signedRecordsForDraft(events, saved).length
-              )
-            }
+          .then(async (events) => {
+            const signed = await signedRecordsForDraft(events, saved)
+            if (active) setSavedSignatureCount(signed.length)
           })
           .catch((cause) => {
             if (active)
@@ -419,7 +434,7 @@ function FutureEventMarketCreateForm({
         )
         const marketCoordinate = `30409:${organizerPubkey}:${draft.marketDTag}`
         const scheduleCoordinate = `31924:${organizerPubkey}:${draft.scheduleDTag}`
-        const savedSignedEvents = signedRecordsForDraft(
+        const savedSignedEvents = await signedRecordsForDraft(
           await loadRetainedSignedEventMarketEvidence(marketCoordinate),
           draft
         )

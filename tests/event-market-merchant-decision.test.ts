@@ -14,6 +14,14 @@ import {
 } from "@conduit/core"
 import { retainEventMarketMerchantDecision } from "../apps/merchant/src/lib/event-market-merchant-decision"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+
+async function admitted(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error(`Fixture admission failed: ${result.status}`)
+  return result.event
+}
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -27,7 +35,9 @@ const firstDraft = buildEventMarketRosterDraft({
   state: "open",
   merchants: [],
 })
-const first = finalizeEvent({ ...firstDraft, created_at: 100 }, secret)
+const first = await admitted(
+  finalizeEvent({ ...firstDraft, created_at: 100 }, secret)
+)
 const delivery = { successfulRelayUrls: ["wss://example.com"] } as never
 
 describe("paired Event Market merchant decisions", () => {
@@ -274,7 +284,7 @@ for (const action of ["approve", "revoke"] as const) {
               merchantPubkey: merchant,
               resolution: {
                 state: action === "approve" ? "revoked" : "active",
-                tip: parseEventMarketAuthorizationEvent(tip)!,
+                tip: parseEventMarketAuthorizationEvent(await admitted(tip))!,
               },
               coverage,
               retained: true,

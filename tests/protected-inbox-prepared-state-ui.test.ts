@@ -157,11 +157,12 @@ describe("protected inbox prepared state", () => {
       ].map(source)
     )
 
-    const expectedSelectorCounts = [2, 1, 2, 1, 1]
+    const expectedSelectorCounts = [0, 0, 0, 0, 1]
     for (const [index, text] of sources.entries()) {
+      if (index < 4) expect(text).toContain("useCommerceInbox")
       expect(text).toContain("deriveProtectedReadPresentationState")
       expect(text).toContain("pending:")
-      expect(text.match(/selectProtectedReadRows\(/g)?.length).toBe(
+      expect(text.match(/selectProtectedReadRows\(/g)?.length ?? 0).toBe(
         expectedSelectorCounts[index]
       )
       expect(text).not.toMatch(/data\?\.data\.length\s*\?/)

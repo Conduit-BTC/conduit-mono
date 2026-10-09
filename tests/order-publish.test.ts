@@ -1,3 +1,4 @@
+import { getEventHash } from "nostr-tools"
 import {
   activateAccountSigner,
   getAccountSigner,
@@ -26,11 +27,21 @@ import {
   publishPrivateMessage,
   unwrapGiftWrap,
   type OrderLifecycle,
+  type PrivateMessageRumor,
   type OrderRelayDeliveryRepository,
   type StagedOrderLifecycleInput,
 } from "@conduit/core"
 
 import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
+import {
+  createInMemoryInboxDeclarationEvidenceRepository,
+  mergeInboxDeclarationEvidence,
+} from "../packages/core/src/protocol/inbox-declaration-evidence"
+import {
+  readRetainedInboxDeclaration,
+  sharedInboxDiscoveryRelayUrls,
+} from "../packages/core/src/protocol/private-message-routing"
+import { admitFixture } from "./helpers/public-event"
 import {
   buildOrderCompanionNotificationRumor,
   buildPaymentProofRumor,
@@ -42,6 +53,20 @@ import {
 let activeSignerLease: ReturnType<typeof setSigner> | null = null
 
 describe("buyer order rumor preparation", () => {
+  it("preserves the deployed named order grammar and JSON terms before delivery", () => {
+    const rumor = orderRumor()
+    const content = rumor.content
+    const tags = structuredClone(rumor.tags)
+    prepareBuyerRumor(rumor, "b".repeat(64))
+    expect(rumor.tags).toEqual(tags)
+    expect(rumor.tags.find((tag) => tag[0] === "type")?.[1]).toBe("order")
+    expect(rumor.content).toBe(content)
+    expect(JSON.parse(rumor.content).items).toHaveLength(1)
+    expect(rumor.id).toBe(
+      getEventHash({ ...rumor, kind: 16, created_at: rumor.created_at! })
+    )
+  })
+
   it("recreates the same payment-proof rumor id for receipt retries", () => {
     const params = {
       merchantPubkey: "merchant-pubkey",
@@ -54,8 +79,14 @@ describe("buyer order rumor preparation", () => {
     const first = buildPaymentProofRumor(params)
     const retry = buildPaymentProofRumor(params)
 
-    prepareBuyerRumor(first, "guest-pubkey")
-    prepareBuyerRumor(retry, "guest-pubkey")
+    prepareBuyerRumor(
+      first,
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )
+    prepareBuyerRumor(
+      retry,
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )
 
     expect(first.created_at).toBe(params.createdAt)
     expect(retry.id).toBe(first.id)
@@ -75,6 +106,10 @@ describe("buyer order rumor preparation", () => {
         ],
       ],
     })
+    prepareBuyerRumor(
+      authoritativeOrder,
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
     const first = buildOrderCompanionNotificationRumor(
       authoritativeOrder,
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -91,8 +126,13 @@ describe("buyer order rumor preparation", () => {
   })
 
   it("uses the selected Merchant deployment for signed-in companions", () => {
+    const rumor = orderRumor()
+    prepareBuyerRumor(
+      rumor,
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
     const companion = buildOrderCompanionNotificationRumor(
-      orderRumor(),
+      rumor,
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "merchant-pubkey",
       "https://fix-293.conduit-merchant-33n.pages.dev"
@@ -119,9 +159,8 @@ describe("buyer order rumor preparation", () => {
 })
 
 function orderRumor(overrides: Record<string, unknown> = {}) {
-  const getEventHash = overrides.getEventHash
   const rumor = {
-    id: "order-rumor",
+    id: "",
     kind: EVENT_KINDS.ORDER,
     pubkey: "",
     created_at: 100,
@@ -158,19 +197,17 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
     ],
     ...overrides,
   }
-  return {
-    ...rumor,
-    getEventHash:
-      typeof getEventHash === "function" ? getEventHash : () => rumor.id,
-  } as never
+  return rumor as never
 }
 
 function guestOrderRumor(overrides: Record<string, unknown> = {}) {
   return orderRumor({
+    pubkey: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     content: JSON.stringify({
       id: "guest-order",
       merchantPubkey: "merchant-pubkey",
-      buyerPubkey: "guest-pubkey",
+      buyerPubkey:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       buyerIdentityKind: "guest_ephemeral",
       items: [
         {
@@ -306,7 +343,6 @@ describe("buyer order publishing", () => {
 
     const result = await publishBuyerOrderMessage(
       rumor,
-      { signer } as never,
       merchantPubkey,
       { kind: "signed_in", pubkey: buyerPubkey, signer: signer as never },
       {
@@ -328,7 +364,7 @@ describe("buyer order publishing", () => {
 
           const prepared = {
             rumorId: input.rumor.id,
-            wrappedToRecipient: recipientWrap,
+            wrappedToRecipient: structuredClone(recipientWrap.rawEvent()),
             deliveryRoute: "declared_inbox" as const,
             routingAuthority: {
               eventId: declaration.id,
@@ -360,7 +396,7 @@ describe("buyer order publishing", () => {
           await input.onRecipientPublishAccepted?.(recipientDelivery as never)
           await input.onRecipientPublishSettled?.(recipientDelivery as never)
           return {
-            wrappedToRecipient: recipientWrap,
+            wrappedToRecipient: structuredClone(recipientWrap.rawEvent()),
             wrappedToSelf: null,
             selfCopyError: null,
             deliveryRoute: "declared_inbox",
@@ -402,7 +438,7 @@ describe("buyer order publishing", () => {
       const buyerPubkey =
         identityKind === "signed_in"
           ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-          : "guest-pubkey"
+          : "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       const signer =
         identityKind === "signed_in"
           ? installBuyerSigner(buyerPubkey)
@@ -509,6 +545,9 @@ describe("buyer order publishing", () => {
       })
       let selfRecoveryStarts = 0
       let cacheAttempts = 0
+      const cacheFailure =
+        identityKind === "signed_in" && terminalStatus === "timed_out"
+      const recoveryNotices: string[] = []
       let companionPublishes = 0
       const committedLifecycle = {
         ...lifecycle,
@@ -520,7 +559,11 @@ describe("buyer order publishing", () => {
         checkoutRecoveryPending: true,
         updatedAt: 100,
         orderRelayDelivery: {
-          rumorId: "order-rumor",
+          rumorId: getEventHash({
+            ...stagedRumor,
+            pubkey: buyerPubkey,
+            created_at: stagedRumor.created_at!,
+          }),
           signedRecipientWrap: { id: "recipient-wrap" },
           route: "declared_inbox",
           relayDelivery: [
@@ -532,7 +575,6 @@ describe("buyer order publishing", () => {
 
       const result = await publishBuyerOrderMessage(
         stagedRumor,
-        { signer } as never,
         "merchant-pubkey",
         identityKind === "guest_ephemeral"
           ? {
@@ -562,7 +604,11 @@ describe("buyer order publishing", () => {
             }
             expect(input.recipientDeliveryBoundary).toBe("accepted")
             const prepared = {
-              rumorId: "order-rumor",
+              rumorId: getEventHash({
+                ...stagedRumor,
+                pubkey: buyerPubkey,
+                created_at: stagedRumor.created_at!,
+              }),
               wrappedToRecipient: {
                 id: "recipient-wrap",
                 rawEvent: () => ({ id: "recipient-wrap" }),
@@ -620,9 +666,12 @@ describe("buyer order publishing", () => {
           }) as never,
           cacheBuyerOrderRumorFn: async () => {
             cacheAttempts += 1
-            return null
+            return cacheFailure ? "Local order history unavailable" : null
           },
-          patchOrderLifecycleFn: (async () => committedLifecycle) as never,
+          patchOrderLifecycleFn: (async (_id, patch) => {
+            if (patch.deliveryNotice) recoveryNotices.push(patch.deliveryNotice)
+            return committedLifecycle
+          }) as never,
         }
       )
 
@@ -633,8 +682,18 @@ describe("buyer order publishing", () => {
         },
       ])
       expect(selfRecoveryStarts).toBe(0)
-      expect(cacheAttempts).toBe(0)
+      expect(cacheAttempts).toBe(identityKind === "signed_in" ? 1 : 0)
       expect(companionPublishes).toBe(0)
+      expect(result.localCacheError).toBe(
+        cacheFailure ? "Local order history unavailable" : null
+      )
+      expect(recoveryNotices).toEqual(
+        cacheFailure
+          ? [
+              "Order was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync.",
+            ]
+          : []
+      )
 
       const firstPostWork = result.startPostAcceptanceWork!()
       const secondPostWork = result.startPostAcceptanceWork!()
@@ -657,6 +716,33 @@ describe("buyer order publishing", () => {
     })
   }
 
+  it("preserves a delivery checkpoint warning through the buyer caller result", async () => {
+    const signer = getAccountSigner()!
+    const result = await publishBuyerOrderMessage(
+      orderRumor(),
+      "merchant-pubkey",
+      {
+        kind: "signed_in",
+        pubkey: signer.pubkey,
+        signer: signer as never,
+      },
+      {
+        cacheBuyerOrderRumorFn: async () => null,
+        publishPrivateMessageFn: (async () => ({
+          buyerSelfCopyError: null,
+          selfCopyError: null,
+          checkpointFailure: true,
+          deliveryRoute: "declared_inbox",
+          wrappedToRecipient: {} as never,
+        })) as never,
+      }
+    )
+    expect(result.checkpointFailure).toBe(true)
+    expect(getDeliveryNotice(result, "Message")).toBe(
+      "Message was accepted by Nostr delivery relays for merchant pickup and saved locally, but its delivery status could not be saved. Do not send it again."
+    )
+  })
+
   it("publishes a recipient-only kind-14 companion after signed-in order delivery", async () => {
     const signer = getAccountSigner()!
     const calls: Array<Record<string, unknown>> = []
@@ -672,7 +758,6 @@ describe("buyer order publishing", () => {
 
     const publishing = publishBuyerOrderMessage(
       authoritativeOrder,
-      { signer } as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -733,7 +818,7 @@ describe("buyer order publishing", () => {
     expect(orderCall?.signerInteraction).toBe("external")
     expect(orderCall?.relayAuthMethod).toBe("nip07")
     expect(orderCall?.validatedOrderScope).toMatchObject({
-      rumorId: "order-rumor",
+      rumorId: (orderCall!.rumor as { id: string }).id,
       orderId: "guest-order",
       senderPubkey:
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -774,7 +859,12 @@ describe("buyer order publishing", () => {
       ["p", "merchant-pubkey"],
       ["subject", "conduit-order-notification"],
       ["order", "guest-order"],
-      ["conduit", "order-companion", "1", "order-rumor"],
+      [
+        "conduit",
+        "order-companion",
+        "1",
+        (orderCall!.rumor as { id: string }).id,
+      ],
       [
         "client",
         "Conduit Market",
@@ -801,8 +891,6 @@ describe("buyer order publishing", () => {
   })
 
   it("stops signed-in private delivery when the active signer changes before transport", async () => {
-    const signer = getAccountSigner()!
-    const ndk = { signer }
     let enteredFinalPolicy!: () => void
     const finalPolicyStarted = new Promise<void>((resolve) => {
       enteredFinalPolicy = resolve
@@ -815,7 +903,6 @@ describe("buyer order publishing", () => {
 
     const publishing = publishBuyerOrderMessage(
       orderRumor(),
-      ndk as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -848,17 +935,15 @@ describe("buyer order publishing", () => {
     expect(transportAttempts).toBe(0)
   })
 
-  it("commits one signed-in order when the signer session changes after the merchant ACK", async () => {
+  it("keeps accepted order delivery and reports unavailable local history after signer change", async () => {
     const buyerPubkey = "a".repeat(64)
     const merchantPubkey = "b".repeat(64)
     const merchantRelayUrl = "wss://merchant.inbox.conduit.market"
     const buyerRelayUrl = "wss://buyer.inbox.conduit.market"
     const signer = installBuyerSigner(buyerPubkey)
-    const ndk = { signer }
     let sessionCurrent = true
     const published: string[] = []
     let companionPublishAttempts = 0
-    let cacheAttempts = 0
     let recipientWrapId = ""
     let selfWrapId = ""
     const wrapSigner = NDKPrivateKeySigner.generate()
@@ -873,7 +958,6 @@ describe("buyer order publishing", () => {
 
     const result = await publishBuyerOrderMessage(
       order,
-      ndk as never,
       merchantPubkey,
       {
         kind: "signed_in",
@@ -882,10 +966,6 @@ describe("buyer order publishing", () => {
       },
       {
         shouldContinue: () => sessionCurrent,
-        cacheBuyerOrderRumorFn: async () => {
-          cacheAttempts += 1
-          return null
-        },
         publishPrivateMessageFn: async (input) => {
           if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
             companionPublishAttempts += 1
@@ -938,12 +1018,11 @@ describe("buyer order publishing", () => {
       }
     )
 
-    expect(cacheAttempts).toBe(1)
     expect(result.orderRelayDelivery).toBeUndefined()
     expect(result.buyerSelfCopyError).toBe(
       "Sender self-copy was skipped because the signer session changed after recipient delivery."
     )
-    expect(result.localCacheError).toBeNull()
+    expect(result.localCacheError).toBe("Local order history unavailable")
     expect(await result.companionNotification).toBe("skipped_session_changed")
     expect(companionPublishAttempts).toBe(0)
     expect(published[0]).toBe(recipientWrapId)
@@ -951,10 +1030,38 @@ describe("buyer order publishing", () => {
   })
 
   it("filters a whole-removed relay from both signed-in order sends", async () => {
-    const buyerPubkey = "a".repeat(64)
-    const merchantPubkey = "b".repeat(64)
+    const buyerSecret = generateSecretKey()
+    const merchantSecret = generateSecretKey()
+    const buyerPubkey = getPublicKey(buyerSecret)
+    const merchantPubkey = getPublicKey(merchantSecret)
     const excludedRelayUrl = "wss://removed-order.conduit.market"
     const eligibleRelayUrl = "wss://eligible-order.conduit.market"
+    const inboxEvidence = createInMemoryInboxDeclarationEvidenceRepository()
+    for (const secret of [buyerSecret, merchantSecret]) {
+      const signedEvent = await admitFixture(
+        finalizeEvent(
+          {
+            kind: 10050,
+            created_at: 1,
+            content: "",
+            tags: [
+              ["relay", excludedRelayUrl],
+              ["relay", eligibleRelayUrl],
+            ],
+          },
+          secret
+        )
+      )
+      await mergeInboxDeclarationEvidence(
+        {
+          pubkey: getPublicKey(secret),
+          signedEvent,
+          sourceRelayUrls: sharedInboxDiscoveryRelayUrls(),
+          sharedSourceRelayUrls: sharedInboxDiscoveryRelayUrls(),
+        },
+        inboxEvidence
+      )
+    }
     const repository = createInMemoryAccountNetworkLocalStateRepository(
       [],
       () => 100
@@ -979,7 +1086,6 @@ describe("buyer order publishing", () => {
 
     const result = await publishBuyerOrderMessage(
       rumor,
-      { signer } as never,
       merchantPubkey,
       { kind: "signed_in", pubkey: buyerPubkey, signer: signer as never },
       {
@@ -989,20 +1095,29 @@ describe("buyer order publishing", () => {
           await publishPrivateMessage({
             ...input,
             accountNetworkLocalStateRepository: repository,
+            inboxDeclarationEvidenceRepository: inboxEvidence,
             recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
             // Keep the non-critical self-copy off live inbox discovery.
             senderInboxRelays: [eligibleRelayUrl],
             inspectOwnInboxReadiness: async () => ({
               state: "ready",
-              eventId: "c".repeat(64),
+              eventId: (await readRetainedInboxDeclaration(buyerPubkey, {
+                durableEvidenceRepository: inboxEvidence,
+              }))!.eventId!,
               relayUrls: [eligibleRelayUrl],
               stale: false,
               distributionRepairable: false,
             }),
             giftWrapFn: (async (_rumor, recipient) =>
-              new NDKEvent(undefined, {
-                id: `wrap-${recipient.pubkey}`,
-              })) as never,
+              finalizeEvent(
+                {
+                  kind: 1059,
+                  created_at: 1_700_000_000,
+                  tags: [["p", recipient.pubkey]],
+                  content: "synthetic encrypted wrap",
+                },
+                generateSecretKey()
+              )) as never,
             publishFn: (async (_event, options) => {
               openedRelayUrls.push(...(options.exclusiveRelayUrls ?? []))
               return {
@@ -1067,7 +1182,6 @@ describe("buyer order publishing", () => {
 
     await publishBuyerOrderMessage(
       sensitiveRumor,
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -1116,11 +1230,11 @@ describe("buyer order publishing", () => {
 
     const result = await publishBuyerOrderMessage(
       guestOrderRumor(),
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       {
         kind: "guest_ephemeral",
-        pubkey: "guest-pubkey",
+        pubkey:
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         signer: guestSigner as never,
         orderId: "guest-order",
         merchantPubkey: "merchant-pubkey",
@@ -1149,7 +1263,9 @@ describe("buyer order publishing", () => {
       EVENT_KINDS.DIRECT_MESSAGE,
     ])
     const orderCall = calls[0]
-    expect(orderCall?.senderPubkey).toBe("guest-pubkey")
+    expect(orderCall?.senderPubkey).toBe(
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )
     expect(orderCall?.signer).toBe(guestSigner)
     expect(orderCall?.selfCopy).toBe(false)
     expect(orderCall?.accountPubkey).toBeNull()
@@ -1157,14 +1273,17 @@ describe("buyer order publishing", () => {
     expect((orderCall?.shouldContinue as () => boolean)()).toBe(true)
     expect(orderCall?.signerInteraction).toBe("application_owned")
     expect(orderCall?.validatedOrderScope).toMatchObject({
-      rumorId: "order-rumor",
+      rumorId: (orderCall!.rumor as { id: string }).id,
       orderId: "guest-order",
-      senderPubkey: "guest-pubkey",
+      senderPubkey:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       recipientPubkey: "merchant-pubkey",
     })
 
     const companionCall = calls[1]
-    expect(companionCall?.senderPubkey).toBe("guest-pubkey")
+    expect(companionCall?.senderPubkey).toBe(
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )
     expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(companionCall?.signer).toBe(guestSigner)
     expect(companionCall?.selfCopy).toBe(false)
@@ -1175,10 +1294,11 @@ describe("buyer order publishing", () => {
     expect(companionCall?.validatedOrderScope).toBeUndefined()
     expect(companionCall?.validatedGuestOrderCompanionScope).toMatchObject({
       rumorId: (companionCall?.rumor as { id: string }).id,
-      orderRumorId: "order-rumor",
+      orderRumorId: (orderCall!.rumor as { id: string }).id,
       orderId: "guest-order",
       subject: "conduit-order-notification",
-      senderPubkey: "guest-pubkey",
+      senderPubkey:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       recipientPubkey: "merchant-pubkey",
     })
     const companion = companionCall?.rumor as { content: string }
@@ -1199,19 +1319,30 @@ describe("buyer order publishing", () => {
     let guestInboxChecks = 0
     const merchantInboxRelay = "wss://merchant.inbox.conduit.market"
     const guestSigner = {
-      getPublicKey: async () => "guest-pubkey",
+      getPublicKey: async () =>
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     }
 
+    const merchant = "d".repeat(64)
+    const guestRumor = guestOrderRumor() as PrivateMessageRumor
+    guestRumor.tags = guestRumor.tags.map((tag) =>
+      tag[0] === "p" ? ["p", merchant] : tag
+    )
+    guestRumor.content = JSON.stringify({
+      ...JSON.parse(guestRumor.content),
+      merchantPubkey: merchant,
+    })
+    guestRumor.id = getEventHash(guestRumor)
     const result = await publishBuyerOrderMessage(
-      guestOrderRumor(),
-      {} as never,
-      "merchant-pubkey",
+      guestRumor,
+      merchant,
       {
         kind: "guest_ephemeral",
-        pubkey: "guest-pubkey",
+        pubkey:
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         signer: guestSigner as never,
         orderId: "guest-order",
-        merchantPubkey: "merchant-pubkey",
+        merchantPubkey: merchant,
       },
       {
         publishPrivateMessageFn: async (input) =>
@@ -1242,7 +1373,7 @@ describe("buyer order publishing", () => {
       EVENT_KINDS.ORDER,
       EVENT_KINDS.DIRECT_MESSAGE,
     ])
-    expect(wrappedRecipients).toEqual(["merchant-pubkey", "merchant-pubkey"])
+    expect(wrappedRecipients).toEqual([merchant, merchant])
     expect(guestInboxChecks).toBe(0)
     expect(result.deliveryRoute).toBe("declared_inbox")
     expect(result.buyerSelfCopyError).toBeNull()
@@ -1295,7 +1426,6 @@ describe("buyer order publishing", () => {
     const merchantInboxRelay = "wss://merchant.inbox.conduit.market"
     const result = await publishBuyerOrderMessage(
       authoritativeOrder,
-      {} as never,
       merchant.pubkey,
       guestIdentity,
       {
@@ -1374,11 +1504,11 @@ describe("buyer order publishing", () => {
     let publishAttempts = 0
     const result = await publishBuyerOrderMessage(
       guestOrderRumor(),
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       {
         kind: "guest_ephemeral",
-        pubkey: "guest-pubkey",
+        pubkey:
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         signer: guestSigner as never,
         orderId: "guest-order",
         merchantPubkey: "merchant-pubkey",
@@ -1406,7 +1536,6 @@ describe("buyer order publishing", () => {
     let publishAttempts = 0
     const result = await publishBuyerOrderMessage(
       orderRumor(),
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -1440,7 +1569,6 @@ describe("buyer order publishing", () => {
           ["order", "guest-order"],
         ],
       }),
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -1479,7 +1607,6 @@ describe("buyer order publishing", () => {
           ["order", "guest-order"],
         ],
       }),
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -1506,7 +1633,6 @@ describe("buyer order publishing", () => {
     await expect(
       publishBuyerOrderMessage(
         orderRumor(),
-        { signer: { id: "connected-signer" } } as never,
         "merchant-pubkey",
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         {
@@ -1534,7 +1660,6 @@ describe("buyer order publishing", () => {
 
     const result = await publishBuyerOrderMessage(
       orderRumor(),
-      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
@@ -1576,7 +1701,6 @@ describe("buyer order publishing", () => {
       let publishAttempts = 0
       const result = await publishBuyerOrderMessage(
         orderRumor(),
-        { signer: { id: "connected-signer" } } as never,
         "merchant-pubkey",
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         {
@@ -1620,11 +1744,11 @@ describe("buyer order publishing", () => {
             ["order", "other-order"],
           ],
         }),
-        {} as never,
         "merchant-pubkey",
         {
           kind: "guest_ephemeral",
-          pubkey: "guest-pubkey",
+          pubkey:
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           signer: {} as never,
           orderId: "expected-order",
           merchantPubkey: "merchant-pubkey",
@@ -1646,7 +1770,6 @@ describe("buyer order publishing", () => {
     await expect(
       publishBuyerOrderMessage(
         orderRumor(),
-        {} as never,
         "merchant-pubkey",
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         {
@@ -1679,7 +1802,6 @@ describe("buyer order publishing", () => {
 
     await publishBuyerOrderMessage(
       orderRumor(),
-      replacementNdk,
       "merchant-pubkey",
       {
         kind: "signed_in",

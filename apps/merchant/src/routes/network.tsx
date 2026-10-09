@@ -11,8 +11,13 @@ import {
   useBlocker,
   useNavigate,
 } from "@tanstack/react-router"
-import { useAccountNetworkSettings, useAuth } from "@conduit/core"
 import {
+  useAccountNetworkSettings,
+  useAuth,
+  useCommerceInbox,
+} from "@conduit/core"
+import {
+  CommerceInboxRecovery,
   Button,
   RelaySettingsPanel,
   SignerRecoveryNotice,
@@ -42,6 +47,11 @@ function NetworkPage() {
     signerReadiness,
     status,
   } = useAuth()
+  const inbox = useCommerceInbox(
+    accountPubkey,
+    signerReadiness === "ready",
+    false
+  )
   const networkSettings = useAccountNetworkSettings({
     telemetryApp: "merchant",
   })
@@ -114,13 +124,9 @@ function NetworkPage() {
   }, [accountPubkey, navigate])
 
   useEffect(() => {
-    const setupConfirmed =
-      networkSettings.view.inbox.state === "declared" &&
-      networkSettings.view.inbox.coverage === "complete" &&
-      !networkSettings.view.inbox.stale
     if (
       !hasProductDraftReturn ||
-      !setupConfirmed ||
+      !networkSettings.view.inbox.currentUsable ||
       hasUnpublishedRelayChanges ||
       networkOperationInProgress
     ) {
@@ -132,14 +138,17 @@ function NetworkPage() {
     hasProductDraftReturn,
     hasUnpublishedRelayChanges,
     networkOperationInProgress,
-    networkSettings.view.inbox.coverage,
-    networkSettings.view.inbox.stale,
-    networkSettings.view.inbox.state,
+    networkSettings.view.inbox.currentUsable,
     returnToProductDraft,
   ])
 
   return (
     <>
+      <CommerceInboxRecovery
+        snapshot={inbox.snapshot}
+        retry={inbox.retry}
+        retrySends={inbox.retrySends}
+      />
       <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
         <div className="mx-auto max-w-[50rem]">
           {hasProductDraftReturn && (

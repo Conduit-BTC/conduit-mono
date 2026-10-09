@@ -1,6 +1,14 @@
+import {
+  cachedDirectMessageRow,
+  parseCachedDirectMessage,
+} from "./cached-direct-message"
 import type { Filter } from "nostr-tools"
+import {
+  getCommerceInbox as getDefaultCommerceInbox,
+  type CommerceInbox,
+  type CommerceInboxSnapshot,
+} from "./commerce-inbox"
 import { liveQuery } from "dexie"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import {
@@ -12,11 +20,16 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import {
-  inspectCheckoutSparkRecoveryWrap,
+  checkoutRecoveryPayloadDigest,
   openCheckoutSparkRecoveryWrap,
   type CheckoutSparkRecoveryPayload,
 } from "./checkout-spark-recovery"
@@ -30,6 +43,7 @@ import {
   type FollowListCoverageState,
 } from "./follows"
 import {
+  verifySignedEventBatches,
   attachEventSourceRelayUrl,
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
@@ -41,8 +55,6 @@ import {
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
-  deriveInboxReadCoverage,
-  planInboxReadRelays,
   resolveInboxDeclaration,
   type InboxDeclarationResolution,
   type InboxDeclarationState,
@@ -58,15 +70,10 @@ import {
 } from "./orders"
 import {
   __resetInboxRelayCache,
-  createLegacyDmDecrypt,
-  decryptLegacyDirectMessage,
-  getOrderCompanionNotificationIdentity,
-  parseDirectMessageRumor,
-  unwrapGiftWraps,
+  type PrivateMessageEvent,
   type DecryptFailure,
   type LegacyDmDecryptFailure,
   type ParsedDirectMessage,
-  type UnwrapGiftWrapOptions,
 } from "./messaging"
 import {
   evaluateListingAvailability,
@@ -91,6 +98,7 @@ import {
   MAX_PRODUCT_RELAY_HINTS,
 } from "./product-reference"
 import {
+  projectProfileContent,
   areProfileProjectionsEqual,
   mergeRicherProfile,
   projectCachedProfile,
@@ -115,7 +123,9 @@ import {
 } from "./signed-event"
 import {
   sameSignedPublicEvent,
-  snapshotSignedPublicEvent,
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
 } from "./verified-public-event"
 import {
   isProductDeletedByNip09,
@@ -149,13 +159,11 @@ import {
 import {
   getProtectedReadAuthorization,
   hasProtectedReadAuthority,
-  subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
-const DM_INBOX_READ_FANOUT = 24
 // Keep author-scoped product filters small enough for public relays that
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
@@ -170,18 +178,6 @@ const PRODUCT_RAW_EVENT_LIMIT_MAX = 1_200
 const PRODUCT_RAW_EVENT_OVERFETCH_FACTOR = 6
 const PRODUCT_VARIATION_EVENT_LIMIT = 200
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
-const EVENT_MARKET_HANDOFF_PAGE_LIMIT = 400
-// Matches the shared relay reader's per-read signature-verification budget.
-const EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT = 512
-const EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ = 8
-const EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT = 1_024
-const CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT = 400
-const CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT = 50
-const CHECKOUT_SPARK_RECOVERY_INSPECTION_BUDGET_MS = 15_000
-const CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS = 4_000
-const CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT = Symbol(
-  "checkout_spark_recovery_inspection_timeout"
-)
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
 export type CommerceSortMode =
@@ -511,26 +507,52 @@ type RawDirectMessageFetchResult = {
   inbox?: PrivateInboxReadStatus
 }
 
-type PrivateInboxSyncResult = {
-  orderMessages: ParsedOrderMessage[]
-  directMessages: ParsedDirectMessage[]
-  pendingDirectMessageIds: Set<string>
-  decryptFailures: DecryptFailure[]
-  inbox: PrivateInboxReadStatus
+function getCommerceInbox(principalPubkey: string): CommerceInbox {
+  return (testOverrides.getCommerceInbox ?? getDefaultCommerceInbox)(
+    principalPubkey
+  )
 }
 
-type LegacyDmSyncResult = {
-  directMessages: ParsedDirectMessage[]
-  decryptFailures: LegacyDmDecryptFailure[]
+// Test transport seams deliberately accept raw signed envelopes. Production
+// reader results stay proof-typed; every public use of these seams is admitted
+// by the same owning adapter, including malformed/forged ingress regressions.
+type RawTestReadResult<T> = Omit<T, "events"> & {
+  events: SignedPublicNostrEvent[]
+}
+type RawTestProgress = Omit<
+  Parameters<Parameters<typeof fetchPublicEventsProgressive>[2]>[0],
+  "events" | "mergedEvents"
+> & {
+  events: SignedPublicNostrEvent[]
+  mergedEvents: SignedPublicNostrEvent[]
 }
 
 type CommerceTestOverrides = {
+  getCommerceInbox?: (principalPubkey: string) => CommerceInbox
   allowMissingProtectedReadAuthorization?: boolean
   getRelayLists?: typeof getRelayLists
-  fetchPublicEvents?: typeof fetchPublicEvents
-  fetchPublicEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
-  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
-  fetchPublicEventsProgressive?: typeof fetchPublicEventsProgressive
+  fetchPublicEvents?: (
+    ...args: Parameters<typeof fetchPublicEvents>
+  ) => Promise<SignedPublicNostrEvent[]>
+  fetchPublicEventsWithDiagnostics?: (
+    ...args: Parameters<typeof fetchPublicEventsWithDiagnostics>
+  ) => Promise<
+    RawTestReadResult<
+      Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>
+    >
+  >
+  fetchSignedEventsFanoutDetailed?: (
+    ...args: Parameters<typeof fetchSignedEventsFanoutDetailed>
+  ) => Promise<
+    RawTestReadResult<
+      Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>>
+    >
+  >
+  fetchPublicEventsProgressive?: (
+    filter: Parameters<typeof fetchPublicEventsProgressive>[0],
+    options: Parameters<typeof fetchPublicEventsProgressive>[1],
+    onProgress: (progress: RawTestProgress) => void | Promise<void>
+  ) => Promise<SignedPublicNostrEvent[]>
   readLatestFollowLists?: typeof readLatestFollowLists
   getAccountSigner?: () => NostrKeySigner | undefined
   readProtectedInbox?: (
@@ -539,9 +561,9 @@ type CommerceTestOverrides = {
   accountNetworkLocalStateRepository?: ReadProtectedInboxOptions["accountNetworkLocalStateRepository"]
   ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
   giftUnwrap?: (
-    event: NDKEvent,
+    event: PrivateMessageEvent,
     signer: NostrKeySigner
-  ) => Promise<NDKEvent | null>
+  ) => Promise<PrivateMessageEvent | null>
   now?: () => number
   getCachedProducts?: (
     merchantPubkey?: string,
@@ -620,61 +642,6 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 let testOverrides: CommerceTestOverrides = {}
 const volatileProductSourceRelayUrls = new Map<string, string[]>()
 const volatileProductTombstones = new Map<string, CachedProductTombstone>()
-const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
-const retryWrapsByPrincipal = new Map<
-  string,
-  Map<string, { event: NDKEvent; failure?: DecryptFailure }>
->()
-type EventMarketInboxRelayScan = {
-  until?: number
-}
-type EventMarketInboxScanCycle = {
-  sessionScope: string
-  principalPubkey: string
-  relayUrls: string[]
-  relays: Map<string, EventMarketInboxRelayScan>
-  messages: Map<string, ParsedEventMarketPrivateMessage>
-  authenticatedWraps: Map<string, SignedPublicNostrEvent>
-  decryptFailures: Map<string, DecryptFailure>
-  evidenceCapped: boolean
-}
-// A strict handoff read may need several bounded calls to walk a large inbox.
-// Retain only cursors, bounded coarse failures, and bounded parsed handoff
-// evidence and its authenticated wraps in account-scoped process memory.
-// Unrelated plaintext and wraps are discarded after each call; no storage writes.
-const eventMarketInboxScanCycles = new Map<string, EventMarketInboxScanCycle>()
-const eventMarketInboxScanPromises = new Map<
-  string,
-  {
-    sessionScope: string
-    principalPubkey: string
-    promise: Promise<EventMarketPrivateMessageListResult>
-  }
->()
-subscribeProtectedReadSignerRevocation((sessionScope) => {
-  for (const [key, cycle] of eventMarketInboxScanCycles) {
-    if (cycle.sessionScope === sessionScope) {
-      eventMarketInboxScanCycles.delete(key)
-    }
-  }
-  for (const [key, pending] of eventMarketInboxScanPromises) {
-    if (pending.sessionScope === sessionScope) {
-      eventMarketInboxScanPromises.delete(key)
-    }
-  }
-})
-const inboxSyncPromises = new Map<string, Promise<PrivateInboxSyncResult>>()
-const successfulLegacyDmIdsByPrincipal = new Map<string, Set<string>>()
-const MAX_LEGACY_DM_DECRYPT_ATTEMPTS = 2
-const retryLegacyDmsByPrincipal = new Map<
-  string,
-  Map<
-    string,
-    { event: NDKEvent; attempts: number; failure?: LegacyDmDecryptFailure }
-  >
->()
-const legacyDmSyncPromises = new Map<string, Promise<LegacyDmSyncResult>>()
-
 class ProtectedInboxAuthorityChangedError extends Error {
   constructor() {
     super("Protected-read authority changed during inbox synchronization")
@@ -744,6 +711,7 @@ function hasCommerceFetchTestOverride(): boolean {
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
+  relayTargets: RelayTarget[]
   /** Ordered candidates retained until the final live-policy admission gate. */
   candidateRelayUrls: string[]
   /** Maximum candidates that may reach relay I/O after policy filtering. */
@@ -761,6 +729,21 @@ type CommerceReadRelayPlan = {
   independentRelayUrls: string[]
   /** Resolved once so per-family plans do not repeat the NIP-65 lookup. */
   relayLists: ReadonlyMap<string, RelayList>
+}
+
+/** Existing bounded legacy-DM policy, independent of kind-10050 inbox declarations. */
+export async function planLegacyDirectMessageRead(
+  principalPubkey: string,
+  shouldContinue: () => boolean
+): Promise<CommerceReadRelayPlan> {
+  return await planCommerceReadRelayPlan({
+    intent: "legacy_dm",
+    authors: [principalPubkey],
+    recipients: [principalPubkey],
+    authenticatedPubkey: principalPubkey,
+    maxRelays: 24,
+    shouldContinue,
+  })
 }
 
 async function planCommerceReadRelayPlan(input: {
@@ -864,6 +847,7 @@ async function planCommerceReadRelayPlan(input: {
           hasCommerceFetchTestOverride()
             ? {
                 cacheOnly: true,
+                relayTargets: relayListLookupPlan.relayTargets,
                 allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
@@ -879,6 +863,7 @@ async function planCommerceReadRelayPlan(input: {
               }
             : {
                 relayUrls: relayListLookupRelayUrls,
+                relayTargets: relayListLookupPlan.relayTargets,
                 allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
@@ -920,8 +905,13 @@ async function planCommerceReadRelayPlan(input: {
 
   const preservesPublicCommerceDiscovery =
     input.intent === "commerce_products" || input.intent === "author_products"
+  const protectedInboxIntent =
+    input.intent === "legacy_dm" || input.intent === "dm_inbox"
   const fallbackRelayUrls = (() => {
     if (preservesPublicCommerceDiscovery) return commerceFallbackRelayUrls()
+    // Protected inbox reads have their own bounded compatibility and signed
+    // owner sources. Generic public fallback relays cannot authorize them.
+    if (protectedInboxIntent) return []
     if (settingsSnapshot.signedRelayListAuthoritative) return []
     return config.corePublicFallbackRelayUrls.length > 0
       ? config.corePublicFallbackRelayUrls
@@ -962,6 +952,33 @@ async function planCommerceReadRelayPlan(input: {
     : plannedRelayUrls
   const executableRelayUrls = clampRelayFanout(candidateRelayUrls)
   const candidateRelayUrlSet = new Set(candidateRelayUrls)
+  const candidateRelayTargets = mergeRelayTargets(
+    plan.relayTargets,
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) =>
+        config.commerceDiscoveryRelayUrls.includes(url)
+      ),
+      {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "commerce_discovery",
+      }
+    ),
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) =>
+        config.corePublicFallbackRelayUrls.includes(url)
+      ),
+      { kind: "public_fallback", operation: "read", bucket: "core_public" }
+    ),
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) => config.defaultRelays.includes(url)),
+      { kind: "public_fallback", operation: "read", bucket: "default" }
+    ),
+    relayTargetsFromUrls(publicExternalRelayHints, {
+      kind: "public_hint",
+      operation: "read",
+    })
+  ).filter((target) => candidateRelayUrlSet.has(target.url))
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
   const policyAccount = accountPubkey?.trim().toLowerCase()
   const includesAuthenticatedOwner = Boolean(
@@ -992,12 +1009,14 @@ async function planCommerceReadRelayPlan(input: {
 
   if (
     config.e2eRelayIsolationEnabled ||
+    protectedInboxIntent ||
     executableRelayUrls.length > 0 ||
     (settingsSnapshot.signedRelayListAuthoritative &&
       !preservesPublicCommerceDiscovery)
   ) {
     return {
       relayUrls: executableRelayUrls,
+      relayTargets: candidateRelayTargets,
       candidateRelayUrls,
       ...(effectiveMaxRelays > 0
         ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1027,6 +1046,11 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
+        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+          kind: "public_fallback",
+          operation: "read",
+          bucket: "commerce_discovery",
+        }),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1048,6 +1072,11 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
+        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+          kind: "public_fallback",
+          operation: "read",
+          bucket: "default",
+        }),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1066,7 +1095,24 @@ async function planCommerceReadRelayPlan(input: {
   }
 }
 
+async function admitObservedPublicEvents(
+  events: readonly SignedPublicNostrEvent[],
+  signal?: AbortSignal
+): Promise<VerifiedNostrEvent[]> {
+  return verifySignedEventBatches(events, { signal })
+}
+
 async function runFetchEventsFanout(
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEvents>[1]
+): Promise<VerifiedNostrEvent[]> {
+  return admitObservedPublicEvents(
+    await runRawFetchEventsFanout(filter, options),
+    options?.signal
+  )
+}
+
+async function runRawFetchEventsFanout(
   filter: Filter,
   options?: Parameters<typeof fetchPublicEvents>[1]
 ): Promise<SignedPublicNostrEvent[]> {
@@ -1098,14 +1144,27 @@ async function runFetchEventsFanoutWithDiagnostics(
   filter: Filter,
   options?: Parameters<typeof fetchPublicEventsWithDiagnostics>[1]
 ): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
+  const result = await runRawFetchEventsFanoutWithDiagnostics(filter, options)
+  return {
+    ...result,
+    events: await admitObservedPublicEvents(result.events, options?.signal),
+  }
+}
+
+async function runRawFetchEventsFanoutWithDiagnostics(
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEventsWithDiagnostics>[1]
+): Promise<
+  Omit<
+    Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>,
+    "events"
+  > & { events: SignedPublicNostrEvent[] }
+> {
   if (testOverrides.fetchPublicEventsWithDiagnostics) {
     return await testOverrides.fetchPublicEventsWithDiagnostics(filter, options)
   }
   if (testOverrides.fetchPublicEvents) {
-    const events = (await testOverrides.fetchPublicEvents(
-      filter,
-      options
-    )) as SignedPublicNostrEvent[]
+    const events = await testOverrides.fetchPublicEvents(filter, options)
     const relayUrls = [...(options?.relayUrls ?? [])]
     const limit = filter.limit
     return {
@@ -1140,6 +1199,21 @@ function isBoundedFanoutSaturated(
 }
 
 async function runFetchEventsFanoutDetailed(
+  filter: Filter,
+  options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
+) {
+  const result = await runRawFetchEventsFanoutDetailed(filter, options)
+  const events = await admitObservedPublicEvents(result.events, options?.signal)
+  const rejected = events.length !== result.events.length
+  return {
+    ...result,
+    events,
+    degraded: result.degraded || rejected,
+    coverage: rejected ? ("partial" as const) : result.coverage,
+  }
+}
+
+async function runRawFetchEventsFanoutDetailed(
   filter: Filter,
   options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
 ): Promise<{
@@ -1198,10 +1272,10 @@ async function runFetchEventsFanoutDetailed(
   // Most gateway tests replace the older event-only seam. Preserve that
   // deterministic contract while production reads use per-relay completion.
   if (testOverrides.fetchPublicEvents) {
-    const events = (await testOverrides.fetchPublicEvents(
-      filter,
-      options
-    )) as SignedPublicNostrEvent[]
+    const events = await admitObservedPublicEvents(
+      await testOverrides.fetchPublicEvents(filter, options),
+      options?.signal
+    )
     return {
       events,
       coverage: "complete",
@@ -1281,15 +1355,7 @@ export function __resetCommerceTestOverrides(): void {
   volatileProductTombstones.clear()
   resetLocalProductDeletionObservation()
   resetLocalProductRevisionObservation()
-  successfulWrapIdsByPrincipal.clear()
-  retryWrapsByPrincipal.clear()
-  eventMarketInboxScanCycles.clear()
-  eventMarketInboxScanPromises.clear()
-  inboxSyncPromises.clear()
   __resetInboxRelayCache()
-  successfulLegacyDmIdsByPrincipal.clear()
-  retryLegacyDmsByPrincipal.clear()
-  legacyDmSyncPromises.clear()
 }
 
 function createMeta(
@@ -1339,7 +1405,7 @@ function createMeta(
 }
 
 function getTagValue(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   name: string
 ): string | null {
   if (!tags) return null
@@ -1502,11 +1568,8 @@ async function streamProductRecordChunks(input: {
   baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
-  ownerSelectedRelayUrls: string[]
-  appRelayUrls: string[]
-  personalRelayUrls: string[]
-  independentRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
   signal?: AbortSignal
@@ -1543,12 +1606,17 @@ async function streamProductRecordChunks(input: {
   }
   const pendingEvents = new Map<string, SignedPublicNostrEvent>()
   let pendingProgress: Promise<void> | undefined
+  const progressAdmissions: Promise<void>[] = []
   let pendingRefresh = false
   let pendingRelayUrl = ""
   const scheduleProgress = async (
     events: SignedPublicNostrEvent[],
     relayUrl: string
   ): Promise<void> => {
+    events = await admitObservedPublicEvents(events, input.signal)
+    input.signal?.throwIfAborted()
+    if (input.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
     // Admit only this relay's delta. The fanout's mergedEvents is cumulative,
     // and parsing it on every callback makes a broad catalog quadratic.
     let taskStartedAt = performance.now()
@@ -1643,11 +1711,8 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            relayTargets: input.relayTargets,
             maxRelayAttempts: input.maxRelayAttempts,
-            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-            appRelayUrls: input.appRelayUrls,
-            personalRelayUrls: input.personalRelayUrls,
-            independentRelayUrls: input.independentRelayUrls,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
@@ -1665,12 +1730,17 @@ async function streamProductRecordChunks(input: {
                 isBoundedFanoutSaturated(chunkFilter, events)
               )
             }
-            await scheduleProgress(events, relayUrl)
+            const progress = scheduleProgress(events, relayUrl)
+            progressAdmissions.push(progress)
+            await progress
           }
         )
         input.signal?.throwIfAborted()
         let mergeTaskStartedAt = performance.now()
-        for (const event of events) {
+        for (const event of await admitObservedPublicEvents(
+          events,
+          input.signal
+        )) {
           if (performance.now() - mergeTaskStartedAt >= 8) {
             await yieldCatalogTask()
             mergeTaskStartedAt = performance.now()
@@ -1686,6 +1756,7 @@ async function streamProductRecordChunks(input: {
   )
   // A transport override may return without awaiting its callback. The final
   // deletion frontier must still follow every scheduled progressive batch.
+  await Promise.all(progressAdmissions)
   await pendingProgress
 }
 
@@ -2231,7 +2302,9 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     parentProductId: row.parentProductId,
     specifications: row.specifications ?? [],
     format: row.format ?? "physical",
-    signedProductEvent: row.signedProductEvent,
+    signedProductEvent: isVerifiedNostrEvent(row.signedProductEvent)
+      ? row.signedProductEvent
+      : undefined,
     shippingWeightGrams: row.shippingWeightGrams,
     shippingWeightAllowanceGrams: row.shippingWeightAllowanceGrams,
     shippingHandling: row.shippingHandling,
@@ -2370,7 +2443,48 @@ function getProfileQueryRelayHints(
   )
 }
 
+async function readmitProductRows(
+  rows: readonly CachedProduct[]
+): Promise<CachedProduct[]> {
+  const signed = rows.flatMap((row) =>
+    row.signedProductEvent ? [row.signedProductEvent] : []
+  )
+  const admitted = await admitObservedPublicEvents(signed)
+  const byId = new Map(admitted.map((event) => [event.id, event]))
+  return rows.flatMap<CachedProduct>((row) => {
+    const raw = row.signedProductEvent
+    if (!raw) return [{ ...row, signedProductEvent: undefined }]
+    const event = byId.get(raw.id)
+    if (!event || !sameSignedPublicEvent(raw, event)) return []
+    const record = dedupeProductEvents([event])[0]
+    if (
+      !record ||
+      record.addressId !== row.id ||
+      record.product.pubkey !== row.pubkey
+    )
+      return []
+    // Persisted projections and identity fields are display data. Rebuild all
+    // product authority from the exact admitted bytes; provenance stays separate.
+    return [
+      {
+        ...toCachedProduct(record),
+        cachedAt: row.cachedAt,
+        sourceRelayUrls: row.sourceRelayUrls,
+      },
+    ]
+  })
+}
+
 async function loadCachedProducts(
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
+): Promise<CachedProduct[]> {
+  return readmitProductRows(
+    await loadRawCachedProducts(merchantPubkey, authorPubkeys)
+  )
+}
+
+async function loadRawCachedProducts(
   merchantPubkey?: string,
   authorPubkeys?: readonly string[]
 ): Promise<CachedProduct[]> {
@@ -2405,6 +2519,9 @@ function shouldReplaceCachedProduct(
   existing: CachedProduct,
   candidate: CachedProduct
 ): boolean {
+  const existingVerified = isVerifiedNostrEvent(existing.signedProductEvent)
+  const candidateVerified = isVerifiedNostrEvent(candidate.signedProductEvent)
+  if (existingVerified !== candidateVerified) return candidateVerified
   const existingCreatedAt = cachedProductEventCreatedAt(existing)
   const candidateCreatedAt = cachedProductEventCreatedAt(candidate)
   if (candidateCreatedAt !== existingCreatedAt) {
@@ -2468,9 +2585,11 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
   let selectedRows = rows
   try {
     if (testOverrides.putCachedProducts) {
-      const existingRows = testOverrides.getCachedProducts
-        ? await testOverrides.getCachedProducts()
-        : []
+      const existingRows = await readmitProductRows(
+        testOverrides.getCachedProducts
+          ? await testOverrides.getCachedProducts()
+          : []
+      )
       const rowsToStore = selectCachedProductUpdates(rows, existingRows)
       const ids = new Set(rows.map((row) => row.id))
       selectedRows = [
@@ -2482,17 +2601,26 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
         await testOverrides.putCachedProducts(rowsToStore)
     } else {
       const ids = Array.from(new Set(rows.map((row) => row.id)))
-      await db.transaction("rw", db.products, async () => {
-        const existingRows = (await db.products.bulkGet(ids)).filter(
-          (row): row is CachedProduct => row !== undefined
+      // Worker admission must finish outside the IndexedDB transaction. Retry
+      // if another tab changed any row while its signed bytes were checked.
+      let stored = false
+      for (let attempt = 0; attempt < 4 && !stored; attempt++) {
+        const rawRows = await db.products.bulkGet(ids)
+        const expected = JSON.stringify(rawRows)
+        const admittedRows = await readmitProductRows(
+          rawRows.filter((row): row is CachedProduct => row !== undefined)
         )
-        const rowsToStore = selectCachedProductUpdates(rows, existingRows)
-        selectedRows = [...existingRows, ...rowsToStore]
-        // Known signed evidence does not depend on successful persistence.
-        // Include an already persisted winner even when there is no write.
-        retainLocalProductRevisionEvidence(selectedRows)
-        if (rowsToStore.length > 0) await db.products.bulkPut(rowsToStore)
-      })
+        stored = await db.transaction("rw", db.products, async () => {
+          const current = await db.products.bulkGet(ids)
+          if (JSON.stringify(current) !== expected) return false
+          const rowsToStore = selectCachedProductUpdates(rows, admittedRows)
+          selectedRows = [...admittedRows, ...rowsToStore]
+          retainLocalProductRevisionEvidence(selectedRows)
+          if (rowsToStore.length > 0) await db.products.bulkPut(rowsToStore)
+          return true
+        })
+      }
+      if (!stored) throw new Error("Product cache changed during verification")
     }
     for (const row of selectedRows) {
       const pending = volatileProductRevisionRows.get(row.id)
@@ -2588,7 +2716,9 @@ function tombstonesFromDeletionEvent(
   const rows = new Map<string, CachedProductTombstone>()
   const cachedAt = now()
   const sourceRelayUrls = getEventSourceRelayUrls(event)
-  const validated = validateProductDeletionEvent(event)
+  const validated = isVerifiedNostrEvent(event)
+    ? validateProductDeletionEvent(event)
+    : null
   if (!validated) {
     throw new Error("Expected a valid signed product deletion event")
   }
@@ -2618,6 +2748,35 @@ function tombstonesFromDeletionEvent(
 }
 
 async function loadCachedProductTombstones(
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
+): Promise<CachedProductTombstone[]> {
+  const rows = await loadRawCachedProductTombstones(
+    merchantPubkey,
+    authorPubkeys
+  )
+  const result: CachedProductTombstone[] = []
+  for (const row of rows) {
+    if (!row.signedEvent) continue
+    const admission = await admitPublicEvent(row.signedEvent)
+    if (admission.status === "unavailable" || admission.status === "cancelled")
+      throw new Error("Stored deletion verification unavailable")
+    if (admission.status !== "verified") continue
+    for (const url of row.sourceRelayUrls ?? [])
+      attachEventSourceRelayUrl(admission.event, url)
+    const derived = tombstonesFromDeletionEvent(admission.event, {
+      observedLocally: row.observedLocally === true,
+    })
+    result.push(
+      ...derived.filter(
+        (item) => item.id === row.id && item.pubkey === row.pubkey
+      )
+    )
+  }
+  return result
+}
+
+async function loadRawCachedProductTombstones(
   merchantPubkey?: string,
   authorPubkeys?: readonly string[]
 ): Promise<CachedProductTombstone[]> {
@@ -2733,6 +2892,7 @@ function retainLocalProductRevisionEvidence(
 ): void {
   const changed = new Set<string>()
   for (const row of rows) {
+    if (!isVerifiedNostrEvent(row.signedProductEvent)) continue
     const candidate = fromCachedProduct(row)
     const existing = localProductRevisionRecords.get(candidate.addressId)
     if (
@@ -2800,8 +2960,11 @@ export function subscribeLocalProductRevisionChanges(
       },
     }
     if (testOverrides.getCachedProducts || typeof indexedDB === "undefined") {
-      void load().then(delivery.next, delivery.error)
-    } else observer.subscription = liveQuery(load).subscribe(delivery)
+      void load().then(readmitProductRows).then(delivery.next, delivery.error)
+    } else
+      observer.subscription = liveQuery(async () =>
+        readmitProductRows(await load())
+      ).subscribe(delivery)
   }
   return () => {
     localProductRevisionObservers.delete(observer)
@@ -3335,16 +3498,22 @@ export async function cacheSignedProductListingEvent(
   } = {}
 ): Promise<CommerceProductRecord> {
   // Local publishing compatibility; relay reads already provide plain events.
-  const event = (
+  const rawEvent = (
     "rawEvent" in input ? input.rawEvent() : input
   ) as SignedPublicNostrEvent
+  const admission = await admitPublicEvent(rawEvent)
+  if (admission.status !== "verified")
+    throw new Error(
+      "Expected a valid signed event; admission " + admission.status
+    )
+  const event = admission.event
   for (const relayUrl of getEventSourceRelayUrls(input))
     attachEventSourceRelayUrl(event, relayUrl)
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
     !event.id ||
     !event.sig ||
-    !isValidSignedPublicNostrEvent(event)
+    !isVerifiedNostrEvent(event)
   ) {
     throw new Error("Expected a valid signed product listing event")
   }
@@ -3381,9 +3550,15 @@ export async function cacheSignedProductDeletionEvent(
   input: SignedPublicNostrEvent | { rawEvent(): unknown }
 ): Promise<CachedProductTombstone[]> {
   // Local publishing compatibility; relay reads already provide plain events.
-  const event = (
+  const rawEvent = (
     "rawEvent" in input ? input.rawEvent() : input
   ) as SignedPublicNostrEvent
+  const admission = await admitPublicEvent(rawEvent)
+  if (admission.status !== "verified")
+    throw new Error(
+      "Expected a valid signed event; admission " + admission.status
+    )
+  const event = admission.event
   for (const relayUrl of getEventSourceRelayUrls(input))
     attachEventSourceRelayUrl(event, relayUrl)
   const tombstones = tombstonesFromDeletionEvent(event, {
@@ -3593,18 +3768,18 @@ function compareReplaceableProfileEvents(
 }
 
 function pickLatestProfileEvent(
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   pubkey: string
-): SignedPublicNostrEvent | undefined {
+): VerifiedNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)[0]
 }
 
 function pickLatestProfileEventWithContent(
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   pubkey: string
-): SignedPublicNostrEvent | undefined {
+): VerifiedNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)
@@ -3614,7 +3789,7 @@ function pickLatestProfileEventWithContent(
 function mergeProfileEvents(
   pubkeys: readonly string[],
   currentProfiles: Record<string, Profile>,
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   currentRows: ReadonlyMap<string, CachedProfile> = new Map()
 ): {
   profiles: Record<string, Profile>
@@ -3691,10 +3866,7 @@ function mergeProfileEvents(
             // payment destination. Keep richer identity fields for display,
             // but clear lud16 unless the current frontier parses safely.
             lud16: hasValidProfileEventContent(effectiveFrontierContent)
-              ? parseProfileEvent({
-                  pubkey,
-                  content: effectiveFrontierContent,
-                }).lud16
+              ? projectProfileContent(pubkey, effectiveFrontierContent).lud16
               : undefined,
           }
         : richProfile
@@ -3755,25 +3927,41 @@ async function loadCachedOrderMessages(
     return await testOverrides.getCachedOrderMessages(principalPubkey)
   }
 
-  return await db.orderMessages
-    .where("recipientPubkey")
-    .equals(principalPubkey)
-    .or("senderPubkey")
-    .equals(principalPubkey)
-    .toArray()
+  const owner = getCommerceInbox(principalPubkey)
+  await owner.initialize()
+  return owner.getSnapshot().orderMessages.map(cachedOrderMessageRow)
 }
 
 async function storeCachedOrderMessages(
-  rows: CachedOrderMessage[]
+  rows: CachedOrderMessage[],
+  accountOwner: CommerceInbox
 ): Promise<void> {
   if (rows.length === 0) return
 
+  // An account send must retain the owner captured before publication. Looking
+  // up the ambient signer after the relay ACK could write A's order under B.
+  accountOwner.assertCurrent()
+  if (rows.some((row) => row.senderPubkey !== accountOwner.store.principal))
+    throw new Error("Order message does not belong to the active account")
+
   if (testOverrides.putCachedOrderMessages) {
     await testOverrides.putCachedOrderMessages(rows)
+    accountOwner.assertCurrent()
     return
   }
 
-  await db.orderMessages.bulkPut(rows)
+  const owner = accountOwner
+  await owner.initialize()
+  for (const row of rows)
+    await owner.store.putProjection(
+      {
+        kind: "order",
+        message: JSON.parse(row.rawContent) as ParsedOrderMessage,
+      },
+      1
+    )
+  await owner.refresh()
+  accountOwner.assertCurrent()
 }
 
 function cachedOrderMessageRow(
@@ -3792,9 +3980,21 @@ function cachedOrderMessageRow(
 }
 
 export async function cacheParsedOrderMessage(
-  message: ParsedOrderMessage
+  message: ParsedOrderMessage,
+  accountOwner: CommerceInbox
 ): Promise<void> {
-  await storeCachedOrderMessages([cachedOrderMessageRow(message)])
+  await storeCachedOrderMessages([cachedOrderMessageRow(message)], accountOwner)
+}
+
+/** Normalize authenticated local sends through the shared commerce boundary. */
+export async function cacheOrderMessageRumor(
+  rumor: PrivateMessageEvent,
+  accountOwner: CommerceInbox
+): Promise<void> {
+  await storeCachedOrderMessages(
+    [cachedOrderMessageRow(parseOrderMessageRumorEvent(rumor))],
+    accountOwner
+  )
 }
 
 type DeletionTimestamps = {
@@ -3931,6 +4131,29 @@ async function fetchProductDeletionTimestamps(
         ...config.appBackplaneRelayUrls,
         ...deletionRelayPlan.relayUrls,
       ])
+      const deletionRelayTargets = mergeRelayTargets(
+        deletionRelayPlan.relayTargets,
+        relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
+          kind: "public_hint",
+          operation: "read",
+        }),
+        relayTargetsFromUrls(
+          config.commerceDiscoveryRelayUrls.filter((url) =>
+            preferredDeletionRelayUrls.includes(url)
+          ),
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "commerce_discovery",
+          }
+        ),
+        relayTargetsFromUrls(
+          config.corePublicFallbackRelayUrls.filter((url) =>
+            preferredDeletionRelayUrls.includes(url)
+          ),
+          { kind: "public_fallback", operation: "read", bucket: "core_public" }
+        )
+      )
       options.onSkippedRelayUrls?.(
         deletionRelayPlan.parkedRelayUrls.filter(
           (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
@@ -3955,10 +4178,9 @@ async function fetchProductDeletionTimestamps(
             async (relayUrls) =>
               await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
-                ownerSelectedRelayUrls:
-                  deletionRelayPlan.ownerSelectedRelayUrls.filter((relayUrl) =>
-                    relayUrls.includes(relayUrl)
-                  ),
+                relayTargets: deletionRelayTargets.filter((target) =>
+                  relayUrls.includes(target.url)
+                ),
                 accountPubkey:
                   options.accountPubkey ?? options.authenticatedPubkey,
                 authenticatedPubkey: options.authenticatedPubkey,
@@ -4093,12 +4315,12 @@ const productParseCache = new Map<
 
 // Reuse parsed projections only while all signed fields match the original
 // snapshot. An id alone cannot admit mutated or unverified signed bytes.
-function parseAndPrepareProductEvent(event: SignedPublicNostrEvent) {
+function parseAndPrepareProductEvent(event: VerifiedNostrEvent) {
   const cached = event.id ? productParseCache.get(event.id) : undefined
   if (cached && sameSignedPublicEvent(cached.event, event)) return cached
   const parsed = parseProductEvent(event)
   const entry = {
-    event: snapshotSignedPublicEvent(event),
+    event,
     parsed,
     availability: evaluateListingAvailability(parsed),
   }
@@ -4121,6 +4343,8 @@ function dedupeProductEvents(
 
   for (const event of events) {
     try {
+      if (!isVerifiedNostrEvent(event))
+        throw new Error("Product event must be admitted")
       const { parsed, availability } = parseAndPrepareProductEvent(event)
 
       const dTag = getTagValue(event.tags ?? [], "d")
@@ -4180,6 +4404,13 @@ function shouldReplaceProductRecord(
   existing: CommerceProductRecord,
   candidate: CommerceProductRecord
 ): boolean {
+  const existingVerified = isVerifiedNostrEvent(
+    existing.product.signedProductEvent
+  )
+  const candidateVerified = isVerifiedNostrEvent(
+    candidate.product.signedProductEvent
+  )
+  if (existingVerified !== candidateVerified) return candidateVerified
   return (
     compareReplaceableEventFrontiers(
       {
@@ -4279,6 +4510,11 @@ async function fetchPublicProductRecords(query: {
   const relayPlan = query.searchText
     ? {
         candidateRelayUrls: productSearchRelayUrls,
+        relayTargets: relayTargetsFromUrls(productSearchRelayUrls, {
+          kind: "app",
+          operation: "read",
+          bucket: "search_index",
+        }),
         maxRelayAttempts: productSearchRelayUrls.length,
         ownerSelectedRelayUrls: [],
         appRelayUrls: productSearchRelayUrls,
@@ -4306,11 +4542,8 @@ async function fetchPublicProductRecords(query: {
 
   const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls: relayPlan.candidateRelayUrls,
+    relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
-    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-    appRelayUrls: relayPlan.appRelayUrls,
-    personalRelayUrls: relayPlan.personalRelayUrls,
-    independentRelayUrls: relayPlan.independentRelayUrls,
     accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
     authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4430,11 +4663,8 @@ async function fetchPublicProductRecordsProgressive(
     baseFilter: filter,
     authorChunks,
     relayUrls: relayPlan.candidateRelayUrls,
+    relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
-    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-    appRelayUrls: relayPlan.appRelayUrls,
-    personalRelayUrls: relayPlan.personalRelayUrls,
-    independentRelayUrls: relayPlan.independentRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
@@ -4459,19 +4689,10 @@ async function fetchPublicProductRecordsProgressive(
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      relayTargets: expandedRelayPlan.relayTargets.filter((target) =>
+        expansionRelayUrlSet.has(target.url)
+      ),
       maxRelayAttempts: expandedRelayPlan.maxRelayAttempts,
-      ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
-      appRelayUrls: expandedRelayPlan.appRelayUrls.filter((relayUrl) =>
-        expansionRelayUrlSet.has(relayUrl)
-      ),
-      personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
-      independentRelayUrls: expandedRelayPlan.independentRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
@@ -5694,11 +5915,8 @@ async function fetchVariationGroupRecordBatch(
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
         relayUrls: relayPlan.candidateRelayUrls,
+        relayTargets: relayPlan.relayTargets,
         maxRelayAttempts: relayPlan.maxRelayAttempts,
-        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-        appRelayUrls: relayPlan.appRelayUrls,
-        personalRelayUrls: relayPlan.personalRelayUrls,
-        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
@@ -6845,11 +7063,8 @@ async function readPreparedProductTargets(
             },
             {
               relayUrls: relayPlan.candidateRelayUrls,
+              relayTargets: relayPlan.relayTargets,
               maxRelayAttempts: relayPlan.maxRelayAttempts,
-              ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-              appRelayUrls: relayPlan.appRelayUrls,
-              personalRelayUrls: relayPlan.personalRelayUrls,
-              independentRelayUrls: relayPlan.independentRelayUrls,
               accountPubkey:
                 options.accountPubkey ?? options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
@@ -7597,11 +7812,8 @@ export async function getProfiles(
     }
     const fanoutOptions = {
       relayUrls: relayPlan.candidateRelayUrls,
+      relayTargets: relayPlan.relayTargets,
       maxRelayAttempts: relayPlan.maxRelayAttempts,
-      ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-      appRelayUrls: relayPlan.appRelayUrls,
-      personalRelayUrls: relayPlan.personalRelayUrls,
-      independentRelayUrls: relayPlan.independentRelayUrls,
       accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
@@ -7617,7 +7829,7 @@ export async function getProfiles(
       // second time at the transport boundary.
       skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
     }
-    const emitProgress = (events: readonly SignedPublicNostrEvent[]) => {
+    const emitProgress = (events: readonly VerifiedNostrEvent[]) => {
       if (!query.onProgress) return
 
       const progress = mergeProfileEvents(
@@ -7663,7 +7875,7 @@ export async function getProfiles(
     let evidenceDegraded =
       query.requireCompleteEvidence && relayPlan.parkedRelayUrls.length > 0
     let evidenceCapped = false
-    let events: SignedPublicNostrEvent[]
+    let events: VerifiedNostrEvent[]
     if (query.requireCompleteEvidence) {
       const evidence = await runFetchEventsFanoutDetailed(
         profileFilter,
@@ -7872,727 +8084,74 @@ function getConversationPreview(message: ParsedOrderMessage): string {
   }
 }
 
-function isEventMarketPrivateMessage(
-  message: ParsedOrderMessage
-): message is ParsedEventMarketPrivateMessage {
-  return (
-    message.type === "future_market_ready" ||
-    message.type === "future_market_revoked" ||
-    message.type === "future_market_handed_out"
-  )
+function ownerInboxStatus(
+  snapshot: CommerceInboxSnapshot
+): PrivateInboxReadStatus {
+  return {
+    declarationState: snapshot.declaration?.state ?? "lookup_unavailable",
+    coverage: snapshot.diagnostics.coverage,
+    readSource:
+      snapshot.declaration?.state === "declared" ? "declared" : "compatibility",
+    authentication:
+      snapshot.diagnostics.authentication ??
+      unavailableInboxStatus().authentication,
+  }
 }
 
-/** Route the commerce test giftUnwrap override into the shared boundary. */
-function unwrapOptions(): UnwrapGiftWrapOptions {
-  return testOverrides.giftUnwrap
-    ? { giftUnwrap: testOverrides.giftUnwrap }
-    : {}
+async function refreshOwnedInbox(
+  principalPubkey: string
+): Promise<CommerceInboxSnapshot> {
+  const owner = getCommerceInbox(principalPubkey)
+  await owner.initialize()
+  try {
+    const declaration = await resolvePrincipalInboxDeclaration(
+      principalPubkey,
+      owner.authorization
+    )
+    return await owner.syncRecent({
+      declaration,
+      read: testOverrides.readProtectedInbox,
+    })
+  } catch (error) {
+    owner.assertCurrent()
+    if (owner.getSnapshot().diagnostics.storageUnavailable) throw error
+    return owner.getSnapshot()
+  }
 }
 
 async function fetchParsedOrderMessages(
   principalPubkey: string
 ): Promise<RawMessageFetchResult> {
-  const authorization = resolveInboxSyncAuthorization(principalPubkey)
-  assertInboxSyncAuthority(authorization)
-  const cached = await loadCachedOrderMessages(principalPubkey)
-  assertInboxSyncAuthority(authorization)
-
-  const cachedById = new Map<string, ParsedOrderMessage>()
-  for (const row of cached) {
-    try {
-      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
-    } catch {
-      // skip corrupt cache rows
-    }
-  }
-
-  try {
-    const signer = await resolveEnvelopeSigner()
-    if (!signer) {
-      if (cachedById.size > 0) {
-        const messages = Array.from(cachedById.values()).sort(
-          (a, b) => a.createdAt - b.createdAt
-        )
-        assertInboxSyncAuthority(authorization)
-        return {
-          messages,
-          source: "local_cache",
-          stale: true,
-          decryptFailures: [],
-          inbox: unavailableInboxStatus(),
-        }
-      }
-      throw new Error("Connect your Nostr signer to view order conversations.")
-    }
-
-    const sync = await syncPrivateMessageInbox(
-      principalPubkey,
-      signer,
-      authorization
-    )
-    for (const parsed of sync.orderMessages) cachedById.set(parsed.id, parsed)
-
-    const messages = Array.from(cachedById.values()).sort(
-      (a, b) => a.createdAt - b.createdAt
-    )
-    assertInboxSyncAuthority(authorization)
-    return {
-      messages,
-      source:
-        sync.inbox.coverage === "unavailable" ? "local_cache" : "commerce",
-      stale: sync.inbox.coverage === "unavailable",
-      decryptFailures: sync.decryptFailures,
-      inbox: sync.inbox,
-    }
-  } catch (error) {
-    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
-    if (cachedById.size > 0) {
-      const messages = Array.from(cachedById.values()).sort(
-        (a, b) => a.createdAt - b.createdAt
-      )
-      assertInboxSyncAuthority(authorization)
-      return {
-        messages,
-        source: "local_cache",
-        stale: true,
-        decryptFailures: [],
-        inbox: unavailableInboxStatus(),
-      }
-    }
-    throw error
-  }
-}
-
-type EventMarketInboxRelayRead = {
-  events: SignedPublicNostrEvent[]
-  complete: boolean
-  singleRequestComplete: boolean
-  successful: boolean
-  capped: boolean
-}
-
-type EventMarketInboxWrapRead = Awaited<
-  ReturnType<typeof fetchPublicEventsWithDiagnostics>
-> & {
-  scanKey: string
-  scanCycle: EventMarketInboxScanCycle
-  freshComplete: boolean
-}
-
-function hasRelayOutcome(
-  relayUrls: readonly string[] | undefined,
-  relayUrl: string
-): boolean {
-  return relayUrls?.includes(relayUrl) ?? false
-}
-
-function retainInboxEvents(
-  retained: Map<string, SignedPublicNostrEvent>,
-  events: readonly SignedPublicNostrEvent[]
-): void {
-  for (const event of events) {
-    if (event.id) retained.set(event.id, event)
-  }
-}
-
-/**
- * Advance one declared inbox relay toward EOSE using NIP-01 time windows. An
- * exact second follow-up closes the inclusive `until` boundary before
- * advancing, so equal-created_at wraps cannot fall between pages. One call has
- * a fixed page budget; only the descending cursor remains in the process-local
- * scan cycle for the next call. A relay that reached EOSE is read fresh on the
- * next call while another relay continues. Only EOSE from the first request is
- * eligible for complete coverage: separate paginated subscriptions cannot
- * prove that a backdated durable retry did not arrive behind their cursor.
- * Resource exhaustion and stitched multi-call scans stay partial instead of
- * becoming false negative evidence.
- */
-/** Keep strict gift-wrap paging on the authorized protected transport. */
-async function readEventMarketInboxPage(
-  principalPubkey: string,
-  relayUrl: string,
-  filter: Pick<Filter, "since" | "until"> & { limit: number },
-  authorization: ProtectedReadAuthorization | null
-): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
-  // Existing wire fixtures own their complete test transport. Production never
-  // dispatches an inbox filter through a public reader.
-  if (
-    testOverrides.fetchPublicEventsWithDiagnostics ||
-    testOverrides.fetchPublicEvents
-  ) {
-    return await runFetchEventsFanoutWithDiagnostics(
-      { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": [principalPubkey], ...filter },
-      {
-        relayUrls: [relayUrl],
-        ownerSelectedRelayUrls: [relayUrl],
-        accountPubkey: principalPubkey,
-        authenticatedPubkey: principalPubkey,
-        accountNetworkLocalStateRepository:
-          testOverrides.accountNetworkLocalStateRepository,
-        shouldContinue: authorization
-          ? () => hasProtectedReadAuthority(authorization)
-          : undefined,
-        connectTimeoutMs: 4000,
-        fetchTimeoutMs: 12000,
-      }
-    )
-  }
-  const result = await (testOverrides.readProtectedInbox ?? readProtectedInbox)(
-    {
-      principalPubkey,
-      relayUrls: [relayUrl],
-      ownerSelectedRelayUrls: [relayUrl],
-      authorization,
-      limit: filter.limit,
-      since: filter.since,
-      until: filter.until,
-      accountNetworkLocalStateRepository:
-        testOverrides.accountNetworkLocalStateRepository,
-      connectTimeoutMs: 4000,
-      queryTimeoutMs: 12000,
-    }
-  )
+  const snapshot = await refreshOwnedInbox(principalPubkey)
   return {
-    events: result.events,
-    attemptedRelayUrls: result.relayResult.attemptedCount > 0 ? [relayUrl] : [],
-    successfulRelayUrls: result.coverage === "unavailable" ? [] : [relayUrl],
-    failedRelayUrls: result.coverage === "complete" ? [] : [relayUrl],
-    cappedRelayUrls: result.events.length >= filter.limit ? [relayUrl] : [],
+    messages: snapshot.orderMessages,
+    source:
+      snapshot.diagnostics.coverage === "unavailable"
+        ? "local_cache"
+        : "commerce",
+    stale: inboxSnapshotIncomplete(snapshot),
+    decryptFailures: snapshot.decryptFailures,
+    inbox: ownerInboxStatus(snapshot),
   }
 }
 
-async function readEventMarketInboxRelay(
-  principalPubkey: string,
-  relayUrl: string,
-  scan: EventMarketInboxRelayScan,
-  authorization: ProtectedReadAuthorization | null
-): Promise<EventMarketInboxRelayRead> {
-  const retained = new Map<string, SignedPublicNostrEvent>()
-  let successful = false
-
-  for (
-    let pageIndex = 0;
-    pageIndex < EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ;
-    pageIndex += 1
-  ) {
-    assertInboxSyncAuthority(authorization)
-    const page = await readEventMarketInboxPage(
-      principalPubkey,
-      relayUrl,
-      {
-        limit: EVENT_MARKET_HANDOFF_PAGE_LIMIT,
-        ...(scan.until === undefined ? {} : { until: scan.until }),
-      },
-      authorization
-    )
-    assertInboxSyncAuthority(authorization)
-    retainInboxEvents(retained, page.events)
-    const pageSucceeded = hasRelayOutcome(page.successfulRelayUrls, relayUrl)
-    successful ||= pageSucceeded
-    if (!pageSucceeded || hasRelayOutcome(page.failedRelayUrls, relayUrl)) {
-      return {
-        events: Array.from(retained.values()),
-        complete: false,
-        singleRequestComplete: false,
-        successful,
-        capped: false,
-      }
-    }
-    if (!hasRelayOutcome(page.cappedRelayUrls, relayUrl)) {
-      scan.until = undefined
-      return {
-        events: Array.from(retained.values()),
-        complete: true,
-        singleRequestComplete: pageIndex === 0,
-        successful,
-        capped: false,
-      }
-    }
-
-    const createdAts = page.events
-      .map((event) => event.created_at)
-      .filter(
-        (createdAt): createdAt is number =>
-          typeof createdAt === "number" &&
-          Number.isSafeInteger(createdAt) &&
-          createdAt >= 0
-      )
-    if (createdAts.length !== page.events.length || createdAts.length === 0) {
-      return {
-        events: Array.from(retained.values()),
-        complete: false,
-        singleRequestComplete: false,
-        successful,
-        capped: true,
-      }
-    }
-    const boundaryCreatedAt = Math.min(...createdAts)
-    assertInboxSyncAuthority(authorization)
-    const boundary = await readEventMarketInboxPage(
-      principalPubkey,
-      relayUrl,
-      {
-        since: boundaryCreatedAt,
-        until: boundaryCreatedAt,
-        limit: EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT,
-      },
-      authorization
-    )
-    assertInboxSyncAuthority(authorization)
-    retainInboxEvents(retained, boundary.events)
-    const boundarySucceeded = hasRelayOutcome(
-      boundary.successfulRelayUrls,
-      relayUrl
-    )
-    successful ||= boundarySucceeded
-    const boundaryIds = new Set(boundary.events.map((event) => event.id))
-    const preservesObservedBoundary = page.events
-      .filter((event) => event.created_at === boundaryCreatedAt)
-      .every((event) => boundaryIds.has(event.id))
-    if (
-      !boundarySucceeded ||
-      hasRelayOutcome(boundary.failedRelayUrls, relayUrl) ||
-      hasRelayOutcome(boundary.cappedRelayUrls, relayUrl) ||
-      !preservesObservedBoundary
-    ) {
-      return {
-        events: Array.from(retained.values()),
-        complete: false,
-        singleRequestComplete: false,
-        successful,
-        capped: true,
-      }
-    }
-    if (boundaryCreatedAt === 0) {
-      scan.until = undefined
-      return {
-        events: Array.from(retained.values()),
-        complete: true,
-        singleRequestComplete: false,
-        successful,
-        capped: false,
-      }
-    }
-    scan.until = boundaryCreatedAt - 1
-  }
-
-  return {
-    events: Array.from(retained.values()),
-    complete: false,
-    singleRequestComplete: false,
-    successful,
-    capped: true,
-  }
-}
-
-function eventMarketInboxScanKey(
-  sessionScope: string,
-  principalPubkey: string,
-  relayUrls: readonly string[]
-): string {
-  return JSON.stringify([
-    sessionScope,
-    principalPubkey.trim().toLowerCase(),
-    ...[...relayUrls].sort(),
-  ])
-}
-
-function discardEventMarketInboxScanCycles(principalPubkey: string): void {
-  const principal = principalPubkey.trim().toLowerCase()
-  for (const [candidateKey, candidate] of eventMarketInboxScanCycles) {
-    if (candidate.principalPubkey === principal) {
-      eventMarketInboxScanCycles.delete(candidateKey)
-    }
-  }
-  for (const [candidateKey, candidate] of eventMarketInboxScanPromises) {
-    if (candidate.principalPubkey === principal) {
-      eventMarketInboxScanPromises.delete(candidateKey)
-    }
-  }
-}
-
-class EventMarketInboxPlanChangedError extends Error {
-  constructor() {
-    super("Event-market inbox relay plan changed during synchronization")
-    this.name = "EventMarketInboxPlanChangedError"
-  }
-}
-
-function assertEventMarketInboxScanCurrent(
-  key: string,
-  cycle: EventMarketInboxScanCycle
-): void {
-  if (eventMarketInboxScanCycles.get(key) !== cycle) {
-    throw new EventMarketInboxPlanChangedError()
-  }
-}
-
-function eventMarketInboxScanCycle(
-  principalPubkey: string,
-  relayUrls: readonly string[],
-  authorization: ProtectedReadAuthorization | null
-): { key: string; cycle: EventMarketInboxScanCycle } {
-  const principal = principalPubkey.trim().toLowerCase()
-  const sessionScope = authorization?.sessionScope ?? "event-market-test"
-  const key = eventMarketInboxScanKey(sessionScope, principal, relayUrls)
-  const existing = eventMarketInboxScanCycles.get(key)
-  if (existing) return { key, cycle: existing }
-
-  // A relay-plan change starts a new strict cycle and drops parsed handoff
-  // evidence retained for the superseded plan instead of keeping it
-  // process-wide.
-  for (const [candidateKey, candidate] of eventMarketInboxScanCycles) {
-    if (candidate.principalPubkey === principal && candidateKey !== key) {
-      eventMarketInboxScanCycles.delete(candidateKey)
-    }
-  }
-  const relays = new Map<string, EventMarketInboxRelayScan>()
-  for (const relayUrl of relayUrls) {
-    relays.set(relayUrl, {})
-  }
-  const cycle = {
-    sessionScope,
-    principalPubkey: principal,
-    relayUrls: [...relayUrls],
-    relays,
-    messages: new Map<string, ParsedEventMarketPrivateMessage>(),
-    authenticatedWraps: new Map<string, SignedPublicNostrEvent>(),
-    decryptFailures: new Map<string, DecryptFailure>(),
-    evidenceCapped: false,
-  }
-  eventMarketInboxScanCycles.set(key, cycle)
-  return { key, cycle }
-}
-
-async function readEventMarketInboxWraps(
-  principalPubkey: string,
-  relayUrls: readonly string[],
-  authorization: ProtectedReadAuthorization | null
-): Promise<EventMarketInboxWrapRead> {
-  const { key, cycle } = eventMarketInboxScanCycle(
-    principalPubkey,
-    relayUrls,
-    authorization
-  )
-  const startedFresh = relayUrls.every(
-    (relayUrl) => cycle.relays.get(relayUrl)?.until === undefined
-  )
-  assertEventMarketInboxScanCurrent(key, cycle)
-  assertInboxSyncAuthority(authorization)
-  const relayReads = await Promise.all(
-    relayUrls.map((relayUrl) => {
-      const scan = cycle.relays.get(relayUrl)
-      if (!scan) throw new Error("Event-market inbox scan state is invalid.")
-      return readEventMarketInboxRelay(
-        principalPubkey,
-        relayUrl,
-        scan,
-        authorization
-      )
-    })
-  )
-  assertInboxSyncAuthority(authorization)
-  assertEventMarketInboxScanCurrent(key, cycle)
-  const events = new Map<string, SignedPublicNostrEvent>()
-  relayReads.forEach((read) => retainInboxEvents(events, read.events))
-  const freshComplete =
-    startedFresh &&
-    relayReads.every((read) => read.complete && read.singleRequestComplete)
-
-  return {
-    events: Array.from(events.values()),
-    attemptedRelayUrls: [...relayUrls],
-    successfulRelayUrls: relayUrls.filter(
-      (_relayUrl, index) => relayReads[index]?.successful
-    ),
-    failedRelayUrls: relayUrls.filter(
-      (_relayUrl, index) => !relayReads[index]?.complete
-    ),
-    cappedRelayUrls: relayUrls.filter(
-      (_relayUrl, index) => relayReads[index]?.capped
-    ),
-    scanKey: key,
-    scanCycle: cycle,
-    freshComplete,
-  }
-}
-
-function eventMarketTerminalReadyReceiptId(
-  message: ParsedEventMarketPrivateMessage
-): string | null {
-  return message.type === "future_market_ready"
-    ? null
-    : message.payload.readyReceiptId
-}
-
-/**
- * Keep private handoff evidence bounded without letting a later terminal
- * revocation/ACK disappear behind older unresolved receipts. When full,
- * terminal evidence may evict an unrelated unresolved receipt (or a coarse
- * decrypt failure), but its matching ready receipt and same-receipt terminal
- * evidence stay together. Coverage remains partial whenever eviction occurs.
- */
-function retainBoundedEventMarketMessage(
-  messages: Map<string, ParsedEventMarketPrivateMessage>,
-  decryptFailures: Map<string, DecryptFailure>,
-  message: ParsedEventMarketPrivateMessage
-): { retained: boolean; capped: boolean } {
-  if (messages.has(message.id)) {
-    messages.set(message.id, message)
-    return { retained: true, capped: false }
-  }
-  if (
-    messages.size + decryptFailures.size <
-    EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT
-  ) {
-    messages.set(message.id, message)
-    return { retained: true, capped: false }
-  }
-
-  const firstFailure = decryptFailures.keys().next().value as string | undefined
-  if (firstFailure) {
-    decryptFailures.delete(firstFailure)
-    messages.set(message.id, message)
-    return { retained: true, capped: true }
-  }
-
-  const terminalReadyId = eventMarketTerminalReadyReceiptId(message)
-  const incomingGroupReadyId = terminalReadyId ?? message.id
-  const incomingReadyIsTerminallyReferenced = Array.from(
-    messages.values()
-  ).some(
-    (candidate) => eventMarketTerminalReadyReceiptId(candidate) === message.id
-  )
-  if (!terminalReadyId && !incomingReadyIsTerminallyReferenced) {
-    return { retained: false, capped: true }
-  }
-
-  const protectedReadyIds = new Set<string>()
-  for (const candidate of messages.values()) {
-    const readyId = eventMarketTerminalReadyReceiptId(candidate)
-    if (readyId) protectedReadyIds.add(readyId)
-  }
-  if (terminalReadyId) protectedReadyIds.add(terminalReadyId)
-
-  const candidateId =
-    Array.from(messages.entries()).find(
-      ([id, candidate]) =>
-        candidate.type === "future_market_ready" &&
-        !protectedReadyIds.has(id) &&
-        id !== incomingGroupReadyId
-    )?.[0] ??
-    Array.from(messages.entries()).find(
-      ([id, candidate]) =>
-        id !== incomingGroupReadyId &&
-        eventMarketTerminalReadyReceiptId(candidate) !== incomingGroupReadyId
-    )?.[0]
-  if (!candidateId) return { retained: false, capped: true }
-
-  messages.delete(candidateId)
-  messages.set(message.id, message)
-  return { retained: true, capped: true }
-}
-
-function retainBoundedEventMarketFailure(
-  messages: Map<string, ParsedEventMarketPrivateMessage>,
-  decryptFailures: Map<string, DecryptFailure>,
-  failure: DecryptFailure
-): boolean {
-  if (decryptFailures.has(failure.wrapId)) {
-    decryptFailures.set(failure.wrapId, failure)
-    return true
-  }
-  if (
-    messages.size + decryptFailures.size >=
-    EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT
-  ) {
-    return false
-  }
-  decryptFailures.set(failure.wrapId, failure)
-  return true
-}
-
-async function advanceEventMarketPrivateMessageScan(input: {
-  principalPubkey: string
-  relayUrls: readonly string[]
-  signer: NostrKeySigner
-  declaration: Awaited<ReturnType<typeof resolvePrincipalInboxDeclaration>>
-  authorization: ProtectedReadAuthorization | null
-}): Promise<EventMarketPrivateMessageListResult> {
-  assertInboxSyncAuthority(input.authorization)
-  const result = await readEventMarketInboxWraps(
-    input.principalPubkey,
-    input.relayUrls,
-    input.authorization
-  )
-  assertInboxSyncAuthority(input.authorization)
-  const cycle = result.scanCycle
-  const wraps = result.events.filter((event) => {
-    const recipients = event.tags.filter(
-      (tag) => tag[0] === "p" && typeof tag[1] === "string"
-    )
-    return (
-      recipients.length === 1 &&
-      recipients[0]![1]!.toLowerCase() === input.principalPubkey.toLowerCase()
-    )
-  })
-  assertInboxSyncAuthority(input.authorization)
-  const outcomes = await unwrapGiftWraps(
-    wraps.map((event) => new NDKEvent(undefined, event)),
-    input.signer,
-    unwrapOptions()
-  )
-  assertInboxSyncAuthority(input.authorization)
-  assertEventMarketInboxScanCurrent(result.scanKey, cycle)
-  const callMessages = new Map<string, ParsedEventMarketPrivateMessage>()
-  const callWraps = new Map<string, SignedPublicNostrEvent>()
-  const wrapsById = new Map(wraps.map((wrap) => [wrap.id, wrap]))
-  const callDecryptFailures = new Map<string, DecryptFailure>()
-  let callEvidenceCapped = false
-  for (const outcome of outcomes) {
-    if (outcome.status === "decrypt_failed") {
-      const failure = {
-        wrapId: outcome.wrapId,
-        reason: outcome.reason,
-      }
-      if (
-        !retainBoundedEventMarketFailure(
-          callMessages,
-          callDecryptFailures,
-          failure
-        )
-      ) {
-        callEvidenceCapped = true
-      }
-      if (
-        !retainBoundedEventMarketFailure(
-          cycle.messages,
-          cycle.decryptFailures,
-          failure
-        )
-      ) {
-        cycle.evidenceCapped = true
-      }
-      continue
-    }
-    cycle.decryptFailures.delete(outcome.wrapId)
-    if (outcome.status !== "ok" || outcome.category !== "order") continue
-    try {
-      const message = parseOrderMessageRumorEvent(outcome.rumor)
-      if (isEventMarketPrivateMessage(message)) {
-        const callRetention = retainBoundedEventMarketMessage(
-          callMessages,
-          callDecryptFailures,
-          message
-        )
-        callEvidenceCapped ||= callRetention.capped
-        const cycleRetention = retainBoundedEventMarketMessage(
-          cycle.messages,
-          cycle.decryptFailures,
-          message
-        )
-        cycle.evidenceCapped ||= cycleRetention.capped
-        const wrap = wrapsById.get(outcome.wrapId)
-        if (wrap && isValidSignedPublicNostrEvent(wrap)) {
-          if (callMessages.has(message.id)) callWraps.set(message.id, wrap)
-          if (cycle.messages.has(message.id))
-            cycle.authenticatedWraps.set(message.id, wrap)
-        }
-        for (const id of cycle.authenticatedWraps.keys()) {
-          if (!cycle.messages.has(id)) cycle.authenticatedWraps.delete(id)
-        }
-      }
-    } catch {
-      const failure: DecryptFailure = {
-        wrapId: outcome.wrapId,
-        reason: "malformed",
-      }
-      if (
-        !retainBoundedEventMarketFailure(
-          callMessages,
-          callDecryptFailures,
-          failure
-        )
-      ) {
-        callEvidenceCapped = true
-      }
-      if (
-        !retainBoundedEventMarketFailure(
-          cycle.messages,
-          cycle.decryptFailures,
-          failure
-        )
-      ) {
-        cycle.evidenceCapped = true
-      }
-    }
-  }
-
-  assertInboxSyncAuthority(input.authorization)
-  const derivedCoverage = deriveInboxReadCoverage(result)
-  const coverage =
-    derivedCoverage === "unavailable"
-      ? "unavailable"
-      : result.freshComplete && !callEvidenceCapped
-        ? derivedCoverage
-        : "partial"
-  const messages = result.freshComplete ? callMessages : cycle.messages
-  const decryptFailures = result.freshComplete
-    ? callDecryptFailures
-    : cycle.decryptFailures
-  const response: EventMarketPrivateMessageListResult = {
-    authenticatedWraps: Object.fromEntries(
-      [...(result.freshComplete ? callWraps : cycle.authenticatedWraps)].filter(
-        ([id]) => messages.has(id)
-      )
-    ),
-    messages: Array.from(messages.values()).sort(
-      (left, right) => left.createdAt - right.createdAt
-    ),
-    stale: input.declaration.stale || coverage === "unavailable",
-    decryptFailures: Array.from(decryptFailures.values()),
-    inbox: {
-      declarationState: input.declaration.state,
-      coverage,
-      readSource: "declared",
-    },
-  }
-  assertInboxSyncAuthority(input.authorization)
-  assertEventMarketInboxScanCurrent(result.scanKey, cycle)
-  if (coverage === "complete") {
-    eventMarketInboxScanCycles.delete(result.scanKey)
-  }
-  return response
-}
-
-/** Handoff traffic reads declared kind-10050 relays only, never CND-208. */
+/** Dedicated handoff projection shares ciphertext retention and paging only. */
 async function fetchEventMarketPrivateMessagesStrict(
   principalPubkey: string
 ): Promise<EventMarketPrivateMessageListResult> {
-  const authorization = resolveInboxSyncAuthorization(principalPubkey)
-  assertInboxSyncAuthority(authorization)
-  const signer = await resolveEnvelopeSigner()
-  assertInboxSyncAuthority(authorization)
-  if (!signer) {
-    discardEventMarketInboxScanCycles(principalPubkey)
-    throw new Error("Connect your Nostr signer to view event handoffs.")
-  }
+  const owner = getCommerceInbox(principalPubkey)
+  await owner.initialize()
   const declaration = await resolvePrincipalInboxDeclaration(
     principalPubkey,
-    authorization
+    owner.authorization
   )
-  assertInboxSyncAuthority(authorization)
   const relayUrls = normalizeOwnerSelectedRelayUrls(
     declaration.state === "declared" ? declaration.relayUrls : []
   )
-  if (relayUrls.length === 0) {
-    discardEventMarketInboxScanCycles(principalPubkey)
+  if (!relayUrls.length)
     return {
       messages: [],
-      stale:
-        declaration.state === "lookup_partial" ||
-        declaration.state === "lookup_unavailable" ||
-        declaration.stale,
+      stale: true,
       decryptFailures: [],
       inbox: {
         declarationState: declaration.state,
@@ -8600,34 +8159,63 @@ async function fetchEventMarketPrivateMessagesStrict(
         readSource: "declared",
       },
     }
-  }
-
-  const sessionScope = authorization?.sessionScope ?? "event-market-test"
-  const scanKey = eventMarketInboxScanKey(
-    sessionScope,
-    principalPubkey,
-    relayUrls
-  )
-  const existing = eventMarketInboxScanPromises.get(scanKey)
-  if (existing) return await existing.promise
-  const pending = advanceEventMarketPrivateMessageScan({
-    principalPubkey,
-    relayUrls,
-    signer,
+  // One bounded page per source per invocation; durable cursors resume after
+  // interruption and include equal-second boundary evidence.
+  await owner.loadOlder({
+    includeLegacy: false,
     declaration,
-    authorization,
+    relayUrls,
+    read: testOverrides.readProtectedInbox,
   })
-  eventMarketInboxScanPromises.set(scanKey, {
-    sessionScope,
-    principalPubkey: principalPubkey.trim().toLowerCase(),
-    promise: pending,
-  })
-  try {
-    return await pending
-  } finally {
-    if (eventMarketInboxScanPromises.get(scanKey)?.promise === pending) {
-      eventMarketInboxScanPromises.delete(scanKey)
-    }
+  const currentDeclaration = await resolvePrincipalInboxDeclaration(
+    principalPubkey,
+    owner.authorization
+  )
+  owner.assertCurrent()
+  if (
+    currentDeclaration.state !== declaration.state ||
+    JSON.stringify(
+      normalizeOwnerSelectedRelayUrls(currentDeclaration.relayUrls).sort()
+    ) !== JSON.stringify([...relayUrls].sort())
+  )
+    throw new Error("Inbox relay plan changed during recovery read")
+  const ranges = await owner.store.database.commerceInboxRanges
+    .where("accountPubkey")
+    .equals(principalPubkey)
+    .toArray()
+  const inboxRanges = ranges.filter(
+    (range) => range.id === owner.store.key(`${range.relayUrl}:nip17`)
+  )
+  const unavailable = relayUrls.every((url) =>
+    inboxRanges.some(
+      (range) => range.relayUrl === url && range.status === "unavailable"
+    )
+  )
+  const evidence = await owner.recoveryEvidence(relayUrls)
+  const coverage = unavailable
+    ? "unavailable"
+    : relayUrls.every((url) =>
+          inboxRanges.some(
+            (range) =>
+              range.relayUrl === url &&
+              range.status === "source_eose" &&
+              range.pageCount === 1
+          )
+        ) && !evidence.unresolved
+      ? "complete"
+      : "partial"
+  return {
+    messages: evidence.messages,
+    authenticatedWraps: evidence.authenticatedWraps,
+    // A partial declaration lookup does not invalidate the retained signed
+    // current inbox or a complete read of its selected relay history.
+    stale: unavailable || evidence.unresolved,
+    decryptFailures: evidence.decryptFailures,
+    inbox: {
+      declarationState: declaration.state,
+      coverage,
+      readSource: "declared",
+    },
   }
 }
 
@@ -8678,919 +8266,49 @@ async function resolvePrincipalInboxDeclaration(
   })
 }
 
-type InboxWrapFetchResult = {
-  wraps: NDKEvent[]
-  inbox: PrivateInboxReadStatus
-}
-
-/**
- * Permissive inbox read (CND-208): union of declared/cached inbox relays,
- * permanent cutover recovery, and the bounded compatibility read set.
- * General NIP-65 reads are not inbox routes. All-failed reads surface as
- * coverage "unavailable" instead of a healthy empty inbox.
- */
-async function fetchNewInboxWraps(
-  principalPubkey: string,
-  limit: number,
-  authorization: ProtectedReadAuthorization | null
-): Promise<InboxWrapFetchResult> {
-  const filter: Filter = {
-    kinds: [EVENT_KINDS.GIFT_WRAP],
-    "#p": [principalPubkey],
-    limit,
-  }
-
-  const declaration = await resolvePrincipalInboxDeclaration(
-    principalPubkey,
-    authorization
-  )
-  const readPlan = planInboxReadRelays({
-    declaration,
-    authenticatedPubkey: principalPubkey,
-    maxRelays: DM_INBOX_READ_FANOUT,
-  })
-  const compatibilityAppRelayUrls = readPlan.relayUrls.filter(
-    (relayUrl) => readPlan.relaySources[relayUrl] === "compatibility"
-  )
-
-  if (
-    testOverrides.fetchPublicEventsWithDiagnostics ||
-    testOverrides.fetchPublicEvents
-  ) {
-    const result = await runFetchEventsFanoutWithDiagnostics(filter, {
-      relayUrls: readPlan.relayUrls,
-      ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
-      appRelayUrls: compatibilityAppRelayUrls,
-      personalRelayUrls: [],
-      accountPubkey: principalPubkey,
-      authenticatedPubkey: principalPubkey,
-      accountNetworkLocalStateRepository:
-        testOverrides.accountNetworkLocalStateRepository,
-      shouldContinue: () => {
-        assertInboxSyncAuthority(authorization)
-        return true
-      },
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 12_000,
-    })
-    const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
-    return {
-      wraps: result.events
-        .filter((event) => !successful?.has(event.id))
-        .map((event) => new NDKEvent(undefined, event)),
-      inbox: {
-        declarationState: declaration.state,
-        coverage: deriveInboxReadCoverage(result),
-        readSource: readPlan.source,
-        authentication: {
-          state: "not_challenged",
-          challengedCount: 0,
-          succeededCount: 0,
-          failedCount: 0,
-        },
-      },
-    }
-  }
-
-  const protectedResult = await (
-    testOverrides.readProtectedInbox ?? readProtectedInbox
-  )({
-    principalPubkey,
-    relayUrls: readPlan.relayUrls,
-    ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
-    appRelayUrls: compatibilityAppRelayUrls,
-    limit,
-    authorization,
-    accountNetworkLocalStateRepository:
-      testOverrides.accountNetworkLocalStateRepository,
-    connectTimeoutMs: 4_000,
-    queryTimeoutMs: 12_000,
-  })
-
-  const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
-  return {
-    wraps: protectedResult.events
-      .filter((event) => !successful?.has(event.id))
-      .map((event) => new NDKEvent(undefined, event)),
-    inbox: {
-      declarationState: declaration.state,
-      coverage: protectedResult.coverage,
-      readSource: readPlan.source,
-      authentication: protectedResult.auth,
-    },
-  }
-}
-
 async function loadCachedDirectMessages(
   principalPubkey: string
 ): Promise<StoredMessage[]> {
-  if (testOverrides.getCachedDirectMessages) {
+  if (testOverrides.getCachedDirectMessages)
     return await testOverrides.getCachedDirectMessages(principalPubkey)
-  }
-
-  return await db.messages
-    .where("recipientPubkey")
-    .equals(principalPubkey)
-    .or("senderPubkey")
-    .equals(principalPubkey)
-    .filter(
-      (row) =>
-        row.kind === EVENT_KINDS.DIRECT_MESSAGE ||
-        row.kind === EVENT_KINDS.DM_LEGACY
-    )
-    .toArray()
+  const owner = getCommerceInbox(principalPubkey)
+  await owner.initialize()
+  const snapshot = owner.getSnapshot()
+  return snapshot.directMessages.map((message) =>
+    cachedDirectMessageRow(message, snapshot.unreadIds.has(message.id) ? 0 : 1)
+  )
 }
 
 async function storeCachedDirectMessages(rows: StoredMessage[]): Promise<void> {
-  if (rows.length === 0) return
-  if (testOverrides.putCachedDirectMessages) {
-    await testOverrides.putCachedDirectMessages(rows)
-    return
-  }
-  await db.messages.bulkPut(rows)
-}
-
-async function deleteCachedDirectMessages(
-  ids: string[],
-  authorization: ProtectedReadAuthorization | null
-): Promise<void> {
-  if (ids.length === 0) return
-  const assertAuthority = () => assertInboxSyncAuthority(authorization)
-  assertAuthority()
-  if (testOverrides.deleteCachedDirectMessages) {
-    await testOverrides.deleteCachedDirectMessages(ids)
-    assertAuthority()
-    return
-  }
-  await db.transaction("rw", db.messages, async () => {
-    assertAuthority()
-    await db.messages.bulkDelete(ids)
-    assertAuthority()
-  })
-  assertAuthority()
-}
-
-async function persistLegacyDirectMessages(
-  rows: StoredMessage[],
-  authorization: ProtectedReadAuthorization | null
-): Promise<void> {
-  const assertAuthority = () => assertInboxSyncAuthority(authorization)
-  assertAuthority()
-  if (rows.length === 0) return
-
-  if (testOverrides.persistLegacyDirectMessages) {
-    await testOverrides.persistLegacyDirectMessages(rows, assertAuthority)
-    assertAuthority()
-    return
-  }
-  if (testOverrides.putCachedDirectMessages) {
-    await storeCachedDirectMessages(rows)
-    assertAuthority()
-    return
-  }
-
-  await db.transaction("rw", db.messages, async () => {
-    assertAuthority()
-    await db.messages.bulkPut(rows)
-    assertAuthority()
-  })
-  assertAuthority()
-}
-
-function cachedDirectMessageRow(
-  message: ParsedDirectMessage,
-  read: 0 | 1 = 0
-): StoredMessage {
-  return {
-    id: message.id,
-    senderPubkey: message.senderPubkey,
-    recipientPubkey: message.recipientPubkey,
-    content: message.content,
-    orderCompanion: message.orderCompanionIdentity
-      ? {
-          orderId: message.orderCompanionIdentity.orderId,
-          orderRumorId: message.orderCompanionIdentity.orderRumorId,
-        }
-      : undefined,
-    kind:
-      message.transport === "nip04"
-        ? EVENT_KINDS.DM_LEGACY
-        : EVENT_KINDS.DIRECT_MESSAGE,
-    createdAt: message.createdAt,
-    read,
-  }
-}
-
-async function persistProtectedInboxMessages(
-  orderRows: CachedOrderMessage[],
-  directRows: StoredMessage[],
-  authorization: ProtectedReadAuthorization | null
-): Promise<void> {
-  const assertAuthority = () => assertInboxSyncAuthority(authorization)
-  assertAuthority()
-
-  if (testOverrides.persistProtectedInboxMessages) {
-    await testOverrides.persistProtectedInboxMessages(
-      orderRows,
-      directRows,
-      assertAuthority
+  if (testOverrides.putCachedDirectMessages)
+    return await testOverrides.putCachedDirectMessages(rows)
+  const signer = getAccountSigner()
+  if (!signer) return
+  const owner = getCommerceInbox(signer.pubkey)
+  await owner.initialize()
+  for (const row of rows)
+    await owner.store.putProjection(
+      { kind: "direct", message: parseCachedDirectMessage(row) },
+      row.read
     )
-    assertAuthority()
-    return
-  }
-
-  if (
-    testOverrides.putCachedOrderMessages ||
-    testOverrides.putCachedDirectMessages
-  ) {
-    await storeCachedOrderMessages(orderRows)
-    assertAuthority()
-    await storeCachedDirectMessages(directRows)
-    assertAuthority()
-    return
-  }
-
-  await db.transaction("rw", db.orderMessages, db.messages, async () => {
-    assertAuthority()
-    if (orderRows.length > 0) await db.orderMessages.bulkPut(orderRows)
-    if (directRows.length > 0) await db.messages.bulkPut(directRows)
-    // Throwing here aborts the Dexie transaction, including completed bulkPut
-    // requests, if another tab changed signer authority during persistence.
-    assertAuthority()
-  })
-  assertAuthority()
-}
-
-function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
-  return {
-    id: row.id,
-    senderPubkey: row.senderPubkey,
-    recipientPubkey: row.recipientPubkey,
-    content: row.decrypted ?? row.content,
-    orderCompanionIdentity: row.orderCompanion
-      ? {
-          ...row.orderCompanion,
-          senderPubkey: row.senderPubkey,
-          recipientPubkey: row.recipientPubkey,
-        }
-      : undefined,
-    createdAt: row.createdAt,
-    transport: row.kind === EVENT_KINDS.DM_LEGACY ? "nip04" : "nip17",
-  }
-}
-
-function successfulLegacyDmIds(sessionPrincipalKey: string): Set<string> {
-  let ids = successfulLegacyDmIdsByPrincipal.get(sessionPrincipalKey)
-  if (!ids) {
-    ids = new Set<string>()
-    successfulLegacyDmIdsByPrincipal.set(sessionPrincipalKey, ids)
-  }
-  return ids
-}
-
-function retryLegacyDms(
-  sessionPrincipalKey: string
-): Map<
-  string,
-  { event: NDKEvent; attempts: number; failure?: LegacyDmDecryptFailure }
-> {
-  let events = retryLegacyDmsByPrincipal.get(sessionPrincipalKey)
-  if (!events) {
-    events = new Map()
-    retryLegacyDmsByPrincipal.set(sessionPrincipalKey, events)
-  }
-  return events
-}
-
-async function runLegacyDmSync(
-  principalPubkey: string,
-  signer: NostrKeySigner,
-  authorization: ProtectedReadAuthorization | null,
-  sessionPrincipalKey: string
-): Promise<LegacyDmSyncResult> {
-  const relayPlan = await planCommerceReadRelayPlan({
-    intent: "legacy_dm",
-    authors: [principalPubkey],
-    recipients: [principalPubkey],
-    authenticatedPubkey: principalPubkey,
-    maxRelays: DM_INBOX_READ_FANOUT,
-  })
-  const [incoming, outgoing, cached] = await Promise.all([
-    runFetchEventsFanout(
-      {
-        kinds: [EVENT_KINDS.DM_LEGACY],
-        "#p": [principalPubkey],
-        limit: 400,
-      },
-      {
-        relayUrls: relayPlan.candidateRelayUrls,
-        maxRelayAttempts: relayPlan.maxRelayAttempts,
-        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-        appRelayUrls: relayPlan.appRelayUrls,
-        personalRelayUrls: relayPlan.personalRelayUrls,
-        independentRelayUrls: relayPlan.independentRelayUrls,
-        accountPubkey: principalPubkey,
-        authenticatedPubkey: principalPubkey,
-        accountNetworkLocalStateRepository:
-          testOverrides.accountNetworkLocalStateRepository,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 12_000,
-      }
-    ),
-    runFetchEventsFanout(
-      {
-        kinds: [EVENT_KINDS.DM_LEGACY],
-        authors: [principalPubkey],
-        limit: 400,
-      },
-      {
-        relayUrls: relayPlan.candidateRelayUrls,
-        maxRelayAttempts: relayPlan.maxRelayAttempts,
-        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-        appRelayUrls: relayPlan.appRelayUrls,
-        personalRelayUrls: relayPlan.personalRelayUrls,
-        independentRelayUrls: relayPlan.independentRelayUrls,
-        accountPubkey: principalPubkey,
-        authenticatedPubkey: principalPubkey,
-        accountNetworkLocalStateRepository:
-          testOverrides.accountNetworkLocalStateRepository,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 12_000,
-      }
-    ),
-    loadCachedDirectMessages(principalPubkey),
-  ])
-  assertInboxSyncAuthority(authorization)
-  const cachedIds = new Set(cached.map((row) => row.id))
-  const successful = successfulLegacyDmIds(sessionPrincipalKey)
-  const retry = retryLegacyDms(sessionPrincipalKey)
-  const candidates = new Map<string, NDKEvent>()
-  for (const { event, attempts } of retry.values()) {
-    if (attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS) {
-      candidates.set(event.id, event)
-    }
-  }
-  for (const event of [...incoming, ...outgoing]) {
-    const pending = retry.get(event.id)
-    if (
-      !successful.has(event.id) &&
-      !cachedIds.has(event.id) &&
-      (!pending || pending.attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS)
-    ) {
-      candidates.set(event.id, new NDKEvent(undefined, event))
-    }
-  }
-  for (const event of candidates.values()) {
-    const pending = retry.get(event.id)
-    retry.set(event.id, {
-      event,
-      attempts: pending?.attempts ?? 0,
-      failure: pending?.failure,
-    })
-  }
-
-  const decrypt = createLegacyDmDecrypt(signer)
-  const messages: ParsedDirectMessage[] = []
-  for (let index = 0; index < candidates.size; index += 5) {
-    const batch = Array.from(candidates.values()).slice(index, index + 5)
-    const outcomes = await Promise.all(
-      batch.map((event) =>
-        decryptLegacyDirectMessage(event, principalPubkey, decrypt)
-      )
-    )
-    assertInboxSyncAuthority(authorization)
-    for (const outcome of outcomes) {
-      if (outcome.status === "ignored") {
-        successful.add(outcome.eventId)
-        retry.delete(outcome.eventId)
-      } else if (outcome.status === "decrypt_failed") {
-        const pending = retry.get(outcome.failure.eventId)
-        if (pending) {
-          const attempts = pending.attempts + 1
-          retry.set(outcome.failure.eventId, {
-            ...pending,
-            attempts,
-            failure: {
-              ...outcome.failure,
-              retryable: attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS,
-            },
-          })
-        }
-      } else {
-        messages.push(outcome.message)
-      }
-    }
-  }
-
-  try {
-    await persistLegacyDirectMessages(
-      messages.map((message) => cachedDirectMessageRow(message)),
-      authorization
-    )
-    for (const message of messages) {
-      successful.add(message.id)
-      retry.delete(message.id)
-    }
-  } catch (error) {
-    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
-    assertInboxSyncAuthority(authorization)
-    // Keep encrypted events in memory for retry; plaintext remains transient.
-  }
-
-  assertInboxSyncAuthority(authorization)
-  return {
-    directMessages: messages,
-    decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
-      failure ? [failure] : []
-    ),
-  }
-}
-
-async function syncLegacyDms(
-  principalPubkey: string,
-  signer: NostrKeySigner,
-  authorization: ProtectedReadAuthorization | null
-): Promise<LegacyDmSyncResult> {
-  const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
-  const existing = legacyDmSyncPromises.get(syncKey)
-  if (existing) return await existing
-  const pending = runLegacyDmSync(
-    principalPubkey,
-    signer,
-    authorization,
-    syncKey
-  )
-  legacyDmSyncPromises.set(syncKey, pending)
-  try {
-    return await pending
-  } catch (error) {
-    if (error instanceof ProtectedInboxAuthorityChangedError) {
-      successfulLegacyDmIdsByPrincipal.delete(syncKey)
-      retryLegacyDmsByPrincipal.delete(syncKey)
-    }
-    throw error
-  } finally {
-    if (legacyDmSyncPromises.get(syncKey) === pending) {
-      legacyDmSyncPromises.delete(syncKey)
-    }
-  }
-}
-
-function successfulWrapIds(principalPubkey: string): Set<string> {
-  let ids = successfulWrapIdsByPrincipal.get(principalPubkey)
-  if (!ids) {
-    ids = new Set<string>()
-    successfulWrapIdsByPrincipal.set(principalPubkey, ids)
-  }
-  return ids
-}
-
-function retryWraps(
-  principalPubkey: string
-): Map<string, { event: NDKEvent; failure?: DecryptFailure }> {
-  let wraps = retryWrapsByPrincipal.get(principalPubkey)
-  if (!wraps) {
-    wraps = new Map()
-    retryWrapsByPrincipal.set(principalPubkey, wraps)
-  }
-  return wraps
-}
-
-async function runPrivateMessageInboxSync(
-  principalPubkey: string,
-  signer: NostrKeySigner,
-  authorization: ProtectedReadAuthorization | null
-): Promise<PrivateInboxSyncResult> {
-  const [cachedOrders, cachedDirect, fetched] = await Promise.all([
-    loadCachedOrderMessages(principalPubkey),
-    loadCachedDirectMessages(principalPubkey),
-    fetchNewInboxWraps(principalPubkey, 400, authorization),
-  ])
-  assertInboxSyncAuthority(authorization)
-  const cachedOrderIds = new Set(cachedOrders.map((row) => row.id))
-  const cachedDirectIds = new Set(cachedDirect.map((row) => row.id))
-  const successful = successfulWrapIds(principalPubkey)
-  const retry = retryWraps(principalPubkey)
-  const candidates = new Map<string, NDKEvent>()
-
-  for (const { event } of retry.values()) candidates.set(event.id, event)
-  for (const event of fetched.wraps) candidates.set(event.id, event)
-  for (const event of candidates.values()) {
-    retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
-  }
-
-  const outcomes = await unwrapGiftWraps(
-    Array.from(candidates.values()),
-    signer,
-    unwrapOptions()
-  )
-  // Decrypted rumors must not escape after a cross-tab revision/account change,
-  // even before the browser delivers its asynchronous storage event.
-  assertInboxSyncAuthority(authorization)
-  const orderEntries: Array<{
-    wrapId: string
-    message: ParsedOrderMessage
-    isCached: boolean
-  }> = []
-  const directEntries: Array<{
-    wrapId: string
-    message: ParsedDirectMessage
-    isCached: boolean
-    pendingOrderCompanion: boolean
-  }> = []
-  const directRumors: Array<{ wrapId: string; rumor: NDKEvent }> = []
-
-  for (const outcome of outcomes) {
-    const pending = retry.get(outcome.wrapId)
-    if (!pending) continue
-    if (outcome.status === "decrypt_failed") {
-      retry.set(outcome.wrapId, {
-        event: pending.event,
-        failure: { wrapId: outcome.wrapId, reason: outcome.reason },
-      })
-      continue
-    }
-    if (outcome.status === "deferred_machine") {
-      // Only the generic inbox's in-memory filter handles this wrap. Do not
-      // cache its recovery payload or delete the relay ciphertext; the
-      // dedicated Merchant reader fetches and verifies it independently.
-      successful.add(outcome.wrapId)
-      retry.delete(outcome.wrapId)
-      continue
-    }
-    if (outcome.status === "ignored") {
-      successful.add(outcome.wrapId)
-      retry.delete(outcome.wrapId)
-      continue
-    }
-
-    try {
-      if (outcome.category === "order") {
-        const message = parseOrderMessageRumorEvent(outcome.rumor)
-        if (isEventMarketPrivateMessage(message)) {
-          // Organizer handoff traffic has its own strict kind-10050 reader and
-          // must never enter the buyer/merchant order conversation cache.
-          successful.add(outcome.wrapId)
-          retry.delete(outcome.wrapId)
-          continue
-        }
-        orderEntries.push({
-          wrapId: outcome.wrapId,
-          message,
-          isCached: cachedOrderIds.has(message.id),
-        })
-      } else {
-        directRumors.push({ wrapId: outcome.wrapId, rumor: outcome.rumor })
-      }
-    } catch {
-      retry.set(outcome.wrapId, {
-        event: pending.event,
-        failure: { wrapId: outcome.wrapId, reason: "malformed" },
-      })
-    }
-  }
-
-  const orderIdentityKey = (
-    orderRumorId: string,
-    orderId: string,
-    senderPubkey: string,
-    recipientPubkey: string
-  ) =>
-    `${orderRumorId.trim()}\u0000${orderId.trim()}\u0000${senderPubkey.trim().toLowerCase()}\u0000${recipientPubkey.trim().toLowerCase()}`
-  const authoritativeOrders = new Set([
-    ...cachedOrders
-      .filter((row) => row.type === "order")
-      .map((row) =>
-        orderIdentityKey(
-          row.id,
-          row.orderId,
-          row.senderPubkey,
-          row.recipientPubkey
-        )
-      ),
-    ...orderEntries
-      .filter((entry) => entry.message.type === "order")
-      .map((entry) =>
-        orderIdentityKey(
-          entry.message.id,
-          entry.message.orderId,
-          entry.message.senderPubkey,
-          entry.message.recipientPubkey
-        )
-      ),
-  ])
-
-  for (const entry of directRumors) {
-    const pending = retry.get(entry.wrapId)
-    if (!pending) continue
-    try {
-      const companion = getOrderCompanionNotificationIdentity(entry.rumor)
-      if (
-        companion &&
-        authoritativeOrders.has(
-          orderIdentityKey(
-            companion.orderRumorId,
-            companion.orderId,
-            companion.senderPubkey,
-            companion.recipientPubkey
-          )
-        )
-      ) {
-        successful.add(entry.wrapId)
-        retry.delete(entry.wrapId)
-        continue
-      }
-
-      const message = parseDirectMessageRumor(entry.rumor)
-      if (!message.id) throw new Error("Missing direct-message id")
-      if (companion) message.orderCompanionIdentity = companion
-      directEntries.push({
-        wrapId: entry.wrapId,
-        message,
-        isCached: cachedDirectIds.has(message.id),
-        pendingOrderCompanion: companion !== null,
-      })
-    } catch {
-      retry.set(entry.wrapId, {
-        event: pending.event,
-        failure: { wrapId: entry.wrapId, reason: "malformed" },
-      })
-    }
-  }
-
-  const persisted = (wrapId: string) => {
-    successful.add(wrapId)
-    retry.delete(wrapId)
-  }
-  const cachedOrderEntries = orderEntries.filter((entry) => entry.isCached)
-  const newOrderEntries = orderEntries.filter((entry) => !entry.isCached)
-  for (const entry of cachedOrderEntries) persisted(entry.wrapId)
-  const committedDirectEntries = directEntries.filter(
-    (entry) => !entry.pendingOrderCompanion
-  )
-  const cachedDirectEntries = committedDirectEntries.filter(
-    (entry) => entry.isCached
-  )
-  const newDirectEntries = committedDirectEntries.filter(
-    (entry) => !entry.isCached
-  )
-  const pendingDirectEntries = directEntries.filter(
-    (entry) => entry.pendingOrderCompanion && !entry.isCached
-  )
-  for (const entry of cachedDirectEntries) persisted(entry.wrapId)
-
-  try {
-    await persistProtectedInboxMessages(
-      newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message)),
-      [...newDirectEntries, ...pendingDirectEntries].map((entry) =>
-        cachedDirectMessageRow(
-          entry.message,
-          entry.pendingOrderCompanion ? 1 : 0
-        )
-      ),
-      authorization
-    )
-    for (const entry of newOrderEntries) persisted(entry.wrapId)
-    for (const entry of newDirectEntries) persisted(entry.wrapId)
-    for (const entry of pendingDirectEntries) persisted(entry.wrapId)
-  } catch (error) {
-    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
-    assertInboxSyncAuthority(authorization)
-    // Keep wrappers pending for a later cache retry; parsed messages remain usable.
-  }
-
-  assertInboxSyncAuthority(authorization)
-
-  return {
-    orderMessages: orderEntries.map((entry) => entry.message),
-    directMessages: directEntries.map((entry) => entry.message),
-    pendingDirectMessageIds: new Set(
-      directEntries
-        .filter((entry) => entry.pendingOrderCompanion)
-        .map((entry) => entry.message.id)
-    ),
-    decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
-      failure ? [failure] : []
-    ),
-    inbox: fetched.inbox,
-  }
-}
-
-async function syncPrivateMessageInbox(
-  principalPubkey: string,
-  signer: NostrKeySigner,
-  authorization: ProtectedReadAuthorization | null
-): Promise<PrivateInboxSyncResult> {
-  const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
-  const existing = inboxSyncPromises.get(syncKey)
-  if (existing) return await existing
-
-  const pending = runPrivateMessageInboxSync(
-    principalPubkey,
-    signer,
-    authorization
-  )
-  inboxSyncPromises.set(syncKey, pending)
-  try {
-    return await pending
-  } finally {
-    if (inboxSyncPromises.get(syncKey) === pending) {
-      inboxSyncPromises.delete(syncKey)
-    }
-  }
+  await owner.refresh()
 }
 
 async function fetchParsedDirectMessages(
   principalPubkey: string
 ): Promise<RawDirectMessageFetchResult> {
-  const authorization = resolveInboxSyncAuthorization(principalPubkey)
-  assertInboxSyncAuthority(authorization)
-  let cached = await loadCachedDirectMessages(principalPubkey)
-  assertInboxSyncAuthority(authorization)
-  const cachedOrders = await loadCachedOrderMessages(principalPubkey)
-  assertInboxSyncAuthority(authorization)
-  const cachedOrderIdentityKey = (
-    eventId: string,
-    orderId: string,
-    senderPubkey: string,
-    recipientPubkey: string
-  ) =>
-    `${eventId}\u0000${orderId}\u0000${senderPubkey.toLowerCase()}\u0000${recipientPubkey.toLowerCase()}`
-  const collectAuthoritativeOrderIdentities = (
-    rows: readonly {
-      type: string
-      id: string
-      orderId: string
-      senderPubkey: string
-      recipientPubkey: string
-    }[]
-  ): Set<string> => {
-    const identities = new Set<string>()
-    for (const row of rows) {
-      if (row.type !== "order") continue
-      identities.add(
-        cachedOrderIdentityKey(
-          row.id,
-          row.orderId,
-          row.senderPubkey,
-          row.recipientPubkey
-        )
-      )
-    }
-    return identities
-  }
-  const authoritativeOrders = collectAuthoritativeOrderIdentities(cachedOrders)
-  const staleCompanionIds = cached.flatMap((row) => {
-    if (row.kind !== EVENT_KINDS.DIRECT_MESSAGE || !row.orderCompanion)
-      return []
-    const identity = cachedOrderIdentityKey(
-      row.orderCompanion.orderRumorId,
-      row.orderCompanion.orderId,
-      row.senderPubkey,
-      row.recipientPubkey
-    )
-    return authoritativeOrders.has(identity) ? [row.id] : []
-  })
-  if (staleCompanionIds.length > 0) {
-    await deleteCachedDirectMessages(staleCompanionIds, authorization)
-    const staleIds = new Set(staleCompanionIds)
-    cached = cached.filter((row) => !staleIds.has(row.id))
-  }
-  const cachedById = new Map<string, ParsedDirectMessage>()
-  const unreadMessageIds = new Set<string>()
-  for (const row of cached) {
-    cachedById.set(row.id, parseCachedDirectMessage(row))
-    if (row.read === 0) unreadMessageIds.add(row.id)
-  }
-
-  try {
-    const signer = await resolveEnvelopeSigner()
-    if (!signer) {
-      if (cachedById.size > 0) {
-        const messages = Array.from(cachedById.values()).sort(
-          (a, b) => a.createdAt - b.createdAt
-        )
-        assertInboxSyncAuthority(authorization)
-        return {
-          messages,
-          unreadMessageIds,
-          source: "local_cache",
-          stale: true,
-          decryptFailures: [],
-          legacyDecryptFailures: [],
-          inbox: unavailableInboxStatus(),
-        }
-      }
-      throw new Error("Connect your Nostr signer to view messages.")
-    }
-
-    const [currentResult, legacyResult] = await Promise.allSettled([
-      syncPrivateMessageInbox(principalPubkey, signer, authorization),
-      syncLegacyDms(principalPubkey, signer, authorization),
-    ])
-    assertInboxSyncAuthority(authorization)
-    if (
-      currentResult.status === "rejected" &&
-      currentResult.reason instanceof ProtectedInboxAuthorityChangedError
-    ) {
-      throw currentResult.reason
-    }
-    if (
-      currentResult.status === "rejected" &&
-      legacyResult.status === "rejected" &&
-      cachedById.size === 0
-    ) {
-      throw currentResult.reason
-    }
-    const current =
-      currentResult.status === "fulfilled"
-        ? currentResult.value
-        : {
-            orderMessages: [],
-            directMessages: [],
-            pendingDirectMessageIds: new Set<string>(),
-            decryptFailures: [],
-            inbox: undefined,
-          }
-    const legacy =
-      legacyResult.status === "fulfilled"
-        ? legacyResult.value
-        : { directMessages: [], decryptFailures: [] }
-    const currentAuthoritativeOrders = collectAuthoritativeOrderIdentities(
-      current.orderMessages
-    )
-    const reconciledCachedCompanionIds = Array.from(
-      cachedById.entries()
-    ).flatMap(([id, message]) => {
-      const companion = message.orderCompanionIdentity
-      if (!companion) return []
-      const identity = cachedOrderIdentityKey(
-        companion.orderRumorId,
-        companion.orderId,
-        companion.senderPubkey,
-        companion.recipientPubkey
-      )
-      return currentAuthoritativeOrders.has(identity) ? [id] : []
-    })
-    if (reconciledCachedCompanionIds.length > 0) {
-      await deleteCachedDirectMessages(
-        reconciledCachedCompanionIds,
-        authorization
-      )
-      for (const id of reconciledCachedCompanionIds) {
-        cachedById.delete(id)
-        unreadMessageIds.delete(id)
-      }
-    }
-    for (const parsed of [
-      ...current.directMessages,
-      ...legacy.directMessages,
-    ]) {
-      const isNew = !cachedById.has(parsed.id)
-      cachedById.set(parsed.id, parsed)
-      if (
-        isNew &&
-        parsed.senderPubkey !== principalPubkey &&
-        !current.pendingDirectMessageIds.has(parsed.id)
-      ) {
-        unreadMessageIds.add(parsed.id)
-      }
-    }
-
-    const messages = Array.from(cachedById.values()).sort(
-      (a, b) => a.createdAt - b.createdAt
-    )
-    assertInboxSyncAuthority(authorization)
-    return {
-      messages,
-      unreadMessageIds,
-      source: "commerce",
-      stale:
-        currentResult.status === "rejected" ||
-        legacyResult.status === "rejected" ||
-        current.inbox?.coverage === "unavailable",
-      decryptFailures: current.decryptFailures,
-      legacyDecryptFailures: legacy.decryptFailures,
-      inbox: current.inbox,
-    }
-  } catch (error) {
-    if (error instanceof ProtectedInboxAuthorityChangedError) throw error
-    if (cachedById.size > 0) {
-      const messages = Array.from(cachedById.values()).sort(
-        (a, b) => a.createdAt - b.createdAt
-      )
-      assertInboxSyncAuthority(authorization)
-      return {
-        messages,
-        unreadMessageIds,
-        source: "local_cache",
-        stale: true,
-        decryptFailures: [],
-        legacyDecryptFailures: [],
-        inbox: unavailableInboxStatus(),
-      }
-    }
-    throw error
+  const snapshot = await refreshOwnedInbox(principalPubkey)
+  return {
+    messages: snapshot.directMessages,
+    unreadMessageIds: new Set(snapshot.unreadIds),
+    source:
+      snapshot.diagnostics.coverage === "unavailable"
+        ? "local_cache"
+        : "commerce",
+    stale: inboxSnapshotIncomplete(snapshot),
+    decryptFailures: snapshot.decryptFailures,
+    legacyDecryptFailures: snapshot.legacyDecryptFailures,
+    inbox: ownerInboxStatus(snapshot),
   }
 }
 
@@ -9781,7 +8499,7 @@ export async function getBuyerConversationList(
           !query.counterpartyPubkey ||
           conversation.merchantPubkey === query.counterpartyPubkey
       )
-      .slice(0, query.limit ?? 200),
+      .slice(0, query.limit),
     meta: createMeta(
       "protected_conversation_list",
       result.source,
@@ -9817,7 +8535,7 @@ export async function getCachedBuyerConversationList(
         !query.counterpartyPubkey ||
         conversation.merchantPubkey === query.counterpartyPubkey
     )
-    .slice(0, query.limit ?? 200)
+    .slice(0, query.limit)
 
   return {
     data: conversations,
@@ -9844,7 +8562,7 @@ export async function getMerchantConversationList(
           !query.counterpartyPubkey ||
           conversation.buyerPubkey === query.counterpartyPubkey
       )
-      .slice(0, query.limit ?? 200),
+      .slice(0, query.limit),
     meta: createMeta(
       "protected_conversation_list",
       result.source,
@@ -9880,7 +8598,7 @@ export async function getCachedMerchantConversationList(
         !query.counterpartyPubkey ||
         conversation.buyerPubkey === query.counterpartyPubkey
     )
-    .slice(0, query.limit ?? 200)
+    .slice(0, query.limit)
 
   return {
     data: conversations,
@@ -9954,7 +8672,7 @@ export interface MerchantCheckoutSparkRecoveryListResult {
 
 /**
  * Discover merchant recovery authority without projecting wallet material into
- * a conversation cache or a UI query result. This is one bounded page from
+ * a conversation cache or a UI query result. This resumes one durable page per source from
  * signed kind-10050 inbox relays only. A capped, failed, or malformed read is
  * never presented as proof that no recovery package exists. Call only from an
  * explicit foreground recovery action, never a background polling interval.
@@ -9967,10 +8685,7 @@ export async function getMerchantCheckoutSparkRecoveryList(
 
 interface MerchantCheckoutSparkRecoveryAuthority {
   candidate: MerchantCheckoutSparkRecoveryCandidate
-  handoffId: string
-  senderPubkey: string
-  mnemonic: string
-  accountNumber: number
+  payloadDigest: string
 }
 
 /** Wallet authority remains private to this foreground call. */
@@ -9983,17 +8698,7 @@ async function inspectMerchantCheckoutSparkRecoveries(
 }> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
-  const signer = await resolveEnvelopeSigner()
-  assertInboxSyncAuthority(authorization)
-  if (!signer) {
-    throw new Error("Connect your Nostr signer to view checkout recoveries.")
-  }
   const principal = principalPubkey.trim().toLowerCase()
-  if ((await signer.getPublicKey()).trim().toLowerCase() !== principal) {
-    throw new ProtectedInboxAuthorityChangedError()
-  }
-  assertInboxSyncAuthority(authorization)
-
   const declaration = await resolvePrincipalInboxDeclaration(
     principal,
     authorization
@@ -10002,7 +8707,9 @@ async function inspectMerchantCheckoutSparkRecoveries(
   const relayUrls = normalizeOwnerSelectedRelayUrls(
     declaration.state === "declared" ? declaration.relayUrls : []
   )
-  if (relayUrls.length === 0) {
+  const byCheckout = new Map<string, MerchantCheckoutSparkRecoveryAuthority>()
+  const conflictingCheckouts = new Set<string>()
+  if (!relayUrls.length)
     return {
       result: {
         candidates: [],
@@ -10012,160 +8719,75 @@ async function inspectMerchantCheckoutSparkRecoveries(
         decryptFailureCount: 0,
         conflictCount: 0,
       },
-      authorities: new Map(),
-      conflictingCheckouts: new Set(),
+      authorities: byCheckout,
+      conflictingCheckouts,
     }
-  }
-
-  const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
-    principalPubkey: principal,
+  const owner = getCommerceInbox(principal)
+  // Each explicit discovery resumes one durable page per declared source.
+  // General inbox history uses the same cursor and original encrypted wrappers.
+  await owner.loadOlder({
+    includeLegacy: false,
+    declaration,
     relayUrls,
-    ownerSelectedRelayUrls: relayUrls,
-    appRelayUrls: [],
-    limit: CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT,
-    authorization,
-    accountNetworkLocalStateRepository:
-      testOverrides.accountNetworkLocalStateRepository,
-    connectTimeoutMs: 4_000,
-    queryTimeoutMs: 12_000,
+    read: testOverrides.readProtectedInbox,
   })
-  assertInboxSyncAuthority(authorization)
-  const relayComplete =
-    read.coverage === "complete" &&
-    read.relayResult.attemptedCount === relayUrls.length &&
-    read.relayResult.completedCount === relayUrls.length &&
-    read.relayResult.failedCount === 0 &&
-    read.relayResult.relays.length === relayUrls.length &&
-    read.relayResult.relays.every(
-      (relay) =>
-        relay.status === "success" &&
-        relay.eventCount < CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT &&
-        relay.malformedCount === 0 &&
-        relay.unusableCount === 0
-    )
-  const uniqueWraps = Array.from(
-    new Map(read.events.map((event) => [event.id, event])).values()
-  )
-  const pageCapped = uniqueWraps.length > CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT
-  const inspectionCapped =
-    uniqueWraps.length > CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT
-  const distinctWraps = uniqueWraps
-    .sort(
-      (left, right) =>
-        right.created_at - left.created_at || left.id.localeCompare(right.id)
-    )
-    .slice(0, CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT)
-  const byCheckout = new Map<string, MerchantCheckoutSparkRecoveryAuthority>()
-  const conflictingCheckouts = new Set<string>()
-  let malformedCount = 0
-  let decryptFailureCount = 0
-  let inspectionTimedOut = false
-  const inspectionDeadline =
-    Date.now() + CHECKOUT_SPARK_RECOVERY_INSPECTION_BUDGET_MS
-  for (const event of distinctWraps) {
-    assertInboxSyncAuthority(authorization)
-    const remainingMs = inspectionDeadline - Date.now()
-    if (remainingMs <= 0) {
-      inspectionTimedOut = true
-      break
-    }
-    const recipients = event.tags.filter((tag) => tag[0] === "p")
-    if (
-      recipients.length !== 1 ||
-      recipients[0]?.[1]?.toLowerCase() !== principal
-    ) {
-      malformedCount += 1
-      continue
-    }
-    const inspection = inspectCheckoutSparkRecoveryWrap({
-      signedRecipientWrap: event,
-      signer,
-      ...(testOverrides.giftUnwrap
-        ? { giftUnwrap: testOverrides.giftUnwrap }
-        : {}),
-    })
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const opened = await Promise.race([
-      inspection,
-      new Promise<typeof CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT>(
-        (resolve) => {
-          timer = setTimeout(
-            () => resolve(CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT),
-            Math.min(CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS, remainingMs)
-          )
-        }
-      ),
-    ]).finally(() => {
-      if (timer !== undefined) clearTimeout(timer)
-    })
-    assertInboxSyncAuthority(authorization)
-    if (opened === CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT) {
-      inspectionTimedOut = true
-      break
-    }
-    if (opened.status === "ignored") continue
-    if (opened.status === "malformed") {
-      malformedCount += 1
-      continue
-    }
-    if (opened.status === "decrypt_failed") {
-      decryptFailureCount += 1
-      continue
-    }
-    const payload = opened.payload
-    const candidate: MerchantCheckoutSparkRecoveryCandidate = {
-      wrapId: opened.wrapId,
-      checkoutId: payload.plan.checkoutId,
-      orderId: payload.plan.orderId,
-      planDigest: payload.plan.planDigest,
-      takeoverAt: payload.plan.takeoverAt,
-      preparedAt: payload.preparedAt,
+  const descriptors = await owner.checkoutRecoveryDescriptors(relayUrls)
+  for (const descriptor of descriptors) {
+    const candidate = {
+      wrapId: descriptor.wrapId,
+      checkoutId: descriptor.checkoutId,
+      orderId: descriptor.orderId,
+      planDigest: descriptor.planDigest,
+      takeoverAt: descriptor.takeoverAt,
+      preparedAt: descriptor.preparedAt,
     }
     const previous = byCheckout.get(candidate.checkoutId)
-    if (previous) {
-      if (
-        previous.candidate.planDigest !== candidate.planDigest ||
-        previous.handoffId !== payload.handoffId ||
-        previous.senderPubkey !== payload.senderPubkey ||
-        previous.mnemonic !== payload.wallet.mnemonic ||
-        previous.accountNumber !== payload.wallet.accountNumber
-      ) {
-        conflictingCheckouts.add(candidate.checkoutId)
-      }
-      continue
-    }
-    byCheckout.set(candidate.checkoutId, {
-      candidate,
-      handoffId: payload.handoffId,
-      senderPubkey: payload.senderPubkey,
-      mnemonic: payload.wallet.mnemonic,
-      accountNumber: payload.wallet.accountNumber,
-    })
+    if (previous && previous.payloadDigest !== descriptor.payloadDigest)
+      conflictingCheckouts.add(candidate.checkoutId)
+    else if (!previous)
+      byCheckout.set(candidate.checkoutId, {
+        candidate,
+        payloadDigest: descriptor.payloadDigest,
+      })
   }
-  assertInboxSyncAuthority(authorization)
+  const wrappers = (await owner.store.wrappers()).filter((row) =>
+    row.sources.some((url) => relayUrls.includes(url))
+  )
+  const malformedCount = wrappers.filter(
+    (row) => row.state === "malformed" || row.state === "invalid_envelope"
+  ).length
+  const decryptFailureCount = wrappers.filter((row) =>
+    [
+      "permission_declined",
+      "provider_unavailable",
+      "retryable_failure",
+    ].includes(row.state)
+  ).length
+  const ranges = await owner.store.database.commerceInboxRanges
+    .where("accountPubkey")
+    .equals(principal)
+    .toArray()
   const coverage: InboxReadCoverage =
-    read.coverage === "unavailable"
-      ? "unavailable"
-      : relayComplete &&
-          !declaration.stale &&
-          !pageCapped &&
-          !inspectionCapped &&
-          !inspectionTimedOut &&
-          malformedCount === 0 &&
-          decryptFailureCount === 0 &&
-          conflictingCheckouts.size === 0
-        ? "complete"
-        : "partial"
+    relayUrls.every((url) =>
+      ranges.some(
+        (row) =>
+          row.id === owner.store.key(`${url}:nip17`) &&
+          row.status === "source_eose" &&
+          row.pageCount === 1
+      )
+    ) &&
+    !malformedCount &&
+    !decryptFailureCount &&
+    !conflictingCheckouts.size
+      ? "complete"
+      : "partial"
+  assertInboxSyncAuthority(authorization)
   return {
     result: {
-      candidates: Array.from(byCheckout.entries())
-        .filter(([checkoutId]) => !conflictingCheckouts.has(checkoutId))
-        .map(([, entry]) => entry.candidate)
-        .sort(
-          (left, right) =>
-            left.takeoverAt - right.takeoverAt ||
-            left.checkoutId.localeCompare(right.checkoutId)
-        ),
+      candidates: [...byCheckout.entries()]
+        .filter(([id]) => !conflictingCheckouts.has(id))
+        .map(([, row]) => row.candidate)
+        .sort((a, b) => a.takeoverAt - b.takeoverAt),
       coverage,
       declarationState: declaration.state,
       malformedCount,
@@ -10268,8 +8890,11 @@ export async function withMerchantCheckoutSparkRecovery(
   const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
     principalPubkey: principal,
     relayUrls,
-    ownerSelectedRelayUrls: relayUrls,
-    appRelayUrls: [],
+    relayTargets: relayTargetsFromUrls(relayUrls, {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey: principal,
+    }),
     eventId: wrapId,
     limit: 2,
     authorization,
@@ -10302,7 +8927,7 @@ export async function withMerchantCheckoutSparkRecovery(
     candidate: null,
   })
   if (read.coverage === "unavailable") return incomplete("unavailable")
-  if (!relayComplete || declaration.stale) return incomplete("partial")
+  if (!relayComplete) return incomplete("partial")
   if (read.events.length === 0) {
     return {
       status: "missing",
@@ -10330,25 +8955,8 @@ export async function withMerchantCheckoutSparkRecovery(
         ? { giftUnwrap: testOverrides.giftUnwrap }
         : {}),
     })
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const result = await Promise.race([
-      opening,
-      new Promise<typeof CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT>(
-        (resolve) => {
-          timer = setTimeout(
-            () => resolve(CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT),
-            CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS
-          )
-        }
-      ),
-    ]).finally(() => {
-      if (timer !== undefined) clearTimeout(timer)
-    })
+    opened = await opening
     assertInboxSyncAuthority(authorization)
-    if (result === CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT) {
-      return incomplete("partial")
-    }
-    opened = result
   } catch {
     assertInboxSyncAuthority(authorization)
     return incomplete("partial")
@@ -10370,10 +8978,7 @@ export async function withMerchantCheckoutSparkRecovery(
   if (
     observed &&
     (observed.candidate.planDigest !== payload.plan.planDigest ||
-      observed.handoffId !== payload.handoffId ||
-      observed.senderPubkey !== payload.senderPubkey ||
-      observed.mnemonic !== payload.wallet.mnemonic ||
-      observed.accountNumber !== payload.wallet.accountNumber)
+      observed.payloadDigest !== checkoutRecoveryPayloadDigest(payload))
   ) {
     return incomplete("partial")
   }
@@ -10402,6 +9007,7 @@ export interface DirectConversationSummary {
   id: string
   transport: ParsedDirectMessage["transport"]
   counterpartyPubkey: string
+  participants?: string[]
   latestAt: number
   preview: string
   messageCount: number
@@ -10440,6 +9046,7 @@ function buildDirectConversationSummaries(
   for (const message of messages) {
     const counterparty = counterpartyOf(message, principalPubkey)
     if (!counterparty) continue
+    // The product supports two-party replies; extra p tags remain message metadata.
     const threadId = `${message.transport}:${counterparty}`
     const bucket = grouped.get(threadId) ?? []
     bucket.push(message)
@@ -10456,6 +9063,7 @@ function buildDirectConversationSummaries(
       id,
       transport: latest.transport,
       counterpartyPubkey,
+      participants: latest.participants,
       latestAt: latest.createdAt,
       // Keep complete content so presentation can recognize structured legacy
       // envelopes before applying visual line clamping.
@@ -10568,6 +9176,7 @@ export async function markDirectMessageConversationRead(input: {
   principalPubkey: string
   counterpartyPubkey: string
   transport?: ParsedDirectMessage["transport"]
+  conversationId?: string
 }): Promise<number> {
   if (testOverrides.markDirectMessagesRead) {
     return await testOverrides.markDirectMessagesRead(
@@ -10577,17 +9186,83 @@ export async function markDirectMessageConversationRead(input: {
     )
   }
 
-  return await db.messages
-    .where("recipientPubkey")
-    .equals(input.principalPubkey)
-    .filter(
-      (row) =>
-        row.kind ===
-          (input.transport === "nip04"
-            ? EVENT_KINDS.DM_LEGACY
-            : EVENT_KINDS.DIRECT_MESSAGE) &&
-        row.senderPubkey === input.counterpartyPubkey &&
-        row.read === 0
+  const owner = getCommerceInbox(input.principalPubkey)
+  await owner.initialize()
+  const ids = owner
+    .getSnapshot()
+    .directMessages.filter(
+      (message) =>
+        message.senderPubkey !== input.principalPubkey &&
+        message.recipientPubkey === input.principalPubkey &&
+        message.senderPubkey === input.counterpartyPubkey &&
+        (!input.conversationId ||
+          `${message.transport}:${input.counterpartyPubkey}` ===
+            input.conversationId) &&
+        (!input.transport || message.transport === input.transport)
     )
-    .modify({ read: 1 })
+    .map((message) => message.id)
+  const count = await owner.store.markRead(ids)
+  await owner.refresh()
+  return count
+}
+
+function inboxSnapshotIncomplete(snapshot: CommerceInboxSnapshot): boolean {
+  return (
+    snapshot.diagnostics.coverage !== "complete" ||
+    snapshot.diagnostics.historyRanges.some(
+      (range) =>
+        range.admissionRejected ||
+        range.status === "capped" ||
+        range.status === "unavailable" ||
+        (range.historyAttempted !== false && range.status === "partial")
+    ) ||
+    snapshot.diagnostics.storageUnavailable ||
+    snapshot.decryptFailures.length > 0 ||
+    snapshot.legacyDecryptFailures.length > 0 ||
+    (snapshot.diagnostics.states.queued ?? 0) > 0 ||
+    (snapshot.diagnostics.states.waiting_for_signer ?? 0) > 0 ||
+    (snapshot.diagnostics.states.opening ?? 0) > 0
+  )
+}
+
+/** Pure views of the same committed owner snapshot; no network/cache pipeline. */
+export function projectCommerceInbox(
+  snapshot: CommerceInboxSnapshot,
+  principalPubkey: string
+) {
+  const meta = createMeta(
+    "protected_conversation_list",
+    "commerce",
+    CONVERSATION_CAPABILITIES,
+    {
+      stale: inboxSnapshotIncomplete(snapshot),
+      decryptFailures: snapshot.decryptFailures,
+      legacyDecryptFailures: snapshot.legacyDecryptFailures,
+      inbox: ownerInboxStatus(snapshot),
+    }
+  )
+  return {
+    buyer: {
+      data: buildBuyerConversationSummaries(
+        snapshot.orderMessages,
+        principalPubkey
+      ),
+      meta,
+    },
+    merchant: {
+      data: buildMerchantConversationSummaries(
+        snapshot.orderMessages,
+        principalPubkey
+      ),
+      meta,
+    },
+    direct: {
+      data: buildDirectConversationSummaries(
+        snapshot.directMessages,
+        principalPubkey,
+        snapshot.unreadIds
+      ),
+      meta,
+    },
+  }
 }

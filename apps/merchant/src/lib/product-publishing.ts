@@ -14,6 +14,7 @@ import {
   getShippingOptionsByCoordinates,
   hasCurrentShippingPolicyEvidence,
   isValidSignedPublicNostrEvent,
+  isVerifiedNostrEvent,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   publishWithPlanner,
@@ -441,7 +442,7 @@ export async function prepareProductPublicationListings(
     !option.signedEvent ||
     !hasCurrentShippingPolicyEvidence(option) ||
     option.pubkey !== input.merchantPubkey ||
-    !isValidSignedPublicNostrEvent(option.signedEvent)
+    !isVerifiedNostrEvent(option.signedEvent)
   ) {
     throw new Error(
       "The shipping table could not be verified. Check Shipping before publishing."

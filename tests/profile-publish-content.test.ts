@@ -1,3 +1,4 @@
+import { signFixture, publicFixturePubkey } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   assertProfilePublishRetained,
@@ -14,7 +15,7 @@ import {
 
 describe("profile publish content", () => {
   it("separates public and authenticated-owner profile query perspectives", () => {
-    const pubkey = "a".repeat(64)
+    const pubkey = publicFixturePubkey
 
     expect(getProfileSingletonQueryKey(pubkey, null)).not.toEqual(
       getProfileSingletonQueryKey(pubkey, pubkey)
@@ -29,7 +30,7 @@ describe("profile publish content", () => {
 
   it("keeps known profile frontiers ahead of legacy projection-only rows", () => {
     const retained = {
-      pubkey: "a".repeat(64),
+      pubkey: publicFixturePubkey,
       name: "Retained",
       rawContent: JSON.stringify({ name: "Retained", bot: true }),
       eventId: "1".repeat(64),
@@ -50,7 +51,7 @@ describe("profile publish content", () => {
     const eventId = "1".repeat(64)
     const rawContent = JSON.stringify({ name: "Alice" })
     const current = {
-      pubkey: "a".repeat(64),
+      pubkey: publicFixturePubkey,
       name: "Alice",
       about: "Stale enriched biography",
       rawContent,
@@ -112,19 +113,24 @@ describe("profile publish content", () => {
     ).not.toThrow()
   })
 
-  it("drops unsafe or malformed media from untrusted kind-0 content", () => {
-    const profile = parseProfileEvent({
-      pubkey: "a".repeat(64),
-      content: JSON.stringify({
-        name: "Mallory",
-        picture: "http://127.0.0.1/avatar.png",
-        banner: "https://cdn.conduit.market/banner.png",
-        about: { unexpected: true },
-      }),
-    })
+  it("drops unsafe or malformed media from untrusted kind-0 content", async () => {
+    const profile = parseProfileEvent(
+      await signFixture(
+        {
+          pubkey: publicFixturePubkey,
+          content: JSON.stringify({
+            name: "Mallory",
+            picture: "http://127.0.0.1/avatar.png",
+            banner: "https://cdn.conduit.market/banner.png",
+            about: { unexpected: true },
+          }),
+        },
+        0
+      )
+    )
 
     expect(profile).toEqual({
-      pubkey: "a".repeat(64),
+      pubkey: publicFixturePubkey,
       name: "Mallory",
       displayName: undefined,
       about: undefined,
@@ -136,11 +142,13 @@ describe("profile publish content", () => {
     })
   })
 
-  it("handles non-object kind-0 JSON as an empty profile", () => {
+  it("handles non-object kind-0 JSON as an empty profile", async () => {
     expect(
-      parseProfileEvent({ pubkey: "a".repeat(64), content: "null" })
+      parseProfileEvent(
+        await signFixture({ pubkey: publicFixturePubkey, content: "null" }, 0)
+      )
     ).toEqual({
-      pubkey: "a".repeat(64),
+      pubkey: publicFixturePubkey,
       name: undefined,
       displayName: undefined,
       about: undefined,
@@ -176,7 +184,7 @@ describe("profile publish content", () => {
         displayName: "Updated Shop",
       },
       latestProfile: {
-        pubkey: "a".repeat(64),
+        pubkey: publicFixturePubkey,
         displayName: "Conduit Shop",
         about: "A merchant profile",
         picture: "https://example.com/avatar.png",
@@ -197,7 +205,7 @@ describe("profile publish content", () => {
         displayName: "Repaired Shop",
       },
       latestProfile: {
-        pubkey: "a".repeat(64),
+        pubkey: publicFixturePubkey,
         displayName: "Last readable shop",
         about: "Last readable biography",
         lud16: undefined,
@@ -218,7 +226,7 @@ describe("profile publish content", () => {
         displayName: "Repaired Shop",
       },
       latestProfile: {
-        pubkey: "a".repeat(64),
+        pubkey: publicFixturePubkey,
         displayName: "Last readable shop",
         about: "Last readable biography",
       },
@@ -236,7 +244,7 @@ describe("profile publish content", () => {
           about: undefined,
         },
         latestProfile: {
-          pubkey: "a".repeat(64),
+          pubkey: publicFixturePubkey,
           displayName: "Conduit Shop",
           about: "A merchant profile",
           picture: "https://example.com/avatar.png",
@@ -248,7 +256,7 @@ describe("profile publish content", () => {
     })
   })
 
-  it("preserves raw unsafe media on unrelated edits without exposing it for rendering", () => {
+  it("preserves raw unsafe media on unrelated edits without exposing it for rendering", async () => {
     const rawContent = JSON.stringify({
       display_name: "Conduit Shop",
       picture: "http://127.0.0.1/avatar.png",
@@ -257,7 +265,12 @@ describe("profile publish content", () => {
     })
 
     expect(
-      parseProfileEvent({ pubkey: "a".repeat(64), content: rawContent })
+      parseProfileEvent(
+        await signFixture(
+          { pubkey: publicFixturePubkey, content: rawContent },
+          0
+        )
+      )
     ).toMatchObject({ picture: undefined, banner: undefined })
     expect(
       buildNip01ProfilePublishContent({
@@ -370,16 +383,21 @@ describe("profile publish content", () => {
     })
   })
 
-  it("omits hidden media clears from full form-shaped unrelated edits", () => {
+  it("omits hidden media clears from full form-shaped unrelated edits", async () => {
     const rawContent = JSON.stringify({
       display_name: "Conduit Shop",
       picture: "http://127.0.0.1/avatar.png",
       banner: "https://assets.localhost/banner.png",
     })
-    const projected = parseProfileEvent({
-      pubkey: "a".repeat(64),
-      content: rawContent,
-    })
+    const projected = parseProfileEvent(
+      await signFixture(
+        {
+          pubkey: publicFixturePubkey,
+          content: rawContent,
+        },
+        0
+      )
+    )
     const update = buildProfileUpdatePayload(
       {
         name: undefined,
@@ -435,7 +453,7 @@ describe("profile publish content", () => {
     const content = buildNip01ProfilePublishContent({
       profile: {},
       latestProfile: {
-        pubkey: "a".repeat(64),
+        pubkey: publicFixturePubkey,
         name: "Conduit Shop",
         about: "A merchant profile",
       },
@@ -457,7 +475,7 @@ describe("profile publish content", () => {
             name: "Conduit Shop",
           },
           latestProfile: {
-            pubkey: "a".repeat(64),
+            pubkey: publicFixturePubkey,
           },
         }),
       })

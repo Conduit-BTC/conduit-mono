@@ -18,7 +18,6 @@ import {
   getShippingOptionsByCoordinates,
   getProductShippingOptionAddress,
   isBuyerCountryEligible,
-  parseProductEvent,
   parseShippingOptionEvent,
   resolveProductFulfillment,
   selectLatestShippingOptions,
@@ -28,6 +27,12 @@ import {
   type CachedProductTombstone,
   type ShippingDeletionFallbackStorage,
 } from "@conduit/core"
+import { parsePrivateOrderProductFields } from "@conduit/core/protocol/products"
+import {
+  admitFixture,
+  publicFixturePubkey,
+  signFixture,
+} from "./helpers/public-event"
 
 const MERCHANT = "a".repeat(64)
 const OTHER_MERCHANT = "b".repeat(64)
@@ -239,7 +244,7 @@ describe("canonical fixed product shipping", () => {
     }
   })
 
-  it("serializes fixed shipping prices as parser-compatible plain decimals", () => {
+  it("serializes fixed shipping prices as parser-compatible plain decimals", async () => {
     const cases = [
       { amount: 0.00000001, currency: "BTC", wireAmount: "0.00000001" },
       { amount: 5.99, currency: "USD", wireAmount: "5.99" },
@@ -259,12 +264,15 @@ describe("canonical fixed product shipping", () => {
 
       expect(draft.tags).toContainEqual(["price", wireAmount, currency])
       expect(
-        parseShippingOptionEvent({
-          id: `shipping-${currency.toLowerCase()}`,
-          pubkey: MERCHANT,
-          created_at: 1,
-          tags: draft.tags,
-        })
+        parseShippingOptionEvent(
+          await signFixture(
+            {
+              created_at: 1,
+              tags: draft.tags,
+            },
+            30406
+          )
+        )
       ).toMatchObject({ price: amount, currency })
     }
   })
@@ -321,7 +329,7 @@ describe("canonical fixed product shipping", () => {
   })
 
   it("fails closed for product extra-cost and multiple option references", () => {
-    const extraCostProduct = parseProductEvent({
+    const extraCostProduct = parsePrivateOrderProductFields({
       id: "extra-cost-product",
       pubkey: MERCHANT,
       created_at: 2,
@@ -333,8 +341,8 @@ describe("canonical fixed product shipping", () => {
         ["type", "simple", "physical"],
         ["shipping_option", SHIPPING_COORDINATE, "3"],
       ],
-    })
-    const multipleOptionsProduct = parseProductEvent({
+    } as never)
+    const multipleOptionsProduct = parsePrivateOrderProductFields({
       id: "multiple-options-product",
       pubkey: MERCHANT,
       created_at: 2,
@@ -350,7 +358,7 @@ describe("canonical fixed product shipping", () => {
           getProductShippingOptionAddress(MERCHANT, "express"),
         ],
       ],
-    })
+    } as never)
 
     expect(extraCostProduct.shippingOptionLaunchUnsupported).toBe(true)
     expect(multipleOptionsProduct.shippingOptionLaunchUnsupported).toBe(true)
@@ -362,7 +370,7 @@ describe("canonical fixed product shipping", () => {
     ).toMatchObject({ status: "order_first", reason: "unsupported" })
   })
 
-  it("requires all Gamma launch fields and lets malformed latest events mask older state", () => {
+  it("requires all Gamma launch fields and lets malformed latest events mask older state", async () => {
     const valid = {
       id: "valid",
       pubkey: MERCHANT,
@@ -382,19 +390,28 @@ describe("canonical fixed product shipping", () => {
       tags: valid.tags.filter((tag) => tag[0] !== "service"),
     }
 
-    expect(parseShippingOptionEvent(valid)).not.toBeNull()
-    expect(parseShippingOptionEvent(malformedLatest)).toBeNull()
-    expect(selectLatestShippingOptions([valid, malformedLatest])).toEqual([])
+    const admittedValid = await signFixture(valid, 30406)
+    const admittedMalformed = await signFixture(malformedLatest, 30406)
+    expect(parseShippingOptionEvent(admittedValid)).not.toBeNull()
+    expect(parseShippingOptionEvent(admittedMalformed)).toBeNull()
     expect(
-      parseShippingOptionEvent({
-        ...valid,
-        id: "ambiguous-price",
-        tags: [...valid.tags, ["price", "6", "USD"]],
-      })
+      selectLatestShippingOptions([admittedValid, admittedMalformed])
+    ).toEqual([])
+    expect(
+      parseShippingOptionEvent(
+        await signFixture(
+          {
+            ...valid,
+            id: "ambiguous-price",
+            tags: [...valid.tags, ["price", "6", "USD"]],
+          },
+          30406
+        )
+      )
     ).toBeNull()
   })
 
-  it("rejects malformed required tag shapes and non-decimal prices without reviving older state", () => {
+  it("rejects malformed required tag shapes and non-decimal prices without reviving older state", async () => {
     const valid = {
       id: "valid-required-tag-shapes",
       pubkey: MERCHANT,
@@ -463,7 +480,8 @@ describe("canonical fixed product shipping", () => {
       ],
     ] as const
 
-    expect(parseShippingOptionEvent(valid)).not.toBeNull()
+    const admittedValid = await signFixture(valid, 30406)
+    expect(parseShippingOptionEvent(admittedValid)).not.toBeNull()
     for (const [name, tags] of malformedCases) {
       const malformedLatest = {
         ...valid,
@@ -471,12 +489,15 @@ describe("canonical fixed product shipping", () => {
         created_at: 2,
         tags,
       }
-      expect(parseShippingOptionEvent(malformedLatest)).toBeNull()
-      expect(selectLatestShippingOptions([valid, malformedLatest])).toEqual([])
+      const admittedMalformed = await signFixture(malformedLatest, 30406)
+      expect(parseShippingOptionEvent(admittedMalformed)).toBeNull()
+      expect(
+        selectLatestShippingOptions([admittedValid, admittedMalformed])
+      ).toEqual([])
     }
   })
 
-  it("fails closed on every unknown launch tag while allowing client metadata", () => {
+  it("fails closed on every unknown launch tag while allowing client metadata", async () => {
     const base = {
       id: "shipping-with-constraints",
       pubkey: MERCHANT,
@@ -496,40 +517,67 @@ describe("canonical fixed product shipping", () => {
       ],
     }
 
-    expect(parseShippingOptionEvent(base)?.launchUnsupportedTags).toEqual([])
+    expect(
+      parseShippingOptionEvent(await signFixture(base, 30406))
+        ?.launchUnsupportedTags
+    ).toEqual([])
 
-    const unknownConstraint = parseShippingOptionEvent({
-      ...base,
-      id: "shipping-with-future-constraint",
-      tags: [...base.tags, ["future_constraint", "merchant-defined"]],
-    })
+    const unknownConstraint = parseShippingOptionEvent(
+      await signFixture(
+        {
+          ...base,
+          id: "shipping-with-future-constraint",
+          tags: [...base.tags, ["future_constraint", "merchant-defined"]],
+        },
+        30406
+      )
+    )
     expect(unknownConstraint?.launchUnsupportedTags).toEqual([
       "future_constraint",
     ])
     expect(
-      resolveProductFulfillment(product(), [unknownConstraint!])
+      resolveProductFulfillment(
+        product({
+          id: `30402:${publicFixturePubkey}:${PRODUCT_D_TAG}`,
+          pubkey: publicFixturePubkey,
+          shippingOptionId: unknownConstraint!.id,
+        }),
+        [unknownConstraint!]
+      )
     ).toMatchObject({ status: "order_first", reason: "unsupported" })
 
-    const draftDestinationConstraint = parseShippingOptionEvent({
-      ...base,
-      id: "shipping-with-draft-destination",
-      tags: [
-        ...base.tags,
-        ["destination_schema", "1"],
-        ["destination", "include", "country", "US"],
-        ["destination", "exclude", "subdivision", "US-HI"],
-      ],
-    })
+    const draftDestinationConstraint = parseShippingOptionEvent(
+      await signFixture(
+        {
+          ...base,
+          id: "shipping-with-draft-destination",
+          tags: [
+            ...base.tags,
+            ["destination_schema", "1"],
+            ["destination", "include", "country", "US"],
+            ["destination", "exclude", "subdivision", "US-HI"],
+          ],
+        },
+        30406
+      )
+    )
     expect(draftDestinationConstraint?.launchUnsupportedTags).toEqual([
       "destination",
       "destination_schema",
     ])
     expect(
-      resolveProductFulfillment(product(), [draftDestinationConstraint!])
+      resolveProductFulfillment(
+        product({
+          id: `30402:${publicFixturePubkey}:${PRODUCT_D_TAG}`,
+          pubkey: publicFixturePubkey,
+          shippingOptionId: draftDestinationConstraint!.id,
+        }),
+        [draftDestinationConstraint!]
+      )
     ).toMatchObject({ status: "order_first", reason: "unsupported" })
   })
 
-  it("does not resolve a latest shipping option deleted by address or event id", () => {
+  it("does not resolve a latest shipping option deleted by address or event id", async () => {
     const older = {
       id: "older",
       pubkey: MERCHANT,
@@ -551,54 +599,52 @@ describe("canonical fixed product shipping", () => {
       ),
     }
 
+    const admittedOlder = await signFixture(older, 30406)
+    const admittedLatest = await signFixture(latest, 30406)
+    const signedCoordinate = getProductShippingOptionAddress(
+      publicFixturePubkey,
+      PRODUCT_D_TAG
+    )
     for (const target of [
-      ["a", SHIPPING_COORDINATE],
-      ["e", latest.id],
+      ["a", signedCoordinate],
+      ["e", admittedLatest.id],
     ]) {
       expect(
         selectLatestShippingOptions(
-          [older, latest],
-          [
-            {
-              id: `delete-${target[0]}`,
-              pubkey: MERCHANT,
-              created_at: 3,
-              tags: [target],
-            },
-          ]
+          [admittedOlder, admittedLatest],
+          [await signFixture({ created_at: 3, tags: [target] }, 5)]
         )
       ).toEqual([])
     }
 
-    expect(
-      selectLatestShippingOptions(
-        [latest],
-        [
-          {
-            id: "foreign-delete",
-            pubkey: OTHER_MERCHANT,
-            created_at: 3,
-            tags: [["a", SHIPPING_COORDINATE]],
-          },
-        ]
+    const foreignDelete = await admitFixture(
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: 3,
+          content: "",
+          tags: [["a", signedCoordinate]],
+        },
+        generateSecretKey()
       )
+    )
+    expect(
+      selectLatestShippingOptions([admittedLatest], [foreignDelete])
     ).toHaveLength(1)
     expect(
       selectLatestShippingOptions(
-        [latest],
+        [admittedLatest],
         [
-          {
-            id: "older-delete",
-            pubkey: MERCHANT,
-            created_at: 1,
-            tags: [["e", latest.id]],
-          },
+          await signFixture(
+            { created_at: 1, tags: [["e", admittedLatest.id]] },
+            5
+          ),
         ]
       )
     ).toEqual([])
   })
 
-  it("applies address deletions only to revisions at or before their cutoff", () => {
+  it("applies address deletions only to revisions at or before their cutoff", async () => {
     const option = {
       id: "latest",
       pubkey: MERCHANT,
@@ -612,29 +658,30 @@ describe("canonical fixed product shipping", () => {
       ],
     }
 
+    const admittedOption = await signFixture(option, 30406)
+    const signedCoordinate = getProductShippingOptionAddress(
+      publicFixturePubkey,
+      PRODUCT_D_TAG
+    )
     expect(
       selectLatestShippingOptions(
-        [option],
+        [admittedOption],
         [
-          {
-            id: "older-address-delete",
-            pubkey: MERCHANT,
-            created_at: 1,
-            tags: [["a", SHIPPING_COORDINATE]],
-          },
+          await signFixture(
+            { created_at: 1, tags: [["a", signedCoordinate]] },
+            5
+          ),
         ]
       )
     ).toHaveLength(1)
     expect(
       selectLatestShippingOptions(
-        [option],
+        [admittedOption],
         [
-          {
-            id: "equal-address-delete",
-            pubkey: MERCHANT,
-            created_at: 2,
-            tags: [["a", SHIPPING_COORDINATE]],
-          },
+          await signFixture(
+            { created_at: 2, tags: [["a", signedCoordinate]] },
+            5
+          ),
         ]
       )
     ).toEqual([])
@@ -717,14 +764,14 @@ describe("canonical fixed product shipping", () => {
     })
   })
 
-  it("fails closed for unverified or saturated authoritative relay reads", async () => {
-    let mode: "rejected-saturated" | "saturated" | "unverified" = "unverified"
+  it("fails closed for saturated authoritative relay reads", async () => {
+    let mode: "rejected-saturated" | "saturated" = "saturated"
     let relayListFetches = 0
     __setRelayListTestOverrides({
       now: () => 1,
       fetchSignedEventsFanoutDetailed: async () => {
         relayListFetches += 1
-        return { events: [], relays: [], eventsVerified: true }
+        return { events: [], relays: [] }
       },
       loadCached: async (author) => ({
         pubkey: author,
@@ -743,18 +790,10 @@ describe("canonical fixed product shipping", () => {
           eventCount: mode === "saturated" ? 100 : 0,
           rejectedEventCount: mode === "rejected-saturated" ? 100 : 0,
         })),
-        eventsVerified: mode !== "unverified",
       }),
     })
 
     try {
-      await expect(
-        getShippingOptionsByCoordinates([SHIPPING_COORDINATE])
-      ).rejects.toThrow(
-        "Fixed shipping could not be verified across the planned relays"
-      )
-
-      mode = "saturated"
       await expect(
         getShippingOptionsByCoordinates([SHIPPING_COORDINATE])
       ).rejects.toThrow(
@@ -843,7 +882,6 @@ describe("canonical fixed product shipping", () => {
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async (targetIds) =>
@@ -992,7 +1030,6 @@ describe("canonical fixed product shipping", () => {
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async (targetIds) => {
@@ -1140,7 +1177,6 @@ describe("canonical fixed product shipping", () => {
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async () => [],
@@ -1246,7 +1282,6 @@ describe("canonical fixed product shipping", () => {
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async () => [],
@@ -1374,7 +1409,6 @@ describe("canonical fixed product shipping", () => {
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async () => [],
@@ -1495,7 +1529,6 @@ describe("canonical fixed product shipping", () => {
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async (targetIds) =>
@@ -1536,7 +1569,7 @@ describe("canonical fixed product shipping", () => {
   }, 15_000)
 
   it("keeps legacy inline listings readable but fail-closed for direct payment", () => {
-    const legacy = parseProductEvent({
+    const legacy = parsePrivateOrderProductFields({
       id: "legacy-event",
       pubkey: MERCHANT,
       created_at: 1,
@@ -1549,7 +1582,7 @@ describe("canonical fixed product shipping", () => {
         ["shipping_cost", "5", "USD"],
         ["shipping_country", "US"],
       ],
-    })
+    } as never)
     const resolution = resolveProductFulfillment(legacy, [])
     const republished = buildProductListingEventDraft({
       product: legacy,
@@ -1796,7 +1829,6 @@ function createShippingReadHarness(
             status: "success" as const,
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       },
       getCachedDeletionTombstones: async (targetIds) =>

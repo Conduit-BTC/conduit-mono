@@ -43,15 +43,13 @@ async function publishProductDeletionRelay(
     status: await publishSignedEventToRelay({
       signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
+      relayTarget: input.relayTarget ?? undefined,
       authorPubkey: input.signedEvent.pubkey,
       accountPubkey: input.accountPubkey,
       authenticatedPubkey,
-      ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-      appRelayUrls: input.appRelayUrls,
-      personalRelayUrls: input.personalRelayUrls,
-      independentRelayUrls: input.independentRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
+      ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,
       shouldContinue:
         requiresAuthenticatedOwnerAuthority && authenticatedPubkey
           ? () =>
@@ -66,7 +64,10 @@ async function restoreLocalDeletionEvidence(
   job: ProductDeletionDeliveryJob
 ): Promise<void> {
   await cacheSignedProductDeletionEvent(
-    new NDKEvent(undefined, job.signedEvent)
+    new NDKEvent(undefined, {
+      ...job.signedEvent,
+      tags: job.signedEvent.tags.map((tag) => [...tag]),
+    })
   )
 }
 
@@ -149,6 +150,9 @@ export function productDeletionJobToPublishResult(
   return {
     plan: {
       intent: "commerce_author_event",
+      // This content-free delivery summary is not an executable authority plan.
+      primaryRelayTargets: [],
+      broadcastRelayTargets: [],
       primaryRelayUrls: job.relayPlan.map((target) => target.relayUrl),
       broadcastRelayUrls: [],
       parkedRelayUrls: [],

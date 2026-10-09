@@ -1,4 +1,8 @@
 import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
+import {
   getShippingCostSats,
   isFiatCurrencyCode,
   normalizeCommercePrice,
@@ -14,10 +18,7 @@ import {
   selectLatestShippingOptions,
 } from "./shipping"
 import type { AnonZapRequestDraft } from "./anon-zap"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+import { type SignedPublicNostrEvent } from "./signed-event"
 
 export {
   isValidSignedPublicNostrEvent,
@@ -170,7 +171,10 @@ export function parseAnonZapCheckoutIntent(
   return { merchantPubkey, items }
 }
 
-function getTagValue(tags: readonly string[][], name: string): string | null {
+function getTagValue(
+  tags: readonly (readonly string[])[],
+  name: string
+): string | null {
   return tags.find((tag) => tag[0] === name)?.[1] ?? null
 }
 
@@ -218,10 +222,10 @@ function normalizeAuthorizedShippingCountryRules(
   return normalized
 }
 
-function latestEvent(
-  events: SignedPublicNostrEvent[],
+function latestEvent<T extends SignedPublicNostrEvent>(
+  events: T[],
   description: string
-): SignedPublicNostrEvent {
+): T {
   if (events.length === 0) throw new Error(`${description} is unavailable.`)
   const newestCreatedAt = Math.max(...events.map((event) => event.created_at))
   const newest = events.filter((event) => event.created_at === newestCreatedAt)
@@ -234,7 +238,7 @@ function latestEvent(
 function isDeleted(
   event: SignedPublicNostrEvent,
   productAddress: string,
-  deletionEvents: SignedPublicNostrEvent[]
+  deletionEvents: VerifiedNostrEvent[]
 ): boolean {
   return deletionEvents.some((deletion) => {
     if (deletion.created_at < event.created_at) return false
@@ -281,13 +285,13 @@ function getExpectedLnurlPayRequestUrl(lud16: string): string | null {
 
 export function resolveAnonZapMerchantLud16(
   merchantPubkey: string,
-  profileEvents: SignedPublicNostrEvent[]
+  profileEvents: VerifiedNostrEvent[]
 ): string {
   const profiles = profileEvents.filter(
     (event) =>
       event.kind === PROFILE_KIND &&
       event.pubkey === merchantPubkey &&
-      isValidSignedPublicNostrEvent(event)
+      isVerifiedNostrEvent(event)
   )
   const lud16 = getProfileLud16(latestEvent(profiles, "Merchant profile"))
   if (!lud16) throw new Error("Merchant Lightning Address is unavailable.")
@@ -296,10 +300,10 @@ export function resolveAnonZapMerchantLud16(
 
 export function authorizeAnonZapCheckout(input: {
   intent: AnonZapCheckoutIntent
-  productEvents: SignedPublicNostrEvent[]
-  shippingEvents: SignedPublicNostrEvent[]
-  profileEvents: SignedPublicNostrEvent[]
-  deletionEvents: SignedPublicNostrEvent[]
+  productEvents: VerifiedNostrEvent[]
+  shippingEvents: VerifiedNostrEvent[]
+  profileEvents: VerifiedNostrEvent[]
+  deletionEvents: VerifiedNostrEvent[]
   receiptRelayUrls: readonly string[]
   pricingRate?: BtcUsdRateQuote | null
   nowSeconds?: number
@@ -314,7 +318,7 @@ export function authorizeAnonZapCheckout(input: {
     ...input.shippingEvents,
     ...input.profileEvents,
     ...input.deletionEvents,
-  ].filter(isValidSignedPublicNostrEvent)
+  ].filter(isVerifiedNostrEvent)
   const products = validEvents.filter(
     (event) =>
       event.kind === PRODUCT_KIND && event.pubkey === intent.merchantPubkey

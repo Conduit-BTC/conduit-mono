@@ -1,16 +1,16 @@
 import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import { relayTargetsFromUrls } from "./relay-authority"
+import { type AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import {
-  filterEligibleAccountRelayUrls,
-  orderEquivalentAccountRelayOperations,
-  type AccountNetworkLocalStateRepository,
-} from "./account-network-local-state"
-import {
-  GUEST_ORDER_LOCAL_RETENTION_MS,
   deriveOrderLifecyclePhase,
+  GUEST_ORDER_LOCAL_RETENTION_MS,
 } from "./order-lifecycle"
-import { publishSignedEventToRelay } from "./relay-publish"
+import {
+  retryPrivateDeliveryTargets,
+  type PrivateDeliveryTargetPublisher,
+} from "./private-message-delivery"
 import {
   isApprovedCompatibilityOrderRelayPlan,
   MAX_COMPATIBILITY_ORDER_RELAYS,
@@ -98,19 +98,7 @@ export interface OrderRelayDeliveryRepository {
   ): Promise<OrderRelayDeliveryStageResult>
 }
 
-export type OrderRelayDeliveryPublisher = (input: {
-  relayUrl: string
-  signedEvent: SignedPublicNostrEvent
-  accountPubkey: string
-  appRelayUrls?: readonly string[]
-  personalRelayUrls?: readonly string[]
-  independentRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: Pick<
-    AccountNetworkLocalStateRepository,
-    "get"
-  >
-  shouldContinue?: () => boolean
-}) => Promise<OrderRelayDeliveryStatus>
+export type OrderRelayDeliveryPublisher = PrivateDeliveryTargetPublisher
 
 export interface RetryOrderRelayDeliveryOptions {
   repository?: OrderRelayDeliveryRepository
@@ -119,6 +107,10 @@ export interface RetryOrderRelayDeliveryOptions {
   leaseOwner?: string
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  inboxDeclarationEvidenceRepository?: Pick<
+    import("./inbox-declaration-evidence").InboxDeclarationEvidenceRepository,
     "get"
   >
   /** Explicit foreground recovery may replay a same-session guest wrap. */
@@ -149,23 +141,6 @@ const dexieRepository: OrderRelayDeliveryRepository = {
       await db.orderLifecycles.put(record)
       return { lifecycle: record, inserted: true }
     }),
-}
-
-async function defaultPublisher(
-  input: Parameters<OrderRelayDeliveryPublisher>[0]
-): Promise<OrderRelayDeliveryStatus> {
-  return await publishSignedEventToRelay({
-    signedEvent: input.signedEvent,
-    relayUrl: input.relayUrl,
-    authorPubkey: input.signedEvent.pubkey,
-    accountPubkey: input.accountPubkey,
-    appRelayUrls: input.appRelayUrls,
-    personalRelayUrls: input.personalRelayUrls,
-    independentRelayUrls: input.independentRelayUrls,
-    accountNetworkLocalStateRepository:
-      input.accountNetworkLocalStateRepository,
-    shouldContinue: input.shouldContinue,
-  })
 }
 
 function nextLeaseOwner(): string {
@@ -737,7 +712,6 @@ export async function retryOrderRelayDelivery(
   options: RetryOrderRelayDeliveryOptions = {}
 ): Promise<OrderLifecycle | undefined> {
   const repository = options.repository ?? dexieRepository
-  const publisher = options.publisher ?? defaultPublisher
   const now = options.now ?? Date.now
   const leaseOwner = options.leaseOwner ?? nextLeaseOwner()
   const timestamp = now()
@@ -777,6 +751,10 @@ export async function retryOrderRelayDelivery(
 
   if (
     !claimed?.orderRelayDelivery ||
+    !hasValidOrderRelayRoutingAuthority(
+      claimed.orderRelayDelivery,
+      claimed.merchantPubkey
+    ) ||
     claimed.orderRelayDelivery.deliveryLeaseOwner !== leaseOwner
   ) {
     return claimed
@@ -792,88 +770,75 @@ export async function retryOrderRelayDelivery(
         (claimed.orderRelayDelivery?.route !== "compatibility_order" ||
           isApprovedCompatibilityOrderRelayPlan([target.relayUrl]))
     )
-    const orderedOutstanding = await orderEquivalentAccountRelayOperations({
+    await retryPrivateDeliveryTargets({
+      senderPubkey: claimed.buyerPubkey,
       accountPubkey: claimed.buyerPubkey,
-      operations: outstanding.map((target) => ({
-        relayUrl: target.relayUrl,
-        equivalenceKey: "exact-order-delivery-retry",
-        value: target,
-      })),
-      repository: options.accountNetworkLocalStateRepository,
+      leg: {
+        recipientPubkey: claimed.merchantPubkey,
+        event: signedEvent,
+        relayUrls: outstanding.map((target) => target.relayUrl),
+        relayTargets: relayTargetsFromUrls(
+          outstanding.map((target) => target.relayUrl),
+          claimed.orderRelayDelivery.route === "compatibility_order"
+            ? {
+                kind: "compatibility",
+                operation: "write",
+                policy: "order_delivery",
+              }
+            : {
+                kind: "recipient_nip17",
+                operation: "write",
+                recipientPubkey: claimed.merchantPubkey,
+                ...(claimed.orderRelayDelivery.routingAuthority
+                  ? {
+                      eventId:
+                        claimed.orderRelayDelivery.routingAuthority.eventId,
+                    }
+                  : {}),
+              }
+        ),
+        ownerSelectedRelayUrls: [],
+        compatibility:
+          claimed.orderRelayDelivery.route === "compatibility_order",
+        acknowledged: [],
+        failed: [],
+      },
+      publisher: options.publisher,
+      shouldContinue: options.shouldContinue,
+      accountNetworkLocalStateRepository:
+        options.accountNetworkLocalStateRepository,
+      inboxDeclarationEvidenceRepository:
+        options.inboxDeclarationEvidenceRepository,
+      beforePublish: async (relayUrl) => {
+        const begun = await beginOrderRelayDeliveryAttempt(
+          {
+            orderId,
+            buyerPubkey: claimed.buyerPubkey,
+            leaseOwner,
+            relayUrls: [relayUrl],
+            shouldContinue: options.shouldContinue,
+          },
+          { repository, now }
+        )
+        const generation = begun.generationsByRelay[relayUrl]
+        return generation === undefined
+          ? null
+          : { generation, wrapId: begun.wrapId }
+      },
+      afterPublish: async (relayUrl, status, checkpoint) => {
+        await recordOrderRelayDeliveryOutcomes(
+          {
+            orderId,
+            buyerPubkey: claimed.buyerPubkey,
+            leaseOwner,
+            wrapId: checkpoint.wrapId,
+            outcomes: [{ relayUrl, status, generation: checkpoint.generation }],
+            retryDelayMs: RETRY_DELAY_MS,
+          },
+          { repository, now }
+        )
+      },
     })
-
-    for (const { value: target } of orderedOutstanding) {
-      if (options.shouldContinue?.() === false) break
-      const appRelayUrls =
-        claimed.orderRelayDelivery.route === "compatibility_order"
-          ? [target.relayUrl]
-          : []
-      const independentRelayUrls =
-        claimed.orderRelayDelivery.route === "declared_inbox"
-          ? [target.relayUrl]
-          : []
-      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
-        accountPubkey: claimed.buyerPubkey,
-        candidateRelayUrls: [target.relayUrl],
-        appRelayUrls,
-        personalRelayUrls: [],
-        independentRelayUrls,
-        repository: options.accountNetworkLocalStateRepository,
-      })
-      if (options.shouldContinue?.() === false) break
-      if (eligibleRelayUrls.length === 0) continue
-
-      const begun = await beginOrderRelayDeliveryAttempt(
-        {
-          orderId,
-          buyerPubkey: claimed.buyerPubkey,
-          leaseOwner,
-          relayUrls: [target.relayUrl],
-          shouldContinue: options.shouldContinue,
-        },
-        { repository, now }
-      )
-      const generation = begun.generationsByRelay[target.relayUrl]
-      if (generation === undefined) continue
-      if (options.shouldContinue?.() === false) break
-
-      let outcome: OrderRelayDeliveryStatus
-      try {
-        outcome = await publisher({
-          relayUrl: target.relayUrl,
-          signedEvent,
-          accountPubkey: claimed.buyerPubkey,
-          appRelayUrls,
-          personalRelayUrls: [],
-          independentRelayUrls,
-          accountNetworkLocalStateRepository:
-            options.accountNetworkLocalStateRepository,
-          shouldContinue: options.shouldContinue,
-        })
-      } catch {
-        if (options.shouldContinue?.() === false) break
-        outcome = "timed_out"
-      }
-      if (outcome === "pending") outcome = "timed_out"
-
-      await recordOrderRelayDeliveryOutcomes(
-        {
-          orderId,
-          buyerPubkey: claimed.buyerPubkey,
-          leaseOwner,
-          wrapId: begun.wrapId,
-          outcomes: [
-            {
-              relayUrl: target.relayUrl,
-              status: outcome,
-              generation,
-            },
-          ],
-          retryDelayMs: RETRY_DELAY_MS,
-        },
-        { repository, now }
-      )
-    }
   } finally {
     await repository.update(orderId, (current) => {
       const delivery = current.orderRelayDelivery

@@ -11,6 +11,7 @@ import {
   type ResolveEventMarketReceiptMerchandiseEvidenceInput,
 } from "./event-market-merchandise"
 import { hasExactSelectedProductSpecifications } from "./event-market-order-evidence"
+import { admitPublicEvent, isVerifiedNostrEvent } from "./verified-public-event"
 
 export interface FutureMarketReceiptMerchandiseItem extends EventMarketReceiptMerchandiseItem {
   selectedSpecifications?: FutureMarketReadyReceiptSchema["items"][number]["selectedSpecifications"]
@@ -64,8 +65,10 @@ export function resolveFutureMarketReceiptMerchandiseEvidence(
   }
 ): FutureMarketReceiptMerchandiseResolution {
   const receipt = futureMarketReadyReceiptSchema.parse(input.receipt)
-  const embedded = receipt.items.flatMap((item) =>
-    item.product.signedEvent ? [item.product.signedEvent] : []
+  const embedded = input.receipt.items.flatMap((item) =>
+    item.product.signedEvent && isVerifiedNostrEvent(item.product.signedEvent)
+      ? [item.product.signedEvent]
+      : []
   )
   const embeddedIds = new Set(embedded.map((event) => event.id))
   return includeReceiptSpecifications(
@@ -104,9 +107,29 @@ export async function getFutureMarketReceiptMerchandise(
   }
   assertCurrent()
   const receipt = futureMarketReadyReceiptSchema.parse(input.receipt)
+  const admittedEmbedded = await Promise.all(
+    receipt.items.map(async (item) => {
+      const raw = item.product.signedEvent
+      if (!raw) return undefined
+      const admission = await admitPublicEvent(raw, { signal: input.signal })
+      if (admission.status === "cancelled") {
+        throw new DOMException(
+          "Receipt merchandise read was cancelled.",
+          "AbortError"
+        )
+      }
+      if (admission.status === "unavailable") {
+        throw new Error("Receipt merchandise verification is unavailable.")
+      }
+      // Keep invalid bytes as evidence of a malformed carried item; the
+      // synchronous resolver will not treat them as verified merchandise.
+      return admission.status === "verified" ? admission.event : raw
+    })
+  )
+  assertCurrent()
   const local = resolveFutureMarketReceiptMerchandiseEvidence({
     receipt,
-    events: [],
+    events: admittedEmbedded.filter((event) => event !== undefined),
     coverage: {
       attemptedRelayCount: 0,
       completeRelayCount: 0,

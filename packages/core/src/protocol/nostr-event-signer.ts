@@ -1,3 +1,4 @@
+import type { AuthMethod } from "./auth-session"
 import { isTransientNip07BridgeError } from "./signing-retry"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
@@ -13,7 +14,7 @@ export type SignedNostrEvent = SignedPublicNostrEvent
 
 export interface NostrEventSigner {
   /** Protected-read eligibility is limited to externally backed account sessions. */
-  readonly authMethod?: "nip07" | "nip46"
+  readonly authMethod?: AuthMethod
   getPublicKey(): Promise<string>
   signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent>
 }
@@ -55,7 +56,7 @@ export interface NostrKeySigner extends NostrEventSigner {
 /** Established account authority. Guest order keys never implement this grant. */
 export interface AccountSigner extends NostrKeySigner {
   readonly revision: string
-  readonly authMethod: "nip07" | "nip46"
+  readonly authMethod: AuthMethod
   readonly capabilities: AccountSignerCapabilities
 }
 

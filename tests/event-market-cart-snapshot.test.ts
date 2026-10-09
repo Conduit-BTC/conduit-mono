@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -398,7 +399,7 @@ describe("future Event Market cart and order snapshots", () => {
     expect(orderSchema.parse(accepted)).toEqual(accepted)
   })
 
-  it("keeps the accepted signed authorization history in historical orders", () => {
+  it("keeps the accepted signed authorization history in historical orders", async () => {
     const created = orderSchema.parse(order())
     const fulfillment = created.items[0]?.fulfillment
     if (fulfillment?.type !== "event_market_pickup")
@@ -445,7 +446,9 @@ describe("future Event Market cart and order snapshots", () => {
         },
       }).success
     ).toBe(false)
-    const parsedGrant = parseEventMarketAuthorizationEvent(grant)
+    const parsedGrant = parseEventMarketAuthorizationEvent(
+      await admitFixture(grant)
+    )
     if (!parsedGrant) throw new Error("Missing initial grant")
     const descendant = finalizeEvent(
       {
@@ -493,8 +496,10 @@ describe("future Event Market cart and order snapshots", () => {
     ).toBe(false)
   })
 
-  it("retains a repaired revocation deletion without reinterpreting the paid order", () => {
-    const parsedGrant = parseEventMarketAuthorizationEvent(grant)
+  it("retains a repaired revocation deletion without reinterpreting the paid order", async () => {
+    const parsedGrant = parseEventMarketAuthorizationEvent(
+      await admitFixture(grant)
+    )
     if (!parsedGrant) throw new Error("Missing initial grant")
     const revoke = finalizeEvent(
       {
@@ -509,7 +514,9 @@ describe("future Event Market cart and order snapshots", () => {
       },
       organizerSecret
     )
-    const parsedRevoke = parseEventMarketAuthorizationEvent(revoke)
+    const parsedRevoke = parseEventMarketAuthorizationEvent(
+      await admitFixture(revoke)
+    )
     if (!parsedRevoke) throw new Error("Missing revoke")
     const deletion = finalizeEvent(
       {
@@ -537,8 +544,10 @@ describe("future Event Market cart and order snapshots", () => {
     const resolution = resolveEventMarketAuthorization({
       marketCoordinate,
       merchantPubkey: merchant,
-      transitions: [grant, revoke, regrant],
-      deletions: [deletion],
+      transitions: await Promise.all(
+        [grant, revoke, regrant].map(admitFixture)
+      ),
+      deletions: [await admitFixture(deletion)],
     })
     expect(resolution.state).toBe("active")
     if (resolution.state !== "active") throw new Error("Missing regrant")
@@ -547,9 +556,20 @@ describe("future Event Market cart and order snapshots", () => {
     if (fulfillment?.type !== "event_market_pickup")
       throw new Error("Missing Event Market pickup")
     fulfillment.grant = snapshotGrant({
-      tip: resolution.tip.signedEvent,
-      ancestry: resolution.ancestry.map((event) => event.signedEvent),
-      deletions: [deletion],
+      tip: {
+        ...resolution.tip.signedEvent,
+        tags: resolution.tip.signedEvent.tags.map((tag) => [...tag]),
+      },
+      ancestry: resolution.ancestry.map((event) => ({
+        ...event.signedEvent,
+        tags: event.signedEvent.tags.map((tag) => [...tag]),
+      })),
+      deletions: [
+        {
+          ...(await admitFixture(deletion)),
+          tags: deletion.tags.map((tag) => [...tag]),
+        },
+      ],
     })
     const created = orderSchema.parse(historical)
     const accepted = created.items[0]?.fulfillment

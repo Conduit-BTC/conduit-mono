@@ -296,32 +296,41 @@ describe("shared account session operations", () => {
     })
   })
 
-  it("bounds a stalled operation, retires queued work, and preserves the timeout reason", async () => {
+  it("keeps a timed-out provider prompt owned until it finishes", async () => {
     let calls = 0
     let invalidations = 0
+    const gate = deferred<string>()
     const signer = fixture({
       operationTimeoutMs: 10,
-      sign: () => {
+      sign: async (draft) => {
         calls++
-        return new Promise<string>(() => undefined)
+        return calls === 1 ? gate.promise : finalizeEvent(draft, secret).sig
       },
-      // Production invalidation also invokes local cleanup synchronously.
       onInvalidated: () => {
         invalidations++
-        signer.invalidateLocal()
       },
     })
     const outcomes = await Promise.allSettled([
       signer.signEvent(template()),
       signer.signEvent(template()),
     ])
-    for (const result of outcomes)
-      expect(result).toMatchObject({
-        status: "rejected",
-        reason: { code: "timeout" },
-      })
+    expect(outcomes[0]).toMatchObject({
+      status: "rejected",
+      reason: { code: "timeout" },
+    })
+    expect(outcomes[1]).toMatchObject({
+      status: "rejected",
+      reason: { code: "provider_unavailable" },
+    })
+    await expect(signer.signEvent(template())).rejects.toMatchObject({
+      code: "provider_unavailable",
+    })
     expect(calls).toBe(1)
-    expect(invalidations).toBe(1)
+    expect(invalidations).toBe(0)
+    gate.resolve(finalizeEvent(template(), secret).sig)
+    await Bun.sleep(0)
+    expect(verifyEvent(await signer.signEvent(template()))).toBe(true)
+    expect(calls).toBe(2)
   })
 
   it("preserves causal provider failures when auth cleanup cancels the owner", async () => {

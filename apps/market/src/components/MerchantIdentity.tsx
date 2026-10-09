@@ -6,6 +6,7 @@ import {
   useNip05Verification,
   type Profile,
 } from "@conduit/core"
+import { useBrainstormVerification } from "../hooks/useBrainstormVerification"
 
 export function getPendingMerchantDisplayName(
   pubkey: string,
@@ -38,6 +39,23 @@ function getNip05DisplayLabel(nip05: string): string {
   return parsed?.name === "_" ? parsed.domain : nip05.trim()
 }
 
+const NO_NIP05_INDICATOR = { Icon: null, label: null, color: "" }
+const NIP05_INDICATORS = {
+  valid: {
+    Icon: ShieldCheck,
+    label: "Verified NIP-05",
+    color: "text-primary-500",
+  },
+  invalid: {
+    Icon: CircleAlert,
+    label: "NIP-05 verification failed",
+    color: "text-[var(--warning)]",
+  },
+  absent: NO_NIP05_INDICATOR,
+  checking: NO_NIP05_INDICATOR,
+  unknown: NO_NIP05_INDICATOR,
+}
+
 export function Nip05TrustIndicator({
   pubkey,
   nip05,
@@ -51,24 +69,24 @@ export function Nip05TrustIndicator({
 }) {
   const verification = useNip05Verification(pubkey, nip05)
   const displayLabel = getNip05DisplayLabel(nip05)
-  const icon =
-    verification.status === "valid" ? (
-      <ShieldCheck
-        className="h-3.5 w-3.5 shrink-0 text-primary-500"
-        aria-hidden="true"
-      />
-    ) : verification.status === "invalid" ? (
-      <CircleAlert
-        className="h-3.5 w-3.5 shrink-0 text-[var(--warning)]"
-        aria-hidden="true"
-      />
-    ) : null
-  const label =
+  const brainstormVerified = useBrainstormVerification(
+    pubkey,
     verification.status === "valid"
-      ? "Verified NIP-05"
-      : verification.status === "invalid"
-        ? "NIP-05 verification failed"
-        : null
+  )
+  const { Icon, label, color } = NIP05_INDICATORS[verification.status]
+  const icon = Icon ? (
+    <Icon
+      className={`h-3.5 w-3.5 shrink-0 ${color}${brainstormVerified ? " nip05-brainstorm-verified" : ""}`}
+      aria-hidden="true"
+    />
+  ) : null
+
+  const verificationLabel = label
+    ? `${label}${brainstormVerified ? "; also verified by Brainstorm's network" : ""}`
+    : null
+  const tooltip = verificationLabel
+    ? `${verificationLabel}: ${displayLabel}`
+    : undefined
 
   if (display === "icon") {
     if (!label) return null
@@ -76,8 +94,8 @@ export function Nip05TrustIndicator({
       <span
         className={`inline-flex shrink-0 items-center ${className}`}
         role="img"
-        aria-label={`${label}: ${displayLabel}`}
-        title={`${label}: ${displayLabel}`}
+        aria-label={tooltip}
+        title={tooltip}
       >
         {icon}
       </span>
@@ -85,8 +103,13 @@ export function Nip05TrustIndicator({
   }
 
   return (
-    <span className={`inline-flex min-w-0 items-center gap-1.5 ${className}`}>
-      {label ? <span className="sr-only">{label}: </span> : null}
+    <span
+      className={`inline-flex min-w-0 items-center gap-1.5 ${className}`}
+      title={tooltip}
+    >
+      {verificationLabel ? (
+        <span className="sr-only">{verificationLabel}: </span>
+      ) : null}
       {icon}
       <span className="min-w-0 truncate">{displayLabel}</span>
     </span>

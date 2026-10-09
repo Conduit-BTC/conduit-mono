@@ -36,13 +36,16 @@ async function seedMessages(
 
 async function markRead(page: Page, ids: string[]): Promise<void> {
   await page.evaluate(
-    async ([modulePath, ids]) => {
+    async ([modulePath, ids, principalPubkey]) => {
       const seed = (await import(modulePath)) as {
-        markSeededDirectMessagesRead(ids: string[]): Promise<void>
+        markSeededDirectMessagesRead(
+          principalPubkey: string,
+          ids: string[]
+        ): Promise<void>
       }
-      await seed.markSeededDirectMessagesRead(ids)
+      await seed.markSeededDirectMessagesRead(principalPubkey, ids)
     },
-    [SEED_MODULE, ids] as const
+    [SEED_MODULE, ids, BUYER_PUBKEY] as const
   )
 }
 

@@ -54,7 +54,10 @@ function normalizePubkey(value: unknown): string | null {
   return /^[0-9a-f]{64}$/.test(normalized) ? normalized : null
 }
 
-function hasSameTags(a: string[][], b: string[][]): boolean {
+function hasSameTags(
+  a: readonly (readonly string[])[],
+  b: readonly (readonly string[])[]
+): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 

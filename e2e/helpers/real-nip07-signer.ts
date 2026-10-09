@@ -168,6 +168,7 @@ export function parseCanonicalRuntimePrivateRumor(input: {
   inboxOwner: RuntimeSignerIdentity
   recipient: RuntimeSignerIdentity
   sender: RuntimeSignerIdentity
+  rumorKind?: 14 | 15 | 16
   wrapperKeyAssignments?: Map<string, string>
   wrap: Event
 }): RuntimePrivateRumor | null {
@@ -219,7 +220,7 @@ export function parseCanonicalRuntimePrivateRumor(input: {
     }
     const rumorRecipients = rumor.tags.filter(([name]) => name === "p")
     if (
-      rumor.kind !== 16 ||
+      rumor.kind !== (input.rumorKind ?? 16) ||
       rumor.pubkey !== sender.pubkey ||
       rumor.pubkey !== seal.pubkey ||
       rumorRecipients.length !== 1 ||

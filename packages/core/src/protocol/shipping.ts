@@ -25,20 +25,26 @@ import {
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
+  verifySignedEventBatches,
+  mergeEventSourceRelayUrls,
   type PublicRelayReadOptions,
   type PublicRelayReadResult,
 } from "./relay-reader"
-import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
+import { filterEligibleAccountRelayTargets } from "./account-network-local-state"
+import type { RelayTarget } from "./relay-authority"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  sameSignedPublicEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 import {
   MERCHANT_SHIPPING_POLICY_D_TAG,
@@ -529,18 +535,23 @@ export function resolveCartShippingCost(
 // ---------------------------------------------------------------------------
 
 export function parseShippingOptionEvent(
-  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">
+  event: VerifiedNostrEvent
 ): ParsedShippingOption | null {
-  const tags = event.tags ?? []
+  if (
+    !isVerifiedNostrEvent(event) ||
+    event.kind !== EVENT_KINDS.SHIPPING_OPTION
+  )
+    return null
+  const tags = event.tags
   const hasPolicyMarker = tags.some(
     (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
   )
   const shippingPolicy = hasPolicyMarker
-    ? parseShippingPolicyEventTags(tags)
+    ? parseShippingPolicyEventTags(event)
     : undefined
   if (hasPolicyMarker && !shippingPolicy) return null
 
-  const getUniqueTag = (name: string): string[] | null => {
+  const getUniqueTag = (name: string): readonly string[] | null => {
     const matches = tags.filter((tag) => tag[0] === name)
     return matches.length === 1 ? matches[0]! : null
   }
@@ -637,13 +648,6 @@ export function parseShippingOptionEvent(
         .filter(Boolean) ?? [],
   }))
 
-  let signedEvent: SignedPublicNostrEvent | undefined
-  if ("rawEvent" in event && typeof event.rawEvent === "function") {
-    const raw = event.rawEvent() as SignedPublicNostrEvent
-    if (isValidSignedPublicNostrEvent(raw)) signedEvent = cloneSignedEvent(raw)
-  } else if (isValidSignedPublicNostrEvent(event as SignedPublicNostrEvent)) {
-    signedEvent = cloneSignedEvent(event as SignedPublicNostrEvent)
-  }
   return {
     eventId: event.id,
     id: getShippingOptionAddress(event.pubkey, dTag),
@@ -657,7 +661,7 @@ export function parseShippingOptionEvent(
     service,
     createdAt: (event.created_at ?? 0) * 1000,
     ...(shippingPolicy ? { shippingPolicy } : {}),
-    ...(signedEvent ? { signedEvent } : {}),
+    signedEvent: event,
     launchUnsupportedTags: Array.from(
       new Set(
         tags
@@ -715,6 +719,27 @@ function getShippingEventCoordinate(
   }
 }
 
+async function admitShippingFrontierRows(
+  rows: readonly CachedShippingOptionFrontier[]
+): Promise<CachedShippingOptionFrontier[]> {
+  const allEvents = rows.flatMap((row) => row.signedEvents)
+  const admitted = await admitShippingEvents(allEvents)
+  if (admitted.length !== allEvents.length)
+    throw new Error("Invalid cached fixed shipping option frontier")
+  let offset = 0
+  return rows.map((row) => ({
+    ...row,
+    signedEvents: admitted.slice(offset, (offset += row.signedEvents.length)),
+  }))
+}
+
+async function admitShippingEvents(
+  events: readonly SignedPublicNostrEvent[],
+  signal?: AbortSignal
+): Promise<VerifiedNostrEvent[]> {
+  return verifySignedEventBatches(events, { signal })
+}
+
 function validateCachedShippingOptionFrontier(
   row: CachedShippingOptionFrontier
 ): SignedPublicNostrEvent[] {
@@ -735,13 +760,13 @@ function validateCachedShippingOptionFrontier(
     const eventAddress = getShippingEventCoordinate(event)
     if (
       event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
-      !isValidSignedPublicNostrEvent(event) ||
+      !isVerifiedNostrEvent(event) ||
       eventAddress?.coordinate !== row.coordinate ||
       event.created_at !== row.strongestCreatedAt
     ) {
       throw new Error("Invalid cached fixed shipping option frontier")
     }
-    validated.set(event.id, cloneSignedEvent(event))
+    validated.set(event.id, event)
   }
 
   return Array.from(validated.values()).sort((a, b) => a.id.localeCompare(b.id))
@@ -757,13 +782,13 @@ function observedShippingOptionEvents(
     const address = getShippingEventCoordinate(rawEvent)
     if (
       rawEvent.kind !== EVENT_KINDS.SHIPPING_OPTION ||
-      !isValidSignedPublicNostrEvent(rawEvent) ||
+      !isVerifiedNostrEvent(rawEvent) ||
       !address ||
       !coordinates.has(address.coordinate)
     ) {
       continue
     }
-    observed.set(rawEvent.id, cloneSignedEvent(rawEvent))
+    observed.set(rawEvent.id, rawEvent)
   }
   return Array.from(observed.values())
 }
@@ -808,7 +833,7 @@ function selectShippingOptionFrontierUpdates(
       new Map(
         candidates
           .filter((event) => event.created_at === strongestCreatedAt)
-          .map((event) => [event.id, cloneSignedEvent(event)] as const)
+          .map((event) => [event.id, event] as const)
       ).values()
     )
       .sort((a, b) => a.id.localeCompare(b.id))
@@ -903,8 +928,9 @@ async function mergeObservedShippingOptionFrontiers(
       ) {
         throw new Error("Incomplete fixed shipping option cache override")
       }
-      const existing =
+      const existing = await admitShippingFrontierRows(
         await shippingTestOverrides.getCachedOptionFrontiers(coordinates)
+      )
       const selected = selectShippingOptionFrontierUpdates(
         coordinates,
         volatileEvents,
@@ -917,6 +943,13 @@ async function mergeObservedShippingOptionFrontiers(
       }
       selectedRows = selected.selectedRows
     } else {
+      const priorRows = (
+        await db.shippingOptionFrontiers.bulkGet([...coordinates])
+      ).filter((row): row is CachedShippingOptionFrontier => row !== undefined)
+      const admittedPrior = await admitShippingFrontierRows(priorRows)
+      const priorByCoordinate = new Map(
+        admittedPrior.map((row) => [row.coordinate, row] as const)
+      )
       selectedRows = await db.transaction(
         "rw",
         db.shippingOptionFrontiers,
@@ -926,10 +959,27 @@ async function mergeObservedShippingOptionFrontiers(
           ).filter(
             (row): row is CachedShippingOptionFrontier => row !== undefined
           )
+          if (
+            existing.length !== priorRows.length ||
+            existing.some((row) => {
+              const prior = priorByCoordinate.get(row.coordinate)
+              return (
+                !prior ||
+                row.signedEvents.length !== prior.signedEvents.length ||
+                row.signedEvents.some(
+                  (event, index) =>
+                    !sameSignedPublicEvent(event, prior.signedEvents[index]!)
+                )
+              )
+            })
+          )
+            throw new Error(
+              "Fixed shipping option frontier changed during read"
+            )
           const selected = selectShippingOptionFrontierUpdates(
             coordinates,
             volatileEvents,
-            existing
+            admittedPrior
           )
           if (selected.updatedRows.length > 0) {
             await db.shippingOptionFrontiers.bulkPut(selected.updatedRows)
@@ -994,14 +1044,11 @@ function shippingTombstonesFromDeletionEvent(
   event: SignedPublicNostrEvent
 ): CachedProductTombstone[] {
   const rawEvent = event
-  if (
-    event.kind !== EVENT_KINDS.DELETION ||
-    !isValidSignedPublicNostrEvent(rawEvent)
-  ) {
+  if (event.kind !== EVENT_KINDS.DELETION || !isVerifiedNostrEvent(rawEvent)) {
     throw new Error("Expected a valid signed shipping deletion event")
   }
 
-  const signedEvent = cloneSignedEvent(rawEvent)
+  const signedEvent = rawEvent
   const pubkey = signedEvent.pubkey.toLowerCase()
   const deletionEventId = signedEvent.id.toLowerCase()
   const sourceRelayUrls = getEventSourceRelayUrls(event)
@@ -1055,23 +1102,23 @@ function getShippingDeletionFallbackStorage(): ShippingDeletionFallbackStorage |
   return window.localStorage
 }
 
-function parseShippingDeletionFallbackEvent(
+async function parseShippingDeletionFallbackEvent(
   value: unknown,
   expectedEventId?: string
-): SignedPublicNostrEvent {
-  const event = value as SignedPublicNostrEvent
+): Promise<SignedPublicNostrEvent> {
+  const admission = await admitPublicEvent(value)
+  const event = admission.status === "verified" ? admission.event : null
   if (
-    !isValidSignedPublicNostrEvent(event) ||
+    !event ||
     event.kind !== EVENT_KINDS.DELETION ||
     (expectedEventId !== undefined && event.id !== expectedEventId)
   ) {
     throw new Error("Invalid fixed shipping deletion fallback")
   }
-  const cloned = cloneSignedEvent(event)
-  if (shippingTombstonesFromDeletionEvent(cloned).length === 0) {
+  if (shippingTombstonesFromDeletionEvent(event).length === 0) {
     throw new Error("Invalid fixed shipping deletion fallback")
   }
-  return cloned
+  return event
 }
 
 function parseShippingDeletionFallbackJson(raw: string): unknown {
@@ -1100,10 +1147,10 @@ function snapshotShippingDeletionFallbackKeys(
   return keys.sort()
 }
 
-function loadShippingDeletionFallback(): {
+async function loadShippingDeletionFallback(): Promise<{
   events: SignedPublicNostrEvent[]
   pendingKeys: string[]
-} {
+}> {
   const storage = getShippingDeletionFallbackStorage()
   if (!storage) return { events: [], pendingKeys: [] }
 
@@ -1139,7 +1186,7 @@ function loadShippingDeletionFallback(): {
     if (!HEX_64.test(eventId)) {
       throw new Error("Invalid fixed shipping deletion fallback")
     }
-    const event = parseShippingDeletionFallbackEvent(
+    const event = await parseShippingDeletionFallbackEvent(
       parseShippingDeletionFallbackJson(raw),
       eventId
     )
@@ -1165,7 +1212,7 @@ function loadShippingDeletionFallback(): {
       throw new Error("Invalid fixed shipping deletion fallback")
     }
     for (const candidate of parsed.events) {
-      const event = parseShippingDeletionFallbackEvent(candidate)
+      const event = await parseShippingDeletionFallbackEvent(candidate)
       events.set(event.id, event)
     }
   }
@@ -1291,7 +1338,7 @@ async function loadCachedShippingTombstones(
   // Read and validate the independent journal before consulting IndexedDB. A
   // prior tab may have observed a withdrawal while the primary write path was
   // transiently unavailable.
-  const fallback = loadShippingDeletionFallback()
+  const fallback = await loadShippingDeletionFallback()
   const fallbackEvents = fallback.events
   const fallbackRows = fallbackEvents.flatMap((event) =>
     shippingTombstonesFromDeletionEvent(event)
@@ -1327,11 +1374,25 @@ async function loadPrimaryShippingTombstones(
     : (await db.productTombstones.bulkGet([...targetIds])).filter(
         (row): row is CachedProductTombstone => row !== undefined
       )
-  return rows.filter((row) => row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX))
+  const admitted: CachedProductTombstone[] = []
+  for (const row of rows) {
+    if (!row.id.startsWith(SHIPPING_TOMBSTONE_PREFIX)) continue
+    if (!row.signedEvent) {
+      admitted.push(row)
+      continue
+    }
+    const result = await admitPublicEvent(row.signedEvent)
+    if (result.status === "unavailable" || result.status === "cancelled")
+      throw new Error("Fixed shipping deletion verification is unavailable")
+    admitted.push(
+      result.status === "verified" ? { ...row, signedEvent: result.event } : row
+    )
+  }
+  return admitted
 }
 
 function isValidCachedShippingTombstone(row: CachedProductTombstone): boolean {
-  if (!row.signedEvent || !isValidSignedPublicNostrEvent(row.signedEvent)) {
+  if (!row.signedEvent || !isVerifiedNostrEvent(row.signedEvent)) {
     return false
   }
   try {
@@ -1408,7 +1469,7 @@ async function storeCachedShippingTombstones(
   if (shippingTestOverrides.putCachedDeletionTombstones) {
     const ids = uniqueStrings(rows.map((row) => row.id))
     const existingRows = shippingTestOverrides.getCachedDeletionTombstones
-      ? await shippingTestOverrides.getCachedDeletionTombstones(ids)
+      ? await loadPrimaryShippingTombstones(ids)
       : []
     const rowsToStore = selectShippingTombstoneUpdates(
       rows,
@@ -1421,13 +1482,16 @@ async function storeCachedShippingTombstones(
   }
 
   const ids = uniqueStrings(rows.map((row) => row.id))
+  const priorRows = await loadPrimaryShippingTombstones(ids)
   await db.transaction("rw", db.productTombstones, async () => {
     const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
       (row): row is CachedProductTombstone => row !== undefined
     )
+    if (JSON.stringify(existingRows) !== JSON.stringify(priorRows))
+      throw new Error("Fixed shipping deletion evidence changed during read")
     const rowsToStore = selectShippingTombstoneUpdates(
       rows,
-      existingRows.filter(isValidCachedShippingTombstone)
+      priorRows.filter(isValidCachedShippingTombstone)
     )
     if (rowsToStore.length > 0) {
       await db.productTombstones.bulkPut(rowsToStore)
@@ -1521,10 +1585,10 @@ function signedDeletionEventsFromShippingTombstones(
       continue
     }
     const signedEvent = row.signedEvent
-    if (!isValidSignedPublicNostrEvent(signedEvent)) continue
+    if (!isVerifiedNostrEvent(signedEvent)) continue
     const validatedRows = shippingTombstonesFromDeletionEvent(signedEvent)
     if (!validatedRows.some((validated) => validated.id === row.id)) continue
-    events.set(signedEvent.id, cloneSignedEvent(signedEvent))
+    events.set(signedEvent.id, signedEvent)
   }
   return Array.from(events.values())
 }
@@ -1556,7 +1620,15 @@ async function runShippingFetchEventsFanoutDetailed(
   const impl =
     shippingTestOverrides.fetchSignedEventsFanoutDetailed ??
     fetchSignedEventsFanoutDetailed
-  return await impl(filter, options)
+  const result = await impl(filter, options)
+  const admitted = await admitShippingEvents(result.events, options?.signal)
+  for (const event of admitted) {
+    for (const raw of result.events) {
+      if (sameSignedPublicEvent(event, raw))
+        mergeEventSourceRelayUrls(event, raw)
+    }
+  }
+  return { ...result, events: admitted }
 }
 
 async function runShippingFetchEventsFanout(
@@ -1564,7 +1636,8 @@ async function runShippingFetchEventsFanout(
   options: Parameters<typeof fetchPublicEvents>[1]
 ): Promise<SignedPublicNostrEvent[]> {
   const impl = shippingTestOverrides.fetchPublicEvents ?? fetchPublicEvents
-  return await impl(filter, options)
+  const raw = await impl(filter, options)
+  return await admitShippingEvents(raw, options?.signal)
 }
 
 export interface ShippingOptionReadOptions {
@@ -1644,27 +1717,22 @@ function shippingOwnerSelectedRelayUrls(
 }
 
 async function getEligibleShippingReadRelayUrls(
-  relayUrls: readonly string[],
-  ownerSelectedRelayUrls: readonly string[],
-  appRelayUrls: readonly string[],
-  personalRelayUrls: readonly string[],
-  independentRelayUrls: readonly string[],
+  relayTargets: readonly RelayTarget[],
   options: ShippingOptionReadOptions
 ): Promise<string[]> {
   const accountPubkey = options.accountPubkey ?? options.authenticatedPubkey
   if (accountPubkey === undefined || accountPubkey === null) {
-    return [...relayUrls]
+    return relayTargets.map((target) => target.url)
   }
-  return await filterEligibleAccountRelayUrls({
-    accountPubkey,
-    authenticatedPubkey: options.authenticatedPubkey,
-    candidateRelayUrls: relayUrls,
-    ownerSelectedRelayUrls,
-    appRelayUrls,
-    personalRelayUrls,
-    independentRelayUrls,
-    repository: options.accountNetworkLocalStateRepository,
-  })
+  return (
+    await filterEligibleAccountRelayTargets({
+      accountPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
+      targets: relayTargets,
+      operation: "read",
+      repository: options.accountNetworkLocalStateRepository,
+    })
+  ).map((target) => target.url)
 }
 
 // ---------------------------------------------------------------------------
@@ -1697,6 +1765,7 @@ export async function getShippingOptions(
     ...(relayListReadPlan
       ? {
           relayUrls: relayListReadPlan.candidateRelayUrls,
+          relayTargets: relayListReadPlan.relayTargets,
           maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
           appRelayUrls: relayListReadPlan.appRelayUrls,
           personalRelayUrls: relayListReadPlan.personalRelayUrls,
@@ -1723,29 +1792,16 @@ export async function getShippingOptions(
       ownerRelayAuthority?.signedRelayListAuthoritative,
   })
   const relayUrls = await getEligibleShippingReadRelayUrls(
-    readPlan.candidateRelayUrls,
-    readPlan.ownerSelectedRelayUrls ?? [],
-    readPlan.appRelayUrls ?? [],
-    readPlan.personalRelayUrls ?? [],
-    readPlan.independentRelayUrls ?? [],
+    readPlan.relayTargets,
     options
   )
   if (readPlan.maxRelayAttempts) {
     relayUrls.splice(readPlan.maxRelayAttempts)
   }
   const executableRelayUrls = new Set(relayUrls)
-  const executableOwnerSelectedRelayUrls = (
-    readPlan.ownerSelectedRelayUrls ?? []
-  ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-  const executableAppRelayUrls = (readPlan.appRelayUrls ?? []).filter(
-    (relayUrl) => executableRelayUrls.has(relayUrl)
+  const executableRelayTargets = readPlan.relayTargets.filter((target) =>
+    executableRelayUrls.has(target.url)
   )
-  const executablePersonalRelayUrls = (readPlan.personalRelayUrls ?? []).filter(
-    (relayUrl) => executableRelayUrls.has(relayUrl)
-  )
-  const executableIndependentRelayUrls = (
-    readPlan.independentRelayUrls ?? []
-  ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
   const filter: Filter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
@@ -1753,12 +1809,9 @@ export async function getShippingOptions(
 
   const events = await runShippingFetchEventsFanout(filter, {
     relayUrls,
+    relayTargets: executableRelayTargets,
     accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
     authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-    ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-    appRelayUrls: executableAppRelayUrls,
-    personalRelayUrls: executablePersonalRelayUrls,
-    independentRelayUrls: executableIndependentRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -1774,20 +1827,12 @@ export async function getShippingOptions(
 }
 
 export function selectLatestShippingOptions(
-  events: readonly Pick<
-    SignedPublicNostrEvent,
-    "id" | "pubkey" | "tags" | "created_at"
-  >[],
-  deletionEvents: readonly Pick<
-    SignedPublicNostrEvent,
-    "id" | "pubkey" | "tags" | "created_at"
-  >[] = []
+  events: readonly VerifiedNostrEvent[],
+  deletionEvents: readonly VerifiedNostrEvent[] = []
 ): ParsedShippingOption[] {
-  const candidatesByCoordinate = new Map<
-    string,
-    Array<Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">>
-  >()
+  const candidatesByCoordinate = new Map<string, VerifiedNostrEvent[]>()
   for (const event of events) {
+    if (!isVerifiedNostrEvent(event)) continue
     const dTag = event.tags?.find((tag) => tag[0] === "d")?.[1]?.trim()
     if (!event.pubkey || !dTag) continue
     const coordinate = getShippingOptionAddress(event.pubkey, dTag)
@@ -1812,6 +1857,7 @@ export function selectLatestShippingOptions(
     const event = [...newest].sort((a, b) => a.id.localeCompare(b.id))[0]!
     const deleted = deletionEvents.some(
       (deletion) =>
+        isVerifiedNostrEvent(deletion) &&
         deletion.pubkey === event.pubkey &&
         deletion.tags.some(
           (tag) =>
@@ -1880,7 +1926,6 @@ function requireCompleteShippingRead(
   )
   if (
     relayUrls.length === 0 ||
-    result.eventsVerified !== true ||
     relayStatuses.size !== relayUrls.length ||
     relayUrls.some(
       (relayUrl) => relayStatuses.get(relayUrl)?.status !== "success"
@@ -1978,8 +2023,8 @@ export async function getShippingOptionsByCoordinatesDetailed(
         throw new Error("Shipping read was cancelled.")
       return {
         options: selectLatestShippingOptions(
-          retained.shippingEvents,
-          deletionEvents
+          retained.shippingEvents.filter(isVerifiedNostrEvent),
+          deletionEvents.filter(isVerifiedNostrEvent)
         ).map((option) => ({
           ...option,
           readSource: "retained" as const,
@@ -2006,8 +2051,10 @@ export async function getShippingOptionsByCoordinatesDetailed(
 export async function rememberPublishedShippingEvidence(
   event: SignedPublicNostrEvent
 ): Promise<void> {
-  if (!isValidSignedPublicNostrEvent(event))
+  const admission = await admitPublicEvent(event)
+  if (admission.status !== "verified")
     throw new Error("Invalid signed shipping evidence.")
+  event = admission.event
   if (event.kind === EVENT_KINDS.SHIPPING_OPTION) {
     const address = getShippingEventCoordinate(event)
     if (!address) throw new Error("Invalid shipping coordinate.")
@@ -2044,7 +2091,7 @@ async function readShippingOptionsByCoordinates(
       if (result.relays.some((relay) => relay.status === "success"))
         coverage = "partial"
       else if (coverage === "complete") coverage = "unavailable"
-      return result.eventsVerified ? result.events : []
+      return result.events
     }
   }
   const batches = buildShippingOptionReadBatches(coordinates)
@@ -2070,6 +2117,7 @@ async function readShippingOptionsByCoordinates(
     ...(relayListReadPlan
       ? {
           relayUrls: relayListReadPlan.candidateRelayUrls,
+          relayTargets: relayListReadPlan.relayTargets,
           maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
           appRelayUrls: relayListReadPlan.appRelayUrls,
           personalRelayUrls: relayListReadPlan.personalRelayUrls,
@@ -2105,29 +2153,16 @@ async function readShippingOptionsByCoordinates(
           ownerRelayAuthority?.signedRelayListAuthoritative,
       })
       const relayUrls = await getEligibleShippingReadRelayUrls(
-        readPlan.candidateRelayUrls,
-        readPlan.ownerSelectedRelayUrls ?? [],
-        readPlan.appRelayUrls ?? [],
-        readPlan.personalRelayUrls ?? [],
-        readPlan.independentRelayUrls ?? [],
+        readPlan.relayTargets,
         options
       )
       if (readPlan.maxRelayAttempts) {
         relayUrls.splice(readPlan.maxRelayAttempts)
       }
       const executableRelayUrls = new Set(relayUrls)
-      const executableOwnerSelectedRelayUrls = (
-        readPlan.ownerSelectedRelayUrls ?? []
-      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-      const executableAppRelayUrls = (readPlan.appRelayUrls ?? []).filter(
-        (relayUrl) => executableRelayUrls.has(relayUrl)
+      const executableRelayTargets = readPlan.relayTargets.filter((target) =>
+        executableRelayUrls.has(target.url)
       )
-      const executablePersonalRelayUrls = (
-        readPlan.personalRelayUrls ?? []
-      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-      const executableIndependentRelayUrls = (
-        readPlan.independentRelayUrls ?? []
-      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
       const optionRead = await runShippingFetchEventsFanoutDetailed(
         {
           kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
@@ -2137,12 +2172,9 @@ async function readShippingOptionsByCoordinates(
         },
         {
           relayUrls,
+          relayTargets: executableRelayTargets,
           accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
           authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-          appRelayUrls: executableAppRelayUrls,
-          personalRelayUrls: executablePersonalRelayUrls,
-          independentRelayUrls: executableIndependentRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           shouldContinue: options.shouldContinue,
@@ -2180,12 +2212,9 @@ async function readShippingOptionsByCoordinates(
         },
         {
           relayUrls,
+          relayTargets: executableRelayTargets,
           accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
           authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-          appRelayUrls: executableAppRelayUrls,
-          personalRelayUrls: executablePersonalRelayUrls,
-          independentRelayUrls: executableIndependentRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           shouldContinue: options.shouldContinue,
@@ -2218,12 +2247,9 @@ async function readShippingOptionsByCoordinates(
           },
           {
             relayUrls,
+            relayTargets: executableRelayTargets,
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-            appRelayUrls: executableAppRelayUrls,
-            personalRelayUrls: executablePersonalRelayUrls,
-            independentRelayUrls: executableIndependentRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             shouldContinue: options.shouldContinue,
@@ -2262,7 +2288,10 @@ async function readShippingOptionsByCoordinates(
   const deletionEvents =
     await getMergedShippingDeletionEvidence(deletionTargetIds)
   return {
-    options: selectLatestShippingOptions(shippingEvents, deletionEvents)
+    options: selectLatestShippingOptions(
+      shippingEvents.filter(isVerifiedNostrEvent),
+      deletionEvents.filter(isVerifiedNostrEvent)
+    )
       .filter((option) => requested.has(option.id))
       .map((option) => ({
         ...option,
