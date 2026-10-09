@@ -63,6 +63,7 @@ import {
 } from "./support/signed-bolt11-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { qualifiedReceiverMetadataFixture } from "./support/checkout-spark-qualified-receiver-fixture"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 
 const NOW = 1_800_000_000_000
 const MERCHANT_SECRET = generateSecretKey()
@@ -155,11 +156,23 @@ function fixture(storage: MemoryStorage) {
   }
   const calls = { open: 0, close: 0, invoice: 0, transport: 0 }
   const controls = { ack: true }
+  const inboxEvidence = createInboxDeclarationFixtureEvidence(
+    finalizeEvent(
+      {
+        kind: 10_050,
+        created_at: NOW / 1_000,
+        tags: [["relay", "wss://merchant.inbox.relay.dev"]],
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+  )
   return {
     input,
     signer,
     calls,
     controls,
+    inboxEvidence,
     options: {
       now: () => NOW,
       receiverContracts: qualifiedReceiverMetadataFixture(
@@ -211,7 +224,7 @@ function fixture(storage: MemoryStorage) {
           receiverIdentityPublicKey: `02${"a".repeat(64)}`,
         }
       },
-      publishRecoveryHandoff: (
+      publishRecoveryHandoff: async (
         request: Parameters<
           typeof publishCheckoutSparkSettledRecoveryHandoff
         >[0]
@@ -222,6 +235,7 @@ function fixture(storage: MemoryStorage) {
           transport: {
             ...request.transport,
             recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
+            inboxDeclarationEvidenceRepository: await inboxEvidence,
             publishFn: async (_event, plan) => {
               calls.transport += 1
               return {
@@ -554,6 +568,8 @@ describe("settled preparation phase recovery", () => {
                       f.signer.pubkey,
                       {
                         repository: orders,
+                        inboxDeclarationEvidenceRepository:
+                          await f.inboxEvidence,
                         now: () => time,
                         leaseOwner: "synthetic-late-funding",
                         accountNetworkLocalStateRepository: {
@@ -914,10 +930,11 @@ describe("settled preparation phase recovery", () => {
                 { repository, now: () => time }
               ),
             readOrder: orders.get,
-            retryOrder: (id, buyer, options) =>
+            retryOrder: async (id, buyer, options) =>
               retryOrderRelayDelivery(id, buyer, {
                 ...options,
                 repository: orders,
+                inboxDeclarationEvidenceRepository: await f.inboxEvidence,
                 now: () => time,
                 accountNetworkLocalStateRepository: { get: async () => null },
                 publisher: async ({ signedEvent }) => {
@@ -1109,7 +1126,8 @@ describe("settled preparation phase recovery", () => {
       const repository = new DexieCheckoutSparkSettledRepository(database)
       const storage = new MemoryStorage()
       const draftStorage = new MemoryStorage()
-      const { input, calls, controls, options } = fixture(storage)
+      const { input, calls, controls, options, inboxEvidence } =
+        fixture(storage)
       controls.ack = false
       const quote = input.quoteAuthority
       const entryInput = {
@@ -1197,10 +1215,11 @@ describe("settled preparation phase recovery", () => {
               {
                 repository,
                 now: () => NOW + 180_000,
-                retryRecovery: (retry) =>
+                retryRecovery: async (retry) =>
                   retryStoredCheckoutSparkRecoveryHandoff({
                     ...retry,
                     recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
+                    inboxDeclarationEvidenceRepository: await inboxEvidence,
                     publishFn: async (event, plan) => {
                       expect(
                         JSON.stringify(event) ===
@@ -1274,7 +1293,7 @@ describe("settled preparation phase recovery", () => {
         }
       }
       const storage = new ReadbackFailureStorage()
-      const { input, calls, options } = fixture(storage)
+      const { input, calls, options, inboxEvidence } = fixture(storage)
       await expect(
         prepareCheckoutSparkSettledFunding(input, { ...options, repository })
       ).rejects.toThrow("Synthetic outbox readback failure")
@@ -1303,10 +1322,11 @@ describe("settled preparation phase recovery", () => {
         {
           repository,
           now: () => NOW + 180_000,
-          retryRecovery: (request) =>
+          retryRecovery: async (request) =>
             retryStoredCheckoutSparkRecoveryHandoff({
               ...request,
               recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
+              inboxDeclarationEvidenceRepository: await inboxEvidence,
               publishFn: async (event, plan) => {
                 publishedExact =
                   JSON.stringify(event) ===

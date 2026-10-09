@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { finalizeEvent } from "nostr-tools"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { UUID } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.browser.js"
 import { ConduitDB } from "@conduit/core/db"
 import {
@@ -29,9 +29,9 @@ import {
 import { plainTestSigner } from "./helpers/plain-signer"
 import {
   AT,
-  MERCHANT,
   nativeTreasuryFixture,
 } from "./support/checkout-spark-native-treasury-fixture"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -42,6 +42,9 @@ import {
 } from "./support/signed-bolt11-fixture"
 
 const INBOX = "wss://merchant.inbox.relay.dev"
+const MERCHANT_SECRET = generateSecretKey()
+const MERCHANT = getPublicKey(MERCHANT_SECRET)
+const WRAP_SECRET = generateSecretKey()
 const BUYER = "f".repeat(64)
 async function fixture(
   options: {
@@ -52,7 +55,18 @@ async function fixture(
     preflight?: "ready" | "fee_over_cap" | "unavailable"
   } = {}
 ) {
-  const f = nativeTreasuryFixture()
+  const f = nativeTreasuryFixture(undefined, undefined, MERCHANT)
+  const inboxEvidence = await createInboxDeclarationFixtureEvidence(
+    finalizeEvent(
+      {
+        kind: 10_050,
+        created_at: AT / 1_000,
+        tags: [["relay", INBOX]],
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+  )
   let state = f.state
   if (options.restoredStatus) {
     state = prepareCheckoutSparkNativeTreasury(state, {
@@ -198,6 +212,7 @@ async function fixture(
     },
     progressTransport: {
       recipientInboxRelays: [INBOX],
+      inboxDeclarationEvidenceRepository: inboxEvidence,
       accountNetworkLocalStateRepository: { get: async () => undefined },
       giftWrapFn: (async (rumor, recipient) => {
         progress.push(parseCheckoutSparkMerchantProgressRumor(rumor))
@@ -218,7 +233,7 @@ async function fixture(
               tags: [["p", recipient.pubkey]],
               content: `synthetic-opaque-native-wrap-${progress.length}`,
             },
-            new Uint8Array(32).fill(12)
+            WRAP_SECRET
           )
         )
       }) as NonNullable<Dependencies["progressTransport"]>["giftWrapFn"],

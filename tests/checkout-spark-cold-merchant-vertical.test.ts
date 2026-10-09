@@ -67,6 +67,8 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
 
 const INBOX = "wss://merchant.inbox.relay.dev"
 const MNEMONIC = createRuntimeMnemonic()
@@ -144,6 +146,17 @@ describe("offline cold Merchant guest supplier recovery", () => {
       const fixture = await createCheckoutSparkGuestSupplierFixture(
         createdAt,
         physical
+      )
+      const declaration = new NDKEvent(undefined, {
+        kind: 10_050,
+        created_at: createdAt / 1_000,
+        tags: [["relay", INBOX]],
+        content: "",
+      })
+      await declaration.sign(fixture.merchantSigner)
+      const inboxEvidence = await createInboxDeclarationFixtureEvidence(
+        declaration,
+        { prime: true }
       )
       const session = new MemoryStorage()
       const buyerStorage = new MemoryStorage()
@@ -273,6 +286,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
           storage: buyerStorage,
           transport: {
             recipientInboxRelays: [INBOX],
+            inboxDeclarationEvidenceRepository: inboxEvidence,
             accountNetworkLocalStateRepository: { get: async () => undefined },
             publishFn: async (event) => {
               relayEvents.set(event.id, event as SignedPublicNostrEvent)
@@ -448,6 +462,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
         let availableSats = grossSats
         const progressTransport: MerchantCheckoutSparkProgressTransport = {
           recipientInboxRelays: [INBOX],
+          inboxDeclarationEvidenceRepository: inboxEvidence,
           deliveryStore: inboxOwner.store,
           accountNetworkLocalStateRepository: { get: async () => undefined },
           publishFn: async (event, options) => {
@@ -888,6 +903,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
         clearTestAccountSigner()
         __resetCommerceTestOverrides()
         __resetProtectedReadSigner()
+        __resetInboxDeclarationCache()
         database.close()
         await database.delete()
       }

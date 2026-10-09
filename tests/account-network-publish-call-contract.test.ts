@@ -64,14 +64,14 @@ const contracts = [
     path: "apps/merchant/src/lib/product-listing-delivery.ts",
     calls: [],
     guards: [
-      "publishSignedEventToRelay\\(\\{\\s*signedEvent: input\\.signedEvent,\\s*relayUrl: input\\.relayUrl,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,",
+      "publishSignedEventToRelay\\(\\{\\s*signedEvent: input\\.signedEvent,\\s*relayUrl: input\\.relayUrl,\\s*relayTarget: input\\.relayTarget,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,\\s*accountNetworkLocalStateRepository:\\s*input\\.accountNetworkLocalStateRepository,\\s*ownerRelayListEvidenceRepository: input\\.ownerRelayListEvidenceRepository,",
     ],
   },
   {
     path: "packages/core/src/protocol/local-product-shipping-delivery.ts",
     calls: [],
     guards: [
-      "publishSignedEventToRelay\\(\\{\\s*relayUrl: input\\.relayUrl,\\s*signedEvent: input\\.signedEvent,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,",
+      "publishSignedEventToRelay\\(\\{\\s*relayUrl: input\\.relayUrl,\\s*signedEvent: input\\.signedEvent,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,\\s*relayTarget: input\\.relayTarget,\\s*accountNetworkLocalStateRepository:\\s*input\\.accountNetworkLocalStateRepository,\\s*ownerRelayListEvidenceRepository: input\\.ownerRelayListEvidenceRepository,",
     ],
   },
 ] as const

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
-import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { ConduitDB } from "@conduit/core/db"
 import {
@@ -52,6 +56,7 @@ import {
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
 import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualified-receiver-fixture"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 
 const MNEMONIC = createRuntimeMnemonic()
 const OTHER_MNEMONIC = createRuntimeMnemonic()
@@ -59,9 +64,10 @@ const WRAP_SECRET = generateSecretKey()
 
 const CREATED_AT = 1_800_000_000_000
 const TAKEOVER_AT = CREATED_AT + 120_000
-const MERCHANT = "a".repeat(64)
-const BUYER = "b".repeat(64)
-const OTHER = "c".repeat(64)
+const MERCHANT_SECRET = generateSecretKey()
+const MERCHANT = getPublicKey(MERCHANT_SECRET)
+const BUYER = getPublicKey(generateSecretKey())
+const OTHER = getPublicKey(generateSecretKey())
 const IDENTITY = `02${"d".repeat(64)}`
 const FUNDING_TRANSFER = "merchant-preparation-credit"
 const INBOX = "wss://merchant-preparation.inbox.relay.dev"
@@ -215,6 +221,17 @@ async function harness(
   destinationPolicy: CheckoutSparkConduitDestinationPolicy = "production"
 ) {
   const value = fixture(destinationPolicy)
+  const inboxEvidence = await createInboxDeclarationFixtureEvidence(
+    finalizeEvent(
+      {
+        kind: 10_050,
+        created_at: CREATED_AT / 1_000,
+        tags: [["relay", INBOX]],
+        content: "",
+      },
+      MERCHANT_SECRET
+    )
+  )
   const database = new ConduitDB(
     `merchant-preparation-${crypto.randomUUID()}`,
     { indexedDB, IDBKeyRange }
@@ -297,6 +314,7 @@ async function harness(
     progressStore,
     progressTransport: {
       recipientInboxRelays: [INBOX],
+      inboxDeclarationEvidenceRepository: inboxEvidence,
       accountNetworkLocalStateRepository: { get: async () => undefined },
       giftWrapFn: (async (rumor, recipient) => {
         expect(recipient.pubkey).toBe(MERCHANT)

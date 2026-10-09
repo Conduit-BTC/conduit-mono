@@ -50,11 +50,25 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
 
 const INBOXES = ["wss://ready.example.test", "wss://offline.example.test"]
 const NOW = 1_800_000_000_000
 const databases: ConduitDB[] = []
 const owners: CommerceInbox[] = []
+
+async function admitMerchantInbox(signer: NDKPrivateKeySigner) {
+  const declaration = new NDKEvent(undefined, {
+    kind: 10_050,
+    created_at: NOW / 1_000,
+    content: "",
+    tags: INBOXES.map((url) => ["relay", url]),
+  })
+  await declaration.sign(signer)
+  await createInboxDeclarationFixtureEvidence(declaration, { prime: true })
+}
 
 function fixtureOwner(
   merchant: string,
@@ -86,6 +100,7 @@ async function settledFixture(degradedStage: "buyer" | "initial" | "merchant") {
   const merchantSigner = NDKPrivateKeySigner.generate()
   const buyer = (await buyerSigner.user()).pubkey
   const merchant = (await merchantSigner.user()).pubkey
+  await admitMerchantInbox(merchantSigner)
   const product = new NDKEvent(undefined, {
     kind: 30_402,
     pubkey: merchant,
@@ -276,6 +291,7 @@ async function fixture() {
   const merchantSigner = NDKPrivateKeySigner.generate()
   const buyer = (await buyerSigner.user()).pubkey
   const merchant = (await merchantSigner.user()).pubkey
+  await admitMerchantInbox(merchantSigner)
   const plan = freezeCheckoutSparkPlan({
     checkoutId: "degraded-recovery-checkout",
     orderId: "degraded-recovery-order",
@@ -355,7 +371,14 @@ async function fixture() {
         expect(options.relayUrls).toHaveLength(1)
         expect(INBOXES).toContain(options.relayUrls[0]!)
       }
-      expect(options.appRelayUrls).toEqual([])
+      expect(options.appRelayUrls).toBeUndefined()
+      expect(options.relayTargets).toEqual(
+        relayTargetsFromUrls(options.relayUrls, {
+          kind: "owner_nip17",
+          operation: "read",
+          ownerPubkey: merchant,
+        })
+      )
       return read(
         options.eventId ? exactEvents : [wrap],
         !!options.eventId,
@@ -438,6 +461,7 @@ afterEach(async () => {
   clearTestAccountSigner()
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
   for (const database of databases.splice(0)) {
     database.close()
     await database.delete()

@@ -40,7 +40,11 @@ import type {
   CachedProduct,
   ProductDeletionDeliveryJob,
 } from "@conduit/core/db"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   applyProductFulfillmentIntentForPublication,
   buildProductRemovalDeletionTargets,
@@ -60,8 +64,8 @@ import {
 import { resumePendingProductDeletionDeliveries } from "../apps/merchant/src/lib/product-deletion-delivery"
 import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 
-const MERCHANT_SECRET = new Uint8Array(32).fill(4)
-const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
+const MERCHANT_SECRET = generateSecretKey()
+const OTHER_MERCHANT_SECRET = generateSecretKey()
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 const originalCommerceRelayUrls = [...config.commerceRelayUrls]
@@ -317,6 +321,12 @@ async function readProductAfterCacheReload(
 }
 
 beforeEach(async () => {
+  // The immutable fixture target needs current configured App authority;
+  // historical personal flags and injected planner URLs do not grant I/O.
+  config.commerceRelayUrls = [
+    ...originalCommerceRelayUrls,
+    "wss://relay.fixture.conduit.market",
+  ]
   const dependencies = (
     db as unknown as {
       _deps: {
@@ -987,6 +997,10 @@ describe("merchant product event delivery", () => {
   })
 
   it("durably resumes a mixed family edit without misclassifying exclusive relay ACKs", async () => {
+    const listingRelayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    config.commerceRelayUrls = [
+      ...new Set([...config.commerceRelayUrls, listingRelayUrl]),
+    ]
     const deletionAckRelayUrl = "wss://relay.damus.io"
     const deletionPendingRelayUrl = "wss://relay.nostr.net"
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
@@ -1002,49 +1016,60 @@ describe("merchant product event delivery", () => {
     ])
     let signedBundle: SignedProductWriteBundle | null = null
     let signedDeletionId = ""
-    const delivery = await signAndPublishProductWriteBundle({
-      merchantPubkey: MERCHANT_PUBKEY,
-      listings: [
-        {
-          product: makeProduct("root"),
-          dTag: "root",
-          fulfillmentIntent: { kind: "coordinate_after_order" },
+    const delivery = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("root"),
+            dTag: "root",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: deletionTargets,
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+          const listing = bundle.events.find(
+            (event) => event.kind === EVENT_KINDS.PRODUCT
+          )
+          const deletion = bundle.events.find(
+            (event) => event.kind === EVENT_KINDS.DELETION
+          )
+          if (!listing) throw new Error("Expected a signed listing event")
+          if (!deletion) throw new Error("Expected a signed deletion event")
+          signedDeletionId = deletion.id
+          setFixturePublisher(listing, (async (relaySet: unknown) => {
+            const attemptedRelayUrls = [
+              ...((relaySet as { relayUrls?: Set<string> | string[] })
+                .relayUrls ?? []),
+            ]
+            return new Set(attemptedRelayUrls.map((url) => ({ url })))
+          }) as never)
+          setFixturePublisher(deletion, (async () => new Set()) as never)
         },
-      ],
-      deletions: deletionTargets,
-      onSignedLocal: async (bundle) => {
-        signedBundle = bundle
-        const listing = bundle.events.find(
-          (event) => event.kind === EVENT_KINDS.PRODUCT
-        )
-        const deletion = bundle.events.find(
-          (event) => event.kind === EVENT_KINDS.DELETION
-        )
-        if (!listing) throw new Error("Expected a signed listing event")
-        if (!deletion) throw new Error("Expected a signed deletion event")
-        signedDeletionId = deletion.id
-        setFixturePublisher(listing, (async (relaySet: unknown) => {
-          const attemptedRelayUrls = [
-            ...((relaySet as { relayUrls?: Set<string> | string[] })
-              .relayUrls ?? []),
-          ]
-          return new Set(attemptedRelayUrls.map((url) => ({ url })))
-        }) as never)
-        setFixturePublisher(deletion, (async () => new Set()) as never)
+        deletionDeliveryOptions: {
+          repository: beforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl }) =>
+            relayUrl === deletionPendingRelayUrl
+              ? { status: "timed_out" }
+              : { status: "acked" },
+        },
       },
-      deletionDeliveryOptions: {
-        repository: beforeReload,
-        accountNetworkLocalStateRepository:
-          allowAllAccountNetworkLocalStateRepository,
-        now: () => NOW,
-        retryDelayMs: 1,
-        restoreLocalEvidence: async () => {},
-        publisher: async ({ relayUrl }) =>
-          relayUrl === deletionPendingRelayUrl
-            ? { status: "timed_out" }
-            : { status: "acked" },
-      },
-    })
+      {
+        planProductListingRelayTargets: async () => [
+          {
+            relayUrl: listingRelayUrl,
+            ownerSelected: false,
+            appRelay: true,
+          },
+        ],
+      }
+    )
     if (!signedBundle) throw new Error("Expected the signed retry bundle")
     const stagedDeletion = await beforeReload.get(signedDeletionId)
 

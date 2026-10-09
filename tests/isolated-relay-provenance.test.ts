@@ -199,7 +199,10 @@ describe("isolated signed author relay provenance", () => {
   ])(
     "keeps $name provenance separate from observed signed checkout profile authority",
     async ({ tags, declaredWriteRelay }) => {
-      await readAuthorPlan(tags ? [signedRelayList(tags)] : [])
+      const { plan } = await readAuthorPlan(tags ? [signedRelayList(tags)] : [])
+      expect(plan.independentRelayUrls).toEqual(
+        declaredWriteRelay ? [ISOLATED_RELAY] : []
+      )
       const profile = finalizeEvent(
         {
           kind: 0,
@@ -218,9 +221,31 @@ describe("isolated signed author relay provenance", () => {
         },
         fetchSignedEventsFanoutDetailed: async (_filter, options) => {
           expect(options?.relayUrls).toEqual([ISOLATED_RELAY])
-          expect(options?.independentRelayUrls).toEqual(
-            declaredWriteRelay ? [ISOLATED_RELAY] : []
-          )
+          // Isolation fixes public transport grants; only the signed author
+          // plan above establishes declaration provenance, never App/fallback.
+          expect(options?.relayTargets).toEqual([
+            {
+              url: ISOLATED_RELAY,
+              grants: [
+                { kind: "app", operation: "read", bucket: "general_read" },
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "commerce_discovery",
+                },
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "core_public",
+                },
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "default",
+                },
+              ],
+            },
+          ])
           expect(verifyEvent(structuredClone(profile))).toBe(true)
           return {
             events: [structuredClone(profile)],

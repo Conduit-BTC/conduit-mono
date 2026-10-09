@@ -38,6 +38,9 @@ import {
   retireAccountSigner,
   SessionSigner,
 } from "../packages/core/src/protocol/session-signer"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 
 const MERCHANT_SECRET = generateSecretKey()
 const BUYER_SECRET = generateSecretKey()
@@ -197,6 +200,9 @@ let database: ConduitDB
 let activeRead: (
   options: ReadProtectedInboxOptions
 ) => Promise<ProtectedInboxReadResult>
+let inboxEvidence: Awaited<
+  ReturnType<typeof createInboxDeclarationFixtureEvidence>
+>
 
 function installMerchantSession(
   options: {
@@ -252,11 +258,24 @@ function installMerchantSession(
   })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   current = true
   decryptCalls = 0
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
+  inboxEvidence = await createInboxDeclarationFixtureEvidence(
+    finalizeEvent(
+      {
+        kind: 10_050,
+        created_at: CREATED_AT / 1_000,
+        tags: [["relay", INBOX]],
+        content: "",
+      },
+      MERCHANT_SECRET
+    ),
+    { prime: true }
+  )
   activeRead = async () => protectedRead([])
   __setCommerceTestOverrides({
     resolveInboxRelayUrls: async () => [INBOX],
@@ -270,6 +289,7 @@ afterEach(async () => {
   retireAccountSigner(signer)
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
   await database.delete()
 })
 
@@ -287,8 +307,12 @@ describe("Merchant checkout Spark recovery discovery", () => {
     const result = await readProtectedInbox({
       principalPubkey: MERCHANT,
       relayUrls: [INBOX],
-      ownerSelectedRelayUrls: [INBOX],
-      appRelayUrls: [],
+      relayTargets: relayTargetsFromUrls([INBOX], {
+        kind: "owner_nip17",
+        operation: "read",
+        ownerPubkey: MERCHANT,
+      }),
+      inboxDeclarationEvidenceRepository: inboxEvidence,
       eventId: wrap.id,
       limit: 2,
       authorization: getProtectedReadAuthorization(MERCHANT),
@@ -329,10 +353,14 @@ describe("Merchant checkout Spark recovery discovery", () => {
     })
     expect(source.calls[0]).toMatchObject({
       relayUrls: [INBOX],
-      ownerSelectedRelayUrls: [INBOX],
+      relayTargets: relayTargetsFromUrls([INBOX], {
+        kind: "owner_nip17",
+        operation: "read",
+        ownerPubkey: MERCHANT,
+      }),
       limit: 50,
     })
-    expect(source.calls[0]?.appRelayUrls).toEqual([])
+    expect(source.calls[0]?.appRelayUrls).toBeUndefined()
     expect(
       (await database.commerceInboxWrappers.toArray())[0]?.event
     ).toMatchObject({
@@ -555,7 +583,11 @@ describe("Merchant checkout Spark recovery discovery", () => {
       eventId: wrap.id,
       limit: 2,
       relayUrls: [INBOX],
-      appRelayUrls: [],
+      relayTargets: relayTargetsFromUrls([INBOX], {
+        kind: "owner_nip17",
+        operation: "read",
+        ownerPubkey: MERCHANT,
+      }),
     })
     expect(JSON.stringify(result)).not.toContain(WALLET_MATERIAL)
     expect(
