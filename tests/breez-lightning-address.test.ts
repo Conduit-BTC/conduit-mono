@@ -265,6 +265,26 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
     expect(f.calls).toEqual(["recover", "public"])
     expect(f.generatorCalls()).toBe(0)
   })
+  it.each(["a", "ab", "support", "_"])(
+    "recovers the existing provider-owned name %s without applying new-name policy",
+    async (username) => {
+      const f = await fixture()
+      f.setRegistered(username)
+      expect(normalizeBreezUsername(username)).toBeNull()
+      for (const result of [
+        await f.client().lookup(),
+        await f.client().ensure(),
+      ])
+        expect(result).toMatchObject({
+          status: "registered",
+          username,
+          address: `${username}@conduit.cash`,
+          publicLookup: "verified",
+        })
+      expect(f.calls).toEqual(["recover", "public", "recover", "public"])
+      expect(f.generatorCalls()).toBe(0)
+    }
+  )
   it("read-only lookup never registers on a fresh restore", async () => {
     const f = await fixture()
     expect(await f.client().lookup()).toEqual({ status: "absent" })
@@ -351,6 +371,121 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
       { attempts: 1, phase: "registering" },
     ])
   })
+  it.each([400, 401, 403, 404, 405, 422, 429])(
+    "resets a fresh registration rejected with %d even when recovery is unavailable",
+    async (status) => {
+      const f = await fixture()
+      let rejected = false
+      f.setOverride(async (operation) => {
+        if (operation === "register") {
+          rejected = true
+          return response("rejected", status)
+        }
+        return rejected && operation === "recover"
+          ? response("unavailable", 503)
+          : null
+      })
+      expect(await f.client().ensure()).toEqual({
+        status: "unavailable",
+        reason: "provider_unavailable",
+      })
+      expect([...f.checkpoints.values()]).toMatchObject([
+        { attempts: 1, phase: "selected" },
+      ])
+      const first = [...f.checkpoints.values()][0].username
+      f.setOverride(async (operation, fields) =>
+        operation === "available" && fields.username === first
+          ? response({ available: false })
+          : null
+      )
+      expect(await f.client().ensure()).toMatchObject({
+        status: "registered",
+        username: "wallet-00000000000000000002",
+      })
+      expect(f.calls.filter((x) => x === "register")).toHaveLength(2)
+    }
+  )
+  it("resets a fresh registration that fails signing before submission", async () => {
+    const f = await fixture()
+    let signatures = 0
+    f.signer.signDigest = async (digest) => {
+      if (++signatures === 4) throw new Error("signing unavailable")
+      return f.native.signMessageWithIdentityKey(digest)
+    }
+    expect(await f.client().ensure()).toEqual({
+      status: "unavailable",
+      reason: "provider_unavailable",
+    })
+    expect(f.calls).not.toContain("register")
+    expect([...f.checkpoints.values()]).toMatchObject([
+      { attempts: 1, phase: "selected" },
+    ])
+    const first = [...f.checkpoints.values()][0].username
+    f.setOverride(async (operation, fields) =>
+      operation === "available" && fields.username === first
+        ? response({ available: false })
+        : null
+    )
+    expect(await f.client().ensure()).toMatchObject({
+      status: "registered",
+      username: "wallet-00000000000000000002",
+    })
+    expect(f.calls.filter((x) => x === "register")).toHaveLength(1)
+  })
+  it("preserves an earlier ambiguous submission after a definite retry rejection", async () => {
+    const f = await fixture()
+    let submissions = 0
+    f.setOverride(async (operation) => {
+      if (operation !== "register") return null
+      if (++submissions === 1) throw new Error("response lost")
+      return response("rejected", 401)
+    })
+    expect(await f.client().ensure()).toEqual({
+      status: "unavailable",
+      reason: "registration_pending",
+    })
+    expect(await f.client().ensure()).toEqual({
+      status: "unavailable",
+      reason: "invalid_api_key",
+    })
+    expect([...f.checkpoints.values()]).toMatchObject([
+      { attempts: 1, phase: "registering" },
+    ])
+    f.setOverride(async (operation) =>
+      operation === "available" ? response({ available: false }) : null
+    )
+    expect(await f.client().ensure()).toEqual({
+      status: "unavailable",
+      reason: "registration_pending",
+    })
+    expect(f.generatorCalls()).toBe(1)
+  })
+  it.each(["server_error", "malformed_success", "unknown_conflict"])(
+    "preserves an uncertain registration after %s",
+    async (outcome) => {
+      const f = await fixture()
+      f.setOverride(async (operation) => {
+        if (operation !== "register") return null
+        if (outcome === "server_error") return response("unavailable", 503)
+        if (outcome === "unknown_conflict")
+          return response("statement already used", 409)
+        return new Response("malformed", { status: 200 })
+      })
+      expect(await f.client().ensure()).toMatchObject({ status: "unavailable" })
+      expect([...f.checkpoints.values()]).toMatchObject([
+        { attempts: 1, phase: "registering" },
+      ])
+      f.setOverride(async (operation) =>
+        operation === "available" ? response({ available: false }) : null
+      )
+      expect(await f.client().ensure()).toEqual({
+        status: "unavailable",
+        reason: "registration_pending",
+      })
+      expect(f.generatorCalls()).toBe(1)
+      expect(f.calls.filter((x) => x === "register")).toHaveLength(1)
+    }
+  )
   it("never interprets unenabled-domain 404 as address absence", async () => {
     const f = await fixture()
     f.setOverride(async () => response("", 404))
