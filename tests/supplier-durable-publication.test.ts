@@ -11,6 +11,7 @@ import {
   __resetRelayPublishTestOverrides,
   __setRelayPublishTestOverrides,
   buildProductSupplierAllocation,
+  config,
   db,
   deriveCheckoutSparkSignedCommerceObligations,
   parseProductEvent,
@@ -146,8 +147,13 @@ function routerAllocations(event: SignedPublicNostrEvent) {
 }
 
 let restoreBrowser: (() => void) | undefined
+let priorCommerceRelayUrls: string[] | undefined
 
 beforeEach(() => {
+  priorCommerceRelayUrls = config.commerceRelayUrls
+  // These exact planned targets have current App write authority in this
+  // controlled fixture; persisted provenance flags alone are not permission.
+  config.commerceRelayUrls = [relayA, relayB]
   const deps = (
     db as unknown as {
       _deps: {
@@ -218,6 +224,8 @@ beforeEach(() => {
 
 afterEach(() => {
   clearTestAccountSigner()
+  if (priorCommerceRelayUrls) config.commerceRelayUrls = priorCommerceRelayUrls
+  priorCommerceRelayUrls = undefined
   restoreBrowser?.()
   restoreBrowser = undefined
   __resetRelayPublishTestOverrides()

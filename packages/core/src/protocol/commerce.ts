@@ -9608,6 +9608,11 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
             principalPubkey: principal,
             relayUrl: source.relayUrl,
             declaredRelayUrls: relayUrls,
+            relayTargets: relayTargetsFromUrls([source.relayUrl], {
+              kind: "owner_nip17",
+              operation: "read",
+              ownerPubkey: principal,
+            }),
             authorization,
             ...(signal ? { signal } : {}),
             ...(source.cursor ? { cursor: source.cursor } : {}),

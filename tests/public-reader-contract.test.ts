@@ -439,9 +439,10 @@ if (!reference) {
     expect(sharedA).toBeDefined()
     expect(sharedB).toBeDefined()
     let declaration = sign(220, 10002, [["r", sharedA!]])
+    let deliveredCopies = 3
     install((socket, id) => {
       if (socket.url === sharedA)
-        for (let index = 0; index < 3; index++)
+        for (let index = 0; index < deliveredCopies; index++)
           socket.emit([
             "EVENT",
             id,
@@ -461,13 +462,14 @@ if (!reference) {
     expect(owner.observation.eventSourceRelayUrls).toEqual([sharedA])
     expect(owner.current?.sourceRelayUrls).toEqual([sharedA])
     declaration = sign(230, 10050, [["relay", sharedA!]])
+    deliveredCopies = 257
     const inbox = await resolveInboxDeclaration(declaration.pubkey, {
       relayUrls: [sharedA!, sharedB!],
       sharedConfirmationRelayUrls: [sharedA!, sharedB!],
       evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
     })
-    // Three duplicate deliveries hit the kind-10050 limit on the observed
-    // source; the empty sibling is complete but cannot confirm that event.
+    // Duplicate deliveries exceed the kind-10050 raw observation budget of
+    // 256 on this source; the complete empty sibling cannot confirm the event.
     expect(inbox.observation?.coverage).toBe("partial")
     expect(inbox.observation?.eventSourceRelayUrls).toEqual([sharedA])
     expect(inbox.sourceRelayUrls).toEqual([sharedA])
