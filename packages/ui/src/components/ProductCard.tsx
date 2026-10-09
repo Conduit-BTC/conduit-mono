@@ -48,6 +48,23 @@ export interface ProductCardProps {
   className?: string
 }
 
+function renderCardPrice(
+  value: string | null | undefined,
+  estimated = false
+): ReactNode {
+  if (!value) return "\u00a0"
+  const text = value.replace(/[~≈]\s*/g, "")
+  const isEstimate = estimated || /[~≈]/.test(value)
+  return (
+    <span title={isEstimate ? `${text} (estimated conversion)` : text}>
+      {isEstimate ? (
+        <span className="sr-only">Estimated conversion: </span>
+      ) : null}
+      {text}
+    </span>
+  )
+}
+
 export function ProductCard({
   title,
   titleAside,
@@ -195,7 +212,6 @@ export function ProductCard({
             )}
           >
             <div
-              title={primaryPrice.replace(/[~≈]\s*/g, "")}
               className={cn(
                 "min-h-5 whitespace-nowrap text-sm font-semibold",
                 /₿|\bsats?\b|\bBTC\b/i.test(primaryPrice)
@@ -203,14 +219,14 @@ export function ProductCard({
                   : "text-[var(--text-primary)]"
               )}
             >
-              {primaryPrice.replace(/[~≈]\s*/g, "")}
+              {renderCardPrice(primaryPrice)}
             </div>
             <div className="min-h-[1rem] w-0 min-w-full truncate text-xs text-[var(--text-secondary)]">
-              {secondaryPrice?.replace(/[~≈]\s*/g, "") ?? "\u00a0"}
+              {renderCardPrice(secondaryPrice)}
             </div>
             {approximateUsdPrice !== undefined ? (
               <div className="min-h-[1rem] w-0 min-w-full truncate text-xs text-[var(--text-secondary)]">
-                {approximateUsdPrice?.replace(/[~≈]\s*/g, "") ?? "\u00a0"}
+                {renderCardPrice(approximateUsdPrice, true)}
               </div>
             ) : null}
           </div>

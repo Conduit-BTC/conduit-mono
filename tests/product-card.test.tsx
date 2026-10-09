@@ -295,6 +295,48 @@ describe("ProductCard", () => {
     expect(html).not.toContain("~")
   })
 
+  it("identifies converted estimates without adding visible approximation glyphs", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Converted"
+        merchantName="Store"
+        images={[]}
+        primaryPrice="~ ₿12,000"
+        secondaryPrice="€10.00 EUR"
+        approximateUsdPrice="$12.00 USD"
+      />
+    )
+    expect(html).toContain('title="₿12,000 (estimated conversion)"')
+    expect(html).toContain('title="$12.00 USD (estimated conversion)"')
+    expect(html).toContain('title="€10.00 EUR"')
+    expect(html.match(/Estimated conversion: /g)).toHaveLength(2)
+    expect(html).not.toMatch(/[~≈]/)
+    const exact = renderToStaticMarkup(
+      <ProductCard
+        title="Exact"
+        merchantName="Store"
+        images={[]}
+        primaryPrice="25 sats"
+        secondaryPrice="€10.00 EUR"
+      />
+    )
+    expect(exact).not.toContain("estimated conversion")
+    expect(exact).not.toContain("Estimated conversion:")
+    const convertedSecondary = renderToStaticMarkup(
+      <ProductCard
+        title="Converted fiat"
+        merchantName="Store"
+        images={[]}
+        primaryPrice="25 sats"
+        secondaryPrice="≈ $0.02 USD"
+      />
+    )
+    expect(convertedSecondary).toContain(
+      'title="$0.02 USD (estimated conversion)"'
+    )
+    expect(convertedSecondary.match(/Estimated conversion: /g)).toHaveLength(1)
+  })
+
   it("reserves the USD reference row when Market pricing has no estimate", () => {
     const html = renderToStaticMarkup(
       <ProductCard
