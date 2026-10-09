@@ -48,6 +48,7 @@ import {
 } from "./helpers/hermetic-network"
 import { createHermeticSparkNative } from "./helpers/hermetic-spark-native"
 import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
+import { viteFileModuleUrl } from "./helpers/vite-file-module-url"
 import {
   createHermeticSparkTransport,
   installHermeticSparkTransport,
@@ -92,15 +93,28 @@ async function setIsolatedRouterCapabilities(
   admission: boolean,
   execution: boolean
 ): Promise<void> {
-  const modulePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/config.ts", import.meta.url)).replaceAll("\\", "/")}`
-  await page.evaluate(
-    async ({ modulePath, admission, execution }) => {
+  const modulePath = viteFileModuleUrl(
+    fileURLToPath(new URL("../packages/core/src/config.ts", import.meta.url))
+  )
+  const appCorePath = viteFileModuleUrl(
+    fileURLToPath(new URL("../packages/core/src/index.ts", import.meta.url))
+  )
+  const observed = await page.evaluate(
+    async ({ modulePath, appCorePath, admission, execution }) => {
       const { config } = await import(/* @vite-ignore */ modulePath)
+      const { isQuantumRouterEnabled, isQuantumRouterExecutionEnabled } =
+        await import(/* @vite-ignore */ appCorePath)
       config.quantumRouterEnabled = admission
       config.quantumRouterExecutionEnabled = execution
+      // Return only public capability booleans, never the runtime config.
+      return {
+        admission: isQuantumRouterEnabled(),
+        execution: isQuantumRouterExecutionEnabled(),
+      }
     },
-    { modulePath, admission, execution }
+    { modulePath, appCorePath, admission, execution }
   )
+  expect(observed).toEqual({ admission: admission && execution, execution })
 }
 
 async function selectIsolatedOrder(page: Page, orderId: string): Promise<void> {
