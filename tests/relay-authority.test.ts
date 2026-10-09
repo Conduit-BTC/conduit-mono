@@ -13,6 +13,7 @@ import { setAccountNetworkRoutingSourceEnabled } from "@conduit/core/protocol/ac
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
+  selectRelayTargets,
 } from "@conduit/core/protocol/relay-authority"
 import {
   __resetOwnerRelayListEvidenceForTests,
@@ -83,6 +84,43 @@ async function signedOverlapSelection() {
 }
 
 describe("relay authority", () => {
+  it("selects normalized operation order without losing independent grants or granting a URL", () => {
+    const source = "wss://source.example"
+    const targets = [
+      ...relayTargetsFromUrls([appRelay], {
+        kind: "app",
+        operation: "read",
+        bucket: "general_read",
+      }),
+      ...relayTargetsFromUrls([source], {
+        kind: "public_hint",
+        operation: "read",
+      }),
+      ...relayTargetsFromUrls([`${appRelay}/`], {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: owner,
+        selection: "read",
+      }),
+    ]
+    const selected = selectRelayTargets(targets, [
+      source,
+      `${appRelay}/`,
+      appRelay,
+      "wss://ungranted.example",
+    ])
+    expect(selected.map((target) => target.url)).toEqual([source, appRelay])
+    expect(selected[1]?.grants.map((grant) => grant.kind)).toEqual([
+      "app",
+      "owner_nip65",
+    ])
+    expect(selectRelayTargets(targets, [])).toEqual([])
+    expect(selectRelayTargets(targets).map((target) => target.url)).toEqual([
+      appRelay,
+      source,
+    ])
+  })
+
   it("keeps per-source grants when the planner deduplicates a shared URL", () => {
     const relayLists = new Map([
       [

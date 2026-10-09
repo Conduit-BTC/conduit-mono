@@ -8,6 +8,7 @@ import {
   mergeRelayTargets,
   relayTargetUrls,
   relayTargetsFromUrls,
+  selectRelayTargets,
   type RelayTarget,
 } from "./relay-authority"
 import { EVENT_KINDS } from "./kinds"
@@ -417,10 +418,10 @@ async function defaultPlanSearchRelayTargets(
         ]
       : [])
   )
-  const orderedTargets = candidateRelayUrls.flatMap((url) => {
-    const target = candidateTargets.find((candidate) => candidate.url === url)
-    return target ? [target] : []
-  })
+  const orderedTargets = selectRelayTargets(
+    candidateTargets,
+    candidateRelayUrls
+  )
   const admittedTargets = authenticatedPubkey
     ? await filterEligibleAccountRelayTargets({
         accountPubkey: authenticatedPubkey,

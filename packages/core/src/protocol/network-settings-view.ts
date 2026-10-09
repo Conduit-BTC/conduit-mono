@@ -53,6 +53,7 @@ export interface AccountNetworkRelayRowView {
   recoveryReadOnly?: boolean
   retainedReadOnly?: boolean
   recoveryPhase?: "awaiting_confirmation" | "grace"
+  /** Persisted recovery observation-clock deadline, in milliseconds. */
   recoveryExpiresAt?: number
   reachability: AccountNetworkRelayReachability
   capability: AccountNetworkRelayCapabilityView

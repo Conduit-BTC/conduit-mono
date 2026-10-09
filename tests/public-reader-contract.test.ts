@@ -1115,66 +1115,59 @@ if (!reference) {
     }
   }
 
-  for (const phase of ["planning", "admission"] as const) {
-    it(`CON-06 retirement abandons blocked ${phase} policy reads and permits sibling work`, async () => {
-      install((socket, id) => socket.emit(["EOSE", id]))
-      const entered = barrier(),
-        released = barrier()
-      let gets = 0
-      const urls = Array.from(
-        { length: 8 },
-        (_, i) => `wss://policy-${i}.example`
-      )
-      const scope = { createWebSocket: (url: string) => new Socket(url) }
-      const pending = read(
-        { kinds: [0] },
-        {
-          ...options(urls),
-          relayTargets: relayTargetsFromUrls(urls, {
-            kind: "public_hint",
-            operation: "read",
-          }),
-          socketScope: scope,
-          accountPubkey: first.pubkey,
-          accountNetworkLocalStateRepository: {
-            get: async () => {
-              gets++
-              if (phase === "admission" && gets === 1) return undefined
-              if (gets === (phase === "planning" ? 1 : 9)) entered.release()
-              await released.promise
-              return undefined
-            },
+  it("CON-06 retirement abandons blocked admission policy reads and permits sibling work", async () => {
+    install((socket, id) => socket.emit(["EOSE", id]))
+    const entered = barrier(),
+      released = barrier()
+    const urls = Array.from(
+      { length: 8 },
+      (_, i) => `wss://policy-${i}.example`
+    )
+    const scope = { createWebSocket: (url: string) => new Socket(url) }
+    const pending = read(
+      { kinds: [0] },
+      {
+        ...options(urls),
+        relayTargets: relayTargetsFromUrls(urls, {
+          kind: "public_hint",
+          operation: "read",
+        }),
+        socketScope: scope,
+        accountPubkey: first.pubkey,
+        accountNetworkLocalStateRepository: {
+          get: async () => {
+            // Planning is pure; block the actual live admission boundary.
+            entered.release()
+            await released.promise
+            return undefined
           },
-        }
-      ).then(
-        () => null,
-        (error: unknown) => error
-      )
-      await entered.promise
-      try {
-        closePublicRelayConnections(scope)
-        const result = await Promise.race([
-          pending,
-          new Promise((resolve) =>
-            setTimeout(
-              () => resolve("policy still owns retired operation"),
-              100
-            )
-          ),
-        ])
-        expect(result).toMatchObject({ name: "AbortError" })
-        expect((await read({ kinds: [0] }, options([B]))).readCoverage).toBe(
-          "complete"
-        )
-        expect(sockets.every((socket) => socket.url === B)).toBe(true)
-      } finally {
-        released.release()
-        await pending
+        },
       }
-      await Promise.resolve()
+    ).then(
+      () => null,
+      (error: unknown) => error
+    )
+    await entered.promise
+    try {
+      closePublicRelayConnections(scope)
+      const result = await Promise.race([
+        pending,
+        new Promise((resolve) =>
+          setTimeout(() => resolve("policy still owns retired operation"), 100)
+        ),
+      ])
+      expect(result).toMatchObject({ name: "AbortError" })
+      expect((await read({ kinds: [0] }, options([B]))).readCoverage).toBe(
+        "complete"
+      )
       expect(sockets.every((socket) => socket.url === B)).toBe(true)
-    })
-  }
+    } finally {
+      released.release()
+      await pending
+    }
+    await Promise.resolve()
+    expect(sockets.every((socket) => socket.url === B)).toBe(true)
+  })
 }
 
 it("CON-03 multi-filter comparison keeps main truncation separate from fixture selection truth", async () => {

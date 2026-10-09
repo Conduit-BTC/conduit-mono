@@ -16,6 +16,7 @@ import { filterEligibleAccountRelayTargets } from "./account-network-local-state
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
+  selectRelayTargets,
   type RelayTarget,
 } from "./relay-authority"
 import { getFollowListPubkeySet } from "./follows"
@@ -1064,7 +1065,6 @@ async function resolveRelayUrls(
       : [...shopperWriteRelayUrls, ...shopperReadRelayUrls]),
     ...(basePlan?.independentRelayUrls ?? []),
   ])
-  const candidateSet = new Set(candidateRelayUrls)
   const mergedCandidateTargets = mergeRelayTargets(
     basePlan?.relayTargets ?? [],
     baseRelayTargetsOverride ?? [],
@@ -1098,14 +1098,11 @@ async function resolveRelayUrls(
       ownerPubkey: accountPubkey ?? "",
       selection: "write",
     })
-  ).filter((target) => candidateSet.has(target.url))
-  const targetByUrl = new Map(
-    mergedCandidateTargets.map((target) => [target.url, target])
   )
-  const candidateTargets = candidateRelayUrls.flatMap((url) => {
-    const target = targetByUrl.get(url)
-    return target ? [target] : []
-  })
+  const candidateTargets = selectRelayTargets(
+    mergedCandidateTargets,
+    candidateRelayUrls
+  )
   const admittedRelayUrls = accountPubkey
     ? (
         await filterEligibleAccountRelayTargets({

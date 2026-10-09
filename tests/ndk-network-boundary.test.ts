@@ -465,6 +465,7 @@ describe("NDK network boundary", () => {
           reuseRelayConnections: false,
         }
       )
+      const accountPolicyReads = queriedPubkeys.length
       const publicRead = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
@@ -484,12 +485,8 @@ describe("NDK network boundary", () => {
       ])
       expect(publicRead.relays).toMatchObject(otherAccount.relays)
       expect(opened.openedUrls).toEqual([relayUrl, relayUrl])
-      expect(queriedPubkeys).toEqual([
-        ACCOUNT_A,
-        ACCOUNT_A,
-        ACCOUNT_B,
-        ACCOUNT_B,
-      ])
+      expect(new Set(queriedPubkeys)).toEqual(new Set([ACCOUNT_A, ACCOUNT_B]))
+      expect(queriedPubkeys).toHaveLength(accountPolicyReads)
     } finally {
       opened.restore()
     }
@@ -552,13 +549,13 @@ describe("NDK network boundary", () => {
     )
     const removedRelayUrl = relayUrls.at(-1)!
     const opened = installEoseWebSocket()
-    let durableReads = 0
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => {
-        durableReads += 1
         return accountNetworkState(
           pubkey,
-          durableReads >= relayUrls.length ? [removedRelayUrl] : []
+          opened.openedUrls.length >= relayUrls.length - 1
+            ? [removedRelayUrl]
+            : []
         )
       },
     }
@@ -575,8 +572,9 @@ describe("NDK network boundary", () => {
         }
       )
 
-      expect(durableReads).toBe(relayUrls.length + 1)
       expect(opened.openedUrls).toEqual(relayUrls.slice(0, -1))
+      expect(result.admittedRelayUrls).toEqual(relayUrls.slice(0, -1))
+      expect(result.attemptedRelayUrls).toEqual(relayUrls.slice(0, -1))
       expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(
         relayUrls.slice(0, -1)
       )
@@ -585,7 +583,7 @@ describe("NDK network boundary", () => {
     }
   })
 
-  it("applies local order only after the final account read plan is selected", async () => {
+  it("preserves the operation's selected order at final account read admission", async () => {
     const relayUrls = [
       "wss://first-order.conduit.market",
       "wss://second-order.conduit.market",
@@ -610,10 +608,8 @@ describe("NDK network boundary", () => {
         }
       )
 
-      expect(opened.openedUrls).toEqual(preferredRelayOrder)
-      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(
-        preferredRelayOrder
-      )
+      expect(opened.openedUrls).toEqual(relayUrls)
+      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(relayUrls)
       expect(new Set(result.relays.map(({ relayUrl }) => relayUrl))).toEqual(
         new Set(relayUrls)
       )

@@ -1,5 +1,18 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
+import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
+import {
+  applyInboxDeclarationDistributionStage,
+  applyInboxDeclarationDistributionOutcomes,
+  createInMemoryInboxDeclarationEvidenceRepository,
+  INBOX_DECLARATION_CUTOVER_GRACE_MS,
+  INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+} from "@conduit/core/protocol/inbox-declaration-evidence"
+import { hydrateAccountNetworkPreferences } from "@conduit/core/protocol/network-preferences"
+import { buildAccountNetworkSettingsView } from "@conduit/core/protocol/network-settings-view"
+import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
 import type {
   AccountNetworkRelayRowView,
   AccountNetworkSettingsController,
@@ -395,30 +408,105 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("ends recovery for this relay immediately")
   })
 
-  it("shows a seven-day recovery expiry only for the active grace phase", () => {
-    const graceMarkup = renderToStaticMarkup(
-      <RelaySettingsPanel
-        controller={controller({
-          rows: [
-            relayRow("wss://grace-inbox.example", {
-              readEnabled: false,
-              publishEnabled: false,
-              privateInboxEnabled: false,
-              readState: null,
-              publishState: null,
-              privateInboxState: null,
-              recoveryReadOnly: true,
-              recoveryPhase: "grace",
-              recoveryExpiresAt: 1_800_000_000,
-            }),
-          ],
-        })}
-      />
+  it("renders the persisted millisecond recovery clock through restored evidence and projection", async () => {
+    const observedAt = 1_800_000_000_000
+    const previous = "wss://grace-inbox.example"
+    const signedEvent = await admitFixture(
+      finalizeEvent(
+        {
+          kind: 10050,
+          created_at: observedAt / 1_000,
+          tags: [["relay", "wss://current-inbox.example"]],
+          content: "",
+        },
+        generateSecretKey()
+      )
     )
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: signedEvent.pubkey,
+      signedEvent,
+      previousRelayUrls: [previous],
+      publishRelayUrls: ["wss://nos.lol"],
+      confirmationRelayUrls: ["wss://nos.lol"],
+      relayOutcomes: [
+        {
+          relayUrl: "wss://nos.lol",
+          publishStatus: "acked",
+          publishAttemptCount: 1,
+          readbackStatus: "pending",
+          readbackAttemptCount: 0,
+        },
+      ],
+      cutoverPolicyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
+      cutoverGraceMs: INBOX_DECLARATION_CUTOVER_GRACE_MS,
+      expectedCurrentEventId: null,
+      stagedAt: observedAt - 1_000,
+    })
+    const renderRecord = async (record: typeof staged) => {
+      const reconciliation = await hydrateAccountNetworkPreferences(
+        signedEvent.pubkey,
+        {
+          inboxDeclaration: {
+            evidenceRepository:
+              createInMemoryInboxDeclarationEvidenceRepository(
+                [record],
+                () => observedAt
+              ),
+            now: () => observedAt,
+          },
+          ownerRelayList: {
+            evidenceRepository:
+              createInMemoryOwnerRelayListEvidenceRepository(),
+            now: () => observedAt,
+          },
+          localStateRepository:
+            createInMemoryAccountNetworkLocalStateRepository(),
+        }
+      )
+      const view = buildAccountNetworkSettingsView({
+        reconciliation,
+        localState: null,
+      })
+      return {
+        view,
+        markup: renderToStaticMarkup(
+          <RelaySettingsPanel controller={{ ...controller(), view }} />
+        ),
+      }
+    }
+    const pending = await renderRecord(staged)
+    expect(
+      pending.view.rows.find((row) => row.url === previous)?.recoveryPhase
+    ).toBe("awaiting_confirmation")
+    expect(
+      pending.view.rows.find((row) => row.url === previous)?.recoveryExpiresAt
+    ).toBeUndefined()
+    const currentInbox = pending.view.rows.find(
+      (row) => row.url === "wss://current-inbox.example"
+    )
+    expect(currentInbox?.privateInboxEnabled).toBe(true)
+    expect(currentInbox?.recoveryReadOnly).not.toBe(true)
+    expect(pending.view.inbox.currentUsable).toBe(true)
+    expect(pending.markup).toContain(
+      "seven-day recovery window starts after confirmation"
+    )
+    const confirmed = applyInboxDeclarationDistributionOutcomes(staged, {
+      readback: [{ relayUrl: "wss://nos.lol", status: "observed" }],
+      observedAt,
+    })
+    const { view, markup: graceMarkup } = await renderRecord(confirmed)
+    const expiresAt = observedAt + INBOX_DECLARATION_CUTOVER_GRACE_MS
+    expect(
+      view.rows.find((row) => row.url === previous)?.recoveryExpiresAt
+    ).toBe(expiresAt)
+    const expectedDate = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(expiresAt))
     expect(graceMarkup).toContain(
       "Conduit reads this previous inbox during the seven-day recovery"
     )
-    expect(graceMarkup).toContain("through")
+    expect(graceMarkup).toContain(`through ${expectedDate}`)
     expect(graceMarkup).not.toContain("confirmation pending")
   })
 

@@ -707,7 +707,7 @@ function RelayRow({
               Conduit reads this previous inbox during the seven-day recovery
               window
               {row.recoveryExpiresAt !== undefined
-                ? ` through ${formatEventTime(row.recoveryExpiresAt)}`
+                ? ` through ${formatObservationTime(row.recoveryExpiresAt)}`
                 : ""}
               . Removing it from your whole setup ends recovery for this relay
               immediately.

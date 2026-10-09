@@ -108,6 +108,31 @@ export function mergeRelayTargets(
   return [...byUrl.values()]
 }
 
+/**
+ * Intersect an operation's ordered URL plan with its independent grants.
+ * Target construction order is not operation priority. Omitted URLs use target
+ * order; an explicit empty list selects nothing. Normalized overlap keeps all
+ * grants and consumes at most one network attempt.
+ */
+export function selectRelayTargets(
+  targets: readonly RelayTarget[],
+  relayUrls?: readonly string[]
+): RelayTarget[] {
+  const merged = mergeRelayTargets(targets)
+  if (relayUrls === undefined) return merged
+  const byUrl = new Map(merged.map((target) => [target.url, target]))
+  const selected: RelayTarget[] = []
+  for (const raw of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(raw)
+    if (!normalized.ok) continue
+    const target = byUrl.get(normalized.url)
+    if (!target) continue
+    selected.push(target)
+    byUrl.delete(normalized.url)
+  }
+  return selected
+}
+
 export function relayTargetUrls(targets: readonly RelayTarget[]): string[] {
   return targets.map((target) => target.url)
 }

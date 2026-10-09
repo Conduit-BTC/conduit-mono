@@ -8,7 +8,11 @@ import {
   filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
-import { mergeRelayTargets, type RelayTarget } from "./relay-authority"
+import {
+  mergeRelayTargets,
+  selectRelayTargets,
+  type RelayTarget,
+} from "./relay-authority"
 import type { SignedNostrEvent } from "./nostr-event-signer"
 import type { ProtectedReadAuthorization } from "./protected-read-authorization"
 
@@ -193,9 +197,7 @@ export async function readProtectedInbox(
   const eligibleRelayTargets = await filterEligibleAccountRelayTargets({
     accountPubkey: principalPubkey,
     authenticatedPubkey: options.authorization.expectedPubkey,
-    targets: protectedTargets.filter((target) =>
-      options.relayUrls.includes(target.url)
-    ),
+    targets: selectRelayTargets(protectedTargets, options.relayUrls),
     operation: "read",
     repository: options.accountNetworkLocalStateRepository,
     ownerRelayListEvidenceRepository: options.ownerRelayListEvidenceRepository,

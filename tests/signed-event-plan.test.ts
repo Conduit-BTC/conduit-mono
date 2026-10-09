@@ -361,7 +361,7 @@ describe("composed plain signed-event target plan", () => {
       try {
         for (let attempt = 0; attempt < 2; attempt++) {
           connected = false
-          let reads = 0
+          let planRead = false
           const result = await publishSignedEventPlan({
             event: signed,
             relayUrls: [target],
@@ -371,10 +371,10 @@ describe("composed plain signed-event target plan", () => {
             accountPubkey: signed.pubkey,
             accountNetworkLocalStateRepository: {
               get: async (pubkey) => {
-                reads++
                 // Initial plan succeeds; the live target refresh fails.
-                if (phase === "before connection" ? reads > 2 : connected)
+                if (phase === "before connection" ? planRead : connected)
                   throw new Error("synthetic local policy read failure")
+                planRead = true
                 return emptyAccountNetworkLocalState(pubkey)
               },
             },

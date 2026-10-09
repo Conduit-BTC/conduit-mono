@@ -1128,6 +1128,124 @@ describe("durable product deletion delivery", () => {
     })
   })
 
+  it("restores historical jobs through the production adapter and final writer under current independent switches", async () => {
+    const relayUrl = "wss://relay.ditto.pub"
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
+    const opened: string[] = []
+    const sent: SignedPublicNostrEvent[] = []
+    class Socket {
+      readyState = 0
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      constructor(url: string) {
+        opened.push(url)
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send(payload: string) {
+        const frame = JSON.parse(payload) as [string, SignedPublicNostrEvent]
+        if (frame[0] !== "EVENT") return
+        sent.push(frame[1])
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: JSON.stringify(["OK", frame[1].id, true, ""]),
+          } as MessageEvent<string>)
+        )
+      }
+      close() {
+        this.readyState = 3
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: Socket,
+    })
+    try {
+      for (const testCase of [
+        { provenance: "app", app: false, personal: true, eligible: true },
+        { provenance: "personal", app: true, personal: false, eligible: true },
+        { provenance: "unflagged", app: false, personal: true, eligible: true },
+        { provenance: "unflagged", app: true, personal: false, eligible: true },
+        {
+          provenance: "unflagged",
+          app: false,
+          personal: false,
+          eligible: false,
+        },
+      ]) {
+        opened.length = 0
+        sent.length = 0
+        const storage = new Map<string, ProductDeletionDeliveryJob>()
+        const repository = new MemoryProductDeletionOutbox(storage)
+        const event = signedDeletionEvent()
+        const created = await persistProductDeletionDelivery(
+          {
+            signedEvent: event,
+            currentWriteRelayUrls: [relayUrl],
+            sourceRelayUrls: [],
+            canonicalConduitRelayUrl: relayUrl,
+          },
+          { repository, now: () => NOW }
+        )
+        await repository.update(created.id, (current) => ({
+          ...current,
+          relayPlan: current.relayPlan.map((target) => ({
+            relayUrl: target.relayUrl,
+            roles: ["author_write", "conduit"],
+            ...(testCase.provenance === "app" ? { appRelay: true } : {}),
+            ...(testCase.provenance === "personal"
+              ? { personalRelay: true }
+              : {}),
+          })),
+        }))
+        const state = emptyAccountNetworkLocalState(event.pubkey, () => NOW)
+        state.routingPolicy = {
+          ...state.routingPolicy,
+          appRelaysEnabled: testCase.app,
+          personalRelaysEnabled: testCase.personal,
+          appRelaysTouched: true,
+          personalRelaysTouched: true,
+        }
+        const localStateRepository =
+          createInMemoryAccountNetworkLocalStateRepository([state])
+        // New repository instances model restart. Neither the adapter nor the
+        // exact publisher is replaced; only the raw socket and storage are.
+        const restored = new MemoryProductDeletionOutbox(storage)
+        const result = await deliverQueuedProductDeletion(created.id, {
+          repository: restored,
+          authenticatedPubkey: event.pubkey,
+          accountNetworkLocalStateRepository: localStateRepository,
+          ownerRelayListEvidenceRepository: ownerEvidenceRepository,
+          now: tickingClock(NOW + 20_000),
+          restoreLocalEvidence: async (job) => {
+            expect(job.signedEvent).toEqual(event)
+          },
+        })
+        expect(opened).toEqual(testCase.eligible ? [relayUrl] : [])
+        expect(sent).toEqual(testCase.eligible ? [event] : [])
+        expect(result.successfulRelayUrls).toEqual(
+          testCase.eligible ? [relayUrl] : []
+        )
+        const saved = await restored.get(created.id)
+        expect(saved?.signedEvent).toEqual(event)
+        expect(saved?.relayPlan.map((target) => target.relayUrl)).toEqual([
+          relayUrl,
+        ])
+        expect(saved?.relayDelivery[0]?.attemptCount).toBe(
+          testCase.eligible ? 1 : 0
+        )
+      }
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
+      else Reflect.deleteProperty(globalThis, "WebSocket")
+    }
+  })
+
   it("keeps source authority independent when it overlaps an app deletion target", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent("5".repeat(64))

@@ -43,6 +43,7 @@ import { EVENT_KINDS } from "./kinds"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
+  selectRelayTargets,
   type RelayGrant,
   type RelayTarget,
 } from "./relay-authority"
@@ -528,15 +529,12 @@ function targetsForCandidateUrls(
   urls: readonly string[],
   ...sources: readonly { urls: readonly string[]; grant: RelayGrant }[]
 ): RelayTarget[] {
-  const candidates = new Set(urls)
-  return mergeRelayTargets(
-    ...sources.map((source) =>
-      relayTargetsFromUrls(
-        source.urls.filter((url) => candidates.has(url)),
-        source.grant
-      )
-    )
-  ).sort((left, right) => urls.indexOf(left.url) - urls.indexOf(right.url))
+  return selectRelayTargets(
+    sources.flatMap((source) =>
+      relayTargetsFromUrls(source.urls, source.grant)
+    ),
+    urls
+  )
 }
 
 function appReadGrantSources(intent: RelayReadIntent, urls: readonly string[]) {

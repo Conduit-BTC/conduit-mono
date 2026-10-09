@@ -60,6 +60,9 @@ Workflow continuation, including returning to a saved product draft, consumes
 that prepared authority fact rather than requiring complete readback or lookup.
 Only a staged replacement creates a recovery transition; its grace clock starts
 under the existing exact confirmation contract. Read failure cannot start it.
+Recovery observation times and expiry deadlines remain milliseconds through
+restoration, projection, and UI formatting; signed event `created_at` remains
+seconds. Pending confirmation has no running expiry clock.
 
 Scoped absence requires a completed admitted bounded query with no matching
 event and no stronger usable retained or pending frontier. It is never proof
@@ -78,6 +81,27 @@ carrying the public read plan through the deletion query's final I/O gate.
 names one applicable authority and operation. `mergeRelayTargets` deduplicates
 URLs while retaining every independent grant. Plans may expose URL arrays for
 ordering, progress, or diagnostics; those arrays do not authorize account I/O.
+
+`selectRelayTargets` intersects an ordered operation URL list with those grants.
+It normalizes and deduplicates before spending a bounded attempt, preserves all
+grants at a shared URL, and never adds authority for an unbacked URL. Explicit
+URL order wins over grant-construction order; omitted URLs use target order and
+an explicit empty list means no I/O. Anonymous secure reads use the same
+normalized deduplication before their cap.
+
+Final readers and writers preserve operation priority. They do not reinterpret
+all fanout candidates as one equivalent group for a saved local preference.
+`orderEquivalentAccountRelayOperations` remains the explicit preference owner
+for callers that can establish equivalence, including exact media and private
+delivery retries. A composed operation may order equivalent source peers before
+execution, while leaving its source-versus-fallback groups in place. No grant
+kind is treated as a universal priority or an exclusive source classification.
+
+Live policy suppression before a socket attempt leaves the bounded slot available
+for a later candidate in that same prepared plan. Publication keeps reserves
+until the per-target admission check, and reports the actual admitted and
+attempted scope. A veto after opening a socket has consumed an attempt and does
+not authorize widening the immutable candidate plan.
 
 | Authority                            | Operation policy                                     | Local layer switch                        |
 | ------------------------------------ | ---------------------------------------------------- | ----------------------------------------- |

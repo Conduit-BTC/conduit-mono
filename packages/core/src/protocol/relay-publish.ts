@@ -37,12 +37,12 @@ import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
   dexieAccountNetworkLocalStateRepository,
   filterEligibleAccountRelayTargets,
-  orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
+  selectRelayTargets,
   type RelayTarget,
 } from "./relay-authority"
 import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
@@ -651,8 +651,14 @@ export async function publishSignedEventPlan(input: {
     authorPubkey: input.relayAuthentication?.expectedPubkey,
     ...input,
   })
-  const targets = await resolveRelayPublishTargets(input)
+  // Keep eligible reserves until each actual attempt passes its live check.
+  // A policy change between planning and admission must not spend the cap.
+  const targets = await resolveRelayPublishTargets({
+    ...input,
+    maxRelayAttempts: undefined,
+  })
   const attemptedRelayUrls: string[] = []
+  const admittedRelayUrls: string[] = []
   const relayAttempts: ProgressiveRelayPublishAttempt[] = []
   let signerFailureSuppressed = false
   const attempt = async (relayUrl: string) => {
@@ -670,6 +676,7 @@ export async function publishSignedEventPlan(input: {
       else if (!fresh.relayUrls.includes(relayUrl)) status = "policy_blocked"
       else if (signerFailureSuppressed) status = "auth_required"
       else {
+        admittedRelayUrls.push(relayUrl)
         attemptedRelayUrls.push(relayUrl)
         status = await (
           testOverrides.publishSignedEventFrameToRelay ??
@@ -716,6 +723,7 @@ export async function publishSignedEventPlan(input: {
     // Local policy/executor and signer failures do not describe relay health.
     else if (status === "timed_out" || status === "rejected")
       recordRelayFailure(relayUrl)
+    return attemptedRelayUrls.includes(relayUrl)
   }
   for (const relayUrl of targets.blockedRelayUrls) {
     const outcome: ProgressiveRelayPublishAttempt = {
@@ -727,16 +735,39 @@ export async function publishSignedEventPlan(input: {
     relayAttempts.push(outcome)
     input.onOutcome?.(outcome, false)
   }
+  const requestedLimit = input.maxRelayAttempts
+  const limit =
+    requestedLimit !== undefined &&
+    Number.isSafeInteger(requestedLimit) &&
+    requestedLimit > 0
+      ? requestedLimit
+      : targets.relayUrls.length
   if (input.relayAuthentication) {
-    for (const url of targets.relayUrls) await attempt(url)
-  } else await Promise.all(targets.relayUrls.map(attempt))
+    for (const url of targets.relayUrls) {
+      if (attemptedRelayUrls.length >= limit) break
+      await attempt(url)
+    }
+  } else {
+    let nextIndex = 0
+    await Promise.all(
+      Array.from(
+        { length: Math.min(limit, targets.relayUrls.length) },
+        async () => {
+          while (nextIndex < targets.relayUrls.length) {
+            const url = targets.relayUrls[nextIndex++]!
+            if (await attempt(url)) break
+          }
+        }
+      )
+    )
+  }
   const successfulRelayUrls = relayAttempts
     .filter((a) => a.status === "acked")
     .map((a) => a.relayUrl)
   const failed = relayAttempts.filter((a) => a.status !== "acked")
   return {
     attemptedRelayUrls,
-    admittedRelayUrls: targets.relayUrls,
+    admittedRelayUrls,
     successfulRelayUrls,
     failedRelayUrls: failed.map((a) => a.relayUrl),
     rejectedRelayUrls: failed
@@ -835,31 +866,21 @@ async function resolveRelayPublishTargets(input: {
   const accountNetworkLocalStateRepository =
     input.accountNetworkLocalStateRepository ??
     testOverrides.accountNetworkLocalStateRepository
-  const orderedCandidateRelayUrls =
-    input.accountPubkey === undefined || input.accountPubkey === null
-      ? safeCandidateRelayUrls
-      : (
-          await orderEquivalentAccountRelayOperations({
-            accountPubkey: input.accountPubkey,
-            operations: safeCandidateRelayUrls.map((relayUrl) => ({
-              relayUrl,
-              equivalenceKey: "final-publish-fanout",
-              value: relayUrl,
-            })),
-            repository: accountNetworkLocalStateRepository,
-          })
-        ).map((operation) => operation.value)
+  // The operation owner has already ordered its candidates. Intersect that
+  // order with grants before admission/capping; neither grant construction nor
+  // a global local preference can replace operation priority at final I/O.
   const eligibleRelayUrls =
-    orderedCandidateRelayUrls.length === 0
+    safeCandidateRelayUrls.length === 0
       ? []
       : input.accountPubkey === undefined || input.accountPubkey === null
-        ? normalizeSecureOrIsolatedE2eRelayUrls(orderedCandidateRelayUrls)
+        ? normalizeSecureOrIsolatedE2eRelayUrls(safeCandidateRelayUrls)
         : (
             await filterEligibleAccountRelayTargets({
               accountPubkey: input.accountPubkey,
               authenticatedPubkey: input.authenticatedPubkey,
-              targets: candidateTargets.filter((target) =>
-                orderedCandidateRelayUrls.includes(target.url)
+              targets: selectRelayTargets(
+                candidateTargets,
+                safeCandidateRelayUrls
               ),
               operation: "write",
               repository: accountNetworkLocalStateRepository,

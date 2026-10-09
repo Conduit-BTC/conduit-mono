@@ -17,12 +17,12 @@ import {
 } from "./relay-health"
 import {
   filterEligibleAccountRelayTargets,
-  orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetUrls,
+  selectRelayTargets,
   type RelayTarget,
 } from "./relay-authority"
 import { NostrSignerError } from "./nostr-event-signer"
@@ -109,7 +109,7 @@ export interface PublicRelayReadOptions {
   maxEventsPerRelay?: number
   maxBytesPerRelay?: number
 
-  /** Omit for configured defaults; pass an empty array for no relay traffic. */
+  /** Ordered operation priority. Omit for target order/defaults; empty means no I/O. */
   relayUrls?: string[]
   /** Exact, additive authority for account-scoped reads. */
   relayTargets?: readonly RelayTarget[]
@@ -1269,17 +1269,9 @@ async function runBoundedRelayAttempts(
 
 function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
   if (options.accountPubkey !== undefined && options.accountPubkey !== null) {
-    const authorizedCandidates = relayTargetUrls(
-      mergeRelayTargets(options.relayTargets ?? [])
+    return relayTargetUrls(
+      selectRelayTargets(options.relayTargets ?? [], options.relayUrls)
     )
-    if (options.relayUrls === undefined) return authorizedCandidates
-    const requested = new Set(
-      options.relayUrls.flatMap((url) => {
-        const normalized = tryNormalizeRelayUrl(url)
-        return normalized.ok ? [normalized.url] : []
-      })
-    )
-    return authorizedCandidates.filter((url) => requested.has(url))
   }
   if (options.relayUrls?.length === 0) return []
 
@@ -1292,8 +1284,10 @@ function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
     options.relayUrls ??
     getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
   )
-    .map((url) => url.trim())
-    .filter(Boolean)
+    .flatMap((url) => {
+      const normalized = tryNormalizeRelayUrl(url)
+      return normalized.ok ? [normalized.url] : []
+    })
     .filter((url, index, all) => all.indexOf(url) === index)
 
   if (options.skipHealthFilter) return dedupedUrls
@@ -1330,33 +1324,11 @@ function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
   )
 }
 
-async function orderAccountRelayFanout(
-  relayUrls: readonly string[],
-  options: Pick<
-    PublicRelayReadOptions,
-    "accountPubkey" | "accountNetworkLocalStateRepository"
-  >
-): Promise<string[]> {
-  if (options.accountPubkey === undefined || options.accountPubkey === null) {
-    return [...relayUrls]
-  }
-  const ordered = await orderEquivalentAccountRelayOperations({
-    accountPubkey: options.accountPubkey,
-    operations: relayUrls.map((relayUrl) => ({
-      relayUrl,
-      equivalenceKey: "final-read-fanout",
-      value: relayUrl,
-    })),
-    repository: options.accountNetworkLocalStateRepository,
-  })
-  return ordered.map((operation) => operation.value)
-}
-
 async function resolveFanoutRelayPlan(options: PublicRelayReadOptions) {
-  const ordered = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  // Planning owns evidence/source priority and any proven-equivalent local
+  // ordering. Final admission preserves it rather than assuming all sources
+  // are equivalent merely because they share one fanout.
+  const ordered = resolveFanoutRelayUrls(options)
   const rateLimitedRelayUrls = new Set(
     ordered.filter((url) => isRelayRateLimited(url))
   )
