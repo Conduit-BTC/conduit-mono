@@ -297,7 +297,7 @@ function ProductsPage() {
   return (
     <div className="space-y-5">
       {search.authRequired && (
-        <section className="rounded-2xl border border-secondary-500/30 bg-secondary-500/10 p-4 sm:p-5">
+        <section className="rounded-[var(--radius-md)] border border-secondary-500/30 bg-secondary-500/10 p-4 sm:p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="max-w-2xl">
               <div className="text-xs font-medium uppercase tracking-[0.18em] text-secondary-300">

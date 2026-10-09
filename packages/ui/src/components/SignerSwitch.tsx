@@ -113,7 +113,7 @@ const NSTART_URL = "https://nstart.me"
 const ALBY_URL = "https://getalby.com/"
 const NOSTR_GET_STARTED_URL = "https://grownostr.org/get-started"
 const signerConnectButtonClassName =
-  "h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_8px_20px_color-mix(in_srgb,var(--primary-500)_24%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
+  "h-14 w-full justify-center gap-3 rounded-[var(--radius-md)] bg-primary-500 text-base font-semibold text-[var(--on-primary)]  hover:bg-primary-600 focus-visible:ring-primary-400 disabled:brightness-75"
 export function isMobileSignerEnvironment(
   input?: SignerEnvironmentInput
 ): boolean {
@@ -169,7 +169,7 @@ function ExtensionConnectButton({
       disabled={connectDisabled}
       className={
         secondary
-          ? "h-12 w-full justify-center gap-3 rounded-xl"
+          ? "h-12 w-full justify-center gap-3 rounded-[var(--radius-md)]"
           : signerConnectButtonClassName
       }
     >
@@ -185,7 +185,7 @@ export function NoSignerSetupGuide({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 text-left sm:p-6",
+        "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 text-left sm:p-6",
         className
       )}
     >
@@ -268,7 +268,7 @@ export function SignerUnlockCard({
   return (
     <div
       className={cn(
-        "rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6",
+        "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6",
         className
       )}
     >
@@ -345,7 +345,7 @@ function SignerDisconnectedContent({
     <div
       id={errorId}
       role="alert"
-      className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
+      className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-[var(--error-text)]"
     >
       {error}
     </div>
@@ -364,7 +364,7 @@ function SignerDisconnectedContent({
               void Promise.resolve(onReconnect()).catch(() => undefined)
             }
             disabled={connectDisabled}
-            className="h-12 w-full justify-center gap-2 rounded-xl"
+            className="h-12 w-full justify-center gap-2 rounded-[var(--radius-md)]"
           >
             <KeyRound className="h-4 w-4" aria-hidden="true" />
             {connectPending && connectingMethod === null
@@ -424,7 +424,7 @@ function SignerDisconnectedContent({
         {!browserError && errorAlert}
 
         {authUrl && (
-          <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+          <div className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
             Your remote signer needs approval. Open the authorization page, then
             return here.
             <Button asChild variant="outline" size="sm" className="mt-3 w-full">
@@ -456,7 +456,7 @@ function SignerDisconnectedContent({
       {pendingSwitch && (
         <div
           className={cn(
-            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
+            "mx-auto mt-4 max-w-md rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
             bodyClassName
           )}
         >
@@ -468,7 +468,7 @@ function SignerDisconnectedContent({
       {extensionNotice && (
         <div
           className={cn(
-            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
+            "mx-auto mt-4 max-w-md rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
             bodyClassName
           )}
         >
@@ -513,7 +513,7 @@ export function SignerConnectPanel({
     <section
       aria-labelledby={titleId}
       className={cn(
-        "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]",
+        "rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]",
         className
       )}
     >

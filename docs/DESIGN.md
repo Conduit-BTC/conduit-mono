@@ -51,7 +51,7 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 
 - Use a dark, high-contrast base with luminous brand accents.
 - Keep structure calm: background, card, and border tones should recede so content and actions stand out.
-- Use the brand palette for actions and status: purple for primary actions, orange for attention, rose for errors, and violet for information. Ready states use a neutral checkmark.
+- Use the brand palette for actions and status: purple for primary actions, orange for attention, red for errors, green for confirmed success, and violet for information.
 - Favor deliberate typography hierarchy over extra decoration.
 - Use the shared tokens first; only add a new token when an existing one cannot express the intended role.
 
@@ -146,10 +146,10 @@ Defined in `packages/ui/src/styles/theme.css`:
 
 - `primary-*`: brand purple, main action color
 - `secondary-*`: orange, warm support/action accent
-- `tertiary-*`: rose, error/destructive and highlight accent
+- `tertiary-*`: rose, decorative legacy accent only
 - `accent-*`: violet, informational and utility accent
 - `neutral-*`: gray scale for structure and type support
-- `success`, `warning`, `error`, `info`: semantic aliases to neutral, orange, rose and violet
+- `success`, `warning`, `error`, `info`: green, orange, red and violet utility signals
 
 ### Semantic Tokens
 
@@ -176,7 +176,7 @@ The color authority is Conduit Design, Brand Identity, **Brand elements / Colors
 | Ink    | `#05001D`   | `--brand-ink`, Night Market background, orange-action foreground |
 | Purple | `#BB00FF`   | `--brand-purple`, `--primary-500`                                |
 | Orange | `#F7771B`   | `--brand-orange`, `--secondary-500`, warning signal              |
-| Rose   | `#D32973`   | `--brand-rose`, `--tertiary-500`, error/destructive signal       |
+| Rose   | `#D32973`   | `--brand-rose`, decorative legacy accent only                    |
 | Violet | `#5521C3`   | `--brand-violet`, `--accent-500`, informational signal           |
 
 The other palette steps are derived UI shades/tints with the source hue and
@@ -186,7 +186,10 @@ Market uses neutral-600 so placeholders and lower-emphasis copy remain readable.
 The light supporting-grey token is unchanged. Use semantic foreground roles for readable copy:
 exact orange, purple and rose do not all pass small-text contrast on both base
 surfaces. Orange actions pair the exact orange fill with ink text. Destructive
-actions pair the exact rose fill with white text.
+actions use a proper red fill, darkened enough for readable white labels. Error
+copy uses red semantic foregrounds. Success uses green fills/icons and readable
+green foregrounds in both themes. `--brand-red` is the approved red utility
+anchor; the historical rose swatch is decorative and never an error signal.
 
 The Foundations workbench shows the exact anchors beside live status components.
 Use token mapping rather than copying raw asset colors into components.
@@ -217,13 +220,13 @@ Use token mapping rather than copying raw asset colors into components.
 
 - Use `primary` for primary CTAs, active filters, selection, and brand emphasis.
 - Use `secondary` for warm support states, merchant/signer accents, and warm highlights.
-- Use `tertiary` for errors, destructive actions and rose highlights, not the main CTA.
+- Use `error` and the destructive action tokens for errors and destructive actions. Keep `tertiary` for deliberate decorative rose highlights only.
 - Use `accent` for information and deliberate violet utility emphasis.
 
 ### Status Colors
 
 - Use `success`, `warning`, `error`, and `info` for signal fills. Use the matching `--success-text`, `--warning-text`, `--error-text`, and `--info-text` roles for readable state labels in both themes.
-- Ready/success uses neutral copy and a checkmark, warning uses brand orange, error uses rose, and information uses violet. Small error/information text uses derived shades in Day Market and tints in Night Market. Day Market warning labels use neutral copy with an orange icon, avoiding both low contrast and a brown substitute. Always preserve explicit words and distinct icons.
+- Ready/success uses green and a checkmark, warning uses brand orange, error uses proper red, and information uses violet. Small success/error/information text uses readable shades in Day Market and tints in Night Market. Day Market warning labels use a darker readable orange foreground; exact orange remains the signal color. Always preserve explicit words and distinct icons.
 - Passive status uses `StatusPill` (historical export name): icon and text, without a capsule. Use a small rectangular `Badge` for attention or classification, plain text for routine counts, and a real pressed/removable control for an active filter.
 - Do not use Tailwind palette shortcuts like `text-emerald-400`, `text-amber-300`, or `bg-fuchsia-500` in app UI.
 
@@ -257,7 +260,7 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 
 - Keep most panels restrained and readable.
 - Let product imagery, merchant identity, type and aligned information provide character. Avoid repeating a panel around every section or nesting panels solely for visual grouping.
-- Reserve stronger gradients for onboarding, confirmations, charts, and brand storytelling moments.
+- Do not use decorative gradients or glass highlights in app pages, onboarding, settings, or status. Product imagery and merchant-provided banners retain their own artwork. The existing tip celebration is a named, isolated motion effect; it is not a surface recipe.
 
 ### Motion
 
@@ -275,7 +278,7 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 
 - Use the radius tokens from `theme.css` and Tailwind config.
 - Default to 4 px for tags/media/segmented choices, 8 px for contained cards and 12 px for dialogs. Most buttons and fields retain the established small control radius.
-- Settings use headings and rules. Product cards retain one 8 px-radius bordered surface: media at the top, with identity, options, price and action contained in a padded body. Avoid adding another frame inside it.
+- Settings use headings and rules. Product cards retain one 8 px-radius bordered surface: media uses the same outer curvature minus the border thickness, including hover/variation panels. Catalog titles and merchant names truncate to one line, retain full accessible text and native titles, and reveal details through the product/store action. Use 8 px phone body padding and grid gaps; primary Bitcoin prices are readable orange at 14 px and remain alongside Add. Hide the visible Add label only below 360 px while retaining its full accessible name and 44 px target. Nonessential secondary conversion estimates may use 12 px and truncate. Cards omit approximation glyphs; payment and checkout precision remains unchanged. Options/notices may add necessary content, while ordinary catalog identity does not grow with name length. Avoid adding another frame inside it.
 - Fully round geometry belongs to avatars, switches and genuine circular controls. Do not use a capsule as the default for status, metadata or navigation.
 
 ## Shared Patterns
@@ -298,13 +301,9 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 <DialogContent className="border-[var(--border)] bg-[var(--surface-dialog)] shadow-[var(--shadow-dialog)]" />
 ```
 
-### Exceptional Brand Treatment
+### Settings Composition
 
-Reserve this for a specifically reviewed brand composition, never routine controls or status.
-
-```tsx
-<div className="bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_16%,transparent),transparent_36%)]" />
-```
+Use `PageLayout` and `PageHeader` for the page, and shared preference sections or headings with rules for settings groups. Avoid a page card containing more cards. Use one contained card only where identity, selectable content, a notice or a distinct interaction requires it.
 
 ### Active Brand State
 

@@ -59,18 +59,18 @@ const SEARCH_SUGGESTIONS_LISTBOX_ID = "market-search-suggestions"
 export type MarketChromeState = "top" | "scrolled" | "hidden"
 
 const headerActionClassName =
-  "inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-2xl px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 sm:px-3"
+  "inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[var(--radius-md)] px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 sm:px-3"
 
 const accountControlClassName =
-  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-primary-500 px-3 text-sm font-semibold text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-[var(--radius-md)] bg-primary-500 px-3 text-sm font-semibold text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
 
 function accountMenuItemClassName(
   variant: "default" | "danger" = "default"
 ): string {
   return cn(
-    "min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium",
+    "min-h-11 cursor-pointer rounded-[var(--radius-md)] px-3 py-2 text-[15px] font-medium",
     variant === "danger"
-      ? "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+      ? "text-[var(--error-text)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error-text)]"
       : "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
   )
 }
@@ -149,7 +149,7 @@ function HeaderAction({
           {badge > 0 ? (
             <span
               aria-hidden="true"
-              className="absolute -right-2.5 -top-2 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[10px] font-semibold leading-none tabular-nums text-white"
+              className="absolute -right-2.5 -top-2 inline-flex h-4 min-w-4 items-center justify-center rounded-[var(--radius-sm)] bg-primary-500 px-1 text-[10px] font-semibold leading-none tabular-nums text-white"
             >
               {badge > 99 ? "99+" : badge}
             </span>
@@ -279,7 +279,7 @@ function AccountControl({
         {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <button
           type="button"
-          className="inline-flex size-11 items-center justify-center rounded-[16px] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
+          className="inline-flex size-11 items-center justify-center rounded-[var(--radius-md)] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
           aria-label="Open account menu"
         >
           <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
@@ -311,7 +311,7 @@ function AccountControl({
       <DropdownMenuContent
         align="end"
         sideOffset={10}
-        className="w-[14rem] rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 shadow-[var(--shadow-dialog)]"
+        className="w-[14rem] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 shadow-[var(--shadow-dialog)]"
       >
         <AccountMenuLink
           icon={<CircleUser className="size-4" />}
@@ -584,8 +584,8 @@ export function MarketHeader({
               className={cn(
                 "hidden border text-[10px] uppercase tracking-wider sm:inline-flex",
                 config.lightningNetwork === "mock"
-                  ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                  : "border-blue-500/30 bg-blue-500/10 text-blue-400"
+                  ? "border-warning/30 bg-warning/10 text-[var(--warning-text)]"
+                  : "border-info/30 bg-info/10 text-[var(--info-text)]"
               )}
             >
               {config.lightningNetwork}

@@ -3,11 +3,7 @@ import type { CSSProperties, ReactNode } from "react"
 import { cn } from "../utils"
 
 export type StatusStepperRowStatus =
-  | "waiting"
-  | "in_progress"
-  | "complete"
-  | "failed"
-  | "retry_needed"
+  "waiting" | "in_progress" | "complete" | "failed" | "retry_needed"
 
 export interface StatusStepperRow {
   /** Stable key for React reconciliation. */
@@ -52,27 +48,27 @@ function getStatusMeta(status: StatusStepperRowStatus): {
     case "complete":
       return {
         rowToneClassName: "text-[var(--text-primary)]",
-        labelToneClassName: "text-[var(--success)]",
+        labelToneClassName: "text-[var(--success-text)]",
         connectorClassName:
           "bg-[color-mix(in_srgb,var(--success)_55%,transparent)]",
       }
     case "in_progress":
       return {
         rowToneClassName: "text-[var(--text-primary)]",
-        labelToneClassName: "text-[var(--secondary-400)]",
+        labelToneClassName: "text-[var(--warning-text)]",
         connectorClassName:
           "bg-[color-mix(in_srgb,var(--secondary-500)_45%,transparent)]",
       }
     case "failed":
       return {
         rowToneClassName: "text-[var(--text-primary)]",
-        labelToneClassName: "text-[var(--error)]",
+        labelToneClassName: "text-[var(--error-text)]",
         connectorClassName: "bg-[var(--border)]",
       }
     case "retry_needed":
       return {
         rowToneClassName: "text-[var(--text-primary)]",
-        labelToneClassName: "text-[var(--warning)]",
+        labelToneClassName: "text-[var(--warning-text)]",
         connectorClassName: "bg-[var(--border)]",
       }
     case "waiting":
@@ -106,7 +102,7 @@ function StepIndicator({ status }: { status: StatusStepperRowStatus }) {
           borderColor: "color-mix(in srgb, var(--success) 55%, transparent)",
           backgroundColor:
             "color-mix(in srgb, var(--success) 16%, transparent)",
-          color: "var(--success)",
+          color: "var(--success-text)",
         }}
         className="flex h-9 w-9 items-center justify-center rounded-full border"
       >
@@ -235,12 +231,13 @@ export function StatusStepper({
             {/* Title + subtitle + label */}
             <div
               className={cn(
-                "flex flex-1 items-start justify-between gap-3",
+                "flex min-w-0 flex-1 flex-wrap items-start justify-between gap-x-3 gap-y-1",
                 isLast ? "pb-0" : "pb-5"
               )}
             >
-              <div className="min-w-0">
+              <div className="min-w-[min(100%,12rem)] flex-1">
                 <div
+                  data-slot="step-title"
                   className={cn(
                     "text-sm font-medium leading-6",
                     meta.rowToneClassName

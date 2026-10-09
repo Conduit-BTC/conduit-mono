@@ -34,11 +34,11 @@ export function SignerRecoveryNotice({
       role={busy ? "status" : "alert"}
       aria-live={busy ? "polite" : "assertive"}
       aria-busy={busy}
-      className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-[var(--text-primary)]"
+      className="rounded-[var(--radius-md)] border border-warning/40 bg-warning/10 p-4 text-[var(--text-primary)]"
     >
       <div className="flex items-start gap-3">
         <AlertTriangle
-          className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+          className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning-text)]"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">

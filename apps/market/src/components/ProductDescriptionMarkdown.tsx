@@ -171,7 +171,7 @@ const markdownComponents: Components = {
   },
   pre({ children }) {
     return (
-      <pre className="max-w-full overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-6 text-[var(--text-primary)]">
+      <pre className="max-w-full overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-6 text-[var(--text-primary)]">
         {children}
       </pre>
     )

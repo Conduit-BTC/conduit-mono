@@ -21,6 +21,7 @@ import {
   signRuntimeTestEvent,
   type RuntimeSignerIdentity,
 } from "./helpers/real-nip07-signer"
+import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
 
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
@@ -402,7 +403,7 @@ test("public identity keeps self actions and legacy links usable @commerce", asy
 
 test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(180_000)
   const buyer = createRuntimeSignerIdentity()
   const merchant = createRuntimeSignerIdentity()
@@ -429,8 +430,14 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     })
     await wallet.start()
 
-    buyerContext = await browser.newContext()
-    merchantContext = await browser.newContext()
+    const contextOptions = {
+      viewport: testInfo.project.use.viewport,
+      isMobile: testInfo.project.use.isMobile,
+      hasTouch: testInfo.project.use.hasTouch,
+      userAgent: testInfo.project.use.userAgent,
+    }
+    buyerContext = await browser.newContext(contextOptions)
+    merchantContext = await browser.newContext(contextOptions)
     await Promise.all([
       installHermeticRoutes(buyerContext),
       installHermeticRoutes(merchantContext),
@@ -732,6 +739,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       merchantProgress.getByText("Payment confirmed", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
+    await inspectCommerceUi(merchantPage, testInfo, "merchant-settled")
 
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
     await buyerPage

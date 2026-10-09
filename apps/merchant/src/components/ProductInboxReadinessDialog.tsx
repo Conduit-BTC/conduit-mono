@@ -67,7 +67,9 @@ export function ProductInboxReadinessDialog({
               {guidance.body}
             </AlertDialogDescription>
             {error ? (
-              <p className="mt-2 text-pretty text-sm text-error">{error}</p>
+              <p className="mt-2 text-pretty text-sm text-[var(--error-text)]">
+                {error}
+              </p>
             ) : null}
           </div>
         </AlertDialogHeader>

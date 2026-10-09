@@ -226,7 +226,7 @@ export function MediaServerPreferencesSection({
       className={className}
     >
       <PreferenceSectionBody className="pt-0 sm:pt-0">
-        <details className="group/published-preference rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 sm:px-4">
+        <details className="group/published-preference rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 sm:px-4">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
             <span className="ml-1">Published preference</span>
             <ChevronDown
@@ -272,7 +272,7 @@ export function MediaServerPreferencesSection({
                   if (node) rowRefs.current.set(serverUrl, node)
                   else rowRefs.current.delete(serverUrl)
                 }}
-                className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2"
+                className="flex min-w-0 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-2"
               >
                 <span
                   className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-xs font-semibold tabular-nums text-[var(--primary-500)]"
@@ -327,7 +327,7 @@ export function MediaServerPreferencesSection({
             ))}
           </ol>
         ) : (
-          <div className="mt-3 rounded-xl border border-dashed border-[var(--border)] px-3 py-4 text-sm leading-6 text-[var(--text-secondary)]">
+          <div className="mt-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border)] px-3 py-4 text-sm leading-6 text-[var(--text-secondary)]">
             No media server preference is saved locally. Later Conduit media
             upload will visibly default to{" "}
             <span className="font-mono text-[var(--text-primary)]">
@@ -365,7 +365,7 @@ export function MediaServerPreferencesSection({
               aria-describedby={
                 validationError ? "media-server-url-error" : undefined
               }
-              className="h-11 rounded-xl bg-[var(--surface-elevated)] font-mono"
+              className="h-11 rounded-[var(--radius-md)] bg-[var(--surface-elevated)] font-mono"
             />
             <Button
               type="submit"
@@ -381,7 +381,7 @@ export function MediaServerPreferencesSection({
             <p
               id="media-server-url-error"
               role="alert"
-              className="mt-2 text-sm text-[var(--error)]"
+              className="mt-2 text-sm text-[var(--error-text)]"
             >
               {validationError}
             </p>
@@ -396,7 +396,7 @@ export function MediaServerPreferencesSection({
         className="flex flex-col items-stretch gap-3"
       >
         {view.pendingSignedListDiffers ? (
-          <p className="rounded-xl border border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="rounded-[var(--radius-md)] border border-[var(--warning)]/35 bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Retry will send the exact previously signed list. Your newer local
             edits will remain unpublished and will not be silently substituted.
           </p>
@@ -483,7 +483,7 @@ export function MediaServerPreferencesSection({
               settings.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <ol className="max-h-56 list-decimal space-y-2 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 pl-9 font-mono text-xs text-[var(--text-primary)]">
+          <ol className="max-h-56 list-decimal space-y-2 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 pl-9 font-mono text-xs text-[var(--text-primary)]">
             {view.localServerUrls.map((serverUrl) => (
               <li key={serverUrl} className="break-all pl-1">
                 {serverUrl}

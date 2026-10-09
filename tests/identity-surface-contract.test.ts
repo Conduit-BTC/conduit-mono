@@ -87,7 +87,7 @@ describe("identity surface contracts", () => {
     expect(content).toContain("ShieldCheck")
     expect(content).toContain("text-primary-500")
     expect(content).toContain("CircleAlert")
-    expect(content).toContain("text-[var(--warning)]")
+    expect(content).toContain("text-[var(--warning-text)]")
     expect(content).toContain('display?: "full" | "icon"')
     expect(content).toContain("aria-label={tooltip}")
     expect(content).toContain("title={tooltip}")

@@ -55,7 +55,10 @@ import {
   type IdentitySearch,
 } from "../lib/identitySearch"
 import { RichProfileText } from "../components/RichProfileText"
-import { ProductGridCardSkeleton } from "../components/ProductGridCard"
+import {
+  ProductGridCardSkeleton,
+  PRODUCT_GRID_CLASS_NAME,
+} from "../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../components/ResolvedProductGridCard"
 import { CopyButton } from "../components/CopyButton"
 import { LivePresenceIndicator } from "../components/LivePresenceIndicator"
@@ -112,7 +115,7 @@ function CategoryFacetButton({
       onClick={onToggle}
       aria-pressed={option.selected}
       className={[
-        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium transition-colors",
+        "inline-flex min-w-0 max-w-full items-center rounded-[var(--radius-sm)] border px-3 py-2 text-left text-sm font-medium transition-colors",
         option.selected
           ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -564,7 +567,7 @@ function PublicIdentityPage() {
         </span>
       </div>
 
-      <section className="max-w-full overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
+      <section className="max-w-full overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
         <ProfileBanner src={profile?.banner} />
         <div className="relative px-5 pb-6 sm:px-6 sm:pb-7">
           <div className="relative -mt-10 space-y-5 sm:-mt-14">
@@ -607,7 +610,7 @@ function PublicIdentityPage() {
                       title={shareCopied ? "Copied" : "Copy identity link"}
                     >
                       {shareCopied ? (
-                        <Check className="h-[18px] w-[18px] text-success" />
+                        <Check className="h-[18px] w-[18px] text-[var(--success-text)]" />
                       ) : (
                         <LinkIcon className="h-[18px] w-[18px]" />
                       )}
@@ -688,7 +691,7 @@ function PublicIdentityPage() {
                 </p>
               )}
               {followError && (
-                <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
+                <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning-text)] sm:ml-auto sm:text-right">
                   {followError}{" "}
                   {followError.startsWith(
                     "Refusing to publish a follow-list replacement"
@@ -732,7 +735,7 @@ function PublicIdentityPage() {
         </div>
       </section>
       <div className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             Npub
           </div>
@@ -741,7 +744,7 @@ function PublicIdentityPage() {
           </div>
         </div>
         {profile?.lud16?.trim() && (
-          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
             <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
               Lightning
             </div>
@@ -752,7 +755,7 @@ function PublicIdentityPage() {
           </div>
         )}
         {profile?.website?.trim() && (
-          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
             <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
               Website
             </div>
@@ -767,7 +770,7 @@ function PublicIdentityPage() {
         <div className="grid min-w-0 max-w-full items-start gap-5 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-6">
           <aside className="hidden md:sticky md:top-24 md:block md:self-start">
             <div className="space-y-5 md:max-h-[calc(100vh-7rem)] md:overflow-y-auto md:pr-1">
-              <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+              <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">
                     Categories
@@ -800,7 +803,7 @@ function PublicIdentityPage() {
                             key={option.value}
                             option={option}
                             onToggle={() => toggleTag(option.value)}
-                            className="w-full rounded-xl"
+                            className="w-full rounded-[var(--radius-md)]"
                           />
                         ))}
                       </div>
@@ -813,7 +816,7 @@ function PublicIdentityPage() {
 
           <section className="min-w-0 max-w-full self-start overflow-hidden [@media(min-width:768px)_and_(hover:hover)]:overflow-visible">
             {categoryFacetOptions.length > 0 && (
-              <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
+              <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">
                     Categories
@@ -843,9 +846,9 @@ function PublicIdentityPage() {
               </div>
             )}
 
-            <div className="grid min-w-0 max-w-full gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
+            <div className="grid min-w-0 max-w-full gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
               <form
-                className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3"
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3"
                 onSubmit={submitSearch}
               >
                 <label htmlFor="identity-listing-search" className="sr-only">
@@ -926,7 +929,9 @@ function PublicIdentityPage() {
             </div>
 
             {productsQuery.isInitialLoading && (
-              <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+              <ul
+                className={`mt-4 min-w-0 max-w-full ${PRODUCT_GRID_CLASS_NAME}`}
+              >
                 {Array.from({ length: 6 }).map((_, index) => (
                   <li key={index} className="h-full">
                     <ProductGridCardSkeleton />
@@ -937,7 +942,7 @@ function PublicIdentityPage() {
 
             {!productsQuery.isInitialLoading &&
               resultPresentation.kind === "degraded_empty" && (
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
                   <span>
                     Listings couldn&apos;t be loaded. Retry to check again.
                   </span>
@@ -955,7 +960,7 @@ function PublicIdentityPage() {
 
             {!productsQuery.isInitialLoading &&
               resultPresentation.kind === "complete_empty" && (
-                <div className="mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
+                <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6">
                   <div className="text-lg font-semibold text-[var(--text-primary)]">
                     No listings yet
                   </div>
@@ -970,8 +975,8 @@ function PublicIdentityPage() {
                 <div
                   className={
                     resultPresentation.visibility === "compact"
-                      ? "mt-4 rounded-[1.5rem] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6"
-                      : "mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6"
+                      ? "mt-4 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6"
+                      : "mt-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6"
                   }
                   role={
                     resultPresentation.visibility === "compact"
@@ -1018,7 +1023,9 @@ function PublicIdentityPage() {
               )}
 
             {filteredProducts.length > 0 && (
-              <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+              <ul
+                className={`mt-4 min-w-0 max-w-full ${PRODUCT_GRID_CLASS_NAME}`}
+              >
                 {filteredProducts.map((product, index) => (
                   <li key={product.id} className="h-full">
                     <ResolvedProductGridCard

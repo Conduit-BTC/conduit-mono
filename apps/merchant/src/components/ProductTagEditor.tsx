@@ -240,7 +240,7 @@ export function ProductTagEditor({
               {tags.map((tag, index) => (
                 <span
                   key={`${tag}-${index}`}
-                  className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+                  className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-primary)] "
                   title={tag}
                 >
                   <span className="max-w-[12rem] truncate">{tag}</span>
@@ -376,13 +376,17 @@ export function ProductTagEditor({
       {feedback && (
         <div
           id={feedbackId}
-          className="text-xs leading-5 text-[var(--warning)]"
+          className="text-xs leading-5 text-[var(--warning-text)]"
         >
           {feedback}
         </div>
       )}
       {errorMessage && (
-        <div id={errorId} role="alert" className="text-xs leading-5 text-error">
+        <div
+          id={errorId}
+          role="alert"
+          className="text-xs leading-5 text-[var(--error-text)]"
+        >
           {errorMessage}
         </div>
       )}

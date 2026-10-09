@@ -222,7 +222,7 @@ export function ProductLegalPageLayout({
 
           <aside
             aria-label="Policy scope"
-            className="my-8 rounded-2xl border border-primary-500/50 bg-[var(--surface-elevated)] p-5 shadow-sm"
+            className="my-8 rounded-[var(--radius-md)] border border-primary-500/50 bg-[var(--surface-elevated)] p-5 shadow-sm"
           >
             <p className="text-pretty text-base leading-7 text-[var(--text-primary)]">
               {scopeNotice}
@@ -286,7 +286,7 @@ function ProductLegalReviewPreviewNotice() {
   return (
     <aside
       aria-label="Legal document review preview"
-      className="mb-8 rounded-2xl border border-dashed border-primary-500/60 bg-[var(--surface-elevated)] p-5 shadow-sm"
+      className="mb-8 rounded-[var(--radius-md)] border border-dashed border-primary-500/60 bg-[var(--surface-elevated)] p-5 shadow-sm"
     >
       <p className="text-sm font-semibold text-primary-500">Review preview</p>
       <p className="mt-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
@@ -307,7 +307,7 @@ function UnofficialHostLegalNotice({ hostname }: { hostname: string }) {
       <main className="mx-auto flex min-h-dvh w-full max-w-3xl items-center px-4 py-12 sm:px-6 lg:px-8">
         <section
           aria-labelledby="independent-deployment-title"
-          className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm sm:p-8"
+          className="w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm sm:p-8"
         >
           <p className="text-sm font-semibold text-primary-500">
             Unofficial host

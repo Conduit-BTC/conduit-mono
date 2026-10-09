@@ -114,6 +114,19 @@ describe("shared UI foundation policy", () => {
       applyUiExceptions([finding], [{ ...exception, reason: "" }])
     ).toHaveLength(1)
   })
+  it("uses readable semantic foreground roles across app and shared surfaces", async () => {
+    const sources = await readUiSources()
+    const rawForeground =
+      /(?:text-\[var\(--(?:info|error)\)\]|text-(?:info|error)(?![\w-]))/g
+    expect(
+      sources.flatMap((source) =>
+        [...source.content.matchAll(rawForeground)].map((match) => ({
+          path: source.path,
+          value: match[0],
+        }))
+      )
+    ).toEqual([])
+  })
   it("enforces the shared foundation across every app and real shared components", async () => {
     const sources = await readUiSources()
     for (const path of [

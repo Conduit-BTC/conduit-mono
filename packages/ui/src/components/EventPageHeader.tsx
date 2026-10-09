@@ -49,7 +49,7 @@ export function EventPageHeader({
           width={1200}
           height={400}
           referrerPolicy="no-referrer"
-          className="aspect-[3/1] w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
+          className="aspect-[3/1] w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
         />
       ) : null}
 

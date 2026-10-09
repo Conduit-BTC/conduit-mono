@@ -13,7 +13,7 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex min-w-0 min-h-11 sm:min-h-10 [@media(pointer:coarse)]:min-h-11 w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-base text-[var(--text-primary)] transition-colors hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-[var(--background)] disabled:cursor-not-allowed disabled:opacity-50 [&>span]:min-w-0 [&>span]:break-words [&>span]:text-left",
+      "flex min-w-0 min-h-11 sm:min-h-10 [@media(pointer:coarse)]:min-h-11 w-full items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-base text-[var(--text-primary)] transition-colors hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-[var(--background)] disabled:cursor-not-allowed disabled:opacity-50 [&>span]:min-w-0 [&>span]:break-words [&>span]:text-left",
       className
     )}
     {...props}

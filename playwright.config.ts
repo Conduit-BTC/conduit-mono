@@ -52,9 +52,13 @@ const mobileTestFiles = [
 ]
 const responsiveCoverageFiles = [
   "**/shared-ui-composition.playwright.ts",
+  "**/shared-ui-visual-contract.playwright.ts",
+  "**/shared-ui-surface-audit.playwright.ts",
+  "**/shared-ui-populated-audit.playwright.ts",
   "**/merchant-shipping-tables.playwright.ts",
   "**/merchant-variation-shipping.playwright.ts",
   "**/commerce-inbox.playwright.ts",
+  "**/commerce.playwright.ts",
   "**/merchant-order-inbox.playwright.ts",
   "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",

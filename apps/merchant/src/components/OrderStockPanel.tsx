@@ -134,7 +134,7 @@ function StockPublishActions({
           <p
             id={errorId}
             role="alert"
-            className="w-full text-pretty text-xs leading-5 text-error"
+            className="w-full text-pretty text-xs leading-5 text-[var(--error-text)]"
           >
             {customError}
           </p>
@@ -171,7 +171,7 @@ export function OrderStockPanel({
   return (
     <section
       aria-labelledby="order-stock-heading"
-      className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+      className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
     >
       <div>
         <h4
@@ -190,7 +190,7 @@ export function OrderStockPanel({
         <div
           role="status"
           aria-live="polite"
-          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-5 text-[var(--text-secondary)]"
+          className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-5 text-[var(--text-secondary)]"
         >
           <div className="flex flex-wrap items-center gap-2">
             <StatusPill
@@ -242,7 +242,7 @@ export function OrderStockPanel({
           <div
             key={adjustment.key}
             className={cn(
-              "rounded-lg border bg-[var(--surface)] p-3",
+              "rounded-[var(--radius-md)] border bg-[var(--surface)] p-3",
               restockingRequired
                 ? "border-warning/30 bg-warning/10"
                 : "border-[var(--border)]"
@@ -324,7 +324,7 @@ export function OrderStockPanel({
       {errorMessage && (
         <div
           role="alert"
-          className="rounded-lg border border-error/30 bg-error/10 p-3 text-xs leading-5 text-error"
+          className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-3 text-xs leading-5 text-[var(--error-text)]"
         >
           {errorMessage}
         </div>

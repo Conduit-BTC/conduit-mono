@@ -7,9 +7,8 @@ export function Foundations() {
         <header className="space-y-1.5">
           <h2 className="text-lg font-semibold">Brand palette</h2>
           <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
-            Exact swatches from Conduit Design’s Brand elements color board.
-            Interaction shades and readable text tints derive from these
-            anchors.
+            Brand anchors and the approved red utility signal. Interaction
+            shades and readable text tints derive from these anchors.
           </p>
         </header>
         <dl className="grid grid-cols-2 gap-4 sm:grid-cols-5">
@@ -17,7 +16,7 @@ export function Foundations() {
             ["Ink", "--brand-ink"],
             ["Purple", "--brand-purple"],
             ["Orange", "--brand-orange"],
-            ["Rose", "--brand-rose"],
+            ["Red", "--brand-red"],
             ["Violet", "--brand-violet"],
           ].map(([name, token]) => (
             <div key={name} className="space-y-2">
@@ -41,10 +40,11 @@ export function Foundations() {
           <StatusPill variant="neutral">Draft</StatusPill>
         </div>
         <p className="max-w-prose text-pretty text-base leading-6 text-[var(--text-secondary)]">
-          Ready uses a neutral checkmark. Orange signals attention, rose signals
-          errors, and violet carries information. Words and icons carry meaning
-          alongside color. Orange actions use ink text; small Day Market
-          warnings pair an orange icon with neutral copy.
+          Green celebrates confirmed success. Orange highlights Bitcoin prices
+          and attention, red signals errors, and violet carries information.
+          Words and icons carry meaning alongside color. Orange actions use ink
+          text; Day Market uses darker foreground shades for readable utility
+          copy.
         </p>
       </section>
       <SectionGrid>
@@ -157,9 +157,10 @@ export function Foundations() {
               empty; pending is not success; delivery is not payment.
             </li>
             <li>
-              Wrap prose, product names and merchant names. Do not hide full
-              names only in accessible labels. Test 200% zoom, reduced motion
-              and long content before adoption.
+              Wrap reading content. Truncate catalog titles and merchant names,
+              preserving full accessible text and native titles; activation
+              reveals complete product/store details. Test 200% zoom, reduced
+              motion and long content before adoption.
             </li>
           </ul>
         </div>

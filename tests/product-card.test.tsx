@@ -134,7 +134,7 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain('class="pt-3 test-options-wrapper"')
+    expect(html).toContain('class="pt-2 test-options-wrapper"')
     expect(html).toContain(">Size<")
   })
 
@@ -152,7 +152,7 @@ describe("ProductCard", () => {
     expect(html).not.toContain("group-hover:scale-105")
   })
 
-  it("keeps long product titles and their badges available without clipping", () => {
+  it("truncates long catalog titles while preserving their full text and badges", () => {
     const html = renderToStaticMarkup(
       <ProductCard
         title="An intentionally long product title that remains fully visible"
@@ -164,7 +164,10 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).not.toContain("truncate")
+    expect(html).toContain("truncate")
+    expect(html).toContain(
+      'title="An intentionally long product title that remains fully visible"'
+    )
     expect(html).not.toContain("line-clamp-2")
     expect(html).not.toContain("min-h-[2.5rem]")
     expect(html).toContain(">Featured<")
@@ -184,8 +187,9 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).not.toContain("truncate")
+    expect(html).toContain("truncate")
     expect(html).toContain(merchantName)
+    expect(html).toContain(`title="${merchantName}"`)
   })
 
   it("renders sats primary pricing with a USD secondary line", () => {
@@ -204,7 +208,8 @@ describe("ProductCard", () => {
     )
 
     expect(html).toContain("40,000 sats")
-    expect(html).toContain("~ $32.28 USD")
+    expect(html).toContain("$32.28 USD")
+    expect(html).not.toContain("~")
   })
 
   it("keeps a sold-out product visible while disabling its cart action", () => {
@@ -282,11 +287,12 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain("~ ₿12,000")
+    expect(html).toContain("₿12,000")
     expect(html).not.toContain("~=")
     expect(html).toContain("€10.00 EUR")
     expect(html).not.toContain("source quote")
-    expect(html).toContain("~ $12.00 USD")
+    expect(html).toContain("$12.00 USD")
+    expect(html).not.toContain("~")
   })
 
   it("reserves the USD reference row when Market pricing has no estimate", () => {

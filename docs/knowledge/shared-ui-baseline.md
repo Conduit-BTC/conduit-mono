@@ -2,8 +2,9 @@
 
 The primary artifact is the [executable workbench](../../packages/ui/workbench/README.md),
 run with `bun run dev:ui`. This report records the foundation approved on October 7, 2026; it does
-not designate all existing Conduit UI as validated. No route-wide restyling is
-part of this slice.
+not designate all existing Conduit UI as validated. The initial slice was narrow;
+the October 8 follow-up extends the presentation audit across implemented Market
+and Merchant surfaces.
 
 ## Evidence inspected
 
@@ -109,8 +110,7 @@ does not deprecate them merely because they lack a story in the initial referenc
 The follow-up critique used [Impeccable's craft floor](https://github.com/pbakaus/impeccable/blob/cf3d2fa07d3ad1814ac5fbbbb5b2043b795eaef1/.agents/skills/impeccable/reference/craft-floor.md)
 as a UI quality checklist, with Conduit intent taking precedence over its stylistic defaults.
 Direct desktop/phone inspection of [MUJI's catalogue](https://www.muji.us/collections/paper-goods)
-informed product-first hierarchy, readable prices and quiet metadata. Conduit retains contained product cards. Its clipped mobile
-names were not adopted. [McMaster's materials catalogue](https://www.mcmaster.com/products/materials/)
+informed product-first hierarchy, readable prices and quiet metadata. Conduit retains contained product cards. The October 7 reference wrapped names; the October 8 density review instead adopts one-line catalog truncation with full accessible text and native titles. [McMaster's materials catalogue](https://www.mcmaster.com/products/materials/)
 informed aligned, task-specific information, not its narrow-screen layout.
 [GOV.UK tags](https://design-system.service.gov.uk/components/tag/) and
 [summary lists](https://design-system.service.gov.uk/components/summary-list/)
@@ -173,7 +173,7 @@ adjustment, not a brand swatch. Workbench “legacy action” wording was remove
 
 Exact anchors own filled actions and signal hues. Derived foreground roles keep
 small copy readable in both themes. Day warnings retain an orange icon with
-neutral copy; orange actions use ink text. Success uses a neutral checkmark.
+neutral copy; orange actions use ink text. Success uses a green checkmark; utility errors and destructive actions use proper red. The October visual rework supersedes the earlier neutral-success/rose-error treatment.
 This changes shared color values and the workbench reference, not theme runtime,
 fonts, spacing, page composition or appearance sync.
 
@@ -234,3 +234,43 @@ show the shared page and field recipes. Account identifiers and wallet fields ar
 masked. Merchant authentication is synthetic; these images do not establish live
 signer recovery, cryptographic delivery or funded wallet behavior. Physical-device,
 screen-reader, native zoom and reduced-motion validation remains separate.
+
+## October 8 surface alignment
+
+The executable reference and consuming surfaces now share 4 px control corners,
+8 px ordinary panel corners and 12 px dialog corners. Flat settings groups use
+headings and rules; payment, shipping, profile and network pages remove decorative
+outer gradients and redundant frames. Functional readiness notices, media and
+scroll-edge masks retain their purpose.
+
+Catalog names use single-line ellipsis with complete accessible text and native
+titles; product and store activation reveal complete details. Phone cards use
+8 px padding and gaps, preserve complete orange Bitcoin prices, and keep ordinary
+Add actions beside the price. Sold-out actions remain compact. The media inset
+matches its 8 px outer border. Card approximation glyphs are removed while
+conversion values remain present. Preferred currency and conversion removal are
+separate work.
+
+Success uses green. Errors and destructive actions use proper red. Readable
+semantic foregrounds pass the composed 4.5:1 check in both themes; exact signal
+colors are not automatically readable small-text colors. Normal and enlarged-text
+layouts use the same intrinsic catalog grid so phone columns can collapse when
+text grows. Summary labels do not shrink into broken words. Progress status labels
+wrap below their titles in narrow columns; wider rows retain right-aligned status.
+
+The route audit traverses implemented routes in both themes with runtime-only real
+signers on an isolated relay, checks containment, panel geometry and decorative
+backgrounds, and rejects sign-in screens as authenticated route evidence. Populated
+profile/editor/catalog/storefront and endpoint readiness checks complement the
+existing commerce, inbox, shipping, Event Market and wallet behavior suites.
+Synthetic endpoints are intercepted before networking; no live settlement or
+public relay delivery is inferred. Physical-device and native accessibility
+validation remains maintainer-owned.
+
+Sanitized synthetic examples:
+
+![Compact catalog cards, phone Night](images/shared-ui/catalog-compact-phone-night.png)
+
+![Semantic states, Day](images/shared-ui/semantic-states-day.png)
+
+![Flat payment settings and green readiness, phone Day](images/shared-ui/payments-ready-phone-day.png)

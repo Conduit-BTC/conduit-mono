@@ -231,7 +231,7 @@ export function Combobox({
           <PopoverAnchor asChild>
             <div
               className={cn(
-                "flex h-10 w-full cursor-text items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 focus-within:ring-offset-[var(--background)]",
+                "flex h-10 w-full cursor-text items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]  focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 focus-within:ring-offset-[var(--background)]",
                 invalid && "border-error/50 focus-within:ring-error/30",
                 disabled && "cursor-not-allowed opacity-50",
                 className,
@@ -301,7 +301,7 @@ export function Combobox({
           aria-invalid={invalid || undefined}
           disabled={disabled}
           className={cn(
-            "w-full justify-between bg-[var(--surface)] px-3 text-base font-normal text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+            "w-full justify-between bg-[var(--surface)] px-3 text-base font-normal text-[var(--text-primary)] ",
             !label && "text-[var(--text-muted)]",
             invalid &&
               "border-error/50 focus-visible:ring-error/30 data-[state=open]:border-error",

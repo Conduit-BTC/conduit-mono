@@ -223,7 +223,7 @@ function MerchantOrderSendNotice({ notice }: { notice: AcceptedOrderNotice }) {
     return (
       <p
         role="alert"
-        className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+        className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-[var(--warning-text)]"
       >
         {label} was accepted by a relay, but it could not be saved on this
         device. Do not send it again.
@@ -233,7 +233,7 @@ function MerchantOrderSendNotice({ notice }: { notice: AcceptedOrderNotice }) {
     return (
       <p
         role="alert"
-        className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+        className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-[var(--warning-text)]"
       >
         {label} was accepted and saved on this device, but its delivery status
         could not be saved. Do not send it again.
@@ -243,7 +243,7 @@ function MerchantOrderSendNotice({ notice }: { notice: AcceptedOrderNotice }) {
   return (
     <p
       role="status"
-      className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+      className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-[var(--warning-text)]"
     >
       {label} was accepted and saved on this device. Sync to your other devices
       is incomplete.
@@ -335,7 +335,7 @@ function getPendingInvoiceQueryToken(
 }
 
 const panelCard =
-  "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+  "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5"
 
 function CopyInline({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -393,7 +393,7 @@ function SearchBox({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Search orders"
-        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+        className="h-11 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
       />
     </div>
   )
@@ -429,7 +429,7 @@ function OrderListSelect<T extends string>({
   describedBy?: string
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1">
       <Label htmlFor={id} className="text-xs text-[var(--text-secondary)]">
         {label}
       </Label>
@@ -444,7 +444,7 @@ function OrderListSelect<T extends string>({
           id={id}
           aria-label={`${label} orders`}
           aria-describedby={describedBy}
-          className="h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+          className="h-11 rounded-[var(--radius-md)] bg-[var(--surface)] px-3 shadow-none"
         >
           <SelectValue />
         </SelectTrigger>
@@ -517,9 +517,9 @@ function MobileOrdersScroller({
   onSelect: (id: string) => void
 }) {
   return (
-    <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+    <section className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       {conversations.length === 0 ? (
-        <div className="rounded-[1.25rem] border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
           No orders match this filter.
         </div>
       ) : (
@@ -2797,7 +2797,7 @@ function OrdersWorkspace() {
       </div>
 
       <div className="grid grid-cols-3 gap-2 md:gap-4 xl:shrink-0">
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
           <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
             Open threads
           </div>
@@ -2805,7 +2805,7 @@ function OrdersWorkspace() {
             {protectedOrderCountsUnavailable ? "—" : conversations.length}
           </div>
         </div>
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
           <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
             Awaiting invoice
           </div>
@@ -2813,7 +2813,7 @@ function OrdersWorkspace() {
             {protectedOrderCountsUnavailable ? "—" : awaitingInvoiceCount}
           </div>
         </div>
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
           <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
             Active fulfillment
           </div>
@@ -2834,7 +2834,7 @@ function OrdersWorkspace() {
       ) : null}
 
       {!hasAccount && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view incoming orders.
         </div>
       )}
@@ -2872,7 +2872,7 @@ function OrdersWorkspace() {
         !ordersQuery.isLoading &&
         conversations.length === 0 &&
         protectedOrdersReadState === "complete" && (
-          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
             No orders yet. Place an order from the Market app targeting this
             merchant pubkey.
           </div>
@@ -2880,7 +2880,7 @@ function OrdersWorkspace() {
 
       {hasAccount && conversations.length > 0 && (
         <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
-          <aside className="hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:sticky xl:top-4 xl:flex xl:max-h-[calc(100vh-2rem)] xl:flex-col xl:overflow-hidden">
+          <aside className="hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:sticky xl:top-4 xl:flex xl:max-h-[calc(100vh-2rem)] xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
               Orders
             </div>
@@ -2896,7 +2896,7 @@ function OrdersWorkspace() {
             </div>
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
-                <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                   {emptyOrdersLabel(orderSearch.trim(), phaseTab)}
                 </div>
               )}
@@ -2922,7 +2922,7 @@ function OrdersWorkspace() {
                   {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <button
                     type="button"
-                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                   >
                     <Search className="size-4" aria-hidden="true" />
                     Filter &amp; sort
@@ -2952,7 +2952,7 @@ function OrdersWorkspace() {
                 />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
-                    <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                       {emptyOrdersLabel(orderSearch.trim(), phaseTab)}
                     </div>
                   )}
@@ -2993,7 +2993,7 @@ function OrdersWorkspace() {
                   />
                 </div>
 
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_320px]">
                   <div className="min-w-0 space-y-4">
                     {selectedFuturePickup?.type === "event_market_pickup" ? (
                       <section className={panelCard}>
@@ -3042,7 +3042,7 @@ function OrdersWorkspace() {
                       </h3>
                       <>
                         {!buyerInboxKnown && (
-                          <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
+                          <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-[var(--warning-text)]">
                             {isGuestOrder
                               ? orderSummary.guestContact
                                 ? "This guest has no Nostr reply inbox. Contact them by phone or email; fulfillment actions below are recorded to your encrypted order history."
@@ -3055,7 +3055,7 @@ function OrdersWorkspace() {
                             <div
                               role="status"
                               aria-live="polite"
-                              className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400"
+                              className="rounded-md border border-success/30 bg-success/10 p-3 text-sm text-[var(--success-text)]"
                             >
                               {successFlash}
                             </div>
@@ -3088,7 +3088,10 @@ function OrdersWorkspace() {
                           {confirmPaymentMutation.error &&
                             confirmPaymentMutation.variables?.orderId ===
                               selected?.orderId && (
-                              <p role="alert" className="text-sm text-error">
+                              <p
+                                role="alert"
+                                className="text-sm text-[var(--error-text)]"
+                              >
                                 Payment confirmation could not be recorded.
                                 Review the order status before retrying. No new
                                 organizer release was authorized by this
@@ -3097,7 +3100,7 @@ function OrdersWorkspace() {
                             )}
 
                           {canRequestPaymentOutOfBand && (
-                            <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
+                            <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-[var(--warning-text)]">
                               <div className="font-semibold">
                                 Request payment outside Nostr
                               </div>
@@ -3183,7 +3186,7 @@ function OrdersWorkspace() {
                                   )}
 
                                   {pendingInvoiceQuery.error && (
-                                    <div className="space-y-2 rounded-md border border-error/30 bg-error/10 p-3 text-xs text-error">
+                                    <div className="space-y-2 rounded-md border border-error/30 bg-error/10 p-3 text-xs text-[var(--error-text)]">
                                       <p>
                                         Could not load the saved invoice status.
                                         Refresh before creating one.
@@ -3230,7 +3233,7 @@ function OrdersWorkspace() {
 
                                   {pendingInvoiceQuery.data?.state ===
                                     "sent" && (
-                                    <div className="space-y-2 rounded-md border border-success/30 bg-success/10 p-3 text-xs text-success">
+                                    <div className="space-y-2 rounded-md border border-success/30 bg-success/10 p-3 text-xs text-[var(--success-text)]">
                                       <p>
                                         Invoice sent to the buyer's relay.
                                         Waiting for payment.
@@ -3256,7 +3259,7 @@ function OrdersWorkspace() {
                                     "accepted_unrecorded" ||
                                     pendingInvoiceQuery.data?.state ===
                                       "delivery_unknown") && (
-                                    <div className="space-y-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+                                    <div className="space-y-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-[var(--warning-text)]">
                                       <p role="status">
                                         {pendingInvoiceQuery.data.state ===
                                         "accepted_unrecorded"
@@ -3337,7 +3340,7 @@ function OrdersWorkspace() {
                                         )}
                                         {invoiceSource === "nwc" &&
                                           nwc.addressStatus === "mismatch" && (
-                                            <p className="text-xs text-error">
+                                            <p className="text-xs text-[var(--error-text)]">
                                               The connected wallet destination
                                               does not match your profile
                                               Lightning address.
@@ -3418,7 +3421,7 @@ function OrdersWorkspace() {
                                               !isInvoiceCompatibleWithCurrentNetwork(
                                                 invoice.trim()
                                               ) && (
-                                                <div className="text-xs text-error">
+                                                <div className="text-xs text-[var(--error-text)]">
                                                   {getLightningNetworkMismatchMessage(
                                                     invoice.trim()
                                                   )}
@@ -3592,7 +3595,7 @@ function OrdersWorkspace() {
                                 noteMutation.error) && (
                                 <div
                                   role="alert"
-                                  className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error"
+                                  className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-[var(--error-text)]"
                                 >
                                   {[
                                     advanceStatusMutation.error,
@@ -3800,7 +3803,7 @@ function OrdersWorkspace() {
                         {handoffCompactionError && (
                           <p
                             role="alert"
-                            className="mt-2 text-xs text-[var(--warning)]"
+                            className="mt-2 text-xs text-[var(--warning-text)]"
                           >
                             {handoffCompactionError}
                           </p>
@@ -3932,7 +3935,7 @@ function OrdersWorkspace() {
                             <p
                               key={index}
                               role="alert"
-                              className="mt-2 text-xs text-error"
+                              className="mt-2 text-xs text-[var(--error-text)]"
                             >
                               {error instanceof Error
                                 ? error.message
@@ -4038,7 +4041,7 @@ function OrdersWorkspace() {
                         </section>
                       )}
 
-                    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+                    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
                       {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                       <button
                         type="button"
@@ -4155,7 +4158,7 @@ function OrdersWorkspace() {
                         checking payment and preparing the order.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
-                    <div className="flex items-start gap-3 rounded-lg border border-[var(--border)] p-3">
+                    <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
                       <Checkbox
                         id="organizer-release-confirmation"
                         checked={organizerReleaseConfirmed}
@@ -4266,7 +4269,7 @@ function OrdersWorkspace() {
                     {(reopenConfirmationError || reopenOrderMutation.error) && (
                       <p
                         role="alert"
-                        className="text-pretty text-sm leading-6 text-error"
+                        className="text-pretty text-sm leading-6 text-[var(--error-text)]"
                       >
                         {reopenConfirmationError ?? (
                           <>

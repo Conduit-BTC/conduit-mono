@@ -18,6 +18,7 @@ import {
   useUpdateProfile,
 } from "@conduit/core"
 import {
+  PageLayout,
   Button,
   Input,
   Label,
@@ -190,14 +191,14 @@ function PaymentsPage() {
   const busyStatus = getBusyStatus()
 
   return (
-    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_40%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
+        <section className="min-w-0">
           <div className="space-y-8">
             {/* Page header */}
             <div className="space-y-5">
               <div>
-                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-heading text-3xl font-semibold text-[var(--text-primary)]">
                   Payments
                 </h1>
                 <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
@@ -213,9 +214,9 @@ function PaymentsPage() {
               </div>
 
               {!complete && !isLoadingProfile && (
-                <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
-                  <p className="text-sm text-[var(--warning)]">
+                <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning-text)]" />
+                  <p className="text-sm text-[var(--warning-text)]">
                     <span className="font-semibold">
                       Lightning Address required.
                     </span>{" "}
@@ -225,7 +226,7 @@ function PaymentsPage() {
               )}
 
               {busyStatus && (
-                <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] px-4 py-3.5">
+                <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] px-4 py-3.5">
                   <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--primary-500)]" />
                   <div className="text-sm leading-6">
                     <div className="font-semibold text-[var(--text-primary)]">
@@ -240,7 +241,7 @@ function PaymentsPage() {
             </div>
 
             {isLoadingProfile ? (
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+              <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
                 <div className="flex items-center gap-2 font-medium text-[var(--text-primary)]">
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                   Loading payment profile
@@ -256,7 +257,7 @@ function PaymentsPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                  <div className="min-w-0 border-t border-[var(--border)] pt-5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex items-center gap-3">
                         <Zap className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
@@ -281,7 +282,7 @@ function PaymentsPage() {
                         profile?.lud16 ? (
                           <div className="space-y-4">
                             <div className="flex items-center gap-2">
-                              <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--success)]" />
+                              <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--success-text)]" />
                               <span className="font-mono text-sm text-[var(--text-primary)]">
                                 {profile.lud16}
                               </span>
@@ -296,7 +297,7 @@ function PaymentsPage() {
                         )
                       ) : (
                         <form onSubmit={saveLud16} className="space-y-3">
-                          <div className="grid gap-1.5">
+                          <div className="grid gap-1 [&>p]:mt-1">
                             <Label htmlFor="lud16-input">
                               Lightning Address
                             </Label>
@@ -318,14 +319,16 @@ function PaymentsPage() {
                             </p>
                           </div>
                           {updateMutation.error && (
-                            <p className="text-sm text-error">
+                            <p className="text-sm text-[var(--error-text)]">
                               {updateMutation.error instanceof Error
                                 ? updateMutation.error.message
                                 : "Failed to save"}
                             </p>
                           )}
                           {lud16Error && (
-                            <p className="text-sm text-error">{lud16Error}</p>
+                            <p className="text-sm text-[var(--error-text)]">
+                              {lud16Error}
+                            </p>
                           )}
                           <div className="flex items-center gap-2">
                             <Button
@@ -375,7 +378,7 @@ function PaymentsPage() {
           </div>
         </section>
       </div>
-    </div>
+    </PageLayout>
   )
 }
 
@@ -430,7 +433,7 @@ function NwcAutomationSection() {
         </p>
       </div>
 
-      <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+      <div className="min-w-0 border-t border-[var(--border)] pt-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-center gap-3">
             <Wallet className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
@@ -448,7 +451,7 @@ function NwcAutomationSection() {
 
         {!connected ? (
           <form onSubmit={connectWallet} className="mt-5 space-y-3">
-            <div className="grid gap-1.5">
+            <div className="grid gap-1 [&>p]:mt-1">
               <Label htmlFor="merchant-nwc-uri">Connection string</Label>
               <Input
                 id="merchant-nwc-uri"
@@ -478,7 +481,10 @@ function NwcAutomationSection() {
                 permissions. The secret is never published or sent to buyers.
               </p>
               {(inputError || automation.connectionError) && (
-                <p id="merchant-nwc-error" className="text-sm text-error">
+                <p
+                  id="merchant-nwc-error"
+                  className="text-sm text-[var(--error-text)]"
+                >
                   {inputError ?? automation.connectionError}
                 </p>
               )}
@@ -505,7 +511,7 @@ function NwcAutomationSection() {
             <NwcAddressStatus status={automation.addressStatus} />
 
             {automation.infoError && (
-              <div className="rounded-xl border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+              <div className="rounded-[var(--radius-md)] border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
                 The connection is saved, but the wallet could not be reached.
                 Automatic verification will resume after it reconnects.
               </div>
@@ -565,12 +571,12 @@ function CapabilityCard({
   detail: string
 }) {
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
       <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
         {ready ? (
-          <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+          <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
         ) : (
-          <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+          <AlertCircle className="h-4 w-4 text-[var(--warning-text)]" />
         )}
         {title}
       </div>
@@ -608,13 +614,13 @@ function NwcAddressStatus({
   }[status]
 
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6">
+    <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6">
       <ShieldCheck
         className={`mt-0.5 h-4 w-4 shrink-0 ${
           content.tone === "success"
-            ? "text-[var(--success)]"
+            ? "text-[var(--success-text)]"
             : content.tone === "warning"
-              ? "text-[var(--warning)]"
+              ? "text-[var(--warning-text)]"
               : "text-[var(--text-muted)]"
         }`}
       />
@@ -645,17 +651,17 @@ function VerificationRunStatus({
     )
   }
   if (run.status === "error") {
-    return <p className="text-sm text-[var(--warning)]">{run.message}</p>
+    return <p className="text-sm text-[var(--warning-text)]">{run.message}</p>
   }
   if (run.verified > 0) {
     return (
       <div className="space-y-1 text-sm">
-        <p className="text-[var(--success)]">
+        <p className="text-[var(--success-text)]">
           Verified and advanced {run.verified} paid order
           {run.verified === 1 ? "" : "s"}.
         </p>
         {run.message && (
-          <p role="status" className="text-[var(--warning)]">
+          <p role="status" className="text-[var(--warning-text)]">
             {run.message}
           </p>
         )}
@@ -687,7 +693,7 @@ function LightningAddressStatus({
 
   if (check.status === "checking") {
     return (
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+      <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
         <div className="flex items-center gap-2 font-semibold text-[var(--text-primary)]">
           <LoaderCircle className="h-4 w-4 animate-spin" />
           Checking Lightning Address
@@ -698,9 +704,9 @@ function LightningAddressStatus({
 
   if (check.status === "invalid") {
     return (
-      <div className="rounded-xl border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+      <div className="rounded-[var(--radius-md)] border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
         <div className="flex items-center gap-2 font-semibold">
-          <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+          <AlertCircle className="h-4 w-4 text-[var(--warning-text)]" />
           Lightning Address needs review
         </div>
         <p className="mt-1 text-[var(--text-secondary)]">
@@ -712,9 +718,9 @@ function LightningAddressStatus({
 
   if (check.status === "zap_supported") {
     return (
-      <div className="rounded-xl border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+      <div className="rounded-[var(--radius-md)] border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
         <div className="flex items-center gap-2 font-semibold">
-          <Zap className="h-4 w-4 text-[var(--success)]" />
+          <Zap className="h-4 w-4 text-[var(--success-text)]" />
           Zap support detected
         </div>
         <p className="mt-1 text-[var(--text-secondary)]">
@@ -728,9 +734,9 @@ function LightningAddressStatus({
 
   if (check.status === "lnurl_ready") {
     return (
-      <div className="rounded-xl border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+      <div className="rounded-[var(--radius-md)] border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
         <div className="flex items-center gap-2 font-semibold">
-          <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+          <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
           Lightning Address ready
         </div>
         <p className="mt-1 text-[var(--text-secondary)]">
@@ -742,9 +748,9 @@ function LightningAddressStatus({
   }
 
   return (
-    <div className="rounded-xl border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+    <div className="rounded-[var(--radius-md)] border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
       <div className="flex items-center gap-2 font-semibold">
-        <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+        <AlertCircle className="h-4 w-4 text-[var(--warning-text)]" />
         Lightning Address saved
       </div>
       <p className="mt-1 text-[var(--text-secondary)]">

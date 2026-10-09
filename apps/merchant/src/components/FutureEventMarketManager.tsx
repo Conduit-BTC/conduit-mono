@@ -394,7 +394,7 @@ function MarketLifecycleEditor({
           Save event details
         </Button>
         {error ? (
-          <p role="alert" className="text-sm text-[var(--destructive)]">
+          <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
           </p>
         ) : null}
@@ -926,7 +926,7 @@ function SeriesDateManager({
           </p>
         ) : null}
         {pendingMutation ? (
-          <div className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+          <div className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
             <p role="status">
               A signed {pendingMutation.action} change is saved for exact retry.
               Review the current schedule before starting another change.
@@ -941,7 +941,7 @@ function SeriesDateManager({
           </div>
         ) : null}
         {editReady && chosen ? (
-          <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
+          <div className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
             <h3 className="font-medium">Edit selected date</h3>
             {editChanged && !pending && !pendingMutation ? (
               <div className="space-y-2">
@@ -1080,7 +1080,7 @@ function SeriesDateManager({
           </p>
         ) : null}
         {canEdit && seed ? (
-          <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
+          <div className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
             <h3 className="font-medium">Add date</h3>
             <div className="space-y-1">
               <Label htmlFor="series-new-kind">Date type</Label>
@@ -1178,7 +1178,7 @@ function SeriesDateManager({
           </ul>
         ) : null}
         {error ? (
-          <p role="alert" className="text-sm text-[var(--destructive)]">
+          <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
           </p>
         ) : null}
@@ -1417,7 +1417,7 @@ function MerchantAuthorityRow({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1">
+          <div className="grid grid-cols-1 gap-1 [&>p]:mt-1">
             <Label htmlFor={`mode-${merchant}`}>Handoff mode</Label>
             <Select
               value={mode}
@@ -1457,7 +1457,7 @@ function MerchantAuthorityRow({
         {confirmReapproval ? (
           <div
             role="alert"
-            className="space-y-2 rounded-lg border border-[var(--warning)]/40 p-3 text-sm"
+            className="space-y-2 rounded-[var(--radius-md)] border border-[var(--warning)]/40 p-3 text-sm"
           >
             <p>
               Reapproving this merchant makes all still-tagged products reappear
@@ -1499,13 +1499,13 @@ function MerchantAuthorityRow({
         {authState === "conflicting" ||
         authState === "missing_parent" ||
         authState === "deleted" ? (
-          <p role="alert" className="text-sm text-[var(--warning)]">
+          <p role="alert" className="text-sm text-[var(--warning-text)]">
             Signed authorization is stale or divergent. Refresh and reconcile
             its transitions before changing admission.
           </p>
         ) : null}
         {error ? (
-          <p role="alert" className="text-sm text-[var(--destructive)]">
+          <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
           </p>
         ) : null}
@@ -1822,7 +1822,7 @@ export function FutureEventMarketManager({
       {pendingDecisions.data?.map((decision) => (
         <div
           key={decision.id}
-          className="space-y-2 rounded-lg border border-[var(--border)] p-4"
+          className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-4"
         >
           <p className="text-sm">
             The signed {decision.action} for merchant{" "}
@@ -1840,12 +1840,12 @@ export function FutureEventMarketManager({
         </div>
       ))}
       {decisionError ? (
-        <p role="alert" className="text-sm text-[var(--destructive)]">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           {decisionError}
         </p>
       ) : null}
       {enrollment.error ? (
-        <p role="alert" className="text-sm text-[var(--destructive)]">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           {enrollment.error}
           {enrollment.networkRepair ? (
             <>
@@ -1858,7 +1858,7 @@ export function FutureEventMarketManager({
         </p>
       ) : null}
       {enrollment.pending ? (
-        <div className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+        <div className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
           <p role="status">
             Your participation message is saved. Retry the same delivery before
             sending another.
@@ -1945,7 +1945,7 @@ export function FutureEventMarketManager({
           {isOrganizer && !canManage ? (
             <p
               role="status"
-              className="rounded-lg border border-[var(--border)] p-4"
+              className="rounded-[var(--radius-md)] border border-[var(--border)] p-4"
             >
               Current signed organizer authority is incomplete or unavailable.
               Refresh before editing.
@@ -1986,7 +1986,7 @@ export function FutureEventMarketManager({
             </Button>
           ) : null}
           {calendarRetryError ? (
-            <p role="alert" className="text-sm text-[var(--destructive)]">
+            <p role="alert" className="text-sm text-[var(--error-text)]">
               {calendarRetryError}
             </p>
           ) : null}

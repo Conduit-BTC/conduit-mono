@@ -59,7 +59,7 @@ export function EventTimelineEntry({
         type="button"
         aria-label={`Open ${title}. ${schedule}. Organized by ${organizerName}.`}
         onClick={onOpen}
-        className="group min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-left text-[var(--text-primary)] shadow-sm outline-none hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+        className="group min-w-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] text-left text-[var(--text-primary)] shadow-sm outline-none hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
       >
         <span className="relative block aspect-[3/1] overflow-hidden border-b border-[var(--border)] bg-[var(--surface-elevated)]">
           {showImage ? (
@@ -109,11 +109,11 @@ export function EventTimelineLoading({ count = 3 }: { count?: number }) {
           className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4"
           aria-hidden="true"
         >
-          <div className="h-14 rounded-lg bg-[var(--surface-elevated)]" />
+          <div className="h-14 rounded-[var(--radius-md)] bg-[var(--surface-elevated)]" />
           <div className="relative">
             <div className="absolute inset-y-0 left-1/2 w-px bg-[var(--border)]" />
           </div>
-          <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+          <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
             <div className="aspect-[3/1] bg-[var(--surface-elevated)]" />
             <div className="space-y-3 p-4">
               <div className="h-5 w-2/3 rounded bg-[var(--surface-elevated)]" />
@@ -172,7 +172,7 @@ export function EventTimelineViewport({
       role="region"
       aria-label="Chronological events"
       tabIndex={0}
-      className="max-h-[70dvh] overflow-y-auto overscroll-contain rounded-2xl border border-[var(--border)] bg-[var(--background)] px-3 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:px-5"
+      className="max-h-[70dvh] overflow-y-auto overscroll-contain rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] px-3 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:px-5"
       aria-busy={busy}
     >
       {hiddenEarlierCount > 0 ? (

@@ -96,7 +96,7 @@ export function SavedFutureHandoffUpdate({
   }
 
   return (
-    <article className="space-y-2 rounded-xl border border-[var(--border)] p-4">
+    <article className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
       <p className="text-sm font-medium">
         Saved handoff update ·{" "}
         {formatEventMarketPickupClaimCode(record.claimRef)}
@@ -126,7 +126,7 @@ export function SavedFutureHandoffUpdate({
       ) : null}
       {status ? <p role="status">{status}</p> : null}
       {error ? (
-        <p role="alert" className="text-[var(--destructive)]">
+        <p role="alert" className="text-[var(--error-text)]">
           {error}
         </p>
       ) : null}

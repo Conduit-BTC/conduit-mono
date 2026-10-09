@@ -9,6 +9,7 @@ import {
   readAuthenticatedGiftWraps,
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
+import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -163,6 +164,12 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       .getByRole("button", { name: "Open messages", exact: true })
       .click()
     const messages = merchantPage.getByRole("dialog", { name: "Messages" })
+    await expect(messages).toBeVisible()
+    await inspectCommerceUi(
+      merchantPage,
+      testInfo,
+      "merchant-order-conversation"
+    )
     await messages.getByRole("textbox", { name: "Message" }).fill(reply)
     await messages.getByRole("button", { name: "Send message" }).click()
     await expect(

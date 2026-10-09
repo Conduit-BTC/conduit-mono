@@ -363,7 +363,7 @@ export function FormExample() {
         />
         <StatePanel
           title="Long content"
-          description="Titles and descriptions wrap; technical references may break anywhere. Product and merchant names stay visible; do not rely on an accessible name alone to reveal text to sighted readers."
+          description="Titles and descriptions wrap; technical references may break anywhere. Catalog names truncate to one line with full native titles. Product and store activation reveal complete details; descriptions and workflow headings wrap."
         />
       </div>
     </SectionGrid>

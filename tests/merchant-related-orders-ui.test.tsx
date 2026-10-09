@@ -77,6 +77,6 @@ describe("Merchant related orders UI", () => {
     expect(markup).toContain("Where is my order?")
     expect(markup).toContain("1 unread")
     expect(markup).toContain("var(--primary-500)")
-    expect(markup).toContain("rounded-[1.1rem]")
+    expect(markup).toContain("rounded-[var(--radius-md)]")
   })
 })

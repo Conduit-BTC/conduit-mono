@@ -5,7 +5,8 @@ import { SignerAppChoices, type SignerApp } from "./SignerAppChoices"
 import type { SignerPlatform } from "./signer-platform"
 import { ManualSignerConnection } from "./ManualSignerConnection"
 
-const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
+const primaryClassName =
+  "h-12 w-full rounded-[var(--radius-md)] text-base font-semibold"
 const appNames = { clave: "Clave", amber: "Amber" } as const
 
 export function RemoteSignerConnect({
@@ -157,7 +158,7 @@ export function RemoteSignerConnect({
       {connectPending && (selectedApp || !hasAppChoices) && (
         <div
           role="status"
-          className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-6 text-[var(--text-secondary)]"
+          className="rounded-[var(--radius-md)] border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-6 text-[var(--text-secondary)]"
         >
           {selectedApp
             ? `Approve in ${appNames[selectedApp]}, then return to Conduit.`
@@ -170,7 +171,7 @@ export function RemoteSignerConnect({
       )}
 
       {selectedApp && nostrConnectUri && (
-        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm leading-6 text-[var(--text-secondary)]">
+        <div className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm leading-6 text-[var(--text-secondary)]">
           <p>
             If nothing happened, open {appNames[selectedApp]} again or copy the
             connection link into the app. If you just installed it, finish setup
@@ -218,7 +219,7 @@ export function RemoteSignerConnect({
         />
       )}
       {copyError && (
-        <p role="alert" className="text-sm leading-6 text-error">
+        <p role="alert" className="text-sm leading-6 text-[var(--error-text)]">
           Copy was blocked. Open the connection options and select Copy link to
           copy it manually.
         </p>

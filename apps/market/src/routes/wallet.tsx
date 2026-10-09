@@ -28,6 +28,7 @@ import {
   type WalletDescriptor,
 } from "@conduit/core"
 import {
+  PageLayout,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -146,10 +147,10 @@ function WalletsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[64rem] py-2 sm:py-6">
+    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="space-y-6">
-        <section className="overflow-hidden rounded-[2.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-dialog)]">
-          <div className="border-b border-[var(--border)] bg-[image:radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--secondary-500)_16%,transparent),transparent_42%)] p-5 sm:p-8">
+        <section className="min-w-0">
+          <div className="border-b border-[var(--border)]  p-5 sm:p-8">
             <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
@@ -158,7 +159,7 @@ function WalletsPage() {
                 <h1
                   ref={walletsHeadingRef}
                   tabIndex={-1}
-                  className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl"
+                  className="mt-3 font-heading text-3xl font-semibold text-[var(--text-primary)]"
                 >
                   Wallets
                 </h1>
@@ -204,7 +205,7 @@ function WalletsPage() {
             {wallets.initializationError ? (
               <div
                 role="alert"
-                className="flex flex-col gap-4 rounded-2xl border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_8%,transparent)] p-4 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_8%,transparent)] p-4 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div>
                   <p className="font-medium text-[var(--text-primary)]">
@@ -227,7 +228,7 @@ function WalletsPage() {
             ) : wallets.sparkAvailability.status === "unavailable" ? (
               <div
                 role="status"
-                className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_9%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]"
+                className="rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_9%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]"
               >
                 <p className="font-medium">
                   Spark Portable Wallets are unavailable
@@ -311,7 +312,7 @@ function WalletsPage() {
 
         <PriceDisplaySettings />
 
-        <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
           <div className="flex items-start gap-3">
             <KeyRound className="mt-1 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
             <p>
@@ -410,7 +411,7 @@ function WalletsPage() {
         }}
         wallets={wallets}
       />
-    </div>
+    </PageLayout>
   )
 }
 
@@ -479,7 +480,7 @@ function WalletSection({
         </span>
       </div>
 
-      <div className="mt-3 overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
+      <div className="mt-3 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
         {loading ? (
           <WalletSectionLoading title={title} />
         ) : wallets.length === 0 ? (
@@ -524,7 +525,7 @@ function WalletSectionLoading({ title }: { title: string }) {
     >
       {[0, 1].map((index) => (
         <div key={index} className="flex items-center gap-3" aria-hidden="true">
-          <div className="h-11 w-11 shrink-0 rounded-2xl bg-[var(--surface-elevated)]" />
+          <div className="h-11 w-11 shrink-0 rounded-[var(--radius-md)] bg-[var(--surface-elevated)]" />
           <div className="min-w-0 flex-1 space-y-2">
             <div className="h-4 w-36 max-w-full rounded bg-[var(--surface-elevated)]" />
             <div className="h-3 w-52 max-w-full rounded bg-[var(--surface-elevated)]" />
@@ -605,7 +606,7 @@ function WalletRow({
     <div className="p-4 sm:p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
             {wallet.providerId === "spark" ? (
               <Sparkles className="h-5 w-5 text-[var(--secondary-500)]" />
             ) : wallet.kind === "portable" ? (
@@ -983,7 +984,7 @@ function PortableWalletDialog({
               </DialogDescription>
             </DialogHeader>
             <SparkRecoveryBundleDetails {...createdRecovery} />
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] p-3">
+            <div className="flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
               <Label htmlFor="recovery-saved" className="leading-5">
                 I saved the recovery phrase, Spark account number, and network
                 somewhere private
@@ -1013,7 +1014,7 @@ function PortableWalletDialog({
             {sparkNetwork && (
               <div
                 role="note"
-                className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3"
+                className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3"
               >
                 <p className="text-sm font-medium text-[var(--text-primary)]">
                   {getWalletProviderDescription({
@@ -1090,7 +1091,7 @@ function PortableWalletDialog({
                       />
                     )}
                   </Field>
-                  <details className="rounded-xl border border-[var(--border)] px-4 py-3">
+                  <details className="rounded-[var(--radius-md)] border border-[var(--border)] px-4 py-3">
                     <summary className="cursor-pointer rounded-sm text-sm font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">
                       Advanced recovery settings
                     </summary>
@@ -1135,7 +1136,7 @@ function PortableWalletDialog({
                   </details>
                 </TabsContent>
 
-                <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] p-4">
+                <fieldset className="grid gap-4 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
                   <legend className="px-1 text-sm font-medium text-[var(--text-primary)]">
                     On this device
                   </legend>
@@ -1949,7 +1950,7 @@ function SendWalletDialog({
               ref={successStatusRef}
               role="status"
               tabIndex={-1}
-              className="rounded-xl border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] outline-none"
+              className="rounded-[var(--radius-md)] border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] outline-none"
             >
               {sentMethod === "spark"
                 ? "Spark transfer sent."
@@ -1969,7 +1970,7 @@ function SendWalletDialog({
                     event.preventDefault()
                     if (!pending) void confirm()
                   }}
-                  className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-4 text-sm text-[var(--text-secondary)]"
+                  className="rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-4 text-sm text-[var(--text-secondary)]"
                 >
                   <h3
                     ref={reviewHeadingRef}
@@ -2195,7 +2196,7 @@ function SendWalletDialog({
                 tabIndex={-1}
                 className={
                   outcome === "ambiguous"
-                    ? "rounded-xl border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)] outline-none"
+                    ? "rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)] outline-none"
                     : "text-sm text-[var(--text-secondary)] outline-none"
                 }
               >
@@ -2385,7 +2386,7 @@ function WalletHistoryDialog({
             No payment history yet.
           </p>
         ) : (
-          <div className="divide-y divide-[var(--border)] overflow-hidden rounded-xl border border-[var(--border)]">
+          <div className="divide-y divide-[var(--border)] overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)]">
             {payments.map((payment) => (
               <div
                 key={payment.id}
@@ -2616,7 +2617,7 @@ function RemoveWalletDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         {portable && (
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-3">
+          <div className="flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-3">
             <Label htmlFor="remove-recovery" className="leading-5">
               I have the recovery details required to restore this Portable
               Wallet
@@ -2655,7 +2656,7 @@ function RemoveWalletDialog({
 function PriceDisplaySettings() {
   const shopperPricing = useShopperPricing()
   return (
-    <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
       <div className="flex items-center gap-2">
         <WalletCards className="h-4 w-4 text-[var(--text-muted)]" />
         <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
@@ -2675,7 +2676,10 @@ function PriceDisplaySettings() {
               shopperPricing.setCurrency(value as ShopperDisplayCurrency)
             }
           >
-            <SelectTrigger id="display-currency" className="h-11 rounded-xl">
+            <SelectTrigger
+              id="display-currency"
+              className="h-11 rounded-[var(--radius-md)]"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -2689,7 +2693,7 @@ function PriceDisplaySettings() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4">
+        <div className="flex h-11 items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4">
           <Label
             htmlFor="sats-standard"
             className="cursor-pointer text-sm font-medium"

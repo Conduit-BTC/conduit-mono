@@ -36,6 +36,8 @@ export interface ProductCardProps {
   /** Existing fulfillment or availability context kept inside the card. */
   notice?: ReactNode
   action?: ReactNode
+  /** Multiple merchant management actions need their own row. */
+  actionLayout?: "inline" | "stacked"
   onActivate?: () => void
   onMerchantActivate?: () => void
   onInvalidImage?: () => void
@@ -64,6 +66,7 @@ export function ProductCard({
   mediaClassName,
   notice,
   action,
+  actionLayout = "inline",
   onActivate,
   onMerchantActivate,
   onInvalidImage,
@@ -74,7 +77,7 @@ export function ProductCard({
   const firstImage = images[0]
 
   const merchantNameContent = merchantNamePending ? (
-    <span className="inline-block max-w-full animate-pulse break-words leading-5">
+    <span className="inline-block max-w-full animate-pulse truncate leading-5">
       {merchantName}
     </span>
   ) : (
@@ -113,26 +116,32 @@ export function ProductCard({
         enableHoverZoom={Boolean(onActivate) && !disableImageHoverZoom}
         soldOut={soldOut}
         onInvalidImage={onInvalidImage}
-        className={cn("rounded-t-[var(--radius-md)]", mediaClassName)}
+        className={cn("rounded-t-[calc(var(--radius-md)-1px)]", mediaClassName)}
       />
 
-      <div className="flex flex-1 flex-col p-4">
-        <div className="min-h-[3.25rem] space-y-1">
+      <div className="flex min-w-0 flex-1 flex-col p-2 sm:p-3">
+        <div className="min-w-0 space-y-0.5 sm:space-y-1">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="min-w-0 flex-1 break-words text-base font-semibold leading-snug text-[var(--text-primary)]">
+            <h3
+              title={title}
+              className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug text-[var(--text-primary)]"
+            >
               {title}
             </h3>
-            {titleAside || soldOut ? (
+            {titleAside || (soldOut && !action) ? (
               <div className="flex shrink-0 items-center gap-1.5">
                 {titleAside}
-                {soldOut ? <Badge variant="warning">Sold out</Badge> : null}
+                {soldOut && !action ? (
+                  <Badge variant="warning">Sold out</Badge>
+                ) : null}
               </div>
             ) : null}
           </div>
           {onMerchantActivate ? (
             <button
               type="button"
-              className="block min-h-11 w-full min-w-0 max-w-full break-words text-left text-sm font-medium leading-normal text-[var(--text-secondary)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              className="block min-h-11 sm:min-h-6 w-full min-w-0 max-w-full truncate text-left text-sm font-medium leading-normal text-[var(--text-secondary)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              title={merchantName}
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -143,7 +152,10 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="w-full min-w-0 max-w-full break-words text-left text-sm font-medium leading-normal text-[var(--text-secondary)]">
+            <div
+              title={merchantName}
+              className="w-full min-w-0 max-w-full truncate text-left text-sm font-medium leading-normal text-[var(--text-secondary)]"
+            >
               {merchantNameContent}
             </div>
           )}
@@ -151,7 +163,7 @@ export function ProductCard({
 
         {options ? (
           <div
-            className={cn("pt-3", optionsClassName)}
+            className={cn("pt-2", optionsClassName)}
             onClick={(event) => event.stopPropagation()}
           >
             {options}
@@ -169,17 +181,36 @@ export function ProductCard({
           </div>
         ) : null}
 
-        <div className="mt-auto flex flex-wrap items-end justify-between gap-3 pt-4">
-          <div className="min-w-0 tabular-nums">
-            <div className="min-h-5 break-words text-lg font-semibold text-[var(--text-primary)]">
-              {primaryPrice}
+        <div
+          className={cn(
+            "mt-auto flex min-w-0 flex-wrap items-end justify-between gap-1.5 pt-2 sm:gap-2"
+          )}
+        >
+          <div
+            data-slot="product-price"
+            className={cn(
+              "min-w-min flex-1 tabular-nums",
+              actionLayout === "stacked" && "basis-full",
+              cartQuantity > 0 && "min-w-20"
+            )}
+          >
+            <div
+              title={primaryPrice.replace(/[~≈]\s*/g, "")}
+              className={cn(
+                "min-h-5 whitespace-nowrap text-sm font-semibold",
+                /₿|\bsats?\b|\bBTC\b/i.test(primaryPrice)
+                  ? "text-[var(--bitcoin-price)]"
+                  : "text-[var(--text-primary)]"
+              )}
+            >
+              {primaryPrice.replace(/[~≈]\s*/g, "")}
             </div>
-            <div className="min-h-[1rem] break-words text-sm text-[var(--text-secondary)]">
-              {secondaryPrice ?? "\u00a0"}
+            <div className="min-h-[1rem] w-0 min-w-full truncate text-xs text-[var(--text-secondary)]">
+              {secondaryPrice?.replace(/[~≈]\s*/g, "") ?? "\u00a0"}
             </div>
             {approximateUsdPrice !== undefined ? (
-              <div className="min-h-[1rem] break-words text-sm text-[var(--text-secondary)]">
-                {approximateUsdPrice ?? "\u00a0"}
+              <div className="min-h-[1rem] w-0 min-w-full truncate text-xs text-[var(--text-secondary)]">
+                {approximateUsdPrice?.replace(/[~≈]\s*/g, "") ?? "\u00a0"}
               </div>
             ) : null}
           </div>
@@ -187,7 +218,7 @@ export function ProductCard({
             <div className="relative shrink-0">{action}</div>
           ) : cartQuantity > 0 ? (
             <div className="relative shrink-0">
-              <span className="inline-flex items-center gap-1.5 text-sm text-[var(--text-secondary)]">
+              <span className="inline-flex items-center gap-1.5 text-sm text-[var(--success-text)]">
                 <Check className="size-3.5 shrink-0" aria-hidden="true" />
                 In cart ({cartQuantity})
               </span>
@@ -243,7 +274,17 @@ export function ProductCartAction({
               : "primary"
         }
         size={canAdjust ? "icon" : "sm"}
-        className={canAdjust ? "rounded-none sm:size-8" : undefined}
+        className={
+          canAdjust
+            ? "rounded-none sm:size-8"
+            : cn(
+                "min-w-11 gap-1 px-2 min-[360px]:gap-1.5",
+                soldOut && "w-11 px-1 sm:w-auto sm:px-2",
+                disabled &&
+                  !soldOut &&
+                  "px-1 text-xs min-[360px]:px-2 min-[360px]:text-sm"
+              )
+        }
         disabled={canAdjust ? false : soldOut || atStockLimit || disabled}
         aria-label={
           canAdjust
@@ -266,13 +307,15 @@ export function ProductCartAction({
             {!soldOut && !disabled && (
               <ShoppingCart className="size-3.5 shrink-0" aria-hidden="true" />
             )}
-            {soldOut
-              ? "Sold out"
-              : disabled
-                ? disabledLabel
-                : cartQuantity > 0
-                  ? `In cart (${cartQuantity})`
-                  : "Add"}
+            {soldOut ? (
+              "Sold out"
+            ) : disabled ? (
+              disabledLabel
+            ) : cartQuantity > 0 ? (
+              `In cart (${cartQuantity})`
+            ) : (
+              <span className="hidden min-[360px]:inline">Add</span>
+            )}
           </>
         )}
       </Button>
@@ -312,14 +355,19 @@ export function ProductCartAction({
 export function ProductCardSkeleton() {
   return (
     <div className="flex animate-pulse flex-col rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
-      <div className="aspect-[4/3] rounded-t-[var(--radius-md)] border-b border-[var(--border)] bg-[var(--surface-elevated)]" />
-      <div className="flex flex-1 flex-col p-4">
-        <div className="min-h-[3.25rem] space-y-1.5">
+      <div className="aspect-[4/3] rounded-t-[calc(var(--radius-md)-1px)] border-b border-[var(--border)] bg-[var(--surface-elevated)]" />
+      <div className="flex min-w-0 flex-1 flex-col p-2 sm:p-3">
+        <div className="min-w-0 space-y-1.5">
           <div className="h-4 w-4/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-4 w-3/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-3 w-1/2 rounded bg-[var(--surface-elevated)]" />
         </div>
-        <div className="mt-auto flex flex-wrap items-end justify-between gap-3 pt-4">
+        <div
+          className={cn(
+            "mt-auto flex min-w-0 items-end justify-between gap-2 pt-2",
+            "flex-wrap"
+          )}
+        >
           <div className="space-y-1">
             <div className="h-5 w-20 rounded bg-[var(--surface-elevated)]" />
             <div className="h-3 w-16 rounded bg-[var(--surface-elevated)]" />

@@ -78,12 +78,12 @@ is an intentional second example. Do not add credentials or live mutations here.
 ### Visual grammar
 
 - StatusPill is an icon/text label, despite its historical name. It is not an action.
-- Color anchors come from the Brand elements palette: ink, purple, orange, rose and violet. Information is violet; errors are rose; attention is orange; ready is a neutral checkmark. Use readable foreground roles instead of raw signal colors for small text.
+- Color anchors come from the Brand elements palette: ink, purple, orange, rose and violet. Information is violet; errors/destructive actions are proper red; attention and Bitcoin price emphasis are orange; ready/confirmed success is green. Use readable foreground roles instead of raw signal colors for small text.
 - Badge is a small rectangular classification/attention tag. Counts are plain text.
 - Use a real pressed button for filters and segmented choices. Tabs have an active underline.
-- Keep primary price neutral, prominent and tabular. Orange is not a readable price role in Day Market.
+- Keep Bitcoin primary prices orange, prominent and tabular through --bitcoin-price. Its Day Market shade meets text contrast; do not use the raw orange signal as small text on white.
 - Product cards retain an 8 px-radius border and surface, with media above a padded body. Labels use a 4 px gap above controls; help and errors use 8 px.
-- Product and merchant names wrap. An accessible name alone does not reveal clipped content to sighted readers.
+- Catalog product and merchant names truncate to one line with full accessible text and native titles; product/store activation reveals complete details. Dense phone grids use 8 px gaps/padding and retain price/Add alignment and touch targets. Remove approximation glyphs on cards only; currency selection and conversion removal remain separate work.
 - Phone and coarse-pointer actions, selectors, switch targets and cart quantity controls use 44 px hit areas. Desktop compact variants remain available.
 - Quantity controls remain visible after adding an item, with focus preserved as Add becomes Remove and back.
 - Poppins is the shared UI font. Keep logo artwork as an asset and use system monospace for identifiers and technical references. Fonts and their OFL license are bundled in `src/assets/fonts`.
@@ -122,9 +122,11 @@ The policy is static: computed class construction and custom interaction logic
 still need code review. CSS variables supplied by Radix are named explicitly;
 local geometry variables must have a declaration or runtime setter.
 
-The exact legacy color inventory is in
+The color exception inventory is empty after all existing presentation colors
+were migrated to semantic tokens. Any future intentional content/brand exception
+must be occurrence-bounded in
 [`ui-foundation-exceptions.json`](../../../scripts/ci/ui-foundation-exceptions.json).
-It records path, utility, occurrence count and reason, verified against main.
+An entry records path, utility, occurrence count and reason.
 Added occurrences and stale entries fail. No wildcard path or open-ended color
 exception is allowed. Use shared tokens when a surface changes. Black/white
 contrast utilities remain available for foregrounds and QR media.

@@ -142,9 +142,9 @@ function PurchaseTab({
       aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${purchaseIndex === undefined ? "" : `, purchase ${purchaseIndex + 1}`}`}
       onClick={onSelect}
       className={cn(
-        "market-cart-hud-item flex min-h-11 min-w-[4.5rem] max-w-60 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:gap-2 sm:px-3",
+        "market-cart-hud-item flex min-h-11 min-w-[4.5rem] max-w-60 shrink-0 items-center justify-center gap-1.5 rounded-[var(--radius-md)] border px-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:gap-2 sm:px-3",
         selected
-          ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+          ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] "
           : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
       )}
     >
@@ -498,7 +498,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         aria-label="Cart inventory"
         aria-hidden={!shouldShow}
         inert={!shouldShow}
-        className="market-cart-hud-surface pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] shadow-[var(--shadow-md)] backdrop-blur"
+        className="market-cart-hud-surface pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] shadow-[var(--shadow-md)] "
       >
         <div className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
           <span
@@ -513,7 +513,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             role="group"
             aria-label="Cart purchases"
             className={cn(
-              "flex h-auto w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+              "flex h-auto w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto rounded-[var(--radius-md)] border-0 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
               displayedGroups.length > 1 && "pr-[50%]"
             )}
             style={
@@ -641,7 +641,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   to="/$identityRef"
                   params={{ identityRef: selectedMerchant }}
                   aria-label={`Open ${merchantName} merchant page`}
-                  className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-[var(--radius-md)] px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >
                   <Avatar className="h-7 w-7">
                     <AvatarImage src={activeProfile?.picture} alt="" />
@@ -684,12 +684,12 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   return (
                     <article
                       key={item.cartLineId ?? getCartItemKey(item)}
-                      className="market-cart-hud-item flex w-[17rem] shrink-0 snap-start items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-2.5 transition-colors motion-reduce:transition-none"
+                      className="market-cart-hud-item flex w-[17rem] shrink-0 snap-start items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-2.5 transition-colors motion-reduce:transition-none"
                     >
                       <Link
                         to="/products/$productId"
                         params={{ productId: item.productId }}
-                        className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                        className="h-14 w-14 shrink-0 overflow-hidden rounded-[var(--radius-md)] bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                         aria-label={`Open ${item.title}`}
                       >
                         {item.image ? (
@@ -719,7 +719,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           {display.primary}
                         </div>
                         {itemUnavailable ? (
-                          <div className="mt-1 text-xs font-medium text-[var(--error)]">
+                          <div className="mt-1 text-xs font-medium text-[var(--error-text)]">
                             {availability?.status === "sold_out"
                               ? "Sold out"
                               : `Only ${currentStock ?? 0} available`}

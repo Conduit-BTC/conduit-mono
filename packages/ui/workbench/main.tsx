@@ -66,7 +66,7 @@ function Workbench() {
       </a>
       <PageHeader
         title="Conduit UI workbench"
-        description="Shared components · Approved foundation"
+        description="Shared components · Shared foundation"
         className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 [&_h1]:text-2xl sm:[&_h1]:text-3xl [&_p]:text-sm"
         actions={<ThemeToggleButton />}
       />
@@ -249,7 +249,7 @@ function Workbench() {
       </main>
       <footer className="border-t border-[var(--border)] pt-4 text-pretty text-xs text-[var(--text-secondary)]">
         @conduit/ui · Development / local preview only · Current theme:{" "}
-        {theme.resolvedTheme} · Visual foundation approved · Validate each
+        {theme.resolvedTheme} · Shared visual foundation · Validate each
         consuming workflow.
       </footer>
     </PageLayout>

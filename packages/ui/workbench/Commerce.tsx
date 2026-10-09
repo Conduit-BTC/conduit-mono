@@ -90,7 +90,7 @@ export function Commerce({
           Freshly roasted Colombian coffee in two bag sizes, ready for Saturday
           market pickup.
         </p>
-        <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,8.5rem),1fr))] gap-2 sm:gap-4">
           {state === "loading" ? (
             <>
               <ProductCardSkeleton />
@@ -98,32 +98,64 @@ export function Commerce({
             </>
           ) : (
             <>
-              <SampleProduct
-                state={state}
-                long={long}
-                size={size}
-                quantity={quantity}
-                onSizeChange={setSize}
-                onAdd={() => setQuantity(quantity + 1)}
-                onRemove={() => setQuantity(Math.max(0, quantity - 1))}
+              <ProductCard
+                title={
+                  long
+                    ? "Colombia coffee gift set, whole bean, medium roast with an exceptionally long catalog title"
+                    : "Colombia coffee gift set"
+                }
+                merchantName={
+                  long
+                    ? "The very long neighborhood coffee collective and merchant"
+                    : "Sample roastery"
+                }
+                images={[{ url: coffeeImage }]}
+                primaryPrice="₿206,353"
+                secondaryPrice="$170.00 USD"
+                onActivate={() => setReviewed(true)}
+                onMerchantActivate={() => setReviewed(true)}
+                action={
+                  <ProductCartAction
+                    title="Colombia coffee gift set"
+                    cartQuantity={0}
+                    onAddToCart={() => setReviewed(true)}
+                  />
+                }
               />
               <ProductCard
-                title="Seasonal coffee sampler"
+                title={
+                  long
+                    ? "Windows Server 2025 RDS – 50 User / Device CAL with extended support"
+                    : "Windows Server RDS – 50 User / Device CAL"
+                }
                 merchantName="Sample Roastery"
                 images={[]}
-                primaryPrice="38,000 sats"
-                secondaryPrice="≈ $38.00 USD"
+                primaryPrice="₿95,047"
+                secondaryPrice="€70.00 EUR"
+                approximateUsdPrice="$78.30 USD"
                 soldOut
-                notice="Unavailable media and sold-out state retain product identity."
                 action={
-                  <Button variant="muted" size="sm" disabled>
-                    Sold out
-                  </Button>
+                  <ProductCartAction
+                    title="Windows Server RDS – 50 User / Device CAL"
+                    cartQuantity={0}
+                    soldOut
+                    onAddToCart={() => undefined}
+                  />
                 }
               />
             </>
           )}
         </div>
+        <h3 className="text-lg font-semibold">Product options</h3>
+        <SampleProduct
+          state={state}
+          long={long}
+          size={size}
+          quantity={quantity}
+          onSizeChange={setSize}
+          onAdd={() => setQuantity(quantity + 1)}
+          onRemove={() => setQuantity(Math.max(0, quantity - 1))}
+        />
       </section>
       <CheckoutExample
         state={state}
@@ -169,7 +201,7 @@ function SampleProduct({
       }
       images={[{ url: coffeeImage }]}
       primaryPrice={size === "680" ? "48,000 sats" : "24,000 sats"}
-      secondaryPrice={size === "680" ? "≈ $48.00 USD" : "≈ $24.00 USD"}
+      secondaryPrice={size === "680" ? "$48.00 USD" : "$24.00 USD"}
       disableImageHoverZoom
       options={
         <Field label="Bag size">

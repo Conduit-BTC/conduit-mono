@@ -49,7 +49,7 @@ const NIP05_INDICATORS = {
   invalid: {
     Icon: CircleAlert,
     label: "NIP-05 verification failed",
-    color: "text-[var(--warning)]",
+    color: "text-[var(--warning-text)]",
   },
   absent: NO_NIP05_INDICATOR,
   checking: NO_NIP05_INDICATOR,

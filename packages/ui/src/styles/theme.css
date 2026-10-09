@@ -11,7 +11,8 @@
   --brand-ink: #05001d;
   --brand-purple: #bb00ff;
   --brand-orange: #f7771b;
-  --brand-rose: #d32973;
+  --brand-rose: #d32973; /* Decorative legacy anchor; never utility error. */
+  --brand-red: #ef4444;
   --brand-violet: #5521c3;
   --theme-color: var(--brand-ink);
   --cash-app-green: #00e013;
@@ -101,20 +102,21 @@
   --neutral-900: hsla(var(--neutral-h), var(--neutral-s), 10%, 1);
   --neutral-950: hsla(var(--neutral-h), var(--neutral-s), 5%, 1);
 
-  /* Semantic roles use the brand palette; success is a quiet neutral check. */
-  --success: var(--text-secondary);
+  /* Utility signals remain recognizable independently of the brand accents. */
+  --success: hsla(142, 71%, 45%, 1);
   --warning: var(--brand-orange);
-  --error: var(--brand-rose);
+  --error: var(--brand-red);
   --info: var(--brand-violet);
 
   /* Readable copy on base surfaces. These are UI roles, not extra brand swatches. */
-  --success-text: var(--text-secondary);
+  --success-text: hsla(142, 71%, 55%, 1);
   --warning-text: var(--brand-orange);
-  --error-text: var(--tertiary-300);
+  --error-text: var(--brand-red);
   --info-text: var(--accent-300);
   --link-text: var(--primary-300);
-  --destructive-action: var(--brand-rose);
-  --destructive-action-hover: var(--tertiary-600);
+  --destructive-action: hsla(0, 72%, 51%, 1);
+  --destructive-action-hover: hsla(0, 74%, 42%, 1);
+  --bitcoin-price: var(--brand-orange);
 
   /* Text on colored/dark surfaces (e.g. gradient buttons, filled badges) */
   --on-primary: hsla(0, 0%, 100%, 1);
@@ -232,9 +234,12 @@
   --foreground: var(--neutral-900);
   --theme-color: var(--background);
 
-  /* Orange stays orange: use neutral copy instead of a brown text substitute. */
-  --warning-text: var(--text-primary);
-  --error-text: var(--tertiary-600);
+  /* Foreground roles retain their hue with enough contrast for small copy. */
+  --warning-text: hsla(25, 100%, 30%, 1);
+  --success: hsla(142, 72%, 35%, 1);
+  --success-text: hsla(142, 72%, 24%, 1);
+  --error-text: hsla(0, 74%, 42%, 1);
+  --bitcoin-price: hsla(25, 100%, 34%, 1);
   --info-text: var(--brand-violet);
   --link-text: var(--primary-600);
 

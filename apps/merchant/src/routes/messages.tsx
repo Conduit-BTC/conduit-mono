@@ -530,7 +530,7 @@ function MessagesWorkspace() {
       ) : null}
 
       {!hasAccount && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view buyer messages.
         </div>
       )}
@@ -579,14 +579,14 @@ function MessagesWorkspace() {
         )}
 
       {showEmpty && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No buyer messages yet.
         </div>
       )}
 
       {hasAccount && conversations.length > 0 && (
         <div className="grid min-w-0 max-w-full gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+          <aside className="hidden min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
               Conversations
             </div>
@@ -599,7 +599,7 @@ function MessagesWorkspace() {
             />
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
-                <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                   No conversations match your search.
                 </div>
               )}
@@ -639,14 +639,14 @@ function MessagesWorkspace() {
                   {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <button
                     type="button"
-                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                   >
                     <Search className="h-4 w-4" />
                     Search
                   </button>
                 </SheetTrigger>
               </div>
-              <section className="min-w-0 max-w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+              <section className="min-w-0 max-w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                 {filteredConversations.length > 0 ? (
                   <ConversationCardScroller>
                     {filteredConversations.map((conversation) => {
@@ -676,7 +676,7 @@ function MessagesWorkspace() {
                     })}
                   </ConversationCardScroller>
                 ) : (
-                  <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                  <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                     No conversations match your search.
                   </div>
                 )}
@@ -698,7 +698,7 @@ function MessagesWorkspace() {
                 />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
-                    <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                       No conversations match your search.
                     </div>
                   )}
@@ -729,7 +729,7 @@ function MessagesWorkspace() {
             </Sheet>
           </div>
 
-          <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:h-full xl:min-h-0">
+          <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:h-full xl:min-h-0">
             {selected ? (
               <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col">
                 <div className="mb-3 flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
@@ -886,7 +886,10 @@ function MessagesWorkspace() {
                         label="Reply"
                       />
                       {sendMutation.error && (
-                        <div role="alert" className="text-xs text-error">
+                        <div
+                          role="alert"
+                          className="text-xs text-[var(--error-text)]"
+                        >
                           Message wasn't published. Retry from the message
                           bubble.
                         </div>

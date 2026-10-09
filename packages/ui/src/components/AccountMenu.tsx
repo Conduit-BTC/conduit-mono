@@ -58,7 +58,7 @@ export function AccountMenu({
             <button
               type="button"
               className={cn(
-                "inline-flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]",
+                "inline-flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]",
                 className
               )}
             >
@@ -102,24 +102,24 @@ export function AccountMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="end"
-          className="min-w-[15rem] rounded-xl border-[var(--border)] bg-[var(--surface-dialog)] p-2"
+          className="min-w-[15rem] rounded-[var(--radius-md)] border-[var(--border)] bg-[var(--surface-dialog)] p-2"
         >
           <DropdownMenuLabel className="px-2 py-2">
             <div className="flex items-center gap-2 text-xs font-normal text-[var(--text-secondary)]">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              <span className="h-2 w-2 rounded-full bg-success" />
               {statusLabel}
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-lg"
+            className="h-10 cursor-pointer gap-2 rounded-[var(--radius-md)]"
             onSelect={onProfile}
           >
             <UserRound className="h-4 w-4 text-secondary-300" />
             Profile
           </DropdownMenuItem>
           <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-lg"
+            className="h-10 cursor-pointer gap-2 rounded-[var(--radius-md)]"
             onSelect={onNetwork}
           >
             <RadioTower className="h-4 w-4 text-secondary-300" />
@@ -127,7 +127,7 @@ export function AccountMenu({
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-lg text-pink-400 focus:text-pink-300"
+            className="h-10 cursor-pointer gap-2 rounded-[var(--radius-md)] text-[var(--error-text)] focus:text-[var(--error-text)]"
             onSelect={() => setDisconnectOpen(true)}
           >
             <LogOut className="h-4 w-4" />
@@ -145,7 +145,7 @@ export function AccountMenu({
               connecting again.
             </DialogDescription>
           </DialogHeader>
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
             <div className="font-medium text-[var(--text-primary)]">
               {displayName}
             </div>
