@@ -1,4 +1,10 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test"
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+  type TestInfo,
+} from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { verifyEvent } from "nostr-tools/pure"
 
@@ -22,6 +28,7 @@ import {
   type RuntimeSignerIdentity,
 } from "./helpers/real-nip07-signer"
 import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
@@ -292,14 +299,90 @@ async function waitForPrivateRumor(input: {
   }
 }
 
-async function publishProduct(page: Page, title: string): Promise<void> {
+async function publishProduct(
+  page: Page,
+  title: string,
+  testInfo: TestInfo
+): Promise<void> {
   await page.goto(`${merchantUrl}/products`)
   await expect(
     page.getByRole("heading", { name: "Products", exact: true })
   ).toBeVisible()
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  const trigger = page.getByRole("button", { name: "Add product" }).first()
+  // Record event delivery and mount state, never fixture/account contents.
+  const diagnosticHandle = await trigger.evaluateHandle((element) => {
+    const observations = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      dialogMounted: false,
+      dialogRemoved: false,
+      fontsAtClick: "unknown",
+    }
+    const listeners = ["pointerdown", "pointerup", "click"].map((type) => {
+      const listener = (event: Event) => {
+        const onTrigger =
+          event.target instanceof Node && element.contains(event.target)
+        if (type === "pointerdown")
+          observations.pointerDownOnTrigger = onTrigger
+        if (type === "pointerup") observations.pointerUpOnTrigger = onTrigger
+        if (type === "click") {
+          observations.clickOnTrigger = onTrigger
+          observations.fontsAtClick = document.fonts.status
+        }
+      }
+      document.addEventListener(type, listener, true)
+      return { type, listener }
+    })
+    const containsDialog = (node: Node) =>
+      node instanceof Element &&
+      (node.matches('[role="dialog"]') ||
+        !!node.querySelector('[role="dialog"]'))
+    const observer = new MutationObserver((changes) => {
+      for (const change of changes) {
+        if ([...change.addedNodes].some(containsDialog))
+          observations.dialogMounted = true
+        if ([...change.removedNodes].some(containsDialog))
+          observations.dialogRemoved = true
+      }
+    })
+    observer.observe(document, { childList: true, subtree: true })
+    return {
+      read() {
+        const rect = element.getBoundingClientRect()
+        return {
+          ...observations,
+          dialogPresent: !!document.querySelector('[role="dialog"]'),
+          triggerEnabled:
+            element.isConnected && !element.hasAttribute("disabled"),
+          triggerX: rect.x,
+          triggerY: rect.y,
+          triggerWidth: rect.width,
+          triggerHeight: rect.height,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        for (const { type, listener } of listeners)
+          document.removeEventListener(type, listener, true)
+      },
+    }
+  })
   const dialog = page.getByRole("dialog", { name: "Add product" })
-  await expect(dialog).toBeVisible()
+  try {
+    await trigger.click()
+    await expect(dialog).toBeVisible()
+  } catch (error) {
+    recordSmokeDiagnostic(
+      testInfo,
+      "product-dialog-open",
+      await diagnosticHandle.evaluate((probe) => probe.read())
+    )
+    throw error
+  } finally {
+    await diagnosticHandle.evaluate((probe) => probe.dispose())
+    await diagnosticHandle.dispose()
+  }
   await dialog.getByLabel("Title").fill(title)
   await dialog
     .getByLabel("Summary")
@@ -481,7 +564,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       merchantPage.getByText("Receiving address matches", { exact: true })
     ).toBeVisible()
 
-    await publishProduct(merchantPage, productTitle)
+    await publishProduct(merchantPage, productTitle, testInfo)
     await expect
       .poll(async () => {
         const products = await readTestRelayEvents({

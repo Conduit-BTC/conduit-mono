@@ -23,6 +23,23 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         footerHidden: "boolean",
       },
     },
+    "product-dialog-open": {
+      file: "e2e/commerce.playwright.ts",
+      fields: {
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        dialogPresent: "boolean",
+        triggerEnabled: "boolean",
+        fontsAtClick: ["loading", "loaded", "unknown"],
+        triggerX: "number",
+        triggerY: "number",
+        triggerWidth: "number",
+        triggerHeight: "number",
+      },
+    },
     "product-submit": {
       file: "e2e/merchant-shipping-tables.playwright.ts",
       fields: {
@@ -98,7 +115,7 @@ export function safeSmokeDiagnostics(
 
 export function recordSmokeDiagnostic(
   info: TestInfo,
-  kind: "footer-layout" | "product-submit",
+  kind: "footer-layout" | "product-submit" | "product-dialog-open",
   values: Record<string, unknown>
 ): void {
   const type = `smoke:${kind}`

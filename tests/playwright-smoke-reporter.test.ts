@@ -359,6 +359,58 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 
+  it("allows only content-free product-dialog observations from commerce", () => {
+    const annotation = {
+      type: "smoke:product-dialog-open",
+      description: JSON.stringify({
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        dialogMounted: false,
+        dialogRemoved: false,
+        dialogPresent: false,
+        triggerEnabled: true,
+        fontsAtClick: "loading",
+        triggerX: 212.345,
+        triggerWidth: Infinity,
+        triggerHeight: "private-value",
+        pubkey: "private-value",
+        connectionString: "private-value",
+        message: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([
+      {
+        kind: "product-dialog-open",
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        dialogMounted: false,
+        dialogRemoved: false,
+        dialogPresent: false,
+        triggerEnabled: true,
+        fontsAtClick: "loading",
+        triggerX: 212.3,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+        {
+          ...annotation,
+          description:
+            '{"fontsAtClick":"private-value","clickOnTrigger":"private-value"}',
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("keeps first-attempt readiness evidence in the report and failure progress without private annotations", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-diagnostic-"))
     try {
