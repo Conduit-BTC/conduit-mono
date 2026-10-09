@@ -67,12 +67,20 @@ const RESERVED_NAMES = new Set([
 ])
 const USERNAME_PATTERN = /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/
 
-// Conservative intersection of Breez's server grammar and LUD-16. No email tags.
+// Provider/LUD-16 syntax for an existing address, independent of selection policy.
+function isBreezUsername(username: string): boolean {
+  return (
+    username.length >= 1 &&
+    username.length <= 64 &&
+    USERNAME_PATTERN.test(username)
+  )
+}
+
+// Conduit's policy for selecting new names. No email tags or protected names.
 export function normalizeBreezUsername(value: string): string | null {
   const username = value.trim().toLowerCase()
   return username.length >= 3 &&
-    username.length <= 64 &&
-    USERNAME_PATTERN.test(username) &&
+    isBreezUsername(username) &&
     !RESERVED_NAMES.has(username)
     ? username
     : null
@@ -112,7 +120,10 @@ export function breezAddressMessage(input: {
 }
 
 class AddressError extends Error {
-  constructor(readonly reason: BreezAddressFailure) {
+  constructor(
+    readonly reason: BreezAddressFailure,
+    readonly registrationMayHaveCommitted = false
+  ) {
     super("Lightning address setup is unavailable.")
   }
 }
@@ -232,6 +243,14 @@ export class BreezLightningAddressClient {
               description: `Pay to ${username}@${this.#domain}`,
             })
           } catch (error) {
+            // Clear only this fresh attempt's uncertainty, before recovery can fail.
+            // A definite rejection cannot disprove an earlier ambiguous submission.
+            if (
+              pending.phase === "selected" &&
+              error instanceof AddressError &&
+              !error.registrationMayHaveCommitted
+            )
+              await this.#save(scope, pending)
             // A conflict may be a collision, replay, or another device's success.
             // Resolve identity ownership before making any decision to change name.
             const recovered = await this.#recover(identity)
@@ -298,12 +317,11 @@ export class BreezLightningAddressClient {
     const result = await this.#request(identity, "recover")
     if (result === null) return null
     const username =
-      typeof result.username === "string"
-        ? normalizeBreezUsername(result.username)
+      typeof result.username === "string" && isBreezUsername(result.username)
+        ? result.username
         : null
     if (
       !username ||
-      result.username !== username ||
       result.lightning_address !== `${username}@${this.#domain}` ||
       result.lnurl !== `lnurlp://${this.#domain}/lnurlp/${username}`
     ) {
@@ -317,91 +335,105 @@ export class BreezLightningAddressClient {
     operation: "recover" | "available" | "register",
     fields: { username?: string; description?: string } = {}
   ): Promise<Record<string, unknown> | null> {
-    this.#assertActive()
-    const timestamp = Math.floor(this.#now() / 1000)
-    if (!Number.isSafeInteger(timestamp) || timestamp < 0)
-      throw new AddressError("invalid_configuration")
-    const message = breezAddressMessage({
-      operation,
-      domain: this.#domain,
-      identity,
-      timestamp,
-      ...fields,
-    })
-    const digest = sha256(new TextEncoder().encode(message))
-    const signature = await this.#signer.signDigest(digest)
-    this.#assertActive()
-    if ((await this.#signer.getIdentityPublicKey()) !== identity)
-      throw new AddressError("identity_mismatch")
+    let registrationMayHaveCommitted = false
     try {
-      if (
-        !secp256k1.verify(signature, digest, hexToBytes(identity), {
-          prehash: false,
-          format: "der",
-        })
-      )
-        throw new Error()
-    } catch {
-      throw new AddressError("identity_mismatch")
-    }
-    this.#assertActive()
-    let response: Response
-    try {
-      response = await this.#fetch(
-        `https://${this.#domain}/lnurlpay/${identity}${operation === "register" ? "" : `/${operation}`}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.#apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            ...fields,
-            signature: bytesToHex(signature),
-            timestamp,
-          }),
-          signal: AbortSignal.timeout(10_000),
-          redirect: "error",
-          credentials: "omit",
-          cache: "no-store",
+      this.#assertActive()
+      const timestamp = Math.floor(this.#now() / 1000)
+      if (!Number.isSafeInteger(timestamp) || timestamp < 0)
+        throw new AddressError("invalid_configuration")
+      const message = breezAddressMessage({
+        operation,
+        domain: this.#domain,
+        identity,
+        timestamp,
+        ...fields,
+      })
+      const digest = sha256(new TextEncoder().encode(message))
+      const signature = await this.#signer.signDigest(digest)
+      this.#assertActive()
+      if ((await this.#signer.getIdentityPublicKey()) !== identity)
+        throw new AddressError("identity_mismatch")
+      try {
+        if (
+          !secp256k1.verify(signature, digest, hexToBytes(identity), {
+            prehash: false,
+            format: "der",
+          })
+        )
+          throw new Error()
+      } catch {
+        throw new AddressError("identity_mismatch")
+      }
+      this.#assertActive()
+      const url = `https://${this.#domain}/lnurlpay/${identity}${operation === "register" ? "" : `/${operation}`}`
+      const request: RequestInit = {
+        method: "POST",
+        headers: {
+          // Intentionally public client integration credential; wallet authority
+          // comes from the signed Spark identity request, not secrecy of this key.
+          Authorization: `Bearer ${this.#apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...fields,
+          signature: bytesToHex(signature),
+          timestamp,
+        }),
+        signal: AbortSignal.timeout(10_000),
+        redirect: "error",
+        credentials: "omit",
+        cache: "no-store",
+      }
+      let response: Response
+      registrationMayHaveCommitted = operation === "register"
+      try {
+        response = await this.#fetch(url, request)
+      } catch {
+        throw new AddressError(
+          operation === "register"
+            ? "registration_pending"
+            : "provider_unavailable"
+        )
+      }
+      // Definite admission/validation rejections cannot commit this submission.
+      // Transport timeouts, server errors and unknown conflicts remain uncertain.
+      if ([400, 401, 403, 404, 405, 422, 429].includes(response.status))
+        registrationMayHaveCommitted = false
+      this.#assertActive()
+      if (response.status === 401 || response.status === 403) {
+        throw new AddressError("invalid_api_key")
+      }
+      let body: unknown
+      try {
+        const text = await response.text()
+        if (text.length > 16_384) throw new Error()
+        body = JSON.parse(text)
+      } catch {
+        throw new AddressError("invalid_response")
+      }
+      // Unknown/disallowed domains also return 404. Only the provider's explicit
+      // authenticated 'user not found' response is evidence of address absence.
+      if (response.status === 404) {
+        if (operation === "recover" && body === "user not found") return null
+        throw new AddressError("domain_unavailable")
+      }
+      if (operation === "register" && response.status === 409) {
+        if (body === "name already taken" || body === "name is reserved") {
+          registrationMayHaveCommitted = false
+          throw new AddressError("names_exhausted")
         }
-      )
-    } catch {
+        throw new AddressError("registration_pending")
+      }
+      if (!response.ok) throw new AddressError("provider_unavailable")
+      if (!body || typeof body !== "object" || Array.isArray(body))
+        throw new AddressError("invalid_response")
+      return body as Record<string, unknown>
+    } catch (error) {
       throw new AddressError(
-        operation === "register"
-          ? "registration_pending"
-          : "provider_unavailable"
+        error instanceof AddressError ? error.reason : "provider_unavailable",
+        registrationMayHaveCommitted
       )
     }
-    this.#assertActive()
-    if (response.status === 401 || response.status === 403) {
-      throw new AddressError("invalid_api_key")
-    }
-    let body: unknown
-    try {
-      const text = await response.text()
-      if (text.length > 16_384) throw new Error()
-      body = JSON.parse(text)
-    } catch {
-      throw new AddressError("invalid_response")
-    }
-    // Unknown/disallowed domains also return 404. Only the provider's explicit
-    // authenticated 'user not found' response is evidence of address absence.
-    if (response.status === 404) {
-      if (operation === "recover" && body === "user not found") return null
-      throw new AddressError("domain_unavailable")
-    }
-    if (operation === "register" && response.status === 409) {
-      throw new AddressError(
-        body === "name already taken" || body === "name is reserved"
-          ? "names_exhausted"
-          : "registration_pending"
-      )
-    }
-    if (!response.ok) throw new AddressError("provider_unavailable")
-    if (!body || typeof body !== "object" || Array.isArray(body))
-      throw new AddressError("invalid_response")
-    return body as Record<string, unknown>
   }
 
   async #present(value: {
@@ -429,7 +461,7 @@ export async function verifyBreezPublicLookup(
   fetcher: BreezAddressFetch = fetch
 ): Promise<{ status: "verified" | "unavailable"; zapAdvertised: boolean }> {
   try {
-    if (normalizeBreezUsername(username) !== username) throw new Error()
+    if (!isBreezUsername(username)) throw new Error()
     const response = await fetcher(
       `https://conduit.cash/.well-known/lnurlp/${username}`,
       {

@@ -34,6 +34,7 @@ export function createSparkBreezAddressAccess(input: {
 }) {
   const configuration = getBreezAddressConfiguration({
     network: input.network,
+    // Intentionally browser-visible public-client credential, not a wallet secret.
     apiKey: import.meta.env?.VITE_BREEZ_SPARK_API_KEY,
     domain: import.meta.env?.VITE_BREEZ_LNURL_DOMAIN,
   })

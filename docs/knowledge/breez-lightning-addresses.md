@@ -19,8 +19,19 @@ Breez configuration:
 
 - `VITE_BREEZ_LNURL_DOMAIN=conduit.cash`
 - `VITE_BREEZ_SPARK_API_KEY`: the Breez-approved public client API key associated
-  with this domain. Never put an administrative/private API key in a `VITE_*`
-  variable; these values ship in the browser bundle.
+  with this domain. This is intentionally a browser-visible public-client
+  integration credential, not a secret or wallet credential. It ships in the
+  bundle and is sent as bearer authorization, matching Breez's browser SDK
+  design. Administrative/private credentials must not use this variable.
+
+Wallet ownership and registration authority come from the signed Spark identity
+request. The public-client key admits the integration to the provider service;
+it does not replace the identity signature. Storing the build value as a
+Cloudflare Secret does not make the emitted browser value secret.
+
+Namespace reservations, name abuse/squatting and service quota controls are
+separate provider-policy questions under discussion with Breez. Conduit's local
+new-name policy does not enforce provider-wide namespace controls.
 
 Missing configuration leaves address setup unavailable. Mainnet is the only
 network enabled for this hosted domain. Provider configuration is distinct from
@@ -53,14 +64,21 @@ number to produce the same collision-resistant candidate on another device.
 They never derive from a Nostr name or display name. Names use the conservative
 intersection of Breez's grammar and LUD-16 (`a-z0-9_-` with non-leading,
 non-trailing, non-consecutive dots), 3–64 characters, excluding protected names.
+Existing-address recovery and public lookup validate syntax and exact ownership
+fields separately from this new-name policy. Valid existing short or protected
+names, such as `ab` or `support`, remain recoverable without registration.
 Availability/collision responses trigger another ownership lookup before moving
 to the next name; at most five candidates are attempted. Web Locks serialize
 clients for the same identity/domain on one browser profile. Local checkpoints
 contain only the candidate, attempt count and uncertainty phase, scoped by a
 hash of the public identity/domain. They preserve an ambiguous candidate across
-reload. A lost registration response is reconciled by lookup, never by changing
-wallets or blindly renaming. Cross-device consistency still needs live provider
-validation; browser locks do not coordinate different devices.
+reload. A fresh attempt rejected by admission/validation, or one that fails
+before submission, returns to the selected phase even if follow-up recovery
+fails. Transport failures, server errors, malformed success and unknown
+conflicts remain ambiguous. A later definite rejection cannot clear uncertainty
+from an earlier submission that may have committed. A lost registration response
+is reconciled by lookup, never by changing wallets or blindly renaming.
+Cross-device consistency still needs live provider validation; browser locks do not coordinate different devices.
 
 Address registration, public LNURL lookup, advertised zap capability and payment
 settlement remain distinct. Public lookup validates the same-domain callback,
@@ -75,8 +93,10 @@ available. The checkout-scoped ephemeral router remains independent.
 `tests/breez-lightning-address.test.ts` exercises actual first-party identity
 signatures against a controlled provider, source-defined message fixtures,
 recovery-before-registration, lost responses, bounded collisions, invalid
-configuration, domain failure and public LNURL substitutions. The composed
-first-party adapter regression also proves that missing address configuration
+configuration, domain failure and public LNURL substitutions. Regressions cover
+short/protected existing names, definite rejection with unavailable recovery,
+non-submission, and preservation of earlier or newly uncertain submissions. The
+composed first-party adapter regression also proves that missing address configuration
 keeps one wallet open and allows a one-off Lightning invoice.
 
 `e2e/breez-lightning-address.playwright.ts` exercises the receive control and
@@ -127,6 +147,7 @@ and recovery material out of logs, traces, screenshots and tracker attachments.
 - [Breez hosted custom domains](https://sdk-doc-spark.breez.technology/guide/custom_domain.html)
 - [Breez address lifecycle](https://sdk-doc-spark.breez.technology/guide/receive_lnurl_pay.html)
 - [Canonical third-party client messages](https://github.com/breez/spark-sdk/blob/eb8be531d1bdb9e9d08cdf39e7800fbbded67397/crates/breez-sdk/lnurl-models/src/signed_message.rs)
+- [Glow browser public-client configuration](https://github.com/breez/glow-web/blob/a131450bd4ea3a7a78b8baccbda09b7e05887c43/src/services/sdkConnect.ts)
 - [SDK HTTP implementation](https://github.com/breez/spark-sdk/blob/eb8be531d1bdb9e9d08cdf39e7800fbbded67397/crates/breez-sdk/core/src/lnurl.rs)
 - [Breez account/identity derivation](https://github.com/breez/spark-sdk/blob/eb8be531d1bdb9e9d08cdf39e7800fbbded67397/crates/spark/src/signer/default_signer.rs)
 - [LUD-16](https://github.com/lnurl/luds/blob/luds/16.md)
