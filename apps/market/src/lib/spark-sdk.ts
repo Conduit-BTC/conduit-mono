@@ -1774,8 +1774,11 @@ function wait(milliseconds: number): Promise<void> {
   })
 }
 
-export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
-  const module = await import("@buildonspark/spark-sdk")
+export async function loadFirstPartySparkModule(
+  loadSdk: () => Promise<typeof import("@buildonspark/spark-sdk")> = () =>
+    import("@buildonspark/spark-sdk")
+): Promise<SparkNativeModule> {
+  const module = await loadSdk()
   const eventNames = Object.values(module.SparkWalletEvent).filter(
     (eventName) => eventName !== module.SparkWalletEvent.All
   )
