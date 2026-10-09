@@ -10,6 +10,8 @@ import {
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
 
+test.use({ trace: "off", screenshot: "off", video: "off" })
+
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 // Direct route shells and their visible empty/degraded/readiness states. Populated
