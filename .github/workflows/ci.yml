@@ -399,6 +399,9 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const updatedAt = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
             const expectedConfigDigest = process.env.EXPECTED_PUBLIC_CONFIG_DIGEST || "";
+            const expectedBreezAddressEnabled = JSON.parse(
+              require("node:fs").readFileSync("deploy/pages-profiles.json", "utf8")
+            ).profiles.preview.publicFeatures.breezLightningAddressEnabled;
             if (!expectedConfigDigest) {
               throw new Error("The validated build did not expose a public config digest.");
             }
@@ -456,6 +459,9 @@ jobs:
                     }
                     if (manifest.publicFeatures?.livePresenceEnabled !== true) {
                       failures.push("livePresenceEnabled");
+                    }
+                    if (manifest.publicFeatures?.breezLightningAddressEnabled !== expectedBreezAddressEnabled) {
+                      failures.push("breezLightningAddressEnabled");
                     }
                     if (failures.length === 0) {
                       return manifestUrl.toString();

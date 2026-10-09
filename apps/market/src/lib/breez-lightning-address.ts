@@ -6,6 +6,7 @@ import {
 } from "@conduit/core"
 
 export function getBreezAddressConfiguration(input: {
+  enabled?: boolean
   apiKey?: string
   domain?: string
   network: string
@@ -15,6 +16,7 @@ export function getBreezAddressConfiguration(input: {
       status: "unavailable"
       reason: "unconfigured" | "unsupported_network" | "invalid_configuration"
     } {
+  if (!input.enabled) return { status: "unavailable", reason: "unconfigured" }
   if (input.network !== "mainnet")
     return { status: "unavailable", reason: "unsupported_network" }
   if (!input.apiKey?.trim())
@@ -34,6 +36,7 @@ export function createSparkBreezAddressAccess(input: {
 }) {
   const configuration = getBreezAddressConfiguration({
     network: input.network,
+    enabled: import.meta.env?.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED === "true",
     // Intentionally browser-visible public-client credential, not a wallet secret.
     apiKey: import.meta.env?.VITE_BREEZ_SPARK_API_KEY,
     domain: import.meta.env?.VITE_BREEZ_LNURL_DOMAIN,

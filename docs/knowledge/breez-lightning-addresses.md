@@ -12,10 +12,24 @@ It does not implement the later signer-backed primary lifecycle or automatically
 promote device-owned wallets. The same shared address service can be composed by
 that lifecycle once its recovery and authority gates are established.
 
+To use this slice in an enabled build: create or restore a Spark wallet on
+`/wallet`, open it, choose **Receive**, then **Set up Lightning address**.
+An existing provider-owned address is recovered first. The receive panel shows
+the address, copy action and reusable QR after public lookup succeeds. The
+wallet setup dialog and wallet list remain the existing device-owned flow.
+
 ## Configuration
 
-Set both variables in the Market build environment only after approving the
-Breez configuration:
+Deployed enablement is the explicit `breezLightningAddressEnabled` flag in
+`deploy/pages-profiles.json`. It defaults to false for preview, production and
+staging. Enable an approved profile through a reviewed repository change;
+preview can be used for controlled provider validation without enabling
+production. The generated build value, public manifest/config digest and local
+artifact/deployed-preview checks include this flag. Dashboard variables cannot
+override it. Local development can opt in with
+`VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED=true`.
+
+An enabled mainnet build also requires both provider variables:
 
 - `VITE_BREEZ_LNURL_DOMAIN=conduit.cash`
 - `VITE_BREEZ_SPARK_API_KEY`: the Breez-approved public client API key associated
@@ -33,9 +47,9 @@ Namespace reservations, name abuse/squatting and service quota controls are
 separate provider-policy questions under discussion with Breez. Conduit's local
 new-name policy does not enforce provider-wide namespace controls.
 
-Missing configuration leaves address setup unavailable. Mainnet is the only
-network enabled for this hosted domain. Provider configuration is distinct from
-the repository-managed public feature flags; no dashboard feature flag is added.
+A disabled profile or missing configuration leaves address setup unavailable.
+Mainnet is the only network enabled for this hosted domain. Provider
+configuration and repository-managed rollout enablement are separate conditions.
 Other apps can consume the core client when their Spark session seam is ready.
 
 Breez must allow the domain for that key. The dedicated apex uses a CNAME/ALIAS
@@ -102,7 +116,13 @@ keeps one wallet open and allows a one-off Lightning invoice.
 `e2e/breez-lightning-address.playwright.ts` exercises the receive control and
 real browser storage/Web Locks/signatures with controlled provider responses,
 including a committed registration whose response is lost and a reload restore.
-It does not open a network wallet or move funds.
+Its fresh first-party Spark signer stays in the Playwright process; the page
+receives only public identity and signatures through a bounded digest-signing
+binding. `tests/spark-address-session.test.ts` composes the production native
+initialization/identity/signing/cleanup seam with controlled network-wallet
+initialization and actual first-party derivation/signatures. It rejects an
+initialized identity mismatch and refuses address operations after cleanup.
+Neither test opens a network wallet or moves funds.
 
 The offline SDK comparison was executed with first-party Spark SDK 0.12.1 and
 Breez SDK 0.26.1 using the public BIP39 test mnemonic, for mainnet account 1,

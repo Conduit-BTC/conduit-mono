@@ -1,5 +1,10 @@
 import path from "node:path"
-import { generateSecretKey } from "nostr-tools/pure"
+import { DefaultSparkSigner } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.node.js"
+import {
+  generateMnemonic,
+  mnemonicToSeedSync,
+} from "../apps/market/node_modules/@scure/bip39/index.js"
+import { wordlist } from "../apps/market/node_modules/@scure/bip39/wordlists/english.js"
 import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
@@ -55,7 +60,30 @@ test("Breez registration serializes across clients and restores after a reload @
 }) => {
   // Real browser signatures/storage/Web Locks; controlled provider responses.
   // No Spark network wallet, live domain registration, payment or zap occurs.
-  const signingFixture = Array.from(generateSecretKey())
+  const signer = new DefaultSparkSigner()
+  await signer.createSparkWalletFromSeed(
+    mnemonicToSeedSync(generateMnemonic(wordlist, 128)),
+    1
+  )
+  const publicIdentity = Buffer.from(
+    await signer.getIdentityPublicKey()
+  ).toString("hex")
+  await context.exposeBinding(
+    "__conduitBreezSignDigest",
+    async (_, digest: number[]) => {
+      if (
+        !Array.isArray(digest) ||
+        digest.length !== 32 ||
+        !digest.every(
+          (byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255
+        )
+      )
+        throw new Error("Invalid address signing digest.")
+      return Array.from(
+        await signer.signMessageWithIdentityKey(new Uint8Array(digest))
+      )
+    }
+  )
   let identity: string | null = null
   let username: string | null = null
   let registrations = 0
@@ -118,18 +146,13 @@ test("Breez registration serializes across clients and restores after a reload @
   })
   await page.goto(`${marketUrl}/wallet`)
   const urls = {
-    signingFixture,
+    publicIdentity,
     client: source("packages/core/src/wallets/breez-lightning-address.ts"),
-    curves: source("packages/core/node_modules/@noble/curves/secp256k1.js"),
-    bytes: source("packages/core/node_modules/@noble/hashes/utils.js"),
   }
   const run = async () =>
     page.evaluate(async (urls) => {
       const { BreezLightningAddressClient } = await import(urls.client)
-      const { secp256k1 } = await import(urls.curves)
-      const { bytesToHex } = await import(urls.bytes)
-      const secret = new Uint8Array(urls.signingFixture) // Fresh, non-funded test signer.
-      const identity = bytesToHex(secp256k1.getPublicKey(secret))
+      const identity = urls.publicIdentity
       const create = () =>
         new BreezLightningAddressClient({
           domain: "conduit.cash",
@@ -138,7 +161,15 @@ test("Breez registration serializes across clients and restores after a reload @
             assertActive() {},
             getIdentityPublicKey: async () => identity,
             signDigest: async (digest: Uint8Array) =>
-              secp256k1.sign(digest, secret, { prehash: false, format: "der" }),
+              new Uint8Array(
+                await (
+                  window as unknown as {
+                    __conduitBreezSignDigest(
+                      digest: number[]
+                    ): Promise<number[]>
+                  }
+                ).__conduitBreezSignDigest(Array.from(digest))
+              ),
           },
           runExclusive: (scope: string, operation: () => Promise<unknown>) =>
             navigator.locks.request(`fixture:breez:${scope}`, operation),

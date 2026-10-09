@@ -605,6 +605,17 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
     })
     expect(f.calls).toEqual(["recover"])
   })
+  it("keeps disabled builds unavailable even with provider configuration", () => {
+    for (const enabled of [undefined, false])
+      expect(
+        getBreezAddressConfiguration({
+          enabled,
+          network: "mainnet",
+          domain: "conduit.cash",
+          apiKey: "public-test-key",
+        })
+      ).toEqual({ status: "unavailable", reason: "unconfigured" })
+  })
   it("keeps addresses unavailable until configured with the approved domain/client key", () => {
     expect(getBreezAddressConfiguration({ network: "mainnet" })).toEqual({
       status: "unavailable",
@@ -612,6 +623,7 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
     })
     expect(
       getBreezAddressConfiguration({
+        enabled: true,
         network: "mainnet",
         domain: "conduit.cash",
         apiKey: "test",
@@ -619,6 +631,7 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
     ).toBe("configured")
     expect(
       getBreezAddressConfiguration({
+        enabled: true,
         network: "regtest",
         domain: "conduit.cash",
         apiKey: "test",
@@ -626,6 +639,7 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
     ).toEqual({ status: "unavailable", reason: "unsupported_network" })
     expect(
       getBreezAddressConfiguration({
+        enabled: true,
         network: "mainnet",
         domain: "other.example",
         apiKey: "test",
