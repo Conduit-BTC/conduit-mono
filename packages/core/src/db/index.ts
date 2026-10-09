@@ -212,6 +212,8 @@ export interface CachedEventMarketRosterEvidence {
   marketCoordinate: string
   signedEvent: SignedPublicNostrEvent
   cachedAt: number
+  /** Bounded browsing cache only; absent on durable and legacy evidence. */
+  discoveryBytes?: number
 }
 
 /** Account-scoped signed settings evidence; relay omission cannot erase it. */
@@ -1403,6 +1405,13 @@ export class ConduitDB extends Dexie {
       commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
+    })
+
+    this.version(26).stores({
+      // Size keys bound background discovery without scanning signed payloads.
+      // The additive index does not rewrite durable or legacy evidence rows.
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
     })
   }
 }

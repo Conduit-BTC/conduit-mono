@@ -51,6 +51,7 @@ const mobileTestFiles = [
   "**/event-sign-preview-mobile.playwright.ts",
 ]
 const responsiveCoverageFiles = [
+  "**/event-market-discovery.playwright.ts",
   "**/merchant-shipping-tables.playwright.ts",
   "**/merchant-variation-shipping.playwright.ts",
   "**/commerce-inbox.playwright.ts",

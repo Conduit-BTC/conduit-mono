@@ -17,6 +17,7 @@ import {
 } from "./relay-authority"
 import {
   getConfiguredIsolatedE2eRelayUrl,
+  loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -824,6 +825,41 @@ export interface EventMarketReadPlan {
   independentRelayUrls: string[]
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
+}
+
+/** One owner-scoped public plan for candidate discovery, without per-author lookups. */
+export async function getEventMarketDiscoveryReadPlan(input: {
+  authenticatedPubkey?: string | null
+}): Promise<EventMarketReadPlan> {
+  const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)
+  const snapshot = authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
+    : loadRelaySettingsPlanningSnapshot()
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    snapshot.settings.entries.flatMap((entry) =>
+      entry.readEnabled ? [entry.url] : []
+    )
+  )
+  const plan = planRelayReads({
+    intent: "commerce_products",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: snapshot.settings,
+    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+  })
+  return {
+    relayUrls: plan.candidateRelayUrls,
+    candidateRelayUrls: plan.candidateRelayUrls,
+    relayTargets: plan.relayTargets,
+    maxRelayAttempts: plan.maxRelayAttempts,
+    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
+    appRelayUrls: plan.appRelayUrls ?? [],
+    personalRelayUrls: plan.personalRelayUrls ?? [],
+    independentRelayUrls: plan.independentRelayUrls ?? [],
+    relayListState: "missing",
+    relayHintTruncated: false,
+  }
 }
 
 function relayListStateFromLegacyLookup(

@@ -29,6 +29,7 @@ export interface EventTimelineDiscoveryResult {
     | undefined
   futureMarkets: EventMarketRosterReadResult[]
   organizerPubkeys: string[] | undefined
+  publicAudience: boolean
   profileRelayHintsByPubkey: Record<string, string[]>
   authorSource: PerspectiveAuthorSource
   effectiveSource: ProductCatalogSourceMode
@@ -37,6 +38,8 @@ export interface EventTimelineDiscoveryResult {
   isRefreshStale: boolean
   error: unknown
   refetch: () => void
+  hasMore: boolean
+  loadMore: () => void
 }
 
 function uniquePubkeys(pubkeys: readonly string[] | undefined): string[] {
@@ -48,20 +51,25 @@ function uniquePubkeys(pubkeys: readonly string[] | undefined): string[] {
 export function useEventTimeline(
   requestedSource: ProductCatalogSourceMode
 ): EventTimelineDiscoveryResult {
-  const { pubkey, status, authGeneration } = useAuth()
+  const { status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
   const session = useConduitSession()
-  const connected = status === "connected" && !!pubkey
-  const effectiveSource = connected ? requestedSource : "conduit"
-  const authenticatedPubkey = connected ? pubkey : null
-  const perspectivePubkey = connected ? pubkey : null
+  const signedIn = session.mode === "signed_in"
+  const publicAudience =
+    session.mode === "guest" &&
+    (status === "disconnected" || status === "error")
+  const effectiveSource = signedIn ? requestedSource : "conduit"
+  // This reader's existing account hint remains scoped during signer recovery;
+  // the shared protected-read boundary still requires actual signer authority.
+  const authenticatedPubkey = signedIn ? session.pubkey : null
+  const perspectivePubkey = signedIn ? session.pubkey : null
   const normalizedPerspectivePubkey = normalizePubkey(perspectivePubkey)
   const firstDegreeDiscoveryEnabled =
     session.relaySettingsReady &&
-    connected &&
+    signedIn &&
     effectiveSource !== "conduit" &&
     !!normalizedPerspectivePubkey
   const firstDegreeQuery = useQuery({
@@ -224,6 +232,7 @@ export function useEventTimeline(
     session.relayScope ?? "no-relay-scope",
     authenticatedPubkey,
     authGeneration,
+    publicAudience ? "public-relays" : "perspective-authors",
     effectiveSource,
     normalizedPerspectivePubkey,
     organizerKey,
@@ -235,11 +244,14 @@ export function useEventTimeline(
   const futureQuery = useProgressiveEventMarketDiscovery({
     queryKey: ["future-market-event-timeline", ...discoveryQueryKey],
     discoveryInput: {
-      organizerPubkeys: organizerPubkeys ?? [],
+      organizerPubkeys: publicAudience ? undefined : (organizerPubkeys ?? []),
       authenticatedPubkey,
       shouldContinue: () => authGenerationRef.current === authGeneration,
     },
-    enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
+    enabled:
+      session.relaySettingsReady &&
+      (signedIn || publicAudience) &&
+      (publicAudience || organizerPubkeys !== undefined),
     refetchInterval: MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const profileRelayHintsByPubkey = useMemo(
@@ -274,10 +286,14 @@ export function useEventTimeline(
       : undefined,
     futureMarkets: futureQuery.data?.markets ?? [],
     organizerPubkeys,
+    publicAudience,
     profileRelayHintsByPubkey,
     authorSource: authorResolution.source,
     effectiveSource,
-    isInitialLoading: organizerPubkeys === undefined || futureQuery.isPending,
+    isInitialLoading:
+      (!signedIn && !publicAudience) ||
+      (!publicAudience && organizerPubkeys === undefined) ||
+      futureQuery.isPending,
     isFetching: futureQuery.isFetching || firstDegreeQuery.isFetching,
     isRefreshStale:
       futureQuery.isError ||
@@ -285,5 +301,7 @@ export function useEventTimeline(
       followRefreshStale,
     error: futureQuery.error,
     refetch,
+    hasMore: futureQuery.hasMore,
+    loadMore: futureQuery.loadMore,
   }
 }
