@@ -10,6 +10,12 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 
 Conduit Shop reads signed merchant listings using [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) and the [Open Markets working specification](https://github.com/OpenMarketsFoundation/specification). Conduit Sell publishes those listings. Buyers and merchants use external [NIP-07](https://github.com/nostr-protocol/nips/blob/master/07.md) or [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md) account signers, exchange private orders and messages with [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), and can pay through non-custodial Lightning paths including [NIP-47](https://github.com/nostr-protocol/nips/blob/master/47.md) where a compatible wallet is connected.
 
+An optional installed-PWA path imports an existing backed-up account through a
+contained local-key adapter behind the same shared signer/session owner. It
+restores automatically and removes the stored key on explicit logout. It
+defaults off pending security review and physical-device validation; see the
+[local signer contract](docs/specs/protocol.md#contained-local-account-key).
+
 **[See the protocol inventory](docs/PROTOCOLS.md)** for the NIPs each app reads or publishes, implementation links, and current limits. NIP-89 app handler metadata on the About pages is a separate event-kind discovery record, not that inventory. For commerce support, compatibility differences, and experimental proposal dependencies, see [Open Markets in Conduit](docs/OPEN_MARKETS.md).
 
 ---
@@ -34,7 +40,7 @@ Conduit Shop reads signed merchant listings using [NIP-99](https://github.com/no
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.1+
-- A Nostr signer browser extension ([Alby](https://getalby.com), [nos2x](https://github.com/nicely/nos2x), or similar NIP-07 extension)
+- For account operations, a NIP-07 browser extension or NIP-46 remote signer; browsing requires neither. Optional local-key import is described above.
 - (Optional) [NWC](https://nwc.dev) wallet connection for Lightning payment requests and proofs
 
 ## Quick Start
@@ -304,10 +310,12 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 
 ## Protocol
 
-- **Authentication**: Durable Nostr account keys remain in external NIP-07 or
-  NIP-46 signers. Guest checkout may create a temporary order-scoped browser
-  key, and NIP-46 connections may use an encrypted browser-local client key;
-  neither is a Conduit-custodied account key.
+- **Authentication**: NIP-07 and NIP-46 keep account keys in external signers.
+  Optional installed-PWA import keeps an existing account key exclusively in
+  the contained local-key module and its device-local storage, behind the same
+  account/session authority. It defaults off pending production gates and does
+  not isolate against compromised same-origin code. Guest-order keys and
+  NIP-46 client connection keys remain separate, purpose-scoped credentials.
 - **Products**: Kind 30402 replaceable events (NIP-99)
 - **Orders**: NIP-17 gift-wrapped encrypted DMs between buyer and merchant
 - **Payments**: Non-custodial Lightning through Portable Wallets, NWC/WebLN

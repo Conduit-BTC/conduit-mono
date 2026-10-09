@@ -282,7 +282,7 @@ function bothKindsChangedRoles(): AccountNetworkRelayRoles[] {
 
 interface SignerHarness {
   signer: {
-    readonly authMethod: "nip07"
+    readonly authMethod: "nip07" | "nip46" | "local"
     getPublicKey(): Promise<string>
     signEvent(
       event: Omit<SignedPublicNostrEvent, "id" | "sig">
@@ -296,13 +296,14 @@ interface SignerHarness {
 function createSignerHarness(input: {
   log: string[]
   cancelSignatureAt?: number
+  authMethod?: "nip07" | "nip46" | "local"
 }): SignerHarness {
   const harness: SignerHarness = {
     getPublicKeyCalls: 0,
     signedDrafts: [],
     signedEvents: [],
     signer: {
-      authMethod: "nip07",
+      authMethod: input.authMethod ?? "nip07",
       async getPublicKey() {
         harness.getPublicKeyCalls += 1
         input.log.push("signer:pubkey")
@@ -548,11 +549,19 @@ describe("account network mutation", () => {
       { roles: bothKindsChangedRoles(), expectedKinds: 2 },
     ]
 
-    for (const testCase of cases) {
+    for (const testCase of cases.flatMap((item) =>
+      (["nip07", "nip46", "local"] as const).map((authMethod) => ({
+        ...item,
+        authMethod,
+      }))
+    )) {
       __resetAccountNetworkMutationLocksForTests()
       const fixture = await createFixture()
       const execution = createExecutionHarness(fixture)
-      const signer = createSignerHarness({ log: execution.log })
+      const signer = createSignerHarness({
+        log: execution.log,
+        authMethod: testCase.authMethod,
+      })
       const reviewed = reviewAccountNetworkMutation(
         fixture.reconciliation,
         action(testCase.roles)

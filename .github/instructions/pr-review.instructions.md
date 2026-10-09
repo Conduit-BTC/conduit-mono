@@ -115,18 +115,18 @@ delivery failures separately from code findings. Do not expose internal terms su
 
 ## Mandatory Code Checks
 
-- Preserve NIP-07/NIP-46 and the approved optional installed-PWA existing-NSEC
-  path in `docs/specs/protocol.md`. Its separate `conduit-signer` origin owns
-  import, persistence, automatic restore, ordinary operations without per-action
-  approvals, and stored-key deletion/session revocation on explicit logout.
-  App origins and services never receive the raw key or independent unwrapping
-  material. Implementation and composed previews may precede production device
-  sign-off; origin/session/privacy controls and production validation remain
-  required. A policy-only PR does not enable a runtime provider. Review explicit
-  maintainer-authorized policy changes for consistency and concrete security
-  defects; do not demand removal solely because the trusted base had the old
-  external-only policy. Authorization still requires trusted maintainer evidence,
-  not candidate text alone.
+- Preserve one `AccountSigner` / `SessionSigner` / `AuthProvider` owner across
+  NIP-07, NIP-46 and local keys. Only `packages/core/src/protocol/local-key/`
+  and its storage may possess imported account secrets. Reject raw-key APIs,
+  ordinary props/context/stores, logging/telemetry and network sinks. No hosted
+  signer, iframe transport or parallel lifecycle. Review this module, its
+  import input, auth cleanup and crypto dependencies together as security-critical.
+- Require focused maintainer review, independent crypto/vector evidence,
+  composed lifecycle tests and the production gate in
+  `docs/knowledge/local-signer-security-review.md`. Verify failed durable
+  deletion, replacement and cancellation, not just happy-path signing.
+  Automatic restore is not protection from compromised same-origin code.
+  Do not infer physical-iPhone/PWA or release readiness from emulated tests.
 - A bounded `guest_ephemeral` browser key is limited to one guest order and
   merchant. Store it only in same-tab session storage for recovery of up to 24
   hours. Expose it only to signing the initial private order and same-order

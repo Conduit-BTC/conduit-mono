@@ -68,10 +68,10 @@ Author proposal. Select one:
 ## Risk Review
 
 - [ ] NIP-07/NIP-46 remain available; any installed-PWA existing-NSEC path follows
-      the separate-origin lifecycle and production requirements in `docs/specs/protocol.md`
-- [ ] No raw account key or independent unwrapping material reaches Market/Merchant
-      origins or Conduit services; signer-origin import/storage stays within
-      `docs/specs/protocol.md`, and Portable Wallet credential handling stays
+      the contained in-monorepo lifecycle and production requirements in `docs/specs/protocol.md`
+- [ ] Imported account secrets stay inside the in-monorepo local-key module and
+      its storage; no general props/context, logs, telemetry or server submission.
+      Import/restore/removal follows `docs/specs/protocol.md`; Portable Wallet handling stays
       inside `docs/specs/wallets.md`
 - [ ] No plaintext message content added to telemetry, logs, or Conduit-operated servers
 - [ ] No behavioral tracking/profiling introduced

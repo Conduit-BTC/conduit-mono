@@ -276,7 +276,7 @@ export async function retryPrivateDeliveries(
     shouldContinue?: () => boolean
     foregroundRelayAuthentication?: {
       signer: AccountSigner
-      method: "nip07" | "nip46"
+      method: "nip07" | "nip46" | "local"
       waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
     }
   } = {}
@@ -517,7 +517,7 @@ export interface PublishPrivateMessageInput {
   /** Skip foreground coordination for a caller-owned ephemeral guest signer. */
   signerInteraction?: "external" | "background_external" | "application_owned"
   /** External account method eligible to answer a foreground NIP-42 challenge. */
-  relayAuthMethod?: "nip07" | "nip46"
+  relayAuthMethod?: "nip07" | "nip46" | "local"
   /** Controlled visibility seam for interactive external signer workflows. */
   waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
   giftWrapFn?: typeof wrapPrivateMessage

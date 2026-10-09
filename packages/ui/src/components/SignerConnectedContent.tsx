@@ -16,7 +16,7 @@ export function SignerConnectedContent({
 }: {
   pubkeyLabel?: string | null
   pubkeyDetailLabel?: string | null
-  signerMethod?: "nip07" | "nip46" | null
+  signerMethod?: "nip07" | "nip46" | "local" | null
   connectedUseDescription: string
   authUrl?: string | null
   error?: string | null
@@ -36,7 +36,11 @@ export function SignerConnectedContent({
               Connected
             </Badge>
             <Badge variant="outline">
-              {signerMethod === "nip46" ? "NIP-46" : "NIP-07"}
+              {signerMethod === "local"
+                ? "On this device"
+                : signerMethod === "nip46"
+                  ? "NIP-46"
+                  : "NIP-07"}
             </Badge>
             <Badge
               variant="outline"
@@ -74,10 +78,14 @@ export function SignerConnectedContent({
         <Button
           variant="outline"
           type="button"
-          onClick={() => void onDisconnect()}
+          onClick={() => void onDisconnect().catch(() => undefined)}
           disabled={isWorking}
         >
-          {signerMethod === "nip46" ? "Disconnect remote signer" : "Disconnect"}
+          {signerMethod === "local"
+            ? "Sign out and remove key"
+            : signerMethod === "nip46"
+              ? "Disconnect remote signer"
+              : "Disconnect"}
         </Button>
         <Button
           type="button"

@@ -105,8 +105,8 @@ interface QueuedSignerOperation {
 }
 
 /**
- * Binds any external signer implementation to one authenticated Conduit
- * session. This is the final authority fence for NIP-07 and NIP-46: a stale
+ * Binds any account signer implementation to one authenticated Conduit
+ * session. This is the final authority fence for every account method: a stale
  * tab or replaced auth claim cannot start or complete a key operation.
  */
 export class SessionSigner implements AccountSigner {

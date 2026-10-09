@@ -9,6 +9,7 @@ import {
   type Ref,
 } from "react"
 import { Button } from "./Button"
+import { LocalKeyImportForm } from "./LocalKeyImportForm"
 import {
   Dialog,
   DialogContent,
@@ -38,8 +39,10 @@ export interface SignerSwitchProps {
   pubkeyDetailLabel?: string | null
   error?: string | null
   authUrl?: string | null
-  signerMethod?: "nip07" | "nip46" | null
-  rememberedMethod?: "nip07" | "nip46" | null
+  signerMethod?: "nip07" | "nip46" | "local" | null
+  rememberedMethod?: "nip07" | "nip46" | "local" | null
+  localKeyEnabled?: boolean
+  onImportLocalKey?: (input: HTMLInputElement) => Promise<void> | void
   extensionAvailable: boolean
   connectedDescription: string
   connectDescription: string
@@ -66,12 +69,14 @@ export interface SignerConnectPanelProps {
   unlockItems: readonly string[]
   error?: string | null
   authUrl?: string | null
-  rememberedMethod?: "nip07" | "nip46" | null
-  connectingMethod?: "nip07" | "nip46" | null
+  rememberedMethod?: "nip07" | "nip46" | "local" | null
+  connectingMethod?: "nip07" | "nip46" | "local" | null
   pendingSwitch?: boolean
   extensionNotice?: string | null
   mobile?: boolean
   platform?: SignerPlatform
+  localKeyEnabled?: boolean
+  onImportLocalKey?: (input: HTMLInputElement) => Promise<void> | void
   extensionAvailable: boolean
   connectPending?: boolean
   connectDisabled?: boolean
@@ -303,6 +308,8 @@ function SignerDisconnectedContent({
   extensionNotice,
   mobile,
   platform: requestedPlatform,
+  localKeyEnabled,
+  onImportLocalKey,
   extensionAvailable,
   connectPending = false,
   connectDisabled = false,
@@ -319,9 +326,20 @@ function SignerDisconnectedContent({
   const platform =
     requestedPlatform ?? (mobile === false ? "desktop" : getSignerPlatform())
   const isMobile = mobile ?? platform !== "desktop"
-  const reconnectOnly = rememberedMethod === "nip46"
+  const [installed] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      (window.matchMedia?.("(display-mode: standalone)").matches ||
+        (typeof navigator !== "undefined" &&
+          (navigator as Navigator & { standalone?: boolean }).standalone ===
+            true))
+  )
+  const localAvailable = !!localKeyEnabled && installed && !!onImportLocalKey
+  const reconnectOnly =
+    rememberedMethod === "nip46" || rememberedMethod === "local"
   const pairing = useSignerPairing({
-    autoPrepare: platform === "ios" || platform === "android",
+    autoPrepare:
+      !localAvailable && (platform === "ios" || platform === "android"),
     connectPending,
     connectDisabled,
     rememberedMethod,
@@ -373,19 +391,22 @@ function SignerDisconnectedContent({
           </Button>
         )}
 
-        {rememberedMethod === "nip46" && onForget && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() =>
-              void Promise.resolve(onForget()).catch(() => undefined)
-            }
-            disabled={connectDisabled}
-            className="h-10 w-full justify-center"
-          >
-            Forget remote signer
-          </Button>
-        )}
+        {(rememberedMethod === "nip46" || rememberedMethod === "local") &&
+          onForget && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() =>
+                void Promise.resolve(onForget()).catch(() => undefined)
+              }
+              disabled={connectDisabled}
+              className="h-10 w-full justify-center"
+            >
+              {rememberedMethod === "local"
+                ? "Remove saved local signer"
+                : "Forget remote signer"}
+            </Button>
+          )}
 
         {!reconnectOnly && (!isMobile || rememberedMethod !== "nip07") && (
           <ExtensionConnectButton
@@ -421,6 +442,13 @@ function SignerDisconnectedContent({
           />
         )}
 
+        {localAvailable && onImportLocalKey && (
+          <LocalKeyImportForm
+            disabled={connectDisabled || connectPending}
+            onImport={onImportLocalKey}
+          />
+        )}
+
         {!browserError && errorAlert}
 
         {authUrl && (
@@ -443,8 +471,7 @@ function SignerDisconnectedContent({
         )}
 
         <p className="px-4 text-center text-sm leading-5 text-[var(--text-muted)]">
-          Your account keys stay in your signer app. Conduit cannot recover
-          them.
+          Keep your account backup safe. Conduit cannot recover your keys.
         </p>
         {!isMobile && <NoSignerSetupGuide />}
       </div>
@@ -494,6 +521,8 @@ export function SignerConnectPanel({
   extensionNotice,
   mobile,
   platform,
+  localKeyEnabled,
+  onImportLocalKey,
   extensionAvailable,
   connectPending,
   connectDisabled,
@@ -543,6 +572,8 @@ export function SignerConnectPanel({
           extensionNotice={extensionNotice}
           mobile={mobile}
           platform={platform}
+          localKeyEnabled={localKeyEnabled}
+          onImportLocalKey={onImportLocalKey}
           extensionAvailable={extensionAvailable}
           connectPending={connectPending}
           connectDisabled={connectDisabled}
@@ -569,6 +600,8 @@ export function SignerSwitch({
   authUrl,
   signerMethod,
   rememberedMethod,
+  localKeyEnabled,
+  onImportLocalKey,
   extensionAvailable,
   connectedDescription,
   connectDescription,
@@ -715,6 +748,8 @@ export function SignerSwitch({
                     }
                     extensionNotice={extensionNotice}
                     mobile={mobile}
+                    localKeyEnabled={localKeyEnabled}
+                    onImportLocalKey={onImportLocalKey}
                     extensionAvailable={extensionAvailable}
                     connectPending={authPending || isWorking}
                     connectDisabled={isWorking || authPending}

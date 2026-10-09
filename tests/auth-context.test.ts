@@ -693,7 +693,11 @@ describe("restore attempt isolation", () => {
   })
 
   it("releases the connecting flag inside the epoch-owned finally block", () => {
-    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {")
+    const finallyIndex = source.indexOf(
+      "} finally {",
+      source.indexOf("const resolution = await resolveFailedAuthAttempt")
+    )
+    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {", finallyIndex)
     expect(fenceIndex).toBeGreaterThan(-1)
     const fencedBlock = source.slice(
       fenceIndex,

@@ -95,26 +95,21 @@ status are maintained in the guide rather than duplicated here.
 
 ### Auth and payments
 
-- Conduit Market and Merchant currently use external NIP-07/NIP-46 signers.
-  The approved optional installed-PWA NSEC path imports an existing account key
-  only in the separate `conduit-signer` repository's dedicated signer origin.
-  That origin owns import, persistence, automatic restore, ordinary operations
-  without per-action approvals, and key deletion/session revocation on explicit
-  logout. Apps receive public identity and operation results, never the raw key,
-  backup or independent unwrapping material; services never receive the key.
-  Implementation and composed preview testing may precede production device
-  sign-off. Exact-origin isolation, session integrity, privacy and maintainer
-  security review plus physical-iPhone validation remain production requirements;
-  origin, deployment and release approval remain separate. No product account
-  creation, server custody, wallet derivation, settings sync or recovery.
-  Automatic restore is not independent at-rest protection. See
-  `docs/specs/protocol.md` for the bounded contract.
+- Market and Merchant share one account/session owner for NIP-07, NIP-46
+  and optional installed-PWA local import. Only the security-critical
+  `packages/core/src/protocol/local-key/` module and storage possess the
+  imported secret; other code requests signer capabilities. Use mature
+  `nostr-tools` primitives, official NIP vectors and independent signature/
+  envelope verification. Automatic restore has no independent unlock and
+  does not protect against compromised same-origin scripts. No hosted signer,
+  key export, cloud recovery or product identity generation. See
+  `docs/specs/protocol.md` for lifecycle, privacy and physical-device gates.
 - Approved browser-generated exceptions remain the outbound-only
   `guest_ephemeral` order sender and encrypted browser-local NIP-46 client
   connection key. Test identities are ordinary newly generated CSPRNG Nostr
-  keys in controlled test processes or the signer-owned test surface, including
+  keys in controlled test processes or the tightly scoped local import fixtures, including
   composed previews. They are not a product key-creation feature. Fixed
-  credentials in source/history and raw-key app/service/diagnostic/artifact sinks
+  credentials in source/history and raw-key sinks outside the local module and its import input
   remain prohibited.
   Existing guest-order/Portable Wallet boundaries and protected-smoke checks
   remain enforced. The only approved server-side private-key exception is the

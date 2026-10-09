@@ -101,33 +101,29 @@ anchors so navigation re-enters that boot boundary.
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
-Market and Merchant currently use external NIP-07 and NIP-46 account signers.
-An optional installed-PWA local signer has an approved bounded policy exception:
-an existing NSEC may be imported only inside the separate `conduit-signer`
-repository's dedicated HTTPS origin. That origin owns import, device-local
-persistence, automatic restore and ordinary signing without per-action
-approvals. Explicit logout deletes its stored key and revokes live sessions.
-Market/Merchant receive public identity and operation results, never the raw key,
-backup or independent unwrapping material. Conduit services never receive the
-key. Account creation, server custody, wallet derivation, settings sync and
-recovery remain outside this exception. Implementation and composed preview
-testing may proceed before production device sign-off. Exact-origin isolation,
-session integrity, privacy review, physical-iPhone validation and maintainer
-security sign-off remain required for a production decision; origin, deployment
-and release approval remain separate. This documentation enables no runtime
-provider; the current client paths remain NIP-07/NIP-46.
+Market and Merchant use one account authority. `AuthProvider` owns auth
+metadata, revision/revocation and connection lifecycle. It installs a
+`SessionSigner` / `AccountSigner` and the matching protected-read grant.
 
-Shared connection UI will embed the exact approved signer origin for import.
-The local provider must adapt to the existing SessionSigner/AccountSigner owner,
-with narrow typed status/public-key, verified event signing, NIP-44,
-legacy NIP-04 decrypt-only and logout operations. Exact origin/source, request,
-frame, account and session binding, timeouts and stale-response rejection are
-mandatory. Auth/frame replacement and logout cancel pending work. App storage
-contains no raw key or independent unwrapping capability. Separate storage
-partitions may require separate imports and logout, as established by device
-evidence and explained in the UI. Automatic restore provides no independent
-unlock or hardware-backed at-rest guarantee. Browsing and external signers stay
-available; installed mode is a UX gate.
+```text
+AuthProvider → SessionSigner / AccountSigner
+                    ├─ NIP-07 adapter
+                    ├─ NIP-46 adapter
+                    └─ contained local-key adapter
+```
+
+`packages/core/src/protocol/local-key/` alone owns imported account-secret
+decoding, storage, restore, key use and deletion. It uses the already pinned
+`nostr-tools` crypto; consumers ask for operations and never receive secrets.
+The local method shares account fencing, the operation scheduler, publication
+owners and NIP-17/NIP-59 helpers. There is no hosted signer or parallel authority.
+The optional installed-PWA path restores automatically and removes its record
+on explicit logout; failed deletion remains visible. Same-origin compromise is
+outside the containment guarantee. No independent unlock or hardware-backed
+protection is claimed. Production activation remains gated on focused review
+and physical-iPhone evidence; the opt-in build flag defaults off. See
+[`protocol.md`](specs/protocol.md#contained-local-account-key) and
+[`local-signer-security-review.md`](knowledge/local-signer-security-review.md).
 
 Guest checkout may create a temporary order-scoped browser key, and an NIP-46
 connection may use an encrypted browser-local client key; neither is a Conduit-custodied user account

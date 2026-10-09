@@ -80,10 +80,8 @@ describe("remote signer UI", () => {
     expect(markup.includes("Paste bunker")).toBe(true)
     expect(markup.includes("Start new connection")).toBe(true)
     expect(markup.includes("Other ways to connect")).toBe(false)
-    expect(markup.includes("Your account keys stay in your signer app.")).toBe(
-      true
-    )
-    expect(markup.includes("Conduit cannot recover them.")).toBe(true)
+    expect(markup.includes("Keep your account backup safe.")).toBe(true)
+    expect(markup.includes("Conduit cannot recover your keys.")).toBe(true)
     expect(
       markup.includes("This device remembers an encrypted connection")
     ).toBe(false)
