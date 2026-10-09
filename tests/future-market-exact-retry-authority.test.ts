@@ -4,7 +4,7 @@ import {
   getRetainedAuthAccountPubkey,
   isExactDeliveryRetryScopeCurrent,
 } from "../packages/core/src/context/AuthContext"
-import type { Nip46AuthSession } from "../packages/core/src/protocol/remote-signer"
+import type { Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
 
 const owner = "a".repeat(64)
 const other = "b".repeat(64)

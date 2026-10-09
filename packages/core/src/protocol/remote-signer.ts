@@ -1,10 +1,21 @@
+import {
+  AUTH_SESSION_VERSION,
+  AUTH_STORAGE_KEY,
+  forgetAuthSession,
+  getDefaultAuthStorage,
+  isAuthSessionRevoked,
+  parseAuthSession,
+  writeAuthSession,
+  type AuthSession,
+  type AuthStorage,
+} from "./auth-session"
+import type { Nip46AuthSession } from "./nip46-auth-session"
 import type {
   AccountSignerCapabilities,
   NostrKeySigner,
   SignedNostrEvent,
   UnsignedNostrEvent,
 } from "./nostr-event-signer"
-import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
 import { generateSecretKey, getPublicKey } from "nostr-tools"
 import {
@@ -19,7 +30,6 @@ import type { EventTemplate, VerifiedEvent } from "nostr-tools"
 import { generateId } from "../utils"
 import {
   createBrowserRemoteSignerKeyVault,
-  withBrowserAuthOperationLock,
   type RemoteSignerKeyVault,
 } from "./remote-signer-vault"
 import {
@@ -34,10 +44,6 @@ import {
 
 export type { RemoteSignerKeyVault } from "./remote-signer-vault"
 
-export const AUTH_STORAGE_KEY = "conduit:auth"
-export const AUTH_REVISION_STORAGE_KEY = "conduit:auth:revision"
-const AUTH_SESSION_REVOCATION_STORAGE_PREFIX = "conduit:auth:revoked:"
-export const REMOTE_SIGNER_SESSION_VERSION = 1 as const
 export const DEFAULT_REMOTE_SIGNER_TIMEOUT_MS = 30_000
 export const DEFAULT_REMOTE_SIGNER_PAIR_TIMEOUT_MS = 120_000
 export const CONDUIT_NIP46_PERMISSIONS = [
@@ -83,33 +89,6 @@ export function requiresRemoteSignerSessionCleanup(error: unknown): boolean {
       error.code === "invalid_response" ||
       error.code === "session_identity_mismatch")
   )
-}
-
-export interface Nip07AuthSession {
-  version: typeof REMOTE_SIGNER_SESSION_VERSION
-  type: "nip07"
-  userPubkey: string
-  authClaim?: string
-}
-
-export interface Nip46AuthSession {
-  version: typeof REMOTE_SIGNER_SESSION_VERSION
-  type: "nip46"
-  clientKeyId: string
-  remoteSignerPubkey: string
-  relayUrls: string[]
-  userPubkey: string
-  createdAt: number
-  updatedAt: number
-  authClaim?: string
-}
-
-export type AuthSession = Nip07AuthSession | Nip46AuthSession
-
-export interface AuthStorage {
-  getItem(key: string): string | null
-  setItem(key: string, value: string): void
-  removeItem(key: string): void
 }
 
 export interface RemoteBunkerSigner {
@@ -273,15 +252,6 @@ function isRelayUrl(value: unknown): value is string {
   }
 }
 
-function getDefaultStorage(): AuthStorage | undefined {
-  if (typeof window === "undefined") return undefined
-  try {
-    return window.localStorage
-  } catch {
-    return undefined
-  }
-}
-
 export function parseBunkerUri(uri: string): BunkerPointer {
   let parsed: URL
   try {
@@ -317,201 +287,6 @@ export function parseBunkerUri(uri: string): BunkerPointer {
     pubkey: remoteSignerPubkey,
     relays: [...new Set(relayUrls)],
     secret: parsed.searchParams.get("secret"),
-  }
-}
-
-export function parseAuthSession(raw: string | null): AuthSession | null {
-  if (raw === null) return null
-
-  const legacyPubkey = raw.toLowerCase()
-  if (isHexKey(legacyPubkey)) {
-    return {
-      version: REMOTE_SIGNER_SESSION_VERSION,
-      type: "nip07",
-      userPubkey: legacyPubkey,
-    }
-  }
-
-  try {
-    const value: unknown = JSON.parse(raw)
-    if (typeof value !== "object" || value === null) return null
-    const record = value as Record<string, unknown>
-    if (record.version !== REMOTE_SIGNER_SESSION_VERSION) return null
-
-    if (record.type === "nip07" && isHexKey(record.userPubkey)) {
-      return {
-        version: REMOTE_SIGNER_SESSION_VERSION,
-        type: "nip07",
-        userPubkey: record.userPubkey,
-        ...(typeof record.authClaim === "string"
-          ? { authClaim: record.authClaim }
-          : {}),
-      }
-    }
-
-    if (
-      record.type === "nip46" &&
-      typeof record.clientKeyId === "string" &&
-      record.clientKeyId.length >= 16 &&
-      isHexKey(record.remoteSignerPubkey) &&
-      Array.isArray(record.relayUrls) &&
-      record.relayUrls.length > 0 &&
-      record.relayUrls.every(isRelayUrl) &&
-      isHexKey(record.userPubkey) &&
-      typeof record.createdAt === "number" &&
-      Number.isFinite(record.createdAt) &&
-      typeof record.updatedAt === "number" &&
-      Number.isFinite(record.updatedAt)
-    ) {
-      return {
-        version: REMOTE_SIGNER_SESSION_VERSION,
-        type: "nip46",
-        clientKeyId: record.clientKeyId,
-        remoteSignerPubkey: record.remoteSignerPubkey,
-        relayUrls: [...new Set(record.relayUrls as string[])],
-        userPubkey: record.userPubkey,
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        ...(typeof record.authClaim === "string"
-          ? { authClaim: record.authClaim }
-          : {}),
-      }
-    }
-  } catch {
-    return null
-  }
-
-  return null
-}
-
-function getAuthSessionRevocationStorageKey(session: AuthSession): string {
-  const identity =
-    session.type === "nip46"
-      ? {
-          version: session.version,
-          type: session.type,
-          clientKeyId: session.clientKeyId,
-          remoteSignerPubkey: session.remoteSignerPubkey,
-          userPubkey: session.userPubkey,
-        }
-      : {
-          version: session.version,
-          type: session.type,
-          userPubkey: session.userPubkey,
-          authClaim: session.authClaim ?? null,
-        }
-  const digest = bytesToHex(
-    sha256(new TextEncoder().encode(JSON.stringify(identity)))
-  )
-  return `${AUTH_SESSION_REVOCATION_STORAGE_PREFIX}${digest}`
-}
-
-export function isAuthSessionRevoked(
-  session: AuthSession,
-  storage: AuthStorage | undefined = getDefaultStorage()
-): boolean {
-  if (!storage) return false
-  try {
-    return storage.getItem(getAuthSessionRevocationStorageKey(session)) === "1"
-  } catch {
-    return true
-  }
-}
-
-export function markAuthSessionRevoked(
-  session: AuthSession,
-  storage: AuthStorage | undefined = getDefaultStorage()
-): boolean {
-  if (!storage) return false
-  const key = getAuthSessionRevocationStorageKey(session)
-  try {
-    storage.setItem(key, "1")
-    return storage.getItem(key) === "1"
-  } catch {
-    return false
-  }
-}
-
-export function readAuthSession(
-  storage: AuthStorage | undefined = getDefaultStorage()
-): AuthSession | null {
-  if (!storage) return null
-  try {
-    const session = parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
-    return session && !isAuthSessionRevoked(session, storage) ? session : null
-  } catch {
-    return null
-  }
-}
-
-type AuthSessionStorageSnapshot =
-  | { status: "empty" }
-  | { status: "invalid" }
-  | { status: "session"; session: AuthSession }
-
-function inspectAuthSessionStorage(
-  storage: AuthStorage | undefined,
-  operation: string
-): AuthSessionStorageSnapshot {
-  if (!storage) {
-    throw new RemoteSignerError(
-      "unavailable",
-      "The browser could not verify the saved signer session.",
-      { operation }
-    )
-  }
-
-  let raw: string | null
-  try {
-    raw = storage.getItem(AUTH_STORAGE_KEY)
-  } catch (cause) {
-    throw new RemoteSignerError(
-      "unavailable",
-      "The browser could not verify the saved signer session.",
-      { cause, operation }
-    )
-  }
-  if (raw === null) return { status: "empty" }
-
-  const session = parseAuthSession(raw)
-  return session ? { status: "session", session } : { status: "invalid" }
-}
-
-function authSessionsMatch(left: AuthSession, right: AuthSession): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
-
-export function shouldRetireAuthSessionAfterAuthorityChange(
-  invalidatedSession: AuthSession | null,
-  storedSession: AuthSession | null
-): boolean {
-  return (
-    invalidatedSession !== null &&
-    (storedSession === null ||
-      !authSessionsMatch(invalidatedSession, storedSession))
-  )
-}
-
-export function canStartAuthConnection(
-  mode: "interactive" | "restore",
-  recoveryRequired: boolean,
-  retirementBlocked = false
-): boolean {
-  return !retirementBlocked && (mode === "restore" || !recoveryRequired)
-}
-
-export function writeAuthSession(
-  session: AuthSession,
-  storage: AuthStorage | undefined = getDefaultStorage()
-): boolean {
-  if (!storage) return false
-  const parsed = parseAuthSession(JSON.stringify(session))
-  if (!parsed || isAuthSessionRevoked(parsed, storage)) return false
-  try {
-    storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(parsed))
-    return true
-  } catch {
-    return false
   }
 }
 
@@ -560,7 +335,7 @@ export async function persistRemoteSignerSession(
     RemoteSignerConnection,
     "session" | "clientPrivateKey" | "clientKeyAlreadyPersisted"
   >,
-  storage: AuthStorage | undefined = getDefaultStorage(),
+  storage: AuthStorage | undefined = getDefaultAuthStorage(),
   keyVault: RemoteSignerKeyVault = getDefaultKeyVault(),
   shouldCommit: () => boolean = () => true
 ): Promise<boolean> {
@@ -626,7 +401,7 @@ export async function rollbackNewRemoteSignerSession(
     RemoteSignerConnection,
     "session" | "clientKeyAlreadyPersisted"
   >,
-  storage: AuthStorage | undefined = getDefaultStorage(),
+  storage: AuthStorage | undefined = getDefaultAuthStorage(),
   keyVault: RemoteSignerKeyVault = getDefaultKeyVault()
 ): Promise<void> {
   if (connection.clientKeyAlreadyPersisted) return
@@ -697,258 +472,6 @@ export async function forgetRemoteSignerKey(
       "The browser could not verify that the remote signer connection key was erased.",
       { operation: "forget remote signer key" }
     )
-  }
-}
-
-export type InvalidatedAuthSessionCleanupStatus =
-  "removed" | "absent" | "replacement"
-
-export interface InvalidatedAuthSessionCleanupOptions {
-  storage?: AuthStorage
-  keyVault?: RemoteSignerKeyVault
-  withLock?: <T>(task: () => Promise<T>) => Promise<T>
-  /** Explicit logout only, when the caller owns the exact expected session. */
-  retireExpectedKeyOnMetadataFailure?: boolean
-}
-
-/**
- * Retire one invalidated session without deleting a concurrently installed
- * replacement. Metadata removal and key retirement are verified while the
- * shared browser auth lock is held.
- */
-export async function cleanupInvalidatedAuthSession(
-  expected: AuthSession,
-  options: InvalidatedAuthSessionCleanupOptions = {}
-): Promise<InvalidatedAuthSessionCleanupStatus> {
-  const storage = options.storage ?? getDefaultStorage()
-  const keyVault = options.keyVault ?? getDefaultKeyVault()
-  const withLock = options.withLock ?? withBrowserAuthOperationLock
-
-  return withLock(async () => {
-    const operation = "retire invalidated signer session"
-    let status: InvalidatedAuthSessionCleanupStatus = "absent"
-    let metadataError: unknown = null
-    let replacementUsesExpectedKey = false
-
-    try {
-      const before = inspectAuthSessionStorage(storage, operation)
-      if (before.status === "empty") {
-        status = "absent"
-      } else if (
-        before.status === "session" &&
-        !authSessionsMatch(before.session, expected)
-      ) {
-        status = "replacement"
-      } else {
-        try {
-          storage?.removeItem(AUTH_STORAGE_KEY)
-        } catch (cause) {
-          throw new RemoteSignerError(
-            "unavailable",
-            "The browser could not erase the invalidated signer session.",
-            { cause, operation }
-          )
-        }
-
-        const afterRemoval = inspectAuthSessionStorage(storage, operation)
-        if (
-          afterRemoval.status === "invalid" ||
-          (afterRemoval.status === "session" &&
-            authSessionsMatch(afterRemoval.session, expected))
-        ) {
-          throw new RemoteSignerError(
-            "unavailable",
-            "The browser could not verify that the invalidated signer session was erased.",
-            { operation }
-          )
-        }
-        status = afterRemoval.status === "session" ? "replacement" : "removed"
-      }
-
-      if (expected.type === "nip46") {
-        const current = inspectAuthSessionStorage(storage, operation)
-        replacementUsesExpectedKey =
-          current.status === "session" &&
-          !authSessionsMatch(current.session, expected) &&
-          current.session.type === "nip46" &&
-          current.session.clientKeyId === expected.clientKeyId
-      }
-    } catch (cause) {
-      metadataError = cause
-    }
-
-    if (metadataError && !options.retireExpectedKeyOnMetadataFailure) {
-      throw metadataError
-    }
-
-    if (expected.type === "nip46" && !replacementUsesExpectedKey) {
-      try {
-        await forgetRemoteSignerKey(expected, keyVault)
-      } catch (cause) {
-        throw new RemoteSignerError(
-          "unavailable",
-          "The browser could not erase the invalidated remote signer connection key.",
-          { cause, operation }
-        )
-      }
-    }
-
-    if (metadataError) throw metadataError
-    return status
-  })
-}
-
-export function forgetAuthSession(
-  storage: AuthStorage | undefined = getDefaultStorage()
-): boolean {
-  if (!storage) return false
-  try {
-    storage.removeItem(AUTH_STORAGE_KEY)
-    return storage.getItem(AUTH_STORAGE_KEY) === null
-  } catch {
-    return false
-  }
-}
-
-export function readAuthRevision(
-  storage: AuthStorage | undefined = getDefaultStorage()
-): string {
-  if (!storage) return ""
-  try {
-    return storage.getItem(AUTH_REVISION_STORAGE_KEY) ?? ""
-  } catch {
-    return ""
-  }
-}
-
-export interface AuthRevisionClaim {
-  revision: string
-  persisted: boolean
-}
-
-export interface AuthSessionAuthorityRevocation {
-  freshRevisionPersisted: boolean
-  authorityRevoked: boolean
-  sessionRetained: boolean
-}
-
-export interface AuthSessionAuthorityRevocationOptions {
-  sessionDisposition?: "retain_for_restore" | "discard"
-}
-
-/**
- * Acquire a fresh cross-tab authority claim and prove it was written. A caller
- * must not treat an older readable revision as its own when setItem() fails.
- */
-export function claimAuthRevision(
-  storage: AuthStorage | undefined = getDefaultStorage()
-): AuthRevisionClaim {
-  const revision = generateId()
-  if (!storage) return { revision, persisted: false }
-  try {
-    storage.setItem(AUTH_REVISION_STORAGE_KEY, revision)
-    return {
-      revision,
-      persisted: storage.getItem(AUTH_REVISION_STORAGE_KEY) === revision,
-    }
-  } catch {
-    return { revision, persisted: false }
-  }
-}
-
-/**
- * Revoke one active session before asynchronous cleanup begins. Recoverable
- * metadata is retained only when a fresh cross-tab revision was written and
- * read back and the exact saved session remains available.
- */
-export function revokeAuthSessionAuthority(
-  expected: AuthSession,
-  storage: AuthStorage | undefined = getDefaultStorage(),
-  options: AuthSessionAuthorityRevocationOptions = {}
-): AuthSessionAuthorityRevocation {
-  const claim = claimAuthRevision(storage)
-  if (options.sessionDisposition !== "discard" && claim.persisted) {
-    let sessionRetained = false
-    try {
-      const snapshot = inspectAuthSessionStorage(
-        storage,
-        "revoke signer authority"
-      )
-      sessionRetained =
-        snapshot.status === "session" &&
-        authSessionsMatch(snapshot.session, expected)
-    } catch {
-      sessionRetained = false
-    }
-    if (sessionRetained) {
-      return {
-        freshRevisionPersisted: true,
-        authorityRevoked: true,
-        sessionRetained: true,
-      }
-    }
-  }
-
-  const revocationMarked = markAuthSessionRevoked(expected, storage)
-  if (revocationMarked) {
-    return {
-      freshRevisionPersisted: claim.persisted,
-      authorityRevoked: true,
-      sessionRetained: false,
-    }
-  }
-
-  if (!storage) {
-    return {
-      freshRevisionPersisted: claim.persisted,
-      authorityRevoked: false,
-      sessionRetained: false,
-    }
-  }
-
-  try {
-    const before = inspectAuthSessionStorage(storage, "revoke signer authority")
-    if (
-      before.status === "empty" ||
-      (before.status === "session" &&
-        !authSessionsMatch(before.session, expected))
-    ) {
-      return {
-        freshRevisionPersisted: false,
-        authorityRevoked: true,
-        sessionRetained: false,
-      }
-    }
-    storage.removeItem(AUTH_STORAGE_KEY)
-    const after = inspectAuthSessionStorage(storage, "revoke signer authority")
-    const authorityRevoked =
-      after.status === "empty" ||
-      (after.status === "session" &&
-        !authSessionsMatch(after.session, expected))
-    return {
-      freshRevisionPersisted: claim.persisted,
-      authorityRevoked,
-      sessionRetained: false,
-    }
-  } catch {
-    return {
-      freshRevisionPersisted: claim.persisted,
-      authorityRevoked: false,
-      sessionRetained: false,
-    }
-  }
-}
-
-export function bumpAuthRevision(
-  storage: AuthStorage | undefined = getDefaultStorage()
-): string {
-  if (!storage) return ""
-  const revision = generateId()
-  try {
-    storage.setItem(AUTH_REVISION_STORAGE_KEY, String(revision))
-    return revision
-  } catch {
-    return readAuthRevision(storage)
   }
 }
 
@@ -1280,7 +803,7 @@ function createRemoteSignerConnection(
   }
   const now = (options.now ?? Date.now)()
   const session: Nip46AuthSession = existingSession ?? {
-    version: REMOTE_SIGNER_SESSION_VERSION,
+    version: AUTH_SESSION_VERSION,
     type: "nip46",
     clientKeyId: generateId(),
     remoteSignerPubkey,
@@ -1656,7 +1179,7 @@ export async function restoreRemoteSigner(
     )
   }
   if (
-    isAuthSessionRevoked(parsed, options.authStorage ?? getDefaultStorage())
+    isAuthSessionRevoked(parsed, options.authStorage ?? getDefaultAuthStorage())
   ) {
     throw new RemoteSignerError(
       "credential_unavailable",
@@ -2144,6 +1667,28 @@ export class RemoteSessionSigner implements NostrKeySigner {
   async decryptLegacy(peer: string, value: string): Promise<string> {
     return this.request("nip04 decrypt", (signal) =>
       this.bunkerSigner.nip04Decrypt(peer, value, { signal })
+    )
+  }
+}
+
+/** Keep a same-credential replacement usable; retire only this provider's key. */
+export async function retireRemoteSignerCredentials(
+  expected: Nip46AuthSession,
+  replacement: AuthSession | null,
+  keyVault: RemoteSignerKeyVault = getDefaultKeyVault()
+): Promise<void> {
+  if (
+    replacement?.type === "nip46" &&
+    replacement.clientKeyId === expected.clientKeyId
+  )
+    return
+  try {
+    await forgetRemoteSignerKey(expected, keyVault)
+  } catch (cause) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "The browser could not erase the invalidated remote signer connection key.",
+      { cause, operation: "retire invalidated signer session" }
     )
   }
 }

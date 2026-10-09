@@ -17,7 +17,7 @@ import {
   revokeAuthSessionAuthority,
   type AuthSession,
   type AuthStorage,
-} from "../packages/core/src/protocol/remote-signer"
+} from "../packages/core/src/protocol/auth-session"
 
 const PRIVATE_KEY = generateSecretKey()
 const PUBKEY_A = getPublicKey(PRIVATE_KEY)
