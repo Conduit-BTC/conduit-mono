@@ -128,9 +128,9 @@ export function MerchantPaymentAutomationProvider({
       conversationsQuery.data.data.length === 0)
 
   useEffect(() => {
-    confirmedEvidenceRef.current.clear()
+    confirmedEvidenceRef.current = new Set<string>()
     setRun({ status: "idle", checked: 0, verified: 0 })
-  }, [addressStatus, nwc.connection])
+  }, [addressStatus, nwc.connection, pubkey, authGeneration])
 
   useEffect(() => {
     if (!conversationReadUnavailable || conversationsQuery.isFetching) return
@@ -159,6 +159,8 @@ export function MerchantPaymentAutomationProvider({
     setRun({ status: "checking", checked: 0, verified: 0 })
     let checked = 0
     let verified = 0
+    let localHistoryUnavailable = 0
+    const confirmedEvidence = confirmedEvidenceRef.current
 
     const assertCurrentProfileAuthority = async () => {
       const current = await loadSelectedProfileContext(pubkey)
@@ -180,7 +182,7 @@ export function MerchantPaymentAutomationProvider({
     try {
       const result = await verifyMerchantPaymentCandidates({
         candidates,
-        confirmedEvidence: confirmedEvidenceRef.current,
+        confirmedEvidence,
         lookupInvoice: async (candidate) => {
           await assertCurrentProfileAuthority()
           return nwcLookupInvoice(
@@ -192,7 +194,7 @@ export function MerchantPaymentAutomationProvider({
         },
         publishConfirmation: async (candidate) => {
           await assertCurrentProfileAuthority()
-          await publishMerchantOrderMessage({
+          const delivery = await publishMerchantOrderMessage({
             merchantPubkey: pubkey,
             buyerPubkey: candidate.buyerPubkey,
             orderId: candidate.orderId,
@@ -204,6 +206,8 @@ export function MerchantPaymentAutomationProvider({
             authenticatedPubkey: signerConnected ? pubkey : null,
             shouldContinue: () => authGenerationRef.current === authGeneration,
           })
+          if (delivery.localHistory === "unavailable")
+            localHistoryUnavailable += 1
           void reportCommerceGmvEstimate({
             orderId: candidate.orderId,
             orderCreatedAt: candidate.orderCreatedAt,
@@ -213,6 +217,7 @@ export function MerchantPaymentAutomationProvider({
       })
       checked = result.checked
       verified = result.verified
+      if (authGenerationRef.current !== authGeneration) return
 
       const allLookupsFailed = result.lookupFailures > 0 && result.checked === 0
       setRun({
@@ -221,28 +226,38 @@ export function MerchantPaymentAutomationProvider({
         verified,
         ...(allLookupsFailed
           ? { message: "The wallet could not check pending invoices." }
-          : {}),
+          : localHistoryUnavailable > 0
+            ? {
+                message:
+                  "Paid updates were sent, but some could not be saved on this device. Do not send them again.",
+              }
+            : {}),
       })
       if (verified > 0) {
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-order-messages", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-order-messages-live", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-conversations-live", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-dashboard-live", pubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-payment-verification", pubkey],
-          }),
-        ])
+        try {
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: ["merchant-order-messages", pubkey],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ["merchant-order-messages-live", pubkey],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ["merchant-conversations-live", pubkey],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ["merchant-dashboard-live", pubkey],
+            }),
+            queryClient.invalidateQueries({
+              queryKey: ["merchant-payment-verification", pubkey],
+            }),
+          ])
+        } catch {
+          console.warn("Could not refresh accepted payment verification")
+        }
       }
     } catch (error) {
+      if (authGenerationRef.current !== authGeneration) return
       setRun({
         status: "error",
         checked,

@@ -21,8 +21,8 @@ describe("account Network hook authority timing", () => {
       "reconciliationControllerRef.current = null\n    }\n  }, [authGeneration, contextKey])"
     )
     const reconciliationEffect = hook.slice(
-      hook.indexOf("void reconcileAccountNetworkPreferences"),
-      hook.indexOf("const refetch")
+      hook.indexOf("const refetch"),
+      hook.indexOf("return {", hook.indexOf("const refetch"))
     )
     expect(reconciliationEffect).toContain("authGeneration,")
     expect(session).toContain("capabilities.signEvent")

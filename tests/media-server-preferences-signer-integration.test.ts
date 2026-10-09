@@ -22,10 +22,13 @@ import {
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { config } from "../packages/core/src/config"
+import { planRelayWrites } from "../packages/core/src/protocol/relay-planner"
+import { createRelaySettingsFromPreferences } from "../packages/core/src/protocol/relay-settings"
 
 const PRIVATE_KEY = generateSecretKey()
 const PUBKEY = getPublicKey(PRIVATE_KEY)
-const RELAY_URL = "wss://relay.conduit.market"
+const RELAY_URL = config.appWriteRelayUrls[0]!
 
 class MemoryStorage implements MediaServerPreferencesStorage {
   readonly values = new Map<string, string>()
@@ -74,7 +77,6 @@ async function publishWithExternalSigner(
         eventCount: filter.ids?.length && published ? 1 : 0,
         rejectedEventCount: 0,
       })),
-      eventsVerified: true,
     }
   }
   const resolution = await readMediaServerPreferences(PUBKEY, {
@@ -91,6 +93,12 @@ async function publishWithExternalSigner(
       storage,
       readRelayUrls: [RELAY_URL],
       publishRelayUrls: [RELAY_URL],
+      planPublish: async (input) =>
+        planRelayWrites({
+          ...input,
+          settings: createRelaySettingsFromPreferences([]),
+          skipHealthFilter: true,
+        }),
       accountNetworkLocalStateRepository,
       fetchEvents,
       publishToRelay: async (input) => {
@@ -150,7 +158,9 @@ describe("kind 10063 external-signer integration", () => {
         session,
         new MemoryStorage()
       )
-      expect(verifyEvent(signed)).toBe(true)
+      expect(
+        verifyEvent({ ...signed, tags: signed.tags.map((tag) => [...tag]) })
+      ).toBe(true)
       expect(signed.kind).toBe(BLOSSOM_SERVER_LIST_KIND)
       expect(signed.tags).toEqual([["server", "https://media.conduit.market"]])
     } finally {
@@ -190,7 +200,9 @@ describe("kind 10063 external-signer integration", () => {
       hasAuthority: () => true,
     })
     const signed = await publishWithExternalSigner(session, new MemoryStorage())
-    expect(verifyEvent(signed)).toBe(true)
+    expect(
+      verifyEvent({ ...signed, tags: signed.tags.map((tag) => [...tag]) })
+    ).toBe(true)
     expect(signed.kind).toBe(BLOSSOM_SERVER_LIST_KIND)
     expect(signed.tags).toEqual([["server", "https://media.conduit.market"]])
   })

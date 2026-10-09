@@ -10,9 +10,9 @@ import {
   BLOSSOM_SERVER_LIST_KIND,
   getMediaServerPreferencesStorageKey,
   loadMediaServerPreferenceRecord,
-  publishMediaServerPreferences,
+  publishMediaServerPreferences as publishPreferences,
   readMediaServerPreferences,
-  retryMediaServerPreferencesPublish,
+  retryMediaServerPreferencesPublish as retryPreferences,
   saveMediaServerDraft,
   toReviewedMediaServerEvidence,
   type MediaServerPreferencesStorage,
@@ -25,6 +25,10 @@ import {
 } from "../packages/core/src/protocol/nostr-event-signer"
 import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { admitFixture } from "./helpers/public-event"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "../packages/core/src/protocol/owner-relay-list-evidence"
+import { planRelayWrites } from "../packages/core/src/protocol/relay-planner"
+import { config } from "../packages/core/src/config"
 
 const OWNER_KEY = generateSecretKey()
 const OTHER_KEY = generateSecretKey()
@@ -33,6 +37,78 @@ const OTHER_OWNER = getPublicKey(OTHER_KEY)
 const NOW = 1_700_000_000_000
 const allowAllAccountNetworkRepository = {
   get: async () => undefined,
+}
+
+/** Publication fixtures carry the same signed owner authority as production. */
+async function withSignedRelayAuthority(
+  dependencies: PublishMediaServerPreferencesDependencies = {}
+) {
+  const snapshot =
+    await dependencies.readAccountRelaySettingsPlanningSnapshot?.(OWNER)
+  const urls = snapshot
+    ? snapshot.settings.entries
+        .filter((entry) => entry.writeEnabled)
+        .map((entry) => entry.url)
+    : [...(dependencies.publishRelayUrls ?? [])]
+  const event = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: 1,
+        content: "",
+        tags: urls.map((url) => ["r", url]),
+      },
+      OWNER_KEY
+    )
+  )
+  const repository = createInMemoryOwnerRelayListEvidenceRepository()
+  await repository.reconcile({
+    pubkey: OWNER,
+    observations: [{ signedEvent: event }],
+    lookup: {
+      observedAt: NOW,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: event.id,
+    },
+  })
+  const authenticatedPubkey =
+    dependencies.authenticatedPubkey === undefined
+      ? OWNER
+      : dependencies.authenticatedPubkey
+  return {
+    ...dependencies,
+    publishRelayUrls: dependencies.publishRelayUrls ?? urls,
+    authenticatedPubkey,
+    ownerRelayListEvidenceRepository: repository,
+    planPublish: async (input: Parameters<typeof planRelayWrites>[0]) =>
+      planRelayWrites({
+        ...input,
+        settings: createRelaySettingsFromPreferences(
+          urls.map((url) => ({ url, readEnabled: true, writeEnabled: true }))
+        ),
+        signedRelayListAuthoritative: authenticatedPubkey === OWNER,
+        maxPrimaryRelays: 0,
+        skipHealthFilter: true,
+      }),
+  }
+}
+
+async function publishMediaServerPreferences(
+  input: Parameters<typeof publishPreferences>[0]
+) {
+  return publishPreferences({
+    ...input,
+    dependencies: await withSignedRelayAuthority(input.dependencies),
+  })
+}
+async function retryMediaServerPreferencesPublish(
+  input: Parameters<typeof retryPreferences>[0]
+) {
+  return retryPreferences({
+    ...input,
+    dependencies: await withSignedRelayAuthority(input.dependencies),
+  })
 }
 
 class MemoryStorage implements MediaServerPreferencesStorage {
@@ -67,13 +143,13 @@ function signer(
   }
 }
 
-function readResult(input: {
+async function readResult(input: {
   events?: SignedPublicNostrEvent[]
   relayUrls: readonly string[]
   sources?: Record<string, string[]>
   failedRelayUrls?: readonly string[]
 }) {
-  const events = input.events ?? []
+  const events = await Promise.all((input.events ?? []).map(admitFixture))
   const failed = new Set(input.failedRelayUrls ?? [])
   return {
     events,
@@ -84,7 +160,6 @@ function readResult(input: {
       eventCount: events.length,
       rejectedEventCount: 0,
     })),
-    eventsVerified: true,
   }
 }
 
@@ -105,6 +180,48 @@ beforeEach(() => {
 })
 
 describe("explicit kind 10063 publication", () => {
+  it("retains authenticated-read-required separately from ACK and current media authority across restart", async () => {
+    const storage = new MemoryStorage()
+    const target = config.appWriteRelayUrls[0]!
+    const resolution = await reviewedEmpty(storage)
+    const result = await publishMediaServerPreferences({
+      owner: OWNER,
+      serverUrls: ["https://media.conduit.market"],
+      signer: signer(),
+      reviewed: toReviewedMediaServerEvidence(resolution),
+      dependencies: {
+        storage,
+        now: () => NOW,
+        publishRelayUrls: [target],
+        readRelayUrls: [target],
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+        publishToRelay: async () => "acked",
+        fetchEvents: async (filter, options) =>
+          filter.ids?.length
+            ? {
+                events: [],
+                eventSourceRelayUrls: {},
+                relays: options.relayUrls.map((relayUrl) => ({
+                  relayUrl,
+                  status: "failed" as const,
+                  outcome: "auth_required" as const,
+                  eventCount: 0,
+                  rejectedEventCount: 0,
+                })),
+              }
+            : readResult({ relayUrls: options.relayUrls }),
+      },
+    })
+    expect(result.outcome).toBe("confirmation_pending")
+    expect(result.acceptedRelayCount).toBe(1)
+    __resetMediaServerPreferencesForTests()
+    expect(
+      loadMediaServerPreferenceRecord(OWNER, storage).pending
+    ).toMatchObject({
+      acknowledgedRelayUrls: [target],
+      readback: [{ relayUrl: target, status: "auth_required" }],
+    })
+  })
   it("signs the displayed ordered list, bounds relay targets, and confirms exact read-back", async () => {
     const storage = new MemoryStorage()
     const resolution = await reviewedEmpty(storage)
@@ -159,7 +276,9 @@ describe("explicit kind 10063 publication", () => {
     expect(result.targetRelayCount).toBe(6)
     expect(attempted).toEqual(targets.slice(0, 6))
     expect(signed).not.toBeNull()
-    expect(verifyEvent(signed!)).toBe(true)
+    expect(
+      verifyEvent({ ...signed!, tags: signed!.tags.map((tag) => [...tag]) })
+    ).toBe(true)
     expect(signed).toMatchObject({
       kind: BLOSSOM_SERVER_LIST_KIND,
       pubkey: OWNER,
@@ -455,14 +574,22 @@ describe("explicit kind 10063 publication", () => {
         signed = input.signedEvent
         attempts.push({
           relayUrl: input.relayUrl,
-          ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+          ownerSelectedRelayUrls: input.relayTarget?.grants.some(
+            (grant) => grant.kind === "owner_nip65"
+          )
+            ? [input.relayUrl]
+            : [],
         })
         return acceptPublish ? "acked" : "timed_out"
       },
       fetchEvents: async (filter, options) => {
         readAttempts.push({
           relayUrls: options.relayUrls,
-          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          ownerSelectedRelayUrls: options.relayTargets
+            ?.filter((target) =>
+              target.grants.some((grant) => grant.kind === "owner_nip65")
+            )
+            .map((target) => target.url),
         })
         return filter.ids?.length && signed
           ? readResult({
@@ -499,7 +626,6 @@ describe("explicit kind 10063 publication", () => {
       loadMediaServerPreferenceRecord(OWNER, storage).pending
     ).toMatchObject({
       publishRelayUrls: [publishRelayUrl],
-      ownerSelectedRelayUrls: [publishRelayUrl],
     })
 
     acceptPublish = true
@@ -598,7 +724,6 @@ describe("explicit kind 10063 publication", () => {
     expect(loadMediaServerPreferenceRecord(OWNER, storage)).toMatchObject({
       pending: {
         publishRelayUrls: [ownerWsRelay],
-        ownerSelectedRelayUrls: [ownerWsRelay],
         acknowledgedRelayUrls: [],
         rejectedRelayUrls: [],
         timedOutRelayUrls: [],
@@ -609,7 +734,7 @@ describe("explicit kind 10063 publication", () => {
   it("drops staged owner ws authority after logout while preserving exact wss retry bytes", async () => {
     const storage = new MemoryStorage()
     const ownerWsRelay = "ws://owner-logout.example"
-    const publicWssRelay = "wss://relay.damus.io"
+    const publicWssRelay = config.appWriteRelayUrls[0]!
     const remoteWsRelay = "ws://remote-logout.example"
     const attempts: Array<{
       relayUrl: string
@@ -653,7 +778,11 @@ describe("explicit kind 10063 publication", () => {
           relayUrl: input.relayUrl,
           eventId: input.signedEvent.id,
           authenticatedPubkey: input.authenticatedPubkey,
-          ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+          ownerSelectedRelayUrls: input.relayTarget?.grants.some(
+            (grant) => grant.kind === "owner_nip65"
+          )
+            ? [input.relayUrl]
+            : [],
         })
         return acceptPublish ? "acked" : "timed_out"
       },
@@ -662,7 +791,11 @@ describe("explicit kind 10063 publication", () => {
           readBackAttempts.push({
             relayUrls: options.relayUrls,
             authenticatedPubkey: options.authenticatedPubkey,
-            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+            ownerSelectedRelayUrls: options.relayTargets
+              ?.filter((target) =>
+                target.grants.some((grant) => grant.kind === "owner_nip65")
+              )
+              .map((target) => target.url),
           })
         }
         return filter.ids?.length && signed
@@ -730,7 +863,9 @@ describe("explicit kind 10063 publication", () => {
       {
         relayUrls: [publicWssRelay],
         authenticatedPubkey: null,
-        ownerSelectedRelayUrls: [],
+        // The plan retains additive grants; final I/O admits the App grant
+        // and rejects the owner grant after logout. No ws target survives.
+        ownerSelectedRelayUrls: [publicWssRelay],
       },
     ])
   })

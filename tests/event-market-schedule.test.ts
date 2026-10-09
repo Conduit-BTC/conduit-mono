@@ -14,6 +14,11 @@ import {
   buildEventMarketRosterDraft,
   readEventMarketRoster,
 } from "@conduit/core"
+import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "@conduit/core/protocol/verified-public-event"
+import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -54,6 +59,15 @@ function occurrence(dTag: string, createdAt: number) {
   )
 }
 
+async function admitted(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error("Signed test event was rejected.")
+  return result.event
+}
+
 describe("finite Event Market schedule", () => {
   it("retries a saved signed schedule without requesting a new signature", async () => {
     const signed = master([first], 10)
@@ -80,8 +94,8 @@ describe("finite Event Market schedule", () => {
     expect(published).toEqual([signed.id])
     expect(result.successfulRelayUrls).toEqual(["wss://example.com"])
   })
-  it("accepts one organizer-authored 31924 with unique full member coordinates", () => {
-    const signed = master([first, second], 10)
+  it("accepts one organizer-authored 31924 with unique full member coordinates", async () => {
+    const signed = await admitted(master([first, second], 10))
     expect(parseEventMarketSeriesEvent(signed)).toMatchObject({
       coordinate: masterCoordinate,
       memberCoordinates: [first, second],
@@ -91,9 +105,9 @@ describe("finite Event Market schedule", () => {
     expect(() => master([], 11)).toThrow()
   })
 
-  it("takes membership only from the current signed master revision", () => {
-    const original = master([first, second], 10)
-    const reduced = master([second], 11)
+  it("takes membership only from the current signed master revision", async () => {
+    const original = await admitted(master([first, second], 10))
+    const reduced = await admitted(master([second], 11))
     const resolved = resolveEventMarketSeries({
       coordinate: masterCoordinate,
       organizerPubkey: organizer,
@@ -112,11 +126,11 @@ describe("finite Event Market schedule", () => {
       ],
       12
     )
-    expect(parseEventMarketSeriesEvent(childRequest)).toBeNull()
+    expect(parseEventMarketSeriesEvent(await admitted(childRequest))).toBeNull()
   })
 
-  it("preserves a verified sibling when another member is absent", () => {
-    const signed = occurrence("first", 10)
+  it("preserves a verified sibling when another member is absent", async () => {
+    const signed = await admitted(occurrence("first", 10))
     expect(
       resolveEventMarketOccurrence({
         coordinate: first,
@@ -133,9 +147,9 @@ describe("finite Event Market schedule", () => {
     ).toBeNull()
   })
 
-  it("rejects a signed deletion of the current master", () => {
-    const signed = master([first], 10)
-    const deletion = sign(5, [["e", signed.id]], 11)
+  it("rejects a signed deletion of the current master", async () => {
+    const signed = await admitted(master([first], 10))
+    const deletion = await admitted(sign(5, [["e", signed.id]], 11))
     expect(
       resolveEventMarketSeries({
         coordinate: masterCoordinate,
@@ -147,7 +161,7 @@ describe("finite Event Market schedule", () => {
   })
 
   it("saves and publishes occurrences before the schedule, then resumes identical signatures", async () => {
-    const saved: ReturnType<typeof sign>[] = []
+    const saved: SignedPublicNostrEvent[] = []
     const sequence: string[] = []
     const outcomes: string[] = []
     let failSecond = true
@@ -166,7 +180,7 @@ describe("finite Event Market schedule", () => {
         signCount += 1
         return finalizeEvent({ ...draft, created_at: createdAt }, secret)
       },
-      publish: async (event: ReturnType<typeof sign>) => {
+      publish: async (event: SignedPublicNostrEvent) => {
         sequence.push(
           `publish:${event.kind}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
         )
@@ -204,7 +218,7 @@ describe("finite Event Market schedule", () => {
           start: "2030-01-08",
         },
       ],
-      onSignedLocal: async (event: ReturnType<typeof sign>) => {
+      onSignedLocal: async (event: SignedPublicNostrEvent) => {
         sequence.push(
           `save:${event.kind}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
         )
@@ -265,9 +279,9 @@ describe("finite Event Market schedule", () => {
       state: "open",
       merchants: [],
     })
-    const market = sign(rosterDraft.kind, rosterDraft.tags, 20)
-    const schedule = master([first, second], 21)
-    const found = occurrence("first", 22)
+    const market = await admitted(sign(rosterDraft.kind, rosterDraft.tags, 20))
+    const schedule = await admitted(master([first, second], 21))
+    const found = await admitted(occurrence("first", 22))
     const events = [market, schedule, found]
     const read = await readEventMarketRoster(
       { reference: `30409:${organizer}:market` },

@@ -39,6 +39,14 @@ import {
 import { filterRelayListForContext, type RelayList } from "./relay-list"
 import { partitionByHealth } from "./relay-health"
 import type { AccountNetworkRoutingPolicy } from "./account-network-routing-policy"
+import { EVENT_KINDS } from "./kinds"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  selectRelayTargets,
+  type RelayGrant,
+  type RelayTarget,
+} from "./relay-authority"
 
 export type RelayReadIntent =
   /** Marketplace listings — commerce + public fallback. */
@@ -110,6 +118,8 @@ export interface RelayReadPlanInput {
 
 export interface RelayReadPlan {
   intent: RelayReadIntent
+  /** Ordered candidates with every independent authority retained. */
+  relayTargets: RelayTarget[]
   /** Ordered relay URLs to query under the legacy planner-time fanout cap. */
   relayUrls: string[]
   /**
@@ -167,6 +177,10 @@ export interface RelayWritePlanInput {
 }
 
 export interface RelayWritePlan {
+  /** Exact primary candidates and their independent write authorities. */
+  primaryRelayTargets: RelayTarget[]
+  /** Exact best-effort candidates and their independent write authorities. */
+  broadcastRelayTargets: RelayTarget[]
   /** Fixed fallback candidates resolved before any publish I/O. */
   fallbackRelayUrls?: string[]
   intent: RelayWriteIntent
@@ -204,6 +218,92 @@ export interface RelayWritePlan {
   personalRelayUrls?: string[]
   /** Remote signed NIP-65 hints that remain authoritative across local switches. */
   independentRelayUrls: string[]
+}
+
+/**
+ * Prepare read authority for verifying a public event after a write ACK.
+ * Recipient and owner NIP-17 grants are deliberately omitted: private inbox
+ * delivery authority does not authorize reading an author's public event.
+ */
+export function planPublicEventReadbackTargets(
+  targets: readonly RelayTarget[]
+): RelayTarget[] {
+  const readback: RelayTarget[] = []
+  for (const target of targets) {
+    const grants: RelayGrant[] = []
+    for (const grant of target.grants) {
+      if (
+        grant.kind === "owner_nip17" ||
+        grant.kind === "recipient_nip17" ||
+        grant.kind === "recovery" ||
+        grant.kind === "retained_inbox" ||
+        grant.kind === "compatibility"
+      ) {
+        continue
+      }
+      if (grant.operation === "read") {
+        grants.push({ ...grant })
+        continue
+      }
+      switch (grant.kind) {
+        case "owner_nip65":
+          if (grant.selection === "write") {
+            grants.push({
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey: grant.ownerPubkey,
+              selection: "write",
+            })
+          }
+          break
+        case "remote_nip65":
+          grants.push({
+            kind: "remote_nip65",
+            operation: "read",
+            pubkey: grant.pubkey,
+          })
+          break
+        case "app":
+          if (
+            grant.bucket === "general_write" ||
+            grant.bucket === "commerce_write"
+          ) {
+            grants.push({
+              kind: "app",
+              operation: "read",
+              bucket: "author_readback",
+            })
+          } else {
+            // A successful public write ACK is direct evidence that this
+            // secure relay can be queried for exact readback.
+            grants.push({ kind: "public_hint", operation: "read" })
+          }
+          break
+        case "discovery":
+          grants.push({
+            kind: "discovery",
+            operation: "read",
+            registry: grant.registry,
+          })
+          break
+        case "source_delivery":
+          grants.push({ kind: "public_hint", operation: "read" })
+          break
+        case "owner_selection":
+          if (grant.eventKind === EVENT_KINDS.RELAY_LIST) {
+            grants.push({
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey: grant.ownerPubkey,
+              selection: "write",
+            })
+          }
+          break
+      }
+    }
+    if (grants.length > 0) readback.push({ url: target.url, grants })
+  }
+  return mergeRelayTargets(readback)
 }
 
 export const DEFAULT_READ_FANOUT = 6
@@ -425,6 +525,57 @@ function clampFanout(urls: string[], limit: number | undefined): string[] {
   return urls.slice(0, limit)
 }
 
+function targetsForCandidateUrls(
+  urls: readonly string[],
+  ...sources: readonly { urls: readonly string[]; grant: RelayGrant }[]
+): RelayTarget[] {
+  return selectRelayTargets(
+    sources.flatMap((source) =>
+      relayTargetsFromUrls(source.urls, source.grant)
+    ),
+    urls
+  )
+}
+
+function appReadGrantSources(intent: RelayReadIntent, urls: readonly string[]) {
+  const sources: { urls: readonly string[]; grant: RelayGrant }[] = [
+    {
+      urls: config.appReadRelayUrls,
+      grant: { kind: "app", operation: "read", bucket: "general_read" },
+    },
+    {
+      urls: config.appCommerceRelayUrls,
+      grant: { kind: "app", operation: "read", bucket: "commerce_read" },
+    },
+    {
+      urls: config.corePublicFallbackRelayUrls,
+      grant: {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "core_public",
+      },
+    },
+    {
+      urls: config.commerceDiscoveryRelayUrls,
+      grant: {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "commerce_discovery",
+      },
+    },
+  ]
+  if (intent === "dm_inbox" || intent === "legacy_dm") {
+    sources.push({
+      urls: config.commerceDmFallbackRelayUrls,
+      grant: { kind: "compatibility", operation: "read", policy: "inbox_read" },
+    })
+  }
+  return sources.map((source) => ({
+    ...source,
+    urls: source.urls.filter((url) => urls.includes(url)),
+  }))
+}
+
 /**
  * Resolve a read plan. Order of precedence (highest first):
  *
@@ -445,6 +596,10 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     }
     return {
       intent: input.intent,
+      relayTargets: targetsForCandidateUrls([isolatedRelayUrl], {
+        urls: [isolatedRelayUrl],
+        grant: { kind: "app", operation: "read", bucket: "general_read" },
+      }),
       relayUrls: [isolatedRelayUrl],
       candidateRelayUrls: [isolatedRelayUrl],
       maxRelayAttempts: 1,
@@ -604,8 +759,73 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     ...authenticatedOwnerRecipientHints,
   ])
   const independentRelaySet = new Set([...authorHints, ...recipientHints])
+  const remoteHintSources = [
+    ...(input.authors ?? []),
+    ...(input.recipients ?? []),
+  ]
+    .filter((pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner)
+    .map((pubkey) => ({
+      urls: [
+        ...(input.authors?.includes(pubkey)
+          ? filterRelayListForContext(
+              input.relayLists?.get(pubkey) ?? {
+                pubkey,
+                readRelayUrls: [],
+                writeRelayUrls: [],
+                eventCreatedAt: 0,
+                cachedAt: 0,
+              }
+            ).writeRelayUrls
+          : []),
+        ...(input.recipients?.includes(pubkey)
+          ? filterRelayListForContext(
+              input.relayLists?.get(pubkey) ?? {
+                pubkey,
+                readRelayUrls: [],
+                writeRelayUrls: [],
+                eventCreatedAt: 0,
+                cachedAt: 0,
+              }
+            ).readRelayUrls
+          : []),
+      ],
+      grant: { kind: "remote_nip65", operation: "read", pubkey } as const,
+    }))
+  const relayTargets = targetsForCandidateUrls(
+    kept,
+    ...appReadGrantSources(input.intent, appBaseRelays),
+    {
+      urls: personalBaseRelays,
+      grant: {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: authenticatedOwner ?? "",
+        selection: "read",
+      },
+    },
+    {
+      urls: authenticatedOwnerAuthorHints,
+      grant: {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: authenticatedOwner ?? "",
+        selection: "write",
+      },
+    },
+    {
+      urls: authenticatedOwnerRecipientHints,
+      grant: {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: authenticatedOwner ?? "",
+        selection: "read",
+      },
+    },
+    ...remoteHintSources
+  )
   return {
     intent: input.intent,
+    relayTargets,
     relayUrls,
     candidateRelayUrls: kept,
     ...(maxRelayAttempts === undefined ? {} : { maxRelayAttempts }),
@@ -650,6 +870,11 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     }
     return {
       intent: input.intent,
+      primaryRelayTargets: targetsForCandidateUrls([isolatedRelayUrl], {
+        urls: [isolatedRelayUrl],
+        grant: { kind: "app", operation: "write", bucket: "general_write" },
+      }),
+      broadcastRelayTargets: [],
       primaryRelayUrls: [isolatedRelayUrl],
       primaryCandidateRelayUrls: [isolatedRelayUrl],
       maxPrimaryRelayAttempts: 1,
@@ -720,8 +945,51 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
       input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
     const primaryRelayUrls = clampFanout(kept, requestedMaxPrimaryRelays)
     const authorWriteHintSet = new Set(authorWriteHints)
+    const primaryRelayTargets = targetsForCandidateUrls(
+      kept,
+      {
+        urls: appWriteRelays,
+        grant: {
+          kind: "app",
+          operation: "write",
+          bucket:
+            input.intent === "commerce_author_event"
+              ? "commerce_write"
+              : "general_write",
+        },
+      },
+      {
+        urls: personalWriteRelays,
+        grant: {
+          kind: "owner_nip65",
+          operation: "write",
+          ownerPubkey: authenticatedPubkey ?? "",
+          selection: "write",
+        },
+      },
+      isAuthenticatedAuthor
+        ? {
+            urls: authorWriteHints,
+            grant: {
+              kind: "owner_nip65",
+              operation: "write",
+              ownerPubkey: authenticatedPubkey ?? "",
+              selection: "write",
+            },
+          }
+        : {
+            urls: authorWriteHints,
+            grant: {
+              kind: "remote_nip65",
+              operation: "write",
+              pubkey: authorPubkey ?? "",
+            },
+          }
+    )
     return {
       intent: input.intent,
+      primaryRelayTargets,
+      broadcastRelayTargets: [],
       signedRelayListAuthoritative: hasReconciledOwnerProjection,
       primaryRelayUrls,
       primaryCandidateRelayUrls: kept,
@@ -827,8 +1095,54 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const executableRelayUrls = dedupeOrdered([...primaryKept, ...broadcastKept])
   const missingRecipientFallbackSet = new Set(missingRecipientFallback)
   const authenticatedRecipientHintSet = new Set(authenticatedRecipientHints)
+  const primaryRelayTargets = targetsForCandidateUrls(
+    primaryKept,
+    {
+      urls: missingRecipientFallback,
+      grant: { kind: "app", operation: "write", bucket: "recipient_delivery" },
+    },
+    {
+      urls: authenticatedRecipientHints,
+      grant: {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: authenticatedPubkey ?? "",
+        selection: "read",
+      },
+    },
+    ...remoteRecipientPubkeys.map((pubkey) => ({
+      urls: filterRelayListForContext(
+        input.relayLists?.get(pubkey) ?? {
+          pubkey,
+          readRelayUrls: [],
+          writeRelayUrls: [],
+          eventCreatedAt: 0,
+          cachedAt: 0,
+        }
+      ).readRelayUrls,
+      grant: { kind: "remote_nip65", operation: "write", pubkey } as const,
+    }))
+  )
+  const broadcastRelayTargets = targetsForCandidateUrls(
+    broadcastKept,
+    {
+      urls: appWriteRelays,
+      grant: { kind: "app", operation: "write", bucket: "general_write" },
+    },
+    {
+      urls: personalWriteRelays,
+      grant: {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: authenticatedPubkey ?? "",
+        selection: "write",
+      },
+    }
+  )
   return {
     intent: input.intent,
+    primaryRelayTargets,
+    broadcastRelayTargets,
     primaryRelayUrls,
     primaryCandidateRelayUrls: primaryKept,
     ...(requestedMaxPrimaryRelays > 0

@@ -17,8 +17,8 @@ import {
   type OrderEventMarketPickupFulfillmentSchema,
   type ShippingPolicyQuote,
   type SourcePriceQuote,
-  type SignedPublicNostrEvent,
-  isValidSignedPublicNostrEvent,
+  type VerifiedNostrEvent,
+  isVerifiedNostrEvent,
   shippingPolicyQuoteSchema,
 } from "@conduit/core"
 
@@ -82,7 +82,7 @@ export type CartItem = {
   productUpdatedAt?: number
   /** Signed kind-30402 event id paired with productUpdatedAt for NIP-01 ordering. */
   productEventId?: string
-  signedProductEvent?: SignedPublicNostrEvent
+  signedProductEvent?: VerifiedNostrEvent
   /** True only after exact canonical kind-30406 resolution. */
   canonicalShippingResolved?: boolean
   publicZapEnabled?: boolean
@@ -772,10 +772,9 @@ function parseCartItem(value: unknown): CartItem | null {
   )
   const productUpdatedAt = finiteNonnegativeNumber(value.productUpdatedAt)
   const productEventId = normalizedEventId(value.productEventId)
-  const signedProductEvent = isValidSignedPublicNostrEvent(
-    value.signedProductEvent as SignedPublicNostrEvent
-  )
-    ? (value.signedProductEvent as SignedPublicNostrEvent)
+  // Storage hydration admits exact signed bytes before this synchronous parser.
+  const signedProductEvent = isVerifiedNostrEvent(value.signedProductEvent)
+    ? value.signedProductEvent
     : undefined
   const stock = finiteNonnegativeNumber(value.stock)
   const selectedSpecifications = parseSpecifications(

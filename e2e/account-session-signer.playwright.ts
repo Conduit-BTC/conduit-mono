@@ -35,7 +35,7 @@ for (const app of ["market", "merchant"] as const) {
         const authorizationModule = await import(
           `${root}/protected-read-authorization.ts`
         )
-        const authModule = await import(`${root}/remote-signer.ts`)
+        const authModule = await import(`${root}/auth-session.ts`)
         const signedModule = await import(`${root}/signed-event.ts`)
         const session = authModule.readAuthSession()
         const authorization = authorizationModule.getProtectedReadAuthorization(

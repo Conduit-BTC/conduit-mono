@@ -1,3 +1,4 @@
+import { signFixture, publicFixturePubkey } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   buildProductDeletionEventDraft,
@@ -14,8 +15,8 @@ import {
 
 function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
   return {
-    id: "30402:merchant:overbudget",
-    pubkey: "merchant",
+    id: `30402:${publicFixturePubkey}:overbudget`,
+    pubkey: publicFixturePubkey,
     title: "Overbudget",
     summary: "Testing **Markdown** product description.",
     price: 10,
@@ -24,7 +25,7 @@ function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
     specifications: [],
     format: "physical",
     shippingCostSats: 1,
-    shippingOptionId: "30406:merchant:conduit-default",
+    shippingOptionId: `30406:${publicFixturePubkey}:conduit-default`,
     shippingOptionDTag: "conduit-default",
     shippingCountries: ["US"],
     shippingCountryRules: [
@@ -54,7 +55,7 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
-  it("round-trips signed listing-area tags for digital and physical products", () => {
+  it("round-trips signed listing-area tags for digital and physical products", async () => {
     for (const format of ["digital", "physical"] as const) {
       const product = baseProduct({
         format,
@@ -71,19 +72,24 @@ describe("product listing event drafts", () => {
         ["location", product.location],
         ["g", "9q9p"],
       ])
-      const parsed = parseProductEvent({
-        id: `${format}-event`,
-        pubkey: "merchant",
-        created_at: 1_779_762_725,
-        content: draft.content,
-        tags: draft.tags,
-      })
+      const parsed = parseProductEvent(
+        await signFixture(
+          {
+            id: `${format}-event`,
+            pubkey: publicFixturePubkey,
+            created_at: 1_779_762_725,
+            content: draft.content,
+            tags: draft.tags,
+          },
+          30402
+        )
+      )
       expect(parsed.location).toBe(product.location)
       expect(parsed.geohash).toBe("9q9p")
     }
   })
 
-  it("does not add area tags to a listing without a selected area and retains signed legacy location", () => {
+  it("does not add area tags to a listing without a selected area and retains signed legacy location", async () => {
     const blank = buildProductListingEventDraft({
       product: baseProduct(),
       dTag: "blank-area",
@@ -91,17 +97,24 @@ describe("product listing event drafts", () => {
     expect(
       blank.tags.some(([name]) => name === "location" || name === "g")
     ).toBe(false)
-    const parsed = parseProductEvent({
-      id: "legacy-area",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify(baseProduct({ location: "Unsigned JSON value" })),
-      tags: [
-        ["d", "legacy-area"],
-        ["price", "10", "USD"],
-        ["location", "Signed nearby town"],
-      ],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-area",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(
+            baseProduct({ location: "Unsigned JSON value" })
+          ),
+          tags: [
+            ["d", "legacy-area"],
+            ["price", "10", "USD"],
+            ["location", "Signed nearby town"],
+          ],
+        },
+        30402
+      )
+    )
     expect(parsed.location).toBe("Signed nearby town")
     expect(parsed.geohash).toBeUndefined()
     expect(
@@ -109,17 +122,24 @@ describe("product listing event drafts", () => {
         .tags
     ).toContainEqual(["location", "Signed nearby town"])
   })
-  it("preserves a legacy content-only location through an ordinary edit", () => {
-    const parsed = parseProductEvent({
-      id: "legacy-content-area",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify(baseProduct({ location: "Legacy nearby town" })),
-      tags: [
-        ["d", "legacy-content-area"],
-        ["price", "10", "USD"],
-      ],
-    })
+  it("preserves a legacy content-only location through an ordinary edit", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-content-area",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(
+            baseProduct({ location: "Legacy nearby town" })
+          ),
+          tags: [
+            ["d", "legacy-content-area"],
+            ["price", "10", "USD"],
+          ],
+        },
+        30402
+      )
+    )
     expect(parsed.location).toBe("Legacy nearby town")
     expect(parsed.geohash).toBeUndefined()
     const edited = buildProductListingEventDraft({
@@ -128,49 +148,64 @@ describe("product listing event drafts", () => {
     })
     expect(edited.tags).toContainEqual(["location", "Legacy nearby town"])
     expect(
-      parseProductEvent({
-        ...parsed,
-        content: edited.content,
-        tags: edited.tags,
-      }).location
+      parseProductEvent(
+        await signFixture(
+          {
+            ...parsed,
+            content: edited.content,
+            tags: edited.tags,
+          },
+          30402
+        )
+      ).location
     ).toBe("Legacy nearby town")
     // An explicit empty tag cannot revive a different content location.
     expect(
-      parseProductEvent({
-        id: "empty-tag-area",
-        pubkey: "merchant",
-        created_at: 1_779_762_725,
-        content: JSON.stringify(
-          baseProduct({ location: "Legacy nearby town" })
-        ),
-        tags: [
-          ["d", "empty-tag-area"],
-          ["price", "10", "USD"],
-          ["location", ""],
-        ],
-      }).location
+      parseProductEvent(
+        await signFixture(
+          {
+            id: "empty-tag-area",
+            pubkey: publicFixturePubkey,
+            created_at: 1_779_762_725,
+            content: JSON.stringify(
+              baseProduct({ location: "Legacy nearby town" })
+            ),
+            tags: [
+              ["d", "empty-tag-area"],
+              ["price", "10", "USD"],
+              ["location", ""],
+            ],
+          },
+          30402
+        )
+      ).location
     ).toBeUndefined()
   })
-  it("retains signed image evidence while capping public request candidates", () => {
+  it("retains signed image evidence while capping public request candidates", async () => {
     const publicImageUrls = Array.from(
       { length: MAX_PRODUCT_IMAGE_CANDIDATES + 5 },
       (_, index) => `https://cdn.conduit.market/products/${index}.png`
     )
     const privateImageUrl = "http://127.0.0.1/private.png"
-    const parsed = parseProductEvent({
-      id: "many-images",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Product description",
-      tags: [
-        ["d", "many-images"],
-        ["title", "Many images"],
-        ["price", "10", "USD"],
-        ...publicImageUrls.map((url) => ["image", url]),
-        ["image", privateImageUrl],
-        ["image", publicImageUrls[0]!],
-      ],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "many-images",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Product description",
+          tags: [
+            ["d", "many-images"],
+            ["title", "Many images"],
+            ["price", "10", "USD"],
+            ...publicImageUrls.map((url) => ["image", url]),
+            ["image", privateImageUrl],
+            ["image", publicImageUrls[0]!],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.images.map((image) => image.url)).toEqual([
       ...publicImageUrls,
@@ -187,34 +222,47 @@ describe("product listing event drafts", () => {
     ).toEqual([...publicImageUrls, privateImageUrl, publicImageUrls[0]!])
   })
 
-  it("retains non-public signed images but excludes them from request projection", () => {
-    const legacy = parseProductEvent({
-      id: "legacy-image-safety",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify(
-        baseProduct({
-          images: [
-            { url: "http://2130706433/camera.jpg" },
-            { url: "https://cdn.conduit.market/product.png", alt: "Product" },
+  it("retains non-public signed images but excludes them from request projection", async () => {
+    const legacy = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-image-safety",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(
+            baseProduct({
+              images: [
+                { url: "http://2130706433/camera.jpg" },
+                {
+                  url: "https://cdn.conduit.market/product.png",
+                  alt: "Product",
+                },
+              ],
+            })
+          ),
+          tags: [["d", "legacy-image-safety"]],
+        },
+        30402
+      )
+    )
+    const tagged = parseProductEvent(
+      await signFixture(
+        {
+          id: "tag-image-safety",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Product description",
+          tags: [
+            ["d", "tag-image-safety"],
+            ["title", "Tagged product"],
+            ["price", "10", "USD"],
+            ["image", "https://169.254.169.254/latest/meta-data"],
+            ["image", "https://images.example.com/product.png"],
           ],
-        })
-      ),
-      tags: [["d", "legacy-image-safety"]],
-    })
-    const tagged = parseProductEvent({
-      id: "tag-image-safety",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Product description",
-      tags: [
-        ["d", "tag-image-safety"],
-        ["title", "Tagged product"],
-        ["price", "10", "USD"],
-        ["image", "https://169.254.169.254/latest/meta-data"],
-        ["image", "https://images.example.com/product.png"],
-      ],
-    })
+        },
+        30402
+      )
+    )
 
     expect(legacy.images).toEqual([
       { url: "http://2130706433/camera.jpg" },
@@ -242,25 +290,30 @@ describe("product listing event drafts", () => {
     ).toEqual(["bitcoin", "hardware"])
   })
 
-  it("uses signed t tags when legacy JSON has a malformed tag collection", () => {
-    const parsed = parseProductEvent({
-      id: "malformed-legacy-tags-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify({
-        ...baseProduct(),
-        tags: "Bitcoin",
-      }),
-      tags: [
-        ["d", "malformed-legacy-tags"],
-        ["t", " Hardware "],
-      ],
-    })
+  it("uses signed t tags when legacy JSON has a malformed tag collection", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "malformed-legacy-tags-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify({
+            ...baseProduct(),
+            tags: "Bitcoin",
+          }),
+          tags: [
+            ["d", "malformed-legacy-tags"],
+            ["t", " Hardware "],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.tags).toEqual(["hardware"])
   })
 
-  it("emits and round-trips only canonical lowercase product tags", () => {
+  it("emits and round-trips only canonical lowercase product tags", async () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({
         tags: [" Bitcoin ", "bitcoin", "BITCOIN", "Hardware"],
@@ -273,13 +326,18 @@ describe("product listing event drafts", () => {
       ["t", "hardware"],
     ])
 
-    const parsed = parseProductEvent({
-      id: "canonical-tags-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: draft.content,
-      tags: draft.tags,
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "canonical-tags-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: draft.content,
+          tags: draft.tags,
+        },
+        30402
+      )
+    )
 
     expect(parsed.tags).toEqual(["bitcoin", "hardware"])
   })
@@ -300,7 +358,10 @@ describe("product listing event drafts", () => {
       "summary",
       "Testing **Markdown** product description.",
     ])
-    expectTag(draft.tags, ["shipping_option", "30406:merchant:conduit-default"])
+    expectTag(draft.tags, [
+      "shipping_option",
+      `30406:${publicFixturePubkey}:conduit-default`,
+    ])
     expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
     expect(draft.tags.some((tag) => tag[0] === "shipping_country")).toBe(false)
     expect(draft.tags.some((tag) => tag[0] === "shipping_exclude")).toBe(false)
@@ -311,8 +372,8 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["checkout_zap_message_policy", "generic_only"])
   })
 
-  it("emits Open Markets visibility for parent and variation listings in both directions", () => {
-    const variationMerchant = "a".repeat(64)
+  it("emits Open Markets visibility for parent and variation listings in both directions", async () => {
+    const variationMerchant = publicFixturePubkey
     const hiddenDraft = buildProductListingEventDraft({
       product: baseProduct({ visibility: "private" }),
       dTag: "event-only-product",
@@ -357,13 +418,18 @@ describe("product listing event drafts", () => {
       `30402:${variationMerchant}:ordinary-product`,
     ])
 
-    const parsed = parseProductEvent({
-      id: "event-only-product-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: hiddenDraft.content,
-      tags: hiddenDraft.tags,
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-only-product-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: hiddenDraft.content,
+          tags: hiddenDraft.tags,
+        },
+        30402
+      )
+    )
     expect(parsed.visibility).toBe("private")
   })
 
@@ -434,26 +500,31 @@ describe("product listing event drafts", () => {
     expect(untrackedDraft.tags.some((tag) => tag[0] === "stock")).toBe(false)
   })
 
-  it("round-trips stock through emitted kind 30402 tags", () => {
+  it("round-trips stock through emitted kind 30402 tags", async () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({ stock: 12 }),
       dTag: "stock-round-trip",
     })
 
-    const parsed = parseProductEvent({
-      id: "stock-round-trip-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: draft.content,
-      tags: draft.tags,
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "stock-round-trip-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: draft.content,
+          tags: draft.tags,
+        },
+        30402
+      )
+    )
 
-    expect(parsed.id).toBe("30402:merchant:stock-round-trip")
+    expect(parsed.id).toBe(`30402:${publicFixturePubkey}:stock-round-trip`)
     expect(parsed.stock).toBe(12)
   })
 
-  it("round-trips independent stock values through variation listing drafts", () => {
-    const merchantPubkey = "a".repeat(64)
+  it("round-trips independent stock values through variation listing drafts", async () => {
+    const merchantPubkey = publicFixturePubkey
     const parentProductId = `30402:${merchantPubkey}:shirt`
     const largeDraft = buildProductListingEventDraft({
       product: baseProduct({
@@ -478,20 +549,30 @@ describe("product listing event drafts", () => {
       dTag: "medium-shirt",
     })
 
-    const large = parseProductEvent({
-      id: "large-shirt-event",
-      pubkey: merchantPubkey,
-      created_at: 1_779_762_725,
-      content: largeDraft.content,
-      tags: largeDraft.tags,
-    })
-    const medium = parseProductEvent({
-      id: "medium-shirt-event",
-      pubkey: merchantPubkey,
-      created_at: 1_779_762_725,
-      content: mediumDraft.content,
-      tags: mediumDraft.tags,
-    })
+    const large = parseProductEvent(
+      await signFixture(
+        {
+          id: "large-shirt-event",
+          pubkey: merchantPubkey,
+          created_at: 1_779_762_725,
+          content: largeDraft.content,
+          tags: largeDraft.tags,
+        },
+        30402
+      )
+    )
+    const medium = parseProductEvent(
+      await signFixture(
+        {
+          id: "medium-shirt-event",
+          pubkey: merchantPubkey,
+          created_at: 1_779_762_725,
+          content: mediumDraft.content,
+          tags: mediumDraft.tags,
+        },
+        30402
+      )
+    )
 
     expect(large.type).toBe("variation")
     expect(large.stock).toBe(2)
@@ -499,7 +580,7 @@ describe("product listing event drafts", () => {
     expect(medium.stock).toBe(7)
   })
 
-  it("emits and parses Open Markets variation parent and specification tags", () => {
+  it("emits and parses Open Markets variation parent and specification tags", async () => {
     const merchantPubkey = "b".repeat(64)
     const parentProductId = `30402:${merchantPubkey}:conduit-tee`
     const draft = buildProductListingEventDraft({
@@ -522,13 +603,18 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["spec", "size", "XL"])
     expectTag(draft.tags, ["spec", "color", "Purple"])
 
-    const parsed = parseProductEvent({
-      id: "variation-event",
-      pubkey: merchantPubkey,
-      created_at: 1_779_762_725,
-      content: draft.content,
-      tags: draft.tags,
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "variation-event",
+          pubkey: merchantPubkey,
+          created_at: 1_779_762_725,
+          content: draft.content,
+          tags: draft.tags,
+        },
+        30402
+      )
+    )
 
     expect(parsed.parentProductId).toBe(parentProductId)
     expect(parsed.specifications).toEqual([
@@ -638,14 +724,17 @@ describe("product listing event drafts", () => {
         price: 25_000,
         currency: "SATS",
         shippingCostSats: 500,
-        shippingOptionId: "30406:merchant:standard",
+        shippingOptionId: `30406:${publicFixturePubkey}:standard`,
         shippingOptionDTag: "standard",
       }),
       dTag: "sats-shipping-product",
     })
 
     expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
-    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard"])
+    expectTag(draft.tags, [
+      "shipping_option",
+      `30406:${publicFixturePubkey}:standard`,
+    ])
   })
 
   it("keeps fiat shipping cost only on the referenced option", () => {
@@ -654,7 +743,7 @@ describe("product listing event drafts", () => {
         price: 15,
         currency: "USD",
         shippingCostSats: undefined,
-        shippingOptionId: "30406:merchant:standard",
+        shippingOptionId: `30406:${publicFixturePubkey}:standard`,
         shippingOptionDTag: "standard",
       }),
       ...canonicalizeShippingCost(5, "USD"),
@@ -666,7 +755,10 @@ describe("product listing event drafts", () => {
     })
 
     expect(draft.tags.some((tag) => tag[0] === "shipping_cost")).toBe(false)
-    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard"])
+    expectTag(draft.tags, [
+      "shipping_option",
+      `30406:${publicFixturePubkey}:standard`,
+    ])
   })
 
   it("does not emit legacy inline custom shipping rules", () => {
@@ -745,21 +837,26 @@ describe("product listing event drafts", () => {
 })
 
 describe("product listing event parsing", () => {
-  it("prefers the standard price tag when legacy JSON conflicts", () => {
+  it("prefers the standard price tag when legacy JSON conflicts", async () => {
     const product = baseProduct({
       tags: [" Bitcoin ", "bitcoin", "BITCOIN", "Hardware"],
     })
-    const parsed = parseProductEvent({
-      id: "legacy-event",
-      pubkey: product.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(product),
-      tags: [
-        ["d", "overbudget"],
-        ["title", "Ignored title"],
-        ["price", "99", "USD"],
-      ],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-event",
+          pubkey: product.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(product),
+          tags: [
+            ["d", "overbudget"],
+            ["title", "Ignored title"],
+            ["price", "99", "USD"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.title).toBe(product.title)
     expect(parsed.summary).toBe(product.summary)
@@ -777,7 +874,7 @@ describe("product listing event parsing", () => {
     expect(parsed.tags).toEqual(["bitcoin", "hardware"])
   })
 
-  it("accepts exact normalized SAT legacy projections and rejects every conflicting projection", () => {
+  it("accepts exact normalized SAT legacy projections and rejects every conflicting projection", async () => {
     const compatible = baseProduct({
       price: 2_500,
       currency: "SATS",
@@ -793,13 +890,18 @@ describe("product listing event parsing", () => {
       ["title", "SAT evidence"],
       ["price", "2500", "SAT"],
     ]
-    const exact = parseProductEvent({
-      id: "sat-exact",
-      pubkey: compatible.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(compatible),
-      tags,
-    })
+    const exact = parseProductEvent(
+      await signFixture(
+        {
+          id: "sat-exact",
+          pubkey: compatible.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(compatible),
+          tags,
+        },
+        30402
+      )
+    )
 
     expect(exact).toMatchObject({
       price: 2_500,
@@ -834,22 +936,32 @@ describe("product listing event parsing", () => {
       { ...compatible, priceSats: 2_499 },
     ]
     for (const conflict of conflicts) {
-      const forward = parseProductEvent({
-        id: "sat-conflict-forward",
-        pubkey: compatible.pubkey,
-        created_at: 1_779_762_725,
-        content: JSON.stringify(conflict),
-        tags,
-      })
-      const reverse = parseProductEvent({
-        id: "sat-conflict-reverse",
-        pubkey: compatible.pubkey,
-        created_at: 1_779_762_725,
-        content: JSON.stringify(
-          Object.fromEntries(Object.entries(conflict).reverse())
-        ),
-        tags,
-      })
+      const forward = parseProductEvent(
+        await signFixture(
+          {
+            id: "sat-conflict-forward",
+            pubkey: compatible.pubkey,
+            created_at: 1_779_762_725,
+            content: JSON.stringify(conflict),
+            tags,
+          },
+          30402
+        )
+      )
+      const reverse = parseProductEvent(
+        await signFixture(
+          {
+            id: "sat-conflict-reverse",
+            pubkey: compatible.pubkey,
+            created_at: 1_779_762_725,
+            content: JSON.stringify(
+              Object.fromEntries(Object.entries(conflict).reverse())
+            ),
+            tags,
+          },
+          30402
+        )
+      )
 
       expect(forward).toMatchObject({
         price: 2_500,
@@ -866,7 +978,7 @@ describe("product listing event parsing", () => {
     }
   })
 
-  it("fails closed on conflicting fiat JSON projections while keeping the tag canonical", () => {
+  it("fails closed on conflicting fiat JSON projections while keeping the tag canonical", async () => {
     const compatible = baseProduct({
       price: 10,
       currency: "usd",
@@ -882,13 +994,18 @@ describe("product listing event parsing", () => {
       ["title", "Fiat evidence"],
       ["price", "10.00", "USD"],
     ]
-    const exact = parseProductEvent({
-      id: "fiat-exact",
-      pubkey: compatible.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(compatible),
-      tags,
-    })
+    const exact = parseProductEvent(
+      await signFixture(
+        {
+          id: "fiat-exact",
+          pubkey: compatible.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(compatible),
+          tags,
+        },
+        30402
+      )
+    )
     expect(exact).toMatchObject({
       price: 10,
       currency: "USD",
@@ -913,13 +1030,18 @@ describe("product listing event parsing", () => {
       { ...compatible, priceSats: 1_000 },
     ]
     for (const conflict of conflicts) {
-      const parsed = parseProductEvent({
-        id: "fiat-conflict",
-        pubkey: compatible.pubkey,
-        created_at: 1_779_762_725,
-        content: JSON.stringify(conflict),
-        tags,
-      })
+      const parsed = parseProductEvent(
+        await signFixture(
+          {
+            id: "fiat-conflict",
+            pubkey: compatible.pubkey,
+            created_at: 1_779_762_725,
+            content: JSON.stringify(conflict),
+            tags,
+          },
+          30402
+        )
+      )
       expect(parsed).toMatchObject({
         price: 10,
         currency: "USD",
@@ -929,7 +1051,7 @@ describe("product listing event parsing", () => {
     }
   })
 
-  it("treats duplicated standard price tags as malformed independent of order", () => {
+  it("treats duplicated standard price tags as malformed independent of order", async () => {
     const legacy = baseProduct({
       price: 1_000,
       currency: "SATS",
@@ -941,17 +1063,22 @@ describe("product listing event parsing", () => {
     ]
 
     for (const orderedPriceTags of [priceTags, [...priceTags].reverse()]) {
-      const parsed = parseProductEvent({
-        id: "duplicate-price-tags",
-        pubkey: legacy.pubkey,
-        created_at: 1_779_762_725,
-        content: JSON.stringify(legacy),
-        tags: [
-          ["d", "duplicate-price-tags"],
-          ["title", "Duplicate price tags"],
-          ...orderedPriceTags,
-        ],
-      })
+      const parsed = parseProductEvent(
+        await signFixture(
+          {
+            id: "duplicate-price-tags",
+            pubkey: legacy.pubkey,
+            created_at: 1_779_762_725,
+            content: JSON.stringify(legacy),
+            tags: [
+              ["d", "duplicate-price-tags"],
+              ["title", "Duplicate price tags"],
+              ...orderedPriceTags,
+            ],
+          },
+          30402
+        )
+      )
       expect(parsed).toMatchObject({
         price: 1_000,
         currency: "SATS",
@@ -960,137 +1087,179 @@ describe("product listing event parsing", () => {
     }
   })
 
-  it("canonicalizes mixed-case tags from external tag-based listings", () => {
-    const parsed = parseProductEvent({
-      id: "mixed-tag-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "A listing from another Nostr client.",
-      tags: [
-        ["d", "mixed-tags"],
-        ["title", "Mixed Tags"],
-        ["price", "10", "SATS"],
-        ["t", " Bitcoin "],
-        ["t", "bitcoin"],
-        ["t", "BITCOIN"],
-        ["t", "Hardware"],
-      ],
-    })
+  it("canonicalizes mixed-case tags from external tag-based listings", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "mixed-tag-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "A listing from another Nostr client.",
+          tags: [
+            ["d", "mixed-tags"],
+            ["title", "Mixed Tags"],
+            ["price", "10", "SATS"],
+            ["t", " Bitcoin "],
+            ["t", "bitcoin"],
+            ["t", "BITCOIN"],
+            ["t", "Hardware"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.tags).toEqual(["bitcoin", "hardware"])
   })
 
-  it("uses signed event identity and time over legacy JSON fields", () => {
-    const parsed = parseProductEvent({
-      id: "signed-event",
-      pubkey: "signed-merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify(
-        baseProduct({
-          id: "content-controlled-id",
-          pubkey: "content-controlled-merchant",
-          createdAt: 9_999_999_999_999,
-          updatedAt: 9_999_999_999_999,
-        })
-      ),
-      tags: [["d", "signed-product"]],
-    })
+  it("uses signed event identity and time over legacy JSON fields", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "signed-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(
+            baseProduct({
+              id: "content-controlled-id",
+              pubkey: "content-controlled-merchant",
+              createdAt: 9_999_999_999_999,
+              updatedAt: 9_999_999_999_999,
+            })
+          ),
+          tags: [["d", "signed-product"]],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.id).toBe("30402:signed-merchant:signed-product")
-    expect(parsed.pubkey).toBe("signed-merchant")
+    expect(parsed.id).toBe(`30402:${publicFixturePubkey}:signed-product`)
+    expect(parsed.pubkey).toBe(publicFixturePubkey)
     expect(parsed.createdAt).toBe(1_779_762_725_000)
     expect(parsed.updatedAt).toBe(1_779_762_725_000)
   })
 
-  it("normalizes JSON-shaped summaries in legacy Conduit listings", () => {
+  it("normalizes JSON-shaped summaries in legacy Conduit listings", async () => {
     const product = baseProduct({
       summary: JSON.stringify({ description: "Legacy display copy" }),
     })
-    const parsed = parseProductEvent({
-      id: "legacy-json-summary-event",
-      pubkey: product.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(product),
-      tags: [["d", "legacy-json-summary"]],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-json-summary-event",
+          pubkey: product.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(product),
+          tags: [["d", "legacy-json-summary"]],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBe("Legacy display copy")
   })
 
-  it("suppresses nested JSON-shaped summaries in legacy listings", () => {
+  it("suppresses nested JSON-shaped summaries in legacy listings", async () => {
     const product = baseProduct({
       summary: JSON.stringify({
         description: JSON.stringify({ material: "linen" }),
       }),
     })
-    const parsed = parseProductEvent({
-      id: "legacy-nested-json-summary-event",
-      pubkey: product.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(product),
-      tags: [["d", "legacy-nested-json-summary"]],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-nested-json-summary-event",
+          pubkey: product.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(product),
+          tags: [["d", "legacy-nested-json-summary"]],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBeUndefined()
   })
 
-  it("keeps legacy JSON-content stock distinct from untracked products", () => {
+  it("keeps legacy JSON-content stock distinct from untracked products", async () => {
     const trackedProduct = baseProduct({ stock: 4 })
     const untrackedProduct = baseProduct({ stock: undefined })
-    const tracked = parseProductEvent({
-      id: "legacy-tracked-stock-event",
-      pubkey: trackedProduct.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(trackedProduct),
-      tags: [["d", "legacy-tracked-stock"]],
-    })
-    const untracked = parseProductEvent({
-      id: "legacy-untracked-stock-event",
-      pubkey: untrackedProduct.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(untrackedProduct),
-      tags: [["d", "legacy-untracked-stock"]],
-    })
+    const tracked = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-tracked-stock-event",
+          pubkey: trackedProduct.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(trackedProduct),
+          tags: [["d", "legacy-tracked-stock"]],
+        },
+        30402
+      )
+    )
+    const untracked = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-untracked-stock-event",
+          pubkey: untrackedProduct.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(untrackedProduct),
+          tags: [["d", "legacy-untracked-stock"]],
+        },
+        30402
+      )
+    )
 
     expect(tracked.stock).toBe(4)
     expect(untracked.stock).toBeUndefined()
   })
 
-  it("lets valid stock tags override legacy JSON-content stock", () => {
-    const parsed = parseProductEvent({
-      id: "legacy-stock-tag-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify(baseProduct({ stock: 9 })),
-      tags: [
-        ["d", "legacy-stock-tag"],
-        ["stock", "0"],
-      ],
-    })
+  it("lets valid stock tags override legacy JSON-content stock", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-stock-tag-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(baseProduct({ stock: 9 })),
+          tags: [
+            ["d", "legacy-stock-tag"],
+            ["stock", "0"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.stock).toBe(0)
   })
 
-  it("lets shipping tags override stale legacy JSON shipping fields", () => {
-    const parsed = parseProductEvent({
-      id: "legacy-shipping-tag-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify(
-        baseProduct({
-          shippingCostSats: undefined,
-          sourceShippingCost: undefined,
-          shippingOptionId: undefined,
-          shippingOptionDTag: undefined,
-        })
-      ),
-      tags: [
-        ["d", "legacy-shipping-tag"],
-        ["shipping_option", "30406:merchant:standard", "5"],
-      ],
-    })
+  it("lets shipping tags override stale legacy JSON shipping fields", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-shipping-tag-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(
+            baseProduct({
+              shippingCostSats: undefined,
+              sourceShippingCost: undefined,
+              shippingOptionId: undefined,
+              shippingOptionDTag: undefined,
+            })
+          ),
+          tags: [
+            ["d", "legacy-shipping-tag"],
+            ["shipping_option", `30406:${publicFixturePubkey}:standard`, "5"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionId).toBe(
+      `30406:${publicFixturePubkey}:standard`
+    )
     expect(parsed.shippingOptionDTag).toBe("standard")
     expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.sourceShippingCost).toEqual({
@@ -1100,70 +1269,85 @@ describe("product listing event parsing", () => {
     })
   })
 
-  it("lets explicit zap policy tags override legacy JSON-content defaults", () => {
+  it("lets explicit zap policy tags override legacy JSON-content defaults", async () => {
     const product = baseProduct({
       publicZapEnabled: true,
       zapMessagePolicy: "generic_only",
       publicZapPolicyKnown: true,
     })
-    const parsed = parseProductEvent({
-      id: "legacy-event-with-policy-tags",
-      pubkey: product.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(product),
-      tags: [
-        ["d", "overbudget"],
-        ["checkout_public_zaps", "false"],
-        ["checkout_zap_message_policy", "custom"],
-      ],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-event-with-policy-tags",
+          pubkey: product.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(product),
+          tags: [
+            ["d", "overbudget"],
+            ["checkout_public_zaps", "false"],
+            ["checkout_zap_message_policy", "custom"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.publicZapEnabled).toBe(false)
     expect(parsed.zapMessagePolicy).toBe("custom")
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
-  it("requires valid zap policy tags before treating legacy JSON policy as known", () => {
+  it("requires valid zap policy tags before treating legacy JSON policy as known", async () => {
     const product = baseProduct({
       publicZapEnabled: false,
       zapMessagePolicy: "custom",
       publicZapPolicyKnown: true,
     })
-    const parsed = parseProductEvent({
-      id: "legacy-content-only-policy-event",
-      pubkey: product.pubkey,
-      created_at: 1_779_762_725,
-      content: JSON.stringify(product),
-      tags: [
-        ["d", "legacy-content-only-policy"],
-        ["title", "Ignored title"],
-        ["price", "99", "USD"],
-      ],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-content-only-policy-event",
+          pubkey: product.pubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify(product),
+          tags: [
+            ["d", "legacy-content-only-policy"],
+            ["title", "Ignored title"],
+            ["price", "99", "USD"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.publicZapEnabled).toBe(true)
     expect(parsed.zapMessagePolicy).toBe("generic_only")
     expect(parsed.publicZapPolicyKnown).toBe(false)
   })
 
-  it("parses spec-aligned tag/content product listings", () => {
-    const parsed = parseProductEvent({
-      id: "spec-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "A Markdown product description.",
-      tags: [
-        ["d", "spec-product"],
-        ["title", "Spec Product"],
-        ["price", "25000", "SATS"],
-        ["type", "simple", "digital"],
-        ["checkout_public_zaps", "false"],
-        ["checkout_zap_message_policy", "custom"],
-        ["image", "https://example.com/spec.png"],
-      ],
-    })
+  it("parses spec-aligned tag/content product listings", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "spec-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "A Markdown product description.",
+          tags: [
+            ["d", "spec-product"],
+            ["title", "Spec Product"],
+            ["price", "25000", "SATS"],
+            ["type", "simple", "digital"],
+            ["checkout_public_zaps", "false"],
+            ["checkout_zap_message_policy", "custom"],
+            ["image", "https://example.com/spec.png"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.id).toBe("30402:merchant:spec-product")
+    expect(parsed.id).toBe(`30402:${publicFixturePubkey}:spec-product`)
     expect(parsed.title).toBe("Spec Product")
     expect(parsed.summary).toBe("A Markdown product description.")
     expect(parsed.price).toBe(25_000)
@@ -1175,22 +1359,29 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
-  it("parses Open Markets shipping option extra cost from product listings", () => {
-    const parsed = parseProductEvent({
-      id: "spec-event-with-shipping-extra-cost",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "A shippable product.",
-      tags: [
-        ["d", "extra-cost-product"],
-        ["title", "Extra Cost Product"],
-        ["price", "25000", "SATS"],
-        ["type", "simple", "physical"],
-        ["shipping_option", "30406:merchant:standard", "500"],
-      ],
-    })
+  it("parses Open Markets shipping option extra cost from product listings", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "spec-event-with-shipping-extra-cost",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "A shippable product.",
+          tags: [
+            ["d", "extra-cost-product"],
+            ["title", "Extra Cost Product"],
+            ["price", "25000", "SATS"],
+            ["type", "simple", "physical"],
+            ["shipping_option", `30406:${publicFixturePubkey}:standard`, "500"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionId).toBe(
+      `30406:${publicFixturePubkey}:standard`
+    )
     expect(parsed.shippingOptionDTag).toBe("standard")
     expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.shippingCostSats).toBe(500)
@@ -1201,22 +1392,29 @@ describe("product listing event parsing", () => {
     })
   })
 
-  it("keeps Open Markets fiat shipping option extra cost in the product currency", () => {
-    const parsed = parseProductEvent({
-      id: "spec-event-with-fiat-shipping-extra-cost",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "A fiat-priced shippable product.",
-      tags: [
-        ["d", "fiat-extra-cost-product"],
-        ["title", "Fiat Extra Cost Product"],
-        ["price", "25", "USD"],
-        ["type", "simple", "physical"],
-        ["shipping_option", "30406:merchant:standard", "5"],
-      ],
-    })
+  it("keeps Open Markets fiat shipping option extra cost in the product currency", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "spec-event-with-fiat-shipping-extra-cost",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "A fiat-priced shippable product.",
+          tags: [
+            ["d", "fiat-extra-cost-product"],
+            ["title", "Fiat Extra Cost Product"],
+            ["price", "25", "USD"],
+            ["type", "simple", "physical"],
+            ["shipping_option", `30406:${publicFixturePubkey}:standard`, "5"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionId).toBe(
+      `30406:${publicFixturePubkey}:standard`
+    )
     expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.shippingCostSats).toBeUndefined()
     expect(parsed.sourceShippingCost).toEqual({
@@ -1226,112 +1424,149 @@ describe("product listing event parsing", () => {
     })
   })
 
-  it("keeps explicit shipping_cost tags ahead of shipping option extra cost", () => {
-    const parsed = parseProductEvent({
-      id: "spec-event-with-legacy-shipping-cost",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "A shippable product.",
-      tags: [
-        ["d", "legacy-shipping-cost-product"],
-        ["title", "Legacy Shipping Cost Product"],
-        ["price", "25000", "SATS"],
-        ["type", "simple", "physical"],
-        ["shipping_cost", "250"],
-        ["shipping_option", "30406:merchant:standard", "500"],
-      ],
-    })
+  it("keeps explicit shipping_cost tags ahead of shipping option extra cost", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "spec-event-with-legacy-shipping-cost",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "A shippable product.",
+          tags: [
+            ["d", "legacy-shipping-cost-product"],
+            ["title", "Legacy Shipping Cost Product"],
+            ["price", "25000", "SATS"],
+            ["type", "simple", "physical"],
+            ["shipping_cost", "250"],
+            ["shipping_option", `30406:${publicFixturePubkey}:standard`, "500"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionId).toBe(
+      `30406:${publicFixturePubkey}:standard`
+    )
     expect(parsed.shippingOptionLaunchUnsupported).toBe(true)
     expect(parsed.shippingCostSats).toBe(250)
   })
 
-  it("parses Open Markets stock tags and keeps zero distinct from missing stock", () => {
-    const zero = parseProductEvent({
-      id: "zero-stock-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Sold out for now.",
-      tags: [
-        ["d", "zero-stock"],
-        ["title", "Zero Stock Product"],
-        ["price", "25000", "SATS"],
-        ["stock", "0"],
-      ],
-    })
-    const untracked = parseProductEvent({
-      id: "untracked-stock-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Inventory is not tracked.",
-      tags: [
-        ["d", "untracked-stock"],
-        ["title", "Untracked Product"],
-        ["price", "25000", "SATS"],
-      ],
-    })
-    const malformed = parseProductEvent({
-      id: "malformed-stock-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Malformed stock should degrade to untracked.",
-      tags: [
-        ["d", "malformed-stock"],
-        ["title", "Malformed Stock Product"],
-        ["price", "25000", "SATS"],
-        ["stock", "-1"],
-      ],
-    })
+  it("parses Open Markets stock tags and keeps zero distinct from missing stock", async () => {
+    const zero = parseProductEvent(
+      await signFixture(
+        {
+          id: "zero-stock-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Sold out for now.",
+          tags: [
+            ["d", "zero-stock"],
+            ["title", "Zero Stock Product"],
+            ["price", "25000", "SATS"],
+            ["stock", "0"],
+          ],
+        },
+        30402
+      )
+    )
+    const untracked = parseProductEvent(
+      await signFixture(
+        {
+          id: "untracked-stock-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Inventory is not tracked.",
+          tags: [
+            ["d", "untracked-stock"],
+            ["title", "Untracked Product"],
+            ["price", "25000", "SATS"],
+          ],
+        },
+        30402
+      )
+    )
+    const malformed = parseProductEvent(
+      await signFixture(
+        {
+          id: "malformed-stock-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Malformed stock should degrade to untracked.",
+          tags: [
+            ["d", "malformed-stock"],
+            ["title", "Malformed Stock Product"],
+            ["price", "25000", "SATS"],
+            ["stock", "-1"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(zero.stock).toBe(0)
     expect(untracked.stock).toBeUndefined()
     expect(malformed.stock).toBeUndefined()
   })
 
-  it("skips malformed duplicate stock tags before a valid stock value", () => {
-    const parsed = parseProductEvent({
-      id: "duplicate-stock-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Duplicate stock tags from an external client.",
-      tags: [
-        ["d", "duplicate-stock"],
-        ["title", "Duplicate Stock Product"],
-        ["price", "25000", "SATS"],
-        ["stock", "-1"],
-        ["stock", "5"],
-      ],
-    })
+  it("skips malformed duplicate stock tags before a valid stock value", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "duplicate-stock-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Duplicate stock tags from an external client.",
+          tags: [
+            ["d", "duplicate-stock"],
+            ["title", "Duplicate Stock Product"],
+            ["price", "25000", "SATS"],
+            ["stock", "-1"],
+            ["stock", "5"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.stock).toBe(5)
   })
 
-  it("defaults missing or unknown public zap tags to generic public-zap-safe policy", () => {
-    const missing = parseProductEvent({
-      id: "missing-policy-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Legacy listing",
-      tags: [
-        ["d", "missing-policy"],
-        ["title", "Missing Policy Product"],
-        ["price", "25000", "SATS"],
-      ],
-    })
-    const malformed = parseProductEvent({
-      id: "malformed-policy-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Malformed listing",
-      tags: [
-        ["d", "malformed-policy"],
-        ["title", "Malformed Policy Product"],
-        ["price", "25000", "SATS"],
-        ["checkout_public_zaps", "maybe"],
-        ["checkout_zap_message_policy", "ship_everything"],
-      ],
-    })
+  it("defaults missing or unknown public zap tags to generic public-zap-safe policy", async () => {
+    const missing = parseProductEvent(
+      await signFixture(
+        {
+          id: "missing-policy-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Legacy listing",
+          tags: [
+            ["d", "missing-policy"],
+            ["title", "Missing Policy Product"],
+            ["price", "25000", "SATS"],
+          ],
+        },
+        30402
+      )
+    )
+    const malformed = parseProductEvent(
+      await signFixture(
+        {
+          id: "malformed-policy-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Malformed listing",
+          tags: [
+            ["d", "malformed-policy"],
+            ["title", "Malformed Policy Product"],
+            ["price", "25000", "SATS"],
+            ["checkout_public_zaps", "maybe"],
+            ["checkout_zap_message_policy", "ship_everything"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(missing.publicZapEnabled).toBe(true)
     expect(missing.zapMessagePolicy).toBe("generic_only")
@@ -1341,73 +1576,93 @@ describe("product listing event parsing", () => {
     expect(malformed.publicZapPolicyKnown).toBe(false)
   })
 
-  it("parses the earlier public_zaps tag candidate for compatibility", () => {
-    const parsed = parseProductEvent({
-      id: "legacy-candidate-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Earlier tag candidate listing",
-      tags: [
-        ["d", "legacy-candidate"],
-        ["title", "Legacy Candidate Product"],
-        ["price", "25000", "SATS"],
-        ["public_zaps", "disabled"],
-        ["zap_message_policy", "shopper_custom"],
-      ],
-    })
+  it("parses the earlier public_zaps tag candidate for compatibility", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-candidate-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Earlier tag candidate listing",
+          tags: [
+            ["d", "legacy-candidate"],
+            ["title", "Legacy Candidate Product"],
+            ["price", "25000", "SATS"],
+            ["public_zaps", "disabled"],
+            ["zap_message_policy", "shopper_custom"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.publicZapEnabled).toBe(false)
     expect(parsed.zapMessagePolicy).toBe("custom")
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
-  it("maps the legacy product policy alias to generic-only compatibility", () => {
-    const parsed = parseProductEvent({
-      id: "legacy-product-policy-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Legacy policy candidate listing",
-      tags: [
-        ["d", "legacy-product-policy"],
-        ["title", "Legacy Product Policy"],
-        ["price", "25000", "SATS"],
-        ["checkout_public_zaps", "true"],
-        ["checkout_zap_message_policy", "product"],
-      ],
-    })
+  it("maps the legacy product policy alias to generic-only compatibility", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-product-policy-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Legacy policy candidate listing",
+          tags: [
+            ["d", "legacy-product-policy"],
+            ["title", "Legacy Product Policy"],
+            ["price", "25000", "SATS"],
+            ["checkout_public_zaps", "true"],
+            ["checkout_zap_message_policy", "product"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.publicZapEnabled).toBe(true)
     expect(parsed.zapMessagePolicy).toBe("generic_only")
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
-  it("parses variable and variation product types from spec type tags", () => {
-    const variable = parseProductEvent({
-      id: "variable-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Choose a size before purchase.",
-      tags: [
-        ["d", "variable-product"],
-        ["title", "Variable Product"],
-        ["price", "25000", "SATS"],
-        ["type", "variable", "physical"],
-        ["image", "https://example.com/variable.png"],
-      ],
-    })
-    const variation = parseProductEvent({
-      id: "variation-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Large size option.",
-      tags: [
-        ["d", "variation-product"],
-        ["title", "Variation Product"],
-        ["price", "25000", "SATS"],
-        ["type", "variation", "physical"],
-        ["image", "https://example.com/variation.png"],
-      ],
-    })
+  it("parses variable and variation product types from spec type tags", async () => {
+    const variable = parseProductEvent(
+      await signFixture(
+        {
+          id: "variable-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Choose a size before purchase.",
+          tags: [
+            ["d", "variable-product"],
+            ["title", "Variable Product"],
+            ["price", "25000", "SATS"],
+            ["type", "variable", "physical"],
+            ["image", "https://example.com/variable.png"],
+          ],
+        },
+        30402
+      )
+    )
+    const variation = parseProductEvent(
+      await signFixture(
+        {
+          id: "variation-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Large size option.",
+          tags: [
+            ["d", "variation-product"],
+            ["title", "Variation Product"],
+            ["price", "25000", "SATS"],
+            ["type", "variation", "physical"],
+            ["image", "https://example.com/variation.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(variable.type).toBe("variable")
     expect(variable.format).toBe("physical")
@@ -1415,52 +1670,67 @@ describe("product listing event parsing", () => {
     expect(variation.format).toBe("physical")
   })
 
-  it("keeps the legacy physical fallback when the type format is omitted", () => {
-    const parsed = parseProductEvent({
-      id: "legacy-format-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Legacy physical listing.",
-      tags: [
-        ["d", "legacy-format"],
-        ["title", "Legacy Format Product"],
-        ["price", "25000", "SATS"],
-        ["type", "simple"],
-        ["image", "https://example.com/legacy-format.png"],
-      ],
-    })
+  it("keeps the legacy physical fallback when the type format is omitted", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "legacy-format-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Legacy physical listing.",
+          tags: [
+            ["d", "legacy-format"],
+            ["title", "Legacy Format Product"],
+            ["price", "25000", "SATS"],
+            ["type", "simple"],
+            ["image", "https://example.com/legacy-format.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.type).toBe("simple")
     expect(parsed.format).toBe("physical")
   })
 
-  it("parses independent stock values for variation listings", () => {
-    const large = parseProductEvent({
-      id: "large-variation-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Large size option.",
-      tags: [
-        ["d", "large-variation"],
-        ["title", "Large Shirt"],
-        ["price", "25000", "SATS"],
-        ["type", "variation", "physical"],
-        ["stock", "2"],
-      ],
-    })
-    const medium = parseProductEvent({
-      id: "medium-variation-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Medium size option.",
-      tags: [
-        ["d", "medium-variation"],
-        ["title", "Medium Shirt"],
-        ["price", "25000", "SATS"],
-        ["type", "variation", "physical"],
-        ["stock", "7"],
-      ],
-    })
+  it("parses independent stock values for variation listings", async () => {
+    const large = parseProductEvent(
+      await signFixture(
+        {
+          id: "large-variation-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Large size option.",
+          tags: [
+            ["d", "large-variation"],
+            ["title", "Large Shirt"],
+            ["price", "25000", "SATS"],
+            ["type", "variation", "physical"],
+            ["stock", "2"],
+          ],
+        },
+        30402
+      )
+    )
+    const medium = parseProductEvent(
+      await signFixture(
+        {
+          id: "medium-variation-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Medium size option.",
+          tags: [
+            ["d", "medium-variation"],
+            ["title", "Medium Shirt"],
+            ["price", "25000", "SATS"],
+            ["type", "variation", "physical"],
+            ["stock", "7"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(large.type).toBe("variation")
     expect(large.stock).toBe(2)
@@ -1468,21 +1738,26 @@ describe("product listing event parsing", () => {
     expect(medium.stock).toBe(7)
   })
 
-  it("falls back to tags when Markdown content is JSON-shaped but not a legacy product", () => {
-    const parsed = parseProductEvent({
-      id: "json-shaped-summary-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: '{"material":"linen","care":"cold wash"}',
-      tags: [
-        ["d", "json-shaped-summary"],
-        ["title", "JSON-Shaped Summary Product"],
-        ["price", "42000", "SATS"],
-        ["type", "simple", "physical"],
-      ],
-    })
+  it("falls back to tags when Markdown content is JSON-shaped but not a legacy product", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "json-shaped-summary-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: '{"material":"linen","care":"cold wash"}',
+          tags: [
+            ["d", "json-shaped-summary"],
+            ["title", "JSON-Shaped Summary Product"],
+            ["price", "42000", "SATS"],
+            ["type", "simple", "physical"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.id).toBe("30402:merchant:json-shaped-summary")
+    expect(parsed.id).toBe(`30402:${publicFixturePubkey}:json-shaped-summary`)
     expect(parsed.title).toBe("JSON-Shaped Summary Product")
     expect(parsed.summary).toBeUndefined()
     expect(parsed.price).toBe(42_000)
@@ -1490,29 +1765,34 @@ describe("product listing event parsing", () => {
     expect(parsed.type).toBe("simple")
   })
 
-  it("uses partial JSON listing metadata for display compatibility", () => {
-    const parsed = parseProductEvent({
-      id: "partial-json-listing-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify({
-        title: "Sats gift",
-        description: "I got some sats for you!",
-        category: "Ecash",
-        pricing: "free",
-        images: [""],
-        created_at: "2025-07-25T13:43:52.327Z",
-      }),
-      tags: [
-        ["d", "sats-gift"],
-        ["price", "0", "SATS"],
-        ["type", "simple", "digital"],
-        ["t", "Ecard"],
-        ["t", "Ecash"],
-      ],
-    })
+  it("uses partial JSON listing metadata for display compatibility", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "partial-json-listing-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify({
+            title: "Sats gift",
+            description: "I got some sats for you!",
+            category: "Ecash",
+            pricing: "free",
+            images: [""],
+            created_at: "2025-07-25T13:43:52.327Z",
+          }),
+          tags: [
+            ["d", "sats-gift"],
+            ["price", "0", "SATS"],
+            ["type", "simple", "digital"],
+            ["t", "Ecard"],
+            ["t", "Ecash"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.id).toBe("30402:merchant:sats-gift")
+    expect(parsed.id).toBe(`30402:${publicFixturePubkey}:sats-gift`)
     expect(parsed.title).toBe("Sats gift")
     expect(parsed.summary).toBe("I got some sats for you!")
     expect(parsed.price).toBe(0)
@@ -1522,7 +1802,7 @@ describe("product listing event parsing", () => {
     expect(parsed.images).toEqual([])
   })
 
-  it("projects screenshot-shaped JSON from a non-standard summary tag", () => {
+  it("projects screenshot-shaped JSON from a non-standard summary tag", async () => {
     const rawSummary = JSON.stringify({
       title: "Love, Love, Love",
       description: "Nutti loves Ecash",
@@ -1533,105 +1813,132 @@ describe("product listing event parsing", () => {
       ],
       created_at: "2025-07-25T13:44:41.029Z",
     })
-    const parsed = parseProductEvent({
-      id: "love-love-love-event",
-      pubkey: "merchant",
-      created_at: 1_753_451_081,
-      content: rawSummary,
-      tags: [
-        ["d", "love-love-love"],
-        ["summary", rawSummary],
-        ["price", "0", "SATS"],
-        ["t", "Ecard"],
-        ["t", "Ecash"],
-        ["t", "Bitpopart"],
-        ["t", "Bitcoin-Art"],
-      ],
-    })
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "love-love-love-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_753_451_081,
+          content: rawSummary,
+          tags: [
+            ["d", "love-love-love"],
+            ["summary", rawSummary],
+            ["price", "0", "SATS"],
+            ["t", "Ecard"],
+            ["t", "Ecash"],
+            ["t", "Bitpopart"],
+            ["t", "Bitcoin-Art"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.title).toBe("Love, Love, Love")
     expect(parsed.summary).toBe("Nutti loves Ecash")
     expect(parsed.summary).not.toContain('{"title"')
   })
 
-  it("suppresses JSON summary tags without display copy", () => {
-    const parsed = parseProductEvent({
-      id: "json-summary-metadata-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "",
-      tags: [
-        ["d", "json-summary-metadata"],
-        ["title", "Metadata-only JSON"],
-        ["summary", '{"material":"linen","care":"cold wash"}'],
-        ["price", "42000", "SATS"],
-      ],
-    })
+  it("suppresses JSON summary tags without display copy", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "json-summary-metadata-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "",
+          tags: [
+            ["d", "json-summary-metadata"],
+            ["title", "Metadata-only JSON"],
+            ["summary", '{"material":"linen","care":"cold wash"}'],
+            ["price", "42000", "SATS"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBeUndefined()
   })
 
-  it("falls back to Markdown content when a JSON summary tag has no display copy", () => {
-    const parsed = parseProductEvent({
-      id: "json-summary-with-markdown-content-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Merchant-authored **Markdown** description.",
-      tags: [
-        ["d", "json-summary-with-markdown-content"],
-        ["title", "Markdown fallback"],
-        ["summary", '{"material":"linen","care":"cold wash"}'],
-        ["price", "42000", "SATS"],
-      ],
-    })
+  it("falls back to Markdown content when a JSON summary tag has no display copy", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "json-summary-with-markdown-content-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Merchant-authored **Markdown** description.",
+          tags: [
+            ["d", "json-summary-with-markdown-content"],
+            ["title", "Markdown fallback"],
+            ["summary", '{"material":"linen","care":"cold wash"}'],
+            ["price", "42000", "SATS"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBe("Merchant-authored **Markdown** description.")
   })
 
-  it("clamps partial JSON listing metadata before schema validation", () => {
-    const parsed = parseProductEvent({
-      id: "oversized-partial-json-listing-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: JSON.stringify({
-        title: "T".repeat(240),
-        description: "D".repeat(5_040),
-      }),
-      tags: [
-        ["d", "oversized-json-listing"],
-        ["price", "1000", "SATS"],
-        ["type", "simple", "digital"],
-      ],
-    })
+  it("clamps partial JSON listing metadata before schema validation", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "oversized-partial-json-listing-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: JSON.stringify({
+            title: "T".repeat(240),
+            description: "D".repeat(5_040),
+          }),
+          tags: [
+            ["d", "oversized-json-listing"],
+            ["price", "1000", "SATS"],
+            ["type", "simple", "digital"],
+          ],
+        },
+        30402
+      )
+    )
 
-    expect(parsed.id).toBe("30402:merchant:oversized-json-listing")
+    expect(parsed.id).toBe(
+      `30402:${publicFixturePubkey}:oversized-json-listing`
+    )
     expect(parsed.title).toHaveLength(200)
     expect(parsed.summary).toHaveLength(5000)
     expect(parsed.title).toBe("T".repeat(200))
     expect(parsed.summary).toBe("D".repeat(5000))
   })
 
-  it("strips generated card metadata from summary tags", () => {
-    const parsed = parseProductEvent({
-      id: "generated-card-summary-event",
-      pubkey:
-        "43baaf0c28e6cfb195b17ee083e19eb3a4afdfac54d9b6baf170270ed193e34c",
-      created_at: 1_783_424_610,
-      content:
-        "## Sun Smile Joy \n\nSun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*\n\n**Price:** 14.95 EUR (-21%)\n**Category:** Keychains\n**Type:** Physical Product\n\n*Listed by BitPopArt*",
-      tags: [
-        ["d", "bitpopart-product-1753683992900-jsvyv2"],
-        ["title", "Sun Smile Joy "],
-        [
-          "summary",
-          "Sun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*",
-        ],
-        ["price", "14.95", "EUR"],
-        ["type", "simple", "physical"],
-        ["t", "keychains"],
-        ["client", "www.bitpopart.com"],
-      ],
-    })
+  it("strips generated card metadata from summary tags", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "generated-card-summary-event",
+          pubkey:
+            "43baaf0c28e6cfb195b17ee083e19eb3a4afdfac54d9b6baf170270ed193e34c",
+          created_at: 1_783_424_610,
+          content:
+            "## Sun Smile Joy \n\nSun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*\n\n**Price:** 14.95 EUR (-21%)\n**Category:** Keychains\n**Type:** Physical Product\n\n*Listed by BitPopArt*",
+          tags: [
+            ["d", "bitpopart-product-1753683992900-jsvyv2"],
+            ["title", "Sun Smile Joy "],
+            [
+              "summary",
+              "Sun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*",
+            ],
+            ["price", "14.95", "EUR"],
+            ["type", "simple", "physical"],
+            ["t", "keychains"],
+            ["client", "www.bitpopart.com"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.title).toBe("Sun Smile Joy ")
     expect(parsed.summary).toBe("Sun Smile Joy Fluffy Pluche")
@@ -1644,28 +1951,33 @@ describe("product listing event parsing", () => {
     })
   })
 
-  it("keeps merchant-authored labeled summary lines that do not match listing metadata", () => {
-    const parsed = parseProductEvent({
-      id: "merchant-authored-labeled-summary-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Fallback content",
-      tags: [
-        ["d", "labeled-summary"],
-        ["title", "Woodcut Edition"],
-        [
-          "summary",
-          [
-            "Category: woodcut prints",
-            "Type: handmade paper",
-            "Price: varies by edition",
-          ].join("\n"),
-        ],
-        ["price", "1000", "SATS"],
-        ["type", "simple", "physical"],
-        ["t", "prints"],
-      ],
-    })
+  it("keeps merchant-authored labeled summary lines that do not match listing metadata", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "merchant-authored-labeled-summary-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Fallback content",
+          tags: [
+            ["d", "labeled-summary"],
+            ["title", "Woodcut Edition"],
+            [
+              "summary",
+              [
+                "Category: woodcut prints",
+                "Type: handmade paper",
+                "Price: varies by edition",
+              ].join("\n"),
+            ],
+            ["price", "1000", "SATS"],
+            ["type", "simple", "physical"],
+            ["t", "prints"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBe(
       [
@@ -1676,42 +1988,52 @@ describe("product listing event parsing", () => {
     )
   })
 
-  it("keeps prose between generated-looking price and format lines", () => {
-    const parsed = parseProductEvent({
-      id: "merchant-prose-between-metadata-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Fallback content",
-      tags: [
-        ["d", "merchant-prose-between-metadata"],
-        ["title", "Carved Cedar"],
-        [
-          "summary",
-          "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product",
-        ],
-        ["price", "1000", "SATS"],
-        ["type", "simple", "physical"],
-      ],
-    })
+  it("keeps prose between generated-looking price and format lines", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "merchant-prose-between-metadata-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Fallback content",
+          tags: [
+            ["d", "merchant-prose-between-metadata"],
+            ["title", "Carved Cedar"],
+            [
+              "summary",
+              "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product",
+            ],
+            ["price", "1000", "SATS"],
+            ["type", "simple", "physical"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBe(
       "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product"
     )
   })
 
-  it("keeps merchant-authored prose that starts with listed by", () => {
-    const parsed = parseProductEvent({
-      id: "merchant-listed-by-prose-event",
-      pubkey: "merchant",
-      created_at: 1_779_762_725,
-      content: "Fallback content",
-      tags: [
-        ["d", "merchant-listed-by-prose"],
-        ["title", "Handmade Print"],
-        ["summary", "Listed by hand and signed by the artist."],
-        ["price", "1000", "SATS"],
-      ],
-    })
+  it("keeps merchant-authored prose that starts with listed by", async () => {
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "merchant-listed-by-prose-event",
+          pubkey: publicFixturePubkey,
+          created_at: 1_779_762_725,
+          content: "Fallback content",
+          tags: [
+            ["d", "merchant-listed-by-prose"],
+            ["title", "Handmade Print"],
+            ["summary", "Listed by hand and signed by the artist."],
+            ["price", "1000", "SATS"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(parsed.summary).toBe("Listed by hand and signed by the artist.")
   })

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 import {
   emptyAccountNetworkLocalState,
@@ -19,7 +23,8 @@ import {
 
 const ACCOUNT = "c".repeat(64)
 const OTHER_ACCOUNT = "e".repeat(64)
-const MERCHANT = "d".repeat(64)
+const MERCHANT_SECRET = generateSecretKey()
+const MERCHANT = getPublicKey(MERCHANT_SECRET)
 const REMOVED_RELAY = "wss://removed-shipping.conduit.market"
 const RETAINED_RELAY = "wss://retained-shipping.conduit.market"
 const OWNER_WS_RELAY = "ws://owner-shipping.example:4848"
@@ -58,7 +63,6 @@ function successfulEmptyRead(options: PublicRelayReadOptions = {}) {
       status: "success" as const,
       eventCount: 0,
     })),
-    eventsVerified: true,
   }
 }
 
@@ -126,10 +130,17 @@ describe("shipping account network boundary", () => {
       },
       fetchPublicEvents: async (_filter, options = {}) => {
         broadReadCalls.push(options)
-        const event = new NDKEvent()
-        event.pubkey = MERCHANT
-        event.tags = [["d", "standard"]]
-        return [event]
+        return [
+          finalizeEvent(
+            {
+              kind: 30406,
+              created_at: 1,
+              content: "Shipping option",
+              tags: [["d", "standard"]],
+            },
+            MERCHANT_SECRET
+          ),
+        ]
       },
       fetchSignedEventsFanoutDetailed: async (_filter, options = {}) => {
         exactReadCalls.push(options)
@@ -164,7 +175,7 @@ describe("shipping account network boundary", () => {
     }
   })
 
-  it("admits only the exact authenticated owner's selected ws relay", async () => {
+  it("does not admit a nominated owner ws relay without durable signed proof", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
     const finalReadCalls: PublicRelayReadOptions[] = []
     let authorityReads = 0
@@ -241,8 +252,10 @@ describe("shipping account network boundary", () => {
     for (const call of finalReadCalls) {
       expect(call.accountPubkey).toBe(ACCOUNT)
       expect(call.authenticatedPubkey).toBe(ACCOUNT)
-      expect(call.relayUrls).toContain(OWNER_WS_RELAY)
-      expect(call.ownerSelectedRelayUrls).toEqual([OWNER_WS_RELAY])
+      expect(call.relayUrls).not.toContain(OWNER_WS_RELAY)
+      expect(call.relayTargets?.map((target) => target.url)).not.toContain(
+        OWNER_WS_RELAY
+      )
       expect(call.relayUrls).not.toContain(REMOTE_WS_RELAY)
       expect(call.relayUrls).toContain(RETAINED_RELAY)
     }
@@ -261,7 +274,9 @@ describe("shipping account network boundary", () => {
     expect(relayListCalls[0]?.authenticatedPubkey).toBeUndefined()
     for (const call of finalReadCalls) {
       expect(call.authenticatedPubkey).toBeUndefined()
-      expect(call.ownerSelectedRelayUrls).toEqual([])
+      expect(call.relayTargets?.map((target) => target.url)).not.toContain(
+        OWNER_WS_RELAY
+      )
       expect(call.relayUrls).not.toContain(OWNER_WS_RELAY)
       expect(call.relayUrls).not.toContain(REMOTE_WS_RELAY)
     }

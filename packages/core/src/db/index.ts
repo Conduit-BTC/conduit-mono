@@ -20,6 +20,14 @@ import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
 import type { WalletDescriptor, WalletProviderId } from "../wallets"
+import type {
+  InboxDeletionRow,
+  InboxDeviceKey,
+  InboxWrapperRow,
+  InboxProjectionRow,
+  InboxRangeRow,
+  InboxDeliveryRow,
+} from "../protocol/commerce-inbox-store"
 
 export interface StoredOrder {
   id: string
@@ -351,6 +359,7 @@ export type OwnerRelayListLookupCoverage =
   "complete" | "partial" | "unavailable"
 
 export interface OwnerRelayListLookupEvidence {
+  sources?: import("../protocol/account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: OwnerRelayListLookupCoverage
   /** True only when this lookup returned a valid, owner-authored kind-10002. */
@@ -391,7 +400,15 @@ export type NetworkPreferencePublishStatus =
   | "error"
 
 export type NetworkPreferenceReadbackStatus =
-  "pending" | "observed" | "absent" | "timed_out"
+  | "pending"
+  | "observed"
+  | "absent"
+  | "timed_out"
+  | "auth_required"
+  | "verification_unavailable"
+  | "unavailable"
+  | "policy_blocked"
+  | "cancelled"
 
 /** Content-free delivery evidence for one immutable signed-event target. */
 export interface NetworkPreferenceRelayOutcome {
@@ -442,6 +459,7 @@ export type InboxDeclarationLookupCoverage =
  * observation cannot disappear after a process restart.
  */
 export interface InboxDeclarationLookupEvidence {
+  sources?: import("../protocol/account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: InboxDeclarationLookupCoverage
   /** True when the lookup returned an event, including unusable evidence. */
@@ -721,6 +739,8 @@ export interface StoredMerchantPendingInvoice {
   source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock"
   invoiceExpiresAt: number
   deliveryState: "pending" | "sent"
+  /** A semantic publish began; absent positive evidence, only exact-wrap recovery is safe. */
+  deliveryAttempted?: boolean
   updatedAt: number
 }
 
@@ -1083,6 +1103,12 @@ export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTo
 export class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
+  commerceInboxDeletions!: EntityTable<InboxDeletionRow, "id">
+  commerceInboxKeys!: EntityTable<InboxDeviceKey, "id">
+  commerceInboxWrappers!: EntityTable<InboxWrapperRow, "id">
+  commerceInboxRecords!: EntityTable<InboxProjectionRow, "id">
+  commerceInboxRanges!: EntityTable<InboxRangeRow, "id">
+  commerceInboxDeliveries!: EntityTable<InboxDeliveryRow, "id">
   products!: EntityTable<CachedProduct, "id">
   productTombstones!: EntityTable<CachedProductTombstone, "id">
   shippingOptionFrontiers!: EntityTable<
@@ -1352,10 +1378,31 @@ export class ConduitDB extends Dexie {
     })
 
     this.version(24).stores({
+      // v24 also opened on recovery previews. Retain their additive stores in
+      // the historical union so Dexie does not delete/recreate their rows.
+      sparkRecoveryEvidence: "ownerPubkey",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
       // Restore direct per-market recovery queries while keeping the current
       // merchant and update-time indexes available for organizer decisions.
       eventMarketMerchantDecisionJobs:
         "id, marketCoordinate, merchantPubkey, status, updatedAt",
+    })
+
+    this.version(25).stores({
+      // v24 exists in concurrent recovery branches. Preserve their additive
+      // stores/indexes without rewriting an already-opened database lineage.
+      sparkRecoveryEvidence: "ownerPubkey",
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, [marketCoordinate+merchantPubkey], status, updatedAt, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
+      commerceInboxDeletions: "id, accountPubkey",
+      commerceInboxKeys: "id",
+      commerceInboxWrappers: "id, accountPubkey, state, observedAt",
+      commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
+      commerceInboxRanges: "id, accountPubkey",
+      commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
     })
   }
 }
@@ -1446,7 +1493,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     // Shipping option frontiers are likewise intentionally absent here: a
     // relay/config change cannot erase a previously observed stronger price.
     db.profiles.clear(),
-    db.orderMessages.clear(),
+    // Private histories are durable account evidence, never relay-scope cache.
     db.relayLists.clear(),
     db.productSocialSummaries.clear(),
     db.nip05Verifications.clear(),

@@ -29,7 +29,6 @@ export interface UseInboxDeclarationOptions {
 export type InboxDeclarationStatus =
   | "loading"
   | "ready"
-  | "distribution_pending"
   | "not_observed"
   | "signed_empty"
   | "malformed"
@@ -76,6 +75,30 @@ function sameAccountReadAuthority(
   )
 }
 
+/** A disabled lookup cannot present cached readiness from an earlier session. */
+export function selectInboxDeclarationReadiness(input: {
+  enabled: boolean
+  readiness: OwnPrivateMessageRelayReadiness | undefined
+  isLoading: boolean
+  error: unknown
+}): {
+  readiness: OwnPrivateMessageRelayReadiness | undefined
+  status: InboxDeclarationStatus
+} {
+  if (!input.enabled) return { readiness: undefined, status: "loading" }
+  const readiness = input.readiness
+  return {
+    readiness,
+    status: input.isLoading
+      ? "loading"
+      : input.error
+        ? "lookup_unavailable"
+        : readiness?.state === "ready"
+          ? "ready"
+          : (readiness?.state ?? "loading"),
+  }
+}
+
 export function useInboxDeclaration(
   pubkey: string | null | undefined,
   options: UseInboxDeclarationOptions = {}
@@ -90,6 +113,7 @@ export function useInboxDeclaration(
     status: auth.status,
   })
   const queryClient = useQueryClient()
+  const enabled = !!pubkey && (options.enabled ?? true)
   const queryKey = useMemo(
     () => [INBOX_DECLARATION_QUERY_KEY, pubkey ?? "none"],
     [pubkey]
@@ -112,7 +136,7 @@ export function useInboxDeclaration(
 
   const readinessQuery = useQuery({
     queryKey,
-    enabled: !!pubkey && (options.enabled ?? true),
+    enabled,
     queryFn: ({ signal }) => {
       const expectedAuthority: AccountReadAuthority = {
         authGeneration: auth.authGeneration,
@@ -149,39 +173,29 @@ export function useInboxDeclaration(
     })
   }, [options.enabled, options.relayScope, pubkey, queryClient, queryKey])
 
-  const readiness = readinessQuery.data
-  const status: InboxDeclarationStatus = readinessQuery.isLoading
-    ? "loading"
-    : readinessQuery.error
-      ? "lookup_unavailable"
-      : readiness?.state === "ready"
-        ? "ready"
-        : (readiness?.state ?? "loading")
+  const { readiness, status } = selectInboxDeclarationReadiness({
+    enabled,
+    readiness: readinessQuery.data,
+    isLoading: readinessQuery.isLoading,
+    error: readinessQuery.error,
+  })
 
   return {
     readiness,
     status,
-    declaredRelayUrls:
-      readiness?.state === "ready" ||
-      readiness?.state === "distribution_pending"
-        ? readiness.relayUrls
-        : [],
+    declaredRelayUrls: readiness?.state === "ready" ? readiness.relayUrls : [],
     retainedRelayUrls:
-      readiness?.state === "signed_empty" ||
-      readiness?.state === "malformed" ||
-      readiness?.state === "distribution_pending"
+      readiness?.state === "signed_empty" || readiness?.state === "malformed"
         ? readiness.retainedRelayUrls
         : [],
     stale:
       readiness?.state === "ready" ||
-      readiness?.state === "distribution_pending" ||
       readiness?.state === "signed_empty" ||
       readiness?.state === "malformed"
         ? readiness.stale
         : false,
     distributionRepairable:
       readiness?.state === "ready" ||
-      readiness?.state === "distribution_pending" ||
       readiness?.state === "signed_empty" ||
       readiness?.state === "malformed"
         ? readiness.distributionRepairable
@@ -190,15 +204,16 @@ export function useInboxDeclaration(
     // public hook aligned with its own status projection so consumers cannot
     // render a not-configured state before the account projection is ready.
     isLoading: status === "loading",
-    isRefetching: readinessQuery.isRefetching,
-    error:
-      readinessQuery.error instanceof Error
+    isRefetching: enabled && readinessQuery.isRefetching,
+    error: !enabled
+      ? null
+      : readinessQuery.error instanceof Error
         ? readinessQuery.error.message
         : readinessQuery.error
           ? "Inbox declaration lookup failed"
           : null,
     refetch: () => {
-      void readinessQuery.refetch()
+      if (enabled) void readinessQuery.refetch()
     },
   }
 }

@@ -42,13 +42,6 @@ export function getProductInboxPublishGuidance(
         title: "Set up your private inbox",
         body: "We did not find a signed private inbox declaration on the shared discovery relays. Set one up so buyers and other clients know where to deliver encrypted orders and messages.",
       }
-    case "distribution_pending":
-      return {
-        action: "setup",
-        actionLabel: "Finish private inbox setup",
-        title: "Finish private inbox setup",
-        body: "Your signed private inbox has not been confirmed on shared discovery relays. Finish setup for more reliable delivery, or publish this product now.",
-      }
     case "signed_empty":
       return {
         action: "setup",

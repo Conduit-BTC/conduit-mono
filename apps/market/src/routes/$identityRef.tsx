@@ -55,7 +55,6 @@ import {
   type IdentitySearch,
 } from "../lib/identitySearch"
 import { RichProfileText } from "../components/RichProfileText"
-import { BrainstormGlobalScoreLink } from "../components/BrainstormGlobalScoreLink"
 import { ProductGridCardSkeleton } from "../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../components/ResolvedProductGridCard"
 import { CopyButton } from "../components/CopyButton"
@@ -630,7 +629,6 @@ function PublicIdentityPage() {
                         <CopyButton value={pubkey} label="Copy pubkey" />
                       </span>
                     </span>
-                    <BrainstormGlobalScoreLink pubkey={pubkey} />
                   </div>
                   {productCount > 0 && (
                     <LivePresenceIndicator
@@ -718,12 +716,7 @@ function PublicIdentityPage() {
               ) : null}
             </div>
 
-            {productCount > 0 && (
-              <MerchantTrustSummary
-                trust={merchantTrust}
-                showBrainstorm={false}
-              />
-            )}
+            {productCount > 0 && <MerchantTrustSummary trust={merchantTrust} />}
 
             <div className="border-t border-[var(--border)] pt-5">
               <RichProfileText

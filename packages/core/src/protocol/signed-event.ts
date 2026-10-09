@@ -1,17 +1,13 @@
 import { schnorr } from "@noble/curves/secp256k1.js"
 import { hexToBytes } from "@noble/curves/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import {
-  hasVerifiedPublicEvent,
-  rememberVerifiedPublicEvent,
-} from "./verified-public-event"
 
 export type SignedPublicNostrEvent = {
   id: string
   pubkey: string
   created_at: number
   kind: number
-  tags: string[][]
+  tags: readonly (readonly string[])[]
   content: string
   sig: string
 }
@@ -22,6 +18,12 @@ export interface ReplaceableEventFrontier {
 }
 
 const HEX_64 = /^[0-9a-f]{64}$/i
+
+// Reuse only the mathematical signature verdict. Every arrival still passes
+// shape validation and the canonical hash check below. This bounded cache
+// grants no public admission/projection proof, including on the private lane.
+const MAX_VERIFIED_SIGNATURES = 4_096
+const verifiedSignatures = new Set<string>()
 
 function normalizeFrontierCreatedAt(
   value: number | undefined
@@ -88,9 +90,6 @@ export function isValidSignedPublicNostrEvent(
   event: SignedPublicNostrEvent
 ): boolean {
   try {
-    // Reuse only an exact immutable signed snapshot, including signature and
-    // every canonical field. A matching id alone never establishes validity.
-    if (hasVerifiedPublicEvent(event)) return true
     if (
       !HEX_64.test(event.id) ||
       !HEX_64.test(event.pubkey) ||
@@ -110,12 +109,18 @@ export function isValidSignedPublicNostrEvent(
       return false
     }
     if (computeEventId(event) !== event.id.toLowerCase()) return false
+    const signatureKey = `${event.pubkey.toLowerCase()}:${event.id.toLowerCase()}:${event.sig.toLowerCase()}`
+    if (verifiedSignatures.has(signatureKey)) return true
     const valid = schnorr.verify(
       hexToBytes(event.sig),
       hexToBytes(event.id),
       hexToBytes(event.pubkey)
     )
-    if (valid) rememberVerifiedPublicEvent(event)
+    if (valid) {
+      if (verifiedSignatures.size >= MAX_VERIFIED_SIGNATURES)
+        verifiedSignatures.delete(verifiedSignatures.values().next().value!)
+      verifiedSignatures.add(signatureKey)
+    }
     return valid
   } catch {
     return false

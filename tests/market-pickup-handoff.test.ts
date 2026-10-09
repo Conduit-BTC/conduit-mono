@@ -118,14 +118,7 @@ describe("Market pickup handoff", () => {
     ).rejects.toThrow("Only stale organizer inbox evidence")
   })
 
-  it("keeps staged and signed-empty inbox blockers distinct", () => {
-    expect(
-      getOrganizerInboxBlockingMessage({
-        state: "blocked",
-        organizerPubkey: ORGANIZER,
-        reason: "distribution_pending",
-      })
-    ).toContain("still being distributed")
+  it("keeps signed-empty inbox blockers explicit", () => {
     expect(
       getOrganizerInboxBlockingMessage({
         state: "blocked",
