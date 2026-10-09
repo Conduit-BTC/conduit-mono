@@ -490,7 +490,3 @@ export function hasAuthSessionAuthority(
     !metadataPersisted || authSessionsEqual(readAuthSession(storage), expected)
   )
 }
-
-export function isAccountAuthMethod(value: unknown): value is AuthMethod {
-  return value === "nip07" || value === "nip46"
-}

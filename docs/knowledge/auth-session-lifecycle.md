@@ -45,42 +45,41 @@ can retire the exact expected credential when metadata verification fails, while
 still reporting failure. Synchronous local and cross-tab authority revocation
 precedes asynchronous cleanup. Cleanup errors cannot install or revive a signer.
 
-## In-process local-key integration handoff
+## Provider integration handoff
 
-The local-key implementation belongs inside `@conduit/core`, directly behind
-`NostrKeySigner`. Bind it with the existing `SessionSigner`; `AuthProvider`
-remains the only account lifecycle owner. There is no standalone signer runtime,
-iframe, cross-origin transport, separately deployed origin or package dependency.
+Adapt a provider to `NostrKeySigner` and bind it with the existing
+`SessionSigner`. `AuthProvider` remains the only account lifecycle owner. This
+foundation does not choose a new provider's custody, storage or transport model.
+The current account-key boundary and separate-origin imported-key exception in
+[`docs/specs/protocol.md`](../specs/protocol.md#authentication) remain unchanged.
+Any change to that policy requires a separate maintainer decision before
+implementation; this note does not authorize app-origin account-key custody.
 
-- The implementation owns existing-NSEC input, NIP-19 decoding/validation,
-  secret-byte storage, key operations and best-effort buffer clearing. Consume
-  and clear import text inside that area; ordinary application code never
-  receives a private key or an NSEC getter/export capability.
-- Persist only public identity and a local credential revision in shared auth
-  metadata. Keep that record revision distinct from the app's `authClaim`.
-  Verify the exact record before and after asynchronous operations; an old
-  session cannot adopt or remove a later import.
-- Implement `signEvent`, `encryptNip44`, `decryptNip44` and the required
-  decrypt-only legacy operation directly using the pinned mature crypto
-  implementation. Preserve `SessionSigner`'s exact-template/signature checks,
-  current foreground/background scheduling and typed failures.
+- Keep provider credential revisions distinct from the app's `authClaim`.
+  Shared metadata contains public identity and provider references, never an
+  account private key or independently usable unwrapping material. A stale
+  session cannot adopt or remove a replacement provider credential.
+- Map `signEvent`, `encryptNip44`, `decryptNip44` and decrypt-only legacy
+  operations to the existing contract. Preserve `SessionSigner`'s exact-template
+  and signature validation, scheduling, capabilities and typed failures.
 - Keep transient invalidation separate from durable removal. Failed restoration
-  or app unmount clears accessible key buffers and pending results but preserves
-  the stored record. Explicit logout synchronously revokes account authority,
-  then conditionally deletes the exact local record. Failed deletion remains
-  failed cleanup with a retry path; it never reports successful logout.
-- Add a named local auth method and fixed connect/restore/credential-retirement
-  branches. Extend account eligibility together for protected reads, Network
-  publication and recipient relay AUTH. Guest keys remain purpose-scoped and
+  closes transient provider resources while preserving durable credentials.
+  Explicit logout synchronously revokes account authority before conditionally
+  retiring the exact captured credential. Failed cleanup stays failed and
+  retryable; it cannot revive authority or report successful removal.
+- Add any approved provider through explicit connect, restore and credential
+  retirement branches. Review protected-read, Network publication and recipient
+  relay AUTH eligibility together. Guest keys remain purpose-scoped and
   ineligible. Never impersonate `window.nostr`.
 
-Automatic restore without an independent unlock secret gives same-origin code
-significant authority over the signer. Module containment reduces accidental
-secret handling and enables focused review; it is not a separate browser
-security boundary against compromised same-origin application code. Do not
-claim stronger protection through automatically available wrapping material.
+Provider implementation, import/onboarding UI, persistence changes and activation
+belong to a separate integration. Real-signer, composed Market/Merchant and
+physical-device evidence remain distinct from this shared-lifecycle extraction.
 
-Contained import UI, persistence, policy correction, composed Market/Merchant
-coverage and physical-device storage/logout evidence belong to the integration.
-Use the existing publication, NIP-17/NIP-59 and inbox owners. Physical iPhone
-PWA validation and a separate production decision remain activation gates.
+## Wallet recovery boundary
+
+Wallet recovery consumes the existing `AccountSigner` capabilities and
+`SessionSigner` authority fences. Recovery-specific permission probes, encrypted
+wallet records, relay delivery/read-back evidence, primary-wallet selection and
+checkout recovery do not belong in auth session metadata or installation. A
+wallet's encryption/signing permissions must not become login requirements.
