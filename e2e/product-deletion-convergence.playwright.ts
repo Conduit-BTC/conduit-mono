@@ -549,6 +549,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   productIndexes: string[]
   tombstoneIndexes: string[]
   ownerEvidenceIndexes: string[]
+  rosterEvidenceIndexes: string[]
   product: Record<string, unknown> | undefined
   tombstone: Record<string, unknown> | undefined
   eventMarketEvidence: Record<string, unknown> | undefined
@@ -566,7 +567,8 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const stores = Array.from(database.objectStoreNames)
           if (
             !stores.includes("productDeletionOutbox") ||
-            !stores.includes("ownerRelayListEvidence")
+            !stores.includes("ownerRelayListEvidence") ||
+            !stores.includes("eventMarketRosterEvidence")
           ) {
             database.close()
             resolve({
@@ -576,6 +578,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               productIndexes: [],
               tombstoneIndexes: [],
               ownerEvidenceIndexes: [],
+              rosterEvidenceIndexes: [],
               product: undefined,
               tombstone: undefined,
               eventMarketEvidence: undefined,
@@ -592,6 +595,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               "productDeletionOutbox",
               "ownerRelayListEvidence",
               "eventMarketEvidence",
+              "eventMarketRosterEvidence",
               "merchantPendingInvoices",
             ],
             "readonly"
@@ -601,6 +605,9 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const outbox = transaction.objectStore("productDeletionOutbox")
           const ownerEvidence = transaction.objectStore(
             "ownerRelayListEvidence"
+          )
+          const rosterEvidence = transaction.objectStore(
+            "eventMarketRosterEvidence"
           )
           const eventMarkets = transaction.objectStore("eventMarketEvidence")
           const pendingInvoices = transaction.objectStore(
@@ -626,6 +633,9 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               productIndexes: Array.from(products.indexNames).sort(),
               tombstoneIndexes: Array.from(tombstones.indexNames).sort(),
               ownerEvidenceIndexes: Array.from(ownerEvidence.indexNames).sort(),
+              rosterEvidenceIndexes: Array.from(
+                rosterEvidence.indexNames
+              ).sort(),
               product: productRequest.result,
               tombstone: tombstoneRequest.result,
               eventMarketEvidence: eventMarketRequest.result,
@@ -670,6 +680,8 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
         const state = await readDatabaseMigrationState(page)
         return {
           nativeVersion: state.nativeVersion,
+          hasDiscoverySizeIndex:
+            state.rosterEvidenceIndexes.includes("discoveryBytes"),
           hasOutbox: state.stores.includes("productDeletionOutbox"),
           hasShopperTrust: state.stores.includes("shopperTrustSnapshots"),
           hasInboxDeclarationEvidence: state.stores.includes(
@@ -722,7 +734,8 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 250,
+      nativeVersion: 260,
+      hasDiscoverySizeIndex: true,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
