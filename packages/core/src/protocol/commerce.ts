@@ -20,6 +20,11 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
@@ -38,6 +43,7 @@ import {
   type FollowListCoverageState,
 } from "./follows"
 import {
+  verifySignedEventBatches,
   attachEventSourceRelayUrl,
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
@@ -92,6 +98,7 @@ import {
   MAX_PRODUCT_RELAY_HINTS,
 } from "./product-reference"
 import {
+  projectProfileContent,
   areProfileProjectionsEqual,
   mergeRicherProfile,
   projectCachedProfile,
@@ -116,7 +123,9 @@ import {
 } from "./signed-event"
 import {
   sameSignedPublicEvent,
-  snapshotSignedPublicEvent,
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
 } from "./verified-public-event"
 import {
   isProductDeletedByNip09,
@@ -504,14 +513,46 @@ function getCommerceInbox(principalPubkey: string): CommerceInbox {
   )
 }
 
+// Test transport seams deliberately accept raw signed envelopes. Production
+// reader results stay proof-typed; every public use of these seams is admitted
+// by the same owning adapter, including malformed/forged ingress regressions.
+type RawTestReadResult<T> = Omit<T, "events"> & {
+  events: SignedPublicNostrEvent[]
+}
+type RawTestProgress = Omit<
+  Parameters<Parameters<typeof fetchPublicEventsProgressive>[2]>[0],
+  "events" | "mergedEvents"
+> & {
+  events: SignedPublicNostrEvent[]
+  mergedEvents: SignedPublicNostrEvent[]
+}
+
 type CommerceTestOverrides = {
   getCommerceInbox?: (principalPubkey: string) => CommerceInbox
   allowMissingProtectedReadAuthorization?: boolean
   getRelayLists?: typeof getRelayLists
-  fetchPublicEvents?: typeof fetchPublicEvents
-  fetchPublicEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
-  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
-  fetchPublicEventsProgressive?: typeof fetchPublicEventsProgressive
+  fetchPublicEvents?: (
+    ...args: Parameters<typeof fetchPublicEvents>
+  ) => Promise<SignedPublicNostrEvent[]>
+  fetchPublicEventsWithDiagnostics?: (
+    ...args: Parameters<typeof fetchPublicEventsWithDiagnostics>
+  ) => Promise<
+    RawTestReadResult<
+      Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>
+    >
+  >
+  fetchSignedEventsFanoutDetailed?: (
+    ...args: Parameters<typeof fetchSignedEventsFanoutDetailed>
+  ) => Promise<
+    RawTestReadResult<
+      Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>>
+    >
+  >
+  fetchPublicEventsProgressive?: (
+    filter: Parameters<typeof fetchPublicEventsProgressive>[0],
+    options: Parameters<typeof fetchPublicEventsProgressive>[1],
+    onProgress: (progress: RawTestProgress) => void | Promise<void>
+  ) => Promise<SignedPublicNostrEvent[]>
   readLatestFollowLists?: typeof readLatestFollowLists
   getAccountSigner?: () => NostrKeySigner | undefined
   readProtectedInbox?: (
@@ -670,6 +711,7 @@ function hasCommerceFetchTestOverride(): boolean {
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
+  relayTargets: RelayTarget[]
   /** Ordered candidates retained until the final live-policy admission gate. */
   candidateRelayUrls: string[]
   /** Maximum candidates that may reach relay I/O after policy filtering. */
@@ -805,6 +847,7 @@ async function planCommerceReadRelayPlan(input: {
           hasCommerceFetchTestOverride()
             ? {
                 cacheOnly: true,
+                relayTargets: relayListLookupPlan.relayTargets,
                 allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
@@ -820,6 +863,7 @@ async function planCommerceReadRelayPlan(input: {
               }
             : {
                 relayUrls: relayListLookupRelayUrls,
+                relayTargets: relayListLookupPlan.relayTargets,
                 allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
@@ -861,8 +905,13 @@ async function planCommerceReadRelayPlan(input: {
 
   const preservesPublicCommerceDiscovery =
     input.intent === "commerce_products" || input.intent === "author_products"
+  const protectedInboxIntent =
+    input.intent === "legacy_dm" || input.intent === "dm_inbox"
   const fallbackRelayUrls = (() => {
     if (preservesPublicCommerceDiscovery) return commerceFallbackRelayUrls()
+    // Protected inbox reads have their own bounded compatibility and signed
+    // owner sources. Generic public fallback relays cannot authorize them.
+    if (protectedInboxIntent) return []
     if (settingsSnapshot.signedRelayListAuthoritative) return []
     return config.corePublicFallbackRelayUrls.length > 0
       ? config.corePublicFallbackRelayUrls
@@ -903,6 +952,33 @@ async function planCommerceReadRelayPlan(input: {
     : plannedRelayUrls
   const executableRelayUrls = clampRelayFanout(candidateRelayUrls)
   const candidateRelayUrlSet = new Set(candidateRelayUrls)
+  const candidateRelayTargets = mergeRelayTargets(
+    plan.relayTargets,
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) =>
+        config.commerceDiscoveryRelayUrls.includes(url)
+      ),
+      {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "commerce_discovery",
+      }
+    ),
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) =>
+        config.corePublicFallbackRelayUrls.includes(url)
+      ),
+      { kind: "public_fallback", operation: "read", bucket: "core_public" }
+    ),
+    relayTargetsFromUrls(
+      fallbackRelayUrls.filter((url) => config.defaultRelays.includes(url)),
+      { kind: "public_fallback", operation: "read", bucket: "default" }
+    ),
+    relayTargetsFromUrls(publicExternalRelayHints, {
+      kind: "public_hint",
+      operation: "read",
+    })
+  ).filter((target) => candidateRelayUrlSet.has(target.url))
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
   const policyAccount = accountPubkey?.trim().toLowerCase()
   const includesAuthenticatedOwner = Boolean(
@@ -933,12 +1009,14 @@ async function planCommerceReadRelayPlan(input: {
 
   if (
     config.e2eRelayIsolationEnabled ||
+    protectedInboxIntent ||
     executableRelayUrls.length > 0 ||
     (settingsSnapshot.signedRelayListAuthoritative &&
       !preservesPublicCommerceDiscovery)
   ) {
     return {
       relayUrls: executableRelayUrls,
+      relayTargets: candidateRelayTargets,
       candidateRelayUrls,
       ...(effectiveMaxRelays > 0
         ? { maxRelayAttempts: effectiveMaxRelays }
@@ -968,6 +1046,11 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
+        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+          kind: "public_fallback",
+          operation: "read",
+          bucket: "commerce_discovery",
+        }),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -989,6 +1072,11 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
+        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+          kind: "public_fallback",
+          operation: "read",
+          bucket: "default",
+        }),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1007,7 +1095,24 @@ async function planCommerceReadRelayPlan(input: {
   }
 }
 
+async function admitObservedPublicEvents(
+  events: readonly SignedPublicNostrEvent[],
+  signal?: AbortSignal
+): Promise<VerifiedNostrEvent[]> {
+  return verifySignedEventBatches(events, { signal })
+}
+
 async function runFetchEventsFanout(
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEvents>[1]
+): Promise<VerifiedNostrEvent[]> {
+  return admitObservedPublicEvents(
+    await runRawFetchEventsFanout(filter, options),
+    options?.signal
+  )
+}
+
+async function runRawFetchEventsFanout(
   filter: Filter,
   options?: Parameters<typeof fetchPublicEvents>[1]
 ): Promise<SignedPublicNostrEvent[]> {
@@ -1039,14 +1144,27 @@ async function runFetchEventsFanoutWithDiagnostics(
   filter: Filter,
   options?: Parameters<typeof fetchPublicEventsWithDiagnostics>[1]
 ): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
+  const result = await runRawFetchEventsFanoutWithDiagnostics(filter, options)
+  return {
+    ...result,
+    events: await admitObservedPublicEvents(result.events, options?.signal),
+  }
+}
+
+async function runRawFetchEventsFanoutWithDiagnostics(
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEventsWithDiagnostics>[1]
+): Promise<
+  Omit<
+    Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>,
+    "events"
+  > & { events: SignedPublicNostrEvent[] }
+> {
   if (testOverrides.fetchPublicEventsWithDiagnostics) {
     return await testOverrides.fetchPublicEventsWithDiagnostics(filter, options)
   }
   if (testOverrides.fetchPublicEvents) {
-    const events = (await testOverrides.fetchPublicEvents(
-      filter,
-      options
-    )) as SignedPublicNostrEvent[]
+    const events = await testOverrides.fetchPublicEvents(filter, options)
     const relayUrls = [...(options?.relayUrls ?? [])]
     const limit = filter.limit
     return {
@@ -1081,6 +1199,21 @@ function isBoundedFanoutSaturated(
 }
 
 async function runFetchEventsFanoutDetailed(
+  filter: Filter,
+  options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
+) {
+  const result = await runRawFetchEventsFanoutDetailed(filter, options)
+  const events = await admitObservedPublicEvents(result.events, options?.signal)
+  const rejected = events.length !== result.events.length
+  return {
+    ...result,
+    events,
+    degraded: result.degraded || rejected,
+    coverage: rejected ? ("partial" as const) : result.coverage,
+  }
+}
+
+async function runRawFetchEventsFanoutDetailed(
   filter: Filter,
   options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
 ): Promise<{
@@ -1139,10 +1272,10 @@ async function runFetchEventsFanoutDetailed(
   // Most gateway tests replace the older event-only seam. Preserve that
   // deterministic contract while production reads use per-relay completion.
   if (testOverrides.fetchPublicEvents) {
-    const events = (await testOverrides.fetchPublicEvents(
-      filter,
-      options
-    )) as SignedPublicNostrEvent[]
+    const events = await admitObservedPublicEvents(
+      await testOverrides.fetchPublicEvents(filter, options),
+      options?.signal
+    )
     return {
       events,
       coverage: "complete",
@@ -1272,7 +1405,7 @@ function createMeta(
 }
 
 function getTagValue(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   name: string
 ): string | null {
   if (!tags) return null
@@ -1435,11 +1568,8 @@ async function streamProductRecordChunks(input: {
   baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
-  ownerSelectedRelayUrls: string[]
-  appRelayUrls: string[]
-  personalRelayUrls: string[]
-  independentRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
   signal?: AbortSignal
@@ -1476,12 +1606,17 @@ async function streamProductRecordChunks(input: {
   }
   const pendingEvents = new Map<string, SignedPublicNostrEvent>()
   let pendingProgress: Promise<void> | undefined
+  const progressAdmissions: Promise<void>[] = []
   let pendingRefresh = false
   let pendingRelayUrl = ""
   const scheduleProgress = async (
     events: SignedPublicNostrEvent[],
     relayUrl: string
   ): Promise<void> => {
+    events = await admitObservedPublicEvents(events, input.signal)
+    input.signal?.throwIfAborted()
+    if (input.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
     // Admit only this relay's delta. The fanout's mergedEvents is cumulative,
     // and parsing it on every callback makes a broad catalog quadratic.
     let taskStartedAt = performance.now()
@@ -1576,11 +1711,8 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            relayTargets: input.relayTargets,
             maxRelayAttempts: input.maxRelayAttempts,
-            ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-            appRelayUrls: input.appRelayUrls,
-            personalRelayUrls: input.personalRelayUrls,
-            independentRelayUrls: input.independentRelayUrls,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
@@ -1598,12 +1730,17 @@ async function streamProductRecordChunks(input: {
                 isBoundedFanoutSaturated(chunkFilter, events)
               )
             }
-            await scheduleProgress(events, relayUrl)
+            const progress = scheduleProgress(events, relayUrl)
+            progressAdmissions.push(progress)
+            await progress
           }
         )
         input.signal?.throwIfAborted()
         let mergeTaskStartedAt = performance.now()
-        for (const event of events) {
+        for (const event of await admitObservedPublicEvents(
+          events,
+          input.signal
+        )) {
           if (performance.now() - mergeTaskStartedAt >= 8) {
             await yieldCatalogTask()
             mergeTaskStartedAt = performance.now()
@@ -1619,6 +1756,7 @@ async function streamProductRecordChunks(input: {
   )
   // A transport override may return without awaiting its callback. The final
   // deletion frontier must still follow every scheduled progressive batch.
+  await Promise.all(progressAdmissions)
   await pendingProgress
 }
 
@@ -2164,7 +2302,9 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     parentProductId: row.parentProductId,
     specifications: row.specifications ?? [],
     format: row.format ?? "physical",
-    signedProductEvent: row.signedProductEvent,
+    signedProductEvent: isVerifiedNostrEvent(row.signedProductEvent)
+      ? row.signedProductEvent
+      : undefined,
     shippingWeightGrams: row.shippingWeightGrams,
     shippingWeightAllowanceGrams: row.shippingWeightAllowanceGrams,
     shippingHandling: row.shippingHandling,
@@ -2303,7 +2443,48 @@ function getProfileQueryRelayHints(
   )
 }
 
+async function readmitProductRows(
+  rows: readonly CachedProduct[]
+): Promise<CachedProduct[]> {
+  const signed = rows.flatMap((row) =>
+    row.signedProductEvent ? [row.signedProductEvent] : []
+  )
+  const admitted = await admitObservedPublicEvents(signed)
+  const byId = new Map(admitted.map((event) => [event.id, event]))
+  return rows.flatMap<CachedProduct>((row) => {
+    const raw = row.signedProductEvent
+    if (!raw) return [{ ...row, signedProductEvent: undefined }]
+    const event = byId.get(raw.id)
+    if (!event || !sameSignedPublicEvent(raw, event)) return []
+    const record = dedupeProductEvents([event])[0]
+    if (
+      !record ||
+      record.addressId !== row.id ||
+      record.product.pubkey !== row.pubkey
+    )
+      return []
+    // Persisted projections and identity fields are display data. Rebuild all
+    // product authority from the exact admitted bytes; provenance stays separate.
+    return [
+      {
+        ...toCachedProduct(record),
+        cachedAt: row.cachedAt,
+        sourceRelayUrls: row.sourceRelayUrls,
+      },
+    ]
+  })
+}
+
 async function loadCachedProducts(
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
+): Promise<CachedProduct[]> {
+  return readmitProductRows(
+    await loadRawCachedProducts(merchantPubkey, authorPubkeys)
+  )
+}
+
+async function loadRawCachedProducts(
   merchantPubkey?: string,
   authorPubkeys?: readonly string[]
 ): Promise<CachedProduct[]> {
@@ -2338,6 +2519,9 @@ function shouldReplaceCachedProduct(
   existing: CachedProduct,
   candidate: CachedProduct
 ): boolean {
+  const existingVerified = isVerifiedNostrEvent(existing.signedProductEvent)
+  const candidateVerified = isVerifiedNostrEvent(candidate.signedProductEvent)
+  if (existingVerified !== candidateVerified) return candidateVerified
   const existingCreatedAt = cachedProductEventCreatedAt(existing)
   const candidateCreatedAt = cachedProductEventCreatedAt(candidate)
   if (candidateCreatedAt !== existingCreatedAt) {
@@ -2401,9 +2585,11 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
   let selectedRows = rows
   try {
     if (testOverrides.putCachedProducts) {
-      const existingRows = testOverrides.getCachedProducts
-        ? await testOverrides.getCachedProducts()
-        : []
+      const existingRows = await readmitProductRows(
+        testOverrides.getCachedProducts
+          ? await testOverrides.getCachedProducts()
+          : []
+      )
       const rowsToStore = selectCachedProductUpdates(rows, existingRows)
       const ids = new Set(rows.map((row) => row.id))
       selectedRows = [
@@ -2415,17 +2601,26 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
         await testOverrides.putCachedProducts(rowsToStore)
     } else {
       const ids = Array.from(new Set(rows.map((row) => row.id)))
-      await db.transaction("rw", db.products, async () => {
-        const existingRows = (await db.products.bulkGet(ids)).filter(
-          (row): row is CachedProduct => row !== undefined
+      // Worker admission must finish outside the IndexedDB transaction. Retry
+      // if another tab changed any row while its signed bytes were checked.
+      let stored = false
+      for (let attempt = 0; attempt < 4 && !stored; attempt++) {
+        const rawRows = await db.products.bulkGet(ids)
+        const expected = JSON.stringify(rawRows)
+        const admittedRows = await readmitProductRows(
+          rawRows.filter((row): row is CachedProduct => row !== undefined)
         )
-        const rowsToStore = selectCachedProductUpdates(rows, existingRows)
-        selectedRows = [...existingRows, ...rowsToStore]
-        // Known signed evidence does not depend on successful persistence.
-        // Include an already persisted winner even when there is no write.
-        retainLocalProductRevisionEvidence(selectedRows)
-        if (rowsToStore.length > 0) await db.products.bulkPut(rowsToStore)
-      })
+        stored = await db.transaction("rw", db.products, async () => {
+          const current = await db.products.bulkGet(ids)
+          if (JSON.stringify(current) !== expected) return false
+          const rowsToStore = selectCachedProductUpdates(rows, admittedRows)
+          selectedRows = [...admittedRows, ...rowsToStore]
+          retainLocalProductRevisionEvidence(selectedRows)
+          if (rowsToStore.length > 0) await db.products.bulkPut(rowsToStore)
+          return true
+        })
+      }
+      if (!stored) throw new Error("Product cache changed during verification")
     }
     for (const row of selectedRows) {
       const pending = volatileProductRevisionRows.get(row.id)
@@ -2521,7 +2716,9 @@ function tombstonesFromDeletionEvent(
   const rows = new Map<string, CachedProductTombstone>()
   const cachedAt = now()
   const sourceRelayUrls = getEventSourceRelayUrls(event)
-  const validated = validateProductDeletionEvent(event)
+  const validated = isVerifiedNostrEvent(event)
+    ? validateProductDeletionEvent(event)
+    : null
   if (!validated) {
     throw new Error("Expected a valid signed product deletion event")
   }
@@ -2551,6 +2748,35 @@ function tombstonesFromDeletionEvent(
 }
 
 async function loadCachedProductTombstones(
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
+): Promise<CachedProductTombstone[]> {
+  const rows = await loadRawCachedProductTombstones(
+    merchantPubkey,
+    authorPubkeys
+  )
+  const result: CachedProductTombstone[] = []
+  for (const row of rows) {
+    if (!row.signedEvent) continue
+    const admission = await admitPublicEvent(row.signedEvent)
+    if (admission.status === "unavailable" || admission.status === "cancelled")
+      throw new Error("Stored deletion verification unavailable")
+    if (admission.status !== "verified") continue
+    for (const url of row.sourceRelayUrls ?? [])
+      attachEventSourceRelayUrl(admission.event, url)
+    const derived = tombstonesFromDeletionEvent(admission.event, {
+      observedLocally: row.observedLocally === true,
+    })
+    result.push(
+      ...derived.filter(
+        (item) => item.id === row.id && item.pubkey === row.pubkey
+      )
+    )
+  }
+  return result
+}
+
+async function loadRawCachedProductTombstones(
   merchantPubkey?: string,
   authorPubkeys?: readonly string[]
 ): Promise<CachedProductTombstone[]> {
@@ -2666,6 +2892,7 @@ function retainLocalProductRevisionEvidence(
 ): void {
   const changed = new Set<string>()
   for (const row of rows) {
+    if (!isVerifiedNostrEvent(row.signedProductEvent)) continue
     const candidate = fromCachedProduct(row)
     const existing = localProductRevisionRecords.get(candidate.addressId)
     if (
@@ -2733,8 +2960,11 @@ export function subscribeLocalProductRevisionChanges(
       },
     }
     if (testOverrides.getCachedProducts || typeof indexedDB === "undefined") {
-      void load().then(delivery.next, delivery.error)
-    } else observer.subscription = liveQuery(load).subscribe(delivery)
+      void load().then(readmitProductRows).then(delivery.next, delivery.error)
+    } else
+      observer.subscription = liveQuery(async () =>
+        readmitProductRows(await load())
+      ).subscribe(delivery)
   }
   return () => {
     localProductRevisionObservers.delete(observer)
@@ -3268,16 +3498,22 @@ export async function cacheSignedProductListingEvent(
   } = {}
 ): Promise<CommerceProductRecord> {
   // Local publishing compatibility; relay reads already provide plain events.
-  const event = (
+  const rawEvent = (
     "rawEvent" in input ? input.rawEvent() : input
   ) as SignedPublicNostrEvent
+  const admission = await admitPublicEvent(rawEvent)
+  if (admission.status !== "verified")
+    throw new Error(
+      "Expected a valid signed event; admission " + admission.status
+    )
+  const event = admission.event
   for (const relayUrl of getEventSourceRelayUrls(input))
     attachEventSourceRelayUrl(event, relayUrl)
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
     !event.id ||
     !event.sig ||
-    !isValidSignedPublicNostrEvent(event)
+    !isVerifiedNostrEvent(event)
   ) {
     throw new Error("Expected a valid signed product listing event")
   }
@@ -3314,9 +3550,15 @@ export async function cacheSignedProductDeletionEvent(
   input: SignedPublicNostrEvent | { rawEvent(): unknown }
 ): Promise<CachedProductTombstone[]> {
   // Local publishing compatibility; relay reads already provide plain events.
-  const event = (
+  const rawEvent = (
     "rawEvent" in input ? input.rawEvent() : input
   ) as SignedPublicNostrEvent
+  const admission = await admitPublicEvent(rawEvent)
+  if (admission.status !== "verified")
+    throw new Error(
+      "Expected a valid signed event; admission " + admission.status
+    )
+  const event = admission.event
   for (const relayUrl of getEventSourceRelayUrls(input))
     attachEventSourceRelayUrl(event, relayUrl)
   const tombstones = tombstonesFromDeletionEvent(event, {
@@ -3526,18 +3768,18 @@ function compareReplaceableProfileEvents(
 }
 
 function pickLatestProfileEvent(
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   pubkey: string
-): SignedPublicNostrEvent | undefined {
+): VerifiedNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)[0]
 }
 
 function pickLatestProfileEventWithContent(
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   pubkey: string
-): SignedPublicNostrEvent | undefined {
+): VerifiedNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)
@@ -3547,7 +3789,7 @@ function pickLatestProfileEventWithContent(
 function mergeProfileEvents(
   pubkeys: readonly string[],
   currentProfiles: Record<string, Profile>,
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   currentRows: ReadonlyMap<string, CachedProfile> = new Map()
 ): {
   profiles: Record<string, Profile>
@@ -3624,10 +3866,7 @@ function mergeProfileEvents(
             // payment destination. Keep richer identity fields for display,
             // but clear lud16 unless the current frontier parses safely.
             lud16: hasValidProfileEventContent(effectiveFrontierContent)
-              ? parseProfileEvent({
-                  pubkey,
-                  content: effectiveFrontierContent,
-                }).lud16
+              ? projectProfileContent(pubkey, effectiveFrontierContent).lud16
               : undefined,
           }
         : richProfile
@@ -3892,6 +4131,29 @@ async function fetchProductDeletionTimestamps(
         ...config.appBackplaneRelayUrls,
         ...deletionRelayPlan.relayUrls,
       ])
+      const deletionRelayTargets = mergeRelayTargets(
+        deletionRelayPlan.relayTargets,
+        relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
+          kind: "public_hint",
+          operation: "read",
+        }),
+        relayTargetsFromUrls(
+          config.commerceDiscoveryRelayUrls.filter((url) =>
+            preferredDeletionRelayUrls.includes(url)
+          ),
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "commerce_discovery",
+          }
+        ),
+        relayTargetsFromUrls(
+          config.corePublicFallbackRelayUrls.filter((url) =>
+            preferredDeletionRelayUrls.includes(url)
+          ),
+          { kind: "public_fallback", operation: "read", bucket: "core_public" }
+        )
+      )
       options.onSkippedRelayUrls?.(
         deletionRelayPlan.parkedRelayUrls.filter(
           (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
@@ -3916,10 +4178,9 @@ async function fetchProductDeletionTimestamps(
             async (relayUrls) =>
               await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
                 relayUrls,
-                ownerSelectedRelayUrls:
-                  deletionRelayPlan.ownerSelectedRelayUrls.filter((relayUrl) =>
-                    relayUrls.includes(relayUrl)
-                  ),
+                relayTargets: deletionRelayTargets.filter((target) =>
+                  relayUrls.includes(target.url)
+                ),
                 accountPubkey:
                   options.accountPubkey ?? options.authenticatedPubkey,
                 authenticatedPubkey: options.authenticatedPubkey,
@@ -4054,12 +4315,12 @@ const productParseCache = new Map<
 
 // Reuse parsed projections only while all signed fields match the original
 // snapshot. An id alone cannot admit mutated or unverified signed bytes.
-function parseAndPrepareProductEvent(event: SignedPublicNostrEvent) {
+function parseAndPrepareProductEvent(event: VerifiedNostrEvent) {
   const cached = event.id ? productParseCache.get(event.id) : undefined
   if (cached && sameSignedPublicEvent(cached.event, event)) return cached
   const parsed = parseProductEvent(event)
   const entry = {
-    event: snapshotSignedPublicEvent(event),
+    event,
     parsed,
     availability: evaluateListingAvailability(parsed),
   }
@@ -4082,6 +4343,8 @@ function dedupeProductEvents(
 
   for (const event of events) {
     try {
+      if (!isVerifiedNostrEvent(event))
+        throw new Error("Product event must be admitted")
       const { parsed, availability } = parseAndPrepareProductEvent(event)
 
       const dTag = getTagValue(event.tags ?? [], "d")
@@ -4141,6 +4404,13 @@ function shouldReplaceProductRecord(
   existing: CommerceProductRecord,
   candidate: CommerceProductRecord
 ): boolean {
+  const existingVerified = isVerifiedNostrEvent(
+    existing.product.signedProductEvent
+  )
+  const candidateVerified = isVerifiedNostrEvent(
+    candidate.product.signedProductEvent
+  )
+  if (existingVerified !== candidateVerified) return candidateVerified
   return (
     compareReplaceableEventFrontiers(
       {
@@ -4240,6 +4510,11 @@ async function fetchPublicProductRecords(query: {
   const relayPlan = query.searchText
     ? {
         candidateRelayUrls: productSearchRelayUrls,
+        relayTargets: relayTargetsFromUrls(productSearchRelayUrls, {
+          kind: "app",
+          operation: "read",
+          bucket: "search_index",
+        }),
         maxRelayAttempts: productSearchRelayUrls.length,
         ownerSelectedRelayUrls: [],
         appRelayUrls: productSearchRelayUrls,
@@ -4267,11 +4542,8 @@ async function fetchPublicProductRecords(query: {
 
   const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls: relayPlan.candidateRelayUrls,
+    relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
-    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-    appRelayUrls: relayPlan.appRelayUrls,
-    personalRelayUrls: relayPlan.personalRelayUrls,
-    independentRelayUrls: relayPlan.independentRelayUrls,
     accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
     authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4391,11 +4663,8 @@ async function fetchPublicProductRecordsProgressive(
     baseFilter: filter,
     authorChunks,
     relayUrls: relayPlan.candidateRelayUrls,
+    relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
-    ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-    appRelayUrls: relayPlan.appRelayUrls,
-    personalRelayUrls: relayPlan.personalRelayUrls,
-    independentRelayUrls: relayPlan.independentRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
@@ -4420,19 +4689,10 @@ async function fetchPublicProductRecordsProgressive(
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      relayTargets: expandedRelayPlan.relayTargets.filter((target) =>
+        expansionRelayUrlSet.has(target.url)
+      ),
       maxRelayAttempts: expandedRelayPlan.maxRelayAttempts,
-      ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
-      appRelayUrls: expandedRelayPlan.appRelayUrls.filter((relayUrl) =>
-        expansionRelayUrlSet.has(relayUrl)
-      ),
-      personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
-      independentRelayUrls: expandedRelayPlan.independentRelayUrls.filter(
-        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
-      ),
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
@@ -5655,11 +5915,8 @@ async function fetchVariationGroupRecordBatch(
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
         relayUrls: relayPlan.candidateRelayUrls,
+        relayTargets: relayPlan.relayTargets,
         maxRelayAttempts: relayPlan.maxRelayAttempts,
-        ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-        appRelayUrls: relayPlan.appRelayUrls,
-        personalRelayUrls: relayPlan.personalRelayUrls,
-        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
@@ -6806,11 +7063,8 @@ async function readPreparedProductTargets(
             },
             {
               relayUrls: relayPlan.candidateRelayUrls,
+              relayTargets: relayPlan.relayTargets,
               maxRelayAttempts: relayPlan.maxRelayAttempts,
-              ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-              appRelayUrls: relayPlan.appRelayUrls,
-              personalRelayUrls: relayPlan.personalRelayUrls,
-              independentRelayUrls: relayPlan.independentRelayUrls,
               accountPubkey:
                 options.accountPubkey ?? options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
@@ -7558,11 +7812,8 @@ export async function getProfiles(
     }
     const fanoutOptions = {
       relayUrls: relayPlan.candidateRelayUrls,
+      relayTargets: relayPlan.relayTargets,
       maxRelayAttempts: relayPlan.maxRelayAttempts,
-      ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-      appRelayUrls: relayPlan.appRelayUrls,
-      personalRelayUrls: relayPlan.personalRelayUrls,
-      independentRelayUrls: relayPlan.independentRelayUrls,
       accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
@@ -7578,7 +7829,7 @@ export async function getProfiles(
       // second time at the transport boundary.
       skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
     }
-    const emitProgress = (events: readonly SignedPublicNostrEvent[]) => {
+    const emitProgress = (events: readonly VerifiedNostrEvent[]) => {
       if (!query.onProgress) return
 
       const progress = mergeProfileEvents(
@@ -7624,7 +7875,7 @@ export async function getProfiles(
     let evidenceDegraded =
       query.requireCompleteEvidence && relayPlan.parkedRelayUrls.length > 0
     let evidenceCapped = false
-    let events: SignedPublicNostrEvent[]
+    let events: VerifiedNostrEvent[]
     if (query.requireCompleteEvidence) {
       const evidence = await runFetchEventsFanoutDetailed(
         profileFilter,
@@ -7950,15 +8201,15 @@ async function fetchEventMarketPrivateMessagesStrict(
               range.status === "source_eose" &&
               range.pageCount === 1
           )
-        ) &&
-        !declaration.stale &&
-        !evidence.unresolved
+        ) && !evidence.unresolved
       ? "complete"
       : "partial"
   return {
     messages: evidence.messages,
     authenticatedWraps: evidence.authenticatedWraps,
-    stale: declaration.stale || unavailable || evidence.unresolved,
+    // A partial declaration lookup does not invalidate the retained signed
+    // current inbox or a complete read of its selected relay history.
+    stale: unavailable || evidence.unresolved,
     decryptFailures: evidence.decryptFailures,
     inbox: {
       declarationState: declaration.state,
@@ -8525,7 +8776,6 @@ async function inspectMerchantCheckoutSparkRecoveries(
           row.pageCount === 1
       )
     ) &&
-    !declaration.stale &&
     !malformedCount &&
     !decryptFailureCount &&
     !conflictingCheckouts.size
@@ -8640,8 +8890,11 @@ export async function withMerchantCheckoutSparkRecovery(
   const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
     principalPubkey: principal,
     relayUrls,
-    ownerSelectedRelayUrls: relayUrls,
-    appRelayUrls: [],
+    relayTargets: relayTargetsFromUrls(relayUrls, {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey: principal,
+    }),
     eventId: wrapId,
     limit: 2,
     authorization,
@@ -8674,7 +8927,7 @@ export async function withMerchantCheckoutSparkRecovery(
     candidate: null,
   })
   if (read.coverage === "unavailable") return incomplete("unavailable")
-  if (!relayComplete || declaration.stale) return incomplete("partial")
+  if (!relayComplete) return incomplete("partial")
   if (read.events.length === 0) {
     return {
       status: "missing",

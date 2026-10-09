@@ -1,3 +1,4 @@
+import { inboxDeclarationEvidenceFacts } from "./account-network-evidence"
 import { getEventHash } from "nostr-tools"
 import { v2 as nip44 } from "nostr-tools/nip44"
 import { createWrap } from "nostr-tools/nip59"
@@ -452,7 +453,9 @@ const DEFAULT_UNWRAP_TIMEOUT_MS = 8_000
 /** Named read-only exception for authenticated client metadata on seals.
  * Canonical writes still emit empty tags. Routing/domain tags never qualify.
  */
-export function acceptsAuthenticatedSealMetadata(tags: string[][]): boolean {
+export function acceptsAuthenticatedSealMetadata(
+  tags: readonly (readonly string[])[]
+): boolean {
   return (
     tags.length === 0 ||
     (tags.length === 1 &&
@@ -535,12 +538,15 @@ export async function wrapPrivateMessage(
   })
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
-  return createWrap(seal, recipient.pubkey)
+  return createWrap(
+    { ...seal, tags: seal.tags.map((tag) => [...tag]) },
+    recipient.pubkey
+  )
 }
 
 /** Validate both envelopes and the unsigned rumor before returning private data. */
 export async function unwrapPrivateMessageEnvelope(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   signer: NostrKeySigner,
   options: { onClientSealMetadataAccepted?: () => void } = {}
 ): Promise<PrivateMessageEvent> {
@@ -601,7 +607,7 @@ export function classifyPrivateMessageKind(
  * the current path; NIP-04 stays in the separate read-only legacy lane.
  */
 export async function unwrapGiftWrap(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   signer: NostrKeySigner,
   options: UnwrapGiftWrapOptions = {}
 ): Promise<UnwrapOutcome> {
@@ -614,7 +620,10 @@ export async function unwrapGiftWrap(
   }> => {
     if (options.giftUnwrap) {
       try {
-        const rumor = await options.giftUnwrap(event, signer)
+        const rumor = await options.giftUnwrap(
+          { ...event, tags: event.tags.map((tag) => [...tag]) },
+          signer
+        )
         return { rumor, reason: rumor ? null : "nip44_failed" }
       } catch {
         return { rumor: null, reason: "nip44_failed" }
@@ -769,7 +778,7 @@ export function createLegacyDmDecrypt(signer: NostrKeySigner): LegacyDmDecrypt {
 }
 
 export async function decryptLegacyDirectMessage(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   principalPubkey: string,
   decrypt: LegacyDmDecrypt,
   options: { timeoutMs?: number } = {}
@@ -958,6 +967,8 @@ export interface FetchInboxRelayOptions {
   fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   relayUrls?: string[]
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  /** Read-only durable evidence for callers that cannot mutate declarations. */
+  durableEvidenceRepository?: Pick<InboxDeclarationEvidenceRepository, "get">
   /** Account whose durable whole-relay exclusions govern declaration lookup. */
   requestingAccountPubkey?: string | null
   /** Active authenticated account for owner-selected ws:// read authority. */
@@ -978,14 +989,6 @@ export type OwnPrivateMessageRelayReadiness =
       eventId: string
       relayUrls: string[]
       stale: boolean
-      distributionRepairable: boolean
-    }
-  | {
-      state: "distribution_pending"
-      eventId: string
-      relayUrls: string[]
-      retainedRelayUrls: string[]
-      stale: true
       distributionRepairable: boolean
     }
   | {
@@ -1013,47 +1016,18 @@ function projectOwnPrivateMessageRelayReadiness(
     distributionRepairable?: boolean
   } = {}
 ): OwnPrivateMessageRelayReadiness {
-  const sharedPlanRelayUrlSet = new Set(
-    normalizeSecureOrIsolatedE2eRelayUrls(
-      options.sharedPlanRelayUrls ?? sharedInboxDiscoveryRelayUrls()
-    )
-  )
   const distributionRepairable = options.distributionRepairable ?? false
-  switch (resolution.state) {
+  const facts = inboxDeclarationEvidenceFacts(resolution)
+  switch (facts.state) {
     case "declared":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
-      if (
-        !normalizeSecureOrIsolatedE2eRelayUrls(
-          resolution.sharedSourceRelayUrls ?? []
-        ).some((relayUrl) => sharedPlanRelayUrlSet.has(relayUrl))
-      ) {
-        return {
-          state: "distribution_pending",
-          eventId: resolution.eventId,
-          relayUrls: resolution.relayUrls,
-          retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
-          stale: true,
-          distributionRepairable,
-        }
-      }
       return {
         state: "ready",
         eventId: resolution.eventId,
         relayUrls: resolution.relayUrls,
-        stale: resolution.stale,
-        distributionRepairable,
-      }
-    case "distribution_pending":
-      if (!resolution.eventId) return { state: "lookup_unavailable" }
-      return {
-        state: "distribution_pending",
-        eventId: resolution.eventId,
-        relayUrls: resolution.pendingRelayUrls ?? [],
-        retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
-        stale: true,
+        stale: facts.stale,
         distributionRepairable:
-          (resolution.pendingPublishRelayUrls?.length ?? 0) > 0 ||
-          distributionRepairable,
+          facts.distributionPending || distributionRepairable,
       }
     case "signed_empty":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
@@ -1088,7 +1062,10 @@ function projectOwnPrivateMessageRelayReadiness(
  */
 export async function inspectRetainedOwnPrivateMessageRelayReadiness(
   pubkey: string,
-  options: Pick<FetchInboxRelayOptions, "evidenceRepository"> = {}
+  options: Pick<
+    FetchInboxRelayOptions,
+    "evidenceRepository" | "durableEvidenceRepository"
+  > = {}
 ): Promise<OwnPrivateMessageRelayReadiness> {
   try {
     const resolution = await readRetainedInboxDeclaration(pubkey, options)
@@ -1160,7 +1137,6 @@ export async function fetchInboxRelayUrls(
   switch (resolution.state) {
     case "declared":
       return resolution.relayUrls
-    case "distribution_pending":
     case "signed_empty":
     case "not_observed":
     case "malformed":

@@ -5,7 +5,7 @@ import {
 import type { ProductSchema } from "../../schemas"
 
 function parseLegacyShippingCostTag(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): CommerceShippingCostLike {
   const tag = tags?.find((candidate) => candidate[0] === "shipping_cost")
   const raw = tag?.[1]
@@ -18,7 +18,9 @@ function parseLegacyShippingCostTag(
   return canonicalizeShippingCost(amount, currency)
 }
 
-function parseLegacyShippingCountryRules(tags: string[][] | undefined): {
+function parseLegacyShippingCountryRules(
+  tags: readonly (readonly string[])[] | undefined
+): {
   shippingCountries?: string[]
   shippingCountryRules?: ProductSchema["shippingCountryRules"]
 } {
@@ -66,7 +68,7 @@ function parseLegacyShippingCountryRules(tags: string[][] | undefined): {
  * listing. It is never sufficient to authorize direct payment.
  */
 export function parseLegacyConduitInlineShippingTags(
-  tags: string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): Partial<ProductSchema> {
   return {
     ...parseLegacyShippingCostTag(tags),

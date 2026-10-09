@@ -10,7 +10,7 @@ import {
   type PricingRateInput,
   type SourcePriceQuote,
 } from "../pricing"
-import { parseProductEvent } from "./products"
+import { parsePrivateOrderProductFields, parseProductEvent } from "./products"
 import { normalizeAddressRegion } from "./address-validation"
 import { EVENT_KINDS } from "./kinds"
 import { getAccountSigner } from "./session-signer"
@@ -28,6 +28,10 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 export const MERCHANT_SHIPPING_POLICY_D_TAG = "conduit-shipping-policy"
 export const SHIPPING_POLICY_EXTENSION_TAG = "conduit_shipping_table"
@@ -320,8 +324,8 @@ export function buildShippingPolicyEventDraft(input: {
 }
 
 /** Table capability is required; summary metadata must agree with the policy. */
-export function parseShippingPolicyEventTags(
-  tags: readonly string[][]
+function parseShippingPolicyTags(
+  tags: readonly (readonly string[])[]
 ): ShippingPolicy | null {
   const markers = tags.filter((tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG)
   if (
@@ -380,6 +384,18 @@ export function parseShippingPolicyEventTags(
   } catch {
     return null
   }
+}
+
+/** Public policy parsing requires the exact admitted kind-30406 event. */
+export function parseShippingPolicyEventTags(
+  event: VerifiedNostrEvent
+): ShippingPolicy | null {
+  if (
+    !isVerifiedNostrEvent(event) ||
+    event.kind !== EVENT_KINDS.SHIPPING_OPTION
+  )
+    return null
+  return parseShippingPolicyTags(event.tags)
 }
 
 export interface ShippingPolicyRevision {
@@ -751,7 +767,7 @@ export const shippingPolicyQuoteSchema = z
   ])
   .superRefine((quote, context) => {
     const event = quote.policyEvent
-    const policy = parseShippingPolicyEventTags(event.tags)
+    const policy = parseShippingPolicyTags(event.tags)
     if (
       event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
       event.pubkey !== quote.merchantPubkey ||
@@ -768,17 +784,20 @@ export const shippingPolicyQuoteSchema = z
       })
       return
     }
-    const result = quoteShippingPolicy({
-      policy,
-      policyCoordinate: quote.policyCoordinate,
-      policyEventId: quote.policyEventId,
-      policyCreatedAt: quote.policyCreatedAt,
-      merchantPubkey: quote.merchantPubkey,
-      policyEvent: event,
-      items: quote.items,
-      destination: quote.destination,
-      rateInput: quote.pricingRate,
-    })
+    const result = quoteShippingPolicyWithEvidence(
+      {
+        policy,
+        policyCoordinate: quote.policyCoordinate,
+        policyEventId: quote.policyEventId,
+        policyCreatedAt: quote.policyCreatedAt,
+        merchantPubkey: quote.merchantPubkey,
+        policyEvent: event,
+        items: quote.items,
+        destination: quote.destination,
+        rateInput: quote.pricingRate,
+      },
+      isValidSignedPublicNostrEvent
+    )
     // Earlier v2 snapshots converted merchandise even without a threshold.
     // Preserve readback of those exact terms using their retained rate only.
     if (
@@ -1159,7 +1178,7 @@ export function previewShippingPolicy(input: {
   }
 }
 
-export function quoteShippingPolicy(input: {
+type ShippingPolicyQuoteInput = {
   policy: ShippingPolicy
   policyCoordinate: string
   policyEventId: string
@@ -1169,16 +1188,21 @@ export function quoteShippingPolicy(input: {
   items: readonly ShippingPolicyQuoteItem[]
   destination: ShippingPolicyDestination
   rateInput?: PricingRateInput
-}): ShippingPolicyQuoteResult {
+}
+
+function quoteShippingPolicyWithEvidence(
+  input: ShippingPolicyQuoteInput,
+  hasSignedEvidence: (event: SignedPublicNostrEvent) => boolean
+): ShippingPolicyQuoteResult {
   let policy: ShippingPolicy
   try {
     policy = parseShippingPolicy(input.policy)
   } catch {
     return { status: "invalid_policy" }
   }
-  if (!input.policyEvent || !isValidSignedPublicNostrEvent(input.policyEvent))
+  if (!input.policyEvent || !hasSignedEvidence(input.policyEvent))
     return { status: "invalid_policy" }
-  const signedPolicy = parseShippingPolicyEventTags(input.policyEvent.tags)
+  const signedPolicy = parseShippingPolicyTags(input.policyEvent.tags)
   if (
     !signedPolicy ||
     JSON.stringify(signedPolicy) !== JSON.stringify(policy) ||
@@ -1211,14 +1235,16 @@ export function quoteShippingPolicy(input: {
     const event = item.productEvent
     if (
       !event ||
-      !isValidSignedPublicNostrEvent(event) ||
+      !hasSignedEvidence(event) ||
       event.kind !== EVENT_KINDS.PRODUCT ||
       event.pubkey !== input.merchantPubkey ||
       event.id !== item.productEventId ||
       event.created_at !== item.productCreatedAt
     )
       return { status: "invalid_items" }
-    const product = parseProductEvent(event)
+    const product = isVerifiedNostrEvent(event)
+      ? parseProductEvent(event)
+      : parsePrivateOrderProductFields(event)
     if (
       !product ||
       product.priceEvidenceMalformed ||
@@ -1371,6 +1397,13 @@ export function quoteShippingPolicy(input: {
       policyEvent: structuredClone(input.policyEvent),
     } as ShippingPolicyQuote,
   }
+}
+
+/** Public action quote requires previously admitted immutable live events. */
+export function quoteShippingPolicy(
+  input: ShippingPolicyQuoteInput
+): ShippingPolicyQuoteResult {
+  return quoteShippingPolicyWithEvidence(input, isVerifiedNostrEvent)
 }
 
 /** Advisory only: never changes weight, price, eligibility, or signed terms. */

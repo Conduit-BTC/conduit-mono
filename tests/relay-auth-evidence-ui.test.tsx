@@ -16,6 +16,7 @@ import { RelaySettingsPanel } from "@conduit/ui"
 const OWNER = "a".repeat(64)
 const EMPTY_FRONTIER = {
   state: "not_observed",
+  currentUsable: false,
   stale: false,
   retained: false,
   coverage: "complete" as const,

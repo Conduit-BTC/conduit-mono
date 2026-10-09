@@ -14,6 +14,7 @@ import {
   seedTestRelayIdentity,
 } from "./helpers/auth"
 import { interceptBlossom } from "./helpers/blossom"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
@@ -758,8 +759,11 @@ test("a pristine new-product draft releases its consumed fallback claim @merchan
 
 test("fallback destination persistence fails before signing and survives draft recovery @merchant", async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(90_000)
+  const phase = (phase: string) =>
+    recordSmokeDiagnostic(testInfo, "fallback-recovery", { phase })
+  phase("setup")
   await page.addInitScript(
     ({ allowKey, claimPrefix }) => {
       const originalSetItem = Storage.prototype.setItem
@@ -783,10 +787,12 @@ test("fallback destination persistence fails before signing and survives draft r
     }
   )
   const state = await interceptBlossom(page, fallbackServer)
+  phase("open_draft")
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
+  phase("upload")
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
@@ -801,6 +807,7 @@ test("fallback destination persistence fails before signing and survives draft r
     await tags.press("Enter")
   }
 
+  phase("guard_publish")
   await dialog
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
@@ -820,6 +827,7 @@ test("fallback destination persistence fails before signing and survives draft r
   ).toEqual([24242])
   expect(state.putCount).toBe(1)
 
+  phase("restore_draft")
   await page.reload()
   const resumeButton = page.getByRole("button", {
     name: "Resume product draft",
@@ -838,6 +846,7 @@ test("fallback destination persistence fails before signing and survives draft r
     (allowKey) => localStorage.setItem(allowKey, "1"),
     "conduit:test:allow-fallback-destination"
   )
+  phase("recovery_publish")
   await resumed
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
@@ -852,6 +861,7 @@ test("fallback destination persistence fails before signing and survives draft r
     timeout: 15_000,
   })
   if (await inboxReady.isVisible()) {
+    phase("inbox_setup")
     await page
       .getByRole("button", { name: "Publish product", exact: true })
       .last()
@@ -859,6 +869,7 @@ test("fallback destination persistence fails before signing and survives draft r
   }
   await expect(resumed).toBeHidden({ timeout: 15_000 })
   await expect(publishedListing).toBeVisible({ timeout: 15_000 })
+  phase("listing_edit")
   await page.getByRole("button", { name: "Edit", exact: true }).first().click()
   const editDialog = page.getByRole("dialog", { name: "Edit listing" })
   await expect(editDialog).toBeVisible()
@@ -869,6 +880,7 @@ test("fallback destination persistence fails before signing and survives draft r
     })
   ).toBeDisabled()
   expect(state.putCount).toBe(1)
+  phase("complete")
 })
 
 test("fallback rejection clears the durable claim across reload @merchant", async ({

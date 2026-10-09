@@ -411,6 +411,42 @@ describe("bounded smoke failure diagnostics", () => {
     ).toEqual([])
   })
 
+  it("keeps stalled-journey phases file-bound and strips unapproved values", () => {
+    for (const fixture of [
+      {
+        file: "e2e/merchant-order-inbox.playwright.ts",
+        kind: "order-reply",
+        phase: "buyer_checkout",
+      },
+      {
+        file: "e2e/merchant-product-image-preview.playwright.ts",
+        kind: "fallback-recovery",
+        phase: "restore_draft",
+      },
+    ]) {
+      const annotation = {
+        type: `smoke:${fixture.kind}`,
+        description: JSON.stringify({
+          phase: fixture.phase,
+          pubkey: "private-value",
+          content: "private-value",
+          rawError: "private-value",
+        }),
+      }
+      expect(safeSmokeDiagnostics(fixture.file, [annotation])).toEqual([
+        { kind: fixture.kind, phase: fixture.phase },
+      ])
+      expect(
+        safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+      ).toEqual([])
+      expect(
+        safeSmokeDiagnostics(fixture.file, [
+          { ...annotation, description: '{"phase":"private-value"}' },
+        ])
+      ).toEqual([])
+    }
+  })
+
   it("keeps first-attempt readiness evidence in the report and failure progress without private annotations", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-diagnostic-"))
     try {

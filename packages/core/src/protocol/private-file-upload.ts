@@ -55,7 +55,10 @@ export async function sendPrivateAttachment(
     throw new Error("Configure a usable media server in Network")
   const server = target.serverUrl
   const auth = await createUploadAuth(
-    async (event) => await signer.signEvent({ ...event, pubkey: principal }),
+    async (event) => {
+      const signed = await signer.signEvent({ ...event, pubkey: principal })
+      return { ...signed, tags: signed.tags.map((tag) => [...tag]) }
+    },
     encrypted.envelope.encryptedSha256,
     {
       servers: server,

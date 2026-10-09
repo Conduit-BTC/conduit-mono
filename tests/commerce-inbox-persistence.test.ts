@@ -5,6 +5,7 @@ import {
 import { deriveProtectedReadPresentationState } from "@conduit/core"
 import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import { resolveInboxDeclaration } from "../packages/core/src/protocol/private-message-routing"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
 import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
@@ -37,6 +38,7 @@ import {
   __resetProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
+import { admitFixture } from "./helpers/public-event"
 
 import { MAX_RELAY_MESSAGE_CHARS } from "../packages/core/src/protocol/relay-wire-limits"
 
@@ -1321,7 +1323,7 @@ it("retries exact owner-local self bytes while rejecting the same remote-local d
         relayUrls: ["wss://discovery.relay.dev"],
         evidenceRepository,
         fetchEventsWithDiagnostics: async () => ({
-          events: [declarations.get(recipient)!],
+          events: [await admitFixture(declarations.get(recipient)!)],
           attemptedRelayUrls: ["wss://discovery.relay.dev"],
           successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],
@@ -1450,6 +1452,12 @@ it("keeps legacy recent and history reads on their own bounded relay plan", asyn
     },
     legacyRelayPlan: {
       relayUrls: [legacyUrl],
+      relayTargets: relayTargetsFromUrls([legacyUrl], {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: pubkey,
+        selection: "read",
+      }),
       ownerSelectedRelayUrls: [legacyUrl],
       appRelayUrls: [],
       personalRelayUrls: [legacyUrl],
@@ -1460,7 +1468,17 @@ it("keeps legacy recent and history reads on their own bounded relay plan", asyn
       calls.push({
         transport: input.transport!,
         url: input.relayUrls[0]!,
-        personal: input.personalRelayUrls?.includes(legacyUrl) ?? false,
+        personal:
+          input.relayTargets?.some(
+            (target) =>
+              target.url === legacyUrl &&
+              target.grants.some(
+                (grant) =>
+                  grant.kind === "owner_nip65" &&
+                  grant.operation === "read" &&
+                  grant.selection === "read"
+              )
+          ) ?? false,
       })
       return completeRead(
         input.transport === "nip04_incoming" &&

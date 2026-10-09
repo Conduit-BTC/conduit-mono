@@ -4049,17 +4049,17 @@ test("event variation shipping rejects changed and deleted listings before addin
     page.getByRole("button", { name: "Cart, 2 items", exact: true })
   ).toBeVisible()
 
-  relay.seed(
-    signEvent(MERCHANT_SECRET, {
-      kind: 5,
-      created_at: createdAt + 3,
-      content: "",
-      tags: [
-        ["a", eventCoordinate(candle)],
-        ["k", "30402"],
-      ],
-    })
-  )
+  const deletion = signEvent(MERCHANT_SECRET, {
+    kind: 5,
+    created_at: createdAt + 3,
+    content: "",
+    tags: [
+      ["a", eventCoordinate(candle)],
+      ["k", "30402"],
+    ],
+  })
+  relay.seed(deletion)
+  const beforeDeletionRead = relay.requests.length
   await add.click()
   await expect(
     page
@@ -4070,4 +4070,9 @@ test("event variation shipping rejects changed and deleted listings before addin
   await expect(
     page.getByRole("button", { name: "Cart, 2 items", exact: true })
   ).toBeVisible()
+  expect(
+    relay.requests
+      .slice(beforeDeletionRead)
+      .some((request) => request.matchedEventIds.includes(deletion.id))
+  ).toBe(true)
 })

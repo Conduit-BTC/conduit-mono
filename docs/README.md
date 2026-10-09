@@ -37,6 +37,10 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/knowledge/public-event-verification.md`: immutable public admission,
+  typed parser and restore boundaries, caller inventory, and browser evidence
+- `docs/knowledge/account-network-evidence-and-authority.md`: shared preference
+  evidence, independent relay grants, operation policy, and final I/O ownership
 - `docs/knowledge/commerce-inbox-recovery.md`: account-owned encrypted inbox,
   history recovery, commerce codecs, immutable delivery and runtime evidence
 - `docs/knowledge/signed-event-publication.md`: plain signed-event writer,

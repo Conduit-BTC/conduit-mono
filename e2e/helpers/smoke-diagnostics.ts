@@ -3,6 +3,42 @@ import type { TestInfo } from "@playwright/test"
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "order-reply": {
+      file: "e2e/merchant-order-inbox.playwright.ts",
+      fields: {
+        phase: [
+          "setup",
+          "merchant_catalog",
+          "publish_product",
+          "buyer_checkout",
+          "send_order",
+          "merchant_order",
+          "merchant_reply",
+          "merchant_restore",
+          "buyer_delivery",
+          "buyer_reply",
+          "buyer_restore",
+          "merchant_delivery",
+          "complete",
+        ],
+      },
+    },
+    "fallback-recovery": {
+      file: "e2e/merchant-product-image-preview.playwright.ts",
+      fields: {
+        phase: [
+          "setup",
+          "open_draft",
+          "upload",
+          "guard_publish",
+          "restore_draft",
+          "recovery_publish",
+          "inbox_setup",
+          "listing_edit",
+          "complete",
+        ],
+      },
+    },
     "footer-layout": {
       file: "e2e/mobile-safari-baseline.playwright.ts",
       fields: {
@@ -115,7 +151,12 @@ export function safeSmokeDiagnostics(
 
 export function recordSmokeDiagnostic(
   info: TestInfo,
-  kind: "footer-layout" | "product-submit" | "product-dialog-open",
+  kind:
+    | "footer-layout"
+    | "product-submit"
+    | "product-dialog-open"
+    | "order-reply"
+    | "fallback-recovery",
   values: Record<string, unknown>
 ): void {
   const type = `smoke:${kind}`

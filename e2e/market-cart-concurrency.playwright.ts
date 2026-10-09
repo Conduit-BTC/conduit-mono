@@ -1101,6 +1101,103 @@ test("a stale remove consumes only observed quantities and preserves a concurren
   ).toBeVisible()
 })
 
+test("signed cart quantities can decrease and be removed while verification is unavailable @market", async ({
+  context,
+  page,
+}) => {
+  const signedProductEvent = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 100,
+      content: "Synthetic cart outage fixture",
+      tags: [
+        ["d", "race-item"],
+        ["title", "Race item"],
+        ["price", "1200", "SATS"],
+        ["type", "simple", "digital"],
+      ],
+    },
+    MERCHANT_SECRET
+  )
+  await seedLegacyCart(context, {
+    ...legacyCart,
+    items: [
+      {
+        ...legacyCart.items[0]!,
+        productEventId: signedProductEvent.id,
+        productUpdatedAt: 100000,
+        signedProductEvent,
+      },
+    ],
+  })
+  await page.goto(`${marketUrl}/cart`)
+  await expect(page.getByText("Qty 2", { exact: true })).toBeVisible()
+  await page.evaluate(async (corePath) => {
+    const repositoryPath = "/src/lib/cart-repository.ts"
+    const proofPath = corePath.replace(
+      /index\.ts$/,
+      "protocol/verified-public-event.ts"
+    )
+    const repository = (await import(
+      /* @vite-ignore */ repositoryPath
+    )) as typeof import("../apps/market/src/lib/cart-repository")
+    const proof = (await import(
+      /* @vite-ignore */ proofPath
+    )) as typeof import("../packages/core/src/protocol/verified-public-event")
+    if (
+      !proof.isVerifiedNostrEvent(
+        repository.getCartRepositorySnapshot().items[0]?.signedProductEvent
+      )
+    ) {
+      throw new Error(
+        "Synthetic signed cart did not hydrate through the browser worker"
+      )
+    }
+    proof.__resetPublicEventVerificationForTests()
+    Object.defineProperty(window, "Worker", {
+      configurable: true,
+      value: undefined,
+    })
+  }, coreBrowserModulePath)
+
+  await page
+    .getByRole("button", { name: "Decrease quantity for Race item" })
+    .click()
+  await expect(page.getByText("Qty 1", { exact: true })).toBeVisible()
+  const preserved = await page.evaluate(
+    async ({ corePath, signedEvent }) => {
+      const core = (await import(
+        /* @vite-ignore */ corePath
+      )) as typeof import("../packages/core/src")
+      const proofPath = corePath.replace(
+        /index\.ts$/,
+        "protocol/verified-public-event.ts"
+      )
+      const proof = (await import(
+        /* @vite-ignore */ proofPath
+      )) as typeof import("../packages/core/src/protocol/verified-public-event")
+      const row = await core.db.shoppingCarts.get("market")
+      const line = row?.lines[0] as
+        { item?: { signedProductEvent?: typeof signedEvent } } | undefined
+      return (
+        !!line?.item?.signedProductEvent &&
+        proof.sameSignedPublicEvent(signedEvent, line.item.signedProductEvent)
+      )
+    },
+    { corePath: coreBrowserModulePath, signedEvent: signedProductEvent }
+  )
+  expect(preserved).toBe(true)
+  await page.getByRole("button", { name: "Remove Race item from cart" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Your cart is empty" })
+  ).toBeVisible()
+  expect(await readCanonicalLines(page)).toEqual([])
+  await page.reload()
+  await expect(
+    page.getByRole("heading", { name: "Your cart is empty" })
+  ).toBeVisible()
+})
+
 test("legacy writes are ignored after the canonical migration boundary @market", async ({
   context,
   page,

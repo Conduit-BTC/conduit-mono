@@ -14,7 +14,6 @@ import {
   useAuth,
   verifyFutureMarketReceiptAuthority,
   type FutureMarketOrganizerClaim,
-  type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
 import {
   Button,
@@ -29,25 +28,23 @@ import {
 import { SavedFutureHandoffUpdate } from "./SavedFutureHandoffUpdate"
 
 function hasVerifiedHandoffEvidence(
-  receipt: FutureMarketReadyReceiptSchema,
+  authorityVerified: boolean,
   merchandiseVerified: boolean,
   refreshing: boolean
 ): boolean {
-  return (
-    verifyFutureMarketReceiptAuthority(receipt) &&
-    merchandiseVerified &&
-    !refreshing
-  )
+  return authorityVerified && merchandiseVerified && !refreshing
 }
 
 function OriginalApprovalNotice({
-  receipt,
+  authorityVerified,
+  checking,
   acknowledged,
 }: {
-  receipt: FutureMarketReadyReceiptSchema
+  authorityVerified: boolean
+  checking: boolean
   acknowledged: boolean
 }) {
-  if (acknowledged || verifyFutureMarketReceiptAuthority(receipt)) return null
+  if (acknowledged || authorityVerified || checking) return null
   return (
     <p role="alert" className="text-sm text-[var(--warning-text)]">
       Original organizer handoff approval could not be verified from this
@@ -122,6 +119,25 @@ function ClaimCard({
     retry: false,
     refetchInterval: 30_000,
   })
+  const authorityQuery = useQuery({
+    queryKey: [
+      "future-market-claim-authority",
+      claim.receipt.id,
+      authGeneration,
+    ],
+    queryFn: async ({ signal }) => {
+      const verified = await verifyFutureMarketReceiptAuthority(receipt, {
+        signal,
+      })
+      return (
+        verified && !signal.aborted && isAuthGenerationCurrent(authGeneration)
+      )
+    },
+    enabled: signerReady,
+    retry: false,
+    staleTime: Infinity,
+  })
+  const authorityVerified = signerReady && authorityQuery.data === true
   const merchandise = signerReady ? merchandiseQuery.data : undefined
   const merchandiseVerified =
     merchandise !== undefined &&
@@ -131,9 +147,9 @@ function ClaimCard({
     signerReady &&
     (Boolean(exactAck) ||
       hasVerifiedHandoffEvidence(
-        receipt,
+        authorityVerified,
         merchandiseVerified,
-        merchandiseQuery.isFetching
+        merchandiseQuery.isFetching || authorityQuery.isFetching
       )) &&
     claim.state === "ready_for_pickup" &&
     codeMatches &&
@@ -296,7 +312,11 @@ function ClaimCard({
       ) : null}
       {claim.state === "ready_for_pickup" ? (
         <div className="space-y-2">
-          <OriginalApprovalNotice receipt={receipt} acknowledged={!!exactAck} />
+          <OriginalApprovalNotice
+            authorityVerified={authorityVerified}
+            checking={authorityQuery.isFetching}
+            acknowledged={!!exactAck}
+          />
           <Label htmlFor={`claim-code-${claim.receipt.id}`}>
             Confirm buyer pickup code
           </Label>

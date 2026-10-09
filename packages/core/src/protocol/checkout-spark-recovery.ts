@@ -422,7 +422,7 @@ function hasExactOuterRecipient(
 }
 
 function signedRecoveryWrap(
-  event: PrivateMessageEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   merchantPubkey: string
 ): SignedPublicNostrEvent {
   const signed = event as SignedPublicNostrEvent
@@ -769,7 +769,10 @@ export async function inspectCheckoutSparkRecoveryWrap(input: {
   let rumor: PrivateMessageEvent | null
   try {
     rumor = input.giftUnwrap
-      ? await input.giftUnwrap(wrapped, input.signer)
+      ? await input.giftUnwrap(
+          { ...wrapped, tags: wrapped.tags.map((tag) => [...tag]) },
+          input.signer
+        )
       : await unwrapPrivateMessageEnvelope(wrapped, input.signer)
   } catch {
     rumor = null

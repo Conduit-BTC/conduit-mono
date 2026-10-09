@@ -1,7 +1,7 @@
 import type { Filter } from "nostr-tools"
 import type { FutureMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
-import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
+import { filterEligibleAccountRelayTargets } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
   fetchSignedEventsFanoutDetailed,
@@ -19,10 +19,8 @@ import { parseProductEvent } from "./products"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+import { type SignedPublicNostrEvent } from "./signed-event"
+import { isVerifiedNostrEvent } from "./verified-public-event"
 
 // Client execution budget; this is not a protocol receipt item limit.
 const MAX_RECEIPT_ITEMS = 64
@@ -178,7 +176,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
       event.pubkey.toLowerCase() === expectedAddress.authorPubkey &&
       actualAddress === expectedAddress.addressId &&
       event.created_at * 1_000 === receiptItem.product.createdAt &&
-      isValidSignedPublicNostrEvent(event)
+      isVerifiedNostrEvent(event)
     if (!validEnvelope) {
       return {
         state: "malformed",
@@ -378,6 +376,7 @@ export async function getEventMarketReceiptMerchandise(
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     relayUrls: relayListReadPlan.candidateRelayUrls,
+    relayTargets: relayListReadPlan.relayTargets,
     maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
     ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
     appRelayUrls: relayListReadPlan.appRelayUrls,
@@ -399,16 +398,15 @@ export async function getEventMarketReceiptMerchandise(
       ownerSettingsSnapshot?.signedRelayListAuthoritative,
   })
   const admittedRelayUrls = authenticatedPubkey
-    ? await filterEligibleAccountRelayUrls({
-        accountPubkey: authenticatedPubkey,
-        authenticatedPubkey,
-        candidateRelayUrls: plan.candidateRelayUrls,
-        ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
-        appRelayUrls: plan.appRelayUrls,
-        personalRelayUrls: plan.personalRelayUrls,
-        independentRelayUrls: plan.independentRelayUrls,
-        repository: input.accountNetworkLocalStateRepository,
-      })
+    ? (
+        await filterEligibleAccountRelayTargets({
+          accountPubkey: authenticatedPubkey,
+          authenticatedPubkey,
+          targets: plan.relayTargets,
+          operation: "read",
+          repository: input.accountNetworkLocalStateRepository,
+        })
+      ).map((target) => target.url)
     : plan.candidateRelayUrls
   const relayUrls = admittedRelayUrls.slice(0, MAX_RECEIPT_READ_RELAYS)
   const productIds = Array.from(
@@ -453,20 +451,11 @@ export async function getEventMarketReceiptMerchandise(
       batch.map((filter) =>
         fetch(filter, {
           relayUrls: remainingRelayUrls,
+          relayTargets: plan.relayTargets.filter((target) =>
+            remainingRelayUrlSet.has(target.url)
+          ),
           accountPubkey: authenticatedPubkey,
           authenticatedPubkey,
-          ownerSelectedRelayUrls: (plan.ownerSelectedRelayUrls ?? []).filter(
-            (relayUrl) => remainingRelayUrlSet.has(relayUrl)
-          ),
-          appRelayUrls: (plan.appRelayUrls ?? []).filter((relayUrl) =>
-            remainingRelayUrlSet.has(relayUrl)
-          ),
-          personalRelayUrls: (plan.personalRelayUrls ?? []).filter((relayUrl) =>
-            remainingRelayUrlSet.has(relayUrl)
-          ),
-          independentRelayUrls: (plan.independentRelayUrls ?? []).filter(
-            (relayUrl) => remainingRelayUrlSet.has(relayUrl)
-          ),
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,

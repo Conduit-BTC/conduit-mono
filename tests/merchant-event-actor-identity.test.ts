@@ -1,3 +1,8 @@
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import { afterEach, describe, expect, it } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
@@ -24,8 +29,10 @@ import {
   normalizeEventActorPubkey,
 } from "../apps/merchant/src/lib/event-actor-identity"
 
-const actorPubkey = "a".repeat(64)
-const otherPubkey = "b".repeat(64)
+const actorSecret = generateSecretKey()
+const otherSecret = generateSecretKey()
+const actorPubkey = getPublicKey(actorSecret)
+const otherPubkey = getPublicKey(otherSecret)
 const orderOrganizerPubkey = "ab".repeat(32)
 const receiptMerchantPubkey = "cd".repeat(32)
 
@@ -295,24 +302,28 @@ describe("Merchant event actor identity", () => {
           organizerRelayUrls.every((relayUrl) => relayUrls.includes(relayUrl))
         ) {
           return [
-            {
-              id: "organizer-profile",
-              pubkey,
-              created_at: 10,
-              content: JSON.stringify({ display_name: "Event organizer" }),
-              tags: [],
-            } as never,
+            finalizeEvent(
+              {
+                kind: 0,
+                created_at: 10,
+                content: JSON.stringify({ display_name: "Event organizer" }),
+                tags: [],
+              },
+              actorSecret
+            ),
           ]
         }
         if (pubkey === otherPubkey && relayUrls.includes(participantRelayUrl)) {
           return [
-            {
-              id: "participant-profile",
-              pubkey,
-              created_at: 10,
-              content: JSON.stringify({ display_name: "Event merchant" }),
-              tags: [],
-            } as never,
+            finalizeEvent(
+              {
+                kind: 0,
+                created_at: 10,
+                content: JSON.stringify({ display_name: "Event merchant" }),
+                tags: [],
+              },
+              otherSecret
+            ),
           ]
         }
         return []

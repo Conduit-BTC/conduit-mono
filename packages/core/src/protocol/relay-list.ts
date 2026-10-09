@@ -4,11 +4,22 @@ import { db, type CachedRelayList } from "../db"
 import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
 import {
+  compareAccountNetworkRevisions,
+  reconcileAccountNetworkReadDiagnostics,
+} from "./account-network-evidence"
+import type { RelayTarget } from "./relay-authority"
+import {
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
+  verifySignedEvents,
   type PublicRelayReadOptions,
   type PublicRelayReadResult,
 } from "./relay-reader"
+import {
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import {
   getGeneralReadRelayUrls,
   normalizePublicRelayHints,
@@ -54,6 +65,8 @@ export interface RelayListLookupOptions {
   cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
   relayUrls?: readonly string[]
+  /** Exact authority supplied by the lookup planner. */
+  relayTargets?: readonly RelayTarget[]
   /** Bound admitted relay attempts after live source-policy filtering. */
   maxRelayAttempts?: number
   /**
@@ -215,9 +228,14 @@ function preferencesToReadWrite(preferences: RelayPreference[]): {
  * empty list, which the planner can treat as "no NIP-65 hint".
  */
 export function parseRelayListEvent(
-  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">,
+  event: VerifiedNostrEvent,
   options?: { sourceRelayUrls?: readonly string[]; cachedAt?: number }
 ): RelayList {
+  if (!isVerifiedNostrEvent(event) || event.kind !== EVENT_KINDS.RELAY_LIST) {
+    throw new Error(
+      "Relay-list projection requires an admitted kind-10002 event"
+    )
+  }
   const preferences = parseNip65RelayTags(event.tags ?? [])
   const { readRelayUrls, writeRelayUrls } = preferencesToReadWrite(preferences)
   return {
@@ -300,12 +318,7 @@ export function pickLatestRelayListEvent<
   let latest: T | undefined
   for (const event of events) {
     if (event.pubkey !== pubkey) continue
-    const candidateTs = event.created_at ?? 0
-    if (
-      !latest ||
-      candidateTs > (latest.created_at ?? 0) ||
-      (candidateTs === (latest.created_at ?? 0) && event.id < latest.id)
-    ) {
+    if (!latest || compareAccountNetworkRevisions(event, latest) > 0) {
       latest = event
     }
   }
@@ -398,6 +411,7 @@ async function runFetch(
   options: Pick<
     RelayListLookupOptions,
     | "accountPubkey"
+    | "relayTargets"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
@@ -413,12 +427,9 @@ async function runFetch(
   const impl = testOverrides.fetchPublicEvents ?? fetchPublicEvents
   return (await impl(filter, {
     relayUrls: [...relayUrls],
+    relayTargets: options.relayTargets,
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
-    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-    appRelayUrls: options.appRelayUrls,
-    personalRelayUrls: options.personalRelayUrls,
-    independentRelayUrls: options.independentRelayUrls,
     maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
@@ -435,6 +446,7 @@ async function runFetchDetailed(
   options: Pick<
     RelayListLookupOptions,
     | "accountPubkey"
+    | "relayTargets"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
     | "appRelayUrls"
@@ -447,17 +459,14 @@ async function runFetchDetailed(
   >
 ): Promise<PublicRelayReadResult> {
   if (relayUrls.length === 0) {
-    return { events: [], relays: [], eventsVerified: true }
+    return { events: [], relays: [] }
   }
   if (testOverrides.fetchSignedEventsFanoutDetailed) {
     return await testOverrides.fetchSignedEventsFanoutDetailed(filter, {
       relayUrls: [...relayUrls],
+      relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
-      ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-      appRelayUrls: options.appRelayUrls,
-      personalRelayUrls: options.personalRelayUrls,
-      independentRelayUrls: options.independentRelayUrls,
       maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
@@ -471,12 +480,9 @@ async function runFetchDetailed(
   if (testOverrides.fetchPublicEvents) {
     const events = await testOverrides.fetchPublicEvents(filter, {
       relayUrls: [...relayUrls],
+      relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
-      ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-      appRelayUrls: options.appRelayUrls,
-      personalRelayUrls: options.personalRelayUrls,
-      independentRelayUrls: options.independentRelayUrls,
       maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
@@ -493,17 +499,13 @@ async function runFetchDetailed(
         status: "success",
         eventCount: events.length,
       })),
-      eventsVerified: true,
     }
   }
   return await fetchSignedEventsFanoutDetailed(filter, {
     relayUrls: [...relayUrls],
+    relayTargets: options.relayTargets,
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
-    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-    appRelayUrls: options.appRelayUrls,
-    personalRelayUrls: options.personalRelayUrls,
-    independentRelayUrls: options.independentRelayUrls,
     maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
@@ -555,7 +557,12 @@ export async function getRelayList(
       opts
     )
     throwIfLookupAborted(opts.signal)
-    const latest = pickLatestRelayListEvent(events, pubkey)
+    const verification = await verifySignedEvents(events, {
+      signal: opts.signal,
+      maxEvents: events.length,
+    })
+    throwIfLookupAborted(opts.signal)
+    const latest = pickLatestRelayListEvent(verification.events, pubkey)
     if (!latest) {
       return filterLookupRelayList(
         withLookupState(retained, "stale-cache"),
@@ -675,28 +682,33 @@ export async function getRelayListsDetailed(
       opts
     )
     throwIfLookupAborted(opts.signal)
-    const statusByRelay = new Map(
-      result.relays.map((relay) => [relay.relayUrl, relay.status] as const)
+    const verification = await verifySignedEvents(result.events, {
+      signal: opts.signal,
+      maxEvents: result.events.length,
+    })
+    throwIfLookupAborted(opts.signal)
+    const verified =
+      !verification.truncated &&
+      verification.events.length === result.events.length
+    const readEvidence = reconcileAccountNetworkReadDiagnostics(
+      verified
+        ? { ...result, events: verification.events }
+        : {
+            ...result,
+            events: verification.events,
+            relays: result.relays.map((relay) => ({
+              ...relay,
+              outcome: "verification_failed" as const,
+            })),
+          },
+      relayUrls
     )
-    const admittedRelayUrls = result.admittedRelayUrls ?? relayUrls
-    const verified = result.eventsVerified === true
-    const transportComplete =
-      verified &&
-      admittedRelayUrls.length > 0 &&
-      admittedRelayUrls.every(
-        (relayUrl) => statusByRelay.get(relayUrl) === "success"
-      )
+    const transportComplete = readEvidence.coverage === "complete"
     const transportUsable =
-      verified &&
-      admittedRelayUrls.some((relayUrl) => {
-        const status = statusByRelay.get(relayUrl)
-        return status === "success" || status === "partial"
-      })
+      readEvidence.coverage === "partial" || transportComplete
 
     for (const pubkey of missing) {
-      const latest = verified
-        ? pickLatestRelayListEvent(result.events, pubkey)
-        : undefined
+      const latest = pickLatestRelayListEvent(verification.events, pubkey)
       if (!latest) {
         if (out.has(pubkey)) {
           resolutionStates.set(pubkey, "stale-cache")
@@ -751,10 +763,16 @@ export async function getRelayListsDetailed(
  * explicit refresh.
  */
 export async function ingestRelayListEvent(
-  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">,
+  event: SignedPublicNostrEvent,
   sourceRelayUrls?: readonly string[]
 ): Promise<RelayList> {
-  const fetched = parseRelayListEvent(event, {
+  const admitted = isVerifiedNostrEvent(event)
+    ? { status: "verified" as const, event }
+    : await admitPublicEvent(event)
+  if (admitted.status !== "verified") {
+    throw new Error("Relay-list ingestion requires a verified signed event")
+  }
+  const fetched = parseRelayListEvent(admitted.event, {
     sourceRelayUrls,
     cachedAt: Date.now(),
   })

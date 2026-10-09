@@ -8,7 +8,7 @@ import {
 } from "nostr-tools/pure"
 import { decrypt, encrypt, getConversationKey } from "nostr-tools/nip44"
 
-import type { Nip46AuthSession } from "../packages/core/src/protocol/remote-signer"
+import type { Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
 import {
   TEST_RELAY_URL,
   readTestRelayEvents,

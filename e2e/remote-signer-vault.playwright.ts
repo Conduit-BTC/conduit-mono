@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+const authLockModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/auth-operation-lock.ts`
 const vaultModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer-vault.ts`
-const remoteSignerModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer.ts`
+const authSessionModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/auth-session.ts`
 
 test("remote signer reconnect key is encrypted and restorable in browser storage @market", async ({
   page,
@@ -173,7 +174,7 @@ test("auth operations serialize across tabs without Web Locks @market", async ({
           return current
         })
       },
-      { moduleUrl: vaultModuleUrl }
+      { moduleUrl: authLockModuleUrl }
     )
 
   const starts = await Promise.all([
@@ -211,7 +212,7 @@ test("remote signer storage works without crypto.randomUUID @market", async ({
       const lockResult = await withBrowserAuthOperationLock(async () => "ready")
       return { revision, lockResult }
     },
-    { signerModuleUrl: remoteSignerModuleUrl, vaultUrl: vaultModuleUrl }
+    { signerModuleUrl: authSessionModuleUrl, vaultUrl: authLockModuleUrl }
   )
 
   expect(

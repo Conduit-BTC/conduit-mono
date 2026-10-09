@@ -86,7 +86,7 @@ function hasSignedOrPendingMembership(
   row: AccountNetworkRelayRowView
 ): boolean {
   return (
-    Boolean(row.recoveryReadOnly) ||
+    Boolean(row.recoveryReadOnly || row.retainedReadOnly) ||
     [row.readState, row.publishState, row.privateInboxState].some(
       (state) => state === "published" || state === "pending"
     )
@@ -410,6 +410,14 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
             </dd>
           </div>
         ) : null}
+        {row.retainedReadOnly ? (
+          <div>
+            <dt className="text-[var(--text-muted)]">Saved read evidence</dt>
+            <dd className="mt-0.5 text-[var(--text-primary)]">
+              Retained for read history only
+            </dd>
+          </div>
+        ) : null}
         <div>
           <dt className="text-[var(--text-muted)]">Recent connection</dt>
           <dd className="mt-0.5 text-[var(--text-primary)]">
@@ -463,12 +471,21 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
 
 function relayRowState(
   row: AccountNetworkRelayRowView,
-  edited: boolean
+  edited: boolean,
+  operationPhase: AccountNetworkSettingsOperationPhase
 ): { label: string; attention: boolean } | null {
   const pending = [row.readState, row.publishState, row.privateInboxState].some(
     (state) => state === "pending"
   )
-  if (pending) return { label: "Publishing", attention: true }
+  if (pending) {
+    return {
+      label:
+        operationPhase === "publishing"
+          ? "Publishing"
+          : "Awaiting confirmation",
+      attention: true,
+    }
+  }
   const draft =
     row.candidate || row.readState === "draft" || row.publishState === "draft"
   if (draft) return { label: "New", attention: false }
@@ -574,6 +591,7 @@ function RelayRoleControls({
 function RelayRow({
   row,
   edited,
+  operationPhase,
   mutationDisabled,
   operationBusy,
   wholeSetupRemoval,
@@ -588,6 +606,7 @@ function RelayRow({
 }: {
   row: AccountNetworkRelayRowView
   edited: boolean
+  operationPhase: AccountNetworkSettingsOperationPhase
   mutationDisabled: boolean
   operationBusy: boolean
   wholeSetupRemoval: boolean
@@ -600,7 +619,7 @@ function RelayRow({
   onMoveEarlier: () => void
   onMoveLater: () => void
 }) {
-  const state = relayRowState(row, edited)
+  const state = relayRowState(row, edited, operationPhase)
   const removalLabel = wholeSetupRemoval
     ? `Remove ${row.url} from my whole setup`
     : `Remove ${row.url} from this review`
@@ -618,6 +637,10 @@ function RelayRow({
               {row.recoveryReadOnly ? (
                 <span className="text-xs font-medium text-[var(--warning-text)]">
                   Recovery read-only
+                </span>
+              ) : row.retainedReadOnly ? (
+                <span className="text-xs font-medium text-[var(--text-muted)]">
+                  Saved read evidence
                 </span>
               ) : null}
               {state ? (
@@ -679,9 +702,28 @@ function RelayRow({
       ) : null}
       {row.recoveryReadOnly ? (
         <p className="ml-10 mt-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-          Conduit reads this previous inbox during the 7-day recovery window.
-          Removing it from your whole setup ends recovery for this relay
-          immediately.
+          {row.recoveryPhase === "grace" ? (
+            <>
+              Conduit reads this previous inbox during the seven-day recovery
+              window
+              {row.recoveryExpiresAt !== undefined
+                ? ` through ${formatObservationTime(row.recoveryExpiresAt)}`
+                : ""}
+              . Removing it from your whole setup ends recovery for this relay
+              immediately.
+            </>
+          ) : (
+            <>
+              The previous inbox is retained while confirmation is pending. The
+              seven-day recovery window starts after confirmation. Removing it
+              from your whole setup ends recovery for this relay immediately.
+            </>
+          )}
+        </p>
+      ) : row.retainedReadOnly ? (
+        <p className="ml-10 mt-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+          This relay is retained as saved read evidence. No recovery window is
+          active.
         </p>
       ) : null}
       <RelayDetails row={row} />
@@ -692,9 +734,6 @@ function RelayRow({
 function frontierExceptionMessage(
   frontier: AccountNetworkFrontierView
 ): string | null {
-  if (frontier.state === "distribution_pending") {
-    return "Publishing is still in progress."
-  }
   if (frontier.state === "signed_empty") {
     return "The published preference is empty."
   }
@@ -863,7 +902,9 @@ function PendingUpdateSummary({
                   ? "Exact event confirmed"
                   : delivery.confirmationState === "policy_blocked"
                     ? "Targets excluded"
-                    : "Exact readback pending"}
+                    : delivery.authRequiredCount
+                      ? "Readback authorization required"
+                      : "Exact readback pending"}
               </StatusPill>
             </div>
             <details className="group/confirmation mt-1 text-xs text-[var(--text-secondary)]">
@@ -877,10 +918,13 @@ function PendingUpdateSummary({
               <p className="text-pretty leading-5">
                 {delivery.exactReadbackCount} exact readback ·{" "}
                 {delivery.unresolvedCount} unresolved ·{" "}
-                {delivery.eligibleTargetCount} eligible target
+                {delivery.eligibleTargetCount} distribution target
                 {delivery.eligibleTargetCount === 1 ? "" : "s"}
                 {delivery.excludedTargetCount > 0
                   ? ` · ${delivery.excludedTargetCount} excluded`
+                  : ""}
+                {delivery.authRequiredCount
+                  ? ` · ${delivery.authRequiredCount} readback target${delivery.authRequiredCount === 1 ? "" : "s"} require authorization`
                   : ""}
               </p>
             </details>
@@ -1324,10 +1368,7 @@ function useRelaySettingsReview(
   )
   const signedRepairAvailable =
     controller.view.relayList.state !== "declared" ||
-    (desiredInboxAvailable &&
-      !["declared", "distribution_pending"].includes(
-        controller.view.inbox.state
-      ))
+    (desiredInboxAvailable && controller.view.inbox.state !== "declared")
   const reviewAvailable = dirty || signedRepairAvailable
   const validation = controller.validate(desiredRoles)
   const validationErrors = hasUnconfiguredLocalCandidate
@@ -1867,6 +1908,7 @@ function RelayListSection({
                 key={row.url}
                 row={row}
                 edited={review.editedRelayUrls.has(row.url)}
+                operationPhase={controller.operation.phase}
                 mutationDisabled={!review.mutationReady}
                 operationBusy={review.busy}
                 wholeSetupRemoval={review.wholeSetupRelayUrls.has(row.url)}

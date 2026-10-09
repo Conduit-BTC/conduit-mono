@@ -1,3 +1,4 @@
+import { admitFixture } from "./public-event"
 import { matchFilter, type Filter } from "nostr-tools"
 import {
   createEventMarketPickupSnapshot,
@@ -50,7 +51,7 @@ export async function createEventMarketCheckoutFixture() {
   })
   const productEvent = fixture.events.find((event) => event.kind === 30402)!
   const product = {
-    ...parseProductEvent(productEvent),
+    ...parseProductEvent(await admitFixture(productEvent)),
     sourceEventId: productEvent.id,
   }
   return {

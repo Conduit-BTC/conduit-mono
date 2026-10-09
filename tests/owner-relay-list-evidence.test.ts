@@ -18,15 +18,16 @@ import {
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitFixture } from "./helpers/public-event"
 
 const OWNER_SECRET = generateSecretKey()
 const OWNER = getPublicKey(OWNER_SECRET)
 const OTHER = getPublicKey(generateSecretKey())
 
-function relayEvent(input: {
+async function relayEvent(input: {
   createdAt: number
   tags?: string[][]
-}): SignedPublicNostrEvent {
+}): Promise<SignedPublicNostrEvent> {
   const event = finalizeEvent(
     {
       kind: 10002,
@@ -36,10 +37,10 @@ function relayEvent(input: {
     },
     OWNER_SECRET
   )
-  return {
+  return await admitFixture({
     ...event,
     tags: event.tags.map((tag) => [...tag]),
-  }
+  })
 }
 
 function lookup(input: {
@@ -81,7 +82,7 @@ describe("owner kind-10002 evidence", () => {
       relayUrls: string[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
-      ownerSelectedRelayUrls: string[]
+      ownerLocalReadTarget: boolean
     }> = []
     const fetchEventsWithDiagnostics = async (
       _filter: unknown,
@@ -89,14 +90,26 @@ describe("owner kind-10002 evidence", () => {
         relayUrls: string[]
         accountPubkey?: string | null
         authenticatedPubkey?: string | null
-        ownerSelectedRelayUrls?: readonly string[]
+        relayTargets?: readonly {
+          url: string
+          grants: readonly { kind: string; operation: string }[]
+        }[]
       }
     ) => {
       calls.push({
         relayUrls: [...options.relayUrls],
         accountPubkey: options.accountPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
-        ownerSelectedRelayUrls: [...(options.ownerSelectedRelayUrls ?? [])],
+        ownerLocalReadTarget: Boolean(
+          options.relayTargets?.some(
+            (target) =>
+              target.url === ownerWsRelay &&
+              target.grants.some(
+                (grant) =>
+                  grant.kind === "owner_nip65" && grant.operation === "read"
+              )
+          )
+        ),
       })
       return {
         events: [] as never,
@@ -128,13 +141,13 @@ describe("owner kind-10002 evidence", () => {
         relayUrls: [ownerWsRelay, secureRelay],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
-        ownerSelectedRelayUrls: [ownerWsRelay],
+        ownerLocalReadTarget: true,
       },
       {
         relayUrls: [secureRelay],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
-        ownerSelectedRelayUrls: [],
+        ownerLocalReadTarget: false,
       },
     ])
   })
@@ -165,10 +178,10 @@ describe("owner kind-10002 evidence", () => {
     expect(fetchCalls).toBe(1)
   })
 
-  it("retains ws distribution only when the exact owner event selected it", () => {
+  it("retains ws distribution only when the exact owner event selected it", async () => {
     const ownerWs = "ws://owner-selected.example"
     const remoteWs = "ws://remote-derived.example"
-    const signedEvent = relayEvent({
+    const signedEvent = await relayEvent({
       createdAt: 100,
       tags: [["r", ownerWs, "write"]],
     })
@@ -201,8 +214,8 @@ describe("owner kind-10002 evidence", () => {
     ).toThrow("requires publish targets")
   })
 
-  it("retains local publication errors through checkpoint normalization and retry", () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+  it("retains local publication errors through checkpoint normalization and retry", async () => {
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const relayUrl = "wss://nos.lol"
     const staged = applyOwnerRelayListDistributionStage(undefined, {
       pubkey: OWNER,
@@ -216,13 +229,10 @@ describe("owner kind-10002 evidence", () => {
       publish: [{ relayUrl, status: "error" }],
       observedAt: 1_100,
     })
-    const restored = applyOwnerRelayListDistributionOutcomes(
-      structuredClone(failed),
-      {
-        readback: [{ relayUrl, status: "absent" }],
-        observedAt: 1_200,
-      }
-    )
+    const restored = applyOwnerRelayListDistributionOutcomes(failed, {
+      readback: [{ relayUrl, status: "absent" }],
+      observedAt: 1_200,
+    })
     expect(restored.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
       "error"
     )
@@ -238,8 +248,8 @@ describe("owner kind-10002 evidence", () => {
     )
   })
 
-  it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
-    const signedEvent = relayEvent({
+  it("keeps exact per-relay outcomes immutable while retrying only unresolved work", async () => {
+    const signedEvent = await relayEvent({
       createdAt: 100,
       tags: [["r", "wss://owner.example"]],
     })
@@ -257,7 +267,9 @@ describe("owner kind-10002 evidence", () => {
       stagedAt: 1_000,
     })
 
-    signedEvent.tags[0]![1] = "wss://caller-mutation.example"
+    expect(() => {
+      ;(signedEvent.tags[0] as string[])[1] = "wss://caller-mutation.example"
+    }).toThrow()
     relayOutcomes[0]!.publishStatus = "rejected"
     expect(staged.pendingDistribution).toEqual({
       signedEvent: exactSignedBytes,
@@ -338,8 +350,8 @@ describe("owner kind-10002 evidence", () => {
     ])
   })
 
-  it("clears exact pending bytes after shared-target readback", () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+  it("clears exact pending bytes after shared-target readback", async () => {
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const exactSignedBytes = structuredClone(signedEvent)
     const staged = applyOwnerRelayListDistributionStage(undefined, {
       pubkey: OWNER,
@@ -365,7 +377,7 @@ describe("owner kind-10002 evidence", () => {
   })
 
   it("retains exact pending bytes when durable evidence is reloaded after restart", async () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const staged = applyOwnerRelayListDistributionStage(undefined, {
       pubkey: OWNER,
       signedEvent,
@@ -383,12 +395,12 @@ describe("owner kind-10002 evidence", () => {
     expect(retained?.current?.signedEvent).toEqual(structuredClone(signedEvent))
   })
 
-  it("lets stronger same-kind evidence supersede pending distribution", () => {
-    const pending = relayEvent({
+  it("lets stronger same-kind evidence supersede pending distribution", async () => {
+    const pending = await relayEvent({
       createdAt: 100,
       tags: [["r", "wss://pending.example"]],
     })
-    const stronger = relayEvent({
+    const stronger = await relayEvent({
       createdAt: 101,
       tags: [["r", "wss://stronger.example"]],
     })
@@ -419,11 +431,11 @@ describe("owner kind-10002 evidence", () => {
   })
 
   it("retains exact signed bytes and applies the NIP-01 frontier tie-break", async () => {
-    const first = relayEvent({
+    const first = await relayEvent({
       createdAt: 100,
       tags: [["r", "wss://z.example"]],
     })
-    const second = relayEvent({
+    const second = await relayEvent({
       createdAt: 100,
       tags: [["r", "wss://a.example"]],
     })
@@ -462,7 +474,7 @@ describe("owner kind-10002 evidence", () => {
     })
     expect(retained?.current?.signedEvent.sig).toBe(winner.sig)
 
-    const older = relayEvent({
+    const older = await relayEvent({
       createdAt: 99,
       tags: [["r", "wss://older.example"]],
     })
@@ -488,7 +500,7 @@ describe("owner kind-10002 evidence", () => {
       eventId: older.id,
     })
 
-    const newer = relayEvent({
+    const newer = await relayEvent({
       createdAt: 101,
       tags: [["r", "wss://newer.example"]],
     })
@@ -512,8 +524,8 @@ describe("owner kind-10002 evidence", () => {
     )
   })
 
-  it("classifies signed-empty, malformed, duplicate, and invalid relay tags", () => {
-    const empty = relayEvent({ createdAt: 1, tags: [] })
+  it("classifies signed-empty, malformed, duplicate, and invalid relay tags", async () => {
+    const empty = await relayEvent({ createdAt: 1, tags: [] })
     const emptyRecord = applyOwnerRelayListEvidenceReconciliation(undefined, {
       pubkey: OWNER,
       observations: [{ signedEvent: empty, observedAt: 1 }],
@@ -521,7 +533,7 @@ describe("owner kind-10002 evidence", () => {
     })
     expect(emptyRecord.current?.state).toBe("signed_empty")
 
-    const malformed = relayEvent({
+    const malformed = await relayEvent({
       createdAt: 2,
       tags: [
         ["r", "not a relay"],
@@ -543,7 +555,7 @@ describe("owner kind-10002 evidence", () => {
       preferences: [],
     })
 
-    const mixed = relayEvent({
+    const mixed = await relayEvent({
       createdAt: 3,
       tags: [
         ["r", "wss://Relay.Example/", "read"],
@@ -571,11 +583,11 @@ describe("owner kind-10002 evidence", () => {
   })
 
   it("retains the last usable declaration across a newer malformed frontier and restart", async () => {
-    const declared = relayEvent({
+    const declared = await relayEvent({
       createdAt: 100,
       tags: [["r", "wss://usable.example"]],
     })
-    const malformed = relayEvent({
+    const malformed = await relayEvent({
       createdAt: 101,
       tags: [["r", "not a relay"]],
     })
@@ -634,12 +646,12 @@ describe("owner kind-10002 evidence", () => {
   })
 
   it("does not resurrect relays cleared by signed-empty when a newer event is malformed", async () => {
-    const declared = relayEvent({
+    const declared = await relayEvent({
       createdAt: 100,
       tags: [["r", "wss://cleared.example"]],
     })
-    const signedEmpty = relayEvent({ createdAt: 101, tags: [] })
-    const malformed = relayEvent({
+    const signedEmpty = await relayEvent({ createdAt: 101, tags: [] })
+    const malformed = await relayEvent({
       createdAt: 102,
       tags: [["r", "not a relay"]],
     })
@@ -730,8 +742,8 @@ describe("owner kind-10002 evidence", () => {
     expect(unavailable.lookup.coverage).toBe("unavailable")
   })
 
-  it("ignores invalid forged candidates without downgrading complete coverage", async () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+  it("ignores unadmitted candidates while preserving verification uncertainty", async () => {
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const relays = ["wss://nos.lol", "wss://relay.ditto.pub"]
     const current = signedEvent as never
     attachEventSourceRelayUrl(current, relays[0]!)
@@ -764,13 +776,13 @@ describe("owner kind-10002 evidence", () => {
       }),
     })
     expect(confirmed.current?.signedEvent.id).toBe(signedEvent.id)
-    expect(confirmed.current?.completeObservedAt).toBe(2_000)
+    expect(confirmed.current?.completeObservedAt).toBe(1_000)
     expect(confirmed.lookup).toMatchObject({
-      coverage: "complete",
+      coverage: "unavailable",
       hadEvent: true,
       eventId: signedEvent.id,
     })
-    expect(confirmed.stale).toBe(false)
+    expect(confirmed.stale).toBe(true)
 
     __resetOwnerRelayListEvidenceForTests()
     repository = createInMemoryOwnerRelayListEvidenceRepository()
@@ -785,16 +797,16 @@ describe("owner kind-10002 evidence", () => {
         failedRelayUrls: [],
       }),
     })
-    expect(forgedOnly.state).toBe("not_observed")
+    expect(forgedOnly.state).toBe("lookup_unavailable")
     expect(forgedOnly.lookup).toMatchObject({
-      coverage: "complete",
+      coverage: "unavailable",
       hadEvent: false,
     })
     expect(forgedOnly.current).toBeUndefined()
   })
 
   it("retains readable durable evidence when reconciliation writes fail after restart", async () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const relays = ["wss://nos.lol", "wss://relay.ditto.pub"]
     await resolveOwnerRelayList(OWNER, {
       relayUrls: relays,
@@ -838,7 +850,7 @@ describe("owner kind-10002 evidence", () => {
   })
 
   it("does not let malformed readable durable data become a fallback frontier", async () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const relays = ["wss://nos.lol"]
     const malformedRecord = {
       pubkey: OWNER,
@@ -884,7 +896,7 @@ describe("owner kind-10002 evidence", () => {
   })
 
   it("keeps stronger retained evidence through a later partial omission", async () => {
-    const signedEvent = relayEvent({ createdAt: 100 })
+    const signedEvent = await relayEvent({ createdAt: 100 })
     const eventWithSource = signedEvent as never
     attachEventSourceRelayUrl(eventWithSource, "wss://nos.lol")
     const relays = ["wss://nos.lol", "wss://relay.ditto.pub"]

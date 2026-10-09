@@ -17,17 +17,23 @@ import {
   INBOX_DECLARATION_CUTOVER_GRACE_MS,
   INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
   mergeInboxDeclarationEvidence,
+  normalizeInboxDeclarationEvidencePubkey,
   recordInboxDeclarationCutoverRecoveryReadback,
   type NetworkPreferenceRelayOutcome,
 } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { unresolvedNetworkPreferenceReadbackRelayUrls } from "@conduit/core/protocol/network-preference-delivery"
 import { readRetainedInboxDeclaration } from "@conduit/core/protocol/private-message-routing"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitFixture } from "./helpers/public-event"
 
 const ACCOUNT_A_SECRET = new Uint8Array(32).fill(1)
 const ACCOUNT_B_SECRET = new Uint8Array(32).fill(2)
-const ACCOUNT_A = getPublicKey(ACCOUNT_A_SECRET)
-const ACCOUNT_B = getPublicKey(ACCOUNT_B_SECRET)
+const ACCOUNT_A = normalizeInboxDeclarationEvidencePubkey(
+  getPublicKey(ACCOUNT_A_SECRET)
+)!
+const ACCOUNT_B = normalizeInboxDeclarationEvidencePubkey(
+  getPublicKey(ACCOUNT_B_SECRET)
+)!
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
@@ -41,12 +47,12 @@ function hexToBytes(hex: string): Uint8Array {
   )
 }
 
-function declarationEvent(input: {
+async function declarationEvent(input: {
   secret?: Uint8Array
   createdAt: number
   tags?: string[][]
   kind?: number
-}): SignedPublicNostrEvent {
+}): Promise<SignedPublicNostrEvent> {
   const event = finalizeEvent(
     {
       kind: input.kind ?? 10050,
@@ -56,7 +62,7 @@ function declarationEvent(input: {
     },
     input.secret ?? ACCOUNT_A_SECRET
   )
-  return {
+  return await admitFixture({
     id: event.id,
     pubkey: event.pubkey,
     created_at: event.created_at,
@@ -64,7 +70,7 @@ function declarationEvent(input: {
     tags: event.tags.map((tag) => [...tag]),
     content: event.content,
     sig: event.sig,
-  }
+  })
 }
 
 function pendingRelayOutcome(relayUrl: string): NetworkPreferenceRelayOutcome {
@@ -78,8 +84,8 @@ function pendingRelayOutcome(relayUrl: string): NetworkPreferenceRelayOutcome {
 }
 
 describe("durable inbox declaration evidence", () => {
-  it("retains local publication errors through checkpoint normalization and retry", () => {
-    const signedEvent = declarationEvent({ createdAt: 100 })
+  it("retains local publication errors through checkpoint normalization and retry", async () => {
+    const signedEvent = await declarationEvent({ createdAt: 100 })
     const relayUrl = "wss://nos.lol"
     const staged = applyInboxDeclarationDistributionStage(undefined, {
       pubkey: ACCOUNT_A,
@@ -94,27 +100,27 @@ describe("durable inbox declaration evidence", () => {
       observedAt: 1_100,
     })
     const restored = applyInboxDeclarationDistributionOutcomes(
-      structuredClone(failed),
+      cloneInboxDeclarationEvidenceRecord(failed),
       {
         readback: [{ relayUrl, status: "absent" }],
         observedAt: 1_200,
       }
     )
-    expect(restored.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
-      "error"
-    )
+    expect(
+      restored.pendingDistribution?.relayOutcomes?.[0]?.publishStatus
+    ).toBe("error")
     expect(restored.pendingDistribution?.signedEvent).toEqual(signedEvent)
     const retried = applyInboxDeclarationDistributionOutcomes(restored, {
       publish: [{ relayUrl, status: "acked" }],
       observedAt: 1_300,
     })
-    expect(retried.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
+    expect(retried.pendingDistribution?.relayOutcomes?.[0]?.publishStatus).toBe(
       "acked"
     )
   })
 
-  it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
-    const signedEvent = declarationEvent({ createdAt: 100 })
+  it("keeps exact per-relay outcomes immutable while retrying only unresolved work", async () => {
+    const signedEvent = await declarationEvent({ createdAt: 100 })
     const exactSignedBytes = structuredClone(signedEvent)
     const relayOutcomes = [
       pendingRelayOutcome("wss://relay.damus.io"),
@@ -129,7 +135,9 @@ describe("durable inbox declaration evidence", () => {
       stagedAt: 1_000,
     })
 
-    signedEvent.tags[0]![1] = "wss://caller-mutation.example"
+    expect(() => {
+      ;(signedEvent.tags[0] as string[])[1] = "wss://caller-mutation.example"
+    }).toThrow()
     relayOutcomes[0]!.publishStatus = "rejected"
     expect(staged.pendingDistribution).toEqual({
       signedEvent: exactSignedBytes,
@@ -210,8 +218,8 @@ describe("durable inbox declaration evidence", () => {
     ])
   })
 
-  it("starts the seven-day cutover only when exact shared-set readback completes", () => {
-    const replacement = declarationEvent({
+  it("starts the seven-day cutover only when exact shared-set readback completes", async () => {
+    const replacement = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://relay.ditto.pub"]],
     })
@@ -342,12 +350,12 @@ describe("durable inbox declaration evidence", () => {
     expect(getActiveInboxCutoverRecoveryRelayUrls(excluded, 3_001)).toEqual([])
   })
 
-  it("lets stronger same-kind evidence supersede pending authority without erasing recovery", () => {
-    const pending = declarationEvent({
+  it("lets stronger same-kind evidence supersede pending authority without erasing recovery", async () => {
+    const pending = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://relay.ditto.pub"]],
     })
-    const stronger = declarationEvent({
+    const stronger = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "wss://relay.primal.net"]],
     })
@@ -394,8 +402,8 @@ describe("durable inbox declaration evidence", () => {
     ])
   })
 
-  it("preserves immutable confirmation evidence when whole removal policy-blocks a target", () => {
-    const replacement = declarationEvent({
+  it("preserves immutable confirmation evidence when whole removal policy-blocks a target", async () => {
+    const replacement = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://replacement.example"]],
     })
@@ -450,8 +458,8 @@ describe("durable inbox declaration evidence", () => {
     ])
   })
 
-  it("retains a previous inbox as blocked history when removal is committed with its replacement", () => {
-    const replacement = declarationEvent({
+  it("retains a previous inbox as blocked history when removal is committed with its replacement", async () => {
+    const replacement = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://replacement.example"]],
     })
@@ -486,12 +494,12 @@ describe("durable inbox declaration evidence", () => {
     expect(getActiveInboxCutoverRecoveryRelayUrls(staged, 1_000)).toEqual([])
   })
 
-  it("confirms a locally planned recovery batch after its pending authority is superseded", () => {
-    const replacement = declarationEvent({
+  it("confirms a locally planned recovery batch after its pending authority is superseded", async () => {
+    const replacement = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://relay.ditto.pub"]],
     })
-    const stronger = declarationEvent({
+    const stronger = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "wss://relay.primal.net"]],
     })
@@ -555,8 +563,8 @@ describe("durable inbox declaration evidence", () => {
     })
   })
 
-  it("uses a fresh immutable same-event attempt without completing a policy-blocked plan", () => {
-    const replacement = declarationEvent({
+  it("uses a fresh immutable same-event attempt without completing a policy-blocked plan", async () => {
+    const replacement = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://replacement.example"]],
     })
@@ -656,7 +664,7 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("does not let repository readback mint an external recovery batch", async () => {
-    const replacement = declarationEvent({ createdAt: 200 })
+    const replacement = await declarationEvent({ createdAt: 200 })
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
     await mergeInboxDeclarationEvidence(
       {
@@ -684,12 +692,12 @@ describe("durable inbox declaration evidence", () => {
     expect((await repository.get(ACCOUNT_A))?.cutoverRecoveries).toBeUndefined()
   })
 
-  it("keeps sequential cutover windows independent with distinct deadlines", () => {
-    const first = declarationEvent({
+  it("keeps sequential cutover windows independent with distinct deadlines", async () => {
+    const first = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://relay.ditto.pub"]],
     })
-    const second = declarationEvent({
+    const second = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "wss://relay.primal.net"]],
     })
@@ -791,12 +799,12 @@ describe("durable inbox declaration evidence", () => {
     ).toEqual([])
   })
 
-  it("preserves an unexpired cutover when a stronger external event wins", () => {
-    const replacement = declarationEvent({
+  it("preserves an unexpired cutover when a stronger external event wins", async () => {
+    const replacement = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://relay.ditto.pub"]],
     })
-    const stronger = declarationEvent({
+    const stronger = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "wss://relay.primal.net"]],
     })
@@ -834,7 +842,7 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("up-converts a legacy singleton without changing its recovery clock", async () => {
-    const replacement = declarationEvent({ createdAt: 200 })
+    const replacement = await declarationEvent({ createdAt: 200 })
     const canonical = applyInboxDeclarationDistributionOutcomes(
       applyInboxDeclarationDistributionStage(undefined, {
         pubkey: ACCOUNT_A,
@@ -894,9 +902,9 @@ describe("durable inbox declaration evidence", () => {
     )
   })
 
-  it("deduplicates overlapping reads and filters whole removals from every batch", () => {
-    const first = declarationEvent({ createdAt: 200 })
-    const current = declarationEvent({
+  it("deduplicates overlapping reads and filters whole removals from every batch", async () => {
+    const first = await declarationEvent({ createdAt: 200 })
+    const current = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "wss://current.example"]],
     })
@@ -985,7 +993,7 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("projects recovery-only relays separately from reintroduced current inboxes", async () => {
-    const current = declarationEvent({
+    const current = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "wss://reintroduced.example"]],
     })
@@ -1000,7 +1008,7 @@ describe("durable inbox declaration evidence", () => {
     evidence.cutoverRecoveries = [
       {
         policyVersion: INBOX_DECLARATION_CUTOVER_POLICY_VERSION,
-        replacementEventId: declarationEvent({ createdAt: 200 }).id,
+        replacementEventId: (await declarationEvent({ createdAt: 200 })).id,
         relayUrls: [
           "wss://reintroduced.example",
           "wss://recovery-only.example",
@@ -1025,7 +1033,7 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("keeps staged bytes and cutover pending until exact shared-set confirmation", async () => {
-    const signedEvent = declarationEvent({ createdAt: 100 })
+    const signedEvent = await declarationEvent({ createdAt: 100 })
     const staged = applyInboxDeclarationDistributionStage(undefined, {
       pubkey: ACCOUNT_A,
       signedEvent,
@@ -1141,8 +1149,8 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("rejects a same-id stage with different signed bytes or targets", async () => {
-    const first = declarationEvent({ createdAt: 100 })
-    const second = {
+    const first = await declarationEvent({ createdAt: 100 })
+    const second = await admitFixture({
       ...first,
       sig: bytesToHex(
         schnorr.sign(
@@ -1151,7 +1159,7 @@ describe("durable inbox declaration evidence", () => {
           new Uint8Array(32).fill(9)
         )
       ),
-    }
+    })
     expect(second.id).toBe(first.id)
     expect(second.sig).not.toBe(first.sig)
 
@@ -1180,9 +1188,9 @@ describe("durable inbox declaration evidence", () => {
     ])
   })
 
-  it("keeps staged bytes canonical when same-id evidence has another valid signature", () => {
-    const stagedEvent = declarationEvent({ createdAt: 100 })
-    const processEvent = {
+  it("keeps staged bytes canonical when same-id evidence has another valid signature", async () => {
+    const stagedEvent = await declarationEvent({ createdAt: 100 })
+    const processEvent = await admitFixture({
       ...stagedEvent,
       sig: bytesToHex(
         schnorr.sign(
@@ -1191,7 +1199,7 @@ describe("durable inbox declaration evidence", () => {
           new Uint8Array(32).fill(8)
         )
       ),
-    }
+    })
     expect(processEvent.id).toBe(stagedEvent.id)
     expect(processEvent.sig).not.toBe(stagedEvent.sig)
 
@@ -1257,7 +1265,7 @@ describe("durable inbox declaration evidence", () => {
   })
 
   it("rejects mutated retained pending bytes and target plans", async () => {
-    const signedEvent = declarationEvent({ createdAt: 100 })
+    const signedEvent = await declarationEvent({ createdAt: 100 })
     const staged = applyInboxDeclarationDistributionStage(undefined, {
       pubkey: ACCOUNT_A,
       signedEvent,
@@ -1273,32 +1281,35 @@ describe("durable inbox declaration evidence", () => {
     )
     expect(alternateSignature).not.toBe(signedEvent.sig)
 
-    const mutatedBytes = cloneInboxDeclarationEvidenceRecord(staged)
-    mutatedBytes.pendingDistribution!.signedEvent.sig = alternateSignature
-    await expect(
-      createInMemoryInboxDeclarationEvidenceRepository([mutatedBytes]).get(
-        ACCOUNT_A
-      )
-    ).rejects.toThrow("must match its signed frontier")
+    const mutatedBytes = structuredClone(staged)
+    mutatedBytes.pendingDistribution!.signedEvent = {
+      ...mutatedBytes.pendingDistribution!.signedEvent,
+      sig: alternateSignature,
+    }
+    expect(
+      await createInMemoryInboxDeclarationEvidenceRepository([
+        mutatedBytes,
+      ]).get(ACCOUNT_A)
+    ).toBeUndefined()
 
     const mutatedTargets = cloneInboxDeclarationEvidenceRecord(staged)
     mutatedTargets.pendingDistribution!.publishRelayUrls = [
       "wss://shared-a.example",
       "wss://shared-a.example",
     ]
-    await expect(
-      createInMemoryInboxDeclarationEvidenceRepository([mutatedTargets]).get(
-        ACCOUNT_A
-      )
-    ).rejects.toThrow("canonical and ordered")
+    expect(
+      await createInMemoryInboxDeclarationEvidenceRepository([
+        mutatedTargets,
+      ]).get(ACCOUNT_A)
+    ).toBeUndefined()
   })
 
   it("retains an older usable route behind a newer pending declaration", async () => {
-    const pending = declarationEvent({
+    const pending = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://new-inbox.example"]],
     })
-    const prior = declarationEvent({
+    const prior = await declarationEvent({
       createdAt: 100,
       tags: [["relay", "wss://prior-inbox.example"]],
     })
@@ -1329,7 +1340,7 @@ describe("durable inbox declaration evidence", () => {
 
   it("rejects invalid signatures, kinds, and cross-account authors", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const valid = declarationEvent({ createdAt: 100 })
+    const valid = await declarationEvent({ createdAt: 100 })
     const invalidSignature = { ...valid, sig: "0".repeat(128) }
 
     await expect(
@@ -1337,13 +1348,13 @@ describe("durable inbox declaration evidence", () => {
         { pubkey: ACCOUNT_A, signedEvent: invalidSignature },
         repository
       )
-    ).rejects.toThrow("valid signed event")
+    ).rejects.toThrow("admitted signed event")
 
     await expect(
       mergeInboxDeclarationEvidence(
         {
           pubkey: ACCOUNT_A,
-          signedEvent: declarationEvent({ createdAt: 101, kind: 10002 }),
+          signedEvent: await declarationEvent({ createdAt: 101, kind: 10002 }),
         },
         repository
       )
@@ -1353,7 +1364,7 @@ describe("durable inbox declaration evidence", () => {
       mergeInboxDeclarationEvidence(
         {
           pubkey: ACCOUNT_A,
-          signedEvent: declarationEvent({
+          signedEvent: await declarationEvent({
             secret: ACCOUNT_B_SECRET,
             createdAt: 102,
           }),
@@ -1365,14 +1376,14 @@ describe("durable inbox declaration evidence", () => {
 
   it("retains the last usable declaration behind a newer signed empty event", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const declared = declarationEvent({
+    const declared = await declarationEvent({
       createdAt: 100,
       tags: [
         ["relay", "wss://inbox-a.example/"],
         ["relay", "ws://insecure.example"],
       ],
     })
-    const signedEmpty = declarationEvent({ createdAt: 101, tags: [] })
+    const signedEmpty = await declarationEvent({ createdAt: 101, tags: [] })
 
     await mergeInboxDeclarationEvidence(
       {
@@ -1409,11 +1420,11 @@ describe("durable inbox declaration evidence", () => {
 
   it("retains the last usable declaration behind a newer malformed event", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const declared = declarationEvent({
+    const declared = await declarationEvent({
       createdAt: 200,
       tags: [["relay", "wss://inbox.example"]],
     })
-    const malformed = declarationEvent({
+    const malformed = await declarationEvent({
       createdAt: 201,
       tags: [["relay", "ftp://not-a-relay.example"], ["relay"]],
     })
@@ -1432,8 +1443,8 @@ describe("durable inbox declaration evidence", () => {
     expect(result.lastUsable?.signedEvent).toEqual(declared)
   })
 
-  it("retains owner-selected ws targets as evidence without treating them as shared confirmation", () => {
-    const replacement = declarationEvent({
+  it("retains owner-selected ws targets as evidence without treating them as shared confirmation", async () => {
+    const replacement = await declarationEvent({
       createdAt: 250,
       tags: [["relay", "ws://owner-inbox.example"]],
     })
@@ -1481,8 +1492,8 @@ describe("durable inbox declaration evidence", () => {
     expect(getActiveInboxCutoverRecoveryRelayUrls(removed, 1_100)).toEqual([])
   })
 
-  it("keeps shared confirmation pending when only an owner relay observes the event", () => {
-    const replacement = declarationEvent({
+  it("keeps shared confirmation pending when only an owner relay observes the event", async () => {
+    const replacement = await declarationEvent({
       createdAt: 251,
       tags: [["relay", "ws://owner-inbox.example"]],
     })
@@ -1542,8 +1553,8 @@ describe("durable inbox declaration evidence", () => {
     ).toBeUndefined()
   })
 
-  it("starts shared recovery before clearing the broader completed plan", () => {
-    const replacement = declarationEvent({
+  it("starts shared recovery before clearing the broader completed plan", async () => {
+    const replacement = await declarationEvent({
       createdAt: 252,
       tags: [["relay", "ws://owner-inbox.example"]],
     })
@@ -1613,12 +1624,12 @@ describe("durable inbox declaration evidence", () => {
 
   it("backfills the newest usable predecessor discovered after the current blocker", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const signedEmpty = declarationEvent({ createdAt: 303, tags: [] })
-    const olderDeclared = declarationEvent({
+    const signedEmpty = await declarationEvent({ createdAt: 303, tags: [] })
+    const olderDeclared = await declarationEvent({
       createdAt: 301,
       tags: [["relay", "wss://older.example"]],
     })
-    const latestDeclaredPredecessor = declarationEvent({
+    const latestDeclaredPredecessor = await declarationEvent({
       createdAt: 302,
       tags: [["relay", "wss://latest-predecessor.example"]],
     })
@@ -1646,12 +1657,16 @@ describe("durable inbox declaration evidence", () => {
 
   it("retains a usable lower-frontier declaration across an equal-time tie", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const blocker = declarationEvent({ createdAt: 350, tags: [] })
-    const declared = Array.from({ length: 64 }, (_, index) =>
-      declarationEvent({
-        createdAt: 350,
-        tags: [["relay", `wss://tie-${index}.example`]],
-      })
+    const blocker = await declarationEvent({ createdAt: 350, tags: [] })
+    const declared = (
+      await Promise.all(
+        Array.from({ length: 64 }, (_, index) =>
+          declarationEvent({
+            createdAt: 350,
+            tags: [["relay", `wss://tie-${index}.example`]],
+          })
+        )
+      )
     ).find((candidate) => candidate.id > blocker.id)
     expect(declared).toBeDefined()
 
@@ -1672,11 +1687,11 @@ describe("durable inbox declaration evidence", () => {
 
   it("never regresses the NIP-01 replaceable frontier", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const newest = declarationEvent({
+    const newest = await declarationEvent({
       createdAt: 301,
       tags: [["relay", "wss://newest.example"]],
     })
-    const older = declarationEvent({
+    const older = await declarationEvent({
       createdAt: 300,
       tags: [["relay", "wss://older.example"]],
     })
@@ -1692,11 +1707,11 @@ describe("durable inbox declaration evidence", () => {
     expect(afterOlder.current.signedEvent.id).toBe(newest.id)
 
     const tied = [
-      declarationEvent({
+      await declarationEvent({
         createdAt: 302,
         tags: [["relay", "wss://tie-a.example"]],
       }),
-      declarationEvent({
+      await declarationEvent({
         createdAt: 302,
         tags: [["relay", "wss://tie-b.example"]],
       }),
@@ -1723,7 +1738,7 @@ describe("durable inbox declaration evidence", () => {
 
   it("unions safe provenance and refreshes times for the same exact event", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const event = declarationEvent({ createdAt: 400 })
+    const event = await declarationEvent({ createdAt: 400 })
 
     await mergeInboxDeclarationEvidence(
       {
@@ -1761,17 +1776,21 @@ describe("durable inbox declaration evidence", () => {
 
   it("returns structured-clone-safe records across repository consumers", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const event = declarationEvent({ createdAt: 500 })
+    const event = await declarationEvent({ createdAt: 500 })
     const firstProcessResult = await mergeInboxDeclarationEvidence(
       { pubkey: ACCOUNT_A, signedEvent: event },
       repository
     )
 
-    firstProcessResult.current.secureRelayUrls.push("wss://mutation.example")
-    firstProcessResult.current.signedEvent.tags.push([
-      "relay",
-      "wss://mutation.example",
-    ])
+    ;(firstProcessResult.current.secureRelayUrls as string[]).push(
+      "wss://mutation.example"
+    )
+    expect(() => {
+      ;(firstProcessResult.current.signedEvent.tags as string[][]).push([
+        "relay",
+        "wss://mutation.example",
+      ])
+    }).toThrow()
 
     // A separate consumer reads a fresh structured clone from the repository.
     const restored = await getInboxDeclarationEvidence(ACCOUNT_A, repository)
@@ -1781,7 +1800,7 @@ describe("durable inbox declaration evidence", () => {
 
   it("preserves and isolates nested evidence fields as the schema evolves", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const event = declarationEvent({ createdAt: 501 })
+    const event = await declarationEvent({ createdAt: 501 })
     const record = await mergeInboxDeclarationEvidence(
       { pubkey: ACCOUNT_A, signedEvent: event },
       repository
@@ -1808,7 +1827,9 @@ describe("durable inbox declaration evidence", () => {
       "wss://mutated.example"
     )
     recordClone.transportEvidence.relayGroups[0]!.push("wss://mutated.example")
-    recordClone.current.signedEvent.tags[0]!.push("mutated")
+    expect(() => {
+      ;(recordClone.current.signedEvent.tags[0] as string[]).push("mutated")
+    }).toThrow()
 
     expect(evidenceWithExtension.transportEvidence.relayGroups).toEqual([
       ["wss://inbox.example"],
@@ -1821,8 +1842,8 @@ describe("durable inbox declaration evidence", () => {
 
   it("isolates evidence by normalized account pubkey", async () => {
     const repository = createInMemoryInboxDeclarationEvidenceRepository()
-    const accountAEvent = declarationEvent({ createdAt: 600 })
-    const accountBEvent = declarationEvent({
+    const accountAEvent = await declarationEvent({ createdAt: 600 })
+    const accountBEvent = await declarationEvent({
       secret: ACCOUNT_B_SECRET,
       createdAt: 601,
       tags: [["relay", "wss://account-b.example"]],

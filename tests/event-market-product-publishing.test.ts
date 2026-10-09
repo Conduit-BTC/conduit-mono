@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -20,7 +21,7 @@ const merchantSecret = generateSecretKey()
 const merchant = getPublicKey(merchantSecret)
 const marketCoordinate = `30409:${organizer}:fair-market`
 
-function market(approved: boolean) {
+async function market(approved: boolean) {
   const draft = buildEventMarketRosterDraft({
     dTag: "fair-market",
     organizerPubkey: organizer,
@@ -31,31 +32,35 @@ function market(approved: boolean) {
       : [],
   })
   return parseEventMarketRosterEvent(
-    finalizeEvent({ ...draft, created_at: 100 }, organizerSecret)
+    await admitFixture(
+      finalizeEvent({ ...draft, created_at: 100 }, organizerSecret)
+    )
   )!
 }
 
-function ordinaryProduct() {
+async function ordinaryProduct() {
   return parseProductEvent(
-    finalizeEvent(
-      {
-        kind: 30402,
-        created_at: 100,
-        content: "Soap",
-        tags: [
-          ["d", "soap"],
-          ["title", "Soap"],
-          ["price", "12", "USD"],
-          ["type", "simple", "physical"],
-          ["shipping_option", `30406:${merchant}:postage`],
-        ],
-      },
-      merchantSecret
+    await admitFixture(
+      finalizeEvent(
+        {
+          kind: 30402,
+          created_at: 100,
+          content: "Soap",
+          tags: [
+            ["d", "soap"],
+            ["title", "Soap"],
+            ["price", "12", "USD"],
+            ["type", "simple", "physical"],
+            ["shipping_option", `30406:${merchant}:postage`],
+          ],
+        },
+        merchantSecret
+      )
     )
   )
 }
 
-function activeAuthorization() {
+async function activeAuthorization() {
   const draft = buildEventMarketAuthorizationDraft({
     marketCoordinate,
     merchantPubkey: merchant,
@@ -63,7 +68,9 @@ function activeAuthorization() {
     sequence: 0,
     parentIds: [],
   })
-  const signed = finalizeEvent({ ...draft, created_at: 101 }, organizerSecret)
+  const signed = await admitFixture(
+    finalizeEvent({ ...draft, created_at: 101 }, organizerSecret)
+  )
   return {
     marketCoordinate,
     merchantPubkey: merchant,
@@ -80,12 +87,12 @@ function activeAuthorization() {
 }
 
 describe("future Event Market product publishing", () => {
-  it("adds only the market association and retains ordinary shop shipping", () => {
-    const baseline = ordinaryProduct()
+  it("adds only the market association and retains ordinary shop shipping", async () => {
+    const baseline = await ordinaryProduct()
     const associated = setEventMarketProductAssociation({
       product: baseline,
-      market: market(true),
-      authorization: activeAuthorization(),
+      market: await market(true),
+      authorization: await activeAuthorization(),
       enabled: true,
       authorizationActive: true,
     })
@@ -101,7 +108,7 @@ describe("future Event Market product publishing", () => {
     expect(associated.shippingOptionRefs).toEqual(baseline.shippingOptionRefs)
     const untagged = setEventMarketProductAssociation({
       product: associated,
-      market: market(false),
+      market: await market(false),
       enabled: false,
     })
     expect(
@@ -109,31 +116,34 @@ describe("future Event Market product publishing", () => {
     ).not.toContainEqual(["a", marketCoordinate])
   })
 
-  it("does not tag an unapproved merchant product", () => {
-    expect(() =>
-      setEventMarketProductAssociation({
-        product: ordinaryProduct(),
-        market: market(false),
-        enabled: true,
-        authorizationActive: true,
-      })
-    ).toThrow("not approved")
-    expect(() =>
-      setEventMarketProductAssociation({
-        product: ordinaryProduct(),
-        market: market(true),
-        enabled: true,
-      })
-    ).toThrow("organizer-signed merchant grant")
+  it("does not tag an unapproved merchant product", async () => {
+    await expect(
+      (async () =>
+        setEventMarketProductAssociation({
+          product: await ordinaryProduct(),
+          market: await market(false),
+          enabled: true,
+          authorizationActive: true,
+        }))()
+    ).rejects.toThrow("not approved")
+    await expect(
+      (async () =>
+        setEventMarketProductAssociation({
+          product: await ordinaryProduct(),
+          market: await market(true),
+          enabled: true,
+        }))()
+    ).rejects.toThrow("organizer-signed merchant grant")
   })
 
-  it("requires a current merchant grant before a new association", () => {
-    expect(() =>
-      setEventMarketProductAssociation({
-        product: ordinaryProduct(),
-        market: market(true),
-        enabled: true,
-      })
-    ).toThrow("organizer-signed merchant grant")
+  it("requires a current merchant grant before a new association", async () => {
+    await expect(
+      (async () =>
+        setEventMarketProductAssociation({
+          product: await ordinaryProduct(),
+          market: await market(true),
+          enabled: true,
+        }))()
+    ).rejects.toThrow("organizer-signed merchant grant")
   })
 })
