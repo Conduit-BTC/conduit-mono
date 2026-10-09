@@ -123,7 +123,7 @@ test("buyer and seller retain conversations and files through self-copy failure,
     const root = `/@fs${process.cwd()}/packages/core/src/protocol`
     const counts = async (page: typeof sellerPage) =>
       await page.evaluate(async (path) => {
-        const { readAuthSession } = await import(`${path}/remote-signer.ts`)
+        const { readAuthSession } = await import(`${path}/auth-session.ts`)
         const { getCommerceInbox } = await import(`${path}/commerce-inbox.ts`)
         const owner = getCommerceInbox(readAuthSession().userPubkey)
         await owner.syncRecent()
@@ -541,7 +541,7 @@ test("extra authenticated recipients cannot expand buyer or merchant replies @co
             await page.evaluate(
               async ({ root, disallowed, peer }) => {
                 const { readAuthSession } = await import(
-                  `${root}/remote-signer.ts`
+                  `${root}/auth-session.ts`
                 )
                 const { getCommerceInbox } = await import(
                   `${root}/commerce-inbox.ts`

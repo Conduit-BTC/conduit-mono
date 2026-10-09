@@ -28,11 +28,13 @@ import {
 import {
   canStartAuthConnection,
   parseAuthSession,
-  RemoteSignerError,
   shouldRetireAuthSessionAfterAuthorityChange,
-  type Nip46AuthSession,
+} from "../packages/core/src/protocol/auth-session"
+import {
+  RemoteSignerError,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
+import { type Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
 import { Nip07SessionSigner } from "../packages/core/src/protocol/nip07-signer"
 import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
@@ -845,7 +847,7 @@ describe("NIP-46 AuthContext API", () => {
     )
 
     expect(source).toContain("createProtectedReadSessionLifecycle()")
-    expect(source).toContain("protectedReadSessionLifecycle.current.activate(")
+    expect(source).toContain("installAccountSigner(")
     expect(source).toContain(
       "protectedReadSessionLifecycle.current.deactivate()"
     )
@@ -885,9 +887,7 @@ describe("NIP-46 AuthContext API", () => {
       "if (!attemptIsCurrent())",
       persistNip07
     )
-    const installSigner = connectAttempt.indexOf(
-      "activateAccountSigner(sessionSigner)"
-    )
+    const installSigner = connectAttempt.indexOf("installAccountSigner(")
     const commitRemote = connectAttempt.indexOf(
       "remoteConnection.current = connectedRemote"
     )

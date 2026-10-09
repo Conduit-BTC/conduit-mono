@@ -17,36 +17,44 @@ import {
 import {
   SessionSigner,
   SessionSignerError,
-  activateAccountSigner,
+  installAccountSigner,
   retireAccountSigner,
 } from "../protocol/session-signer"
 import {
   abandonRemoteSignerConnection,
-  canStartAuthConnection,
-  cleanupInvalidatedAuthSession,
   commitRemoteSignerConnection,
-  forgetAuthSession,
-  claimAuthRevision,
   logoutRemoteSigner,
   pairRemoteSigner,
   pairRemoteSignerFromNostrConnect,
   persistRemoteSignerSession,
-  readAuthSession,
-  readAuthRevision,
   requiresRemoteSignerSessionCleanup,
-  revokeAuthSessionAuthority,
   restoreRemoteSigner,
   rollbackAndAbandonRemoteSignerConnection,
-  shouldRetireAuthSessionAfterAuthorityChange,
   verifyRemoteSignerConnection,
-  writeAuthSession,
-  type AuthSession,
   type RemoteSignerAdapterInvalidation,
   type RemoteSignerConnection,
+} from "../protocol/remote-signer"
+import {
+  authSessionsEqual,
+  hasAuthSessionAuthority,
+  resolveAuthConnectionMethod,
+  canStartAuthConnection,
+  forgetAuthSession,
+  claimAuthRevision,
+  readAuthSession,
+  readAuthRevision,
+  revokeAuthSessionAuthority,
+  shouldRetireAuthSessionAfterAuthorityChange,
+  writeAuthSession,
+  type AuthSession,
+  type AuthMethod,
   AUTH_REVISION_STORAGE_KEY,
   AUTH_STORAGE_KEY,
-} from "../protocol/remote-signer"
-import { withBrowserAuthOperationLock } from "../protocol/remote-signer-vault"
+} from "../protocol/auth-session"
+import {
+  retireAuthSession,
+} from "../protocol/auth-session-lifecycle"
+import { withBrowserAuthOperationLock } from "../protocol/auth-operation-lock"
 import { isTransientNip07BridgeError } from "../protocol/signing-retry"
 import {
   createProtectedReadSessionLifecycle,
@@ -103,7 +111,7 @@ type RemoteSignerState =
   | "active"
   | "recoverable"
 
-export type AuthMethod = "nip07" | "nip46"
+export type { AuthMethod } from "../protocol/auth-session"
 export type AuthSignerCapabilities = AccountSignerCapabilities
 
 export type AuthSignerReadiness =
@@ -230,13 +238,6 @@ const REMOTE_SIGNER_RECOVERY_REQUIRED_MESSAGE =
   "Reconnect or safely forget the saved signer connection before choosing another signer."
 const REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE =
   "The saved signer connection changed in another tab. Safely forget this recovery session before reconnecting."
-
-function authSessionsEqual(
-  left: AuthSession | null,
-  right: AuthSession | null
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
 
 export function getRetainedAuthAccountPubkey(
   session: AuthSession | null,
@@ -798,7 +799,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     }): Promise<boolean> => {
       retirementBlockedSession.current = options.session
       try {
-        await cleanupInvalidatedAuthSession(options.session, {
+        await retireAuthSession(options.session, {
           ...(options.lockHeld
             ? { withLock: async (task) => task() }
             : {}),
@@ -962,8 +963,6 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     ) {
       throw new Error(REMOTE_SIGNER_RECOVERY_REPLACED_MESSAGE)
     }
-    const requestedMethod =
-      options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (
       mode === "restore" &&
       options.restorePendingAttempt !== undefined &&
@@ -987,11 +986,18 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       if (mode === "restore") return
       throw new Error("Disconnect the current signer before connecting another.")
     }
+    let requestedMethod: AuthMethod | undefined
+    let methodError: Error | null = null
+    try {
+      requestedMethod = resolveAuthConnectionMethod(mode, storedSession, options.method)
+    } catch (cause) {
+      methodError = cause instanceof Error ? cause : new Error("The saved signer method is unavailable.")
+    }
     if (!requestedMethod) {
       if (mode === "restore") {
         settleRestorePending(options.restorePendingAttempt)
       }
-      const missingSessionError = new Error(
+      const missingSessionError = methodError ?? new Error(
         mode === "restore"
           ? "The saved signer session is no longer available. Connect again."
           : "Choose a signer connection method and try again."
@@ -1184,11 +1190,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       connectedRemote?.signer.assertUsable()
 
       const boundSession = session
-      const hasSessionAuthority = () => {
-        if (readAuthRevision() !== boundSession.authClaim) return false
-        if (!sessionPersisted) return true
-        return JSON.stringify(readAuthSession()) === JSON.stringify(boundSession)
-      }
+      const hasSessionAuthority = () =>
+        hasAuthSessionAuthority(boundSession, sessionPersisted)
       const sessionSigner = new SessionSigner(signer, {
         expectedPubkey: pk,
         revision: authRevision,
@@ -1199,18 +1202,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         hasAuthority: hasSessionAuthority,
         onInvalidated: handleSignerSessionInvalidated,
       })
-      try {
-        protectedReadSessionLifecycle.current.activate(
-          sessionSigner,
-          pk,
-          hasSessionAuthority
-        )
-      } catch (installError) {
-        sessionSigner.invalidateLocal()
-        throw installError
-      }
+      installAccountSigner(sessionSigner, protectedReadSessionLifecycle.current, hasSessionAuthority)
       activeSessionSigner.current = sessionSigner
-      activateAccountSigner(sessionSigner)
       remoteConnection.current = connectedRemote
       if (connectedRemote) void commitRemoteSignerConnection(connectedRemote)
       uncommittedRemote = null
@@ -1406,16 +1399,20 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         )
         throw replacedError
       }
-      const requestedMethod =
-        options.method ??
-        (mode === "restore" ? storedSession?.type ?? null : "nip07")
+      let requestedMethod: AuthMethod | undefined
+      let methodError: Error | null = null
+      try {
+        requestedMethod = resolveAuthConnectionMethod(mode, storedSession, options.method)
+      } catch (cause) {
+        methodError = cause instanceof Error ? cause : new Error("The saved signer method is unavailable.")
+      }
       const pendingRestoreAttempt =
         mode === "restore" && storedSession
           ? beginRestorePending(storedSession.userPubkey)
           : restorePending.current.attempt
       if (!requestedMethod) {
         if (mode === "restore") settleRestorePending(pendingRestoreAttempt)
-        const missingSessionError = new Error(
+        const missingSessionError = methodError ?? new Error(
           "The saved signer session is no longer available. Connect again."
         )
         if (mode === "restore") {
@@ -1531,9 +1528,9 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const disconnectWithoutLock = useCallback(
     async (expectedSession: AuthSession | null): Promise<void> => {
       if (expectedSession) {
-        await cleanupInvalidatedAuthSession(expectedSession, {
+        await retireAuthSession(expectedSession, {
           withLock: async (task) => task(),
-          retireExpectedKeyOnMetadataFailure: true,
+          retireExpectedCredentialsOnMetadataFailure: true,
         })
         if (
           authSessionsEqual(retirementBlockedSession.current, expectedSession)
