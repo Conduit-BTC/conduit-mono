@@ -17,6 +17,11 @@ const configuredRelayPort =
     : undefined
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
+if (commerceIncluded) {
+  // Screenshots and tracing do not control Playwright's automatic DOM failure
+  // snapshot. Commerce pages may contain payment/recovery data, even in tests.
+  process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
+}
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
 const smokeProgressFile = process.env.PLAYWRIGHT_SMOKE_PROGRESS_FILE
 const smokeEvidenceValues = {
@@ -128,7 +133,10 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: mobileTestFiles,
+      testIgnore: [
+        ...mobileTestFiles,
+        "**/commerce-router-recovery.playwright.ts",
+      ],
     },
     {
       name: "mobile-chromium",

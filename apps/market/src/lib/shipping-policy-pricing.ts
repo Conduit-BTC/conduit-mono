@@ -1,4 +1,7 @@
-import { convertShippingMinor, hasSameShippingPolicyQuote } from "@conduit/core"
+import {
+  allocateCheckoutSparkShippingPolicySats,
+  hasSameShippingPolicyQuote,
+} from "@conduit/core"
 import type { CartItem } from "./cart-model"
 
 function handlingFingerprint(value: CartItem["shippingHandling"]): string {
@@ -62,35 +65,12 @@ export function allocateShippingPolicyCosts(
       continue
     // Converted quotes retain the exact settlement amount.
     // A later display-rate refresh must not reinterpret its agreed result.
-    let amountSats = quote.amountSats
-    if (amountSats === undefined) {
-      try {
-        amountSats = convertShippingMinor(
-          quote.amountMinor,
-          quote.currency,
-          "SATS"
-        )
-      } catch {
-        continue
-      }
-    }
-    if (!Number.isSafeInteger(amountSats) || amountSats < 0) continue
-    const quantity = group.reduce((sum, item) => sum + item.quantity, 0)
-    if (!Number.isSafeInteger(quantity) || quantity <= 0) continue
-    const ordered = [...group].sort((a, b) =>
-      a.productId.localeCompare(b.productId)
-    )
-    let allocated = 0
-    for (const item of ordered) {
-      item.shippingAllocatedCostSats = Number(
-        (BigInt(amountSats) * BigInt(item.quantity)) / BigInt(quantity)
-      )
-      allocated += item.shippingAllocatedCostSats
-    }
-    let remaining = amountSats - allocated
-    for (const item of ordered) {
-      if (remaining-- <= 0) break
-      item.shippingAllocatedCostSats! += 1
+    try {
+      const allocations = allocateCheckoutSparkShippingPolicySats(quote)
+      for (const item of group)
+        item.shippingAllocatedCostSats = allocations.get(item.productId)
+    } catch {
+      continue
     }
   }
   return result

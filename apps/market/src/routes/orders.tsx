@@ -12,7 +12,9 @@ import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
   config,
+  isQuantumRouterExecutionEnabled,
   db,
+  DexieCheckoutSparkSettledRepository,
   encodeEventMarketNaddr,
   formatEventMarketPickupClaimCode,
   formatEventMarketPickupDate,
@@ -87,6 +89,20 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { CheckoutSparkFundingExpiry } from "../components/CheckoutSparkFundingExpiry"
+import { CheckoutSparkExternalFunding } from "../components/CheckoutSparkExternalFunding"
+import {
+  performExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentActionResult,
+} from "../components/invoice-payment-action"
+import {
+  applyCheckoutSparkFundingChoice,
+  resolveCheckoutSparkFundingSelection,
+} from "../components/checkout-spark-funding-selection"
+import { CheckoutSparkPaymentReceipt } from "../components/CheckoutSparkPaymentReceipt"
+import { CheckoutPaymentProgress } from "../components/CheckoutPaymentProgress"
+import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
 import { MarketProjectTip } from "../components/MarketProjectTip"
 import { useCart } from "../hooks/useCart"
 import { groupCartPurchases } from "../lib/cart-model"
@@ -121,6 +137,10 @@ import {
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
+import {
+  presentSettledRouterHeaderStatus,
+  presentSettledRouterTimeline,
+} from "../lib/checkout-spark-settled-order-presentation"
 import { assertCreatedEventMarketPickupTerms } from "../lib/order-pickup-retry"
 import { assertCartPickupHandlerReady } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
@@ -166,6 +186,7 @@ type PriceFormatter = (
 import {
   clearSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  isCurrentGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
 import {
@@ -185,8 +206,34 @@ import {
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
+  resolveCheckoutPaymentTarget,
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
+import {
+  acknowledgeOrRetryCheckoutSparkSettledSnapshot,
+  getCheckoutSparkRecoveryDelivery,
+} from "../lib/checkout-spark-recovery-handoff"
+import {
+  readCurrentCheckoutSparkSettledOrderControl,
+  matchesCheckoutSparkSettledOrderControl,
+  type CheckoutSparkSettledOrderControlState,
+} from "../lib/checkout-spark-settled-order-control"
+import { getCheckoutSparkSettledOutcomeMessage } from "../lib/checkout-spark-settled-outcome-message"
+import { getCheckoutSparkSettledPreparation } from "../lib/checkout-spark-settled-preparation"
+import { canContinueCheckoutSparkSettledRouteSession } from "../lib/checkout-spark-settled-route-session"
+import {
+  createCheckoutSparkSettledShopperRunner,
+  type CheckoutSparkSettledShopperProgress,
+} from "../lib/checkout-spark-settled-shopper-runner"
+import { retireCheckoutSparkSettledShopper } from "../lib/checkout-spark-settled-retirement"
+import type { CheckoutSparkExternalFundingInvoice } from "../lib/checkout-spark-settled-funding"
+import { getSparkWalletManager } from "../lib/spark-sdk"
+import {
+  BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY,
+  getCheckoutSparkBuyerSettlementQueryOptions,
+  NO_BUYER_CHECKOUT_SPARK_SETTLEMENTS,
+  type CheckoutSparkPaymentReceipt as PaymentReceipt,
+} from "../lib/checkout-spark-buyer-settlement"
 
 type OrdersSearch = {
   order?: string
@@ -194,6 +241,16 @@ type OrdersSearch = {
 }
 
 const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
+
+type RouterConfirmation = {
+  control: Exclude<
+    CheckoutSparkSettledOrderControlState,
+    { status: "blocked" | "complete" | "retired" }
+  >
+  external: boolean
+  payerValue: string
+  externalAction?: ExternalInvoicePaymentAction
+}
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
   if (
@@ -240,6 +297,7 @@ interface OrderRow {
   conversation?: BuyerConversation
   vm: OrderViewModel
   headerStatus: OrderHeaderStatus
+  receipt?: PaymentReceipt | null
   updatedAt: number
 }
 
@@ -644,13 +702,19 @@ function OrderItemsSection({
 function OrderTimeline({
   vm,
   formatSats,
+  isRouterOrder,
 }: {
   vm: OrderViewModel
   formatSats: (sats: number) => string
+  isRouterOrder: boolean
 }) {
   const rows = useMemo(
-    () => buildOrderTimeline(vm, formatSats),
-    [formatSats, vm]
+    () =>
+      presentSettledRouterTimeline(
+        buildOrderTimeline(vm, formatSats),
+        isRouterOrder
+      ),
+    [formatSats, isRouterOrder, vm]
   )
   return (
     <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -710,7 +774,30 @@ function OrderDetail({
     guestIdentity
       ? isGuestGenerationCurrent(authGeneration)
       : isAuthGenerationCurrent(authGeneration)
-  const actionsReady = !!guestIdentity || signerReady
+  function getCurrentRouterGuestIdentity(): GuestOrderSigningIdentity | null {
+    const currentIdentity = guestIdentity
+      ? getSessionGuestOrderSigningIdentity(vm.orderId)
+      : null
+    if (
+      !guestIdentity ||
+      !currentIdentity ||
+      !isGuestGenerationCurrent(authGeneration) ||
+      currentIdentity.pubkey !== guestIdentity.pubkey ||
+      currentIdentity.createdAt !== guestIdentity.createdAt ||
+      currentIdentity.expiresAt !== guestIdentity.expiresAt ||
+      !isCurrentGuestOrderSigningIdentity(currentIdentity, {
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        pubkey: buyerPubkey,
+      })
+    ) {
+      return null
+    }
+    return currentIdentity
+  }
+  const actionsReady = guestIdentity
+    ? getCurrentRouterGuestIdentity() !== null
+    : signerReady
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
@@ -757,6 +844,25 @@ function OrderDetail({
     [eventActorProfiles.data]
   )
   const [busy, setBusy] = useState(false)
+  const routerActionInFlightRef = useRef(false)
+  const routerApprovalGenerationRef = useRef(0)
+  const [routerRunner] = useState(createCheckoutSparkSettledShopperRunner)
+  const [routerProgress, setRouterProgress] =
+    useState<CheckoutSparkSettledShopperProgress | null>(null)
+  const [routerPausing, setRouterPausing] = useState(false)
+  const [routerTarget, setRouterTarget] = useState<OrderPaymentTarget | null>(
+    null
+  )
+  const [settledRouterOutcome, setSettledRouterOutcome] = useState<
+    string | null
+  >(null)
+  const [externalFundingInvoice, setExternalFundingInvoice] = useState<
+    | (CheckoutSparkExternalFundingInvoice & {
+        authGeneration: number
+        actionResult?: ExternalInvoicePaymentActionResult
+      })
+    | null
+  >(null)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
   const [paymentAddressUpdate, setPaymentAddressUpdate] =
@@ -785,11 +891,57 @@ function OrderDetail({
   )
   const [priorInvoiceIndex, setPriorInvoiceIndex] = useState("0")
   const sparkFeeApproval = useSparkFeeApproval()
+  const declineSparkFeeRef = useRef(sparkFeeApproval.decline)
+  useLayoutEffect(() => {
+    declineSparkFeeRef.current = sparkFeeApproval.decline
+  }, [sparkFeeApproval.decline])
   const queryClient = useQueryClient()
 
   useEffect(() => {
     if (!actionsReady && sparkFeeApproval.quote) sparkFeeApproval.decline()
   }, [actionsReady, sparkFeeApproval])
+
+  useEffect(() => {
+    if (!actionsReady) {
+      setExternalFundingInvoice(null)
+      routerApprovalGenerationRef.current += 1
+      void routerRunner.pause()
+    }
+  }, [actionsReady, routerRunner])
+
+  useEffect(() => {
+    setExternalFundingInvoice(null)
+    setSettledRouterOutcome(null)
+  }, [
+    authGeneration,
+    buyerPubkey,
+    vm.orderId,
+    row.lifecycle?.checkoutSparkRouterBinding?.planDigest,
+  ])
+
+  useLayoutEffect(() => {
+    const pause = () => {
+      routerApprovalGenerationRef.current += 1
+      void routerRunner.pause()
+      declineSparkFeeRef.current()
+    }
+    const pauseWhenHidden = () => {
+      if (document.visibilityState !== "visible") pause()
+    }
+    document.addEventListener("visibilitychange", pauseWhenHidden)
+    window.addEventListener("pagehide", pause)
+    return () => {
+      pause()
+      document.removeEventListener("visibilitychange", pauseWhenHidden)
+      window.removeEventListener("pagehide", pause)
+    }
+  }, [
+    routerRunner,
+    authGeneration,
+    buyerPubkey,
+    vm.orderId,
+    row.lifecycle?.checkoutSparkRouterBinding?.planDigest,
+  ])
 
   useEffect(() => {
     if (
@@ -893,6 +1045,477 @@ function OrderDetail({
     wallets.runtime[paymentWallet.id]?.status === "ready"
   const selectedStoredPaymentTarget: OrderPaymentTarget | null =
     retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
+
+  const routerBinding = row.lifecycle?.checkoutSparkRouterBinding
+  function isRouterSavedStateCurrent(): boolean {
+    return (
+      authGenerationRef.current === authGeneration &&
+      shouldContinueBuyerSession() &&
+      currentViewRef.current.orderId === vm.orderId &&
+      currentViewRef.current.merchantPubkey === row.merchantPubkey &&
+      (guestIdentity
+        ? getCurrentRouterGuestIdentity() !== null
+        : authenticatedPubkey === buyerPubkey)
+    )
+  }
+  const settledRouterQuery = useQuery({
+    queryKey: [
+      "checkout-spark-settled-order-control",
+      vm.orderId,
+      routerBinding?.planDigest ?? "none",
+      buyerPubkey,
+      authGeneration,
+    ],
+    enabled: routerBinding !== undefined && isRouterSavedStateCurrent(),
+    queryFn: ({ signal }) => readSettledRouterControl(signal),
+    refetchOnWindowFocus: false,
+  })
+  const settledRouterControl = isRouterSavedStateCurrent()
+    ? (settledRouterQuery.data ?? null)
+    : null
+  const settledControlRefreshAt =
+    settledRouterControl?.status === "pay_funding"
+      ? settledRouterControl.fundingExpiresAt
+      : settledRouterControl?.status === "route_payout"
+        ? settledRouterControl.sendWindowEndsAt
+        : null
+  const refetchSettledRouterControl = settledRouterQuery.refetch
+  useEffect(() => {
+    if (settledControlRefreshAt === null) return
+    let timer = 0
+    const refreshAtCutoff = () => {
+      const remaining = settledControlRefreshAt - Date.now()
+      if (remaining <= 0) {
+        void refetchSettledRouterControl()
+        return
+      }
+      timer = window.setTimeout(
+        refreshAtCutoff,
+        Math.min(remaining, 2_147_483_647)
+      )
+    }
+    refreshAtCutoff()
+    return () => window.clearTimeout(timer)
+  }, [settledControlRefreshAt, refetchSettledRouterControl])
+  const fundingWalletId =
+    settledRouterControl?.status === "pay_funding"
+      ? settledRouterControl.walletId
+      : null
+  const routerPayerWallets = eligibleWallets.filter((candidate) => {
+    if (candidate.id === fundingWalletId) return false
+    if (candidate.providerId === "spark") {
+      return wallets.runtime[candidate.id]?.status === "ready"
+    }
+    if (candidate.providerId === "nwc") {
+      const snapshot = wallets.nwcSnapshots[candidate.id]
+      return (
+        !!snapshot &&
+        getNwcPaymentReadiness({
+          snapshot,
+          walletNetwork: candidate.network,
+          configuredNetwork: walletNetwork,
+        }).ready
+      )
+    }
+    return false
+  })
+  const routerPayerOptions = getCheckoutPaymentTargetOptions({
+    eligibleWallets: routerPayerWallets,
+    // A stale WebLN choice must not stay payable after the browser rail drops.
+    selectedTarget: { type: "manual" },
+    // Router funding is device-local, independent of a Nostr account signer.
+    weblnAvailable: hasWebLN(),
+  })
+  const routerFundingSelection = resolveCheckoutSparkFundingSelection({
+    selection: routerTarget,
+    defaultTarget: resolveCheckoutPaymentTarget({
+      selection: null,
+      eligibleWallets: routerPayerWallets,
+      weblnAvailable: hasWebLN(),
+    }),
+    options: routerPayerOptions,
+    guestSession: !!guestIdentity,
+  })
+  const routerTargetValue =
+    routerFundingSelection.selectedOption?.value ??
+    (routerTarget ? getCheckoutPaymentTargetValue(routerTarget) : "")
+  const routerSelectedOption = routerFundingSelection.selectedOption
+  const routerSelectedTarget = routerSelectedOption?.target
+  const routerPayerWallet =
+    routerSelectedTarget?.type === "wallet"
+      ? routerPayerWallets.find(
+          (wallet) => wallet.id === routerSelectedTarget.walletId
+        )
+      : null
+
+  async function readSettledRouterControl(signal?: AbortSignal) {
+    return readCurrentCheckoutSparkSettledOrderControl({
+      signal,
+      isCurrent: isRouterSavedStateCurrent,
+      async read(assertCurrent) {
+        const lifecycle = await getOrderLifecycle(vm.orderId)
+        assertCurrent()
+        const binding = lifecycle?.checkoutSparkRouterBinding
+        const preparation = binding
+          ? getCheckoutSparkSettledPreparation(binding.checkoutId)
+          : null
+        const snapshot = binding
+          ? await new DexieCheckoutSparkSettledRepository().load(
+              binding.checkoutId,
+              binding.planDigest
+            )
+          : ({ status: "absent" } as const)
+        assertCurrent()
+        const initialRecovery = preparation?.recoveryHandoffId
+          ? getCheckoutSparkRecoveryDelivery(preparation.recoveryHandoffId)
+          : null
+        const manager = getSparkWalletManager()
+        const currentGuestIdentity = getCurrentRouterGuestIdentity()
+        return {
+          lifecycle,
+          preparation,
+          snapshot,
+          buyerPubkey:
+            currentGuestIdentity || authenticatedPubkey === buyerPubkey
+              ? buyerPubkey
+              : null,
+          guestIdentity: currentGuestIdentity,
+          initialRecoverySenderPubkey:
+            initialRecovery?.record.senderPubkey ?? null,
+          initialRecoveryAcked: Boolean(
+            initialRecovery?.deliveryProgress.acknowledgedRelayRefs.length
+          ),
+          now: Date.now(),
+          routerWalletOpen: Boolean(
+            binding && manager?.isOpen(binding.walletId)
+          ),
+        }
+      },
+    })
+  }
+
+  function canContinueRouterSession(): boolean {
+    return canContinueCheckoutSparkSettledRouteSession({
+      enabled: isQuantumRouterExecutionEnabled(),
+      mounted: viewMountedRef.current,
+      visible: document.visibilityState === "visible",
+      actionsReady,
+      identityCurrent: guestIdentity
+        ? getCurrentRouterGuestIdentity() !== null
+        : authenticatedPubkey === buyerPubkey &&
+          isAuthGenerationCurrent(authGeneration),
+      orderId: vm.orderId,
+      view: currentViewRef.current,
+    })
+  }
+
+  function canContinueRouterCleanupSession(): boolean {
+    const current = currentViewRef.current
+    return (
+      isQuantumRouterExecutionEnabled() &&
+      viewMountedRef.current &&
+      actionsReady &&
+      authGenerationRef.current === authGeneration &&
+      (guestIdentity
+        ? getCurrentRouterGuestIdentity() !== null
+        : authenticatedPubkey === buyerPubkey &&
+          isAuthGenerationCurrent(authGeneration)) &&
+      current.orderId === vm.orderId &&
+      current.merchantPubkey === row.merchantPubkey &&
+      current.phase !== "cancelled" &&
+      current.merchantStatus !== "cancelled" &&
+      current.merchantStatus !== "refund_requested" &&
+      // Completed/paid presentation permits inspection, never another send.
+      current.checkoutSparkRouted === true
+    )
+  }
+
+  async function checkSettledRouterCleanup(): Promise<void> {
+    if (routerActionInFlightRef.current) return
+    routerActionInFlightRef.current = true
+    setSettledRouterOutcome(null)
+    try {
+      if (!canContinueRouterCleanupSession()) {
+        throw new Error(
+          "The original buyer session must be active to check wallet cleanup."
+        )
+      }
+      const current = await readSettledRouterControl()
+      const displayed = settledRouterControl
+      if (
+        !canContinueRouterCleanupSession() ||
+        current.status !== "complete" ||
+        !current.retirement ||
+        displayed?.status !== "complete" ||
+        !displayed.retirement ||
+        current.retirement.checkoutId !== displayed.retirement.checkoutId ||
+        current.retirement.planDigest !== displayed.retirement.planDigest ||
+        current.retirement.network !== displayed.retirement.network ||
+        current.retirement.checkoutId !== routerBinding?.checkoutId ||
+        current.retirement.planDigest !== routerBinding.planDigest
+      ) {
+        throw new Error(
+          "Saved wallet cleanup eligibility changed. Refresh this order before checking again."
+        )
+      }
+      const currentGuestIdentity = getCurrentRouterGuestIdentity()
+      const result = await retireCheckoutSparkSettledShopper({
+        ...current.retirement,
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        buyerPubkey,
+        guestIdentity: currentGuestIdentity,
+        currentGuestIdentity: getCurrentRouterGuestIdentity,
+        currentBuyerPubkey: () =>
+          !guestIdentity && canContinueRouterCleanupSession()
+            ? buyerPubkey
+            : null,
+        shouldContinue: canContinueRouterCleanupSession,
+      })
+      if (canContinueRouterCleanupSession()) {
+        setSettledRouterOutcome(
+          result.status === "retired"
+            ? null
+            : result.status === "retirement_pending"
+              ? "Wallet cleanup is still pending. Saved recovery remains available."
+              : "Wallet cleanup could not be verified. Saved recovery remains available."
+        )
+      }
+    } finally {
+      routerActionInFlightRef.current = false
+      await Promise.all([
+        settledRouterQuery.refetch(),
+        queryClient.invalidateQueries({
+          queryKey: [BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY, buyerPubkey],
+        }),
+      ])
+    }
+  }
+
+  function canUseRouterExternalInvoice(
+    invoice: CheckoutSparkExternalFundingInvoice
+  ) {
+    if (
+      invoice.buyerPubkey !== buyerPubkey ||
+      invoice.orderId !== vm.orderId ||
+      invoice.checkoutId !== routerBinding?.checkoutId ||
+      invoice.planDigest !== routerBinding.planDigest ||
+      !canContinueRouterSession()
+    )
+      return false
+    try {
+      const now = Date.now()
+      const saved = getCheckoutSparkSettledPreparation(invoice.checkoutId)
+      return (
+        saved?.planDigest === invoice.planDigest &&
+        saved.fundingSubmissionState === "provisional" &&
+        saved.externalFundingExposedAt === invoice.exposedAt &&
+        Number.isSafeInteger(invoice.exposedAt) &&
+        Number.isSafeInteger(invoice.expiresAt) &&
+        Number.isSafeInteger(invoice.takeoverAt) &&
+        invoice.takeoverAt > 0 &&
+        invoice.exposedAt > 0 &&
+        invoice.exposedAt <= now &&
+        now < invoice.expiresAt
+      )
+    } catch {
+      return false
+    }
+  }
+
+  async function continueSettledRouterCheckout(
+    confirmation: RouterConfirmation
+  ): Promise<void> {
+    if (routerActionInFlightRef.current) return
+    routerActionInFlightRef.current = true
+    setSettledRouterOutcome(null)
+    setExternalFundingInvoice(null)
+    setRouterPausing(false)
+    const exposeExternalInvoice = confirmation.external
+    const approvalGeneration = routerApprovalGenerationRef.current
+    const approvedSessionIsCurrent = () =>
+      approvalGeneration === routerApprovalGenerationRef.current &&
+      canContinueRouterSession()
+    try {
+      if (!approvedSessionIsCurrent()) {
+        throw new Error(
+          "Keep this order open in the original buyer session to continue payment."
+        )
+      }
+      const current = await readSettledRouterControl()
+      if (
+        !approvedSessionIsCurrent() ||
+        current.status === "blocked" ||
+        current.status === "complete" ||
+        current.status === "retired" ||
+        !matchesCheckoutSparkSettledOrderControl({
+          displayed: confirmation.control,
+          current,
+          bindingPlanDigest: routerBinding?.planDigest,
+        })
+      ) {
+        throw new Error(
+          "Settled router state changed. Refresh this order before continuing."
+        )
+      }
+      const paying = current.status === "pay_funding"
+      if (exposeExternalInvoice && !current.externalFundingAvailable) {
+        throw new Error(
+          "This invoice cannot be opened for external payment. Check its saved funding status."
+        )
+      }
+      const namedExternalChoice =
+        confirmation.externalAction !== undefined &&
+        exposeExternalInvoice &&
+        confirmation.payerValue === "manual" &&
+        routerPayerOptions.some((option) => option.target.type === "manual")
+      const selectedChoice =
+        routerSelectedOption &&
+        routerTargetValue === confirmation.payerValue &&
+        exposeExternalInvoice ===
+          (routerSelectedOption.target.type === "manual")
+      if (paying && !namedExternalChoice && !selectedChoice) {
+        throw new Error("Choose how to pay before funding this order.")
+      }
+      const preparation = getCheckoutSparkSettledPreparation(current.checkoutId)
+      const currentGuestIdentity = getCurrentRouterGuestIdentity()
+      const signer = currentGuestIdentity?.signer ?? getAccountSigner()
+      if (
+        !preparation?.recoveryHandoffId ||
+        !signer ||
+        (guestIdentity && !currentGuestIdentity)
+      ) {
+        throw new Error("The signed recovery handoff is unavailable.")
+      }
+      const initialHandoffId = preparation.recoveryHandoffId
+      const paymentTarget =
+        paying && !exposeExternalInvoice
+          ? routerSelectedOption!.target
+          : ({ type: "manual" } as const)
+      let externalActionHandled = false
+      const result = await routerRunner.run({
+        checkoutId: current.checkoutId,
+        planDigest: current.planDigest,
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        network: current.network,
+        buyerPubkey,
+        guestIdentity: currentGuestIdentity,
+        currentGuestIdentity: getCurrentRouterGuestIdentity,
+        currentBuyerPubkey: () =>
+          !guestIdentity && approvedSessionIsCurrent() ? buyerPubkey : null,
+        shouldContinue: approvedSessionIsCurrent,
+        authorization: {
+          planDigest: confirmation.control.planDigest,
+          walletId: confirmation.control.walletId,
+          grossFundingSats: confirmation.control.grossFundingSats,
+        },
+        fundingMode: paying || exposeExternalInvoice ? "pay_once" : "inspect",
+        onProgress: (progress) => {
+          if (!approvedSessionIsCurrent()) return
+          setRouterProgress(progress)
+          void settledRouterQuery.refetch()
+          void queryClient.invalidateQueries({
+            queryKey: [BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY, buyerPubkey],
+          })
+        },
+        onExternalInvoice: (invoice) => {
+          if (
+            !approvedSessionIsCurrent() ||
+            !canUseRouterExternalInvoice(invoice)
+          )
+            return
+          if (!confirmation.externalAction) {
+            setExternalFundingInvoice({ ...invoice, authGeneration })
+            return
+          }
+          // Observation polls may return the same reservation again. A named
+          // browser handoff belongs to this explicit click exactly once.
+          if (externalActionHandled) return
+          externalActionHandled = true
+          // Keep the already-reserved links available even if a clipboard
+          // permission prompt stalls or an asynchronous wallet popup is blocked.
+          setExternalFundingInvoice({ ...invoice, authGeneration })
+          void performExternalInvoicePaymentAction({
+            action: confirmation.externalAction,
+            invoice: invoice.invoice,
+            expectedAmountSats: invoice.amountSats,
+            onBeforeInvoiceUse: () =>
+              approvedSessionIsCurrent() &&
+              canUseRouterExternalInvoice(invoice),
+          }).then((actionResult) => {
+            if (
+              approvedSessionIsCurrent() &&
+              canUseRouterExternalInvoice(invoice)
+            ) {
+              setExternalFundingInvoice({
+                ...invoice,
+                authGeneration,
+                actionResult,
+              })
+            }
+          })
+        },
+        fundingPayment: {
+          buyerPubkey,
+          shouldContinue: approvedSessionIsCurrent,
+          inspectionOnly:
+            current.status === "check_funding" && !exposeExternalInvoice,
+          exposeExternalInvoice,
+          paymentTarget,
+          ...(paymentTarget.type === "wallet"
+            ? { walletPaymentAttemptId: crypto.randomUUID() }
+            : {}),
+          ...(paymentTarget.type === "wallet" &&
+          paymentTarget.providerId === "spark"
+            ? { approveFee: sparkFeeApproval.requestApproval }
+            : {}),
+          beforeSend: async () => {
+            if (!approvedSessionIsCurrent()) {
+              throw new Error("Buyer session changed before funding was sent.")
+            }
+          },
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        acknowledgeRecoverySnapshot: async (state) => {
+          if (!approvedSessionIsCurrent()) {
+            throw new Error("Buyer session changed before recovery handoff.")
+          }
+          await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+            initialHandoffId,
+            state,
+            identity: currentGuestIdentity ?? {
+              kind: "signed_in",
+              pubkey: buyerPubkey,
+              signer,
+            },
+            transport: { shouldContinue: approvedSessionIsCurrent },
+          })
+          if (!approvedSessionIsCurrent()) {
+            throw new Error("Buyer session changed during recovery handoff.")
+          }
+        },
+      })
+      if (
+        viewMountedRef.current &&
+        currentViewRef.current.orderId === vm.orderId &&
+        authGenerationRef.current === authGeneration
+      ) {
+        setSettledRouterOutcome(getCheckoutSparkSettledOutcomeMessage(result))
+      }
+    } finally {
+      routerActionInFlightRef.current = false
+      setRouterProgress(null)
+      setRouterPausing(false)
+      await Promise.all([
+        settledRouterQuery.refetch(),
+        queryClient.invalidateQueries({
+          queryKey: [BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY, buyerPubkey],
+        }),
+      ])
+    }
+  }
 
   function buildServiceCtx(): OrderPaymentContext | null {
     if (!actionsReady) return null
@@ -1030,11 +1653,20 @@ function OrderDetail({
       shippingCostSats: row.lifecycle?.shippingCostSats ?? 0,
       createdAt: row.lifecycle?.createdAt ?? vm.createdAt,
     })
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
-      requestingAccountPubkey: authenticatedPubkey,
-      authenticatedPubkey,
-      shouldContinue: shouldContinueBuyerSession,
-    })
+    await assertCartPickupHandlerReady(
+      (row.lifecycle?.items ?? []).map((item) => ({
+        fulfillment:
+          item.fulfillment?.type === "event_market_pickup"
+            ? item.fulfillment
+            : undefined,
+      })),
+      undefined,
+      {
+        requestingAccountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        shouldContinue: shouldContinueBuyerSession,
+      }
+    )
   }
 
   async function retryPayment(): Promise<void> {
@@ -1079,6 +1711,7 @@ function OrderDetail({
   }
 
   async function renewExpiredInvoice(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
     if (!vm.invoice) {
@@ -1094,6 +1727,7 @@ function OrderDetail({
       throw new Error("Choose manual payment to renew this invoice.")
     }
     const lifecycle = await getOrderLifecycle(vm.orderId)
+    assertLegacyOrderPaymentAllowed(lifecycle)
     if (
       !lifecycle ||
       lifecycle.invoice?.toLowerCase() !== expectedInvoice.toLowerCase() ||
@@ -1392,6 +2026,12 @@ function OrderDetail({
       : undefined
 
   function beginMerchantInvoicePayment(): boolean {
+    if (routerBinding) {
+      setRecoveryError(
+        "This order uses Spark routing. Resume its exact saved checkout instead of paying the merchant directly."
+      )
+      return false
+    }
     if (
       manualInvoiceAccess === "report_only" ||
       manualInvoiceAccess === "receipt_only" ||
@@ -1417,6 +2057,7 @@ function OrderDetail({
   }
 
   async function prepareCurrentMerchantInvoice(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     if (!shouldContinueAccountRead()) {
       throw new Error("Your account changed. Reopen the order to continue.")
     }
@@ -1431,6 +2072,7 @@ function OrderDetail({
   }
 
   async function reportExternalPayment(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     if (manualInvoiceAccess === "closed") {
       throw new Error("The merchant already confirmed this payment.")
     }
@@ -1446,6 +2088,7 @@ function OrderDetail({
       authenticatedPubkey ?? null,
       shouldContinueBuyerSession,
       (lifecycle) =>
+        lifecycle.checkoutSparkRouterBinding === undefined &&
         shouldContinueAccountRead() &&
         canClaimManualInvoiceReport(
           vm,
@@ -1457,6 +2100,7 @@ function OrderDetail({
   }
 
   async function reportPriorExpiredInvoice(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     const prior =
       priorInvoiceChoices.find(
         ({ index }) => index === Number(priorInvoiceIndex)
@@ -1526,6 +2170,7 @@ function OrderDetail({
   }
 
   const merchantInvoicePrepared =
+    !routerBinding &&
     !!vm.merchantInvoiceAction &&
     vm.merchantInvoiceAction.status === "payable" &&
     isMerchantInvoicePaymentActionBound(
@@ -1541,6 +2186,7 @@ function OrderDetail({
       : null
 
   const generalPaymentRetryEligible =
+    !routerBinding &&
     vm.phase !== "cancelled" &&
     vm.phase !== "completed" &&
     vm.merchantStatus !== "cancelled" &&
@@ -1564,6 +2210,7 @@ function OrderDetail({
   const showAmbiguousPayment =
     !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
   const showExternalWallet =
+    !routerBinding &&
     !zeroCostPickupOrder &&
     manualInvoiceAccess !== "closed" &&
     manualInvoiceAccess !== "report_only" &&
@@ -1576,6 +2223,7 @@ function OrderDetail({
         !vm.invoice || entry.invoice.toLowerCase() !== vm.invoice.toLowerCase()
     )
   const showPriorExpiredInvoiceReport =
+    !routerBinding &&
     priorInvoiceChoices.length > 0 &&
     !vm.publicZapSigner &&
     (row.lifecycle?.checkoutMode === "private_checkout" ||
@@ -1600,6 +2248,7 @@ function OrderDetail({
     !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
+    !vm.checkoutSparkRouted &&
     !zeroCostPickupOrder &&
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
@@ -1609,6 +2258,7 @@ function OrderDetail({
     !!row.lifecycle.orderRelayDelivery
   const showContinueAcceptedCheckout =
     !zeroCostPickupOrder &&
+    !routerBinding &&
     !!row.lifecycle &&
     requiresAcceptedOrderPaymentContinuation(row.lifecycle)
   const showFinishAcceptedOrderRecovery =
@@ -1832,35 +2482,367 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {(manualInvoiceAccess === "report_only" ||
-        manualInvoiceAccess === "receipt_only") && (
-        <StatusNotice
-          variant="warning"
-          title="Order no longer accepts payment"
-          detail={
-            vm.merchantStatus === "refund_requested"
-              ? "Refund requested"
-              : "Order cancelled"
-          }
-        >
-          <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            {manualInvoiceAccess === "receipt_only"
-              ? "Do not pay this invoice. If your wallet already confirms payment, report it for merchant verification while Conduit continues checking for a public receipt."
-              : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
+      {routerBinding && !isQuantumRouterExecutionEnabled() && (
+        <StatusNotice variant="warning" title="Payment processing paused">
+          <p className="text-sm text-[var(--text-secondary)]">
+            Saved payment status remains available. Processing is paused in this
+            build; do not pay again or try a different rail.
           </p>
-          {(manualInvoiceAccess === "report_only" ||
-            manualInvoiceAccess === "receipt_only") && (
-            <Button
-              variant="outline"
-              className="mt-4 h-10 px-4 text-sm"
-              disabled={busy}
-              onClick={() => void withBusy(reportExternalPayment)}
-            >
-              Report a payment already made
-            </Button>
-          )}
         </StatusNotice>
       )}
+
+      {routerBinding && (
+        <StatusNotice
+          variant={
+            settledRouterControl?.status === "complete" &&
+            vm.checkoutSparkCommerceVerified === true
+              ? "success"
+              : settledRouterControl?.status === "blocked" ||
+                  settledRouterQuery.isError
+                ? "warning"
+                : "info"
+          }
+          title={
+            settledRouterControl?.status === "retired"
+              ? "Payment complete"
+              : "Order payment"
+          }
+          detail={
+            settledRouterControl &&
+            settledRouterControl.status !== "blocked" &&
+            settledRouterControl.status !== "retired"
+              ? settledRouterControl.status === "complete"
+                ? "Payment recorded"
+                : settledRouterControl.status === "pay_funding"
+                  ? "Awaiting payment"
+                  : "Completing payment"
+              : undefined
+          }
+        >
+          {settledRouterControl && "priceSummary" in settledRouterControl && (
+            <div className="mb-4 max-w-lg">
+              <CheckoutCoordinationSummary
+                price={settledRouterControl.priceSummary}
+                formatSats={formatSats}
+              />
+            </div>
+          )}
+          {settledRouterQuery.isPending ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              Checking this order&apos;s saved payment state…
+            </p>
+          ) : settledRouterQuery.isError ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              Saved payment status could not be read. Do not pay again until it
+              is checked.
+            </p>
+          ) : settledRouterControl?.status === "blocked" ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              {settledRouterControl.reason}
+            </p>
+          ) : settledRouterControl?.status === "complete" ? (
+            <div className="space-y-3">
+              <p className="text-sm text-[var(--text-secondary)]">
+                Your payment is recorded. Delivery confirmation is separate;
+                check the order status for the latest confirmation.
+              </p>
+              <details className="text-xs leading-5 text-[var(--text-secondary)]">
+                <summary className="cursor-pointer">
+                  Checkout recovery details
+                </summary>
+                <p className="my-2">
+                  Keep recovery details until the checkout wallet can be safely
+                  retired.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 px-4 text-sm"
+                  disabled={
+                    busy ||
+                    settledRouterQuery.isFetching ||
+                    !settledRouterControl.retirement ||
+                    !canContinueRouterCleanupSession()
+                  }
+                  onClick={() => void withBusy(checkSettledRouterCleanup)}
+                >
+                  Check wallet cleanup
+                </Button>
+                <p className="text-xs text-[var(--text-secondary)]">
+                  Checks whether the checkout wallet is safe to retire. Sends no
+                  funds.
+                </p>
+              </details>
+            </div>
+          ) : settledRouterControl?.status === "retired" ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              Payment processing is complete. Delivery confirmation is separate.
+            </p>
+          ) : settledRouterControl ? (
+            <div className="space-y-3">
+              <p className="text-sm text-[var(--text-secondary)]">
+                {settledRouterControl.status === "pay_funding"
+                  ? "Pay once for this order. After your payment is verified, we'll finish automatically."
+                  : "Continue this order from its saved payment status. An uncertain payment is never sent again."}
+              </p>
+              <p className="text-xs leading-5 text-[var(--text-secondary)]">
+                Keep this order visible while your payment finishes. You can
+                pause processing; a submitted payment cannot be cancelled. Your
+                wallet may charge a separate fee.
+              </p>
+              {(settledRouterControl.status === "pay_funding" ||
+                settledRouterControl.status === "check_funding") && (
+                <CheckoutSparkFundingExpiry
+                  expiresAt={settledRouterControl.fundingExpiresAt}
+                />
+              )}
+              {!row.receipt && (
+                <details className="text-xs leading-5 text-[var(--text-secondary)]">
+                  <summary className="cursor-pointer">Payment details</summary>
+                  <p className="mt-2">
+                    Gross funding:{" "}
+                    {settledRouterControl.grossFundingSats.toLocaleString()}{" "}
+                    sats
+                    {settledRouterControl.creditedSats !== null
+                      ? ` · exact credit: ${settledRouterControl.creditedSats.toLocaleString()} sats`
+                      : " · exact credit pending"}
+                    . Each recipient payment is verified before the next starts.
+                  </p>
+                </details>
+              )}
+              {routerProgress && routerProgress.phase !== "funding" && (
+                <CheckoutPaymentProgress pausing={routerPausing} />
+              )}
+              {settledRouterControl.status === "pay_funding" &&
+                routerFundingSelection.showSelector && (
+                  <div className="grid max-w-sm gap-1.5">
+                    <label
+                      htmlFor={`settled-router-payer-${vm.orderId}`}
+                      className="text-xs font-medium text-[var(--text-secondary)]"
+                    >
+                      Pay with
+                    </label>
+                    <Select
+                      value={routerTargetValue}
+                      onValueChange={(value) =>
+                        setRouterTarget((selection) =>
+                          applyCheckoutSparkFundingChoice({
+                            selection,
+                            value,
+                            options: routerPayerOptions,
+                          })
+                        )
+                      }
+                      disabled={busy || wallets.loading}
+                    >
+                      <SelectTrigger
+                        id={`settled-router-payer-${vm.orderId}`}
+                        className={PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}
+                      >
+                        <PaymentTargetSelectValue
+                          target={routerSelectedOption?.target ?? null}
+                          eligibleWallets={routerPayerWallets}
+                          walletDisplayLabels={getWalletDisplayLabels(
+                            routerPayerWallets
+                          )}
+                          weblnAvailable={weblnAvailable}
+                          placeholder="Choose a ready wallet"
+                        />
+                      </SelectTrigger>
+                      <PaymentTargetSelectContent
+                        options={routerPayerOptions}
+                        eligibleWallets={routerPayerWallets}
+                        walletDisplayLabels={getWalletDisplayLabels(
+                          routerPayerWallets
+                        )}
+                        staleWalletValue={null}
+                        weblnAvailable={weblnAvailable}
+                      />
+                    </Select>
+                  </div>
+                )}
+              <Button
+                type="button"
+                className="h-11 px-4 text-sm"
+                disabled={
+                  busy ||
+                  !actionsReady ||
+                  !canContinueRouterSession() ||
+                  settledRouterQuery.isFetching ||
+                  (settledRouterControl.status === "route_payout" &&
+                    !settledRouterControl.payoutReview &&
+                    !settledRouterControl.nativeTreasury?.prepared) ||
+                  (settledRouterControl.status === "pay_funding" &&
+                    !routerSelectedOption)
+                }
+                onClick={() =>
+                  void withBusy(() =>
+                    continueSettledRouterCheckout({
+                      control: settledRouterControl,
+                      external:
+                        settledRouterControl.status === "pay_funding" &&
+                        routerSelectedOption?.target.type === "manual",
+                      payerValue: routerTargetValue,
+                    })
+                  )
+                }
+              >
+                {settledRouterControl.status === "pay_funding"
+                  ? "Pay for order"
+                  : "Resume payment"}
+              </Button>
+              {routerProgress && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={routerPausing}
+                  onClick={() => {
+                    setRouterPausing(true)
+                    routerApprovalGenerationRef.current += 1
+                    void routerRunner.pause()
+                    sparkFeeApproval.decline()
+                  }}
+                >
+                  Pause payment
+                </Button>
+              )}
+              {settledRouterControl.status === "check_funding" &&
+                !externalFundingInvoice &&
+                settledRouterControl.externalFundingAvailable && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 px-4 text-sm"
+                    disabled={
+                      busy ||
+                      !canContinueRouterSession() ||
+                      settledRouterQuery.isFetching
+                    }
+                    onClick={() =>
+                      void withBusy(() =>
+                        continueSettledRouterCheckout({
+                          control: settledRouterControl,
+                          external: true,
+                          payerValue: routerTargetValue,
+                        })
+                      )
+                    }
+                  >
+                    Reopen external invoice
+                  </Button>
+                )}
+              <CheckoutSparkExternalFunding
+                externalInvoice={externalFundingInvoice}
+                enabled={
+                  settledRouterControl.externalFundingAvailable === true &&
+                  canContinueRouterSession() &&
+                  ((settledRouterControl.status === "pay_funding" &&
+                    !externalFundingInvoice) ||
+                    (settledRouterControl.status === "check_funding" &&
+                      externalFundingInvoice?.authGeneration ===
+                        authGeneration &&
+                      canUseRouterExternalInvoice(externalFundingInvoice)))
+                }
+                preparation={
+                  settledRouterControl.status === "pay_funding"
+                    ? {
+                        amountSats: settledRouterControl.grossFundingSats,
+                        cashAppAvailable:
+                          settledRouterControl.network === "mainnet",
+                        disabled:
+                          busy ||
+                          !actionsReady ||
+                          settledRouterQuery.isFetching,
+                        onApprove: (externalAction) => {
+                          void withBusy(() =>
+                            continueSettledRouterCheckout({
+                              control: settledRouterControl,
+                              external: true,
+                              payerValue: "manual",
+                              externalAction,
+                            })
+                          )
+                        },
+                      }
+                    : undefined
+                }
+                actionResult={externalFundingInvoice?.actionResult}
+                onBeforeInvoiceUse={() =>
+                  !!externalFundingInvoice &&
+                  externalFundingInvoice.authGeneration === authGeneration &&
+                  canUseRouterExternalInvoice(externalFundingInvoice)
+                }
+                preference={shopperPricing.preference}
+                quote={shopperPricing.quote}
+              />
+            </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 px-3 text-xs"
+              disabled={busy || settledRouterQuery.isFetching}
+              onClick={() => void settledRouterQuery.refetch()}
+            >
+              Refresh saved status
+            </Button>
+            {settledRouterOutcome && (
+              <span className="text-xs text-[var(--text-secondary)]">
+                {settledRouterOutcome}
+              </span>
+            )}
+          </div>
+        </StatusNotice>
+      )}
+
+      {routerBinding && row.receipt && (
+        <CheckoutSparkPaymentReceipt receipt={row.receipt} />
+      )}
+
+      {routerBinding &&
+        settledRouterControl?.status !== "retired" &&
+        settledRouterControl?.status !== "complete" && (
+          <p
+            role="note"
+            className="text-xs leading-5 text-[var(--text-secondary)]"
+          >
+            Keep this page open until payment processing finishes. If you leave,
+            return to this order to check its saved status—do not pay again. If
+            you cannot return, the merchant can help recover your checkout.
+          </p>
+        )}
+
+      {!routerBinding &&
+        (manualInvoiceAccess === "report_only" ||
+          manualInvoiceAccess === "receipt_only") && (
+          <StatusNotice
+            variant="warning"
+            title="Order no longer accepts payment"
+            detail={
+              vm.merchantStatus === "refund_requested"
+                ? "Refund requested"
+                : "Order cancelled"
+            }
+          >
+            <p className="text-pretty text-sm text-[var(--text-secondary)]">
+              {manualInvoiceAccess === "receipt_only"
+                ? "Do not pay this invoice. If your wallet already confirms payment, report it for merchant verification while Conduit continues checking for a public receipt."
+                : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
+            </p>
+            {(manualInvoiceAccess === "report_only" ||
+              manualInvoiceAccess === "receipt_only") && (
+              <Button
+                variant="outline"
+                className="mt-4 h-10 px-4 text-sm"
+                disabled={busy}
+                onClick={() => void withBusy(reportExternalPayment)}
+              >
+                Report a payment already made
+              </Button>
+            )}
+          </StatusNotice>
+        )}
 
       {showPriorExpiredInvoiceReport && (
         <StatusNotice
@@ -2262,17 +3244,23 @@ function OrderDetail({
       <SparkFeeApprovalDialog
         controller={sparkFeeApproval}
         walletLabel={
-          paymentWallet?.providerId === "spark"
-            ? (eligibleWalletDisplayLabels.get(paymentWallet.id) ??
-              paymentWallet.label)
-            : undefined
+          routerBinding && routerPayerWallet?.providerId === "spark"
+            ? routerPayerWallet.label
+            : paymentWallet?.providerId === "spark"
+              ? (eligibleWalletDisplayLabels.get(paymentWallet.id) ??
+                paymentWallet.label)
+              : undefined
         }
       />
 
       {paymentFocused ? (
         <div className="space-y-4">
           {!showExternalWallet && (
-            <OrderTimeline vm={vm} formatSats={formatSats} />
+            <OrderTimeline
+              vm={vm}
+              formatSats={formatSats}
+              isRouterOrder={vm.checkoutSparkRouted === true}
+            />
           )}
           <OrderItemsSection
             vm={vm}
@@ -2293,7 +3281,11 @@ function OrderDetail({
         </div>
       ) : (
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <OrderTimeline vm={vm} formatSats={formatSats} />
+          <OrderTimeline
+            vm={vm}
+            formatSats={formatSats}
+            isRouterOrder={vm.checkoutSparkRouted === true}
+          />
 
           <div className="space-y-4">
             <div className="hidden xl:block">
@@ -2583,6 +3575,8 @@ function OrdersPage() {
   const {
     accountPubkey,
     authGeneration,
+    isAuthGenerationCurrent,
+    isGuestGenerationCurrent,
     connect,
     pubkey,
     remoteSignerRecovery,
@@ -2627,11 +3621,9 @@ function OrdersPage() {
     const delayMs = Math.max(0, guestIdentity.expiresAt - Date.now())
     const timer = window.setTimeout(() => {
       clearSessionGuestOrderSigningIdentity(guestIdentity.orderId)
-      void pruneExpiredGuestOrderData()
-        .catch(() => {})
-        .finally(() => {
-          setGuestSessionEpoch((epoch) => epoch + 1)
-        })
+      // Hide cached guest payment projections immediately, not after DB pruning.
+      setGuestSessionEpoch((epoch) => epoch + 1)
+      void pruneExpiredGuestOrderData().catch(() => {})
     }, delayMs)
     return () => window.clearTimeout(timer)
   }, [guestIdentity])
@@ -2661,13 +3653,27 @@ function OrdersPage() {
   const messagesQuery = inbox.buyer
 
   const refetchAll = useCallback(async () => {
-    const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
+    const refreshes: Promise<unknown>[] = [
+      lifecyclesQuery.refetch(),
+      queryClient.invalidateQueries({
+        queryKey: [
+          BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY,
+          activeBuyerPubkey ?? "none",
+        ],
+      }),
+    ]
     if (signerConnected && activeBuyerPubkey) {
       clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
       refreshes.push(messagesQuery.refetch())
     }
     await Promise.all(refreshes)
-  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
+  }, [
+    activeBuyerPubkey,
+    lifecyclesQuery,
+    messagesQuery,
+    queryClient,
+    signerConnected,
+  ])
 
   const reconnectSigner = useCallback(async () => {
     setSignerReconnectPending(true)
@@ -2721,6 +3727,46 @@ function OrdersPage() {
     [lifecyclesQuery.data]
   )
   const refetchLifecycles = lifecyclesQuery.refetch
+  function getCurrentSettlementGuestIdentity(): GuestOrderSigningIdentity | null {
+    const currentIdentity = guestIdentity
+      ? getSessionGuestOrderSigningIdentity(guestIdentity.orderId)
+      : null
+    if (
+      !guestIdentity ||
+      !currentIdentity ||
+      !isGuestGenerationCurrent(authGeneration) ||
+      currentIdentity.pubkey !== guestIdentity.pubkey ||
+      currentIdentity.createdAt !== guestIdentity.createdAt ||
+      currentIdentity.expiresAt !== guestIdentity.expiresAt ||
+      !isCurrentGuestOrderSigningIdentity(currentIdentity, {
+        orderId: guestIdentity.orderId,
+        merchantPubkey: guestIdentity.merchantPubkey,
+        pubkey: guestIdentity.pubkey,
+      })
+    ) {
+      return null
+    }
+    return currentIdentity
+  }
+  const canReadRouterSettlement = guestIdentity
+    ? getCurrentSettlementGuestIdentity() !== null
+    : signerConnected && isAuthGenerationCurrent(authGeneration)
+  const buyerSettlementsQuery = useQuery(
+    getCheckoutSparkBuyerSettlementQueryOptions({
+      enabled: canReadRouterSettlement,
+      lifecycles,
+      buyerPubkey: activeBuyerPubkey,
+      guestIdentity,
+      currentGuestIdentity: getCurrentSettlementGuestIdentity,
+      authGeneration,
+      isAuthGenerationCurrent: guestIdentity
+        ? isGuestGenerationCurrent
+        : isAuthGenerationCurrent,
+    })
+  )
+  const buyerSettlements = canReadRouterSettlement
+    ? (buyerSettlementsQuery.data ?? NO_BUYER_CHECKOUT_SPARK_SETTLEMENTS)
+    : NO_BUYER_CHECKOUT_SPARK_SETTLEMENTS
 
   useEffect(() => {
     const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
@@ -2807,6 +3853,7 @@ function OrdersPage() {
         lifecycle: entry.lifecycle,
         conversation: entry.conversation,
         messages: entry.conversation?.messages,
+        checkoutSparkSettlement: buyerSettlements.get(orderId),
       })
       rows.push({
         orderId,
@@ -2814,24 +3861,40 @@ function OrdersPage() {
         lifecycle: entry.lifecycle,
         conversation: entry.conversation,
         vm,
-        headerStatus: deriveOrderHeaderStatus(vm),
+        receipt: buyerSettlements.get(orderId)?.receipt,
+        headerStatus: presentSettledRouterHeaderStatus(
+          deriveOrderHeaderStatus(vm),
+          vm.checkoutSparkRouted === true
+        ),
         updatedAt: vm.updatedAt,
       })
     }
     return rows.sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [conversations, lifecycles])
+  }, [buyerSettlements, conversations, lifecycles])
 
   useEffect(() => {
     for (const row of orders) {
       const lifecycle = row.lifecycle
       if (!lifecycle || !isBuyerOrderPaid(row.vm)) continue
+      if (
+        row.vm.checkoutSparkRouted &&
+        (!canReadRouterSettlement || !isAuthGenerationCurrent(authGeneration))
+      )
+        continue
       void reportCommerceGmvEstimate({
         orderId: lifecycle.orderId,
         orderCreatedAt: lifecycle.createdAt,
         invoicedAmountSats: lifecycle.totalSats,
       })
     }
-  }, [lifecyclesQuery.dataUpdatedAt, messagesQuery.dataUpdatedAt, orders])
+  }, [
+    authGeneration,
+    canReadRouterSettlement,
+    isAuthGenerationCurrent,
+    lifecyclesQuery.dataUpdatedAt,
+    messagesQuery.dataUpdatedAt,
+    orders,
+  ])
 
   const merchantPubkeys = useMemo(
     () =>
@@ -2934,13 +3997,17 @@ function OrdersPage() {
       conversation: selected.conversation,
       messages: selected.conversation?.messages,
       paymentAttempt: paymentAttemptQuery.data,
+      checkoutSparkSettlement: buyerSettlements.get(selected.orderId),
     })
     return {
       ...selected,
       vm,
-      headerStatus: deriveOrderHeaderStatus(vm),
+      headerStatus: presentSettledRouterHeaderStatus(
+        deriveOrderHeaderStatus(vm),
+        vm.checkoutSparkRouted === true
+      ),
     }
-  }, [paymentAttemptQuery.data, selected])
+  }, [buyerSettlements, paymentAttemptQuery.data, selected])
 
   useEffect(() => {
     const current = selectedRow?.lifecycle

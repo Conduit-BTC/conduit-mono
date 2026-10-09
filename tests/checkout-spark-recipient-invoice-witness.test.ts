@@ -33,18 +33,21 @@ function profileContext(): SelectedProfileContext {
     },
     generateSecretKey()
   )
-  return createSelectedProfileContext({
-    pubkey: event.pubkey,
-    row: {
+  return {
+    ...createSelectedProfileContext({
       pubkey: event.pubkey,
-      eventId: event.id,
-      eventCreatedAt: event.created_at,
-      rawContent: event.content,
-      cachedAt: Date.now(),
-    },
-    observed: true,
-    readComplete: true,
-  })
+      row: {
+        pubkey: event.pubkey,
+        eventId: event.id,
+        eventCreatedAt: event.created_at,
+        rawContent: event.content,
+        cachedAt: Date.now(),
+      },
+      observed: true,
+      readComplete: true,
+    }),
+    signedEvent: event,
+  }
 }
 
 function profileRead(

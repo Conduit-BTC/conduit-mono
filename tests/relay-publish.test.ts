@@ -1670,7 +1670,7 @@ describe("planPublishRelays", () => {
 
       refreshNdkRelaySettings("merchant:replacement")
 
-      await expect(publish).resolves.toBe("acked")
+      expect(await publish).toBe("acked")
       await new Promise((resolve) => setTimeout(resolve, 0))
       expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
     } finally {

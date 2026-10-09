@@ -758,6 +758,72 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(result.resolutionStates.get(ALICE)).toBe("missing")
   })
 
+  it("requires every requested discovery source for fresh payment-profile evidence", async () => {
+    const relayUrls = [
+      "wss://healthy.conduit.market/",
+      "wss://blocked.conduit.market/",
+    ]
+    __setRelayListTestOverrides({
+      fetchSignedEventsFanoutDetailed: async () => ({
+        events: [],
+        admittedRelayUrls: [relayUrls[0]!],
+        relays: [
+          {
+            relayUrl: relayUrls[0]!,
+            status: "success" as const,
+            eventCount: 0,
+          },
+        ],
+      }),
+    })
+
+    const ordinary = await getRelayListsDetailed([ALICE], {
+      relayUrls,
+      skipCache: true,
+    })
+    const paymentProfile = await getRelayListsDetailed([ALICE], {
+      relayUrls,
+      skipCache: true,
+      requireAllRequestedRelays: true,
+    })
+
+    expect(ordinary.resolutionStates.get(ALICE)).toBe("missing")
+    expect(paymentProfile.resolutionStates.get(ALICE)).toBe(
+      "lookup-unavailable"
+    )
+  })
+
+  it("accepts signed payment-profile relay evidence after every requested source completes", async () => {
+    const relayUrls = ["wss://one.conduit.market/", "wss://two.conduit.market/"]
+    const event = makeRelayListEvent({
+      pubkey: ALICE,
+      tags: [["r", "wss://recipient.conduit.market"]],
+    })
+    __setRelayListTestOverrides({
+      fetchSignedEventsFanoutDetailed: async () => ({
+        events: [event] as unknown as NDKEvent[],
+        admittedRelayUrls: relayUrls,
+        relays: relayUrls.map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 1,
+        })),
+      }),
+    })
+
+    const result = await getRelayListsDetailed([ALICE], {
+      relayUrls,
+      skipCache: true,
+      requireAllRequestedRelays: true,
+    })
+
+    expect(result.resolutionStates.get(ALICE)).toBe("network")
+    expect(result.relayLists.get(ALICE)?.eventId).toBe(event.id)
+    expect(result.relayLists.get(ALICE)?.writeRelayUrls).toEqual([
+      "wss://recipient.conduit.market",
+    ])
+  })
+
   it("retains prior relay evidence when a forced lookup returns no event", async () => {
     cache.set(ALICE, {
       pubkey: ALICE,

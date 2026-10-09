@@ -410,7 +410,7 @@ function mergePublishResults(
   }
 }
 
-function getAuthorEventFallbackRelayUrls(input: {
+export function getAuthorEventFallbackRelayUrls(input: {
   eventKind: number | undefined
   intent: RelayWriteIntent
   attemptedRelayUrls: readonly string[]
@@ -1256,6 +1256,9 @@ export async function publishSignedEventToRelay(
 export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
+  if (!input.exclusiveRelayUrls && testOverrides.planPublishRelays) {
+    return testOverrides.planPublishRelays(input)
+  }
   if (input.exclusiveRelayUrls) {
     const explicitTargets = mergeRelayTargets(input.relayTargets ?? [])
     const wsTargets = new Set(

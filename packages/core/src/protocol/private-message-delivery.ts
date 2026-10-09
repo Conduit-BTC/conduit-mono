@@ -1025,6 +1025,7 @@ export async function publishPrivateMessage(
     input.shouldContinue,
     input.inboxDeclarationEvidenceRepository
   )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
     resolvedRecipientDeclaration,
     accountPubkey,
@@ -1032,6 +1033,7 @@ export async function publishPrivateMessage(
     input.accountNetworkLocalStateRepository,
     input.inboxDeclarationEvidenceRepository
   )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   if (
     resolvedRecipientDeclaration.state === "declared" &&
     resolvedRecipientDeclaration.relayUrls.length > 0 &&
@@ -1384,7 +1386,7 @@ export async function publishPrivateMessage(
             selfCopyError = summary.error
             if (deliveryStore) await deliveryStore.receive(wrappedToSelf)
           } catch (error) {
-            let sessionChanged = false
+            let sessionChanged: boolean
             try {
               sessionChanged = input.shouldContinue?.() === false
             } catch {
@@ -2218,6 +2220,8 @@ async function stageAndPublishPrivateLeg(
   const claim = store && id ? await holdPrivateDeliveryClaim(store, id) : null
   let acceptedDelivery:
     Awaited<ReturnType<typeof publishPrivateDeliveryLeg>> | undefined
+  let publishFailed = false
+  let publishError: unknown
   try {
     acceptedDelivery = await publishPrivateDeliveryLeg({
       ...input,
@@ -2234,17 +2238,20 @@ async function stageAndPublishPrivateLeg(
           })
       },
     })
-    return acceptedDelivery
-  } finally {
-    try {
-      await claim?.release()
-    } catch (error) {
-      if (
-        !acceptedDelivery?.successfulRelayUrls.length ||
-        !input.onAcceptedCheckpointFailure
-      )
-        throw error
-      input.onAcceptedCheckpointFailure()
-    }
+  } catch (error) {
+    publishFailed = true
+    publishError = error
   }
+  try {
+    await claim?.release()
+  } catch (error) {
+    if (
+      !acceptedDelivery?.successfulRelayUrls.length ||
+      !input.onAcceptedCheckpointFailure
+    )
+      throw error
+    input.onAcceptedCheckpointFailure()
+  }
+  if (publishFailed) throw publishError
+  return acceptedDelivery!
 }

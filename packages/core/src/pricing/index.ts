@@ -8,12 +8,37 @@ export type SourcePriceQuote = {
   normalizedCurrency: string
 }
 
+/** Shared provenance vocabulary, including labels retained for historical reads. */
+export const TRUSTED_PRICING_BTC_SOURCES = [
+  "mempool",
+  "coinbase",
+  "kraken",
+] as const
+export const PRICING_BTC_SOURCES = [
+  "env",
+  ...TRUSTED_PRICING_BTC_SOURCES,
+] as const
+export const TRUSTED_PRICING_FIAT_SOURCES = [
+  "frankfurter",
+  "floatrates",
+  "ecb",
+  "exchange-rate-api",
+  "mempool",
+] as const
+export const PRICING_FIAT_SOURCES = [
+  "env",
+  ...TRUSTED_PRICING_FIAT_SOURCES,
+] as const
+export type PricingFiatSource = (typeof PRICING_FIAT_SOURCES)[number]
+
 export type BtcUsdRateQuote = {
   rate: number
   fetchedAt: number
-  source: "env" | "mempool" | "coinbase"
+  source: (typeof PRICING_BTC_SOURCES)[number]
   fiatUsdRates?: Record<string, number>
-  fiatSource?: "frankfurter" | "exchange-rate-api" | "env" | "mempool"
+  fiatSource?: PricingFiatSource
+  /** Present for mixed feeds; binds every conversion to its actual provider. */
+  fiatSources?: Record<string, PricingFiatSource>
 }
 
 export type PricingRateInput = number | BtcUsdRateQuote | null
@@ -25,6 +50,8 @@ export interface CommercePriceNormalizationOptions {
    * create a zero-cost order; ordinary commerce pricing remains positive-only.
    */
   allowZero?: boolean
+  /** Read/recompute retained evidence only; never authorize new commerce. */
+  currencyPolicy?: "historical"
 }
 
 export type CommercePriceNormalization =
@@ -77,7 +104,6 @@ export const SUPPORTED_PRODUCT_PRICE_CURRENCIES = [
   "SATS",
   "USD",
   "AUD",
-  "BGN",
   "BRL",
   "CAD",
   "CHF",
@@ -221,6 +247,19 @@ export function isFiatCurrencyCode(currency: string): boolean {
     !isSatsLikeCurrency(normalized) &&
     !isMsatsLikeCurrency(normalized) &&
     !isBtcLikeCurrency(normalized)
+  )
+}
+
+/** Product support is policy, not the presence of an upstream exchange rate. */
+export function isSupportedCommercePriceCurrency(currency: string): boolean {
+  const normalized = normalizeCurrencyCode(currency)
+  return (
+    isSatsLikeCurrency(normalized) ||
+    isMsatsLikeCurrency(normalized) ||
+    isBtcLikeCurrency(normalized) ||
+    SUPPORTED_PRODUCT_PRICE_CURRENCIES.some(
+      (supported) => supported === normalized
+    )
   )
 }
 
@@ -397,6 +436,19 @@ export function normalizeCommercePrice(
     return invalidPrice(amount, currency, "Price currency is required")
   }
 
+  if (
+    options.currencyPolicy !== "historical" &&
+    !isSupportedCommercePriceCurrency(source.normalizedCurrency)
+  ) {
+    return {
+      status: "unsupported",
+      sats: null,
+      source,
+      approximate: false,
+      reason: `${source.normalizedCurrency} prices are not supported for new commerce`,
+    }
+  }
+
   if (isSatsLikeCurrency(source.normalizedCurrency)) {
     const sats = toSafeIntegerSats(amount, options.allowZero ? 0 : 1)
     if (sats === null) {
@@ -496,7 +548,7 @@ export function canonicalizeProductPrice<T extends CommercePriceLike>(
     // Canonical projection records an exact native zero without authorizing a
     // payment or checkout. Consequential callers still need explicit
     // `allowZero` plus authenticated pickup evidence.
-    { allowZero: true }
+    { allowZero: true, currencyPolicy: "historical" }
   )
 
   const sourcePrice = product.sourcePrice ?? normalized.source
@@ -531,6 +583,19 @@ export function getPriceSats(
   rateInput: PricingRateInput = null,
   options: CommercePriceNormalizationOptions = {}
 ): { sats: number; approximate: boolean } | null {
+  if (
+    options.currencyPolicy !== "historical" &&
+    [
+      price.currency,
+      price.sourcePrice?.currency,
+      price.sourcePrice?.normalizedCurrency,
+    ].some(
+      (currency) =>
+        currency !== undefined && !isSupportedCommercePriceCurrency(currency)
+    )
+  )
+    return null
+
   if (options.allowZero && price.priceSats === 0) {
     const source = price.sourcePrice
     const sourceCurrency =
@@ -593,7 +658,9 @@ export function canonicalizeShippingCost(
   const source = sourceQuote(amount, currency)
   if (amount === 0) return { shippingCostSats: 0, sourceShippingCost: source }
 
-  const normalized = normalizeCommercePrice(amount, currency)
+  const normalized = normalizeCommercePrice(amount, currency, null, {
+    currencyPolicy: "historical",
+  })
   if (normalized.status === "ok" && !normalized.approximate) {
     return {
       shippingCostSats: normalized.sats,
@@ -606,17 +673,26 @@ export function canonicalizeShippingCost(
 
 export function getShippingCostSats(
   shipping: CommerceShippingCostLike,
-  rateInput: PricingRateInput = null
+  rateInput: PricingRateInput = null,
+  options: CommercePriceNormalizationOptions = {}
 ): { sats: number; approximate: boolean } | null {
   const source = shipping.sourceShippingCost
   if (source) {
+    if (
+      options.currencyPolicy !== "historical" &&
+      [source.currency, source.normalizedCurrency].some(
+        (currency) => !isSupportedCommercePriceCurrency(currency)
+      )
+    )
+      return null
     if (!Number.isFinite(source.amount) || source.amount < 0) return null
     if (source.amount === 0) return { sats: 0, approximate: false }
 
     const normalized = normalizeCommercePrice(
       source.amount,
       source.normalizedCurrency || source.currency,
-      rateInput
+      rateInput,
+      options
     )
     if (normalized.status !== "ok") return null
     return { sats: normalized.sats, approximate: normalized.approximate }
@@ -804,7 +880,10 @@ export function getShopperPriceDisplay(
   const source = getDisplaySource(price)
   const sourceCurrency = source?.normalizedCurrency ?? price.currency
   const allowedZero = options.allowZero
-    ? getPriceSats(price, quote, { allowZero: true })
+    ? getPriceSats(price, quote, {
+        allowZero: true,
+        currencyPolicy: "historical",
+      })
     : null
   if (allowedZero?.sats === 0) {
     return {
@@ -819,7 +898,10 @@ export function getShopperPriceDisplay(
     }
   }
   const recordedSats = options.settledSatsAreAuthoritative
-    ? getPriceSats(price, null, { allowZero: options.allowZero })
+    ? getPriceSats(price, null, {
+        allowZero: options.allowZero,
+        currencyPolicy: "historical",
+      })
     : null
   const authoritativeSats = recordedSats
     ? { sats: recordedSats.sats, approximate: false }
@@ -841,7 +923,14 @@ export function getShopperPriceDisplay(
       options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
     )
     const converted = freshQuote
-      ? normalizeCommercePrice(source.amount, source.normalizedCurrency, quote)
+      ? normalizeCommercePrice(
+          source.amount,
+          source.normalizedCurrency,
+          quote,
+          {
+            currencyPolicy: "historical",
+          }
+        )
       : null
     const displaySats =
       authoritativeSats ??
@@ -905,7 +994,14 @@ export function getShopperPriceDisplay(
 
   const normalized =
     sourceNeedsRate && source
-      ? normalizeCommercePrice(source.amount, source.normalizedCurrency, quote)
+      ? normalizeCommercePrice(
+          source.amount,
+          source.normalizedCurrency,
+          quote,
+          {
+            currencyPolicy: "historical",
+          }
+        )
       : null
   const sats =
     authoritativeSats ??
@@ -913,7 +1009,7 @@ export function getShopperPriceDisplay(
       ? normalized.status === "ok"
         ? { sats: normalized.sats, approximate: normalized.approximate }
         : null
-      : getPriceSats(price, quote))
+      : getPriceSats(price, quote, { currencyPolicy: "historical" }))
 
   if (!sats) {
     const state =
@@ -1076,7 +1172,9 @@ export function getProductPriceDisplay(
   product: CommercePriceLike,
   rateInput: PricingRateInput = null
 ): { primary: string; secondary: string | null } {
-  const sats = getPriceSats(product, rateInput)
+  const sats = getPriceSats(product, rateInput, {
+    currencyPolicy: "historical",
+  })
   const source =
     product.sourcePrice ??
     (isFiatCurrencyCode(product.currency)
@@ -1110,7 +1208,10 @@ export function getComparablePriceValue(
   product: CommercePriceLike,
   rateInput: PricingRateInput = null
 ): number | null {
-  return getPriceSats(product, rateInput)?.sats ?? null
+  return (
+    getPriceSats(product, rateInput, { currencyPolicy: "historical" })?.sats ??
+    null
+  )
 }
 
 export function compareCommercePrices(

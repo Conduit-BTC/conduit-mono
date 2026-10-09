@@ -1,0 +1,1282 @@
+import {
+  assertCheckoutSparkLnurlPayoutMetadata,
+  observeCheckoutSparkReceiverCapability,
+  type CheckoutSparkReceiverContract,
+  assertCheckoutSparkSignedCommerceAllocations,
+  calculateCheckoutSparkSettledGrossFundingSats,
+  canonicalizeCheckoutSparkPlanSourceEvents,
+  createCheckoutSparkSettledReconciliation,
+  freezeCheckoutSparkCommerceQuote,
+  freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
+  deriveCheckoutSparkNativeTreasuryInvoiceId,
+  selectCheckoutSparkTreasuryAddress,
+  restoreCheckoutSparkSettledReconciliation,
+  snapshotCheckoutSparkPlanSourceEvents,
+  projectProfileContent,
+  resolveCheckoutSparkSignedPickup,
+  DexieCheckoutSparkSettledRepository,
+  type CheckoutSparkNetwork,
+  type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledRecipientInput,
+  type CheckoutSparkSettledReconciliation,
+  type SignedPublicNostrEvent,
+  type CheckoutSparkTreasuryConfiguration,
+  type fetchLnurlPayMetadata,
+  type CheckoutSparkMerchantPublicZapPolicy,
+} from "@conduit/core"
+
+import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
+import { assertCheckoutSparkPrefundingPricingAuthority } from "./checkout-spark-prefunding-pricing-authority"
+import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
+import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
+import { acquireCheckoutSparkWalletRetentionLock } from "./checkout-spark-wallet-retention-lock"
+import { withCheckoutSparkStorageLock } from "./checkout-spark-storage"
+import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
+import {
+  getCheckoutSparkRecoveryDelivery,
+  isCheckoutSparkRecoveryPrePersistenceFailure,
+  listCheckoutSparkRecoveryDeliveries,
+  retryStoredCheckoutSparkRecoveryHandoff,
+  publishCheckoutSparkSettledRecoveryHandoff,
+  archiveCompletedCheckoutSparkRecovery,
+  retryPendingCompletedCheckoutSparkRecovery,
+  type CheckoutSparkCompletedRecoveryTransport,
+  type CheckoutSparkRecoverySigningIdentity,
+} from "./checkout-spark-recovery-handoff"
+import { generateSparkMnemonic } from "./spark-recovery"
+import type { SparkRecoveryBundle } from "./spark-recovery-bundle"
+import {
+  getDefaultSparkAccountNumber,
+  getSparkConfiguration,
+  getSparkWalletManager,
+} from "./spark-sdk"
+import type {
+  SparkCheckoutReceiveInput,
+  SparkCheckoutReceiveRequest,
+  SparkCheckoutTreasuryDestination,
+  SparkCheckoutTreasuryPrepareInput,
+  SparkCheckoutTreasuryRequest,
+} from "./spark-wallet"
+
+const STORAGE_KEY = "conduit:checkout-spark-settled-preparations:v3"
+const MAX_STORED = 64
+const COMPLETED_PREPARATION_PREFIX =
+  "conduit:checkout-spark-completed-preparation:v1:"
+const HEX_64 = /^[0-9a-f]{64}$/
+
+export type CheckoutSparkSettledPreparationStorage = Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem"
+>
+
+export interface StoredCheckoutSparkSettledPreparation {
+  schemaVersion: 3
+  checkoutId: string
+  planDigest: string
+  /** SHA-256 of the exact cart batches that started this checkout. */
+  purchaseClaimDigest?: string
+  recoveryHandoffId: string | null
+  fundingInvoiceExposedAt: number | null
+  fundingSubmissionState: "not_started" | "provisional"
+  /** Possible external payment; immutable once its invoice can leave the app. */
+  externalFundingExposedAt?: number
+  savedAt: number
+}
+
+export interface CheckoutSparkSettledWalletMaterial extends SparkRecoveryBundle {
+  walletId: string
+  network: CheckoutSparkNetwork
+}
+
+export interface PrepareCheckoutSparkSettledFundingInput {
+  checkoutId: string
+  orderId: string
+  purchaseClaimDigest?: string
+  merchantPubkey: string
+  network: CheckoutSparkNetwork
+  takeoverAt: number
+  grossFundingSats: number
+  fundingExpirySecs: number
+  identity: CheckoutSparkRecoverySigningIdentity
+  shouldContinue?: () => boolean
+  quoteAuthority: CheckoutSparkQuoteAuthority
+  sourceEvents: readonly SignedPublicNostrEvent[]
+  recipients: readonly CheckoutSparkSettledRecipientInput[]
+  merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
+  storage?: CheckoutSparkSettledPreparationStorage | null
+  recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
+  /** Save the original private order draft before any recovery publication. */
+  onPlanPrepared?: (input: {
+    plan: CheckoutSparkSettledPlan
+    sourceEvents: readonly SignedPublicNostrEvent[]
+  }) => void | Promise<void>
+}
+
+export interface PreparedCheckoutSparkSettledFunding {
+  readonly plan: CheckoutSparkSettledPlan
+  readonly state: CheckoutSparkSettledReconciliation
+  readonly fundingReceive: Readonly<SparkCheckoutReceiveRequest>
+  readonly fundingInvoice: string
+  readonly recoveryHandoffId: string
+}
+
+/** Metadata failed before any checkout wallet, invoice or recovery existed. */
+export class CheckoutSparkSettledFundingMetadataPreflightError extends Error {
+  constructor() {
+    super(
+      "Checkout Spark recipient payment endpoint is not ready. No checkout wallet was created."
+    )
+    this.name = "CheckoutSparkSettledFundingMetadataPreflightError"
+  }
+}
+
+export interface CheckoutSparkSettledPreparationRepository {
+  create: DexieCheckoutSparkSettledRepository["create"]
+  load: DexieCheckoutSparkSettledRepository["load"]
+  abandonPristine?: DexieCheckoutSparkSettledRepository["abandonPristine"]
+  loadBuyerSettlement?: DexieCheckoutSparkSettledRepository["loadBuyerSettlement"]
+}
+
+/** Positive local cleanup, not a timeout or inferred absence of payment. */
+export class CheckoutSparkSettledPreparationAbandonedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "The unfunded checkout preparation was safely closed. Retry checkout.",
+      { cause }
+    )
+    this.name = "CheckoutSparkSettledPreparationAbandonedError"
+  }
+}
+
+export class CheckoutSparkSettledFundingExpiredError extends Error {
+  constructor() {
+    super(
+      "The saved funding invoice expired. Keep the original checkout and coordinate recovery with the merchant; do not create or pay another invoice."
+    )
+    this.name = "CheckoutSparkSettledFundingExpiredError"
+  }
+}
+
+export interface PrepareCheckoutSparkSettledFundingDependencies {
+  now?: () => number
+  treasuryConfiguration?: CheckoutSparkTreasuryConfiguration
+  validateTreasuryDestination?: (input: {
+    network: CheckoutSparkNetwork
+    sparkAddress: string
+  }) => Promise<SparkCheckoutTreasuryDestination>
+  prepareTreasuryRequest?: (
+    input: SparkCheckoutTreasuryPrepareInput
+  ) => Promise<SparkCheckoutTreasuryRequest>
+  fetchPayoutMetadata?: typeof fetchLnurlPayMetadata
+  /** Public, deployment-qualified contracts; never buyer recovery input. */
+  receiverContracts?: readonly CheckoutSparkReceiverContract[]
+  repository?: CheckoutSparkSettledPreparationRepository
+  createWalletMaterial?: (
+    network: CheckoutSparkNetwork
+  ) => CheckoutSparkSettledWalletMaterial
+  openWallet?: (wallet: CheckoutSparkSettledWalletMaterial) => Promise<void>
+  closeWallet?: (walletId: string) => Promise<void>
+  createFundingReceive?: (
+    wallet: CheckoutSparkSettledWalletMaterial,
+    input: SparkCheckoutReceiveInput
+  ) => Promise<SparkCheckoutReceiveRequest>
+  publishRecoveryHandoff?: typeof publishCheckoutSparkSettledRecoveryHandoff
+  verifyRecoveryAck?: (
+    handoffId: string,
+    plan: CheckoutSparkSettledPlan,
+    storage: CheckoutSparkSettledPreparationStorage | null
+  ) => boolean
+}
+
+function browserStorage(): CheckoutSparkSettledPreparationStorage | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+function requireStorage(
+  storage: CheckoutSparkSettledPreparationStorage | null
+): CheckoutSparkSettledPreparationStorage {
+  if (!storage) {
+    throw new Error(
+      "Durable settled checkout preparation storage is unavailable."
+    )
+  }
+  return storage
+}
+
+function parseStored(value: unknown): StoredCheckoutSparkSettledPreparation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Stored settled checkout preparation is invalid.")
+  }
+  const item = value as Partial<StoredCheckoutSparkSettledPreparation>
+  if (
+    item.schemaVersion !== 3 ||
+    typeof item.checkoutId !== "string" ||
+    !item.checkoutId ||
+    item.checkoutId.trim() !== item.checkoutId ||
+    item.checkoutId.length > 512 ||
+    typeof item.planDigest !== "string" ||
+    !HEX_64.test(item.planDigest) ||
+    (item.purchaseClaimDigest !== undefined &&
+      (typeof item.purchaseClaimDigest !== "string" ||
+        !HEX_64.test(item.purchaseClaimDigest))) ||
+    (item.recoveryHandoffId !== null &&
+      (typeof item.recoveryHandoffId !== "string" ||
+        !item.recoveryHandoffId ||
+        item.recoveryHandoffId.length > 256)) ||
+    (item.fundingInvoiceExposedAt !== null &&
+      (!Number.isSafeInteger(item.fundingInvoiceExposedAt) ||
+        item.fundingInvoiceExposedAt! < 0 ||
+        item.recoveryHandoffId === null)) ||
+    (item.fundingSubmissionState !== "not_started" &&
+      item.fundingSubmissionState !== "provisional") ||
+    (item.externalFundingExposedAt !== undefined &&
+      (!Number.isSafeInteger(item.externalFundingExposedAt) ||
+        item.fundingSubmissionState !== "provisional" ||
+        item.fundingInvoiceExposedAt === null ||
+        item.externalFundingExposedAt < item.fundingInvoiceExposedAt! ||
+        item.externalFundingExposedAt > item.savedAt!)) ||
+    !Number.isSafeInteger(item.savedAt) ||
+    item.savedAt! < 0
+  ) {
+    throw new Error("Stored settled checkout preparation is invalid.")
+  }
+  return item as StoredCheckoutSparkSettledPreparation
+}
+
+function readStored(
+  storage: CheckoutSparkSettledPreparationStorage | null
+): StoredCheckoutSparkSettledPreparation[] {
+  const raw = requireStorage(storage).getItem(STORAGE_KEY)
+  if (!raw) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error("Stored settled checkout preparations are invalid.")
+  }
+  if (!Array.isArray(parsed) || parsed.length > MAX_STORED) {
+    throw new Error("Stored settled checkout preparations are invalid.")
+  }
+  const items = parsed.map(parseStored)
+  if (new Set(items.map((item) => item.checkoutId)).size !== items.length) {
+    throw new Error("Stored settled checkout preparations are duplicated.")
+  }
+  return items
+}
+
+function writeStored(
+  items: readonly StoredCheckoutSparkSettledPreparation[],
+  storage: CheckoutSparkSettledPreparationStorage | null
+): void {
+  if (items.length > MAX_STORED) {
+    throw new Error("Stored settled checkout preparation limit reached.")
+  }
+  requireStorage(storage).setItem(STORAGE_KEY, JSON.stringify(items))
+}
+
+export function getCheckoutSparkSettledPreparation(
+  checkoutId: string,
+  storage: CheckoutSparkSettledPreparationStorage | null = browserStorage()
+): StoredCheckoutSparkSettledPreparation | null {
+  return (
+    readStored(storage).find((item) => item.checkoutId === checkoutId) ?? null
+  )
+}
+
+export function listCheckoutSparkSettledPreparations(
+  storage: CheckoutSparkSettledPreparationStorage | null = browserStorage()
+): StoredCheckoutSparkSettledPreparation[] {
+  return readStored(storage)
+}
+
+/** Terminal cleanup is independent of wallet closing and grants no execution authority. */
+export async function cleanupCompletedCheckoutSparkSettledExecution(input: {
+  checkoutId: string
+  planDigest: string
+  buyerPubkey: string
+  repository?: Pick<DexieCheckoutSparkSettledRepository, "loadBuyerSettlement">
+  storage?: CheckoutSparkSettledPreparationStorage | null
+  recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
+  assertCurrent?: () => void
+  /** Fresh preparation only compacts local queues; it never waits on old relays. */
+  retryPendingDelivery?: boolean
+  recoveryTransport?: CheckoutSparkCompletedRecoveryTransport
+}): Promise<"cleaned" | "active" | "delivery_pending"> {
+  input.assertCurrent?.()
+  const repository =
+    input.repository ?? new DexieCheckoutSparkSettledRepository()
+  const terminal = await repository.loadBuyerSettlement(
+    input.checkoutId,
+    input.planDigest,
+    input.buyerPubkey
+  )
+  input.assertCurrent?.()
+  if (terminal.status !== "retired") return "active"
+  const binding = terminal.buyerBinding
+  if (
+    binding.checkoutId !== input.checkoutId ||
+    binding.planDigest !== input.planDigest ||
+    binding.buyerPubkey !== input.buyerPubkey
+  ) {
+    throw new Error("Completed checkout execution binding changed.")
+  }
+  const exactBinding = JSON.stringify(binding)
+  const assertTerminalCurrent = async () => {
+    input.assertCurrent?.()
+    const current = await repository.loadBuyerSettlement(
+      input.checkoutId,
+      input.planDigest,
+      input.buyerPubkey
+    )
+    input.assertCurrent?.()
+    if (
+      current.status !== "retired" ||
+      JSON.stringify(current.buyerBinding) !== exactBinding
+    )
+      throw new Error("Completed checkout execution binding changed.")
+  }
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const recoveryStorage =
+    input.recoveryStorage === undefined
+      ? browserStorage()
+      : input.recoveryStorage
+  const item = getCheckoutSparkSettledPreparation(input.checkoutId, storage)
+  const archiveKey = `${COMPLETED_PREPARATION_PREFIX}${input.checkoutId}`
+  const previousRaw = requireStorage(storage).getItem(archiveKey)
+  const previous = previousRaw ? parseStored(JSON.parse(previousRaw)) : null
+  const preparation = item ?? previous
+  if (
+    preparation &&
+    (preparation.checkoutId !== input.checkoutId ||
+      preparation.planDigest !== input.planDigest)
+  ) {
+    throw new Error(
+      "Completed checkout preparation conflicts with terminal state."
+    )
+  }
+  if (previous && item && JSON.stringify(previous) !== JSON.stringify(item)) {
+    throw new Error("Completed checkout preparation archive changed.")
+  }
+  if (preparation) {
+    requireStorage(storage).setItem(archiveKey, JSON.stringify(preparation))
+    const readback = requireStorage(storage).getItem(archiveKey)
+    if (
+      !readback ||
+      JSON.stringify(parseStored(JSON.parse(readback))) !==
+        JSON.stringify(preparation)
+    ) {
+      throw new Error(
+        "Completed checkout preparation archive was not durably saved."
+      )
+    }
+  }
+  const scope = {
+    checkoutId: binding.checkoutId,
+    planDigest: binding.planDigest,
+    orderId: binding.orderId,
+    walletId: binding.walletId,
+    merchantPubkey: binding.merchantPubkey,
+    senderPubkey: binding.buyerPubkey,
+  }
+  if (input.retryPendingDelivery !== false)
+    await retryPendingCompletedCheckoutSparkRecovery({
+      scope,
+      storage: recoveryStorage,
+      assertCurrent: input.assertCurrent,
+      assertTerminalCurrent,
+      transport: input.recoveryTransport,
+    })
+  await assertTerminalCurrent()
+  const result = await archiveCompletedCheckoutSparkRecovery({
+    scope,
+    initialHandoffId: preparation?.recoveryHandoffId ?? null,
+    storage: recoveryStorage,
+    assertCurrent: input.assertCurrent,
+    verifyBeforeCommit: assertTerminalCurrent,
+  })
+  await assertTerminalCurrent()
+  if (result !== "cleaned") return result
+  // Archive writes can survive a callback failure. Cleanup is repeatable after
+  // reload, and the repository's terminal marker still blocks all payment work.
+  await withCheckoutSparkStorageLock(STORAGE_KEY, async () => {
+    await assertTerminalCurrent()
+    input.assertCurrent?.()
+    const items = readStored(storage)
+    const current = items.find(
+      (candidate) => candidate.checkoutId === input.checkoutId
+    )
+    if (current && JSON.stringify(current) !== JSON.stringify(preparation)) {
+      throw new Error("Completed checkout preparation changed during cleanup.")
+    }
+    const retained = items.filter(
+      (candidate) => candidate.checkoutId !== input.checkoutId
+    )
+    writeStored(retained, storage)
+    if (JSON.stringify(readStored(storage)) !== JSON.stringify(retained)) {
+      throw new Error(
+        "Completed checkout preparation cleanup was not durably saved."
+      )
+    }
+  })
+  return "cleaned"
+}
+
+export function saveCheckoutSparkSettledPreparation(
+  item: StoredCheckoutSparkSettledPreparation,
+  storage: CheckoutSparkSettledPreparationStorage | null = browserStorage(),
+  options: { allowDefinitePreSendReset?: boolean } = {}
+): StoredCheckoutSparkSettledPreparation {
+  const next = parseStored(item)
+  if (
+    requireStorage(storage).getItem(
+      `${COMPLETED_PREPARATION_PREFIX}${next.checkoutId}`
+    )
+  ) {
+    throw new Error("Completed checkout preparation cannot be reopened.")
+  }
+  const items = readStored(storage)
+  const index = items.findIndex(
+    (candidate) => candidate.checkoutId === next.checkoutId
+  )
+  const previous = items[index]
+  if (
+    previous &&
+    (previous.planDigest !== next.planDigest ||
+      previous.purchaseClaimDigest !== next.purchaseClaimDigest ||
+      (previous.recoveryHandoffId !== null &&
+        previous.recoveryHandoffId !== next.recoveryHandoffId) ||
+      (previous.fundingInvoiceExposedAt !== null &&
+        previous.fundingInvoiceExposedAt !== next.fundingInvoiceExposedAt) ||
+      (previous.externalFundingExposedAt !== undefined &&
+        previous.externalFundingExposedAt !== next.externalFundingExposedAt) ||
+      (previous.fundingSubmissionState === "provisional" &&
+        previous.externalFundingExposedAt === undefined &&
+        next.externalFundingExposedAt !== undefined) ||
+      (previous.fundingSubmissionState === "provisional" &&
+        next.fundingSubmissionState !== "provisional" &&
+        !options.allowDefinitePreSendReset) ||
+      next.savedAt < previous.savedAt)
+  ) {
+    throw new Error("Settled checkout preparation conflicts with prior state.")
+  }
+  if (index < 0) items.push(next)
+  else items[index] = next
+  writeStored(items, storage)
+  const readback = getCheckoutSparkSettledPreparation(next.checkoutId, storage)
+  if (!readback || JSON.stringify(readback) !== JSON.stringify(next)) {
+    throw new Error("Settled checkout preparation was not durably saved.")
+  }
+  return readback
+}
+
+function createWalletMaterial(
+  network: CheckoutSparkNetwork
+): CheckoutSparkSettledWalletMaterial {
+  const configuration = getSparkConfiguration()
+  if (configuration.status !== "ready" || configuration.network !== network) {
+    throw new Error("Spark is unavailable for this checkout network.")
+  }
+  if (!globalThis.crypto?.randomUUID) {
+    throw new Error("Secure checkout wallet generation is unavailable.")
+  }
+  return {
+    walletId: globalThis.crypto.randomUUID(),
+    mnemonic: generateSparkMnemonic(),
+    accountNumber: getDefaultSparkAccountNumber(network),
+    network,
+  }
+}
+
+function requireSparkManager() {
+  const manager = getSparkWalletManager()
+  if (!manager) throw new Error("Spark is unavailable in this Market build.")
+  return manager
+}
+
+function recoveryAcked(
+  handoffId: string,
+  plan: CheckoutSparkSettledPlan,
+  storage: CheckoutSparkSettledPreparationStorage | null
+): boolean {
+  const delivery = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+  return Boolean(
+    delivery &&
+    delivery.record.checkoutId === plan.checkoutId &&
+    delivery.record.orderId === plan.orderId &&
+    delivery.record.planDigest === plan.planDigest &&
+    delivery.record.walletId === plan.walletId &&
+    delivery.record.merchantPubkey === plan.merchantPubkey &&
+    delivery.deliveryProgress.acknowledgedRelayRefs.length > 0
+  )
+}
+
+export async function prepareCheckoutSparkSettledFunding(
+  input: PrepareCheckoutSparkSettledFundingInput,
+  dependencies: PrepareCheckoutSparkSettledFundingDependencies = {}
+): Promise<PreparedCheckoutSparkSettledFunding> {
+  // New routed commerce uses ordinary invoices only. Historical plan readers
+  // retain public attempts, but they cannot authorize a new public preparation.
+  if (input.merchantPublicZapPolicy !== undefined) {
+    throw new Error("Public routed zaps are not supported in this checkout.")
+  }
+  const {
+    checkoutId,
+    orderId,
+    merchantPubkey,
+    network,
+    takeoverAt,
+    grossFundingSats,
+    fundingExpirySecs,
+    shouldContinue: callerShouldContinue,
+  } = input
+  const now = dependencies.now ?? Date.now
+  const fetchPayoutMetadata = dependencies.fetchPayoutMetadata
+  const identity = { ...input.identity }
+  const shouldContinue = () =>
+    (callerShouldContinue?.() ?? true) &&
+    (identity.kind !== "guest_ephemeral" ||
+      (typeof callerShouldContinue === "function" &&
+        isCurrentGuestOrderSigningIdentity(
+          identity,
+          {
+            orderId,
+            merchantPubkey,
+          },
+          now()
+        )))
+  const assertCurrent = () => {
+    if (!shouldContinue())
+      throw new Error("Checkout Spark buyer session changed.")
+  }
+  assertCurrent()
+  // Detach the complete public evidence before any wallet or storage await.
+  // It is never rebuilt from display/cache fields or fetched a second time.
+  const sourceEvents = snapshotCheckoutSparkPlanSourceEvents(input.sourceEvents)
+  const quoteAuthority = structuredClone(input.quoteAuthority)
+  const recipients = structuredClone(input.recipients)
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const recoveryStorage =
+    input.recoveryStorage === undefined
+      ? browserStorage()
+      : input.recoveryStorage
+  const repository =
+    dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
+  // Completed execution entries are not a history archive. Finish interrupted
+  // terminal cleanup before a busy browser reaches either active queue's cap.
+  if (repository.loadBuyerSettlement) {
+    for (const completed of listCheckoutSparkSettledPreparations(storage)) {
+      assertCurrent()
+      await cleanupCompletedCheckoutSparkSettledExecution({
+        checkoutId: completed.checkoutId,
+        planDigest: completed.planDigest,
+        buyerPubkey: identity.pubkey,
+        repository: {
+          loadBuyerSettlement: (...args) =>
+            repository.loadBuyerSettlement!(...args),
+        },
+        storage,
+        recoveryStorage,
+        assertCurrent,
+        retryPendingDelivery: false,
+      })
+    }
+  }
+  const makeWallet = dependencies.createWalletMaterial ?? createWalletMaterial
+  const openWallet =
+    dependencies.openWallet ??
+    ((wallet: CheckoutSparkSettledWalletMaterial) =>
+      requireSparkManager().openWithMnemonic(wallet))
+  const closeWallet =
+    dependencies.closeWallet ??
+    ((walletId: string) => requireSparkManager().close(walletId))
+  const createReceive =
+    dependencies.createFundingReceive ??
+    ((
+      wallet: CheckoutSparkSettledWalletMaterial,
+      request: SparkCheckoutReceiveInput
+    ) => requireSparkManager().createCheckoutReceive(wallet.walletId, request))
+  const publishRecovery =
+    dependencies.publishRecoveryHandoff ??
+    publishCheckoutSparkSettledRecoveryHandoff
+  const verifyAck = dependencies.verifyRecoveryAck ?? recoveryAcked
+  const treasuryAddress = selectCheckoutSparkTreasuryAddress(
+    network,
+    dependencies.treasuryConfiguration
+  )
+  // Validate a configured public destination before generating wallet material.
+  // Invalid configuration must not silently revert to the Lightning rail.
+  const treasuryDestination = treasuryAddress
+    ? await (
+        dependencies.validateTreasuryDestination ??
+        ((request) =>
+          requireSparkManager().validateCheckoutTreasuryDestination(request))
+      )({
+        network,
+        sparkAddress: treasuryAddress,
+      })
+    : null
+  assertCurrent()
+  if (
+    treasuryDestination &&
+    (treasuryDestination.sparkAddress !== treasuryAddress ||
+      !/^(02|03)[0-9a-f]{64}$/.test(
+        treasuryDestination.receiverIdentityPublicKey
+      ))
+  ) {
+    throw new Error("Checkout Spark treasury configuration is invalid.")
+  }
+
+  const preparedAt = now()
+  if (
+    !Number.isSafeInteger(preparedAt) ||
+    preparedAt < 0 ||
+    !Number.isSafeInteger(fundingExpirySecs) ||
+    fundingExpirySecs <= 0 ||
+    !Number.isSafeInteger(grossFundingSats) ||
+    grossFundingSats <= 0 ||
+    !Number.isSafeInteger(grossFundingSats * 1_000)
+  ) {
+    throw new Error("Settled checkout funding terms are invalid.")
+  }
+  // A pre-existing checkout cannot be given a second wallet or invoice.
+  const assertUnprepared = () => {
+    if (
+      getCheckoutSparkSettledPreparation(checkoutId, storage) ||
+      requireStorage(storage).getItem(
+        `${COMPLETED_PREPARATION_PREFIX}${checkoutId}`
+      )
+    ) {
+      throw new Error("Settled checkout funding is already prepared.")
+    }
+  }
+  assertUnprepared()
+  const commerceQuote = freezeCheckoutSparkCommerceQuote(
+    buildCheckoutSparkCommerceEvidence(quoteAuthority),
+    merchantPubkey
+  )
+  if (
+    grossFundingSats !==
+    calculateCheckoutSparkSettledGrossFundingSats(
+      commerceQuote.commerceTotalSats
+    )
+  ) {
+    throw new Error("Settled checkout gross funding differs from frozen terms.")
+  }
+  if (recipients.some((recipient) => recipient.kind === "organizer")) {
+    throw new Error(
+      "Settled checkout organizer allocation is not yet supported."
+    )
+  }
+  assertCheckoutSparkSignedCommerceAllocations({
+    quote: commerceQuote,
+    products: quoteAuthority.products,
+    shippingEvents: sourceEvents.filter((event) => event.kind === 30_406),
+    pickupSourceEvents: sourceEvents,
+    acceptedAtMs: preparedAt,
+    merchantPubkey,
+    commerce: recipients
+      .filter(
+        (
+          recipient
+        ): recipient is CheckoutSparkSettledRecipientInput & {
+          kind: "merchant" | "supplier"
+        } => recipient.kind === "merchant" || recipient.kind === "supplier"
+      )
+      .map((recipient) => ({
+        kind: recipient.kind,
+        recipientId: recipient.recipientId,
+        amountSats: recipient.weightSats,
+      })),
+  })
+
+  const sourcesById = new Map(sourceEvents.map((event) => [event.id, event]))
+  const expectedSourceIds = new Set<string>()
+  function unavailableSources(): never {
+    throw new Error(
+      "Settled checkout requires its complete signed source events."
+    )
+  }
+  for (const line of commerceQuote.lines) {
+    const event = sourcesById.get(line.productEventId)
+    if (
+      !event ||
+      event.kind !== 30_402 ||
+      event.pubkey !== line.merchantPubkey ||
+      event.created_at > Math.floor(preparedAt / 1_000)
+    )
+      unavailableSources()
+    expectedSourceIds.add(line.productEventId)
+    if (line.shippingOption) {
+      const shippingEvent = sourcesById.get(line.shippingOption.eventId)
+      if (
+        !shippingEvent ||
+        shippingEvent.kind !== 30_406 ||
+        shippingEvent.pubkey !==
+          (line.pickup
+            ? line.shippingOption.coordinate.split(":")[1]
+            : line.merchantPubkey) ||
+        shippingEvent.created_at > Math.floor(preparedAt / 1_000)
+      )
+        unavailableSources()
+      expectedSourceIds.add(line.shippingOption.eventId)
+    }
+    if (line.pickup) {
+      const pickup = resolveCheckoutSparkSignedPickup({
+        productEvent: event,
+        line,
+        sourceEvents,
+        acceptedAtMs: preparedAt,
+      })
+      if (
+        pickup?.handoffMode !== "merchant_handoff" ||
+        pickup.handlerPubkey !== merchantPubkey
+      )
+        unavailableSources()
+      // The complete graph was independently verified by signed allocation
+      // above. Retain precisely those revisions, not latest replacements.
+      expectedSourceIds.add(line.pickup.calendar.eventId)
+      expectedSourceIds.add(line.pickup.collection.eventId)
+    }
+  }
+  for (const recipient of recipients) {
+    if (recipient.kind === "conduit") continue
+    const source = recipient.destination.source
+    if (source.type !== "signed_profile") unavailableSources()
+    const event = sourcesById.get(source.profileEventId)
+    if (
+      !event ||
+      event.kind !== 0 ||
+      event.pubkey !== recipient.recipientId ||
+      event.created_at !== source.profileEventCreatedAt ||
+      event.created_at > Math.floor(preparedAt / 1_000) ||
+      projectProfileContent(event.pubkey, event.content).lud16?.trim() !==
+        recipient.destination.value
+    )
+      unavailableSources()
+    expectedSourceIds.add(source.profileEventId)
+  }
+  if (expectedSourceIds.size !== sourcesById.size) unavailableSources()
+
+  // Metadata is only an endpoint/range observation. It cannot prove the
+  // eventual allocation, invoice network or fees; those remain post-credit.
+  const payoutDestinations = new Set(
+    recipients
+      .filter(
+        (recipient) =>
+          recipient.kind === "merchant" || recipient.kind === "supplier"
+      )
+      .map((recipient) => recipient.destination.value)
+  )
+  for (const lud16 of payoutDestinations) {
+    assertCurrent()
+    try {
+      await assertCheckoutSparkLnurlPayoutMetadata(
+        { lud16, maximumAllocationSats: grossFundingSats, shouldContinue },
+        { fetchMetadata: fetchPayoutMetadata }
+      )
+      const capability = await observeCheckoutSparkReceiverCapability(
+        { lud16, mode: "private", assertCurrent },
+        {
+          ...(dependencies.receiverContracts
+            ? { contracts: dependencies.receiverContracts }
+            : {}),
+          fetchMetadata: fetchPayoutMetadata,
+        }
+      )
+      if (capability.status !== "supported")
+        throw new CheckoutSparkSettledFundingMetadataPreflightError()
+    } catch {
+      assertCurrent()
+      throw new CheckoutSparkSettledFundingMetadataPreflightError()
+    }
+    assertCurrent()
+  }
+  assertUnprepared()
+  // Registry reloads may run while the wallet exists but its plan has not yet
+  // reached local storage. Acquire before generation, then recheck a competing
+  // preparation that may have completed while metadata or this lock was pending.
+  const releaseRetentionLock = await acquireCheckoutSparkWalletRetentionLock()
+  let wallet: CheckoutSparkSettledWalletMaterial | null = null
+  let handoffPersisted = false
+  let preparedPlan: CheckoutSparkSettledPlan | null = null
+  let recoveryStarted = false
+  try {
+    assertCurrent()
+    assertUnprepared()
+    wallet = makeWallet(network)
+    if (wallet.network !== network) {
+      throw new Error("Settled checkout wallet network is invalid.")
+    }
+    await openWallet(wallet)
+    assertCurrent()
+    const receive = await createReceive(wallet, {
+      description: "Conduit checkout funding",
+      requiredNetSats: grossFundingSats,
+      grossFundingSats,
+      expirySecs: fundingExpirySecs,
+      receiveMode: "ordinary_settled_v3",
+    })
+    assertCurrent()
+    if (
+      receive.walletId !== wallet.walletId ||
+      receive.network !== wallet.network ||
+      receive.receiveSettledPolicy !== "ordinary-exact-credit-v3" ||
+      !/^(02|03)[0-9a-f]{64}$/.test(receive.receiverIdentityPublicKey ?? "") ||
+      receive.receiveQuotePolicy !== undefined ||
+      receive.receiveCanaryPolicy !== undefined ||
+      receive.requiredNetSats !== grossFundingSats ||
+      receive.grossFundingSats !== grossFundingSats ||
+      receive.expirySecs !== fundingExpirySecs
+    ) {
+      throw new Error(
+        "Settled checkout receive does not match its invoice terms."
+      )
+    }
+    const planInput = {
+      checkoutId,
+      orderId,
+      merchantPubkey,
+      walletId: wallet.walletId,
+      network,
+      createdAt: receive.createdAt,
+      takeoverAt,
+      commerceQuote,
+      funding: {
+        requestId: receive.id,
+        paymentRequest: receive.paymentRequest,
+        paymentHash: receive.paymentHash,
+        grossFundingSats: receive.grossFundingSats,
+        receiverIdentityPublicKey: receive.receiverIdentityPublicKey!,
+        createdAt: receive.createdAt,
+        expiresAt: receive.expiresAt,
+      },
+      recipients,
+    }
+    assertCheckoutSparkPrefundingPricingAuthority({
+      quote: commerceQuote,
+      receive,
+      nowMs: now(),
+    })
+    const nativeTreasury = treasuryDestination
+      ? await (
+          dependencies.prepareTreasuryRequest ??
+          ((request) =>
+            requireSparkManager().prepareCheckoutTreasuryRequest(request))
+        )({
+          network,
+          ...treasuryDestination,
+          senderIdentityPublicKey: receive.receiverIdentityPublicKey!,
+          invoiceId: deriveCheckoutSparkNativeTreasuryInvoiceId({
+            checkoutId,
+            orderId,
+            walletId: wallet.walletId,
+            network,
+            createdAt: receive.createdAt,
+            ...treasuryDestination,
+            senderIdentityPublicKey: receive.receiverIdentityPublicKey!,
+          }),
+        })
+      : null
+    assertCurrent()
+    const plan = nativeTreasury
+      ? freezeCheckoutSparkSettledTreasuryPlan({ ...planInput, nativeTreasury })
+      : freezeCheckoutSparkSettledPlan(planInput)
+    preparedPlan = plan
+    const canonicalSources = canonicalizeCheckoutSparkPlanSourceEvents(
+      plan,
+      sourceEvents
+    )
+    assertCurrent()
+    // Persist the unexposed claim before an asynchronous create can become
+    // ambiguous. A failed/conflicting create must not make this cart look new.
+    const initial = saveCheckoutSparkSettledPreparation(
+      {
+        schemaVersion: 3,
+        checkoutId: plan.checkoutId,
+        planDigest: plan.planDigest,
+        purchaseClaimDigest: input.purchaseClaimDigest,
+        recoveryHandoffId: null,
+        fundingInvoiceExposedAt: null,
+        fundingSubmissionState: "not_started",
+        savedAt: now(),
+      },
+      storage
+    )
+    const snapshot = await repository.create(plan)
+    assertCurrent()
+    if (
+      snapshot.status !== "active" ||
+      snapshot.state.plan.planDigest !== plan.planDigest ||
+      snapshot.state.credit !== null
+    ) {
+      throw new Error("Settled checkout plan was not durably recorded.")
+    }
+    await input.onPlanPrepared?.({ plan, sourceEvents: canonicalSources })
+    assertCurrent()
+    recoveryStarted = true
+    const handoff = await publishRecovery({
+      state: createCheckoutSparkSettledReconciliation(plan),
+      recovery: wallet,
+      identity,
+      sourceEvents: canonicalSources,
+      preparedAt: now(),
+      storage: recoveryStorage,
+      transport: { shouldContinue },
+      onPersisted: (handoffId) => {
+        handoffPersisted = true
+        saveCheckoutSparkSettledPreparation(
+          {
+            ...initial,
+            recoveryHandoffId: handoffId,
+            savedAt: now(),
+          },
+          storage
+        )
+      },
+    })
+    assertCurrent()
+    const persisted = getCheckoutSparkSettledPreparation(
+      plan.checkoutId,
+      storage
+    )
+    const exposedAt = now()
+    if (
+      !handoff.canExposeFundingInvoice ||
+      !persisted ||
+      persisted.recoveryHandoffId !== handoff.handoffId ||
+      !verifyAck(handoff.handoffId, plan, recoveryStorage) ||
+      !Number.isSafeInteger(exposedAt) ||
+      exposedAt < plan.createdAt ||
+      exposedAt >= plan.funding.expiresAt
+    ) {
+      throw new Error(
+        "Settled checkout recovery is not ready to expose funding."
+      )
+    }
+    // Recovery publication can outlive a scheduled event. Historical plan
+    // validity must not authorize first invoice exposure after ordering ends.
+    for (const line of plan.commerceQuote.lines) {
+      if (!line.pickup) continue
+      resolveCheckoutSparkSignedPickup({
+        productEvent: sourcesById.get(line.productEventId)!,
+        line,
+        sourceEvents: canonicalSources,
+        acceptedAtMs: exposedAt,
+      })
+    }
+    saveCheckoutSparkSettledPreparation(
+      { ...persisted, fundingInvoiceExposedAt: exposedAt, savedAt: exposedAt },
+      storage
+    )
+    return {
+      plan,
+      state: restoreCheckoutSparkSettledReconciliation(snapshot.state),
+      fundingReceive: Object.freeze({ ...receive }),
+      fundingInvoice: plan.funding.paymentRequest,
+      recoveryHandoffId: handoff.handoffId,
+    }
+  } catch (error) {
+    const preTransport =
+      !recoveryStarted || isCheckoutSparkRecoveryPrePersistenceFailure(error)
+    // A callback/readback failure can leave a durable wrap even before our
+    // onPersisted callback runs. Preserve it and its wallet; never guess.
+    const noWrap =
+      preTransport &&
+      !handoffPersisted &&
+      listCheckoutSparkRecoveryDeliveries(recoveryStorage).every(
+        (delivery) => delivery.record.checkoutId !== checkoutId
+      )
+    if (wallet && noWrap) {
+      const closingWalletId = wallet.walletId
+      const assertUnexposed = () => {
+        assertCurrent()
+        if (
+          listCheckoutSparkRecoveryDeliveries(recoveryStorage).some(
+            (delivery) => delivery.record.checkoutId === checkoutId
+          )
+        )
+          throw error
+        const metadata = getCheckoutSparkSettledPreparation(checkoutId, storage)
+        if (
+          metadata &&
+          (metadata.planDigest !== preparedPlan?.planDigest ||
+            metadata.recoveryHandoffId !== null ||
+            metadata.fundingInvoiceExposedAt !== null ||
+            metadata.fundingSubmissionState !== "not_started" ||
+            metadata.externalFundingExposedAt !== undefined)
+        )
+          throw error
+      }
+      const closeUnexposed = async () => {
+        assertUnexposed()
+        try {
+          await closeWallet(closingWalletId)
+        } catch (closeError) {
+          throw new AggregateError(
+            [error, closeError],
+            "Settled checkout preparation failed and its unfunded wallet could not be closed.",
+            { cause: closeError }
+          )
+        }
+      }
+      if (preparedPlan && repository.abandonPristine) {
+        const planToAbandon = preparedPlan
+        await withCheckoutSparkStorageLock(
+          "conduit:checkout-spark-recovery-outbox:v1",
+          async () => {
+            assertUnexposed()
+            await repository.abandonPristine!(
+              planToAbandon,
+              1,
+              assertCurrent,
+              closeUnexposed
+            )
+            // Closing was already admitted with positive pristine evidence.
+            // Complete that local cleanup even if its session revoked in flight.
+            writeStored(
+              readStored(storage).filter(
+                (item) => item.checkoutId !== checkoutId
+              ),
+              storage
+            )
+          }
+        )
+        if (getCheckoutSparkSettledPreparation(checkoutId, storage)) throw error
+        throw new CheckoutSparkSettledPreparationAbandonedError(error)
+      }
+      // There is no saved plan yet, so there is no CAS-backed financial state
+      // to abandon. A close still requires positive pre-transport evidence.
+      if (!preparedPlan) {
+        await closeUnexposed()
+        if (getCheckoutSparkSettledPreparation(checkoutId, storage)) throw error
+        throw new CheckoutSparkSettledPreparationAbandonedError(error)
+      }
+    }
+    throw error
+  } finally {
+    releaseRetentionLock()
+  }
+}
+
+export async function loadAuthorizedCheckoutSparkSettledFunding(
+  checkoutId: string,
+  options: {
+    storage?: CheckoutSparkSettledPreparationStorage | null
+    recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
+    repository?: Pick<CheckoutSparkSettledPreparationRepository, "load">
+    now?: () => number
+    expectedBuyerPubkey?: string
+  } = {}
+): Promise<PreparedCheckoutSparkSettledFunding> {
+  const storage =
+    options.storage === undefined ? browserStorage() : options.storage
+  const recoveryStorage =
+    options.recoveryStorage === undefined
+      ? browserStorage()
+      : options.recoveryStorage
+  const stored = getCheckoutSparkSettledPreparation(checkoutId, storage)
+  if (
+    !stored ||
+    !stored.recoveryHandoffId ||
+    stored.fundingInvoiceExposedAt === null
+  ) {
+    throw new Error("Settled checkout funding is not durably authorized.")
+  }
+  const repository =
+    options.repository ?? new DexieCheckoutSparkSettledRepository()
+  const snapshot = await repository.load(checkoutId, stored.planDigest)
+  if (snapshot.status !== "active") {
+    throw new Error("Settled checkout funding state is unavailable.")
+  }
+  const plan = snapshot.state.plan
+  assertMarketCheckoutSparkDispatchPlan(plan)
+  const currentTime = (options.now ?? Date.now)()
+  const delivery = getCheckoutSparkRecoveryDelivery(
+    stored.recoveryHandoffId,
+    recoveryStorage
+  )
+  if (
+    !recoveryAcked(stored.recoveryHandoffId, plan, recoveryStorage) ||
+    (options.expectedBuyerPubkey !== undefined &&
+      delivery?.record.senderPubkey !==
+        options.expectedBuyerPubkey.toLowerCase()) ||
+    stored.fundingInvoiceExposedAt < plan.createdAt ||
+    stored.fundingInvoiceExposedAt >= plan.funding.expiresAt ||
+    !Number.isSafeInteger(currentTime) ||
+    currentTime < stored.fundingInvoiceExposedAt
+  ) {
+    throw new Error("Settled checkout funding authorization is stale.")
+  }
+  // The persisted invoice is reconstructed only from the frozen, CAS-backed plan.
+  return {
+    plan,
+    state: snapshot.state,
+    fundingReceive: Object.freeze({
+      walletId: plan.walletId,
+      network: plan.network,
+      id: plan.funding.requestId,
+      paymentRequest: plan.funding.paymentRequest,
+      paymentHash: plan.funding.paymentHash,
+      providerStatus: "PERSISTED",
+      requiredNetSats: plan.funding.grossFundingSats,
+      grossFundingSats: plan.funding.grossFundingSats,
+      expirySecs: (plan.funding.expiresAt - plan.funding.createdAt) / 1_000,
+      createdAt: plan.funding.createdAt,
+      expiresAt: plan.funding.expiresAt,
+      receiveSettledPolicy: "ordinary-exact-credit-v3",
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+    }),
+    fundingInvoice: plan.funding.paymentRequest,
+    recoveryHandoffId: stored.recoveryHandoffId,
+  }
+}
+
+/** Resume the exact initial ciphertext; never generate a wallet or receive. */
+export async function resumeCheckoutSparkSettledFunding(
+  input: {
+    checkoutId: string
+    planDigest: string
+    orderId: string
+    merchantPubkey: string
+    buyerPubkey: string
+    shouldContinue: () => boolean
+    storage?: CheckoutSparkSettledPreparationStorage | null
+    recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
+  },
+  dependencies: {
+    repository?: Pick<DexieCheckoutSparkSettledRepository, "load">
+    now?: () => number
+    retryRecovery?: typeof retryStoredCheckoutSparkRecoveryHandoff
+  } = {}
+): Promise<PreparedCheckoutSparkSettledFunding> {
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const recoveryStorage =
+    input.recoveryStorage === undefined
+      ? browserStorage()
+      : input.recoveryStorage
+  const now = dependencies.now ?? Date.now
+  const assertCurrent = () => {
+    if (!input.shouldContinue())
+      throw new Error("Checkout Spark buyer session changed.")
+  }
+  const assertUnexpired = (plan: CheckoutSparkSettledPlan) => {
+    const time = now()
+    if (
+      !Number.isSafeInteger(time) ||
+      time < plan.createdAt ||
+      time >= plan.funding.expiresAt
+    ) {
+      throw new CheckoutSparkSettledFundingExpiredError()
+    }
+  }
+  assertCurrent()
+  const metadata = getCheckoutSparkSettledPreparation(input.checkoutId, storage)
+  if (
+    !metadata ||
+    metadata.planDigest !== input.planDigest ||
+    metadata.fundingSubmissionState !== "not_started"
+  ) {
+    throw new Error(
+      "The original checkout preparation needs recovery; do not prepare another invoice."
+    )
+  }
+  const repository =
+    dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
+  const snapshot = await repository.load(input.checkoutId, input.planDigest)
+  assertCurrent()
+  if (snapshot.status !== "active" || snapshot.state.credit !== null) {
+    throw new Error("The original checkout state needs recovery.")
+  }
+  const plan = snapshot.state.plan
+  if (
+    plan.orderId !== input.orderId ||
+    plan.merchantPubkey !== input.merchantPubkey
+  ) {
+    throw new Error("The original checkout order changed.")
+  }
+  assertMarketCheckoutSparkDispatchPlan(plan)
+  assertUnexpired(plan)
+  const deliveries = listCheckoutSparkRecoveryDeliveries(
+    recoveryStorage
+  ).filter(
+    ({ record }) =>
+      record.checkoutId === plan.checkoutId &&
+      record.orderId === plan.orderId &&
+      record.planDigest === plan.planDigest &&
+      record.walletId === plan.walletId &&
+      record.network === plan.network &&
+      record.merchantPubkey === plan.merchantPubkey &&
+      record.senderPubkey === input.buyerPubkey &&
+      (metadata.recoveryHandoffId === null ||
+        record.handoffId === metadata.recoveryHandoffId)
+  )
+  if (deliveries.length !== 1)
+    throw new Error(
+      "The exact original recovery wrap is unavailable or ambiguous."
+    )
+  const delivery = deliveries[0]!
+  if (metadata.recoveryHandoffId === null) {
+    saveCheckoutSparkSettledPreparation(
+      {
+        ...metadata,
+        recoveryHandoffId: delivery.record.handoffId,
+        savedAt: now(),
+      },
+      storage
+    )
+  }
+  if (delivery.deliveryProgress.acknowledgedRelayRefs.length === 0) {
+    await (
+      dependencies.retryRecovery ?? retryStoredCheckoutSparkRecoveryHandoff
+    )({
+      handoffId: delivery.record.handoffId,
+      storage: recoveryStorage,
+      shouldContinue: input.shouldContinue,
+      now,
+    })
+  }
+  assertCurrent()
+  assertUnexpired(plan)
+  const latest = await repository.load(input.checkoutId, input.planDigest)
+  assertCurrent()
+  assertUnexpired(plan)
+  if (
+    latest.status !== "active" ||
+    latest.revision !== snapshot.revision ||
+    JSON.stringify(latest.state) !== JSON.stringify(snapshot.state)
+  ) {
+    throw new Error(
+      "The original checkout changed during recovery. Inspect it before continuing."
+    )
+  }
+  const current = getCheckoutSparkSettledPreparation(input.checkoutId, storage)
+  if (
+    !current ||
+    current.planDigest !== plan.planDigest ||
+    current.recoveryHandoffId !== delivery.record.handoffId ||
+    current.fundingSubmissionState !== "not_started" ||
+    !recoveryAcked(delivery.record.handoffId, plan, recoveryStorage)
+  ) {
+    throw new Error("The exact recovery acknowledgement was not durably saved.")
+  }
+  if (current.fundingInvoiceExposedAt === null) {
+    saveCheckoutSparkSettledPreparation(
+      { ...current, fundingInvoiceExposedAt: now(), savedAt: now() },
+      storage
+    )
+  }
+  assertCurrent()
+  return loadAuthorizedCheckoutSparkSettledFunding(input.checkoutId, {
+    storage,
+    recoveryStorage,
+    repository,
+    now,
+    expectedBuyerPubkey: input.buyerPubkey,
+  })
+}

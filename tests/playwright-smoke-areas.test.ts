@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  buildPlaywrightSmokeDiscoveryArgs,
   buildPlaywrightSmokeManifest,
   type PlaywrightJsonReport,
   validatePlaywrightSmokeAreas,
@@ -49,6 +50,79 @@ function reportWithSpecs(
 }
 
 describe("Playwright smoke area validation", () => {
+  it("forwards an explicit config through ordinary and shard discovery without changing defaults", () => {
+    expect(buildPlaywrightSmokeDiscoveryArgs()).toEqual([
+      "playwright",
+      "test",
+      "--list",
+      "--reporter=json",
+    ])
+    expect(
+      buildPlaywrightSmokeDiscoveryArgs(
+        undefined,
+        "playwright.router.config.ts"
+      )
+    ).toEqual([
+      "playwright",
+      "test",
+      "--list",
+      "--reporter=json",
+      "--config",
+      "playwright.router.config.ts",
+    ])
+    expect(
+      buildPlaywrightSmokeDiscoveryArgs("1/2", "isolated.config.ts")
+    ).toEqual([
+      "playwright",
+      "test",
+      "--list",
+      "--reporter=json",
+      "--shard=1/2",
+      "--config",
+      "isolated.config.ts",
+    ])
+    expect(() => buildPlaywrightSmokeDiscoveryArgs(undefined, "")).toThrow()
+  })
+
+  it("requires separate candidate-bound router evidence inside the commerce CI job", () => {
+    const steps = [
+      "Validate isolated router smoke selection",
+      "Run isolated router Playwright smoke tests",
+      "Verify executed isolated router smoke evidence",
+    ].map((name) => {
+      const start = ciWorkflow.indexOf(`      - name: ${name}\n`)
+      expect(start).toBeGreaterThan(0)
+      const next = ciWorkflow.indexOf("      - name:", start + 1)
+      return ciWorkflow.slice(start, next < 0 ? undefined : next)
+    })
+    for (const step of steps) {
+      expect(step).toContain("matrix.job.area == 'commerce'")
+      expect(step).toContain("playwright.router.config.ts")
+    }
+    expect(steps[0]).toContain("--manifest-output")
+    expect(steps[0]).toContain("playwright-router-smoke-manifest.json")
+    expect(steps[1]).toContain(
+      "--config playwright.router.config.ts >/dev/null 2>&1"
+    )
+    expect(steps[1]).toContain("playwright-router-smoke-results.json")
+    expect(steps[1]).toContain("umask 077")
+    for (const field of ["BASE_SHA", "SOURCE_HEAD_SHA", "TESTED_SHA"]) {
+      expect(steps[0]).toContain(`PLAYWRIGHT_SMOKE_${field}:`)
+      expect(steps[1]).toContain(`PLAYWRIGHT_SMOKE_${field}:`)
+    }
+    expect(steps[2]).toContain("if: always() && matrix.job.area == 'commerce'")
+    expect(steps[2]).toContain("--expected-manifest")
+    expect(steps[2]).toContain("--execution-report")
+    const cleanup = ciWorkflow.slice(
+      ciWorkflow.indexOf("      - name: Remove raw Playwright output"),
+      ciWorkflow.indexOf("\n  e2e-smoke:\n")
+    )
+    expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_RESULT_FILE"')
+    expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_PROGRESS_FILE"')
+    expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_MANIFEST"')
+    expect(ciWorkflow).toContain("needs: [smoke-changes, e2e-smoke-shard]")
+  })
+
   it("requires an exact project-aware multiset across smoke shards", () => {
     const full = buildPlaywrightSmokeManifest(
       reportWithSpecs([
@@ -597,6 +671,123 @@ describe("Playwright smoke area validation", () => {
         smokeEvidence
       )
     ).toEqual(expected)
+  })
+
+  it("explains native timeout phase and body-vs-teardown without changing first-attempt failure", () => {
+    const report: PlaywrightJsonReport = {
+      ...reportWithSpecs([
+        {
+          file: "e2e/commerce-router-recovery.playwright.ts",
+          line: 1338,
+          ok: false,
+          tags: ["commerce"],
+          tests: [
+            {
+              expectedStatus: "passed",
+              status: "unexpected",
+              results: [
+                {
+                  status: "timedOut",
+                  duration: 240_001,
+                  retry: 0,
+                  router: {
+                    phase: "cold Merchant reload navigation completes",
+                    lifecycle: "teardown",
+                    body: "failed",
+                  },
+                },
+              ],
+            },
+          ],
+          title: "native router recovery remains isolated @commerce",
+        },
+      ]),
+      config: { metadata: { smokeEvidence } },
+      errors: [],
+      stats: { flaky: 0, skipped: 0, unexpected: 1 },
+    } as PlaywrightJsonReport
+    const expected = buildPlaywrightSmokeManifest(
+      report,
+      ["commerce"],
+      smokeEvidence
+    )
+    let message = ""
+    try {
+      validatePlaywrightSmokeExecution(
+        report,
+        expected,
+        ["commerce"],
+        smokeEvidence
+      )
+    } catch (error) {
+      message = error instanceof Error ? error.message : ""
+    }
+
+    expect(message).toContain("did not pass cleanly on its first attempt")
+    expect(message).toContain("retry=0 status=timedOut duration=240001ms")
+    expect(message).toContain(
+      'router_phase="cold Merchant reload navigation completes" router_lifecycle=teardown router_body=failed'
+    )
+  })
+
+  it("never formats arbitrary router data from execution JSON", () => {
+    const privateSentinel = "private-router-json-must-not-be-serialized"
+    const safe = {
+      phase: "cold Merchant reload navigation completes",
+      lifecycle: "body",
+      body: "running",
+    }
+    const invalid = [
+      { ...safe, phase: privateSentinel },
+      { ...safe, lifecycle: privateSentinel },
+      { ...safe, body: privateSentinel },
+      { ...safe, extra: privateSentinel },
+      { ...safe, lifecycle: ["body"], body: ["running"] },
+      { ...safe, lifecycle: "teardown" },
+      { ...safe, body: "completed" },
+      [safe],
+      privateSentinel,
+      null,
+      safe,
+    ]
+    for (const [index, router] of invalid.entries()) {
+      const report: PlaywrightJsonReport = {
+        ...reportWithSpecs([
+          {
+            file:
+              index === invalid.length - 1
+                ? "e2e/commerce.playwright.ts"
+                : "e2e/commerce-router-recovery.playwright.ts",
+            line: 1338,
+            ok: false,
+            tags: ["commerce"],
+            tests: [
+              {
+                expectedStatus: "passed",
+                status: "unexpected",
+                results: [{ status: "timedOut", retry: 0, router }],
+              },
+            ],
+            title: "native router diagnostics remain private @commerce",
+          },
+        ]),
+        config: { metadata: { smokeEvidence } },
+      }
+      let message = ""
+      try {
+        validatePlaywrightSmokeExecution(
+          report,
+          buildPlaywrightSmokeManifest(report, ["commerce"], smokeEvidence),
+          ["commerce"],
+          smokeEvidence
+        )
+      } catch (error) {
+        message = error instanceof Error ? error.message : ""
+      }
+      expect(message).toContain("did not pass cleanly on its first attempt")
+      expect(message).not.toContain(privateSentinel)
+      expect(message).not.toContain("router_phase=")
+    }
   })
 
   it("reconciles project-specific discovery and execution rows", () => {

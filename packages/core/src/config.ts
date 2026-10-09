@@ -1,3 +1,5 @@
+import { resolveCheckoutSparkPublicTrust } from "./checkout-spark-deployment-trust"
+
 export type RelayBucketId =
   | "app_backplane"
   | "core_public_fallback"
@@ -216,6 +218,10 @@ export interface ConduitConfig {
   dmCompatibilityOrderRelayUrls: string[]
   /** Redeploy-controlled flag for the validated-order compatibility lane. */
   dmCompatibilityOrderRoutingEnabled: boolean
+  /** Compiled admission for new supported Quantum Router checkouts. */
+  quantumRouterEnabled: boolean
+  /** Compiled execution gate; never authorizes an unbound checkout by itself. */
+  quantumRouterExecutionEnabled: boolean
   zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
@@ -226,6 +232,10 @@ export interface ConduitConfig {
   nip89MerchantDTag: string
   anonZapSignerUrl: string | null
   anonZapSignerPubkey: string | null
+  /** Public receiver-contract descriptors; parsed at the payment boundary. */
+  checkoutSparkReceiverContracts: string | null
+  checkoutSparkPricingUrl: string | null
+  checkoutSparkPricingPublicKeys: string | null
 }
 
 // Vite only statically replaces direct property access (import.meta.env.VITE_FOO).
@@ -233,7 +243,9 @@ export interface ConduitConfig {
 // Use direct access for each variable so Vite can inline them at build time.
 function getViteEnv(): {
   mode: string
+  dev: boolean
   e2eRelayUrl: string
+  e2ePublicZapReceiptHints: string
   relayUrl: string
   defaultRelayUrl: string
   defaultRelays: string
@@ -244,6 +256,10 @@ function getViteEnv(): {
   lightningNetwork: string
   deploymentProfile: string
   dmCompatibilityOrderRouting: string
+  quantumRouter: string
+  quantumRouterExecution: string
+  localRouterCanary: string
+  checkoutSparkRehearsal: string
   nip89RelayHint: string
   nip89MarketPubkey: string
   nip89MerchantPubkey: string
@@ -251,11 +267,18 @@ function getViteEnv(): {
   nip89MerchantDTag: string
   anonZapSignerUrl: string
   anonZapSignerPubkey: string
+  checkoutSparkReceiverContracts: string
+  checkoutSparkPricingUrl: string
+  checkoutSparkPricingPublicKeys: string
+  checkoutSparkPublicTrustDigest: string
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
       mode: import.meta.env.MODE ?? "",
+      dev: (import.meta.env.DEV as unknown) === true,
       e2eRelayUrl: import.meta.env.VITE_E2E_RELAY_URL ?? "",
+      e2ePublicZapReceiptHints:
+        import.meta.env.VITE_E2E_PUBLIC_ZAP_RECEIPT_HINTS ?? "",
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
       defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
@@ -267,6 +290,13 @@ function getViteEnv(): {
       deploymentProfile: import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "",
       dmCompatibilityOrderRouting:
         import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
+      quantumRouter: import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "",
+      quantumRouterExecution:
+        import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED ?? "",
+      localRouterCanary:
+        import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY ?? "",
+      checkoutSparkRehearsal:
+        import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
       nip89MarketPubkey: import.meta.env.VITE_NIP89_MARKET_PUBKEY ?? "",
       nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
@@ -274,11 +304,21 @@ function getViteEnv(): {
       nip89MerchantDTag: import.meta.env.VITE_NIP89_MERCHANT_D_TAG ?? "",
       anonZapSignerUrl: import.meta.env.VITE_ANON_ZAP_SIGNER_URL ?? "",
       anonZapSignerPubkey: import.meta.env.VITE_ANON_ZAP_SIGNER_PUBKEY ?? "",
+      checkoutSparkReceiverContracts:
+        import.meta.env.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS ?? "",
+      checkoutSparkPricingUrl:
+        import.meta.env.VITE_CHECKOUT_SPARK_PRICING_URL ?? "",
+      checkoutSparkPricingPublicKeys:
+        import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS ?? "",
+      checkoutSparkPublicTrustDigest:
+        import.meta.env.VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST ?? "",
     }
   }
   return {
     mode: "",
+    dev: false,
     e2eRelayUrl: "",
+    e2ePublicZapReceiptHints: "",
     relayUrl: "",
     defaultRelayUrl: "",
     defaultRelays: "",
@@ -289,6 +329,10 @@ function getViteEnv(): {
     lightningNetwork: "",
     deploymentProfile: "",
     dmCompatibilityOrderRouting: "",
+    quantumRouter: "",
+    quantumRouterExecution: "",
+    localRouterCanary: "",
+    checkoutSparkRehearsal: "",
     nip89RelayHint: "",
     nip89MarketPubkey: "",
     nip89MerchantPubkey: "",
@@ -296,6 +340,10 @@ function getViteEnv(): {
     nip89MerchantDTag: "",
     anonZapSignerUrl: "",
     anonZapSignerPubkey: "",
+    checkoutSparkReceiverContracts: "",
+    checkoutSparkPricingUrl: "",
+    checkoutSparkPricingPublicKeys: "",
+    checkoutSparkPublicTrustDigest: "",
   }
 }
 
@@ -371,8 +419,12 @@ export function resolveE2eRelayIsolation(
 
 export function applyE2eRelayIsolation(
   input: ConduitConfig,
-  relayUrls: readonly string[]
+  relayUrls: readonly string[],
+  publicZapReceiptHints = false
 ): ConduitConfig {
+  if (publicZapReceiptHints && relayUrls.length === 0) {
+    throw new Error("Public E2E zap receipt hints require relay isolation")
+  }
   if (relayUrls.length === 0) return input
   if (relayUrls.length !== 1) {
     throw new Error("E2E relay isolation requires exactly one relay")
@@ -410,9 +462,29 @@ export function applyE2eRelayIsolation(
     commerceDmFallbackRelayUrls: [...isolatedRelayUrls],
     dmInboxDefaultRelayUrls: [...isolatedRelayUrls],
     dmCompatibilityOrderRelayUrls: [...isolatedRelayUrls],
-    zapRelayUrls: [...isolatedRelayUrls],
+    // Receipt hints in a signed request are not permission for network access.
+    // The dedicated public-zap rehearsal still blocks all public transports.
+    zapRelayUrls: publicZapReceiptHints
+      ? [...CANONICAL_ZAP_PUBLIC_RELAYS]
+      : [...isolatedRelayUrls],
     nip89RelayHint: relayUrl,
   }
+}
+
+export function resolveE2ePublicZapReceiptHints(
+  mode: string,
+  relayUrls: readonly string[],
+  raw: string
+): boolean {
+  const flag = raw.trim()
+  if (!flag || flag === "false") return false
+  if (flag !== "true" || mode !== "mock" || relayUrls.length !== 1) {
+    throw new Error(
+      "Public E2E zap receipt hints require explicit mock relay isolation"
+    )
+  }
+  resolveE2eRelayIsolation(mode, relayUrls[0])
+  return true
 }
 
 /**
@@ -448,6 +520,98 @@ export function resolveDmCompatibilityOrderRoutingEnabled(input: {
   }
 
   return true
+}
+
+/**
+ * Public capability admission only: signed plans and payout evidence still
+ * authorize payments. Local rehearsal flags never activate a hosted profile
+ * or grant the separate local fee, invoice, or accelerated-timing exceptions.
+ */
+type QuantumRouterCapabilityInput = {
+  profileEnabled: boolean
+  executionEnabled?: boolean
+  deploymentProfile: string
+  lightningNetwork: string
+  hostname?: string | null
+  dev?: boolean
+  localRouterCanaryFlag?: string
+  localRehearsalFlag?: string
+  e2eRelayIsolationEnabled?: boolean
+}
+
+function resolveQuantumRouterCapability(
+  input: QuantumRouterCapabilityInput
+): boolean {
+  const deploymentProfile = input.deploymentProfile.trim().toLowerCase()
+  const lightningNetwork = input.lightningNetwork.trim().toLowerCase()
+  const hostname = (input.hostname ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.+$/, "")
+
+  if (deploymentProfile === "local") {
+    const localRehearsalEnabled =
+      input.localRouterCanaryFlag === "true" &&
+      input.localRehearsalFlag === "true"
+    // Mock maps to regtest only in the explicitly isolated browser rehearsal.
+    const localNetworkSupported =
+      lightningNetwork === "mainnet" ||
+      lightningNetwork === "regtest" ||
+      (lightningNetwork === "mock" &&
+        input.e2eRelayIsolationEnabled === true &&
+        localRehearsalEnabled)
+    return (
+      input.dev === true &&
+      localNetworkSupported &&
+      ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname) &&
+      (input.profileEnabled || localRehearsalEnabled)
+    )
+  }
+
+  if (
+    !input.profileEnabled ||
+    lightningNetwork !== "mainnet" ||
+    (deploymentProfile !== "preview" && deploymentProfile !== "production")
+  ) {
+    return false
+  }
+
+  if (OFFICIAL_PRODUCTION_APP_HOSTNAMES.has(hostname)) {
+    return deploymentProfile === "production"
+  }
+  if (
+    SIGNET_PAGES_PROJECT_HOSTNAMES.some(
+      (projectHostname) =>
+        hostname === projectHostname || hostname.endsWith(`.${projectHostname}`)
+    )
+  ) {
+    return false
+  }
+  return true
+}
+
+/** Execution is independent of new admission but retains the same boundaries. */
+export function resolveQuantumRouterExecutionEnabled(
+  input: QuantumRouterCapabilityInput
+): boolean {
+  if (input.executionEnabled === undefined) {
+    // Preserve only the explicit local rehearsal's established default.
+    return input.deploymentProfile.trim().toLowerCase() === "local"
+      ? resolveQuantumRouterCapability(input)
+      : false
+  }
+  if (!input.executionEnabled) return false
+  return resolveQuantumRouterCapability({ ...input, profileEnabled: true })
+}
+
+/** New checkouts require both admission and execution, never either alone. */
+export function resolveQuantumRouterEnabled(
+  input: QuantumRouterCapabilityInput
+): boolean {
+  return (
+    resolveQuantumRouterCapability(input) &&
+    resolveQuantumRouterExecutionEnabled(input)
+  )
 }
 
 function getConfiguredRelayUrl(raw: string, fallback: string): string {
@@ -550,7 +714,21 @@ function logRelayDebugConfig(input: {
 }
 
 const env = getViteEnv()
+const checkoutSparkPublicTrust = resolveCheckoutSparkPublicTrust({
+  deploymentProfile: env.deploymentProfile,
+  compiledDigest: env.checkoutSparkPublicTrustDigest,
+  configuration: {
+    receiverContracts: env.checkoutSparkReceiverContracts,
+    pricingUrl: env.checkoutSparkPricingUrl,
+    pricingPublicKeys: env.checkoutSparkPricingPublicKeys,
+  },
+})
 const e2eRelayUrls = resolveE2eRelayIsolation(env.mode, env.e2eRelayUrl)
+const e2ePublicZapReceiptHints = resolveE2ePublicZapReceiptHints(
+  env.mode,
+  e2eRelayUrls,
+  env.e2ePublicZapReceiptHints
+)
 
 const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
 const envRelayUrl = uniqueConfiguredRelayUrls([env.relayUrl])
@@ -624,6 +802,29 @@ const dmCompatibilityOrderRoutingEnabled =
     runtimeHostname:
       typeof window === "undefined" ? null : window.location.hostname,
   })
+const quantumRouterCapabilityInput: QuantumRouterCapabilityInput = {
+  profileEnabled: ["1", "true", "on"].includes(
+    env.quantumRouter.trim().toLowerCase()
+  ),
+  executionEnabled: env.quantumRouterExecution.trim()
+    ? ["1", "true", "on"].includes(
+        env.quantumRouterExecution.trim().toLowerCase()
+      )
+    : undefined,
+  deploymentProfile: env.deploymentProfile,
+  lightningNetwork: env.lightningNetwork || "mainnet",
+  hostname: typeof window === "undefined" ? null : window.location.hostname,
+  dev: env.dev,
+  localRouterCanaryFlag: env.localRouterCanary,
+  localRehearsalFlag: env.checkoutSparkRehearsal,
+  e2eRelayIsolationEnabled: e2eRelayUrls.length === 1,
+}
+const quantumRouterExecutionEnabled = resolveQuantumRouterExecutionEnabled(
+  quantumRouterCapabilityInput
+)
+const quantumRouterEnabled = resolveQuantumRouterEnabled(
+  quantumRouterCapabilityInput
+)
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appCommercePublishRelayUrls,
@@ -662,6 +863,8 @@ const configuredRelayConfig: ConduitConfig = {
   dmInboxDefaultRelayUrls,
   dmCompatibilityOrderRelayUrls,
   dmCompatibilityOrderRoutingEnabled,
+  quantumRouterEnabled,
+  quantumRouterExecutionEnabled,
   zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
@@ -673,11 +876,17 @@ const configuredRelayConfig: ConduitConfig = {
   nip89MerchantDTag: env.nip89MerchantDTag.trim() || "conduit-merchant",
   anonZapSignerUrl: env.anonZapSignerUrl.trim() || null,
   anonZapSignerPubkey: env.anonZapSignerPubkey.trim() || null,
+  checkoutSparkReceiverContracts:
+    checkoutSparkPublicTrust.receiverContracts || null,
+  checkoutSparkPricingUrl: checkoutSparkPublicTrust.pricingUrl || null,
+  checkoutSparkPricingPublicKeys:
+    checkoutSparkPublicTrust.pricingPublicKeys || null,
 }
 
 export const config = applyE2eRelayIsolation(
   configuredRelayConfig,
-  e2eRelayUrls
+  e2eRelayUrls,
+  e2ePublicZapReceiptHints
 )
 
 logRelayDebugConfig({
@@ -792,6 +1001,14 @@ export function getRelayBucketConfigs(
 
 export function isMockPayments(): boolean {
   return config.lightningNetwork === "mock"
+}
+
+export function isQuantumRouterEnabled(): boolean {
+  return config.quantumRouterEnabled && config.quantumRouterExecutionEnabled
+}
+
+export function isQuantumRouterExecutionEnabled(): boolean {
+  return config.quantumRouterExecutionEnabled
 }
 
 export function isSignet(): boolean {

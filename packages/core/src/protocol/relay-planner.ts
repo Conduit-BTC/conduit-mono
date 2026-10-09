@@ -31,6 +31,7 @@ import {
   getGeneralWriteRelayUrls,
   loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
+  normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
   type RelayPlanOptions,
@@ -594,6 +595,32 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
         "E2E relay isolation requires one configured loopback relay"
       )
     }
+    const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+    const hintsForOwner = (isOwner: boolean) =>
+      normalizePublicOrIsolatedE2eRelayHints([
+        ...hintReadRelaysForAuthors(
+          (input.authors ?? []).filter(
+            (pubkey) =>
+              (pubkey.trim().toLowerCase() === authenticatedOwner) === isOwner
+          ),
+          input.relayLists,
+          input.authenticatedPubkey
+        ),
+        ...hintReadRelaysForRecipients(
+          (input.recipients ?? []).filter(
+            (pubkey) =>
+              (pubkey.trim().toLowerCase() === authenticatedOwner) === isOwner
+          ),
+          input.relayLists,
+          input.authenticatedPubkey
+        ),
+      ])
+    // Isolation selects the transport, not evidence that an author uses it.
+    // Retain only actual NIP-65 declarations of that exact test relay.
+    const independentRelayUrls = hintsForOwner(false)
+    const personalRelayUrls = personalLayerEnabled(input.routingPolicy)
+      ? hintsForOwner(true)
+      : []
     return {
       intent: input.intent,
       relayTargets: targetsForCandidateUrls([isolatedRelayUrl], {
@@ -604,11 +631,14 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       candidateRelayUrls: [isolatedRelayUrl],
       maxRelayAttempts: 1,
       parkedRelayUrls: [],
-      hintRelayUrls: [],
+      hintRelayUrls: dedupeOrdered([
+        ...personalRelayUrls,
+        ...independentRelayUrls,
+      ]),
       ownerSelectedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
-      personalRelayUrls: [],
-      independentRelayUrls: [],
+      personalRelayUrls,
+      independentRelayUrls,
     }
   }
 

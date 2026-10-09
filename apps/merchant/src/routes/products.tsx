@@ -9,31 +9,33 @@ import {
   getMerchantShippingPolicyCoordinate,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  buildProductDeletionEventDraft,
   buildProductPublishResultTelemetryProperties,
-  cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
   decodeEventMarketReference,
   compileProductFulfillmentIntent,
   evaluateListingAvailability,
   getCachedMerchantStorefront,
+  getProductDeletionDelivery,
+  getProductListingDelivery,
+  getRejectedProductListingDeliveries,
+  getStagedProductListingDeliveries,
   getListingAvailabilityDisplay,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
-  getAccountSigner,
   type SignedPublicNostrEvent,
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
   readEventMarketAuthorization,
+  readProductSupplierReadiness,
   readEventMarketRoster,
-  waitForVisibleDocument,
   type CommerceResult,
   type ListingAvailabilityEvaluation,
   type PreparedProductFamily,
   type ProductSchema,
   type ProductDeletionDeliveryJob,
+  type ProductListingDeliveryJob,
   type ProductZapMessagePolicy,
   type PublishWithPlannerResult,
   useAuth,
@@ -73,6 +75,8 @@ import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix
 import { ListingAreaPicker } from "../components/ListingAreaPicker"
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
+import { ProductSupplierAllocationEditor } from "../components/ProductSupplierAllocationEditor"
+import { repairSupersededStagedProductWrite } from "../lib/product-staged-repair"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ProductShippingMeasurements } from "../components/ProductShippingMeasurements"
@@ -96,7 +100,9 @@ import {
   isProductDraftPublishAuthorized,
   loadProductVariationAuthoringState,
   ProductDraftStore,
+  restoreProductDraftSupplierAllocation,
   saveProductVariationAuthoringState,
+  type ProductDraftLoadResult,
   type ProductDraftTarget,
   type ProductVariationAuthoringTarget,
 } from "../lib/productDraft"
@@ -107,14 +113,17 @@ import {
   saveProductDraftReturnIntent,
 } from "../lib/productDraftReturn"
 import {
+  applyMerchantProductSupplierAllocationFormChange,
   buildProductShippingMetadata,
   canSubmitProductForm,
+  getMerchantProductSupplierAllocationFormState,
   getProductShippingPricingMode,
   isProductUsingPresetShippingZone,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
   prepareProductImages,
   reconcileProductFormShippingPreset,
+  validateMerchantProductSupplierAllocationForm,
   validateProductPublishForm,
   type MerchantProductFormValues,
 } from "../lib/productForm"
@@ -131,12 +140,16 @@ import {
 import { buildProductTagCatalog } from "../lib/productTagSuggestions"
 import {
   buildLocalProductDeliveryNotice,
+  buildLocalProductQueueFailureNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
+  getRejectedMixedDeletionRecoveryTargets,
+  getTerminalRejectedListingRecoveryDTags,
   reconcilePendingProductDeletionRetry,
+  resolveProductWriteDeliveryNotice,
   type ProductDeliveryNotice,
   type ProductWriteAction,
 } from "../lib/product-delivery"
@@ -150,8 +163,6 @@ import { needsProductInboxPublishGuidance } from "../lib/productInboxReadiness"
 import {
   deliverQueuedProductDeletion,
   getPendingProductDeletionJobs,
-  persistSignedProductDeletion,
-  planCurrentProductDeletionWriteRelays,
   productDeletionJobToPublishResult,
 } from "../lib/product-deletion-delivery"
 import {
@@ -165,6 +176,7 @@ import {
   SignedProductDeliveryError,
   type ProductSignerRequestProgress,
   type SignedProductWriteBundle,
+  type ProductWriteDeliveryResult,
 } from "../lib/product-publishing"
 import { setEventMarketProductAssociation } from "../lib/event-market-product"
 import {
@@ -181,6 +193,7 @@ import {
   generateProductVariationRows,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
+  getProductFamilySupplierAllocationRevisionKey,
   getProductVariationMatrix,
   getProductVariationFormState,
   getProductVariationRemovalCount,
@@ -189,6 +202,7 @@ import {
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
+  productFamilyReadSupportsAllocationChange,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -197,6 +211,7 @@ import {
   updateProductVariationInheritance,
   updateProductVariationMeasurements,
   updateProductVariationOverride,
+  validateProductFamilySupplierAllocationSaveSnapshot,
   type ProductVariationFormResult,
 } from "../lib/productVariations"
 
@@ -230,6 +245,7 @@ type MerchantProductFamily = MerchantProduct & {
   variations: MerchantProduct[]
   orphanVariation: boolean
   variationForm: ProductVariationFormResult
+  familyEvidenceComplete: boolean
   family?: PreparedProductFamily<MerchantProduct>
 }
 
@@ -242,6 +258,9 @@ type ProductPublishMutationPayload = {
   presetShippingConfig: ShippingConfig
   dTag: string
   existing?: MerchantProductFamily
+  familyEvidenceComplete?: boolean
+  /** Durable terminal job being replaced with a newly signed, current revision. */
+  recoveryJobId?: string
   signedBundle?: SignedProductWriteBundle
   previousNotice?: ProductDeliveryNotice
 }
@@ -303,6 +322,7 @@ function createEmptyProductForm(
     eventGuestContactOptional: false,
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
+    ...getMerchantProductSupplierAllocationFormState(undefined),
     images: [],
     tags: "",
   }
@@ -451,6 +471,9 @@ function productToForm(
     zapMessagePolicy: product.publicZapPolicyKnown
       ? product.zapMessagePolicy
       : "generic_only",
+    ...getMerchantProductSupplierAllocationFormState(
+      product.supplierAllocation
+    ),
     images: product.images.map((image) => ({ ...image })),
     tags: product.tags.join(", "),
   }
@@ -500,6 +523,11 @@ function getPublishErrorMessage(
       ? "Failed to delete listing"
       : "Failed to publish listing"
   if (error instanceof SignedProductDeliveryError) {
+    if (!error.retryable) {
+      return action === "delete"
+        ? "Delete delivery could not be queued safely. Start the delete again."
+        : "Publish delivery could not be queued safely. Open the listing and publish it again."
+    }
     return action === "delete"
       ? "Delete saved locally. Relay delivery needs retry."
       : "Publish saved locally. Relay delivery needs retry."
@@ -548,7 +576,11 @@ function ProductDeliveryStatusNotice({
                   ? "Delivered"
                   : notice.state === "partial"
                     ? "Partial"
-                    : "Retry needed"}
+                    : notice.state === "rejected"
+                      ? "Rejected"
+                      : notice.state === "failed"
+                        ? "Failed"
+                        : "Retry needed"}
             </StatusPill>
             <div className="font-medium text-[var(--text-primary)]">
               {notice.title}
@@ -592,16 +624,52 @@ function ProductDeliveryStatusNotice({
             </span>{" "}
             {formatProductRelayUrls(notice.successfulRelayUrls)}
           </div>
-          {notice.failedRelayUrls.length > 0 && (
+          {notice.failedRelayUrls.some(
+            (url) => !notice.rejectedRelayUrls.includes(url)
+          ) && (
             <div className="break-all">
               <span className="font-medium text-[var(--text-primary)]">
                 Needs retry:
               </span>{" "}
-              {formatProductRelayUrls(notice.failedRelayUrls)}
+              {formatProductRelayUrls(
+                notice.failedRelayUrls.filter(
+                  (url) => !notice.rejectedRelayUrls.includes(url)
+                )
+              )}
+            </div>
+          )}
+          {notice.rejectedRelayUrls.length > 0 && (
+            <div className="break-all">
+              <span className="font-medium text-[var(--text-primary)]">
+                Rejected:
+              </span>{" "}
+              {formatProductRelayUrls(notice.rejectedRelayUrls)}
             </div>
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function RejectedProductPublicationNotice({
+  onReview,
+}: {
+  onReview: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs leading-5 text-[var(--text-secondary)]">
+      Every relay rejected this signed product revision. Repair Network
+      Settings, then review the listing and sign a new delivery.
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-2 block h-7 px-2 text-xs"
+        onClick={onReview}
+      >
+        Review and republish
+      </Button>
     </div>
   )
 }
@@ -765,8 +833,14 @@ async function publishProduct(
   onSignerRequestsComplete?: () => void,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean,
+  existingFamilyEvidenceComplete?: boolean,
+  onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>,
+  assertCurrentFamilyRevision?: () => void,
+  forcePublishDTags?: readonly string[],
+  recoveryDeletionJob?: ProductDeletionDeliveryJob,
+  recoveryListingJobId?: string,
   associationContext?: string
-): Promise<PublishWithPlannerResult> {
+): Promise<ProductWriteDeliveryResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
     throw new Error(
@@ -791,6 +865,15 @@ async function publishProduct(
   if (!formValidation.canPublish) {
     throw new Error(
       formValidation.firstError ?? "Product form is not publishable"
+    )
+  }
+
+  const supplierAllocationValidation =
+    validateMerchantProductSupplierAllocationForm(form, merchantPubkey)
+  if (!supplierAllocationValidation.canPublish) {
+    throw new Error(
+      supplierAllocationValidation.error ??
+        "Revenue-split terms are not publishable"
     )
   }
 
@@ -915,6 +998,9 @@ async function publishProduct(
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
+    ...(supplierAllocationValidation.allocation
+      ? { supplierAllocation: supplierAllocationValidation.allocation }
+      : {}),
     location: listingArea.location,
     geohash: listingArea.geohash,
     createdAt: existing?.product.createdAt ?? now,
@@ -995,28 +1081,85 @@ async function publishProduct(
           orphanVariation: existing.orphanVariation,
         }
       : undefined,
+    existingFamilyEvidenceComplete,
+    forcePublishDTags,
     now,
   })
 
   const listings = plan.publish.map((target) => ({
     product: target.product,
     dTag: target.dTag,
+    previousEventId: target.existing?.eventId ?? null,
     previousEventCreatedAt: target.existing?.eventCreatedAt,
     fulfillmentIntent: target.fulfillmentIntent,
   }))
-  const deletions = buildProductRemovalDeletionTargets(plan.remove)
+  const recoveryDeletionTargets = recoveryDeletionJob
+    ? getRejectedMixedDeletionRecoveryTargets(
+        recoveryDeletionJob,
+        merchantPubkey
+      )
+    : null
+  if (
+    recoveryDeletionJob &&
+    (!recoveryDeletionTargets || plan.remove.length > 0 || !forcePublishDTags)
+  ) {
+    throw new Error("The rejected mixed product update changed before recovery")
+  }
+  const deletions =
+    recoveryDeletionTargets ?? buildProductRemovalDeletionTargets(plan.remove)
+
+  assertCurrentFamilyRevision?.()
   return signAndPublishProductWriteBundle({
     merchantPubkey,
     authenticatedPubkey,
     shouldContinue,
+    assertCurrentWriteBaseline: async () => assertCurrentFamilyRevision?.(),
     listings,
     deletions,
-    onSignerRequest: (progress) =>
+    recoveryDeletionEvent: recoveryDeletionJob?.signedEvent,
+    // Fresh families use one atomic intent. An older rejected mixed family
+    // keeps its original NIP-09 cutoff and stages under the same local locks.
+    ...(recoveryDeletionJob
+      ? {
+          legacyCommit: {
+            recovery: {
+              kind: "mixed_deletion" as const,
+              previousDeletionEventId: recoveryDeletionJob.id,
+            },
+          },
+        }
+      : recoveryListingJobId
+        ? {
+            legacyCommit: {
+              recovery: {
+                kind: "listing_republish" as const,
+                previousListingJobId: recoveryListingJobId,
+              },
+            },
+          }
+        : {
+            durableCommit: {
+              ...(existing
+                ? {
+                    additionalExpectedRevisions: [
+                      existing,
+                      ...existing.variations,
+                    ].map((record) => ({
+                      addressId: record.addressId,
+                      eventId: record.eventId,
+                    })),
+                  }
+                : {}),
+            },
+          }),
+    onSignerRequest: (progress) => {
+      assertCurrentFamilyRevision?.()
       onSignerRequest?.({
         ...progress,
         current: progress.current,
         total: progress.total,
-      }),
+      })
+    },
     onSignerRequestsComplete,
     onSignedLocal: async (bundle) => {
       const rootPublishIndex = plan.publish.findIndex(
@@ -1035,6 +1178,7 @@ async function publishProduct(
         rootEventId,
       })
     },
+    onDeliveryQueued,
   })
 }
 
@@ -1049,14 +1193,6 @@ async function deleteProduct(
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
-  const signer = getAccountSigner()
-  if (!signer) throw new Error("Signer not connected")
-  const signerPubkey = await signer.getPublicKey()
-  if (signerPubkey !== merchantPubkey) {
-    throw new Error("Active signer does not match current merchant pubkey")
-  }
-  const activeAuthenticatedPubkey =
-    authenticatedPubkey === undefined ? signerPubkey : authenticatedPubkey
   const familyRecords = [product, ...product.variations]
   if (
     familyRecords.some((record) => record.product.pubkey !== merchantPubkey)
@@ -1065,71 +1201,30 @@ async function deleteProduct(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
   }
-  const draft = buildProductDeletionEventDraft({
+  let deliveryJobId: string | undefined
+  const delivery = await signAndPublishProductWriteBundle({
     merchantPubkey,
-    targets: familyRecords.map((record) => ({
-      eventId: record.eventId,
-      addressId: record.dTag ? record.addressId : undefined,
-    })),
-    clientAppId: "merchant",
+    authenticatedPubkey,
+    shouldContinue,
+    listings: [],
+    deletions: buildProductRemovalDeletionTargets(familyRecords),
+    durableCommit: {},
+    onSignerRequest,
+    onSignedLocal: async (bundle) => {
+      const deletion = bundle.events.find(
+        (event) => event.kind === EVENT_KINDS.DELETION
+      )
+      if (!deletion || !bundle.deletionDeliveryJobId) {
+        throw new Error("Signed product deletion is missing its durable job")
+      }
+      deliveryJobId = bundle.deletionDeliveryJobId
+      await onSignedLocal(deletion, deliveryJobId)
+    },
   })
-  const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
-    merchantPubkey,
-    activeAuthenticatedPubkey,
-    shouldContinue
-  )
-
-  const deletion: SignedPublicNostrEvent = {
-    id: "",
-    sig: "",
-    pubkey: merchantPubkey,
-    kind: 0,
-    created_at: 0,
-    tags: [],
-    content: "",
+  if (!deliveryJobId) {
+    throw new Error("Signed product deletion was not committed locally")
   }
-  deletion.kind = EVENT_KINDS.DELETION
-  deletion.created_at = Math.floor(Date.now() / 1000)
-  deletion.tags = draft.tags
-  deletion.content = draft.content
-
-  onSignerRequest?.({ kind: "deletion", current: 1, total: 1 })
-  await waitForVisibleDocument()
-  deletion.pubkey = signerPubkey
-  Object.assign(
-    deletion,
-    await signer.signEvent({
-      kind: deletion.kind,
-      pubkey: deletion.pubkey,
-      created_at: deletion.created_at,
-      tags: deletion.tags.map((tag) => [...tag]),
-      content: deletion.content,
-    })
-  )
-  const deliveryJob = await persistSignedProductDeletion({
-    signedEvent: deletion,
-    currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
-    currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
-    currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
-    sourceRelayUrls: Array.from(
-      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
-    ),
-  })
-  await cacheSignedProductDeletionEvent(deletion)
-  try {
-    await onSignedLocal(deletion, deliveryJob.id)
-    return {
-      delivery: await deliverQueuedProductDeletion(deliveryJob.id, {
-        authenticatedPubkey: activeAuthenticatedPubkey,
-        shouldContinue,
-      }),
-      deliveryJobId: deliveryJob.id,
-    }
-  } catch (error) {
-    throw error instanceof SignedProductDeliveryError
-      ? error
-      : new SignedProductDeliveryError(error)
-  }
+  return { delivery, deliveryJobId }
 }
 
 function ProductsPage() {
@@ -1289,16 +1384,98 @@ function ProductsPage() {
     () => pendingDeletionJobsQuery.data ?? [],
     [pendingDeletionJobsQuery.data]
   )
+  const rejectedListingJobsQuery = useQuery({
+    queryKey: ["merchant-product-rejected-listings", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
+    queryFn: async () => {
+      const jobs = await getRejectedProductListingDeliveries(accountPubkey!)
+      return Promise.all(
+        jobs.map(async (job) => ({
+          job,
+          companionDeletion: job.companionDeletionJobId
+            ? await getProductDeletionDelivery(job.companionDeletionJobId)
+            : undefined,
+        }))
+      )
+    },
+    staleTime: 5_000,
+  })
+  const rejectedListingJobs = rejectedListingJobsQuery.data ?? []
+  const stagedListingJobsQuery = useQuery({
+    queryKey: ["merchant-product-staged-listings", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
+    queryFn: async () =>
+      (await getStagedProductListingDeliveries()).filter(
+        (job) => job.merchantPubkey === accountPubkey
+      ),
+    refetchInterval: 5_000,
+  })
+  const stagedListingJobs = stagedListingJobsQuery.data ?? []
+  const listingOnlyStagedJobs = stagedListingJobs.filter(
+    (job) => !job.companionDeletionJobId
+  )
+  const stagedRepairMutation = useMutation({
+    mutationFn: async (listingJobId: string) => {
+      if (
+        !accountPubkey ||
+        authenticatedPubkey !== accountPubkey ||
+        !signer ||
+        remoteSignerRecovery
+      ) {
+        throw new Error(
+          "Connect the merchant signer before repairing this write"
+        )
+      }
+      const generation = authGeneration
+      await repairSupersededStagedProductWrite({
+        merchantPubkey: accountPubkey,
+        listingJobId,
+        shouldContinue: () => authGenerationRef.current === generation,
+      })
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-product-staged-listings", accountPubkey],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-products-live", accountPubkey],
+        }),
+      ])
+    },
+  })
   const merchantProductRecords = useMemo(
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
+  function getRejectedListingRecovery(family: MerchantProductFamily): {
+    job: ProductListingDeliveryJob
+    dTags: string[]
+    companionDeletion?: ProductDeletionDeliveryJob
+  } | null {
+    for (let index = rejectedListingJobs.length - 1; index >= 0; index--) {
+      const { job, companionDeletion } = rejectedListingJobs[index]!
+      const dTags = getTerminalRejectedListingRecoveryDTags(
+        job,
+        family,
+        companionDeletion
+      )
+      if (dTags) return { job, dTags, companionDeletion }
+    }
+    return null
+  }
   const merchantProductReadMeta =
     productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
   const merchantProductReadIncomplete =
     isCommerceReadIncomplete(merchantProductReadMeta) ||
     !!productsQuery.error ||
     productsQuery.isPaused
+  const merchantProductFamilyEvidenceComplete =
+    productFamilyReadSupportsAllocationChange({
+      meta: merchantProductReadMeta,
+      readFailed: !!productsQuery.error,
+      readPaused: productsQuery.isPaused,
+    })
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
       // Group at the read boundary so edit and delete always operate on the
@@ -1335,11 +1512,23 @@ function ProductsPage() {
           variations: family.variations,
           orphanVariation: family.orphanVariation,
           variationForm,
+          familyEvidenceComplete: merchantProductFamilyEvidenceComplete,
           family: prepared?.kind === "family" ? prepared.family : undefined,
         }
       }),
-    [merchantProductReadMeta, merchantProductRecords]
+    [
+      merchantProductFamilyEvidenceComplete,
+      merchantProductReadMeta,
+      merchantProductRecords,
+    ]
   )
+  const merchantProductsRef = useRef(merchantProducts)
+  merchantProductsRef.current = merchantProducts
+  const merchantProductFamilyEvidenceCompleteRef = useRef(
+    merchantProductFamilyEvidenceComplete
+  )
+  merchantProductFamilyEvidenceCompleteRef.current =
+    merchantProductFamilyEvidenceComplete
   const shippingConfig = loadShippingConfig(accountPubkey)
   const signedPolicyQuery = useQuery({
     queryKey: ["merchant-shipping-policy", accountPubkey ?? "none"],
@@ -1455,6 +1644,12 @@ function ProductsPage() {
       queryClient.invalidateQueries({
         queryKey: ["merchant-product-deletion-jobs", merchantPubkey ?? "none"],
       }),
+      queryClient.invalidateQueries({
+        queryKey: [
+          "merchant-product-rejected-listings",
+          merchantPubkey ?? "none",
+        ],
+      }),
     ])
   }
 
@@ -1527,6 +1722,83 @@ function ProductsPage() {
     )
   }
 
+  function bindAllocationEditToCurrentProductFamily(
+    payload: ProductPublishMutationPayload
+  ): {
+    payload: ProductPublishMutationPayload
+    expectedFamilyRevision: string | null
+    requiresCompleteFamilyEvidence: boolean
+  } {
+    if (!payload.existing || payload.signedBundle) {
+      return {
+        payload,
+        expectedFamilyRevision: null,
+        requiresCompleteFamilyEvidence: false,
+      }
+    }
+
+    const allocationValidation = validateMerchantProductSupplierAllocationForm(
+      payload.form,
+      payload.merchantPubkey
+    )
+    if (!allocationValidation.canPublish) {
+      return {
+        payload,
+        expectedFamilyRevision: null,
+        requiresCompleteFamilyEvidence: false,
+      }
+    }
+
+    const baselineFamily = {
+      root: payload.existing,
+      variations: payload.existing.variations,
+      orphanVariation: payload.existing.orphanVariation,
+    }
+    const currentFamily = merchantProductsRef.current.find(
+      (candidate) => candidate.addressId === payload.existing?.addressId
+    )
+    const snapshotValidation =
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: baselineFamily,
+        current: currentFamily
+          ? {
+              root: currentFamily,
+              variations: currentFamily.variations,
+              orphanVariation: currentFamily.orphanVariation,
+            }
+          : null,
+        nextAllocation: allocationValidation.allocation,
+        evidenceComplete: merchantProductFamilyEvidenceCompleteRef.current,
+      })
+    if (!snapshotValidation.requiresCurrentSnapshot) {
+      return {
+        payload,
+        expectedFamilyRevision:
+          getProductFamilySupplierAllocationRevisionKey(baselineFamily),
+        requiresCompleteFamilyEvidence: false,
+      }
+    }
+    if (!currentFamily) {
+      throw new Error(
+        "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+      )
+    }
+
+    return {
+      payload: {
+        ...payload,
+        existing: currentFamily,
+        familyEvidenceComplete: true,
+      },
+      expectedFamilyRevision: getProductFamilySupplierAllocationRevisionKey({
+        root: currentFamily,
+        variations: currentFamily.variations,
+        orphanVariation: currentFamily.orphanVariation,
+      }),
+      requiresCompleteFamilyEvidence: true,
+    }
+  }
+
   const saveMutation = useMutation({
     mutationFn: async (payload: ProductPublishMutationPayload) => {
       if (payload.signedBundle) {
@@ -1551,27 +1823,156 @@ function ProductsPage() {
         )
       }
 
+      let recoveryDTags: string[] | undefined
+      let recoveryFamilyRevision: string | undefined
+      let recoveryDeletionJob: ProductDeletionDeliveryJob | undefined
+      if (payload.recoveryJobId) {
+        const job = await getProductListingDelivery(payload.recoveryJobId)
+        const companionDeletion = job?.companionDeletionJobId
+          ? await getProductDeletionDelivery(job.companionDeletionJobId)
+          : undefined
+        const currentFamily = merchantProductsRef.current.find(
+          (candidate) => candidate.addressId === payload.existing?.addressId
+        )
+        const dTags =
+          job && currentFamily
+            ? getTerminalRejectedListingRecoveryDTags(
+                job,
+                currentFamily,
+                companionDeletion
+              )
+            : null
+        if (
+          !currentFamily ||
+          !dTags ||
+          !payload.existing ||
+          JSON.stringify(payload.form) !==
+            JSON.stringify(
+              productToForm(currentFamily, hasPresetShippingZone)
+            ) ||
+          getProductFamilySupplierAllocationRevisionKey({
+            root: currentFamily,
+            variations: currentFamily.variations,
+            orphanVariation: currentFamily.orphanVariation,
+          }) !==
+            getProductFamilySupplierAllocationRevisionKey({
+              root: payload.existing,
+              variations: payload.existing.variations,
+              orphanVariation: payload.existing.orphanVariation,
+            })
+        ) {
+          throw new Error(
+            "The rejected product revision changed. Refresh and reopen it before starting a newly signed delivery."
+          )
+        }
+        recoveryDTags = dTags
+        recoveryDeletionJob = companionDeletion
+        recoveryFamilyRevision = getProductFamilySupplierAllocationRevisionKey({
+          root: currentFamily,
+          variations: currentFamily.variations,
+          orphanVariation: currentFamily.orphanVariation,
+        })
+      }
+
+      const boundAllocation = bindAllocationEditToCurrentProductFamily(payload)
+      const currentPayload = boundAllocation.payload
+      const assertCurrentFamilyRevision = () => {
+        if (recoveryFamilyRevision && payload.existing) {
+          const currentFamily = merchantProductsRef.current.find(
+            (candidate) => candidate.addressId === payload.existing?.addressId
+          )
+          if (
+            !currentFamily ||
+            getProductFamilySupplierAllocationRevisionKey({
+              root: currentFamily,
+              variations: currentFamily.variations,
+              orphanVariation: currentFamily.orphanVariation,
+            }) !== recoveryFamilyRevision
+          ) {
+            throw new Error(
+              "The product changed while preparing recovery. Refresh before signing a new revision."
+            )
+          }
+        }
+        const expected = boundAllocation.expectedFamilyRevision
+        if (!expected || !currentPayload.existing) return
+        if (
+          boundAllocation.requiresCompleteFamilyEvidence &&
+          !merchantProductFamilyEvidenceCompleteRef.current
+        ) {
+          throw new Error(
+            "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+          )
+        }
+        const currentFamily = merchantProductsRef.current.find(
+          (candidate) =>
+            candidate.addressId === currentPayload.existing?.addressId
+        )
+        // An unrelated edit with explicit allocation absence still works from
+        // its owned baseline when the current bounded read has no family.
+        if (!currentFamily && !boundAllocation.requiresCompleteFamilyEvidence) {
+          return
+        }
+        if (
+          !currentFamily ||
+          getProductFamilySupplierAllocationRevisionKey({
+            root: currentFamily,
+            variations: currentFamily.variations,
+            orphanVariation: currentFamily.orphanVariation,
+          }) !== expected
+        ) {
+          throw new Error(
+            "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+          )
+        }
+      }
+
+      const allocationCheck = validateMerchantProductSupplierAllocationForm(
+        currentPayload.form,
+        currentPayload.merchantPubkey
+      )
+      if (!allocationCheck.canPublish) {
+        throw new Error(
+          allocationCheck.error ?? "Review the revenue split before publishing."
+        )
+      }
+      if (allocationCheck.allocation?.state === "valid") {
+        const readiness = await readProductSupplierReadiness({
+          allocation: allocationCheck.allocation,
+          accountPubkey: currentPayload.merchantPubkey,
+          authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+          shouldContinue: () =>
+            authGenerationRef.current === authGeneration &&
+            isCurrentProductOwner(currentPayload.merchantPubkey),
+        })
+        if (readiness.state !== "ready") {
+          throw new Error(
+            "A revenue recipient's payment or messaging setup could not be verified. Check the Revenue split section before publishing."
+          )
+        }
+      }
+
       const fallbackSourceScope = getProductImageUploadScopeId(
-        getProductDraftTarget(payload.merchantPubkey)
+        getProductDraftTarget(currentPayload.merchantPubkey)
       )
       const fallbackDestinationScope = getProductImageUploadScopeId({
-        merchantPubkey: payload.merchantPubkey,
-        productAddressId: `30402:${payload.merchantPubkey}:${payload.dTag}`,
+        merchantPubkey: currentPayload.merchantPubkey,
+        productAddressId: `30402:${currentPayload.merchantPubkey}:${currentPayload.dTag}`,
       })
       let fallbackMovePrepared = false
       let signedLocally = false
       try {
-        if (!payload.existing) {
+        if (!currentPayload.existing) {
           fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
             fallbackSourceScope,
             fallbackDestinationScope
           )
         }
         return await publishProduct(
-          payload.merchantPubkey,
-          payload.form,
-          payload.presetShippingConfig,
-          payload.dTag,
+          currentPayload.merchantPubkey,
+          currentPayload.form,
+          currentPayload.presetShippingConfig,
+          currentPayload.dTag,
           async (signedBundle, authoringTarget) => {
             signedLocally = true
             if (fallbackMovePrepared) {
@@ -1580,29 +1981,45 @@ function ProductsPage() {
                 fallbackDestinationScope
               )
             }
-            if (isCurrentProductOwner(payload.merchantPubkey)) {
+            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
               setProductDeliveryRetry({
                 action: "publish",
-                payload: { ...payload, signedBundle },
+                payload: { ...currentPayload, signedBundle },
               })
             }
-            completeLocalProductSave(payload, authoringTarget)
-            await showLocalProductProjection("publish", payload.merchantPubkey)
+            completeLocalProductSave(currentPayload, authoringTarget)
+            await showLocalProductProjection(
+              "publish",
+              currentPayload.merchantPubkey
+            )
           },
-          payload.existing,
+          currentPayload.existing,
           (progress) => {
-            if (isCurrentProductOwner(payload.merchantPubkey)) {
+            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
               setProductSignerProgress(progress)
             }
           },
           () => {
-            if (isCurrentProductOwner(payload.merchantPubkey)) {
+            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
               setProductSignerProgress(null)
               setProductSignerRequestsComplete(true)
             }
           },
           authStatus === "connected" ? pubkey : null,
           () => authGenerationRef.current === authGeneration,
+          currentPayload.familyEvidenceComplete,
+          async (signedBundle) => {
+            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
+              setProductDeliveryRetry({
+                action: "publish",
+                payload: { ...currentPayload, signedBundle },
+              })
+            }
+          },
+          assertCurrentFamilyRevision,
+          recoveryDTags,
+          recoveryDeletionJob,
+          recoveryDTags ? payload.recoveryJobId : undefined,
           payload.associationContext
         )
       } catch (error) {
@@ -1627,8 +2044,7 @@ function ProductsPage() {
     },
     onSuccess: async (data, variables) => {
       productPublishInFlightRef.current = false
-      const notice = buildProductDeliveryNotice(
-        "publish",
+      const { notice, retryDeletionJobId } = resolveProductWriteDeliveryNotice(
         data,
         variables.previousNotice
       )
@@ -1654,7 +2070,17 @@ function ProductsPage() {
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(false)
       setProductDeliveryNotice(notice)
-      if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
+      if (retryDeletionJobId) {
+        setProductDeliveryRetry({
+          action: "delete",
+          payload: {
+            merchantPubkey: variables.merchantPubkey,
+            deliveryJobId: retryDeletionJobId,
+          },
+        })
+      } else if (notice.state === "delivered" || notice.state === "rejected") {
+        setProductDeliveryRetry(null)
+      }
       await refreshProductQueries(variables.merchantPubkey)
     },
     onError: async (error, variables) => {
@@ -1691,7 +2117,10 @@ function ProductsPage() {
         )
       } else if (error instanceof SignedProductDeliveryError) {
         setProductDeliveryNotice(
-          variables.previousNotice ?? buildLocalProductRetryNotice("publish")
+          variables.previousNotice ??
+            (error.retryable
+              ? buildLocalProductRetryNotice("publish")
+              : buildLocalProductQueueFailureNotice("publish"))
         )
       } else {
         setProductDeliveryNotice((current) =>
@@ -1805,7 +2234,9 @@ function ProductsPage() {
         variables.previousNotice
       )
       setProductDeliveryNotice(notice)
-      if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
+      if (notice.state === "delivered") {
+        setProductDeliveryRetry(null)
+      }
       await refreshProductQueries(variables.merchantPubkey)
     },
     onError: async (error, variables) => {
@@ -2063,6 +2494,43 @@ function ProductsPage() {
   const zeroPriceFormAuthorized =
     preservingFulfillment &&
     (editing.product.sourcePrice?.amount ?? editing.product.price) === 0
+  const supplierAllocationValidation =
+    validateMerchantProductSupplierAllocationForm(form, pubkey ?? "")
+  const supplierReadinessQuery = useQuery({
+    queryKey: [
+      "product-supplier-readiness",
+      pubkey,
+      authGeneration,
+      supplierAllocationValidation.allocation?.recipients.map(
+        ({ pubkey: recipient, relayHint }) => [recipient, relayHint]
+      ),
+    ],
+    enabled:
+      productDialogOpen &&
+      !!pubkey &&
+      supplierAllocationValidation.canPublish &&
+      supplierAllocationValidation.allocation?.state === "valid",
+    queryFn: ({ signal }) =>
+      readProductSupplierReadiness({
+        allocation: supplierAllocationValidation.allocation!,
+        accountPubkey: pubkey!,
+        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+        shouldContinue: () =>
+          authGenerationRef.current === authGeneration && !signal.aborted,
+        signal,
+      }),
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const supplierReadinessError =
+    supplierAllocationValidation.allocation?.state !== "valid"
+      ? null
+      : supplierReadinessQuery.isPending || supplierReadinessQuery.isFetching
+        ? "Checking revenue recipients' payment and messaging setup…"
+        : supplierReadinessQuery.data?.state !== "ready"
+          ? "Check revenue recipients' payment and messaging setup before publishing."
+          : null
   const productFormValidation = useMemo(() => {
     const validation = validateProductPublishForm(
       preservingFulfillment
@@ -2075,11 +2543,15 @@ function ProductsPage() {
         preserveExistingFulfillment: preservingFulfillment,
       }
     )
-    return productTableError
+    const blockingError =
+      productTableError ??
+      supplierAllocationValidation.error ??
+      supplierReadinessError
+    return blockingError
       ? {
           ...validation,
           canPublish: false,
-          firstError: validation.firstError ?? productTableError,
+          firstError: validation.firstError ?? blockingError,
         }
       : validation
   }, [
@@ -2088,6 +2560,8 @@ function ProductsPage() {
     effectiveShippingConfig,
     zeroPriceFormAuthorized,
     preservingFulfillment,
+    supplierAllocationValidation.error,
+    supplierReadinessError,
     productTableError,
   ])
   const productTagFieldError =
@@ -2098,16 +2572,22 @@ function ProductsPage() {
       ))
       ? productFormValidation.errors.tags
       : null
-  const productCanSubmit = canSubmitProductForm(productFormValidation, {
-    isEditing: !!editing,
-    hasProductChanges,
-  })
+  const rejectedEditingRecovery =
+    editing && !hasProductChanges ? getRejectedListingRecovery(editing) : null
+  const productCanSubmit =
+    canSubmitProductForm(productFormValidation, {
+      isEditing: !!editing,
+      hasProductChanges,
+    }) ||
+    (!!rejectedEditingRecovery && productFormValidation.canPublish)
   const productStatusMessage = !productFormValidation.canPublish
     ? productFormValidation.firstError
     : editing
-      ? form.variations.enabled
-        ? "Save changes to publish only the parent or variations that changed."
-        : "Save changes to publish this listing update."
+      ? rejectedEditingRecovery
+        ? "This signed revision was rejected by every relay. After repairing Network Settings, sign a new delivery for the same product."
+        : form.variations.enabled
+          ? "Save changes to publish only the parent or variations that changed."
+          : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
     !!accountPubkey && productsQuery.isPending && cachedProductsQuery.isPending
@@ -2464,7 +2944,7 @@ function ProductsPage() {
     const draftTarget = accountPubkey
       ? getProductDraftTarget(accountPubkey)
       : null
-    const loaded = draftTarget
+    const loaded: ProductDraftLoadResult = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
     setEditing(null)
@@ -2538,7 +3018,7 @@ function ProductsPage() {
     const draftTarget = accountPubkey
       ? getProductDraftTarget(accountPubkey, item)
       : null
-    const loaded = draftTarget
+    const loaded: ProductDraftLoadResult = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
     if ("error" in loaded && loaded.error)
@@ -2557,12 +3037,16 @@ function ProductsPage() {
           ),
         }
       : item
-    const loadedDraft = loaded.draft
+    const restoredDraft = restoreProductDraftSupplierAllocation(
+      loaded,
+      editingItem.product.supplierAllocation
+    )
+    const loadedDraft = restoredDraft
       ? {
-          ...loaded.draft,
+          ...restoredDraft,
           variations: reconcileProductVariationDraftResolution(
             item.variationForm,
-            loaded.draft.variations
+            restoredDraft.variations
           ),
         }
       : null
@@ -2931,6 +3415,53 @@ function ProductsPage() {
             />
           </div>
         )}
+        {stagedListingJobs.length > 0 && (
+          <div className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm">
+            <div className="font-semibold text-[var(--text-primary)]">
+              Signed product delivery awaiting recovery
+            </div>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">
+              A staged write stays blocked until its exact delivery can resume.
+              For listing-only writes, you can check whether a newer signed
+              version makes the old unattempted stage safe to retire. Uncertain
+              or attempted deliveries stay blocked. Paired listing/deletion
+              writes retain their exact signed delivery for manual
+              reconciliation.
+            </p>
+            {listingOnlyStagedJobs.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {listingOnlyStagedJobs.map((job) => (
+                  <Button
+                    key={job.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      stagedRepairMutation.isPending ||
+                      authenticatedPubkey !== accountPubkey ||
+                      !signer ||
+                      !!remoteSignerRecovery
+                    }
+                    onClick={() => stagedRepairMutation.mutate(job.id)}
+                  >
+                    Check safe repair for {job.signedEvents.length} item
+                    {job.signedEvents.length === 1 ? "" : "s"}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {stagedRepairMutation.error &&
+              stagedListingJobs.some(
+                (job) => job.id === stagedRepairMutation.variables
+              ) && (
+                <p role="alert" className="mt-2 text-xs text-warning">
+                  {stagedRepairMutation.error instanceof Error
+                    ? stagedRepairMutation.error.message
+                    : "This signed write cannot be safely retired yet."}
+                </p>
+              )}
+          </div>
+        )}
       </section>
 
       <section className="space-y-4">
@@ -3020,9 +3551,15 @@ function ProductsPage() {
             const stockDisplay = item.family
               ? getProductFamilyStockDisplay(item.family.inventorySummary)
               : getProductStockDisplay(item.product.stock)
+            const rejectedListingRecovery = getRejectedListingRecovery(item)
             if (!item.availability.marketVisible) {
               return (
                 <div key={item.addressId} className="grid gap-2">
+                  {rejectedListingRecovery && item.variationForm.supported && (
+                    <RejectedProductPublicationNotice
+                      onReview={() => openEditDialog(item)}
+                    />
+                  )}
                   <ListingAvailabilitySummary
                     item={item}
                     onEdit={
@@ -3066,6 +3603,11 @@ function ProductsPage() {
 
             return (
               <div key={item.addressId} className="grid gap-2">
+                {rejectedListingRecovery && item.variationForm.supported && (
+                  <RejectedProductPublicationNotice
+                    onReview={() => openEditDialog(item)}
+                  />
+                )}
                 {!isActive && (
                   <ListingAvailabilitySummary
                     item={item}
@@ -3226,7 +3768,7 @@ function ProductsPage() {
 
           {productDialogOpen && (
             <form
-              className="grid gap-3"
+              className="grid min-w-0 grid-cols-1 gap-3"
               onSubmit={(event) => {
                 event.preventDefault()
                 if (
@@ -3246,6 +3788,13 @@ function ProductsPage() {
                     editing?.dTag ??
                     `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
                   existing: editing ?? undefined,
+                  ...(rejectedEditingRecovery
+                    ? { recoveryJobId: rejectedEditingRecovery.job.id }
+                    : {}),
+                  familyEvidenceComplete: editing
+                    ? editing.familyEvidenceComplete &&
+                      merchantProductFamilyEvidenceComplete
+                    : true,
                 })
               }}
             >
@@ -3884,6 +4433,32 @@ function ProductsPage() {
                 />
               )}
 
+              <ProductSupplierAllocationEditor
+                value={{
+                  enabled: form.supplierAllocationEnabled,
+                  merchantWeight: form.merchantAllocationWeight,
+                  merchantRelayHint: form.merchantAllocationRelayHint,
+                  suppliers: form.supplierAllocations,
+                }}
+                validation={supplierAllocationValidation}
+                readiness={supplierReadinessQuery.data}
+                checking={supplierReadinessQuery.isFetching}
+                onRetryReadiness={
+                  supplierAllocationValidation.allocation?.state === "valid"
+                    ? () => {
+                        void supplierReadinessQuery.refetch()
+                      }
+                    : undefined
+                }
+                onChange={(allocation) =>
+                  setForm((previous) =>
+                    applyMerchantProductSupplierAllocationFormChange(
+                      previous,
+                      allocation
+                    )
+                  )
+                }
+              />
               <ProductImageUrlCollectionField
                 id="product-image"
                 images={form.images}
@@ -4702,7 +5277,9 @@ function ProductsPage() {
                       : productImageUpload.isBusy
                         ? "Uploading images..."
                         : editing
-                          ? "Save changes"
+                          ? rejectedEditingRecovery
+                            ? "Sign new delivery"
+                            : "Save changes"
                           : "Publish product"}
                 </Button>
               </DialogFooter>

@@ -1,5 +1,9 @@
+import type { ProductSupplierAllocation } from "@conduit/core"
 import { isShippingWeightUnit } from "./shippingWeightUnits"
-import type { MerchantProductFormValues } from "./productForm"
+import {
+  getMerchantProductSupplierAllocationFormState,
+  type MerchantProductFormValues,
+} from "./productForm"
 import {
   isAcceptedListingAreaCountry,
   isAcceptedUSListingAreaState,
@@ -17,7 +21,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 12
+const PRODUCT_DRAFT_VERSION = 13
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -59,12 +63,37 @@ interface StoredProductDraft {
   baseEventId: string | null
   savedAt: number
   form: MerchantProductFormValues
+  /** Read-time migration information, never inferred from user form defaults. */
+  supplierAllocationAuthority?: "legacy_edit_unknown"
 }
 
 export interface ProductDraftLoadResult {
   draft: MerchantProductFormValues | null
   storageAvailable: boolean
   error?: string
+  /** Restore this edit's supplier fields from its matching signed baseline. */
+  supplierAllocationAuthority?: "legacy_edit_unknown"
+}
+
+/**
+ * Use only after loading this edit against its matching baseline event ID.
+ * Missing cached allocation evidence is unknown, not permission to remove it.
+ */
+export function restoreProductDraftSupplierAllocation(
+  result: ProductDraftLoadResult,
+  baseline: ProductSupplierAllocation | undefined
+): MerchantProductFormValues | null {
+  if (
+    !result.draft ||
+    result.supplierAllocationAuthority !== "legacy_edit_unknown" ||
+    !baseline
+  ) {
+    return result.draft
+  }
+  return {
+    ...result.draft,
+    ...getMerchantProductSupplierAllocationFormState(baseline),
+  }
 }
 
 export interface ProductVariationAuthoringTarget {
@@ -143,6 +172,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 9 &&
         candidate.version !== 10 &&
         candidate.version !== 11 &&
+        candidate.version !== 12 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -259,6 +289,107 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         : createEmptyProductVariationForm()
     if (!variations) return null
 
+    // Supplier authoring used versions 8/9/11 on its own branch. Main used
+    // versions 8-12 for listing areas, shipping, and Event Markets, so recognize
+    // explicit supplier fields instead of reinterpreting old main drafts as
+    // allocation drafts. Version 13 is the first combined format.
+    const hasSupplierFields =
+      candidate.version >= 8 &&
+      [
+        "supplierAllocationEnabled",
+        "supplierAllocationRepairRequired",
+        "merchantAllocationWeight",
+        "merchantAllocationRelayHint",
+        "supplierAllocations",
+      ].some((field) => Object.hasOwn(form, field))
+    const legacyEditUnknown =
+      candidate.version < PRODUCT_DRAFT_VERSION &&
+      !hasSupplierFields &&
+      typeof candidate.baseEventId === "string"
+    const readSupplierFields =
+      candidate.version === PRODUCT_DRAFT_VERSION || hasSupplierFields
+    const supplierAllocationEnabled = readSupplierFields
+      ? typeof form.supplierAllocationEnabled === "boolean"
+        ? form.supplierAllocationEnabled
+        : null
+      : legacyEditUnknown
+    const supplierAllocationRepairRequired = readSupplierFields
+      ? candidate.version === 8 &&
+        form.supplierAllocationRepairRequired === undefined
+        ? typeof candidate.baseEventId === "string" &&
+          supplierAllocationEnabled === true
+        : typeof form.supplierAllocationRepairRequired === "boolean"
+          ? form.supplierAllocationRepairRequired
+          : null
+      : legacyEditUnknown
+    const merchantAllocationWeight = readSupplierFields
+      ? typeof form.merchantAllocationWeight === "string"
+        ? form.merchantAllocationWeight
+        : null
+      : "1"
+    const merchantAllocationRelayHint = readSupplierFields
+      ? typeof form.merchantAllocationRelayHint === "string"
+        ? form.merchantAllocationRelayHint
+        : candidate.version < 11 &&
+            form.merchantAllocationRelayHint === undefined
+          ? ""
+          : null
+      : ""
+    const acceptsLegacySupplierRelayHint = candidate.version < 11
+    const supplierAllocations = readSupplierFields
+      ? Array.isArray(form.supplierAllocations) &&
+        form.supplierAllocations.every(
+          (recipient) =>
+            !!recipient &&
+            typeof recipient === "object" &&
+            typeof (recipient as { identity?: unknown }).identity ===
+              "string" &&
+            (typeof (recipient as { relayHint?: unknown }).relayHint ===
+              "string" ||
+              (acceptsLegacySupplierRelayHint &&
+                (recipient as { relayHint?: unknown }).relayHint ===
+                  undefined)) &&
+            typeof (recipient as { weight?: unknown }).weight === "string" &&
+            ((recipient as { percentageInput?: unknown }).percentageInput ===
+              undefined ||
+              typeof (recipient as { percentageInput?: unknown })
+                .percentageInput === "string") &&
+            ((recipient as { percentageError?: unknown }).percentageError ===
+              undefined ||
+              typeof (recipient as { percentageError?: unknown })
+                .percentageError === "string")
+        )
+        ? form.supplierAllocations.map((recipient) => {
+            const allocation = recipient as {
+              identity: string
+              relayHint?: string
+              weight: string
+              percentageInput?: string
+              percentageError?: string
+            }
+            return {
+              identity: allocation.identity,
+              relayHint: allocation.relayHint ?? "",
+              weight: allocation.weight,
+              ...(allocation.percentageInput !== undefined
+                ? { percentageInput: allocation.percentageInput }
+                : {}),
+              ...(allocation.percentageError !== undefined
+                ? { percentageError: allocation.percentageError }
+                : {}),
+            }
+          })
+        : null
+      : []
+    if (
+      supplierAllocationEnabled === null ||
+      supplierAllocationRepairRequired === null ||
+      merchantAllocationWeight === null ||
+      merchantAllocationRelayHint === null ||
+      supplierAllocations === null
+    )
+      return null
+
     const listingAreaCountry =
       candidate.version >= 8 && typeof form.listingAreaCountry === "string"
         ? form.listingAreaCountry
@@ -271,8 +402,18 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       candidate.version >= 8 && form.listingAreaPlaceId !== undefined
         ? form.listingAreaPlaceId
         : null
+    const supplierBranchWithoutListingArea =
+      (candidate.version === 8 || candidate.version === 9) &&
+      hasSupplierFields &&
+      ![
+        "listingAreaCountry",
+        "listingAreaState",
+        "listingAreaPlaceId",
+        "listingAreaMode",
+        "listingAreaDefault",
+      ].some((field) => Object.hasOwn(form, field))
     const originalListingAreaMode =
-      candidate.version >= 8
+      candidate.version >= 8 && !supplierBranchWithoutListingArea
         ? form.listingAreaMode
         : candidate.baseEventId
           ? "unchanged"
@@ -325,6 +466,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       version: PRODUCT_DRAFT_VERSION,
       baseEventId: candidate.baseEventId,
       savedAt: candidate.savedAt,
+      ...(legacyEditUnknown
+        ? { supplierAllocationAuthority: "legacy_edit_unknown" as const }
+        : {}),
       form: {
         title: form.title as string,
         summary: form.summary as string,
@@ -378,6 +522,11 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         ),
         publicZapEnabled: form.publicZapEnabled,
         zapMessagePolicy: form.zapMessagePolicy,
+        supplierAllocationEnabled,
+        supplierAllocationRepairRequired,
+        merchantAllocationWeight,
+        merchantAllocationRelayHint,
+        supplierAllocations,
         images,
         tags: form.tags as string,
       },
@@ -434,7 +583,13 @@ export function loadProductDraft(
       return { draft: null, storageAvailable: true }
     }
 
-    return { draft: stored.form, storageAvailable: true }
+    return {
+      draft: stored.form,
+      storageAvailable: true,
+      ...(stored.supplierAllocationAuthority
+        ? { supplierAllocationAuthority: stored.supplierAllocationAuthority }
+        : {}),
+    }
   } catch {
     return { draft: null, storageAvailable: false }
   }

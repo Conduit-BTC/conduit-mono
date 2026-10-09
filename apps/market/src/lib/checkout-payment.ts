@@ -15,6 +15,7 @@ import {
   isMsatsLikeCurrency,
   isPricingRateQuoteFresh,
   isSatsLikeCurrency,
+  isSupportedCommercePriceCurrency,
   normalizePubkey,
   normalizeCommercePrice,
   resolveCartShippingCost,
@@ -90,6 +91,7 @@ export type CheckoutPricingIntent =
         fetchedAt: number
         source: BtcUsdRateQuote["source"]
         fiatSource?: BtcUsdRateQuote["fiatSource"]
+        fiatSources?: BtcUsdRateQuote["fiatSources"]
         fiatUsdRates?: BtcUsdRateQuote["fiatUsdRates"]
       }
       approximate: boolean
@@ -297,6 +299,38 @@ export function buildCheckoutPricingIntent(
   rateInput: PricingRateInput,
   nowMs = Date.now()
 ): CheckoutPricingIntent {
+  // This constructs a new purchase, not a replay of an existing signed order.
+  // Retained table allocations must not turn a retired currency into new support.
+  const unsupportedShipping = getCheckoutShippingResolvableItems(items).some(
+    (item) => {
+      const quote = item.shippingPolicyQuote
+      const currencies = [
+        item.sourceShippingCost?.currency,
+        item.sourceShippingCost?.normalizedCurrency,
+        quote?.currency,
+        ...(quote?.items.flatMap((quotedItem) => [
+          quotedItem.currency,
+          ...("shippingHandling" in quotedItem && quotedItem.shippingHandling
+            ? [
+                quotedItem.shippingHandling.currency,
+                quotedItem.shippingHandling.normalizedCurrency,
+              ]
+            : []),
+        ]) ?? []),
+      ]
+      return currencies.some(
+        (currency) =>
+          currency !== undefined && !isSupportedCommercePriceCurrency(currency)
+      )
+    }
+  )
+  if (unsupportedShipping) {
+    return {
+      status: "error",
+      code: "unpriced_items",
+      reason: "Shipping currency is not supported for new commerce.",
+    }
+  }
   items = allocateShippingPolicyCosts(items)
   const pricedItems: CheckoutPricingItem[] = []
   let itemSubtotalSats = 0
@@ -481,6 +515,9 @@ export function buildCheckoutPricingIntent(
           fetchedAt: rateInput.fetchedAt,
           source: rateInput.source,
           fiatSource: rateInput.fiatSource,
+          ...(rateInput.fiatSources
+            ? { fiatSources: { ...rateInput.fiatSources } }
+            : {}),
           fiatUsdRates: rateInput.fiatUsdRates
             ? { ...rateInput.fiatUsdRates }
             : undefined,

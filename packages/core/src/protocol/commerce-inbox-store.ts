@@ -183,7 +183,7 @@ function freezeProjection<T>(value: T): T {
 }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-export const INBOX_DECODE_RULES_VERSION = 1
+export const INBOX_DECODE_RULES_VERSION = 2
 const LEASE_MS = 60_000
 const KEY_ID = "commerce-inbox-aes-gcm-v1"
 
@@ -695,7 +695,11 @@ export class CommerceInboxStore {
         try {
           const payload = JSON.parse(content)
           machine =
-            payload?.type === "checkout_spark_recovery" ||
+            [
+              "checkout_spark_recovery",
+              "checkout_spark_recovery_progress",
+              "checkout_spark_merchant_progress",
+            ].includes(String(payload?.type ?? "")) ||
             payload?.wallet?.mnemonic !== undefined ||
             String(payload?.type ?? "").startsWith("organizer_")
         } catch {

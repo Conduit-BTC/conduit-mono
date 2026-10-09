@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Plugin } from "vite"
 import {
   createPublicDeploymentManifest,
   resolveDeploymentProfile,
+  type ResolvedDeploymentProfile,
 } from "./deployment_profile.ts"
 
 type PackageJson = {
@@ -69,6 +71,27 @@ function getSourceUrl(): string {
   )
 }
 
+/** Managed trust is code-owned; local Vite dotenv remains an explicit boundary. */
+export function defineCheckoutSparkDeploymentTrust(
+  profile: ResolvedDeploymentProfile
+): Record<string, string> {
+  if (profile.name === "local") return {}
+  return {
+    "import.meta.env.VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS": JSON.stringify(
+      profile.quantumRouterTrust.receiverContracts
+    ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_URL": JSON.stringify(
+      profile.quantumRouterTrust.pricingUrl
+    ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS": JSON.stringify(
+      profile.quantumRouterTrust.pricingPublicKeys
+    ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST": JSON.stringify(
+      profile.quantumRouterTrustDigest
+    ),
+  }
+}
+
 export function createConduitBuildContract(appDir: string): {
   define: Record<string, string>
   deploymentManifestPlugin: Plugin
@@ -89,7 +112,7 @@ export function createConduitBuildContract(appDir: string): {
     sourceUrl,
   })
 
-  const define = {
+  const define: Record<string, string> = {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(
       readPackageVersion(appDir)
     ),
@@ -112,14 +135,52 @@ export function createConduitBuildContract(appDir: string): {
     "import.meta.env.VITE_LIVE_PRESENCE_ENABLED": JSON.stringify(
       profile.publicFeatures.livePresenceEnabled ? "true" : "false"
     ),
+    "import.meta.env.VITE_QUANTUM_ROUTER_ENABLED": JSON.stringify(
+      profile.publicFeatures.quantumRouterEnabled ? "true" : "false"
+    ),
     "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
       profile.lightningNetwork
     ),
   }
 
+  // Omit an unset local flag so Vite can load an explicit stop from dotenv.
+  // Managed builds always compile the independent code-owned boolean.
+  if (
+    profile.name !== "local" ||
+    process.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED?.trim()
+  ) {
+    define["import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED"] =
+      JSON.stringify(
+        profile.publicFeatures.quantumRouterExecutionEnabled ? "true" : "false"
+      )
+  }
+
+  // Local Vite dotenv settings are loaded after this contract is created.
+  // Only managed profiles override treasury variables; staging clears all rails.
+  if (profile.name !== "local") {
+    define["import.meta.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS"] =
+      JSON.stringify(profile.quantumRouterTreasury.mainnetAddress)
+    define["import.meta.env.VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS"] =
+      JSON.stringify(profile.quantumRouterTreasury.regtestAddress)
+    define["import.meta.env.VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES"] =
+      JSON.stringify(profile.quantumRouterTreasury.retiredAddresses.join(","))
+  }
+  Object.assign(define, defineCheckoutSparkDeploymentTrust(profile))
+
   const deploymentManifestPlugin: Plugin = {
     name: "conduit-deployment-manifest",
     apply: "build",
+    buildStart() {
+      if (profile.name === "local") return
+      this.emitFile({
+        type: "chunk",
+        id: fileURLToPath(
+          new URL("./checkout_spark_trust_probe.ts", import.meta.url)
+        ),
+        fileName: ".well-known/conduit-checkout-trust.js",
+        preserveSignature: "strict",
+      })
+    },
     generateBundle() {
       this.emitFile({
         type: "asset",

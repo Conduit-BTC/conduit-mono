@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import {
+  buildProductSupplierAllocation,
+  pubkeyToNpub,
+  type ProductSupplierAllocation,
+} from "@conduit/core"
+import {
   clearProductDraft,
   clearProductVariationAuthoringState,
   getProductDraftStorageKey,
@@ -8,12 +13,17 @@ import {
   loadProductVariationAuthoringState,
   loadProductDraft,
   ProductDraftStore,
+  restoreProductDraftSupplierAllocation,
   saveProductVariationAuthoringState,
   saveProductDraft,
   type ProductDraftTarget,
   type ProductVariationAuthoringTarget,
 } from "../apps/merchant/src/lib/productDraft"
-import type { MerchantProductFormValues } from "../apps/merchant/src/lib/productForm"
+import {
+  applyMerchantProductSupplierAllocationFormChange,
+  validateMerchantProductSupplierAllocationForm,
+  type MerchantProductFormValues,
+} from "../apps/merchant/src/lib/productForm"
 import {
   createProductVariationAxis,
   createEmptyProductVariationForm,
@@ -65,6 +75,37 @@ class FailingStorage extends MemoryStorage {
   }
 }
 
+const SUPPLIER_MERCHANT =
+  "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+const SUPPLIER =
+  "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+
+it("retains an unfinished supplier percentage and its publish blocker after draft recovery", () => {
+  const storage = new MemoryStorage()
+  const draftTarget = target({ merchantPubkey: SUPPLIER_MERCHANT })
+  const values = form({
+    supplierAllocationEnabled: true,
+    merchantAllocationWeight: "3",
+    merchantAllocationRelayHint: "",
+    supplierAllocations: [
+      {
+        identity: SUPPLIER,
+        relayHint: "",
+        weight: "1",
+        percentageInput: "12.",
+        percentageError: "Enter a percentage with at most two decimal places.",
+      },
+    ],
+  })
+  expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+  const recovered = loadProductDraft(draftTarget, storage).draft!
+  expect(recovered.supplierAllocations).toEqual(values.supplierAllocations)
+  expect(
+    validateMerchantProductSupplierAllocationForm(recovered, SUPPLIER_MERCHANT)
+      .canPublish
+  ).toBe(false)
+})
+
 function target(
   overrides: Partial<ProductDraftTarget> = {}
 ): ProductDraftTarget {
@@ -106,6 +147,11 @@ function form(
     },
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
+    supplierAllocationEnabled: false,
+    supplierAllocationRepairRequired: false,
+    merchantAllocationWeight: "1",
+    merchantAllocationRelayHint: "",
+    supplierAllocations: [],
     images: [
       { url: "https://example.com/pocket-relay.png", alt: "Pocket Relay" },
       { url: "https://example.com/pocket-relay-side.png" },
@@ -128,6 +174,174 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  it("round-trips version 13 supplier terms with listing-area and future-event snapshots", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target({ merchantPubkey: SUPPLIER_MERCHANT })
+    const values = form({
+      listingAreaCountry: "US",
+      listingAreaState: "CA",
+      listingAreaPlaceId: 5378538,
+      listingAreaMode: "selected",
+      listingAreaDefault: { location: "Oakland, California", geohash: "9q9p" },
+      futureEventMarketReference: `30409:${"b".repeat(64)}:future-market`,
+      supplierAllocationEnabled: true,
+      merchantAllocationWeight: "3",
+      merchantAllocationRelayHint: "wss://relay.conduit.market",
+      supplierAllocations: [
+        {
+          identity: pubkeyToNpub(SUPPLIER),
+          relayHint: "wss://nos.lol",
+          weight: "1",
+        },
+      ],
+    })
+    const expectedTerms = validateMerchantProductSupplierAllocationForm(
+      values,
+      SUPPLIER_MERCHANT
+    )
+    expect(expectedTerms.canPublish).toBe(true)
+    expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+    expect(
+      JSON.parse(storage.getItem(getProductDraftStorageKey(draftTarget)!)!)
+        .version
+    ).toBe(13)
+    const loaded = loadProductDraft(draftTarget, storage)
+    expect(loaded).toEqual({ draft: values, storageAvailable: true })
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        loaded.draft!,
+        SUPPLIER_MERCHANT
+      )
+    ).toEqual(expectedTerms)
+    expect(loaded.draft!.supplierAllocations).not.toBe(
+      values.supplierAllocations
+    )
+    expect(
+      saveProductDraft(
+        draftTarget,
+        { ...loaded.draft!, title: "Copy title" },
+        storage
+      )
+    ).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toEqual({
+      ...values,
+      title: "Copy title",
+    })
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        loadProductDraft(draftTarget, storage).draft!,
+        SUPPLIER_MERCHANT
+      )
+    ).toEqual(expectedTerms)
+  })
+
+  it("retains explicit repair requirements across unrelated draft edits and reloads", () => {
+    const storage = new MemoryStorage()
+    const editTarget = target({
+      productAddressId: `30402:${"a".repeat(64)}:item`,
+      baseEventId: "revision-1",
+    })
+    const values = form({
+      supplierAllocationEnabled: true,
+      supplierAllocationRepairRequired: true,
+    })
+    expect(saveProductDraft(editTarget, values, storage)).toBe(true)
+    const loaded = loadProductDraft(editTarget, storage).draft!
+    expect(
+      saveProductDraft(
+        editTarget,
+        { ...loaded, title: "Revised title" },
+        storage
+      )
+    ).toBe(true)
+    const reloaded = loadProductDraft(editTarget, storage).draft!
+    expect(reloaded.supplierAllocationRepairRequired).toBe(true)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        reloaded,
+        editTarget.merchantPubkey
+      ).canPublish
+    ).toBe(false)
+    const removed = applyMerchantProductSupplierAllocationFormChange(reloaded, {
+      enabled: false,
+      merchantWeight: "1",
+      merchantRelayHint: "",
+      suppliers: [],
+    })
+    expect(saveProductDraft(editTarget, removed, storage)).toBe(true)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        loadProductDraft(editTarget, storage).draft!,
+        editTarget.merchantPubkey
+      ).canPublish
+    ).toBe(true)
+  })
+
+  for (const version of [8, 9, 10, 11, 12]) {
+    it(`migrates version ${version} listing-area drafts without inventing supplier absence for edits`, () => {
+      const storage = new MemoryStorage()
+      const values = form({
+        listingAreaCountry: "CA",
+        listingAreaPlaceId: 6167865,
+        listingAreaMode: "selected",
+        futureEventMarketReference: `30409:${"b".repeat(64)}:future-market`,
+      })
+      const legacy: Record<string, unknown> = { ...values }
+      for (const field of [
+        "supplierAllocationEnabled",
+        "supplierAllocationRepairRequired",
+        "merchantAllocationWeight",
+        "merchantAllocationRelayHint",
+        "supplierAllocations",
+      ])
+        delete legacy[field]
+      for (const editing of [false, true]) {
+        const draftTarget = target(
+          editing
+            ? {
+                productAddressId: `30402:${"a".repeat(64)}:item`,
+                baseEventId: "revision-1",
+              }
+            : {}
+        )
+        storage.setItem(
+          getProductDraftStorageKey(draftTarget)!,
+          JSON.stringify({
+            version,
+            savedAt: 1_700_000_000_000,
+            baseEventId: editing ? "revision-1" : null,
+            form: legacy,
+          })
+        )
+        const loaded = loadProductDraft(draftTarget, storage)
+        expect(loaded.draft).toMatchObject({
+          title: values.title,
+          listingAreaCountry: "CA",
+          listingAreaPlaceId: 6167865,
+          listingAreaMode: "selected",
+          futureEventMarketReference: values.futureEventMarketReference,
+          supplierAllocationEnabled: editing,
+          supplierAllocationRepairRequired: editing,
+        })
+        expect(loaded.supplierAllocationAuthority).toBe(
+          editing ? "legacy_edit_unknown" : undefined
+        )
+        expect(
+          validateMerchantProductSupplierAllocationForm(
+            loaded.draft!,
+            draftTarget.merchantPubkey
+          ).canPublish
+        ).toBe(!editing)
+        // Unknown supplier authority cannot become permission after autosave.
+        expect(saveProductDraft(draftTarget, loaded.draft!, storage)).toBe(true)
+        expect(
+          loadProductDraft(draftTarget, storage).draft
+            ?.supplierAllocationRepairRequired
+        ).toBe(editing)
+      }
+    })
+  }
+
   it("recovers explicit shared measurements and independent variation fields", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()
@@ -209,6 +423,150 @@ describe("merchant product drafts", () => {
       }
     })
   }
+
+  for (const version of [8, 9]) {
+    it(`retains independently versioned supplier-branch v${version} draft terms`, () => {
+      const storage = new MemoryStorage()
+      const draftTarget = target({
+        productAddressId: `30402:${"a".repeat(64)}:item`,
+        baseEventId: "revision-1",
+      })
+      const supplierAllocations = [
+        {
+          identity: pubkeyToNpub(SUPPLIER),
+          relayHint: "wss://nos.lol",
+          weight: "1",
+        },
+      ]
+      const legacy: Record<string, unknown> = {
+        ...form(),
+        supplierAllocationEnabled: true,
+        merchantAllocationWeight: "3",
+        merchantAllocationRelayHint: "wss://relay.conduit.market",
+        supplierAllocations,
+      }
+      for (const field of [
+        "listingAreaCountry",
+        "listingAreaState",
+        "listingAreaPlaceId",
+        "listingAreaMode",
+        "listingAreaDefault",
+      ])
+        delete legacy[field]
+      if (version === 8) delete legacy.supplierAllocationRepairRequired
+      storage.setItem(
+        getProductDraftStorageKey(draftTarget)!,
+        JSON.stringify({
+          version,
+          savedAt: 1_700_000_000_000,
+          baseEventId: "revision-1",
+          form: legacy,
+        })
+      )
+      const loaded = loadProductDraft(draftTarget, storage)
+      expect(loaded.supplierAllocationAuthority).toBeUndefined()
+      expect(loaded.draft).toMatchObject({
+        supplierAllocationEnabled: true,
+        supplierAllocationRepairRequired: version === 8,
+        merchantAllocationWeight: "3",
+        merchantAllocationRelayHint: "wss://relay.conduit.market",
+        supplierAllocations,
+        listingAreaCountry: "",
+        listingAreaPlaceId: null,
+        listingAreaMode: "unchanged",
+      })
+      expect(saveProductDraft(draftTarget, loaded.draft!, storage)).toBe(true)
+      expect(loadProductDraft(draftTarget, storage).draft).toEqual(loaded.draft)
+    })
+  }
+
+  it("restores unknown legacy edit terms only from present matching baseline evidence", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target({
+      merchantPubkey: SUPPLIER_MERCHANT,
+      productAddressId: `30402:${SUPPLIER_MERCHANT}:item`,
+      baseEventId: "revision-1",
+    })
+    const legacy: Record<string, unknown> = {
+      ...form({ title: "Draft title" }),
+    }
+    for (const field of [
+      "supplierAllocationEnabled",
+      "supplierAllocationRepairRequired",
+      "merchantAllocationWeight",
+      "merchantAllocationRelayHint",
+      "supplierAllocations",
+    ])
+      delete legacy[field]
+    storage.setItem(
+      getProductDraftStorageKey(draftTarget)!,
+      JSON.stringify({
+        version: 10,
+        savedAt: 1_700_000_000_000,
+        baseEventId: "revision-1",
+        form: legacy,
+      })
+    )
+    const store = new ProductDraftStore(storage)
+    const loaded = store.load(draftTarget)
+    const missing = restoreProductDraftSupplierAllocation(loaded, undefined)
+    expect(missing).toBe(loaded.draft)
+    expect(missing).toMatchObject({
+      supplierAllocationEnabled: true,
+      supplierAllocationRepairRequired: true,
+    })
+    expect(
+      validateMerchantProductSupplierAllocationForm(missing!, SUPPLIER_MERCHANT)
+        .canPublish
+    ).toBe(false)
+
+    const built = buildProductSupplierAllocation({
+      merchantPubkey: SUPPLIER_MERCHANT,
+      merchantWeight: "3",
+      merchantRelayHint: "wss://relay.conduit.market",
+      suppliers: [
+        { identity: SUPPLIER, relayHint: "wss://nos.lol", weight: "1" },
+      ],
+    })
+    if (!built.ok) throw new Error("Expected normal supplier terms")
+    const baselines: ProductSupplierAllocation[] = [
+      built.allocation,
+      { state: "absent", recipients: [], issues: [] },
+      { ...built.allocation, state: "invalid", issues: ["invalid_version"] },
+    ]
+    for (const baseline of baselines) {
+      const restored = restoreProductDraftSupplierAllocation(loaded, baseline)!
+      expect(restored.title).toBe("Draft title")
+      expect(restored.supplierAllocationEnabled).toBe(
+        baseline.state !== "absent"
+      )
+      expect(restored.supplierAllocationRepairRequired).toBe(
+        baseline.state === "invalid"
+      )
+      const validation = validateMerchantProductSupplierAllocationForm(
+        restored,
+        SUPPLIER_MERCHANT
+      )
+      expect(validation.canPublish).toBe(baseline.state !== "invalid")
+      if (baseline.state === "valid")
+        expect(validation.allocation).toEqual(baseline)
+    }
+    // Once saved in v11, the user's explicit form state takes precedence.
+    expect(store.save(draftTarget, missing!)).toBe(true)
+    const current = store.load(draftTarget)
+    expect(
+      restoreProductDraftSupplierAllocation(current, built.allocation)
+    ).toBe(current.draft)
+    expect(current.draft?.supplierAllocationRepairRequired).toBe(true)
+    // The existing loader still refuses a different source revision first.
+    const changedRevision = store.load({
+      ...draftTarget,
+      baseEventId: "revision-2",
+    })
+    expect(
+      restoreProductDraftSupplierAllocation(changedRevision, built.allocation)
+    ).toBeNull()
+  })
 
   it("rejects malformed contact-free handoff settings", () => {
     const storage = new MemoryStorage()

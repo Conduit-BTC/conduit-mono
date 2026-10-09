@@ -74,6 +74,59 @@ function commerceQuote() {
 }
 
 describe("checkout Spark reconciliation", () => {
+  it("digest-binds and restores optional frozen conversion in v2 while preserving legacy tuples", () => {
+    const legacy = freezeCheckoutSparkPlan({
+      ...planInput(),
+      commerceQuote: commerceQuote(),
+    })
+    const quote = {
+      ...commerceQuote(),
+      pricing: {
+        version: 1 as const,
+        rate: {
+          rate: 100_000,
+          fetchedAt: CREATED_AT,
+          source: "mempool" as const,
+          fiatUsdRates: { GBP: 1.3, EUR: 1.2 },
+        },
+      },
+      lines: commerceQuote().lines.map((line) => ({
+        ...line,
+        sourcePrice: { amount: 1, currency: "USD", normalizedCurrency: "USD" },
+      })),
+    }
+    const frozen = freezeCheckoutSparkPlan({
+      ...planInput(),
+      commerceQuote: quote,
+    })
+    expect(frozen.schemaVersion).toBe(2)
+    expect(frozen.planDigest).not.toBe(legacy.planDigest)
+    expect(
+      restoreCheckoutSparkReconciliation(
+        createCheckoutSparkReconciliation(frozen)
+      ).plan.commerceQuote
+    ).toEqual(quote)
+    const reordered = {
+      ...quote,
+      pricing: {
+        ...quote.pricing,
+        rate: { ...quote.pricing.rate, fiatUsdRates: { EUR: 1.2, GBP: 1.3 } },
+      },
+    }
+    expect(
+      freezeCheckoutSparkPlan({ ...planInput(), commerceQuote: reordered })
+        .planDigest
+    ).toBe(frozen.planDigest)
+    const changed = structuredClone(createCheckoutSparkReconciliation(frozen))
+    changed.plan.commerceQuote!.pricing!.rate.rate += 1
+    expect(() => restoreCheckoutSparkReconciliation(changed)).toThrow()
+    expect(
+      freezeCheckoutSparkPlan({
+        ...planInput(),
+        commerceQuote: commerceQuote(),
+      }).planDigest
+    ).toBe(legacy.planDigest)
+  })
   it("rejects a quote-bound merchant leg for a different account", () => {
     const input = planInput()
     expect(() =>

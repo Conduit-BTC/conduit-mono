@@ -1,0 +1,725 @@
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import {
+  cacheSignedProductListingEvent,
+  cacheSignedProductDeletionEvent,
+  config,
+  db,
+  deliverPendingProductShippingJobs,
+  deliverProductListingJob,
+  EVENT_KINDS,
+  getCachedMerchantStorefront,
+  getPendingProductListingDeliveries,
+  getProductDeletionDelivery,
+  getProductListingDelivery,
+  getProductListingDeliveryJobId,
+  getStagedProductListingDeliveries,
+  isProductListingEventReplayEligible,
+  getAuthorEventFallbackRelayUrls,
+  normalizePublicWebSocketUrl,
+  markProductListingDeliveryReady,
+  armRecoveredProductListingDelivery,
+  persistProductListingDelivery,
+  planPublishRelays,
+  publishExactProductShippingRelay,
+  publishSignedEventToRelay,
+  readCurrentProductWriteRevision,
+  withLocalProductCoordinateLocks,
+  type ProductListingDeliveryJob,
+  type ProductListingDeliveryOptions,
+  type ProductDeletionDeliveryOptions,
+  type ProductListingRelayPublisher,
+  type ProductListingRelayTarget,
+  type PublishWithPlannerResult,
+  type RelayWritePlan,
+  type SignedPublicNostrEvent,
+} from "@conduit/core"
+
+const WORKER_INTERVAL_MS = 15_000
+const MAX_JOB_DELIVERY_CONCURRENCY = 3
+
+async function runJobsWithConcurrency<T>(
+  jobs: readonly T[],
+  operation: (job: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MAX_JOB_DELIVERY_CONCURRENCY, jobs.length) },
+      async () => {
+        while (nextIndex < jobs.length) {
+          const index = nextIndex
+          nextIndex += 1
+          await operation(jobs[index]!)
+        }
+      }
+    )
+  )
+}
+
+function uniqueRelayTargets(
+  targets: readonly ProductListingRelayTarget[]
+): ProductListingRelayTarget[] {
+  const byUrl = new Map<string, ProductListingRelayTarget>()
+  for (const target of targets) {
+    const existing = byUrl.get(target.relayUrl)
+    byUrl.set(target.relayUrl, {
+      relayUrl: target.relayUrl,
+      ownerSelected: target.ownerSelected || existing?.ownerSelected === true,
+      ...(target.appRelay === true || existing?.appRelay === true
+        ? { appRelay: true }
+        : {}),
+      ...(target.personalRelay === true || existing?.personalRelay === true
+        ? { personalRelay: true }
+        : {}),
+      ...(target.independentRelay === true ||
+      existing?.independentRelay === true
+        ? { independentRelay: true }
+        : {}),
+    })
+  }
+  return Array.from(byUrl.values())
+}
+
+async function publishProductListingRelay(
+  input: Parameters<ProductListingRelayPublisher>[0],
+  jobId: string,
+  options: ProductListingDeliveryOptions
+): Promise<Awaited<ReturnType<ProductListingRelayPublisher>>> {
+  let authenticatedPubkey = input.authenticatedPubkey
+  try {
+    if (
+      authenticatedPubkey &&
+      input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) === false
+    ) {
+      authenticatedPubkey = null
+    }
+  } catch {
+    authenticatedPubkey = null
+  }
+  const requiresAuthenticatedOwnerAuthority =
+    !config.e2eRelayIsolationEnabled &&
+    (!normalizePublicWebSocketUrl(input.relayUrl) ||
+      input.relayTarget.grants.every((grant) => grant.kind === "owner_nip65"))
+
+  const status = await publishSignedEventToRelay({
+    signedEvent: input.signedEvent,
+    relayUrl: input.relayUrl,
+    relayTarget: input.relayTarget,
+    authorPubkey: input.signedEvent.pubkey,
+    accountPubkey: input.accountPubkey,
+    authenticatedPubkey,
+    accountNetworkLocalStateRepository:
+      input.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,
+    shouldContinue:
+      requiresAuthenticatedOwnerAuthority && authenticatedPubkey
+        ? () =>
+            input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) !== false
+        : undefined,
+  })
+  if (status === "acked") {
+    await cacheCurrentListingEvidence(
+      input.signedEvent,
+      [input.relayUrl],
+      "required",
+      jobId,
+      options
+    )
+  }
+  // Keep the durable exact frame retryable while relay authentication is pending.
+  return {
+    status: status === "acked" || status === "rejected" ? status : "timed_out",
+  }
+}
+
+/** Never let a late ACK or stale worker snapshot restore a superseded intent. */
+async function cacheCurrentListingEvidence(
+  event: SignedPublicNostrEvent,
+  sourceRelayUrls: readonly string[],
+  persistence: "required" | "best_effort",
+  jobId: string,
+  options: ProductListingDeliveryOptions
+): Promise<void> {
+  const dTags = event.tags.filter(([name]) => name === "d")
+  if (dTags.length !== 1 || !dTags[0]?.[1]) {
+    throw new Error("Signed product coordinate is missing")
+  }
+  const addressId = `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${dTags[0][1]}`
+  // Relay I/O has finished. Hold only local coordination while re-reading
+  // durable authority and projecting; a commit uses this same coordinate lock.
+  await withLocalProductCoordinateLocks([addressId], async () => {
+    const [currentJob, frontier, current, exactTombstone] = await Promise.all([
+      getProductListingDelivery(jobId, options),
+      db.localProductWriteFrontiers.get(addressId),
+      readCurrentProductWriteRevision(addressId),
+      db.productTombstones.get(`e:${event.pubkey}:${event.id}`),
+    ])
+    const selectedIsNewer =
+      current.eventId !== null &&
+      (current.eventCreatedAt! > event.created_at ||
+        (current.eventCreatedAt === event.created_at &&
+          current.eventId < event.id))
+    if (
+      !currentJob ||
+      !isProductListingEventReplayEligible(currentJob, event.id) ||
+      (frontier !== undefined && frontier.eventId !== event.id) ||
+      selectedIsNewer ||
+      exactTombstone !== undefined ||
+      event.created_at <= current.deletionCreatedAt
+    ) {
+      // Keep source provenance on a surviving current row without changing its
+      // signed projection. With no cache row, the exact ACK remains in outbox
+      // history; absence is not permission to recreate the older product.
+      if (sourceRelayUrls.length > 0) {
+        await db.transaction("rw", db.products, async () => {
+          const row = await db.products.get(addressId)
+          if (row) {
+            await db.products.put({
+              ...row,
+              sourceRelayUrls: uniqueRelayUrls([
+                ...(row.sourceRelayUrls ?? []),
+                ...sourceRelayUrls,
+              ]),
+            })
+          }
+        })
+      }
+      return
+    }
+    await cacheSignedProductListingEvent(
+      new NDKEvent(undefined, {
+        ...event,
+        tags: event.tags.map((tag) => [...tag]),
+      }),
+      {
+        sourceRelayUrls,
+        persistence,
+      }
+    )
+  })
+}
+
+async function restoreLocalListingEvidence(
+  job: ProductListingDeliveryJob,
+  options: ProductListingDeliveryOptions
+): Promise<void> {
+  await Promise.all(
+    job.signedEvents
+      .filter((event) => isProductListingEventReplayEligible(job, event.id))
+      .map((signedEvent) => {
+        const sourceRelayUrls = job.relayDelivery
+          .filter(
+            (delivery) =>
+              delivery.eventId === signedEvent.id && delivery.status === "acked"
+          )
+          .map((delivery) => delivery.relayUrl)
+        return cacheCurrentListingEvidence(
+          signedEvent,
+          sourceRelayUrls,
+          "best_effort",
+          job.id,
+          options
+        )
+      })
+  )
+}
+
+/**
+ * Recovery may only arm the exact signed revisions still selected by the
+ * local NIP-01 product frontier. Another tab can have committed a newer (or
+ * same-second, lower-ID) revision while this job was staged. An incomplete
+ * cache read also leaves the exact signed job staged for explicit repair.
+ */
+async function isCurrentStagedListingFamily(
+  job: ProductListingDeliveryJob
+): Promise<boolean> {
+  const records = (
+    await getCachedMerchantStorefront({
+      merchantPubkey: job.merchantPubkey,
+      includeMarketHidden: true,
+    })
+  ).data
+  return job.signedEvents.every((event) => {
+    const dTags = event.tags.filter((tag) => tag[0] === "d")
+    if (dTags.length !== 1 || !dTags[0]?.[1]) return false
+    const addressId = `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${dTags[0][1]}`
+    const selected = records.filter((record) => record.addressId === addressId)
+    return (
+      selected.length === 1 &&
+      selected[0]?.eventId === event.id &&
+      selected[0]?.eventCreatedAt === event.created_at
+    )
+  })
+}
+
+export async function planCurrentProductListingRelayTargets(
+  merchantPubkey: string,
+  authenticatedPubkey: string | null,
+  shouldContinue?: () => boolean
+): Promise<ProductListingRelayTarget[]> {
+  const plan = await planPublishRelays({
+    intent: "commerce_author_event",
+    authorPubkey: merchantPubkey,
+    authenticatedPubkey,
+    accountPubkey: merchantPubkey,
+    refreshRelayLists: true,
+    deliveryMode: "critical",
+    skipHealthFilter: true,
+    shouldContinue,
+  })
+  return resolveProductListingRelayTargets(plan)
+}
+
+export function resolveProductListingRelayTargets(
+  plan: RelayWritePlan
+): ProductListingRelayTarget[] {
+  const plannedRelayUrls = [
+    ...(plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls),
+    ...(plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls),
+    ...plan.parkedRelayUrls,
+  ]
+  const fallbackRelayUrls =
+    plan.signedRelayListAuthoritative === true
+      ? []
+      : getAuthorEventFallbackRelayUrls({
+          eventKind: EVENT_KINDS.PRODUCT,
+          intent: "commerce_author_event",
+          attemptedRelayUrls: plannedRelayUrls,
+        })
+  const appRelayUrls = new Set(plan.appRelayUrls ?? [])
+  const personalRelayUrls = new Set(plan.personalRelayUrls ?? [])
+  const independentRelayUrls = new Set(plan.independentRelayUrls ?? [])
+  const commerceFallbackRelayUrls = new Set(fallbackRelayUrls)
+  return uniqueRelayTargets(
+    [...plannedRelayUrls, ...fallbackRelayUrls].map((relayUrl) => ({
+      relayUrl,
+      // Private/local targets can only survive author-event planning when the
+      // authenticated owner selected them. The configured isolated E2E relay
+      // is admitted separately and does not need owner authority.
+      ownerSelected:
+        !config.e2eRelayIsolationEnabled &&
+        !normalizePublicWebSocketUrl(relayUrl),
+      ...(appRelayUrls.has(relayUrl) || commerceFallbackRelayUrls.has(relayUrl)
+        ? { appRelay: true }
+        : {}),
+      ...(personalRelayUrls.has(relayUrl) ? { personalRelay: true } : {}),
+      ...(independentRelayUrls.has(relayUrl) ? { independentRelay: true } : {}),
+    }))
+  )
+}
+
+export async function persistSignedProductListings(
+  input: {
+    merchantPubkey: string
+    signedEvents: readonly SignedPublicNostrEvent[]
+    relayTargets: readonly ProductListingRelayTarget[]
+    companionDeletionJobId?: string
+    readyForDelivery?: boolean
+    replacesRejectedListingJobId?: string
+  },
+  options: ProductListingDeliveryOptions = {}
+): Promise<ProductListingDeliveryJob> {
+  return await persistProductListingDelivery(input, options)
+}
+
+/**
+ * Migrate a pre-outbox retry by durably binding its exact signed bytes to one
+ * immutable relay plan before any relay I/O. Existing jobs always win so a
+ * later tab cannot replace their original targets.
+ */
+export async function ensureSignedProductListingsQueued(
+  input: {
+    merchantPubkey: string
+    signedEvents: readonly SignedPublicNostrEvent[]
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  },
+  options: ProductListingDeliveryOptions = {},
+  dependencies: {
+    planRelayTargets?: typeof planCurrentProductListingRelayTargets
+  } = {}
+): Promise<ProductListingDeliveryJob> {
+  const merchantPubkey = input.merchantPubkey
+  const authenticatedPubkey = input.authenticatedPubkey ?? null
+  const shouldContinue = input.shouldContinue
+  const signedEvents = input.signedEvents.map((event) => ({
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
+  }))
+  const id = getProductListingDeliveryJobId(signedEvents)
+  const existing = await getProductListingDelivery(id, options)
+  if (existing) return existing
+
+  const relayTargets = await (
+    dependencies.planRelayTargets ?? planCurrentProductListingRelayTargets
+  )(merchantPubkey, authenticatedPubkey, shouldContinue)
+  return await persistSignedProductListings(
+    {
+      merchantPubkey,
+      signedEvents,
+      relayTargets,
+      readyForDelivery: true,
+    },
+    options
+  )
+}
+
+function uniqueRelayUrls(urls: readonly string[]): string[] {
+  return Array.from(new Set(urls))
+}
+
+export function productListingJobToPublishResult(
+  job: ProductListingDeliveryJob
+): PublishWithPlannerResult {
+  const attemptedRelayUrls = uniqueRelayUrls(
+    job.relayDelivery
+      .filter((delivery) => delivery.attemptCount > 0)
+      .map((delivery) => delivery.relayUrl)
+  )
+  const successfulRelayUrls = job.relayTargets
+    .map((target) => target.relayUrl)
+    .filter((relayUrl) =>
+      job.signedEvents.every((event) =>
+        job.relayDelivery.some(
+          (delivery) =>
+            delivery.eventId === event.id &&
+            delivery.relayUrl === relayUrl &&
+            delivery.status === "acked"
+        )
+      )
+    )
+  const successfulRelaySet = new Set(successfulRelayUrls)
+  const failedRelayUrls = job.relayTargets
+    .map((target) => target.relayUrl)
+    .filter((relayUrl) => !successfulRelaySet.has(relayUrl))
+  const rejectedRelayUrls = failedRelayUrls.filter((relayUrl) => {
+    const deliveries = job.relayDelivery.filter(
+      (delivery) => delivery.relayUrl === relayUrl
+    )
+    return (
+      deliveries.some((delivery) => delivery.status === "rejected") &&
+      deliveries.every(
+        (delivery) =>
+          delivery.status === "acked" || delivery.status === "rejected"
+      )
+    )
+  })
+
+  return {
+    plan: {
+      intent: "commerce_author_event",
+      // This delivery summary cannot be replayed as an executable grant plan.
+      primaryRelayTargets: [],
+      broadcastRelayTargets: [],
+      primaryRelayUrls: job.relayTargets.map((target) => target.relayUrl),
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+      appRelayUrls: job.relayTargets
+        .filter((target) => target.appRelay === true)
+        .map((target) => target.relayUrl),
+      personalRelayUrls: job.relayTargets
+        .filter((target) => target.personalRelay === true)
+        .map((target) => target.relayUrl),
+      independentRelayUrls: job.relayTargets
+        .filter((target) => target.independentRelay === true)
+        .map((target) => target.relayUrl),
+    },
+    attemptedRelayUrls,
+    successfulRelayUrls,
+    failedRelayUrls,
+    rejectedRelayUrls,
+    relayFailureMessages: Object.fromEntries(
+      failedRelayUrls.map((relayUrl) => {
+        const deliveries = job.relayDelivery.filter(
+          (delivery) => delivery.relayUrl === relayUrl
+        )
+        const message = deliveries.some(
+          (delivery) => delivery.status === "rejected"
+        )
+          ? "Relay rejected part of the product family"
+          : deliveries.some((delivery) => delivery.status === "timed_out")
+            ? "No acknowledgement before timeout"
+            : "Product-family delivery attempt pending"
+        return [relayUrl, message]
+      })
+    ),
+  }
+}
+
+export interface DeliverQueuedProductListingOptions extends ProductListingDeliveryOptions {
+  publisher?: ProductListingRelayPublisher
+  restoreLocalEvidence?: (job: ProductListingDeliveryJob) => Promise<void>
+  shouldContinue?: () => boolean
+  expectedSignedEvents?: readonly SignedPublicNostrEvent[]
+}
+
+function signedEventsMatch(
+  left: readonly SignedPublicNostrEvent[],
+  right: readonly SignedPublicNostrEvent[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((event, index) => {
+      const candidate = right[index]
+      return (
+        !!candidate &&
+        event.id === candidate.id &&
+        event.pubkey === candidate.pubkey &&
+        event.created_at === candidate.created_at &&
+        event.kind === candidate.kind &&
+        event.content === candidate.content &&
+        event.sig === candidate.sig &&
+        event.tags.length === candidate.tags.length &&
+        event.tags.every(
+          (tag, tagIndex) =>
+            tag.length === candidate.tags[tagIndex]?.length &&
+            tag.every(
+              (value, valueIndex) =>
+                value === candidate.tags[tagIndex]?.[valueIndex]
+            )
+        )
+      )
+    })
+  )
+}
+
+function bindAuthenticatedProductListingAuthority(
+  authenticatedPubkey: string | null | undefined,
+  shouldContinue: (() => boolean) | undefined,
+  isAuthenticatedPubkeyCurrent: ProductListingDeliveryOptions["isAuthenticatedPubkeyCurrent"]
+): ProductListingDeliveryOptions["isAuthenticatedPubkeyCurrent"] {
+  if (!authenticatedPubkey || !shouldContinue) {
+    return isAuthenticatedPubkeyCurrent
+  }
+  return (candidatePubkey) =>
+    candidatePubkey === authenticatedPubkey &&
+    (isAuthenticatedPubkeyCurrent?.(candidatePubkey) ?? true) &&
+    shouldContinue()
+}
+
+export async function deliverQueuedProductListings(
+  jobId: string,
+  options: DeliverQueuedProductListingOptions = {}
+): Promise<PublishWithPlannerResult> {
+  const {
+    publisher: customPublisher,
+    restoreLocalEvidence: customRestore,
+    shouldContinue,
+    expectedSignedEvents,
+    ...deliveryOptions
+  } = options
+  const publisher: ProductListingRelayPublisher =
+    customPublisher ??
+    ((input) => publishProductListingRelay(input, jobId, deliveryOptions))
+  const restoreLocalEvidence =
+    customRestore ??
+    ((job: ProductListingDeliveryJob) =>
+      restoreLocalListingEvidence(job, deliveryOptions))
+  const queuedJob = await getProductListingDelivery(jobId, deliveryOptions)
+  if (!queuedJob) {
+    throw new Error("Product listing delivery job not found")
+  }
+  if (
+    expectedSignedEvents &&
+    !signedEventsMatch(queuedJob.signedEvents, expectedSignedEvents)
+  ) {
+    throw new Error(
+      "Product listing delivery job does not match the exact signed family"
+    )
+  }
+
+  await restoreLocalEvidence(queuedJob)
+  const deliveredJob = await deliverProductListingJob(jobId, publisher, {
+    ...deliveryOptions,
+    isAuthenticatedPubkeyCurrent: bindAuthenticatedProductListingAuthority(
+      deliveryOptions.authenticatedPubkey,
+      shouldContinue,
+      deliveryOptions.isAuthenticatedPubkeyCurrent
+    ),
+  })
+  await restoreLocalEvidence(deliveredJob)
+  return productListingJobToPublishResult(deliveredJob)
+}
+
+export interface ResumeProductListingDeliveriesOptions extends ProductListingDeliveryOptions {
+  publisher?: ProductListingRelayPublisher
+  restoreLocalEvidence?: (job: ProductListingDeliveryJob) => Promise<void>
+}
+
+export interface ResumeStagedProductListingDeliveriesOptions extends ProductListingDeliveryOptions {
+  deletionDeliveryOptions?: ProductDeletionDeliveryOptions
+  restoreLocalListingEvidence?: (
+    job: ProductListingDeliveryJob
+  ) => Promise<void>
+  restoreLocalDeletionEvidence?: (
+    signedEvent: SignedPublicNostrEvent
+  ) => Promise<void>
+}
+
+/**
+ * Recover the narrow crash window after signed listing evidence became
+ * durable but before its delivery gate was armed. Mixed writes also require
+ * the exact reciprocal deletion intent before either half is exposed.
+ */
+export async function resumeStagedProductListingDeliveries(
+  options: ResumeStagedProductListingDeliveriesOptions = {}
+): Promise<void> {
+  const {
+    deletionDeliveryOptions,
+    restoreLocalListingEvidence: customRestoreListing,
+    restoreLocalDeletionEvidence: restoreDeletion = async (signedEvent) => {
+      await cacheSignedProductDeletionEvent(
+        new NDKEvent(undefined, {
+          ...signedEvent,
+          tags: signedEvent.tags.map((tag) => [...tag]),
+        })
+      )
+    },
+    ...listingOptions
+  } = options
+  const restoreListing =
+    customRestoreListing ??
+    ((job: ProductListingDeliveryJob) =>
+      restoreLocalListingEvidence(job, listingOptions))
+  const jobs = await getStagedProductListingDeliveries(listingOptions)
+  for (const job of jobs) {
+    const deletionId = job.companionDeletionJobId
+    try {
+      if (!deletionId) {
+        await restoreListing(job)
+        if (!(await isCurrentStagedListingFamily(job))) continue
+        if (job.replacesRejectedListingJobId) {
+          await armRecoveredProductListingDelivery(
+            job.replacesRejectedListingJobId,
+            job.id
+          )
+        } else {
+          await markProductListingDeliveryReady(job.id, listingOptions)
+        }
+        continue
+      }
+      const deletion = await getProductDeletionDelivery(
+        deletionId,
+        deletionDeliveryOptions
+      )
+      if (
+        !deletion ||
+        deletion.companionListingJobId !== job.id ||
+        deletion.signedEvent.id !== deletionId
+      ) {
+        continue
+      }
+      await restoreListing(job)
+      await restoreDeletion(deletion.signedEvent)
+      if (!(await isCurrentStagedListingFamily(job))) continue
+      await markProductListingDeliveryReady(job.id, {
+        ...listingOptions,
+        isCompanionDeletionDurable: async (
+          candidateId,
+          candidateListingJobId
+        ) => candidateId === deletion.id && candidateListingJobId === job.id,
+      })
+    } catch {
+      // Leave both exact intents staged. A later startup/online pass can retry
+      // local evidence restoration without exposing either half to a relay.
+    }
+  }
+}
+
+export async function resumePendingProductListingDeliveries(
+  options: ResumeProductListingDeliveriesOptions = {}
+): Promise<void> {
+  const {
+    publisher: customPublisher,
+    restoreLocalEvidence: customRestore,
+    ...deliveryOptions
+  } = options
+  const restoreLocalEvidence =
+    customRestore ??
+    ((job: ProductListingDeliveryJob) =>
+      restoreLocalListingEvidence(job, deliveryOptions))
+  const jobs = await getPendingProductListingDeliveries({
+    ...deliveryOptions,
+    dueOnly: true,
+  })
+  await runJobsWithConcurrency(jobs, async (job) => {
+    try {
+      await restoreLocalEvidence(job)
+      const deliveredJob = await deliverProductListingJob(
+        job.id,
+        customPublisher ??
+          ((input) =>
+            publishProductListingRelay(input, job.id, deliveryOptions)),
+        deliveryOptions
+      )
+      await restoreLocalEvidence(deliveredJob)
+    } catch {
+      // Each exact signed family remains durable and independent. A cache or
+      // relay failure must not prevent later jobs from making progress.
+    }
+  })
+}
+
+export function startProductListingDeliveryWorker(
+  authenticatedPubkey: string | null = null
+): () => void {
+  if (typeof window === "undefined") return () => {}
+
+  let stopped = false
+  let active: Promise<void> | null = null
+  const run = () => {
+    if (stopped || active) return
+    active = deliverPendingProductShippingJobs(
+      publishExactProductShippingRelay,
+      {
+        authenticatedPubkey,
+        isAuthenticatedPubkeyCurrent: () => !stopped,
+      }
+    )
+      .then(() =>
+        resumeStagedProductListingDeliveries({
+          authenticatedPubkey,
+          isAuthenticatedPubkeyCurrent: () => !stopped,
+        })
+      )
+      .then(() =>
+        resumePendingProductListingDeliveries({
+          authenticatedPubkey,
+          isAuthenticatedPubkeyCurrent: () => !stopped,
+        })
+      )
+      .catch(() => {
+        // The durable family remains queued for a later timer/online/focus run.
+      })
+      .finally(() => {
+        active = null
+      })
+  }
+  const runWhenVisible = () => {
+    if (
+      typeof document === "undefined" ||
+      document.visibilityState === "visible"
+    ) {
+      run()
+    }
+  }
+
+  const interval = window.setInterval(runWhenVisible, WORKER_INTERVAL_MS)
+  window.addEventListener("online", run)
+  window.addEventListener("focus", run)
+  document.addEventListener("visibilitychange", runWhenVisible)
+  queueMicrotask(run)
+
+  return () => {
+    stopped = true
+    window.clearInterval(interval)
+    window.removeEventListener("online", run)
+    window.removeEventListener("focus", run)
+    document.removeEventListener("visibilitychange", runWhenVisible)
+  }
+}

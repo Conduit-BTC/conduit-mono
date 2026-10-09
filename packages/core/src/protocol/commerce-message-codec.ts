@@ -250,8 +250,18 @@ export function decodeCommerceMessageRumor(
   const contentObject = rumor.kind === 16 ? objectContent(rumor.content) : null
   if (
     rumor.kind === 16 &&
-    (typeTags.some((tag) => tag[1] === "checkout_spark_recovery") ||
-      contentObject?.type === "checkout_spark_recovery" ||
+    (typeTags.some((tag) =>
+      [
+        "checkout_spark_recovery",
+        "checkout_spark_recovery_progress",
+        "checkout_spark_merchant_progress",
+      ].includes(tag[1] ?? "")
+    ) ||
+      [
+        "checkout_spark_recovery",
+        "checkout_spark_recovery_progress",
+        "checkout_spark_merchant_progress",
+      ].includes(String(contentObject?.type ?? "")) ||
       typeTags.some(
         (tag) =>
           tag[1]?.startsWith("organizer_") ||

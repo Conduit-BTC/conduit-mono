@@ -1,35 +1,62 @@
 import {
   config,
+  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+  createCheckoutSparkNativeTreasurySdkAdapter,
   decodeLightningInvoiceAmount,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
+  ensureSparkPrivateModeReady,
+  getCheckoutSparkNativeTreasuryPolicyForSdkVersion,
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
+  hasCheckoutSparkProviderSendWindow,
   isAmountlessLightningInvoice,
+  isValidLightningInvoice,
+  inspectSparkCheckoutLightningReturnedAttempt,
+  inspectSparkCheckoutLightningClosedReturnedAttempt,
   normalizeLightningInvoice,
+  prepareCheckoutSparkNativeTreasuryRequest,
+  readExactSparkLightningRecoveredTransfer,
+  verifyExactSparkLightningRequestDebit,
+  validateCheckoutSparkNativeTreasuryDestination,
+  type CheckoutSparkNativeRetirementReader,
+  type SparkCheckoutLightningReturnedReader,
   type WalletNetwork,
 } from "@conduit/core"
 
 import {
   SparkWalletManager,
   type SparkCheckoutLightningObligationInput,
+  type SparkCheckoutLightningFeeEstimateInput,
   type SparkCheckoutReceiveInput,
   type SparkCheckoutReceiveFailureReason,
+  type SparkCheckoutHistoricalReceiveAttestation,
+  type SparkCheckoutHistoricalReceiveTarget,
   type SparkCheckoutReceiveReconciliation,
   type SparkCheckoutReceiveRequest,
+  type SparkCheckoutRetirementSession,
   type SparkFundsState,
+  type SparkCheckoutTreasuryPrepareInput,
+  type SparkCheckoutTreasuryRequest,
+  type SparkCheckoutTreasuryDestination,
   type SparkPreparedPayment,
   type SparkPayInvoiceInput,
   type SparkSdkClient,
   type SparkSdkFactory,
   type SparkSdkPayment,
 } from "./spark-wallet"
+import marketPackage from "../../package.json"
 import { isSparkWalletSessionCoordinationAvailable } from "./spark-wallet-lease"
+import { canUseCheckoutSparkLocalRouterCanary } from "./checkout-spark-local-router-canary"
+import { CHECKOUT_SPARK_LOCAL_UNQUOTED_RECEIVE_POLICY } from "./checkout-spark-unquoted-canary"
+import { proveSparkCheckoutReceiveCredit } from "./spark-checkout-receive-credit"
 
 export type SparkNetwork = WalletNetwork
 export type SupportedSparkNetwork = Extract<SparkNetwork, "mainnet" | "regtest">
 export type SparkNativeNetwork = "MAINNET" | "TESTNET" | "SIGNET" | "REGTEST"
 type SparkNativeTransferId = import("@buildonspark/spark-sdk").UUID
+type SparkNativeReceiveQuote =
+  import("@buildonspark/spark-sdk").LightningReceiveQuote
 
 interface SparkNativeWalletSettings {
   privateEnabled: boolean
@@ -54,6 +81,11 @@ interface SparkNativeLightningReceiveRequest {
   status: string
   network: string
   invoice: SparkNativeInvoice
+  transfer?: {
+    sparkId?: string
+    totalAmount: SparkNativeCurrencyAmount
+    userRequestId?: string
+  }
 }
 
 interface SparkNativeTransfer {
@@ -62,6 +94,17 @@ interface SparkNativeTransfer {
   totalValue: number
   type: string
   transferDirection: string
+  receiverIdentityPublicKey?: string
+  senderIdentityPublicKey?: string
+  valueSentByWallet?: number
+  valueReceivedByWallet?: number
+  sparkInvoice?: string
+  senders?: Array<{ identityPublicKey: string }>
+  receivers?: Array<{
+    identityPublicKey: string
+    amountSats: number
+    status: string
+  }>
   createdTime?: Date
   updatedTime?: Date
   userRequest?: unknown
@@ -81,6 +124,17 @@ interface SparkNativeLightningSendRequest {
 }
 
 export interface SparkNativeWallet {
+  querySparkInvoices?(
+    invoices: string[]
+  ): Promise<
+    import("@buildonspark/spark-sdk/proto/spark").QuerySparkInvoicesResponse
+  >
+  fulfillSparkInvoice?(
+    invoices: Array<{ invoice: string; amount: bigint }>
+  ): Promise<unknown>
+  /** Authenticated native closure reads; only an explicit renewal uses these. */
+  queryHTLC?: SparkCheckoutLightningReturnedReader["queryHTLC"]
+  getLeaves?: SparkCheckoutLightningReturnedReader["getLeaves"]
   on(event: string, listener: (...args: unknown[]) => void): unknown
   off(event: string, listener: (...args: unknown[]) => void): unknown
   cleanup(): Promise<void>
@@ -113,7 +167,19 @@ export interface SparkNativeWallet {
     expirySeconds?: number
     includeSparkAddress?: boolean
     includeSparkInvoice?: boolean
+    receiverIdentityPubkey?: string
+    quote?: SparkNativeReceiveQuote
   }): Promise<SparkNativeLightningReceiveRequest>
+  getIdentityPublicKey(): Promise<string>
+  /** Uses this initialized wallet's signer; never a public privacy-filtered reader. */
+  openRetirementReader?(): Promise<{
+    reader: CheckoutSparkNativeRetirementReader
+    cleanup(): Promise<void>
+  }>
+  getLightningReceiveQuote(input: {
+    amountSats: number
+    amountBasis: "NET"
+  }): Promise<SparkNativeReceiveQuote>
   getLightningReceiveRequest(
     id: string
   ): Promise<SparkNativeLightningReceiveRequest | null>
@@ -154,7 +220,21 @@ interface SparkNativeInitializeInput {
 
 export interface SparkNativeModule {
   readonly eventNames: readonly string[]
+  /** Reviewed dependency capability, not a provider quote or deployment proof. */
+  readonly nativeTreasuryPolicy?: typeof SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
+  encodeSparkAddress?: typeof import("@buildonspark/spark-sdk").encodeSparkAddress
   parseTransferId(value: string): SparkNativeTransferId
+  inspectLightningReceiveQuote(input: {
+    quote: SparkNativeReceiveQuote
+    receiverIdentityPubkey: string
+    network: SparkNativeNetwork
+  }): {
+    grossSats: number
+    netSats: number
+    feeSats: number
+    feeComponents: number
+    expiresAt: number
+  }
   isPreSendFeeCapError(error: unknown): boolean
   createPublicReadonlyClient(options: {
     log: false
@@ -166,15 +246,19 @@ export interface SparkNativeModule {
   decodeSparkAddress(
     address: string,
     network: SparkNativeNetwork
-  ): { sparkInvoiceFields?: unknown }
+  ): { sparkInvoiceFields?: unknown; identityPublicKey?: string }
   isValidSparkAddress(address: string): boolean
   getNetworkFromSparkAddress(address: string): string
 }
+
+export const SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY =
+  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
 
 interface FirstPartySparkSdkFactoryOptions {
   network: SupportedSparkNetwork
   loadModule?: () => Promise<SparkNativeModule>
   pollIntervalMs?: number
+  retirementReadTimeoutMs?: number
   transferCompletionTimeoutSecs?: number
   privacyConvergenceTimeoutMs?: number
   privacyReadTimeoutMs?: number
@@ -222,6 +306,13 @@ const LIGHTNING_RECOVERY_CONFLICT_MESSAGES = new Set([
   "Spark returned a Lightning preimage that does not match the prepared invoice.",
 ])
 
+const EXACT_LIGHTNING_TRANSFER_CONFLICT_MESSAGES = new Set([
+  "Spark returned a conflicting transfer identity.",
+  "Spark returned invalid Lightning recovery evidence.",
+  "Spark returned a conflicting Lightning payment identity.",
+  "Spark returned a different Lightning invoice.",
+])
+
 class SparkLightningLookupUnavailableError extends Error {
   constructor() {
     super("Spark payment status could not be checked.")
@@ -240,6 +331,7 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
   readonly network: SupportedSparkNetwork
   readonly #loadModule: () => Promise<SparkNativeModule>
   readonly #pollIntervalMs: number
+  readonly #retirementReadTimeoutMs: number
   readonly #transferCompletionTimeoutSecs: number
   readonly #privacyConvergenceTimeoutMs: number
   readonly #privacyReadTimeoutMs: number
@@ -258,6 +350,14 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
     this.network = input.network
     this.#loadModule = input.loadModule ?? loadFirstPartySparkModule
     this.#pollIntervalMs = input.pollIntervalMs ?? 500
+    this.#retirementReadTimeoutMs = input.retirementReadTimeoutMs ?? 5_000
+    if (
+      !Number.isSafeInteger(this.#retirementReadTimeoutMs) ||
+      this.#retirementReadTimeoutMs < 1 ||
+      this.#retirementReadTimeoutMs > 5_000
+    ) {
+      throw new Error("Spark retirement read timeout is invalid.")
+    }
     this.#transferCompletionTimeoutSecs =
       input.transferCompletionTimeoutSecs ?? 60
     this.#privacyConvergenceTimeoutMs =
@@ -271,6 +371,24 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
       input.privacyReadWithTimeout ?? withReadTimeout
     this.#wait = input.wait ?? wait
     this.#now = input.now ?? Date.now
+  }
+
+  async prepareCheckoutTreasuryRequest(
+    request: SparkCheckoutTreasuryPrepareInput
+  ): Promise<SparkCheckoutTreasuryRequest> {
+    if (request.network !== this.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    return prepareCheckoutTreasuryRequest(await this.#getModule(), request)
+  }
+
+  async validateCheckoutTreasuryDestination(
+    request: Pick<SparkCheckoutTreasuryPrepareInput, "network" | "sparkAddress">
+  ): Promise<SparkCheckoutTreasuryDestination> {
+    if (request.network !== this.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    return validateCheckoutTreasuryDestination(await this.#getModule(), request)
   }
 
   async open(input: {
@@ -289,19 +407,13 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
     })
 
     try {
-      await wallet.setPrivacyEnabled(true)
-      const settings = await wallet.getWalletSettings()
-      if (settings?.privateEnabled !== true) {
-        throw new Error("Spark private mode could not be verified.")
-      }
-      const sparkAddress = await wallet.getSparkAddress()
-      const publicClient = module.createPublicReadonlyClient({
-        log: false,
-        network: toNativeNetwork(this.network),
-      })
-      await waitForPrivacyConvergence({
-        publicClient,
-        sparkAddress,
+      await ensureSparkPrivateModeReady({
+        wallet,
+        createPublicReader: () =>
+          module.createPublicReadonlyClient({
+            log: false,
+            network: toNativeNetwork(this.network),
+          }),
         convergenceTimeoutMs: this.#privacyConvergenceTimeoutMs,
         readTimeoutMs: this.#privacyReadTimeoutMs,
         observationIntervalMs: this.#privacyObservationIntervalMs,
@@ -317,6 +429,7 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
         module,
         network: toNativeNetwork(this.network),
         pollIntervalMs: this.#pollIntervalMs,
+        retirementReadTimeoutMs: this.#retirementReadTimeoutMs,
         transferCompletionTimeoutSecs: this.#transferCompletionTimeoutSecs,
         wait: this.#wait,
         now: this.#now,
@@ -344,91 +457,18 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
   }
 }
 
-async function waitForPrivacyConvergence(input: {
-  publicClient: SparkNativeReadonlyClient
-  sparkAddress: string
-  convergenceTimeoutMs: number
-  readTimeoutMs: number
-  observationIntervalMs: number
-  requiredConsecutiveObservations: number
-  readWithTimeout: <T>(
-    read: Promise<T>,
-    timeoutMs: number,
-    label: string
-  ) => Promise<T>
-  wait: (milliseconds: number) => Promise<void>
-  now: () => number
-}): Promise<void> {
-  const deadline = input.now() + input.convergenceTimeoutMs
-  let consecutiveHiddenObservations = 0
+export const validateCheckoutTreasuryDestination =
+  validateCheckoutSparkNativeTreasuryDestination
+export const prepareCheckoutTreasuryRequest =
+  prepareCheckoutSparkNativeTreasuryRequest
 
-  /*
-   * Zero/empty public reads cannot cryptographically prove privacy for a
-   * brand-new wallet with no balance or history. Requiring multiple spaced
-   * observations still gives the provider setting time to converge before
-   * Conduit exposes the address for display or funding. Restored wallets with
-   * funds or history positively verify that those public records become hidden.
-   */
-  while (input.now() < deadline) {
-    const remainingMs = deadline - input.now()
-    const readTimeoutMs = Math.min(input.readTimeoutMs, remainingMs)
-
-    try {
-      const [availableBalance, ownedBalance, history] = await Promise.all([
-        input.readWithTimeout(
-          input.publicClient.getAvailableBalance(input.sparkAddress),
-          readTimeoutMs,
-          "Spark public available-balance read"
-        ),
-        input.readWithTimeout(
-          input.publicClient.getOwnedBalance(input.sparkAddress),
-          readTimeoutMs,
-          "Spark public owned-balance read"
-        ),
-        input.readWithTimeout(
-          input.publicClient.getTransfers({
-            sparkAddress: input.sparkAddress,
-            limit: 1,
-            offset: 0,
-          }),
-          readTimeoutMs,
-          "Spark public transfer-history read"
-        ),
-      ])
-      const isHidden =
-        availableBalance === 0n &&
-        ownedBalance === 0n &&
-        history.transfers.length === 0
-      consecutiveHiddenObservations = isHidden
-        ? consecutiveHiddenObservations + 1
-        : 0
-      if (
-        consecutiveHiddenObservations >= input.requiredConsecutiveObservations
-      ) {
-        return
-      }
-    } catch {
-      consecutiveHiddenObservations = 0
-    }
-
-    const remainingAfterReadMs = deadline - input.now()
-    if (remainingAfterReadMs <= 0) break
-    await input.wait(
-      Math.min(input.observationIntervalMs, remainingAfterReadMs)
-    )
-  }
-
-  throw new Error(
-    "Spark private mode could not be confirmed before the readiness deadline."
-  )
-}
-
-function adaptFirstPartySparkWallet(input: {
+export function adaptFirstPartySparkWallet(input: {
   walletId: string
   wallet: SparkNativeWallet
   module: SparkNativeModule
   network: SparkNativeNetwork
   pollIntervalMs: number
+  retirementReadTimeoutMs: number
   transferCompletionTimeoutSecs: number
   wait: (milliseconds: number) => Promise<void>
   now: () => number
@@ -445,6 +485,149 @@ function adaptFirstPartySparkWallet(input: {
     }
   >()
   let nextListenerId = 0
+  let disconnected = false
+  const retirementSessions = new Set<SparkCheckoutRetirementSession>()
+
+  const openCheckoutRetirementReader: NonNullable<
+    SparkSdkClient["openCheckoutRetirementReader"]
+  > = async (target) => {
+    const expected = { ...target }
+    const assertCurrent = () => {
+      if (disconnected)
+        throw new Error("Checkout Spark retirement session is closed.")
+    }
+    const boundedRead = async <T>(action: () => Promise<T>): Promise<T> => {
+      assertCurrent()
+      const result = await withReadTimeout(
+        action(),
+        input.retirementReadTimeoutMs,
+        "Checkout Spark retirement read"
+      )
+      assertCurrent()
+      return result
+    }
+    if (
+      expected.walletId !== input.walletId ||
+      toNativeNetwork(expected.network) !== input.network ||
+      !/^(02|03)[0-9a-f]{64}$/.test(expected.receiverIdentityPublicKey)
+    ) {
+      throw new Error("Checkout Spark retirement wallet does not match.")
+    }
+    if (!input.wallet.openRetirementReader) {
+      throw new Error(
+        "Authenticated Spark retirement inspection is unavailable."
+      )
+    }
+    const identity = await boundedRead(() =>
+      input.wallet.getIdentityPublicKey()
+    )
+    const sparkAddress = await boundedRead(() => input.wallet.getSparkAddress())
+    if (
+      identity !== expected.receiverIdentityPublicKey ||
+      !isSparkAddress(input.module, sparkAddress) ||
+      input.module.getNetworkFromSparkAddress(sparkAddress) !== input.network ||
+      input.module.decodeSparkAddress(sparkAddress, input.network)
+        .identityPublicKey !== identity
+    ) {
+      throw new Error("Checkout Spark retirement wallet does not match.")
+    }
+    // A late open after timeout/disconnect must still release its own connections.
+    let openingAbandoned = false
+    const opening = input.wallet
+      .openRetirementReader()
+      .then(async (session) => {
+        if (openingAbandoned || disconnected) {
+          await session.cleanup()
+          throw new Error(
+            "Checkout Spark retirement reader opening was cancelled."
+          )
+        }
+        return session
+      })
+    let native: Awaited<typeof opening>
+    try {
+      native = await withReadTimeout(
+        opening,
+        input.retirementReadTimeoutMs,
+        "Checkout Spark retirement read"
+      )
+    } catch (error) {
+      openingAbandoned = true
+      throw error
+    }
+    let closed = false
+    let cleanupPromise: Promise<void> | undefined
+    const observedInternalTransferIds = new Set<string>()
+    const session: SparkCheckoutRetirementSession = {
+      sparkAddress,
+      reader: {
+        getTransfers: (params) =>
+          read(params.sparkAddress, async () => {
+            const result = await native.reader.getTransfers({
+              ...params,
+              types: [...params.types],
+            })
+            for (const transfer of result.transfers) {
+              if ([4, 5, 30, 40].includes(transfer.type))
+                observedInternalTransferIds.add(transfer.id)
+            }
+            return result
+          }),
+        ...(native.reader.getInternalSwapEvidence
+          ? {
+              getInternalSwapEvidence: (params: {
+                sparkAddress: string
+                transferId: string
+              }) =>
+                read(params.sparkAddress, () => {
+                  if (!observedInternalTransferIds.has(params.transferId))
+                    throw new Error(
+                      "Checkout Spark swap evidence is out of scope."
+                    )
+                  return native.reader.getInternalSwapEvidence!({ ...params })
+                }),
+            }
+          : {}),
+        getPendingTransfers: (address) =>
+          read(address, () => native.reader.getPendingTransfers(address)),
+        getAvailableBalance: (address) =>
+          read(address, () => native.reader.getAvailableBalance(address)),
+        getOwnedBalance: (address) =>
+          read(address, () => native.reader.getOwnedBalance(address)),
+      },
+      cleanup() {
+        closed = true
+        cleanupPromise ??= native
+          .cleanup()
+          .then(() => {
+            retirementSessions.delete(session)
+          })
+          .catch((error: unknown) => {
+            cleanupPromise = undefined
+            throw error
+          })
+        return cleanupPromise
+      },
+    }
+    async function read<T>(
+      address: string,
+      action: () => Promise<T>
+    ): Promise<T> {
+      if (closed || address !== sparkAddress)
+        throw new Error("Checkout Spark retirement reader is out of scope.")
+      const result = await boundedRead(action)
+      if (closed) throw new Error("Checkout Spark retirement reader is closed.")
+      return result
+    }
+    retirementSessions.add(session)
+    try {
+      assertCurrent()
+      return session
+    } catch (error) {
+      await session.cleanup()
+      throw error
+    }
+  }
 
   const readFundsState = async (): Promise<SparkFundsState> => {
     const balance = await input.wallet.getBalance()
@@ -470,24 +653,171 @@ function adaptFirstPartySparkWallet(input: {
     return { availableSats, ownedSats, incomingSats, observedAt }
   }
 
+  const {
+    inspectCheckoutTreasury,
+    preflightCheckoutTreasury,
+    sendCheckoutTreasury,
+  } = createCheckoutSparkNativeTreasurySdkAdapter({
+    wallet: input.wallet,
+    codec: input.module,
+    network: input.network === "MAINNET" ? "MAINNET" : "REGTEST",
+    isClosed: () => disconnected,
+    read: (read) =>
+      withReadTimeout(
+        read(),
+        input.retirementReadTimeoutMs,
+        "Checkout Spark treasury operation"
+      ),
+  })
+
   const createCheckoutReceive = async (
     request: SparkCheckoutReceiveInput
   ): Promise<SparkCheckoutReceiveRequest> => {
     validateCheckoutReceiveInput(request)
-    const result = await input.wallet.createLightningInvoice({
-      amountSats: request.grossFundingSats,
-      memo: request.description,
-      expirySeconds: request.expirySecs,
-      includeSparkAddress: false,
-      includeSparkInvoice: false,
+    if (request.grossFundingSats !== request.requiredNetSats) {
+      throw new Error(
+        "Spark checkout funding requires an exact net receive quote."
+      )
+    }
+    if (request.receiveMode === "local_unquoted_canary") {
+      if (!canUseCheckoutSparkLocalRouterCanary()) {
+        throw new Error("Spark local unquoted checkout is unavailable.")
+      }
+      let result: SparkNativeLightningReceiveRequest
+      try {
+        result = await input.wallet.createLightningInvoice({
+          amountSats: request.grossFundingSats,
+          memo: request.description,
+          expirySeconds: request.expirySecs,
+          includeSparkAddress: false,
+          includeSparkInvoice: false,
+        })
+      } catch {
+        throw new Error("Spark checkout funding invoice is unavailable.")
+      }
+      return Object.assign(
+        mapNativeCheckoutReceive({
+          native: result,
+          walletId: input.walletId,
+          network: input.network,
+          requiredNetSats: request.requiredNetSats,
+          grossFundingSats: request.grossFundingSats,
+          expirySecs: request.expirySecs,
+        }),
+        { receiveCanaryPolicy: CHECKOUT_SPARK_LOCAL_UNQUOTED_RECEIVE_POLICY }
+      )
+    }
+    if (request.receiveMode === "ordinary_settled_v3") {
+      const receiverIdentityPublicKey = (
+        await input.wallet.getIdentityPublicKey()
+      ).toLowerCase()
+      if (!/^(02|03)[0-9a-f]{64}$/.test(receiverIdentityPublicKey)) {
+        throw new Error("Spark settled checkout wallet identity is invalid.")
+      }
+      let result: SparkNativeLightningReceiveRequest
+      try {
+        result = await input.wallet.createLightningInvoice({
+          amountSats: request.grossFundingSats,
+          memo: request.description,
+          expirySeconds: request.expirySecs,
+          includeSparkAddress: false,
+          includeSparkInvoice: false,
+        })
+      } catch {
+        throw new Error("Spark checkout funding invoice is unavailable.")
+      }
+      if (
+        (await input.wallet.getIdentityPublicKey()).toLowerCase() !==
+        receiverIdentityPublicKey
+      ) {
+        throw new Error("Spark settled checkout wallet identity changed.")
+      }
+      return Object.assign(
+        mapNativeCheckoutReceive({
+          native: result,
+          walletId: input.walletId,
+          network: input.network,
+          requiredNetSats: request.requiredNetSats,
+          grossFundingSats: request.grossFundingSats,
+          expirySecs: request.expirySecs,
+        }),
+        {
+          receiveSettledPolicy: "ordinary-exact-credit-v3" as const,
+          receiverIdentityPublicKey,
+        }
+      )
+    }
+    // Query and attest on the same open wallet that creates the invoice.
+    // Never estimate a receive fee by opening a second ephemeral wallet.
+    const receiverIdentityPubkey = await input.wallet.getIdentityPublicKey()
+    let quote: SparkNativeReceiveQuote
+    try {
+      // The dated mainnet SSP schema defaults the quote receiver to its caller.
+      // Explicit receiver_identity_pubkey is RC-only; verify the signed quote
+      // against this same wallet's identity below instead of sending that field.
+      quote = await input.wallet.getLightningReceiveQuote({
+        amountSats: request.requiredNetSats,
+        amountBasis: "NET",
+      })
+    } catch {
+      // Provider errors may include identity keys or request details.
+      throw new Error("Spark checkout receive quote is unavailable.")
+    }
+    if (
+      quote.amountSats !== request.requiredNetSats ||
+      quote.amountBasis !== "NET" ||
+      !quote.serializedManifest ||
+      !quote.issuerSignature
+    ) {
+      throw new Error("Spark checkout receive quote is incomplete or changed.")
+    }
+    const quoted = input.module.inspectLightningReceiveQuote({
+      quote,
+      receiverIdentityPubkey,
+      network: input.network,
     })
-    return mapNativeCheckoutReceive({
+    if (
+      quoted.grossSats !== request.grossFundingSats ||
+      quoted.netSats !== request.requiredNetSats ||
+      quoted.feeSats !== 0 ||
+      quoted.feeComponents !== 0 ||
+      !Number.isSafeInteger(quoted.expiresAt) ||
+      quoted.expiresAt <= Date.now()
+    ) {
+      throw new Error(
+        "Spark checkout receive quote has an unsupported fee or amount."
+      )
+    }
+    if (
+      (await input.wallet.getIdentityPublicKey()) !== receiverIdentityPubkey
+    ) {
+      throw new Error("Spark checkout receive wallet identity changed.")
+    }
+    let result: SparkNativeLightningReceiveRequest
+    try {
+      result = await input.wallet.createLightningInvoice({
+        amountSats: request.grossFundingSats,
+        memo: request.description,
+        expirySeconds: request.expirySecs,
+        includeSparkAddress: false,
+        includeSparkInvoice: false,
+        receiverIdentityPubkey,
+        quote,
+      })
+    } catch {
+      // Do not expose provider response metadata through checkout errors.
+      throw new Error("Spark checkout funding invoice is unavailable.")
+    }
+    const received = mapNativeCheckoutReceive({
       native: result,
       walletId: input.walletId,
       network: input.network,
       requiredNetSats: request.requiredNetSats,
       grossFundingSats: request.grossFundingSats,
       expirySecs: request.expirySecs,
+    })
+    return Object.assign(received, {
+      receiveQuotePolicy: "same-wallet-feeless-net-v1" as const,
     })
   }
 
@@ -514,7 +844,7 @@ function adaptFirstPartySparkWallet(input: {
         funds: await readFundsState(),
       }
     }
-    const funds = await readFundsState()
+    let funds = await readFundsState()
     if (!native) {
       return {
         state: "unresolved_failure",
@@ -543,6 +873,57 @@ function adaptFirstPartySparkWallet(input: {
         funds,
       }
     }
+    // Spark can report the exact receive as completed before a separate
+    // balance read reflects its spendable leaves. Re-read both pieces of
+    // evidence briefly; never submit another payment or infer funds from the
+    // payer's proof alone. A persistent shortfall still fails closed.
+    for (
+      let attempt = 0;
+      attempt < 10 &&
+      current.providerStatus === "TRANSFER_COMPLETED" &&
+      funds.availableSats < request.requiredNetSats;
+      attempt += 1
+    ) {
+      await input.wait(Math.max(input.pollIntervalMs, 500))
+      let refreshed: SparkNativeLightningReceiveRequest | null
+      try {
+        refreshed = await input.wallet.getLightningReceiveRequest(request.id)
+      } catch {
+        return {
+          state: "unresolved_failure",
+          providerStatus: null,
+          failureReason: "lookup_unavailable",
+          funds,
+        }
+      }
+      funds = await readFundsState()
+      if (!refreshed) {
+        return {
+          state: "unresolved_failure",
+          providerStatus: null,
+          failureReason: "receive_not_found",
+          funds,
+        }
+      }
+      try {
+        current = mapNativeCheckoutReceive({
+          native: refreshed,
+          walletId: input.walletId,
+          network: input.network,
+          requiredNetSats: request.requiredNetSats,
+          grossFundingSats: request.grossFundingSats,
+          expirySecs: request.expirySecs,
+        })
+        assertSameCheckoutReceiveRequest(request, current)
+      } catch {
+        return {
+          state: "unresolved_failure",
+          providerStatus: normalizeProviderStatus(refreshed.status),
+          failureReason: "conflicting_evidence",
+          funds,
+        }
+      }
+    }
     const outcome = mapCheckoutReceiveState(current.providerStatus, {
       availableSats: funds.availableSats,
       requiredNetSats: request.requiredNetSats,
@@ -557,7 +938,134 @@ function adaptFirstPartySparkWallet(input: {
     }
   }
 
+  const attestCheckoutReceiveCredit = async (
+    request: SparkCheckoutReceiveRequest
+  ) => {
+    validateCheckoutReceiveRequest(request)
+    if (
+      request.walletId !== input.walletId ||
+      request.network !== fromNativeNetwork(input.network) ||
+      request.receiveSettledPolicy !== "ordinary-exact-credit-v3" ||
+      !/^(02|03)[0-9a-f]{64}$/.test(request.receiverIdentityPublicKey ?? "") ||
+      request.receiveQuotePolicy !== undefined ||
+      request.receiveCanaryPolicy !== undefined
+    ) {
+      throw new Error("Spark settled checkout receive identity is invalid.")
+    }
+    let native: SparkNativeLightningReceiveRequest | null
+    try {
+      native = await input.wallet.getLightningReceiveRequest(request.id)
+    } catch {
+      throw new Error("Spark settled checkout receive lookup is unavailable.")
+    }
+    if (!native) return null
+    try {
+      const current = mapNativeCheckoutReceive({
+        native,
+        walletId: input.walletId,
+        network: input.network,
+        requiredNetSats: request.requiredNetSats,
+        grossFundingSats: request.grossFundingSats,
+        expirySecs: request.expirySecs,
+        allowSettledShortfall: true,
+      })
+      assertSameCheckoutReceiveRequest(request, current)
+    } catch {
+      throw new Error(
+        "Spark settled checkout receive evidence conflicts with its invoice."
+      )
+    }
+    if (native.status !== "TRANSFER_COMPLETED") return null
+    const transferId = native.transfer?.sparkId
+    if (!transferId) return null
+    let transfer: SparkNativeTransfer | undefined
+    let walletIdentityPublicKey: string
+    try {
+      ;[transfer, walletIdentityPublicKey] = await Promise.all([
+        input.wallet.getTransfer(transferId),
+        input.wallet.getIdentityPublicKey(),
+      ])
+    } catch {
+      throw new Error("Spark settled checkout transfer lookup is unavailable.")
+    }
+    if (!transfer) return null
+    if (
+      walletIdentityPublicKey.toLowerCase() !==
+      request.receiverIdentityPublicKey
+    ) {
+      throw new Error("Spark settled checkout receiver identity changed.")
+    }
+    const userRequest = asRecord(transfer.userRequest)
+    return proveSparkCheckoutReceiveCredit({
+      expectedRequest: request,
+      expectedReceive: { mode: "ordinary_v3" },
+      walletIdentityPublicKey,
+      receive: native,
+      transfer: {
+        ...transfer,
+        userRequest:
+          typeof userRequest?.id === "string"
+            ? { id: userRequest.id }
+            : undefined,
+      },
+    })
+  }
+
+  const attestCheckoutReceiveHistory = async (
+    target: SparkCheckoutHistoricalReceiveTarget
+  ): Promise<SparkCheckoutHistoricalReceiveAttestation> => {
+    const expected = validateCheckoutHistoricalReceiveTarget(target, {
+      walletId: input.walletId,
+      network: input.network,
+    })
+    const observedAt = () => {
+      const value = input.now()
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error("Spark checkout receive observation time is invalid.")
+      }
+      return value
+    }
+    const unconfirmed = (
+      reason: Extract<
+        SparkCheckoutHistoricalReceiveAttestation,
+        { status: "unconfirmed" }
+      >["reason"]
+    ): SparkCheckoutHistoricalReceiveAttestation => ({
+      status: "unconfirmed",
+      reason,
+      observedAt: observedAt(),
+    })
+    let native: SparkNativeLightningReceiveRequest | null
+    try {
+      native = await input.wallet.getLightningReceiveRequest(target.requestId)
+    } catch {
+      return unconfirmed("lookup_unavailable")
+    }
+    if (!native) return unconfirmed("not_found")
+    let current: SparkCheckoutReceiveRequest
+    try {
+      current = mapNativeCheckoutReceive({
+        native,
+        walletId: input.walletId,
+        network: input.network,
+        requiredNetSats: expected.requiredNetSats,
+        grossFundingSats: expected.grossFundingSats,
+        expirySecs: expected.expirySecs,
+      })
+      assertSameCheckoutReceiveRequest(expected, current)
+    } catch {
+      return unconfirmed("conflicting_evidence")
+    }
+    if (current.providerStatus !== "TRANSFER_COMPLETED") {
+      return unconfirmed("not_completed")
+    }
+    return { status: "completed", observedAt: observedAt() }
+  }
+
   const client: SparkSdkClient = {
+    inspectCheckoutTreasury,
+    preflightCheckoutTreasury,
+    sendCheckoutTreasury,
     async addEventListener(listener) {
       const listenerId = `spark-listener-${++nextListenerId}`
       const nativeListener = () => {
@@ -580,8 +1088,21 @@ function adaptFirstPartySparkWallet(input: {
       return true
     },
     async disconnect() {
+      disconnected = true
       listeners.clear()
-      await input.wallet.cleanup()
+      const results = await Promise.allSettled([
+        input.wallet.cleanup(),
+        ...[...retirementSessions].map((session) => session.cleanup()),
+      ])
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : []
+      )
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1)
+        throw new AggregateError(
+          failures,
+          "Spark wallet and retirement readers could not be closed."
+        )
     },
     async getInfo() {
       const funds = await readFundsState()
@@ -590,8 +1111,45 @@ function adaptFirstPartySparkWallet(input: {
       }
     },
     getFundsState: readFundsState,
+    async inspectCheckoutLightningReturnedAttempt(request, assertCurrent) {
+      if (request.network.toUpperCase() !== input.network) {
+        return { status: "conflicting" }
+      }
+      return inspectSparkCheckoutLightningReturnedAttempt(
+        input.wallet,
+        request,
+        {
+          now: input.now,
+          assertCurrent: () => {
+            if (disconnected) throw new Error("Spark wallet is closed.")
+            assertCurrent?.()
+          },
+        }
+      )
+    },
+    async inspectCheckoutLightningClosedReturnedAttempt(
+      request,
+      assertCurrent
+    ) {
+      if (request.network.toUpperCase() !== input.network)
+        return { status: "conflicting" }
+      return inspectSparkCheckoutLightningClosedReturnedAttempt(
+        input.wallet,
+        request,
+        {
+          now: input.now,
+          assertCurrent: () => {
+            if (disconnected) throw new Error("Spark wallet is closed.")
+            assertCurrent?.()
+          },
+        }
+      )
+    },
+    openCheckoutRetirementReader,
     createCheckoutReceive,
     reconcileCheckoutReceive,
+    attestCheckoutReceiveCredit,
+    attestCheckoutReceiveHistory,
     async listPayments(request) {
       const result = await input.wallet.getTransfers(
         request?.limit ?? 50,
@@ -824,53 +1382,42 @@ function adaptFirstPartySparkWallet(input: {
         return { status: "lookup_unavailable" }
       }
 
-      let recovered: ReturnType<typeof readRecoveredLightningSendRequest>
+      let recovered: ReturnType<typeof readExactSparkLightningRecoveredTransfer>
       try {
-        recovered = readRecoveredLightningSendRequest(transfer.userRequest)
-      } catch {
+        recovered = readExactSparkLightningRecoveredTransfer({
+          transferId,
+          paymentRequest: request.paymentRequest,
+          transfer,
+        })
+      } catch (error) {
         return {
           status: "conflicting_evidence",
-          reason: "Spark returned invalid Lightning recovery evidence.",
-        }
-      }
-      if (recovered.idempotencyKey !== transferId) {
-        return {
-          status: "conflicting_evidence",
-          reason: "Spark returned a conflicting Lightning payment identity.",
-        }
-      }
-      const recoveredInvoice = canonicalLightningInvoice(
-        recovered.encodedInvoice
-      )
-      const expectedInvoice = canonicalLightningInvoice(request.paymentRequest)
-      if (!recoveredInvoice || recoveredInvoice !== expectedInvoice) {
-        return {
-          status: "conflicting_evidence",
-          reason: "Spark returned a different Lightning invoice.",
+          reason:
+            error instanceof Error &&
+            EXACT_LIGHTNING_TRANSFER_CONFLICT_MESSAGES.has(error.message)
+              ? error.message
+              : "Spark returned invalid Lightning recovery evidence.",
         }
       }
 
       try {
-        const recoveredRequestId = recovered.id
+        const recoveredRequestId = recovered.request.id
+        let verifiedTransferTotalSats: number | null = null
         const payment = await reconcileLightningPayment({
           wallet: input.wallet,
-          initial: recovered,
+          initial: recovered.request,
           maxFeeSats: request.maxFeeSats,
           expectedPaymentHash: decodeHex32(
             paymentHash,
             "The Lightning invoice contains an invalid payment hash."
           ).bytes,
           validateRequest: (nativeRequest) => {
-            if (nativeRequest.id !== recoveredRequestId) {
-              throw new Error(
-                "Spark returned a conflicting Lightning request identity."
-              )
-            }
-            validateRecoveredLightningTransferTotal({
-              totalAmount: transfer.totalAmount,
+            verifiedTransferTotalSats = verifyExactSparkLightningRequestDebit({
+              requestId: recoveredRequestId,
+              totalAmount: recovered.totalAmount,
               amountSats: request.amountSats,
-              fee: nativeRequest.fee,
               maxFeeSats: request.maxFeeSats,
+              request: nativeRequest,
             })
           },
           timeoutSecs: request.completionTimeoutSecs ?? 60,
@@ -878,7 +1425,12 @@ function adaptFirstPartySparkWallet(input: {
           wait: input.wait,
           now: input.now,
         })
-        return { status: "resolved", payment }
+        if (verifiedTransferTotalSats === null) {
+          throw new Error(
+            "Spark returned a conflicting Lightning transfer total."
+          )
+        }
+        return { status: "resolved", payment, verifiedTransferTotalSats }
       } catch (error) {
         if (error instanceof SparkLightningLookupUnavailableError) {
           return { status: "lookup_unavailable" }
@@ -913,6 +1465,22 @@ function adaptFirstPartySparkWallet(input: {
               ? "fee_over_cap"
               : "fee_unavailable",
         }
+      }
+
+      // History and fee reads can outlive the shopper's signer, order, or
+      // takeover authority. Recheck after both awaits, at the last app-owned
+      // boundary before the SDK may move funds.
+      await request.assertBeforeSend?.()
+      // The adapter's own history, fee and authority awaits may outlive the
+      // runner's earlier expiry check. This rejection is before SDK admission;
+      // an expiry error after admission must still remain possibly sent.
+      if (
+        !hasCheckoutSparkProviderSendWindow({
+          paymentRequest: request.paymentRequest,
+          nowMs: input.now(),
+        })
+      ) {
+        return { status: "not_sent", reason: "invoice_expired" }
       }
 
       // The first-party SDK re-estimates the fee and rejects if this fixed
@@ -958,6 +1526,25 @@ function adaptFirstPartySparkWallet(input: {
         return "unavailable"
       }
       return estimatedFeeSats > request.maxFeeSats ? "fee_over_cap" : "ready"
+    },
+    async estimateCheckoutLightningFee(request) {
+      validateCheckoutLightningFeeEstimate(request, {
+        walletId: input.walletId,
+        network: input.network,
+        nowMs: input.now(),
+      })
+      const estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
+        encodedInvoice: request.paymentRequest,
+      })
+      validateCheckoutLightningFeeEstimate(request, {
+        walletId: input.walletId,
+        network: input.network,
+        nowMs: input.now(),
+      })
+      if (!Number.isSafeInteger(estimatedFeeSats) || estimatedFeeSats < 0) {
+        throw new Error("Spark returned an invalid Lightning fee estimate.")
+      }
+      return estimatedFeeSats
     },
     async receivePayment(request) {
       if (request.paymentMethod.type === "sparkAddress") {
@@ -1014,6 +1601,40 @@ function validateFrozenCheckoutLightningSend(
   }
 }
 
+function validateCheckoutLightningFeeEstimate(
+  request: SparkCheckoutLightningFeeEstimateInput,
+  context: {
+    walletId: string
+    network: SparkNativeNetwork
+    nowMs: number
+  }
+): void {
+  const invoice = canonicalLightningInvoice(request.paymentRequest)
+  const metadata = invoice ? decodeLightningInvoiceMetadata(invoice) : null
+  if (
+    request.walletId !== context.walletId ||
+    request.network !== fromNativeNetwork(context.network) ||
+    !invoice ||
+    invoice !== request.paymentRequest ||
+    !isValidLightningInvoice(invoice) ||
+    getLightningInvoiceNetwork(invoice) !== request.network ||
+    !Number.isSafeInteger(request.amountSats) ||
+    request.amountSats <= 0 ||
+    !Number.isSafeInteger(request.amountSats * 1_000) ||
+    metadata?.msats !== request.amountSats * 1_000 ||
+    !/^[0-9a-f]{64}$/.test(request.paymentHash) ||
+    decodeLightningInvoicePaymentHash(invoice) !== request.paymentHash ||
+    !Number.isSafeInteger(context.nowMs) ||
+    context.nowMs < 0 ||
+    metadata?.expiresAt === null ||
+    metadata?.expiresAt === undefined ||
+    !Number.isSafeInteger(metadata.expiresAt * 1_000) ||
+    metadata.expiresAt * 1_000 <= context.nowMs
+  ) {
+    throw new Error("The checkout Lightning fee-estimate invoice is invalid.")
+  }
+}
+
 function resolvedCheckoutResult(
   observation: Awaited<
     ReturnType<NonNullable<SparkSdkClient["reconcileLightningSend"]>>
@@ -1063,6 +1684,13 @@ function validateCheckoutReceiveInput(
   if (typeof request.description !== "string") {
     throw new Error("Checkout receive description is invalid.")
   }
+  if (
+    request.receiveMode !== undefined &&
+    request.receiveMode !== "local_unquoted_canary" &&
+    request.receiveMode !== "ordinary_settled_v3"
+  ) {
+    throw new Error("Checkout receive mode is invalid.")
+  }
 }
 
 function validateCheckoutReceiveRequest(
@@ -1094,6 +1722,58 @@ function validateCheckoutReceiveRequest(
   }
 }
 
+function validateCheckoutHistoricalReceiveTarget(
+  target: SparkCheckoutHistoricalReceiveTarget,
+  binding: { walletId: string; network: SparkNativeNetwork }
+): SparkCheckoutReceiveRequest {
+  const expiryMs = target.expiresAt - target.createdAt
+  const expirySecs = expiryMs / 1_000
+  const expected: SparkCheckoutReceiveRequest = {
+    walletId: target.walletId,
+    network: target.network,
+    id: target.requestId,
+    paymentRequest: target.paymentRequest,
+    paymentHash: target.paymentHash,
+    providerStatus: "HISTORICAL_LOOKUP",
+    requiredNetSats: target.requiredNetSats,
+    grossFundingSats: target.grossFundingSats,
+    expirySecs,
+    createdAt: target.createdAt,
+    expiresAt: target.expiresAt,
+  }
+  try {
+    validateCheckoutReceiveRequest(expected)
+    if (
+      target.walletId !== binding.walletId ||
+      target.network !== fromNativeNetwork(binding.network) ||
+      target.requestId.trim() !== target.requestId ||
+      target.paymentRequest.trim() !== target.paymentRequest
+    ) {
+      throw new Error("Invalid checkout receive binding")
+    }
+    const invoice = validateLightningReceiveInvoice({
+      amountSats: target.grossFundingSats,
+      network: binding.network,
+      paymentRequest: target.paymentRequest,
+    })
+    const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+    const metadata = decodeLightningInvoiceMetadata(invoice)
+    if (
+      !paymentHash ||
+      target.paymentHash !== paymentHash.toLowerCase() ||
+      secondsToMilliseconds(metadata.createdAt, "Invalid creation time") !==
+        target.createdAt ||
+      secondsToMilliseconds(metadata.expiresAt, "Invalid expiry") !==
+        target.expiresAt
+    ) {
+      throw new Error("Invalid checkout receive invoice")
+    }
+  } catch {
+    throw new Error("Checkout historical receive target is invalid.")
+  }
+  return expected
+}
+
 function mapNativeCheckoutReceive(input: {
   native: SparkNativeLightningReceiveRequest
   walletId: string
@@ -1101,6 +1781,7 @@ function mapNativeCheckoutReceive(input: {
   requiredNetSats: number
   grossFundingSats: number
   expirySecs: number
+  allowSettledShortfall?: boolean
 }): SparkCheckoutReceiveRequest {
   const id = input.native.id.trim()
   const providerStatus = input.native.status.trim()
@@ -1136,6 +1817,27 @@ function mapNativeCheckoutReceive(input: {
   ) {
     throw new Error("Spark returned a different checkout funding amount.")
   }
+  if (
+    providerStatus === "TRANSFER_COMPLETED" &&
+    input.native.transfer !== undefined
+  ) {
+    const transfer = input.native.transfer
+    if (
+      !transfer ||
+      (transfer.userRequestId !== undefined && transfer.userRequestId !== id) ||
+      !transfer.totalAmount ||
+      (input.allowSettledShortfall
+        ? readNativeInvoiceAmountSats(transfer.totalAmount) <= 0 ||
+          readNativeInvoiceAmountSats(transfer.totalAmount) >
+            input.grossFundingSats
+        : readNativeInvoiceAmountSats(transfer.totalAmount) !==
+          input.grossFundingSats)
+    ) {
+      throw new Error(
+        "Spark returned conflicting checkout receive transfer evidence."
+      )
+    }
+  }
   const providerCreatedAt = parseNativeTimestamp(
     input.native.invoice.createdAt,
     "Spark returned an invalid checkout receive creation time."
@@ -1169,7 +1871,7 @@ function mapNativeCheckoutReceive(input: {
   if (network !== "mainnet" && network !== "regtest") {
     throw new Error("Spark returned an unsupported checkout network.")
   }
-  return {
+  const request: SparkCheckoutReceiveRequest = {
     walletId: input.walletId,
     network,
     id,
@@ -1182,6 +1884,13 @@ function mapNativeCheckoutReceive(input: {
     createdAt,
     expiresAt,
   }
+  // Preserve the validated provider precision in RAM without widening any
+  // serialized receive snapshot or restoring a buyer-supplied acceptance time.
+  Object.defineProperties(request, {
+    providerCreatedAtMs: { value: providerCreatedAt },
+    providerExpiresAtMs: { value: providerExpiresAt },
+  })
+  return request
 }
 
 function assertSameCheckoutReceiveRequest(
@@ -1257,7 +1966,7 @@ function normalizeProviderStatus(value: string): string | null {
 function readNativeInvoiceAmountSats(
   amount: SparkNativeCurrencyAmount
 ): number {
-  if (!Number.isFinite(amount.originalValue) || amount.originalValue < 0) {
+  if (!Number.isSafeInteger(amount.originalValue) || amount.originalValue < 0) {
     throw new Error("Spark returned an invalid checkout funding amount.")
   }
   const sats =
@@ -1461,46 +2170,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
-function readRecoveredLightningSendRequest(
-  value: unknown
-): SparkNativeLightningSendRequest & {
-  encodedInvoice: string
-  idempotencyKey: string
-  typename: "LightningSendRequest"
-} {
-  const request = asRecord(value)
-  const fee = asRecord(request?.fee)
-  if (
-    request?.typename !== "LightningSendRequest" ||
-    typeof request.id !== "string" ||
-    request.id.length === 0 ||
-    typeof request.status !== "string" ||
-    typeof request.encodedInvoice !== "string" ||
-    typeof request.idempotencyKey !== "string" ||
-    typeof fee?.originalValue !== "number" ||
-    typeof fee.originalUnit !== "string" ||
-    (request.paymentPreimage !== undefined &&
-      request.paymentPreimage !== null &&
-      typeof request.paymentPreimage !== "string")
-  ) {
-    throw new Error("Spark returned invalid Lightning recovery evidence.")
-  }
-  return {
-    id: request.id,
-    status: request.status,
-    fee: {
-      originalValue: fee.originalValue,
-      originalUnit: fee.originalUnit,
-    },
-    ...(typeof request.paymentPreimage === "string"
-      ? { paymentPreimage: request.paymentPreimage }
-      : {}),
-    encodedInvoice: request.encodedInvoice,
-    idempotencyKey: request.idempotencyKey,
-    typename: "LightningSendRequest",
-  }
-}
-
 function isNativeTransfer(
   value: SparkNativeLightningSendRequest | SparkNativeTransfer
 ): value is SparkNativeTransfer {
@@ -1540,31 +2209,6 @@ function readNativeLightningFeeSats(
     )
   }
   return feeSats
-}
-
-function validateRecoveredLightningTransferTotal(input: {
-  totalAmount?: SparkNativeCurrencyAmount
-  amountSats: number
-  fee: SparkNativeCurrencyAmount
-  maxFeeSats: number
-}): void {
-  const feeSats = readNativeLightningFeeSats(input.fee, input.maxFeeSats)
-  const expectedTotalSats = input.amountSats + feeSats
-  const total = input.totalAmount
-  const totalSats =
-    total?.originalUnit === "SATOSHI"
-      ? total.originalValue
-      : total?.originalUnit === "MILLISATOSHI"
-        ? total.originalValue / 1_000
-        : Number.NaN
-  if (
-    !Number.isSafeInteger(expectedTotalSats) ||
-    !Number.isSafeInteger(totalSats) ||
-    totalSats < 0 ||
-    totalSats !== expectedTotalSats
-  ) {
-    throw new Error("Spark returned a conflicting Lightning transfer total.")
-  }
 }
 
 function isSparkAddress(
@@ -1721,6 +2365,15 @@ function decodeHex32(
   return { hex, bytes }
 }
 
+function decodeSparkQuoteHex(value: string): Uint8Array {
+  if (!/^(?:[0-9a-f]{2})+$/i.test(value) || value.length > 32_768) {
+    throw new Error("Spark checkout receive quote is invalid.")
+  }
+  return Uint8Array.from(value.match(/.{2}/g) ?? [], (byte) =>
+    Number.parseInt(byte, 16)
+  )
+}
+
 async function sha256Bytes(value: Uint8Array): Promise<Uint8Array> {
   const digest = await crypto.subtle.digest("SHA-256", value.slice().buffer)
   return new Uint8Array(digest)
@@ -1769,12 +2422,47 @@ function wait(milliseconds: number): Promise<void> {
 
 export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
   const module = await import("@buildonspark/spark-sdk")
+  const { TransferManifest } =
+    await import("@buildonspark/spark-sdk/proto/spark")
   const eventNames = Object.values(module.SparkWalletEvent).filter(
     (eventName) => eventName !== module.SparkWalletEvent.All
   )
   return {
     eventNames,
+    // Any dependency upgrade must re-review native fee/debit semantics before
+    // enabling this path. There is no public native fee estimate/max-fee API.
+    nativeTreasuryPolicy: getCheckoutSparkNativeTreasuryPolicyForSdkVersion(
+      marketPackage.dependencies["@buildonspark/spark-sdk"]
+    ),
+    encodeSparkAddress: module.encodeSparkAddress,
     parseTransferId: (value) => module.UUID.parse(value),
+    inspectLightningReceiveQuote({ quote, receiverIdentityPubkey, network }) {
+      try {
+        // Decode the exact SSP-signed bytes; quote.manifest is only an
+        // advisory decoded copy and must not authorize an invoice amount.
+        const manifest = TransferManifest.decode(
+          decodeSparkQuoteHex(quote.serializedManifest)
+        )
+        if (
+          manifest.network !== module.NetworkToProto[module.Network[network]]
+        ) {
+          throw new Error("Spark checkout receive quote network changed.")
+        }
+        const receiver = module.parseCompressedPublicKeyHex(
+          receiverIdentityPubkey,
+          "receiverIdentityPubkey"
+        )
+        return {
+          grossSats: module.manifestGrossSats(manifest),
+          netSats: module.manifestNetSatsFor(manifest, receiver),
+          feeSats: module.manifestFeeSats(manifest),
+          feeComponents: manifest.fees.length,
+          expiresAt: manifest.quoteExpiryTime?.getTime() ?? 0,
+        }
+      } catch {
+        throw new Error("Spark checkout receive quote is invalid.")
+      }
+    },
     isPreSendFeeCapError(error) {
       return (
         error instanceof module.SparkValidationError &&
@@ -1789,7 +2477,57 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
     getNetworkFromSparkAddress: module.getNetworkFromSparkAddress,
     isValidSparkAddress: module.isValidSparkAddress,
     async initialize(input) {
-      const { wallet } = await module.SparkWallet.initialize(input)
+      const retirementNetwork = input.options.network
+      class RetirementReadonlyClient extends module.SparkReadonlyClient {
+        async cleanup() {
+          try {
+            await this.connectionManager.closeConnections()
+          } finally {
+            await this.logging.close()
+          }
+        }
+      }
+      class CheckoutSparkWallet extends module.SparkWallet {
+        async openRetirementReader() {
+          const sparkAddress = await this.getSparkAddress()
+          const walletIdentityPublicKey = await this.getIdentityPublicKey()
+          const sspIdentityPublicKey = this.config.getSspIdentityPublicKey()
+          // Reuse the initialized exact-account signer without retaining or
+          // exporting recovery material, and request identity-authenticated data.
+          const reader = RetirementReadonlyClient.createWithSigner(
+            { log: false, network: retirementNetwork },
+            this.config.signer
+          )
+          return {
+            reader: {
+              getTransfers: (params) => reader.getTransfers(params),
+              getPendingTransfers: (address) =>
+                reader.getPendingTransfers(address),
+              getAvailableBalance: (address) =>
+                reader.getAvailableBalance(address),
+              getOwnedBalance: (address) => reader.getOwnedBalance(address),
+              getInternalSwapEvidence: async (params) => {
+                if (params.sparkAddress !== sparkAddress)
+                  throw new Error(
+                    "Checkout Spark swap evidence is out of scope."
+                  )
+                const transfer = await this.getTransferFromSsp(
+                  params.transferId
+                )
+                return transfer
+                  ? {
+                      walletIdentityPublicKey,
+                      sspIdentityPublicKey,
+                      transfer,
+                    }
+                  : null
+              },
+            } satisfies CheckoutSparkNativeRetirementReader,
+            cleanup: () => reader.cleanup(),
+          }
+        }
+      }
+      const { wallet } = await CheckoutSparkWallet.initialize(input)
       return {
         wallet: {
           on(event, listener) {
@@ -1821,8 +2559,29 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
           getTransfers: (limit, offset) => wallet.getTransfers(limit, offset),
           getSparkAddress: () => wallet.getSparkAddress(),
           transfer: (request) => wallet.transfer(request),
+          querySparkInvoices: (invoices) =>
+            wallet.querySparkInvoices(
+              invoices as import("@buildonspark/spark-sdk").SparkAddressFormat[]
+            ),
+          fulfillSparkInvoice: (invoices) =>
+            wallet.fulfillSparkInvoice(
+              invoices.map(({ invoice, amount }) => ({
+                invoice:
+                  invoice as import("@buildonspark/spark-sdk").SparkAddressFormat,
+                amount,
+              }))
+            ),
           getTransfer: (id) => wallet.getTransfer(id),
           getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
+          getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
+          queryHTLC: (request) => wallet.queryHTLC(request),
+          getLeaves: () => wallet.getLeaves(),
+          openRetirementReader: () => wallet.openRetirementReader(),
+          getLightningReceiveQuote: (request) =>
+            wallet.getLightningReceiveQuote({
+              ...request,
+              amountBasis: module.ReceiveQuoteAmountBasis.NET,
+            }),
           createLightningInvoice: (request) =>
             wallet.createLightningInvoice(request),
           getLightningReceiveRequest: (id) =>

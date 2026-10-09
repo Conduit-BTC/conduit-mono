@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react"
 import { ChevronRight } from "lucide-react"
-import { type MerchantConversationSummary } from "@conduit/core"
+import {
+  type CheckoutSparkMerchantSettlementProjection,
+  type MerchantConversationSummary,
+} from "@conduit/core"
 import { ConversationCardScroller, StatusPill } from "@conduit/ui"
 import { getMerchantConversationStatusDisplay } from "../lib/order-phase"
 import { BuyerAvatar } from "./OrderListItem"
@@ -10,6 +13,7 @@ export function OrderCardScroller({
   selectedId,
   buyerName,
   buyerPicture,
+  getSettlement,
   onSelect,
 }: {
   conversations: MerchantConversationSummary[]
@@ -22,6 +26,9 @@ export function OrderCardScroller({
     pubkey: string,
     conversation: MerchantConversationSummary
   ) => string | undefined
+  getSettlement?: (
+    conversation: MerchantConversationSummary
+  ) => CheckoutSparkMerchantSettlementProjection | null
   onSelect: (conversation: MerchantConversationSummary) => void
 }) {
   const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
@@ -39,7 +46,10 @@ export function OrderCardScroller({
     <ConversationCardScroller label="Orders">
       {conversations.map((conversation) => {
         const active = conversation.id === selectedId
-        const statusDisplay = getMerchantConversationStatusDisplay(conversation)
+        const statusDisplay = getMerchantConversationStatusDisplay(
+          conversation,
+          getSettlement?.(conversation)
+        )
         const name = buyerName(conversation.buyerPubkey, conversation)
         return (
           <button

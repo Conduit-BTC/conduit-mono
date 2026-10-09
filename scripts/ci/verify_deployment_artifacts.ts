@@ -1,5 +1,7 @@
 import { appendFileSync, readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { pathToFileURL } from "node:url"
+import { checkoutSparkPublicTrustDigest } from "../../packages/core/src/checkout-spark-deployment-trust"
 import {
   loadPagesProfiles,
   resolveDeploymentProfile,
@@ -47,8 +49,47 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
   ) {
     throw new Error(`${manifestPath} has mismatched compiled feature flags.`)
   }
+  if (
+    manifest.publicFeatures.quantumRouterEnabled !==
+    resolvedProfile.publicFeatures.quantumRouterEnabled
+  ) {
+    throw new Error(`${manifestPath} has mismatched compiled feature flags.`)
+  }
+  if (
+    manifest.publicFeatures.quantumRouterExecutionEnabled !==
+    resolvedProfile.publicFeatures.quantumRouterExecutionEnabled
+  ) {
+    throw new Error(`${manifestPath} has mismatched compiled execution flag.`)
+  }
   if (expectedCommit && manifest.commitSha !== expectedCommit) {
     throw new Error(`${manifestPath} has the wrong source commit.`)
+  }
+
+  const trustProbe = (await import(
+    pathToFileURL(
+      resolve(
+        appConfig.outputDirectory,
+        ".well-known/conduit-checkout-trust.js"
+      )
+    ).href
+  )) as {
+    readCompiledCheckoutSparkPublicTrust: () => unknown
+  }
+  const observedTrust = trustProbe.readCompiledCheckoutSparkPublicTrust()
+  const expectedTrust = resolvedProfile.quantumRouterTrust
+  if (
+    !observedTrust ||
+    typeof observedTrust !== "object" ||
+    !("receiverContracts" in observedTrust) ||
+    !("pricingUrl" in observedTrust) ||
+    !("pricingPublicKeys" in observedTrust) ||
+    observedTrust.receiverContracts !== expectedTrust.receiverContracts ||
+    observedTrust.pricingUrl !== expectedTrust.pricingUrl ||
+    observedTrust.pricingPublicKeys !== expectedTrust.pricingPublicKeys
+  ) {
+    throw new Error(
+      `${manifestPath} has mismatched compiled checkout trust settings.`
+    )
   }
 
   if (appConfig.cloudflareProject) {
@@ -60,6 +101,39 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
     if (!compiledJavaScript.includes(manifest.publicConfigDigest)) {
       throw new Error(
         `${manifestPath} public config digest is not present in the compiled runtime.`
+      )
+    }
+    if (
+      !compiledJavaScript.includes(
+        checkoutSparkPublicTrustDigest(expectedTrust)
+      )
+    ) {
+      throw new Error(
+        `${manifestPath} is missing the runtime checkout trust guard.`
+      )
+    }
+    const expectedTreasury = resolvedProfile.quantumRouterTreasury
+    const expectedAddresses = [
+      expectedTreasury.mainnetAddress,
+      expectedTreasury.regtestAddress,
+      ...expectedTreasury.retiredAddresses,
+    ].filter(Boolean)
+    if (
+      expectedAddresses.some((address) => !compiledJavaScript.includes(address))
+    ) {
+      throw new Error(
+        `${manifestPath} is missing the compiled treasury destination policy.`
+      )
+    }
+    if (
+      resolvedProfile.lightningNetwork !== "mainnet" &&
+      [
+        profiles.quantumRouterTreasury.mainnetAddress,
+        ...profiles.quantumRouterTreasury.retiredMainnetAddresses,
+      ].some((address) => address && compiledJavaScript.includes(address))
+    ) {
+      throw new Error(
+        `${manifestPath} contains a mainnet treasury policy on an unsupported network.`
       )
     }
   }

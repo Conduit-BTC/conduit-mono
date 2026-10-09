@@ -24,6 +24,7 @@ import {
   getMerchantStorefront,
   getProfileName,
   getTelemetryCountBucket,
+  isQuantumRouterEnabled,
   normalizePublicMediaUrl,
   normalizePubkey,
   pubkeyToNpub,
@@ -96,6 +97,10 @@ import {
 } from "../lib/checkout-session"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
+  coordinationPricingEnabled,
+  getCartCoordinationEstimate,
+} from "../lib/checkout-coordination-pricing"
+import {
   getCartCostSummary,
   getCartItemStockEvidenceForAvailability,
   getMixedFulfillmentBlockingMessage,
@@ -129,6 +134,7 @@ type CartSearch = {
 type CartSummaryPrice = {
   primary: string
   secondary?: string | null
+  estimateNote?: string
 }
 
 type SuggestedProduct = {
@@ -185,16 +191,30 @@ function getCartSummaryPrice(
     }
   }
 
+  const includeCoordination = coordinationPricingEnabled()
+  const estimate = includeCoordination
+    ? getCartCoordinationEstimate(items, btcUsdRate)
+    : null
   const display = formatPrice(
     {
-      price: pricing.totalSats,
+      price: estimate?.totalSats ?? pricing.totalSats,
       currency: "SATS",
-      priceSats: pricing.totalSats,
+      priceSats: estimate?.totalSats ?? pricing.totalSats,
     },
     { allowZero: !pricing.paymentRequired }
   )
 
-  return display
+  return estimate && pricing.paymentRequired
+    ? {
+        ...display,
+        primary: display.primary.startsWith("~ ")
+          ? display.primary
+          : `~ ${display.primary}`,
+        estimateNote: estimate.shippingPending
+          ? "Estimated total · unquoted shipping extra"
+          : "Estimated total · final amounts at checkout",
+      }
+    : display
 }
 
 function getCartTelemetryProductType(items: CartItem[]): string {
@@ -777,7 +797,9 @@ function MerchantCartCard({
     wallets,
   })
   const canZapOut =
-    capability.outcome === "zap_candidate" && !mixedFulfillmentMessage
+    !isQuantumRouterEnabled() &&
+    capability.outcome === "zap_candidate" &&
+    !mixedFulfillmentMessage
   // Only the initial no-evidence read blocks the card; a background refresh
   // keeps the prepared state actionable.
   const availabilityChecking = readiness?.isChecking === true
@@ -858,6 +880,11 @@ function MerchantCartCard({
               <div className="mt-1 text-sm text-[var(--text-muted)]">
                 {summary.secondary}
               </div>
+            )}
+            {summary.estimateNote && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {summary.estimateNote}
+              </p>
             )}
           </div>
 
@@ -1539,6 +1566,11 @@ function CartPage() {
               <div className="mt-1 text-sm text-[var(--text-muted)]">
                 {allCartsSummary.secondary}
               </div>
+            )}
+            {allCartsSummary.estimateNote && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {allCartsSummary.estimateNote}
+              </p>
             )}
             <div className="mt-3 text-sm text-[var(--text-secondary)]">
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}{" "}

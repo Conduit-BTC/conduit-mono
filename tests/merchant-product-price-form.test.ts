@@ -15,6 +15,18 @@ import {
 } from "../apps/merchant/src/lib/productPriceForm"
 
 describe("merchant product price form", () => {
+  it("does not author retired or unsupported commerce currencies", () => {
+    expect(normalizePublishableProductPrice(1, "EUR")).toBe(1)
+    expect(normalizePublishableProductShippingCost(0, "EUR")).toBe(0)
+    for (const currency of ["BGN", "XYZ"]) {
+      expect(() => normalizePublishableProductPrice(1, currency)).toThrow(
+        "not supported for new commerce"
+      )
+      expect(() =>
+        normalizePublishableProductShippingCost(0, currency)
+      ).toThrow("not supported for new commerce")
+    }
+  })
   it("uses currency-specific price input precision", () => {
     expect(getProductPriceInputStep("USD")).toBe("0.01")
     expect(getProductPriceInputStep("SAT")).toBe("1")

@@ -255,6 +255,10 @@ export function RevenueOverTimeChart({
       range={range}
       onRangeChange={onRangeChange}
     >
+      <p className="mb-3 text-xs text-[var(--text-muted)]">
+        Order value, not net wallet receipts. Routed sales use the date all
+        required commerce payouts were verified on this device.
+      </p>
       {!hasRevenue || total === 0 ? (
         <EmptyNote>No convertible paid revenue in this range.</EmptyNote>
       ) : (

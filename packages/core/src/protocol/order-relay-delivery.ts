@@ -5,6 +5,7 @@ import { type AccountNetworkLocalStateRepository } from "./account-network-local
 import { EVENT_KINDS } from "./kinds"
 import {
   deriveOrderLifecyclePhase,
+  isGuestOrderDataExpired,
   GUEST_ORDER_LOCAL_RETENTION_MS,
 } from "./order-lifecycle"
 import {
@@ -57,6 +58,7 @@ export type StagedOrderLifecycleInput = Pick<
   | "claimedReferralSource"
   | "buyerPubkey"
   | "buyerIdentityKind"
+  | "guestSessionExpiresAt"
   | "merchantPubkey"
   | "checkoutMode"
   | "checkoutSparkRouterBinding"
@@ -203,6 +205,7 @@ function immutableLifecycleSnapshot(
     claimedReferralSource: lifecycle.claimedReferralSource,
     buyerPubkey: lifecycle.buyerPubkey,
     buyerIdentityKind: lifecycle.buyerIdentityKind,
+    guestSessionExpiresAt: lifecycle.guestSessionExpiresAt,
     merchantPubkey: lifecycle.merchantPubkey,
     checkoutMode: lifecycle.checkoutMode,
     checkoutSparkRouterBinding: lifecycle.checkoutSparkRouterBinding,
@@ -451,7 +454,14 @@ export async function stageOrderRelayDelivery(
     deliveryLeaseExpiresAt: timestamp + ORDER_RELAY_DELIVERY_LEASE_MS,
     createdAt: timestamp,
     updatedAt: timestamp,
-    expiresAt: createdAt + GUEST_ORDER_LOCAL_RETENTION_MS,
+    expiresAt:
+      input.lifecycle.buyerIdentityKind === "guest_ephemeral" &&
+      input.lifecycle.guestSessionExpiresAt !== undefined
+        ? Math.min(
+            createdAt + GUEST_ORDER_LOCAL_RETENTION_MS,
+            input.lifecycle.guestSessionExpiresAt
+          )
+        : createdAt + GUEST_ORDER_LOCAL_RETENTION_MS,
   }
   const stagedBase = {
     ...input.lifecycle,
@@ -467,6 +477,9 @@ export async function stageOrderRelayDelivery(
     zapReceiptStatus: "not_applicable" as const,
   }
   const record: OrderLifecycle = { ...stagedBase, phase: "pending" }
+  if (isGuestOrderDataExpired(record, timestamp)) {
+    throw new Error("Cannot stage an expired guest order.")
+  }
 
   return await repository.stage(record, (current) => {
     if (
@@ -525,6 +538,7 @@ export async function beginOrderRelayDeliveryAttempt(
       input.shouldContinue?.() === false ||
       current.buyerPubkey !== input.buyerPubkey ||
       activeOtherLease ||
+      isGuestOrderDataExpired(current, timestamp) ||
       delivery.expiresAt <= timestamp ||
       relayUrls.length === 0 ||
       relayUrls.some(
@@ -728,6 +742,7 @@ export async function retryOrderRelayDelivery(
       (current.buyerIdentityKind === "guest_ephemeral" &&
         !options.allowGuest) ||
       current.buyerPubkey !== activeBuyerPubkey ||
+      isGuestOrderDataExpired(current, timestamp) ||
       delivery.expiresAt <= timestamp ||
       !hasRetryablePublicTarget(delivery) ||
       (delivery.deliveryLeaseOwner &&
@@ -804,7 +819,9 @@ export async function retryOrderRelayDelivery(
         failed: [],
       },
       publisher: options.publisher,
-      shouldContinue: options.shouldContinue,
+      shouldContinue: () =>
+        options.shouldContinue?.() !== false &&
+        !isGuestOrderDataExpired(claimed, now()),
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       inboxDeclarationEvidenceRepository:

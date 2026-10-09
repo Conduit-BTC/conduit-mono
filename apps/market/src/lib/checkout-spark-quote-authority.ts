@@ -1,8 +1,12 @@
-import {
-  orderEventMarketPickupFulfillmentSchema,
-  type PricingRateInput,
-  type Product,
+import type {
+  CheckoutSparkCommerceQuoteLine,
+  PricingRateInput,
+  Product,
+  SignedPublicNostrEvent,
+  CheckoutSparkPricingRateAttestation,
 } from "@conduit/core"
+import { orderEventMarketPickupFulfillmentSchema } from "@conduit/core"
+import { freezeCheckoutSparkPricingRateAttestation } from "@conduit/core/protocol/checkout-spark-pricing-authority"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
 import type { CheckoutAuthorizationResult } from "./checkout-authorization"
@@ -24,6 +28,7 @@ export interface CheckoutSparkQuoteLineEvidence {
     coordinate: string
     eventId: string
   }
+  pickup?: CheckoutSparkCommerceQuoteLine["pickup"]
 }
 
 /**
@@ -33,8 +38,14 @@ export interface CheckoutSparkQuoteLineEvidence {
  */
 export interface CheckoutSparkQuoteAuthority {
   pricing: PricedIntent
+  /** Independently signed rate snapshot retained with the final fiat conversion. */
+  pricingAuthority?: CheckoutSparkPricingRateAttestation
   products: readonly Product[]
   lines: readonly CheckoutSparkQuoteLineEvidence[]
+  /** Exact selected 30406 revisions, retained from the same authorized read. */
+  shippingSourceEvents?: readonly SignedPublicNostrEvent[]
+  /** Exact calendar, collection and pickup revisions from current authorization. */
+  pickupSourceEvents?: readonly SignedPublicNostrEvent[]
 }
 
 const EVENT_ID = /^[0-9a-f]{64}$/
@@ -77,6 +88,11 @@ function requireMatchingProduct(
       JSON.stringify(listing.sourcePrice) ||
     resolved.type !== listing.type ||
     listing.type === "variable" ||
+    (listing.type === "variation" &&
+      item.familyProductId !== listing.parentProductId) ||
+    (listing.type !== "variation" && item.familyProductId !== undefined) ||
+    JSON.stringify(item.selectedSpecifications ?? []) !==
+      JSON.stringify(listing.specifications ?? []) ||
     resolved.parentProductId !== listing.parentProductId ||
     JSON.stringify(resolved.specifications) !==
       JSON.stringify(listing.specifications) ||
@@ -91,6 +107,7 @@ function requireMatchingProduct(
     resolved.shippingOptionLaunchUnsupported !==
       listing.shippingOptionLaunchUnsupported ||
     (item.fulfillment?.type !== "event_market_pickup" &&
+      !item.shippingPolicyQuote &&
       item.shippingOptionLaunchUnsupported !==
         listing.shippingOptionLaunchUnsupported) ||
     JSON.stringify(resolved.shippingOptionRefs) !==
@@ -131,6 +148,7 @@ function requireMatchingProduct(
 export function buildCheckoutSparkQuoteAuthority(input: {
   authorization: AuthorizedItems
   rateInput: PricingRateInput
+  pricingAuthority?: CheckoutSparkPricingRateAttestation
   nowMs?: number
 }): CheckoutSparkQuoteAuthority {
   const { authorization } = input
@@ -250,7 +268,10 @@ export function buildCheckoutSparkQuoteAuthority(input: {
     getCartCommerceFingerprint(
       prepareCartFulfillment(
         authorization.items,
-        authorization.shippingOptionEvidence.options
+        authorization.shippingOptionEvidence.options,
+        authorization.items.find((item) => item.shippingPolicyQuote)
+          ?.shippingPolicyQuote?.destination,
+        input.rateInput
       ).items
     ) !== getCartCommerceFingerprint(authorization.items)
   ) {
@@ -279,7 +300,27 @@ export function buildCheckoutSparkQuoteAuthority(input: {
 
   return freezeDeep({
     pricing: structuredClone(pricing),
+    ...(input.pricingAuthority
+      ? {
+          pricingAuthority: freezeCheckoutSparkPricingRateAttestation(
+            input.pricingAuthority
+          ),
+        }
+      : {}),
     products: structuredClone(authorization.listingReadProducts),
     lines: structuredClone(lines),
+    ...(selectedShipping.size > 0
+      ? {
+          shippingSourceEvents: structuredClone(
+            [...selectedShipping.values()].flatMap((option) =>
+              option.sourceEvent
+                ? [option.sourceEvent]
+                : option.signedEvent
+                  ? [option.signedEvent]
+                  : []
+            )
+          ),
+        }
+      : {}),
   })
 }

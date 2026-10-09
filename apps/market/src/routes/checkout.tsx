@@ -1,3 +1,5 @@
+import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
+import { CheckoutSparkNativeTreasuryNotice } from "../components/CheckoutSparkNativeTreasuryNotice"
 import {
   AlertCircle,
   AlertTriangle,
@@ -29,7 +31,10 @@ import {
   type PrivateMessageEvent,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  BTC_USD_RATE_QUERY_KEY,
   config,
+  isQuantumRouterEnabled,
+  isQuantumRouterExecutionEnabled,
   fetchLnurlPayMetadata,
   formatNpub,
   getPriceSats,
@@ -48,6 +53,7 @@ import {
   normalizePublicMediaUrl,
   orderSchema,
   serializeOrderRumorContent,
+  selectCheckoutSparkTreasuryAddress,
   patchOrderLifecycle,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -207,6 +213,7 @@ import {
   isPublicZapContentEditable,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
+import { getCheckoutCoordinationPriceEstimate } from "../lib/checkout-coordination-pricing"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   findCheckoutOrderRecovery,
@@ -223,7 +230,9 @@ import {
   clearSessionGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  isCurrentGuestOrderSigningIdentity,
   listSessionGuestOrderIds,
+  type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
 import {
   consumeHudZapIntent,
@@ -245,6 +254,34 @@ import {
 } from "../lib/checkout-payment-target"
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
+import { buildCheckoutSparkQuoteAuthority } from "../lib/checkout-spark-quote-authority"
+import { buildCheckoutSparkCommerceEvidence } from "../lib/checkout-spark-commerce-evidence"
+import { fetchCheckoutSparkAuthorizedPricing } from "../lib/checkout-spark-authorized-pricing"
+import { getCheckoutSparkRequiredFiatCurrencies } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
+import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
+import {
+  createCheckoutSparkPurchaseClaimDigest,
+  findBlockingCheckoutSparkPreparation,
+} from "../lib/checkout-spark-router-purchase-claim"
+import {
+  canRetryCheckoutSparkSettledPreparation,
+  prepareCheckoutSparkSettledOrder,
+  resumeCheckoutSparkSettledOrder,
+  CheckoutSparkSettledContinuationManualRecoveryError,
+} from "../lib/checkout-spark-settled-entry"
+import {
+  listCheckoutSparkSettledContinuations,
+  pruneExpiredCheckoutSparkSettledContinuations,
+  type CheckoutSparkSettledContinuation,
+} from "../lib/checkout-spark-settled-continuation"
+import {
+  getCheckoutSparkSettledPreparation,
+  CheckoutSparkSettledFundingExpiredError,
+  CheckoutSparkSettledPreparationAbandonedError,
+  listCheckoutSparkSettledPreparations,
+} from "../lib/checkout-spark-settled-preparation"
+import { getSparkConfiguration } from "../lib/spark-sdk"
+import { assessCheckoutSparkCheckoutAdmission } from "../lib/checkout-spark-checkout-admission"
 import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
 import {
@@ -825,6 +862,8 @@ function OrderSummary({
   availabilityByProductId,
   pickupHandlerIdentity,
   formatPrice,
+  routerFundingSeparate = false,
+  nativeTreasuryConfigured = false,
   className = "",
   fulfillmentChangesDisabled = false,
 }: {
@@ -838,6 +877,8 @@ function OrderSummary({
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   pickupHandlerIdentity: EventActorIdentityView | null
   formatPrice: PriceFormatter
+  routerFundingSeparate?: boolean
+  nativeTreasuryConfigured?: boolean
   className?: string
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey, {
@@ -913,6 +954,13 @@ function OrderSummary({
                 currency: "SATS",
                 priceSats: shippingCost.totalSats,
               }).primary
+  const routerPrice =
+    routerFundingSeparate && pricing.status === "ok"
+      ? getCheckoutCoordinationPriceEstimate({
+          itemSubtotalSats: pricing.itemSubtotalSats,
+          shippingSubtotalSats: pricing.shippingCost.totalSats,
+        })
+      : null
 
   return (
     <aside
@@ -1021,58 +1069,108 @@ function OrderSummary({
       </div>
 
       <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-        <div className="flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
-          <span>
-            Subtotal ({items.reduce((sum, item) => sum + item.quantity, 0)} item
-            {items.reduce((sum, item) => sum + item.quantity, 0) === 1
-              ? ""
-              : "s"}
-            )
-          </span>
-          <span>{itemSubtotalPrice.primary}</span>
-        </div>
-        <div className="mt-3 flex items-start justify-between gap-3 text-sm text-[var(--text-secondary)]">
-          <span className="min-w-0">
-            {pickupHandoff && pickupHandlerIdentity ? (
-              <>
-                <span className="flex items-start gap-1.5 text-pretty">
-                  <MapPin
-                    className="mt-0.5 size-3.5 shrink-0 text-secondary-400"
-                    aria-hidden="true"
-                  />
-                  <span>
-                    {pickupHandoff.label}
-                    {pickupLocation ? ` · ${pickupLocation}` : ""}
-                    {pickupDate ? ` · ${pickupDate}` : ""}
-                  </span>
+        {routerPrice ? (
+          <>
+            <CheckoutCoordinationSummary
+              price={routerPrice}
+              estimate
+              formatSats={(sats) =>
+                sats === 0
+                  ? "0 sats"
+                  : formatPrice({
+                      price: sats,
+                      currency: "SATS",
+                      priceSats: sats,
+                    }).primary
+              }
+            />
+            {nativeTreasuryConfigured ? (
+              <div className="mt-3">
+                <CheckoutSparkNativeTreasuryNotice
+                  estimatedBaseConduitAllocationSats={
+                    routerPrice.conduitFeeSats
+                  }
+                  fixedCheckoutTotalSats={routerPrice.totalSats}
+                  prepared={null}
+                />
+              </div>
+            ) : null}
+            {pickupHandoff && pickupHandlerIdentity && (
+              <p className="mt-3 text-xs text-[var(--text-secondary)]">
+                <span>
+                  {pickupHandoff.label}
+                  {pickupLocation ? ` · ${pickupLocation}` : ""}
+                  {pickupDate ? ` · ${pickupDate}` : ""}
                 </span>
-                <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
+                <span className="mt-1 block">
                   Handled by <EventActorName identity={pickupHandlerIdentity} />
                 </span>
-              </>
-            ) : fulfillmentLane === "pickup" ? (
-              "Event pickup"
-            ) : (
-              "Shipping"
+              </p>
             )}
-          </span>
-          <span>{shippingLabel}</span>
-        </div>
-        <div className="mt-5 flex items-end justify-between gap-3 border-t border-[var(--border)] pt-4">
-          <div className="text-lg font-semibold text-[var(--text-primary)]">
-            Total
-          </div>
-          <div className="text-right">
-            <div className="text-3xl font-semibold text-secondary-400">
-              {totalPrice.primary}
+            {shippingCost.status === "manual" && (
+              <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+                Shipping is not included until quoted by the merchant.
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
+              <span>
+                Subtotal ({items.reduce((sum, item) => sum + item.quantity, 0)}{" "}
+                item
+                {items.reduce((sum, item) => sum + item.quantity, 0) === 1
+                  ? ""
+                  : "s"}
+                )
+              </span>
+              <span>{itemSubtotalPrice.primary}</span>
             </div>
-            {totalPrice.secondary && (
-              <div className="mt-1 text-sm text-[var(--text-muted)]">
-                {totalPrice.secondary}
+            <div className="mt-3 flex items-start justify-between gap-3 text-sm text-[var(--text-secondary)]">
+              <span className="min-w-0">
+                {pickupHandoff && pickupHandlerIdentity ? (
+                  <>
+                    <span className="flex items-start gap-1.5 text-pretty">
+                      <MapPin
+                        className="mt-0.5 size-3.5 shrink-0 text-secondary-400"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {pickupHandoff.label}
+                        {pickupLocation ? ` · ${pickupLocation}` : ""}
+                        {pickupDate ? ` · ${pickupDate}` : ""}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
+                      Handled by{" "}
+                      <EventActorName identity={pickupHandlerIdentity} />
+                    </span>
+                  </>
+                ) : fulfillmentLane === "pickup" ? (
+                  "Event pickup"
+                ) : (
+                  "Shipping"
+                )}
+              </span>
+              <span>{shippingLabel}</span>
+            </div>
+            <div className="mt-5 flex items-end justify-between gap-3 border-t border-[var(--border)] pt-4">
+              <div className="text-lg font-semibold text-[var(--text-primary)]">
+                Total
               </div>
-            )}
-          </div>
-        </div>
+              <div className="text-right">
+                <div className="text-3xl font-semibold text-secondary-400">
+                  {totalPrice.primary}
+                </div>
+                {totalPrice.secondary && (
+                  <div className="mt-1 text-sm text-[var(--text-muted)]">
+                    {totalPrice.secondary}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </aside>
   )
@@ -1207,6 +1305,16 @@ function CheckoutPage() {
   // first tick so a second click is rejected before it can publish a duplicate
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
+  const routerPreparedOrderRef = useRef<string | null>(null)
+  const [routerContinuations, setRouterContinuations] = useState<
+    CheckoutSparkSettledContinuation[]
+  >([])
+  const [routerContinuationError, setRouterContinuationError] = useState<
+    string | null
+  >(null)
+  const [routerContinuedOrder, setRouterContinuedOrder] = useState<
+    string | null
+  >(null)
   const autoZapStartedRef = useRef(false)
   const autoZapAuthorizationGenerationRef = useRef<number | null>(null)
   const payNowRef = useRef<
@@ -1239,8 +1347,60 @@ function CheckoutPage() {
     signedBuyerPubkey
       ? isAuthGenerationCurrent(authGeneration)
       : isGuestGenerationCurrent(authGeneration)
-  async function resolveCheckoutOrderAttempt(orderId: string): Promise<void> {
-    if (!shouldContinueBuyerSession()) {
+  const refreshRouterContinuations = useCallback(() => {
+    if (
+      signedBuyerPubkey
+        ? !isAuthGenerationCurrent(authGeneration)
+        : !isGuestCheckout || !isGuestGenerationCurrent(authGeneration)
+    )
+      return
+    try {
+      const now = Date.now()
+      pruneExpiredCheckoutSparkSettledContinuations(now)
+      const rows = signedBuyerPubkey
+        ? listCheckoutSparkSettledContinuations(signedBuyerPubkey, now)
+        : isGuestCheckout
+          ? listSessionGuestOrderIds(undefined, now).flatMap((orderId) => {
+              const identity = getSessionGuestOrderSigningIdentity(
+                orderId,
+                undefined,
+                now
+              )
+              return identity
+                ? listCheckoutSparkSettledContinuations(
+                    identity.pubkey,
+                    now
+                  ).filter((row) => row.order.id === orderId)
+                : []
+            })
+          : []
+      setRouterContinuations(rows)
+    } catch {
+      setRouterContinuations([])
+      setRouterContinuationError(
+        "Saved checkout recovery is unreadable. Do not create another invoice for the original purchase."
+      )
+    }
+  }, [
+    signedBuyerPubkey,
+    isGuestCheckout,
+    authGeneration,
+    isAuthGenerationCurrent,
+    isGuestGenerationCurrent,
+  ])
+  useEffect(() => {
+    setRouterContinuationError(null)
+    setRouterContinuedOrder(null)
+    if (isQuantumRouterExecutionEnabled() && !authPending)
+      refreshRouterContinuations()
+    else setRouterContinuations([])
+    // Restored continuations are buyer-scoped, not derived from the new cart.
+  }, [authGeneration, authPending, refreshRouterContinuations])
+  async function resolveCheckoutOrderAttempt(
+    orderId: string,
+    isCurrent: () => boolean = shouldContinueBuyerSession
+  ): Promise<void> {
+    if (!isCurrent()) {
       throw new Error(
         "The accepted order remains recoverable because the buyer session changed."
       )
@@ -1251,7 +1411,7 @@ function CheckoutPage() {
     if (!resolved) {
       throw new Error("The accepted order recovery state could not be saved.")
     }
-    if (!shouldContinueBuyerSession()) {
+    if (!isCurrent()) {
       await patchOrderLifecycle(orderId, { checkoutRecoveryPending: true })
       throw new Error(
         "The accepted order remains recoverable because the buyer session changed."
@@ -1744,6 +1904,31 @@ function CheckoutPage() {
   )
   const verifiedZeroCostPickup =
     pricingPreview.status === "ok" && !pricingPreview.paymentRequired
+  const routerAdmission = assessCheckoutSparkCheckoutAdmission({
+    enabled: isQuantumRouterEnabled(),
+    freeOrderVerified: verifiedZeroCostPickup,
+    items: rawCheckoutItems,
+    fulfillment: preparedFulfillment.resolutions,
+  })
+  const routerBranchTargetCheckout = routerAdmission.mode === "router"
+  const routerPreparationUnavailableMessage =
+    routerAdmission.mode === "router" && !routerAdmission.ready
+      ? "This checkout’s fulfillment is not supported by the router yet."
+      : null
+  const nativeTreasuryConfigured = (() => {
+    if (!routerBranchTargetCheckout) return false
+    const configuration = getSparkConfiguration()
+    if (configuration.status !== "ready") return false
+    try {
+      return selectCheckoutSparkTreasuryAddress(configuration.network) !== null
+    } catch {
+      // A malformed configured value is still a selected native deployment.
+      // Preparation performs the authoritative SDK validation before creating
+      // wallet material and reports the configuration error without falling
+      // back to a Lightning fee leg.
+      return true
+    }
+  })()
   const paymentRequired =
     pricingPreview.status !== "ok" || pricingPreview.paymentRequired
   const paymentPathEnabled =
@@ -2250,7 +2435,8 @@ function CheckoutPage() {
 
   async function assertCheckoutItemsAvailable(
     checkoutMode: CheckoutTelemetryMode,
-    rateInput: PricingRateInput = btcUsdRateQuery.data ?? null
+    rateInput: PricingRateInput = btcUsdRateQuery.data ?? null,
+    rateEvidenceRefresh?: { reviewedRateInput: PricingRateInput }
   ): Promise<Extract<CheckoutAuthorizationResult, { status: "ok" }>> {
     const refreshResult = await checkoutAvailability.refresh()
     if (refreshResult.decision.status === "unverified") {
@@ -2298,6 +2484,12 @@ function CheckoutPage() {
             shouldContinue: shouldContinueBuyerSession,
           }),
         rateInput,
+        ...(rateEvidenceRefresh
+          ? {
+              allowPricingRateEvidenceRefresh: true,
+              reviewedRateInput: rateEvidenceRefresh.reviewedRateInput,
+            }
+          : {}),
         destination: {
           country: shipping.country,
           subdivision: shipping.state,
@@ -2316,6 +2508,11 @@ function CheckoutPage() {
       throw error
     }
     if (authorization.status === "changed") {
+      if (rateEvidenceRefresh && rateInput && typeof rateInput === "object") {
+        // Show the authenticated price that needs review on the next render.
+        // This display refresh does not authorize a payment or save a quote.
+        queryClient.setQueryData(BTC_USD_RATE_QUERY_KEY, rateInput)
+      }
       void queryClient.invalidateQueries({
         queryKey: ["canonicalShippingOptions"],
       })
@@ -2634,7 +2831,386 @@ function CheckoutPage() {
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
+  /** Exact original-order continuation; this action never submits payment. */
+  async function continueSavedRouterOrder(
+    saved: CheckoutSparkSettledContinuation
+  ): Promise<void> {
+    const generationCurrent = () =>
+      saved.identityKind === "guest_ephemeral"
+        ? isGuestCheckout && isGuestGenerationCurrent(authGeneration)
+        : signedBuyerPubkey === saved.buyerPubkey &&
+          isAuthGenerationCurrent(authGeneration)
+    if (
+      paymentInFlightRef.current ||
+      !isQuantumRouterExecutionEnabled() ||
+      !generationCurrent()
+    )
+      return
+    const guest =
+      saved.identityKind === "guest_ephemeral"
+        ? getSessionGuestOrderSigningIdentity(saved.order.id)
+        : null
+    const connectedBuyer = guest ? null : getCheckoutBuyerIdentity()
+    const buyer =
+      guest ??
+      (connectedBuyer?.signer && signedBuyerPubkey === saved.buyerPubkey
+        ? {
+            kind: "signed_in" as const,
+            pubkey: signedBuyerPubkey,
+            signer: connectedBuyer.signer,
+          }
+        : null)
+    if (
+      !buyer ||
+      buyer.pubkey !== saved.buyerPubkey ||
+      buyer.kind !== saved.identityKind
+    ) {
+      setRouterContinuationError(
+        "Reconnect the original buyer session to continue this checkout."
+      )
+      return
+    }
+    const shouldContinue = () =>
+      generationCurrent() &&
+      isQuantumRouterExecutionEnabled() &&
+      (buyer.kind === "signed_in"
+        ? (() => {
+            const current = getCheckoutBuyerIdentity()
+            return (
+              current?.pubkey === buyer.pubkey &&
+              current.signer === buyer.signer
+            )
+          })()
+        : (() => {
+            const current = getSessionGuestOrderSigningIdentity(saved.order.id)
+            return (
+              current?.pubkey === buyer.pubkey &&
+              current.createdAt === buyer.createdAt &&
+              current.expiresAt === buyer.expiresAt
+            )
+          })())
+    paymentInFlightRef.current = true
+    setRouterContinuationError(null)
+    setStep("sending")
+    let deliveredOrderId: string | null = null
+    try {
+      const result = await withCheckoutSparkRouterPreparationLock(
+        () => {
+          if (!shouldContinue())
+            throw new Error("Checkout Spark buyer session changed.")
+        },
+        () =>
+          resumeCheckoutSparkSettledOrder({
+            checkoutId: saved.checkoutId,
+            buyer,
+            shouldContinue,
+            relayAuthMethod: guest ? undefined : (authMethod ?? undefined),
+          })
+      )
+      if (!shouldContinue()) return
+      deliveredOrderId = result.orderId
+      await resolveCheckoutOrderAttempt(result.orderId, shouldContinue)
+      if (!shouldContinue()) return
+      routerPreparedOrderRef.current = result.orderId
+      refreshRouterContinuations()
+      if (result.nextStep === "merchant_recovery") {
+        setRouterContinuedOrder(result.orderId)
+        setRouterContinuationError(
+          "The original private order was delivered. This browser no longer has its temporary wallet; coordinate recovery with the merchant. No new wallet, invoice, or payment was created."
+        )
+      } else {
+        void navigate({
+          to: "/orders",
+          search: { order: result.orderId },
+          replace: true,
+        })
+      }
+    } catch (cause) {
+      if (!shouldContinue()) return
+      if (
+        cause instanceof CheckoutSparkSettledContinuationManualRecoveryError
+      ) {
+        setRouterContinuedOrder(saved.order.id)
+      }
+      if (deliveredOrderId) setRouterContinuedOrder(deliveredOrderId)
+      setRouterContinuationError(
+        deliveredOrderId
+          ? "The original private order was delivered, but its local recovery marker could not be finished. Open the original order to check it; do not create or pay another invoice."
+          : cause instanceof CheckoutSparkSettledFundingExpiredError
+            ? "The saved funding invoice expired. Keep the original checkout and coordinate recovery with the merchant; do not create or pay another invoice."
+            : cause instanceof
+                CheckoutSparkSettledContinuationManualRecoveryError
+              ? "The saved original order needs manual merchant recovery. Open the original order; do not rebuild it or create or pay another invoice."
+              : "The original checkout still needs recovery. Retry its exact saved delivery here; do not prepare or pay another invoice."
+      )
+      refreshRouterContinuations()
+    } finally {
+      paymentInFlightRef.current = false
+      if (shouldContinue()) setStep("payment")
+    }
+  }
+
+  /** Explicit checkout preparation; this action never submits payment. */
+  async function prepareSettledRouterOrder(): Promise<void> {
+    if (routerPreparationUnavailableMessage) {
+      setError(routerPreparationUnavailableMessage)
+      return
+    }
+    if (
+      !isQuantumRouterEnabled() ||
+      !routerBranchTargetCheckout ||
+      !selectedMerchant ||
+      !selectedPurchase ||
+      routerPreparedOrderRef.current ||
+      paymentInFlightRef.current
+    ) {
+      return
+    }
+    if (!validateCheckoutDetailsForSubmit()) return
+    if (
+      checkoutRecoveryIsChecking ||
+      checkoutRecoveryBlockingMessage ||
+      checkoutEvidenceIsChecking ||
+      fulfillmentBlockingMessage ||
+      hasUnavailableCheckoutItems
+    ) {
+      setError(
+        checkoutRecoveryBlockingMessage ??
+          fulfillmentBlockingMessage ??
+          "Wait for current checkout and saved-order verification."
+      )
+      return
+    }
+    const connectedBuyer = isGuestCheckout ? null : getCheckoutBuyerIdentity()
+    const signedIdentity = connectedBuyer?.signer
+      ? {
+          kind: "signed_in" as const,
+          pubkey: connectedBuyer.pubkey,
+          signer: connectedBuyer.signer,
+        }
+      : null
+    if (!isGuestCheckout && !signedIdentity) return
+    const guestContact = buildGuestContact()
+    if (isGuestCheckout && !guestContact) return
+    // Freeze the submitted private details before the authoritative quote reads.
+    // Entry rechecks address consistency and the exact signed option's coverage.
+    const shippingAddress = buildShippingAddress()
+    const submittedNote = isGuestCheckout
+      ? buildBuyerNote()
+      : buildContactNote()
+    const configuration = getSparkConfiguration()
+    if (configuration.status !== "ready") {
+      setError(
+        "The temporary checkout wallet is unavailable. No order or payment was started."
+      )
+      return
+    }
+    paymentInFlightRef.current = true
+    setStep(isGuestCheckout ? "sending" : "signing")
+    setError(null)
+    const checkoutId = crypto.randomUUID()
+    const orderId = crypto.randomUUID()
+    let guestIdentity: GuestOrderSigningIdentity | null = null
+    const canContinueSettledPreparation = () => {
+      if (!shouldContinueBuyerSession() || !isQuantumRouterEnabled()) {
+        return false
+      }
+      if (!guestIdentity) return true
+      const currentGuestIdentity = getSessionGuestOrderSigningIdentity(orderId)
+      return (
+        currentGuestIdentity !== null &&
+        currentGuestIdentity.pubkey === guestIdentity.pubkey &&
+        currentGuestIdentity.createdAt === guestIdentity.createdAt &&
+        currentGuestIdentity.expiresAt === guestIdentity.expiresAt &&
+        isCurrentGuestOrderSigningIdentity(currentGuestIdentity, {
+          orderId,
+          merchantPubkey: selectedMerchant,
+        })
+      )
+    }
+    let published = false
+    let preparationStarted = false
+    let lockedPurchaseClaimDigest: string | null = null
+    try {
+      await withCheckoutSparkRouterPreparationLock(
+        async () => {
+          if (!isQuantumRouterEnabled()) {
+            throw new Error("Quantum Router is unavailable in this deployment.")
+          }
+          const claim = await cart.capturePurchase(
+            selectedPurchase.id,
+            rawCheckoutItems
+          )
+          const digest = await createCheckoutSparkPurchaseClaimDigest(claim)
+          if (
+            findBlockingCheckoutSparkPreparation(
+              listCheckoutSparkSettledPreparations(),
+              digest,
+              Date.now()
+            )
+          ) {
+            throw new Error(
+              "This cart already has a saved checkout. Continue or recover that order in Orders; do not create another funding invoice."
+            )
+          }
+          lockedPurchaseClaimDigest = digest
+        },
+        async () => {
+          if (!isQuantumRouterEnabled()) {
+            throw new Error("Quantum Router is unavailable in this deployment.")
+          }
+          const reviewedRateInput = btcUsdRateQuery.data ?? null
+          let rateInput = await getFreshPricingRateInput(checkoutItems)
+          let authorization = await assertCheckoutItemsAvailable(
+            "private_checkout",
+            rateInput
+          )
+          if (!canContinueSettledPreparation()) {
+            throw new Error(
+              "Buyer session or router availability changed before preparation."
+            )
+          }
+          let quoteAuthority = buildCheckoutSparkQuoteAuthority({
+            authorization,
+            rateInput,
+          })
+          const fiatCurrencies = getCheckoutSparkRequiredFiatCurrencies(
+            buildCheckoutSparkCommerceEvidence(quoteAuthority)
+          )
+          if (fiatCurrencies.length) {
+            const authorizedPricing = await fetchCheckoutSparkAuthorizedPricing(
+              {
+                currencies: fiatCurrencies,
+                shouldContinue: canContinueSettledPreparation,
+              }
+            )
+            rateInput = authorizedPricing.pricing.rate
+            authorization = await assertCheckoutItemsAvailable(
+              "private_checkout",
+              rateInput,
+              { reviewedRateInput }
+            )
+            quoteAuthority = buildCheckoutSparkQuoteAuthority({
+              authorization,
+              rateInput,
+              pricingAuthority: authorizedPricing.pricingAuthority,
+            })
+          }
+          const purchaseClaim = await cart.capturePurchase(
+            selectedPurchase.id,
+            rawCheckoutItems
+          )
+          const purchaseClaimDigest =
+            await createCheckoutSparkPurchaseClaimDigest(purchaseClaim)
+          if (purchaseClaimDigest !== lockedPurchaseClaimDigest) {
+            throw new Error(
+              "The cart changed during checkout preparation. Review it again before continuing."
+            )
+          }
+          if (!canContinueSettledPreparation()) {
+            throw new Error("Buyer session changed before order preparation.")
+          }
+          guestIdentity = isGuestCheckout
+            ? createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
+            : null
+          const buyer = guestIdentity ?? signedIdentity
+          if (!buyer)
+            throw new Error("The checkout signing identity is unavailable.")
+          preparationStarted = true
+          const result = await prepareCheckoutSparkSettledOrder({
+            checkoutId,
+            orderId,
+            purchaseClaimDigest,
+            quoteAuthority,
+            buyer,
+            network: configuration.network,
+            nowMs: Date.now(),
+            shouldContinue: canContinueSettledPreparation,
+            note: submittedNote,
+            guestContact,
+            shippingAddress,
+            relayAuthMethod: guestIdentity
+              ? undefined
+              : (authMethod ?? undefined),
+          })
+          published = true
+          routerPreparedOrderRef.current = orderId
+          clearCheckoutShippingSession()
+          if (!canContinueSettledPreparation()) {
+            throw new Error(
+              "The private order was accepted, but the buyer session or router availability changed. Continue it in Orders; do not start another checkout."
+            )
+          }
+          if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
+          await resolveCheckoutOrderAttempt(orderId)
+          void result.published.delivery.startPostAcceptanceWork?.()
+          void navigate({
+            to: "/orders",
+            search: { order: orderId },
+            replace: true,
+          })
+        }
+      )
+    } catch (cause) {
+      const message =
+        cause instanceof Error
+          ? cause.message
+          : "Private router preparation failed."
+      if (published) {
+        routerPreparedOrderRef.current = orderId
+        setError(
+          "The private router order was prepared. Continue it in Orders; do not prepare another invoice. " +
+            message
+        )
+      } else {
+        let recoveryState: "absent" | "present" | "unreadable" = "unreadable"
+        try {
+          recoveryState = getCheckoutSparkSettledPreparation(checkoutId)
+            ? "present"
+            : "absent"
+        } catch {
+          // An unreadable store is not proof that no wallet was prepared.
+        }
+        if (
+          canRetryCheckoutSparkSettledPreparation({
+            cause,
+            recoveryState,
+            preparationStarted,
+          })
+        ) {
+          // A failed admission or typed preflight with no saved wallet is safe
+          // to retry. Once preparation starts, all other failures stay closed.
+          if (guestIdentity) clearSessionGuestOrderSigningIdentity(orderId)
+          setError(
+            cause instanceof CheckoutSparkSettledPreparationAbandonedError
+              ? "The unfunded preparation was safely closed before any recovery publication or funding exposure. You can retry this purchase."
+              : preparationStarted
+                ? "A required recipient's payout setup could not be verified. No checkout wallet or order was created; retry after their profile, payment endpoint, or network is ready. " +
+                  message
+                : message
+          )
+        } else {
+          routerPreparedOrderRef.current = orderId
+          setError(
+            "Settled router preparation could not be confirmed. Do not retry this checkout without checking recovery first. " +
+              message
+          )
+        }
+      }
+      setStep("payment")
+    } finally {
+      paymentInFlightRef.current = false
+      if (canContinueSettledPreparation()) refreshRouterContinuations()
+    }
+  }
+
   async function placeOrder(): Promise<void> {
+    if (routerBranchTargetCheckout) {
+      setError(
+        "This purchase requires the private router order. Direct checkout is disabled for this purchase."
+      )
+      return
+    }
     if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
       return
     }
@@ -3089,6 +3665,12 @@ function CheckoutPage() {
   async function payNow(
     zapAuthorization: HudZapAuthorization | null = null
   ): Promise<void> {
+    if (routerBranchTargetCheckout) {
+      setError(
+        "This purchase requires the private router order. Direct payment is disabled for this purchase."
+      )
+      return
+    }
     if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
       return
     }
@@ -3804,6 +4386,30 @@ function CheckoutPage() {
     ) {
       return
     }
+    if (routerBranchTargetCheckout) {
+      // The HUD authorized the commerce estimate, not this route's final gross
+      // funding total. Consume it as review intent only; never auto-fund.
+      const generationChanged =
+        autoZapAuthorizationGenerationRef.current !== authGeneration
+      const rejection = getHudZapAuthorizationRejection(autoZapAuthorization, {
+        merchantPubkey: selectedMerchant,
+        purchaseId: selectedPurchase?.id,
+        buyerPubkey: signedBuyerPubkey,
+        items: checkoutItems,
+        totalMsats:
+          pricingPreview.status === "ok" ? pricingPreview.totalMsats : null,
+      })
+      autoZapAuthorizationGenerationRef.current = null
+      setAutoZapAuthorization(null)
+      autoZapStartedRef.current = true
+      if (!signerConnected || generationChanged || rejection) {
+        setError("Zap out details changed. Review checkout before paying.")
+      } else {
+        setError(null)
+      }
+      setStep("payment")
+      return
+    }
     if (!signerConnected) {
       autoZapAuthorizationGenerationRef.current = null
       setAutoZapAuthorization(null)
@@ -3870,6 +4476,7 @@ function CheckoutPage() {
     firstFastUnavailableReason,
     hasUnavailableCheckoutItems,
     pricingPreview,
+    routerBranchTargetCheckout,
     selectedMerchant,
     selectedPurchase?.id,
     signerConnected,
@@ -3889,6 +4496,55 @@ function CheckoutPage() {
 
   // ─── Empty / multi-merchant guards ──────────────────────────────────────
 
+  const pendingPreparationPanel =
+    routerContinuations.length > 0 ||
+    routerContinuationError ||
+    routerContinuedOrder ? (
+      <section
+        aria-label="Saved checkout recovery"
+        className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"
+      >
+        <h2 className="font-semibold text-[var(--text-primary)]">
+          Continue the original checkout
+        </h2>
+        <p className="mt-2 text-sm text-[var(--text-secondary)]">
+          This uses the saved order and its exact delivery, not the current
+          cart. It creates no new funding invoice and sends no payment.
+        </p>
+        {routerContinuationError && (
+          <p role="alert" className="mt-2 text-sm text-[var(--text-secondary)]">
+            {routerContinuationError}
+          </p>
+        )}
+        <div className="mt-3 flex flex-wrap gap-3">
+          {routerContinuations.map((saved, index) => (
+            <Button
+              key={saved.checkoutId}
+              type="button"
+              disabled={
+                step === "sending" ||
+                step === "signing" ||
+                authPending ||
+                !!signerBlockedMessage
+              }
+              onClick={() => void continueSavedRouterOrder(saved)}
+            >
+              {routerContinuations.length > 1
+                ? `Continue saved checkout ${index + 1}`
+                : "Continue saved checkout"}
+            </Button>
+          ))}
+          {routerContinuedOrder && (
+            <Button asChild variant="outline">
+              <Link to="/orders" search={{ order: routerContinuedOrder }}>
+                Open original order
+              </Link>
+            </Button>
+          )}
+        </div>
+      </section>
+    ) : null
+
   if (!cart.hydrated) {
     return (
       <div
@@ -3905,6 +4561,7 @@ function CheckoutPage() {
     return (
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
+        {pendingPreparationPanel}
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-balance text-4xl font-semibold text-[var(--text-primary)]">
             Choose a purchase before ordering
@@ -3977,6 +4634,7 @@ function CheckoutPage() {
     return (
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
+        {pendingPreparationPanel}
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Cart is empty
@@ -4024,6 +4682,7 @@ function CheckoutPage() {
   return (
     <div className="space-y-6">
       <CheckoutBreadcrumb current="order" includesShippingStep={false} />
+      {pendingPreparationPanel}
 
       <h1 className="text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
         Checkout
@@ -4126,6 +4785,8 @@ function CheckoutPage() {
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
           pickupHandlerIdentity={pickupHandlerIdentity}
           formatPrice={shopperPricing.formatPrice}
+          routerFundingSeparate={routerBranchTargetCheckout}
+          nativeTreasuryConfigured={nativeTreasuryConfigured}
           className="lg:order-2 lg:sticky lg:top-6"
         />
         <section className="space-y-5">
@@ -4532,7 +5193,7 @@ function CheckoutPage() {
           {/* ── Order action ──────────────────────────────────────────────── */}
           {
             <>
-              {!isGuestCheckout && (
+              {!routerBranchTargetCheckout && !isGuestCheckout && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div className="min-w-0 flex-1">
@@ -4670,13 +5331,28 @@ function CheckoutPage() {
               )}
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-                {/* Zap out banner */}
-                <CheckoutMerchantPaymentNotice
-                  state={merchantPaymentReadiness}
-                  isGuestCheckout={isGuestCheckout}
-                />
+                {routerBranchTargetCheckout ? (
+                  <div
+                    role="status"
+                    className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm"
+                  >
+                    <div className="font-medium text-[var(--text-primary)]">
+                      Payment
+                    </div>
+                    <p className="mt-1 leading-6 text-[var(--text-secondary)]">
+                      Review and approve the full order total next. Your order
+                      details stay private.
+                    </p>
+                  </div>
+                ) : (
+                  <CheckoutMerchantPaymentNotice
+                    state={merchantPaymentReadiness}
+                    isGuestCheckout={isGuestCheckout}
+                  />
+                )}
 
-                {paymentRequired &&
+                {!routerBranchTargetCheckout &&
+                  paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
                   showFastCheckoutSurface && (
@@ -4713,7 +5389,8 @@ function CheckoutPage() {
                     </div>
                   )}
 
-                {paymentRequired &&
+                {!routerBranchTargetCheckout &&
+                  paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
                   directCheckoutEligible &&
@@ -4872,49 +5549,82 @@ function CheckoutPage() {
 
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-4 sm:border-0 sm:pt-0">
-                  {!isGuestCheckout && directCheckoutEligible && (
-                    <HoldToReleaseButton
-                      className="h-11 w-full px-5 text-sm sm:w-auto"
-                      disabled={
-                        checkoutRecoveryIsChecking ||
-                        checkoutRecoveryBlockingMessage !== null ||
-                        checkoutEvidenceIsChecking ||
-                        hasUnavailableCheckoutItems ||
-                        fulfillmentBlockingMessage !== null ||
-                        selectedPaymentTargetIsStale ||
-                        authPending ||
-                        !!signerBlockedMessage
-                      }
-                      canComplete={() =>
-                        directCheckoutEligible &&
-                        !checkoutAvailability.isChecking &&
-                        !checkoutRecoveryIsChecking &&
-                        !checkoutRecoveryBlockingMessage &&
-                        !hasUnavailableCheckoutItems &&
-                        !paymentInFlightRef.current
-                      }
-                      onHoldComplete={() => {
-                        void payNow()
-                      }}
-                      chargedLabel={
-                        selectedPaymentTarget.type === "manual"
-                          ? "Release to show invoice"
-                          : "Release to zap out"
-                      }
-                    >
-                      <LightningIcon className="h-4 w-4" />
-                      {isGuestCheckout
-                        ? "Hold to send order and show invoice"
-                        : selectedPaymentTargetIsStale
-                          ? "Choose how to pay"
-                          : selectedPaymentTarget.type === "manual"
-                            ? "Hold to send order and show invoice"
-                            : canAttemptLightningPayment
-                              ? "Hold to zap out"
-                              : "Hold to send order and review payment"}
-                    </HoldToReleaseButton>
+                  {routerBranchTargetCheckout && (
+                    <div className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                      <Button
+                        type="button"
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
+                        disabled={
+                          checkoutRecoveryIsChecking ||
+                          checkoutRecoveryBlockingMessage !== null ||
+                          checkoutEvidenceIsChecking ||
+                          hasUnavailableCheckoutItems ||
+                          fulfillmentBlockingMessage !== null ||
+                          routerPreparationUnavailableMessage !== null ||
+                          authPending ||
+                          !!signerBlockedMessage ||
+                          !!routerPreparedOrderRef.current
+                        }
+                        onClick={() => void prepareSettledRouterOrder()}
+                      >
+                        Continue to payment
+                      </Button>
+                      {routerPreparationUnavailableMessage && (
+                        <p
+                          role="status"
+                          className="mt-2 text-sm text-[var(--text-secondary)]"
+                        >
+                          {routerPreparationUnavailableMessage}
+                        </p>
+                      )}
+                    </div>
                   )}
-                  {isGuestCheckout &&
+                  {!routerBranchTargetCheckout &&
+                    !isGuestCheckout &&
+                    directCheckoutEligible && (
+                      <HoldToReleaseButton
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
+                        disabled={
+                          checkoutRecoveryIsChecking ||
+                          checkoutRecoveryBlockingMessage !== null ||
+                          checkoutEvidenceIsChecking ||
+                          hasUnavailableCheckoutItems ||
+                          fulfillmentBlockingMessage !== null ||
+                          selectedPaymentTargetIsStale ||
+                          authPending ||
+                          !!signerBlockedMessage
+                        }
+                        canComplete={() =>
+                          directCheckoutEligible &&
+                          !checkoutAvailability.isChecking &&
+                          !checkoutRecoveryIsChecking &&
+                          !checkoutRecoveryBlockingMessage &&
+                          !hasUnavailableCheckoutItems &&
+                          !paymentInFlightRef.current
+                        }
+                        onHoldComplete={() => {
+                          void payNow()
+                        }}
+                        chargedLabel={
+                          selectedPaymentTarget.type === "manual"
+                            ? "Release to show invoice"
+                            : "Release to zap out"
+                        }
+                      >
+                        <LightningIcon className="h-4 w-4" />
+                        {isGuestCheckout
+                          ? "Hold to send order and show invoice"
+                          : selectedPaymentTargetIsStale
+                            ? "Choose how to pay"
+                            : selectedPaymentTarget.type === "manual"
+                              ? "Hold to send order and show invoice"
+                              : canAttemptLightningPayment
+                                ? "Hold to zap out"
+                                : "Hold to send order and review payment"}
+                      </HoldToReleaseButton>
+                    )}
+                  {!routerBranchTargetCheckout &&
+                    isGuestCheckout &&
                     !fastEligible &&
                     manualInvoiceEligible && (
                       <Button
@@ -4931,7 +5641,8 @@ function CheckoutPage() {
                         Send order
                       </Button>
                     )}
-                  {pricingOnlyFastCheckoutBlocker &&
+                  {!routerBranchTargetCheckout &&
+                    pricingOnlyFastCheckoutBlocker &&
                     !directCheckoutEligible && (
                       <Button
                         className="h-11 w-full px-5 text-sm sm:w-auto"
@@ -4952,7 +5663,8 @@ function CheckoutPage() {
                       </Button>
                     )}
 
-                  {isGuestCheckout &&
+                  {!routerBranchTargetCheckout &&
+                    isGuestCheckout &&
                     !fastEligible &&
                     (verifiedZeroCostPickup ? (
                       <Button
@@ -4987,7 +5699,7 @@ function CheckoutPage() {
                       </Button>
                     ) : null)}
 
-                  {!isGuestCheckout && (
+                  {!routerBranchTargetCheckout && !isGuestCheckout && (
                     <Button
                       variant={
                         directCheckoutEligible || pricingOnlyFastCheckoutBlocker

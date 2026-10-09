@@ -649,19 +649,22 @@ class RelayConnection {
     if (!challenge) throw new RelayAuthError("missing_challenge")
     if (this.invalidChallenge) throw new RelayAuthError("challenge_invalid")
     if (this.authenticatedChallenge === challenge) return
-    if (this.usedChallenges.has(challenge)) {
-      onSignerInvoked?.()
-      throw new RelayAuthError("challenge_replayed")
-    }
-    if (this.usedChallenges.size >= MAX_USED_CHALLENGES) {
-      onSignerInvoked?.()
-      throw new RelayAuthError("challenge_loop")
-    }
     if (this.authPromise) {
       if (this.authPromiseChallenge !== challenge) {
         throw new RelayAuthError("challenge_superseded")
       }
     } else {
+      // AUTH dispatch marks the challenge used while its matching OK is still
+      // pending. Same-connection consumers join that attempt; only a new
+      // authentication may be rejected as replaying an already-sent challenge.
+      if (this.usedChallenges.has(challenge)) {
+        onSignerInvoked?.()
+        throw new RelayAuthError("challenge_replayed")
+      }
+      if (this.usedChallenges.size >= MAX_USED_CHALLENGES) {
+        onSignerInvoked?.()
+        throw new RelayAuthError("challenge_loop")
+      }
       let authenticationPhase:
         "before_signer" | "signer_pending" | "auth_sent" = "before_signer"
       this.authSignerInvoked = false

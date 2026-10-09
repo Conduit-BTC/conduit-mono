@@ -164,12 +164,19 @@ export async function fetchLnurlPayMetadataFromUrl(
   try {
     const res = await (options.fetchImpl ?? fetch)(safePayRequestUrl, {
       headers: { accept: "application/json" },
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
       // Cloudflare's edge fetch accepts manual but can reject error mode.
       // A redirect is still rejected below because a 3xx response is not ok.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!res.ok) throw new Error(`LNURL endpoint returned ${res.status}`)
+    if (!res.ok) {
+      throw new Error(`LNURL endpoint returned ${res.status}`)
+    }
+    if (res.redirected || (res.url && res.url !== safePayRequestUrl))
+      throw new Error("LNURL endpoint response is unavailable")
     const contentLength = Number(res.headers?.get("content-length") ?? "0")
     if (
       Number.isFinite(contentLength) &&
@@ -270,6 +277,8 @@ export interface ZapRequestParams {
 export interface FetchZapInvoiceResult {
   /** BOLT11 invoice returned by the LNURL callback. */
   invoice: string
+  /** Optional LUD-21 endpoint; a hint, not recipient or settlement authority. */
+  verifyUrl?: string
 }
 
 export const OMF_ZAPOUT_MARKER_TAG = ["omf", "zapout"] as const
@@ -385,10 +394,14 @@ export async function fetchLnurlInvoice(
   try {
     const res = await fetch(url.toString(), {
       headers: { accept: "application/json" },
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
       redirect: "error",
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
+    if (!res.ok || res.redirected || (res.url && res.url !== url.toString()))
+      throw new Error("LNURL callback response is unavailable")
     const contentLength = Number(res.headers?.get("content-length") ?? "0")
     if (
       Number.isFinite(contentLength) &&
@@ -422,7 +435,10 @@ export async function fetchLnurlInvoice(
   if (!invoice)
     throw new Error("LNURL callback did not return a BOLT11 invoice")
 
-  return { invoice }
+  return {
+    invoice,
+    ...(typeof data.verify === "string" ? { verifyUrl: data.verify } : {}),
+  }
 }
 
 /**
@@ -508,6 +524,12 @@ const BOLT11_SIGNATURE_WORD_COUNT = 104
 const BECH32_CHECKSUM_WORD_COUNT = 6
 const BOLT11_PAYMENT_HASH_WORD_COUNT = 52
 const BOLT11_DESCRIPTION_HASH_WORD_COUNT = 52
+
+// Reuse only positive mathematical verdicts, not invoice or payment authority.
+// Every arrival still passes fresh parsing, checksum, field and digest checks.
+// Keys contain bounded crypto inputs only; no full invoice is retained.
+const MAX_VERIFIED_BOLT11_SIGNATURES = 4_096
+const verifiedBolt11Signatures = new Set<string>()
 
 type Bolt11TaggedField = {
   tag: string
@@ -746,23 +768,37 @@ export function isValidLightningInvoice(invoice: string): boolean {
     )
     const compact = signature.slice(0, 64)
     const payee = fields("n")[0]
-    if (payee) {
+    const payeePublicKey = payee ? wordsToBytes(payee.words, 33)! : null
+    const signatureKey = `${bytesToHex(digest)}:${bytesToHex(signature)}:${payeePublicKey ? `payee-low-s:${bytesToHex(payeePublicKey)}` : "recover"}`
+    if (verifiedBolt11Signatures.has(signatureKey)) return true
+    let valid: boolean
+    if (payeePublicKey) {
       // With an explicit payee, recovery is forbidden and low-S is mandatory.
-      return secp256k1.verify(compact, digest, wordsToBytes(payee.words, 33)!, {
+      valid = secp256k1.verify(compact, digest, payeePublicKey, {
         prehash: false,
         lowS: true,
       })
+    } else {
+      // Noble's recovered encoding puts the recovery byte first; BOLT11 puts it last.
+      const publicKey = secp256k1.recoverPublicKey(
+        concatBytes(signature.slice(64), compact),
+        digest,
+        { prehash: false }
+      )
+      valid = secp256k1.verify(compact, digest, publicKey, {
+        prehash: false,
+        lowS: false,
+      })
     }
-    // Noble's recovered encoding puts the recovery byte first; BOLT11 puts it last.
-    const publicKey = secp256k1.recoverPublicKey(
-      concatBytes(signature.slice(64), compact),
-      digest,
-      { prehash: false }
-    )
-    return secp256k1.verify(compact, digest, publicKey, {
-      prehash: false,
-      lowS: false,
-    })
+    if (valid) {
+      if (verifiedBolt11Signatures.size >= MAX_VERIFIED_BOLT11_SIGNATURES) {
+        verifiedBolt11Signatures.delete(
+          verifiedBolt11Signatures.values().next().value!
+        )
+      }
+      verifiedBolt11Signatures.add(signatureKey)
+    }
+    return valid
   } catch {
     // Malformed UTF-8, public keys, signatures and impossible recovery all fail closed.
     return false
@@ -1156,22 +1192,32 @@ export type LightningInvoiceValidation =
 export function validateLightningInvoiceForPayment({
   invoice,
   expectedAmountMsats,
+  expectedNetwork,
   nowSeconds = Math.floor(Date.now() / 1000),
   allowExpired = false,
 }: {
   invoice: string
   expectedAmountMsats: number
+  /** When omitted, retain the deployment network and its compatibility rules. */
+  expectedNetwork?: Exclude<LightningInvoiceNetwork, "unknown">
   nowSeconds?: number
   /** Payment reports may preserve an invoice after it expired; payment may not. */
   allowExpired?: boolean
 }): LightningInvoiceValidation {
   const metadata = decodeLightningInvoiceMetadata(invoice)
-  if (!isInvoiceCompatibleWithCurrentNetwork(invoice)) {
+  const actualNetwork = getLightningInvoiceNetwork(invoice)
+  if (
+    expectedNetwork
+      ? actualNetwork !== expectedNetwork
+      : !isInvoiceCompatibleWithCurrentNetwork(invoice)
+  ) {
     return {
       ok: false,
       reason:
-        getLightningNetworkMismatchMessage(invoice) ??
-        "The invoice returned by the merchant is for a different Lightning network.",
+        expectedNetwork && actualNetwork !== "unknown"
+          ? `This invoice is for ${actualNetwork}, but ${expectedNetwork} was required.`
+          : (getLightningNetworkMismatchMessage(invoice) ??
+            "The invoice returned by the merchant is for a different Lightning network."),
       metadata,
     }
   }

@@ -13,6 +13,11 @@ import {
 import { Button, useTimeBoundaryNow } from "@conduit/ui"
 import cashAppLogo from "../assets/cash-app.svg"
 import { getCashAppLightningUrl } from "../lib/cash-app-lightning"
+import type {
+  ExternalInvoicePaymentAction,
+  ExternalInvoicePaymentActionResult,
+} from "./invoice-payment-action"
+export type { ExternalInvoicePaymentAction } from "./invoice-payment-action"
 
 export function InvoicePayment({
   invoice,
@@ -21,29 +26,51 @@ export function InvoicePayment({
   quote,
   guestSession,
   onBeforeInvoiceUse,
+  onPrepareInvoice,
+  preparationDisabled = false,
+  cashAppPreparationAvailable = false,
+  actionResult,
 }: {
-  invoice: string
+  invoice: string | null
   expectedAmountSats: number | null
   preference: ShopperPricePreference
   quote: BtcUsdRateQuote | null
   guestSession: boolean
   onBeforeInvoiceUse: () => boolean
+  onPrepareInvoice?: (action: ExternalInvoicePaymentAction) => void
+  preparationDisabled?: boolean
+  cashAppPreparationAvailable?: boolean
+  actionResult?: ExternalInvoicePaymentActionResult
 }) {
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
-  const [showQr, setShowQr] = useState(false)
+  const actionFeedback =
+    actionResult === "copied"
+      ? "Invoice copied."
+      : actionResult === "copy_failed"
+        ? "Could not copy. Select the invoice in Payment details and copy it manually."
+        : actionResult === "wallet_requested" ||
+            actionResult === "wallet_request_failed"
+          ? "If the wallet didn’t open, use the link above."
+          : null
+  const displayedStatus = copyStatus ?? actionFeedback
+  const [qrChoice, setQrChoice] = useState<boolean | null>(null)
+  const showQr = qrChoice ?? actionResult === "qr_ready"
   const qrId = useId()
-  const bolt11 = normalizeLightningInvoice(invoice)
-  const metadata = decodeLightningInvoiceMetadata(invoice)
+  const bolt11 = invoice ? normalizeLightningInvoice(invoice) : ""
+  const metadata = invoice ? decodeLightningInvoiceMetadata(invoice) : null
   const nowMs = useTimeBoundaryNow([
-    ...(metadata.expiresAt === null ? [] : [metadata.expiresAt * 1_000]),
+    ...(metadata?.expiresAt == null ? [] : [metadata.expiresAt * 1_000]),
     ...(quote ? [quote.fetchedAt + DEFAULT_PRICING_RATE_MAX_AGE_MS + 1] : []),
   ])
-  const cashAppUrl = getCashAppLightningUrl(
-    invoice,
-    expectedAmountSats,
-    Math.floor(Math.max(nowMs, Date.now()) / 1_000)
-  )
-  const sats = metadata.msats === null ? null : metadata.msats / 1_000
+  const cashAppUrl = invoice
+    ? getCashAppLightningUrl(
+        invoice,
+        expectedAmountSats,
+        Math.floor(Math.max(nowMs, Date.now()) / 1_000)
+      )
+    : null
+  const canPrepare = !invoice && !!onPrepareInvoice
+  const sats = metadata?.msats == null ? null : metadata.msats / 1_000
   const exactAmount =
     sats === null ? null : formatBitcoinBaseUnits(sats, "sats")
   const display =
@@ -60,7 +87,11 @@ export function InvoicePayment({
     display?.state === "ready" ? display.primary : exactAmount
 
   async function copyInvoice() {
-    if (!onBeforeInvoiceUse()) return
+    if (canPrepare) {
+      onPrepareInvoice?.("copy")
+      return
+    }
+    if (!invoice || !onBeforeInvoiceUse()) return
     try {
       await navigator.clipboard.writeText(bolt11)
       setCopyStatus("Invoice copied.")
@@ -84,56 +115,85 @@ export function InvoicePayment({
         </div>
       )}
       <div className="min-w-0 space-y-3">
-        {cashAppUrl && (
+        {(cashAppUrl || (canPrepare && cashAppPreparationAvailable)) && (
           <>
-            <Button
-              asChild
-              className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
-            >
-              <a
-                href={cashAppUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                referrerPolicy="no-referrer"
-                onClick={(event) => {
-                  if (
-                    !getCashAppLightningUrl(invoice, expectedAmountSats) ||
-                    !onBeforeInvoiceUse()
-                  )
-                    event.preventDefault()
-                }}
+            {cashAppUrl ? (
+              <Button
+                asChild
+                className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
+              >
+                <a
+                  href={cashAppUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  referrerPolicy="no-referrer"
+                  onClick={(event) => {
+                    if (
+                      !invoice ||
+                      !getCashAppLightningUrl(invoice, expectedAmountSats) ||
+                      !onBeforeInvoiceUse()
+                    )
+                      event.preventDefault()
+                  }}
+                >
+                  <img src={cashAppLogo} alt="" className="h-6 w-6" />
+                  Pay with Cash App
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              </Button>
+            ) : (
+              <Button
+                className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
+                disabled={preparationDisabled}
+                onClick={() => onPrepareInvoice?.("cash_app")}
               >
                 <img src={cashAppLogo} alt="" className="h-6 w-6" />
                 Pay with Cash App
                 <ExternalLink className="h-4 w-4" />
-              </a>
-            </Button>
-            <details className="text-xs leading-5 text-[var(--text-secondary)]">
-              <summary className="cursor-pointer py-1">
-                Cash App didn’t open?
-              </summary>
-              <p>
-                Try Open Lightning wallet or copy the invoice. Cash App must be
-                installed and Lightning payments available for your account.
-              </p>
-            </details>
+              </Button>
+            )}
+            {invoice && (
+              <details className="text-xs leading-5 text-[var(--text-secondary)]">
+                <summary className="cursor-pointer py-1">
+                  Cash App didn’t open?
+                </summary>
+                <p>
+                  Try Open Lightning wallet or copy the invoice. Cash App must
+                  be installed and Lightning payments available for your
+                  account.
+                </p>
+              </details>
+            )}
           </>
         )}
-        <Button asChild variant="outline" className="h-12 w-full">
-          <a
-            href={`lightning:${bolt11}`}
-            onClick={(event) => {
-              if (!onBeforeInvoiceUse()) event.preventDefault()
-            }}
+        {invoice ? (
+          <Button asChild variant="outline" className="h-12 w-full">
+            <a
+              href={`lightning:${bolt11}`}
+              onClick={(event) => {
+                if (!onBeforeInvoiceUse()) event.preventDefault()
+              }}
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open Lightning wallet
+            </a>
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            className="h-12 w-full"
+            disabled={preparationDisabled || !canPrepare}
+            onClick={() => onPrepareInvoice?.("lightning")}
           >
             <ExternalLink className="h-4 w-4" />
             Open Lightning wallet
-          </a>
-        </Button>
+          </Button>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant="outline"
             className="h-11 min-w-0 px-3"
+            disabled={!invoice && (preparationDisabled || !canPrepare)}
             onClick={() => void copyInvoice()}
           >
             <Copy className="h-4 w-4" />
@@ -144,21 +204,24 @@ export function InvoicePayment({
             className="h-11 min-w-0 px-3"
             aria-expanded={showQr}
             aria-controls={qrId}
-            onClick={() => setShowQr(!showQr)}
+            disabled={!invoice && (preparationDisabled || !canPrepare)}
+            onClick={() =>
+              canPrepare ? onPrepareInvoice?.("qr") : setQrChoice(!showQr)
+            }
           >
             <QrCode className="h-4 w-4" />
             {showQr ? "Hide QR code" : "Show QR code"}
           </Button>
         </div>
-        {copyStatus && (
+        {displayedStatus && (
           <p
             role="status"
             className="text-pretty text-xs text-[var(--text-secondary)]"
           >
-            {copyStatus}
+            {displayedStatus}
           </p>
         )}
-        {showQr && (
+        {invoice && showQr && (
           <div id={qrId} className="mx-auto w-fit rounded-xl bg-white p-3">
             <QRCodeSVG
               value={bolt11}
@@ -169,14 +232,16 @@ export function InvoicePayment({
           </div>
         )}
       </div>
-      <details className="border-t border-[var(--border)] pt-2 text-sm text-[var(--text-secondary)]">
-        <summary className="cursor-pointer py-2">Payment details</summary>
-        {exactAmount && <p className="py-2">Invoice amount: {exactAmount}</p>}
-        <p className="mb-2 text-xs">Payment network: Lightning</p>
-        <p className="select-all break-all rounded-xl bg-[var(--surface)] p-3 font-mono text-xs leading-5">
-          {bolt11}
-        </p>
-      </details>
+      {invoice && (
+        <details className="border-t border-[var(--border)] pt-2 text-sm text-[var(--text-secondary)]">
+          <summary className="cursor-pointer py-2">Payment details</summary>
+          {exactAmount && <p className="py-2">Invoice amount: {exactAmount}</p>}
+          <p className="mb-2 text-xs">Payment network: Lightning</p>
+          <p className="select-all break-all rounded-xl bg-[var(--surface)] p-3 font-mono text-xs leading-5">
+            {bolt11}
+          </p>
+        </details>
+      )}
     </div>
   )
 }

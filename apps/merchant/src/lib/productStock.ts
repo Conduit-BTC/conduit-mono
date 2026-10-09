@@ -16,13 +16,15 @@ const STOCK_DELIVERY_STORAGE_PREFIX =
 const MAX_STORED_STOCK_DECISIONS = 500
 const MAX_STORED_STOCK_DELIVERIES = 100
 
-export type ProductStockDecisionKind = "applied" | "declined"
+export type ProductStockDecisionKind = "applied" | "declined" | "unpublished"
 
 export interface ProductStockDecision {
   kind: ProductStockDecisionKind
   decidedAt: number
   /** Latest unresolved order-relative state, preserved across listing refetches. */
   adjustment?: OrderStockAdjustment
+  /** Exact locally applied revision that received no relay ACK. */
+  localEventId?: string
 }
 
 interface StoredProductStockDecisions {
@@ -97,6 +99,40 @@ function getDeliveryStorageKey(merchantPubkey: string): string | null {
     : null
 }
 
+/** All tabs must serialize stock checkpoint and decision map writes. */
+export type MerchantStockLockRequest = <T>(
+  name: string,
+  task: () => Promise<T>
+) => Promise<T>
+
+export async function withMerchantStockLock<T>(
+  merchantPubkey: string,
+  task: () => T | Promise<T>,
+  requestLock?: MerchantStockLockRequest | null
+): Promise<T> {
+  const normalizedMerchant = merchantPubkey.trim()
+  if (!normalizedMerchant) {
+    throw new Error("A merchant account is required for stock recovery")
+  }
+  const browserRequestLock: MerchantStockLockRequest | null =
+    typeof navigator !== "undefined" && navigator.locks
+      ? (name, lockedTask) =>
+          navigator.locks.request(name, async (lock) => {
+            if (!lock) throw new Error("Stock recovery lock was not acquired")
+            return lockedTask()
+          })
+      : null
+  const acquire = requestLock === undefined ? browserRequestLock : requestLock
+  if (!acquire) {
+    throw new Error(
+      "This browser cannot coordinate stock updates across tabs. No product change was staged."
+    )
+  }
+  return acquire(`conduit:merchant:order-stock:v1:${normalizedMerchant}`, () =>
+    Promise.resolve().then(task)
+  )
+}
+
 function getDecisionProductAddressId(decisionKey: string): string | null {
   const separatorIndex = decisionKey.indexOf(":")
   if (
@@ -161,9 +197,12 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
         kind?: unknown
         decidedAt?: unknown
         adjustment?: unknown
+        localEventId?: unknown
       }
       if (
-        (decision.kind !== "applied" && decision.kind !== "declined") ||
+        (decision.kind !== "applied" &&
+          decision.kind !== "declined" &&
+          decision.kind !== "unpublished") ||
         typeof decision.decidedAt !== "number" ||
         !Number.isFinite(decision.decidedAt)
       ) {
@@ -182,10 +221,21 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
       ) {
         continue
       }
+      if (
+        decision.kind === "unpublished" &&
+        (!adjustment ||
+          typeof decision.localEventId !== "string" ||
+          !/^[0-9a-f]{64}$/.test(decision.localEventId))
+      ) {
+        continue
+      }
       decisions[key] = {
         kind: decision.kind,
         decidedAt: decision.decidedAt,
         ...(adjustment ? { adjustment } : {}),
+        ...(decision.kind === "unpublished"
+          ? { localEventId: decision.localEventId as string }
+          : {}),
       }
     }
 
@@ -193,6 +243,37 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
   } catch {
     return { version: 1, decisions: {} }
   }
+}
+
+function parseStoredDecisionsStrict(
+  raw: string | null
+): StoredProductStockDecisions {
+  if (raw === null) return { version: 1, decisions: {} }
+  let candidate: unknown
+  try {
+    candidate = JSON.parse(raw)
+  } catch {
+    throw new Error("Stored stock decisions are unreadable")
+  }
+  if (
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate) ||
+    (candidate as { version?: unknown }).version !== 1 ||
+    !(candidate as { decisions?: unknown }).decisions ||
+    typeof (candidate as { decisions?: unknown }).decisions !== "object" ||
+    Array.isArray((candidate as { decisions?: unknown }).decisions)
+  ) {
+    throw new Error("Stored stock decisions are unreadable")
+  }
+  const stored = parseStoredDecisions(raw)
+  if (
+    Object.keys(stored.decisions).length !==
+    Object.keys((candidate as StoredProductStockDecisions).decisions).length
+  ) {
+    throw new Error("Stored stock decisions contain invalid order evidence")
+  }
+  return stored
 }
 
 function parseOrderStockAdjustment(
@@ -349,6 +430,38 @@ function parseStoredDeliveries(
   }
 }
 
+function parseStoredDeliveriesStrict(
+  raw: string | null,
+  merchantPubkey: string
+): StoredProductStockDeliveries {
+  if (raw === null) return { version: 1, deliveries: {} }
+  let candidate: unknown
+  try {
+    candidate = JSON.parse(raw)
+  } catch {
+    throw new Error("Stored stock checkpoints are unreadable")
+  }
+  if (
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate) ||
+    (candidate as { version?: unknown }).version !== 1 ||
+    !(candidate as { deliveries?: unknown }).deliveries ||
+    typeof (candidate as { deliveries?: unknown }).deliveries !== "object" ||
+    Array.isArray((candidate as { deliveries?: unknown }).deliveries)
+  ) {
+    throw new Error("Stored stock checkpoints are unreadable")
+  }
+  const stored = parseStoredDeliveries(raw, merchantPubkey)
+  if (
+    Object.keys(stored.deliveries).length !==
+    Object.keys((candidate as StoredProductStockDeliveries).deliveries).length
+  ) {
+    throw new Error("Stored stock checkpoints contain invalid order evidence")
+  }
+  return stored
+}
+
 export function isPlainStockInput(value: string): boolean {
   return /^\d*$/.test(value)
 }
@@ -454,6 +567,31 @@ export function doesOrderStockDecisionCoverAdjustment(input: {
   return getOrderStockDecisionFollowUpAdjustment(input) === null
 }
 
+/** Re-sign only the exact locally applied stock revision, never the order decrement. */
+export function getUnpublishedOrderStockRepublishAdjustment(input: {
+  adjustment: OrderStockAdjustment
+  persistedDecision: ProductStockDecision | null
+  record: CommerceProductRecord
+}): OrderStockAdjustment {
+  const decision = input.persistedDecision
+  const applied = decision?.adjustment
+  if (
+    decision?.kind !== "unpublished" ||
+    !applied ||
+    applied.key !== input.adjustment.key ||
+    applied.addressId !== input.adjustment.addressId ||
+    input.record.addressId !== applied.addressId ||
+    input.record.product.id !== applied.addressId ||
+    input.record.eventId !== decision.localEventId ||
+    input.record.product.stock !== applied.nextStock
+  ) {
+    throw new Error(
+      "The rejected local stock revision is no longer current. Review the listing before publishing again."
+    )
+  }
+  return applied
+}
+
 export function getOrderStockDecisionFollowUpAdjustment(input: {
   adjustment: OrderStockAdjustment
   persistedDecision: ProductStockDecision | null
@@ -504,6 +642,7 @@ export function shouldShowOrderStockAdjustment(input: {
   hasSessionDecision: boolean
   persistedDecision: ProductStockDecision | null
 }): boolean {
+  if (input.persistedDecision?.kind === "unpublished") return true
   if (
     input.orderStatus === "cancelled" ||
     input.orderStatus === "complete" ||
@@ -535,6 +674,9 @@ export function getOrderStockAdjustmentForDisplay(input: {
   const followUpAdjustment = getOrderStockDecisionFollowUpAdjustment(input)
   if (followUpAdjustment) return followUpAdjustment
   const persistedAdjustment = input.persistedDecision?.adjustment
+  if (input.persistedDecision?.kind === "unpublished" && persistedAdjustment) {
+    return persistedAdjustment
+  }
   if (
     input.persistedDecision?.kind === "applied" &&
     persistedAdjustment &&
@@ -642,39 +784,73 @@ export class ProductStockDecisionStore {
       normalizedProductAddressId
     )
     const memoryKey = `${merchantPubkey}:${decisionKey}`
+    const storageKey = getDecisionStorageKey(merchantPubkey)
+    if (storageKey && this.storage) {
+      try {
+        const decision = this.getPersisted(
+          merchantPubkey,
+          orderId,
+          normalizedProductAddressId
+        )
+        if (decision) this.memoryDecisions.set(memoryKey, decision)
+        else this.memoryDecisions.delete(memoryKey)
+        return decision
+      } catch {
+        // Keep the current-session fallback when browser storage is down.
+      }
+    }
     const memoryDecision = this.memoryDecisions.get(memoryKey)
-    if (
-      memoryDecision &&
+    return memoryDecision &&
       isDecisionBoundToProduct(
         memoryDecision,
         decisionKey,
         normalizedProductAddressId
       )
-    ) {
-      return memoryDecision
-    }
-    if (memoryDecision) this.memoryDecisions.delete(memoryKey)
+      ? memoryDecision
+      : null
+  }
 
+  /** Read current cross-tab authority; never substitute cached session state. */
+  getPersisted(
+    merchantPubkey: string,
+    orderId: string,
+    productAddressId: string
+  ): ProductStockDecision | null {
+    const normalizedProductAddressId = productAddressId.trim()
+    const decisionKey = getOrderStockDecisionKey(
+      orderId,
+      normalizedProductAddressId
+    )
     const storageKey = getDecisionStorageKey(merchantPubkey)
-    if (!storageKey || !this.storage) return null
-    try {
-      const stored = parseStoredDecisions(this.storage.getItem(storageKey))
-      const decision = stored.decisions[decisionKey] ?? null
-      if (
-        decision &&
-        !isDecisionBoundToProduct(
-          decision,
-          decisionKey,
-          normalizedProductAddressId
-        )
-      ) {
-        return null
-      }
-      if (decision) this.memoryDecisions.set(memoryKey, decision)
-      return decision
-    } catch {
-      return null
+    if (!storageKey || !this.storage) {
+      throw new Error("Browser storage is unavailable for stock decisions")
     }
+    const decision =
+      parseStoredDecisionsStrict(this.storage.getItem(storageKey)).decisions[
+        decisionKey
+      ] ?? null
+    if (
+      decision &&
+      !isDecisionBoundToProduct(
+        decision,
+        decisionKey,
+        normalizedProductAddressId
+      )
+    ) {
+      throw new Error("Stored stock decision belongs to another product")
+    }
+    return decision
+  }
+
+  /** Read every durable order decision for same-product revision fencing. */
+  getPersistedForMerchant(merchantPubkey: string): ProductStockDecision[] {
+    const storageKey = getDecisionStorageKey(merchantPubkey)
+    if (!storageKey || !this.storage) {
+      throw new Error("Browser storage is unavailable for stock decisions")
+    }
+    return Object.values(
+      parseStoredDecisionsStrict(this.storage.getItem(storageKey)).decisions
+    )
   }
 
   set(
@@ -682,7 +858,9 @@ export class ProductStockDecisionStore {
     orderId: string,
     productAddressId: string,
     kind: ProductStockDecisionKind,
-    adjustment?: OrderStockAdjustment
+    adjustment?: OrderStockAdjustment,
+    localEventId?: string,
+    options: { requireDurable?: boolean } = {}
   ): boolean {
     const normalizedProductAddressId = productAddressId.trim()
     const decisionKey = getOrderStockDecisionKey(
@@ -698,25 +876,62 @@ export class ProductStockDecisionStore {
         "Stock decision adjustment does not match the order product"
       )
     }
+    if (
+      kind === "unpublished" &&
+      (!adjustment || !localEventId || !/^[0-9a-f]{64}$/.test(localEventId))
+    ) {
+      throw new Error(
+        "An unpublished stock decision requires its exact local revision"
+      )
+    }
     const decision: ProductStockDecision = {
       kind,
       decidedAt: Date.now(),
       ...(adjustment ? { adjustment: { ...adjustment } } : {}),
+      ...(kind === "unpublished" ? { localEventId } : {}),
     }
-    this.memoryDecisions.set(`${merchantPubkey}:${decisionKey}`, decision)
+    const memoryKey = `${merchantPubkey}:${decisionKey}`
+    if (!options.requireDurable) {
+      this.memoryDecisions.set(memoryKey, decision)
+    }
 
     const storageKey = getDecisionStorageKey(merchantPubkey)
     if (!storageKey || !this.storage) return false
     try {
-      const stored = parseStoredDecisions(this.storage.getItem(storageKey))
+      const stored = options.requireDurable
+        ? parseStoredDecisionsStrict(this.storage.getItem(storageKey))
+        : parseStoredDecisions(this.storage.getItem(storageKey))
+      if (
+        options.requireDurable &&
+        !stored.decisions[decisionKey] &&
+        Object.keys(stored.decisions).length >= MAX_STORED_STOCK_DECISIONS
+      ) {
+        // The matching pending delivery must remain available after reload.
+        // Do not evict another order's decision to complete this one.
+        return false
+      }
       stored.decisions[decisionKey] = decision
       const entries = Object.entries(stored.decisions).sort(
-        ([, left], [, right]) => right.decidedAt - left.decidedAt
+        ([leftKey, left], [rightKey, right]) =>
+          right.decidedAt - left.decidedAt ||
+          (leftKey === decisionKey ? -1 : rightKey === decisionKey ? 1 : 0)
       )
       stored.decisions = Object.fromEntries(
         entries.slice(0, MAX_STORED_STOCK_DECISIONS)
       )
       this.storage.setItem(storageKey, JSON.stringify(stored))
+      if (options.requireDurable) {
+        const persisted = parseStoredDecisionsStrict(
+          this.storage.getItem(storageKey)
+        ).decisions[decisionKey]
+        if (
+          !persisted ||
+          JSON.stringify(persisted) !== JSON.stringify(decision)
+        ) {
+          return false
+        }
+        this.memoryDecisions.set(memoryKey, decision)
+      }
       return true
     } catch {
       return false
@@ -747,6 +962,12 @@ export class PendingProductStockDeliveryStore {
           this.storage.getItem(storageKey),
           normalizedMerchant
         )
+        // A successful storage read supersedes another tab's deleted entries.
+        for (const key of this.memoryDeliveries.keys()) {
+          if (key.startsWith(`${normalizedMerchant}:`)) {
+            this.memoryDeliveries.delete(key)
+          }
+        }
         for (const [key, delivery] of Object.entries(stored.deliveries)) {
           this.memoryDeliveries.set(`${normalizedMerchant}:${key}`, delivery)
         }
@@ -767,9 +988,27 @@ export class PendingProductStockDeliveryStore {
     return deliveries.sort((left, right) => right.savedAt - left.savedAt)
   }
 
+  /** Read current cross-tab authority, including other orders for a product. */
+  getPersistedForMerchant(
+    merchantPubkey: string
+  ): PendingProductStockDelivery[] {
+    const normalizedMerchant = merchantPubkey.trim()
+    const storageKey = getDeliveryStorageKey(normalizedMerchant)
+    if (!storageKey || !this.storage) {
+      throw new Error("Browser storage is unavailable for stock recovery")
+    }
+    return Object.values(
+      parseStoredDeliveriesStrict(
+        this.storage.getItem(storageKey),
+        normalizedMerchant
+      ).deliveries
+    )
+  }
+
   set(
     merchantPubkey: string,
-    delivery: Omit<PendingProductStockDelivery, "savedAt">
+    delivery: Omit<PendingProductStockDelivery, "savedAt">,
+    options: { requireDurable?: boolean } = {}
   ): boolean {
     const normalizedMerchant = merchantPubkey.trim()
     const pending: PendingProductStockDelivery = {
@@ -789,26 +1028,60 @@ export class PendingProductStockDeliveryStore {
       normalizedPending.orderId,
       normalizedPending.adjustment.addressId
     )
-    this.memoryDeliveries.set(
-      `${normalizedMerchant}:${deliveryKey}`,
-      normalizedPending
-    )
+    if (!options.requireDurable) {
+      this.memoryDeliveries.set(
+        `${normalizedMerchant}:${deliveryKey}`,
+        normalizedPending
+      )
+    }
 
     const storageKey = getDeliveryStorageKey(normalizedMerchant)
     if (!storageKey || !this.storage) return false
     try {
-      const stored = parseStoredDeliveries(
-        this.storage.getItem(storageKey),
-        normalizedMerchant
-      )
+      const stored = options.requireDurable
+        ? parseStoredDeliveriesStrict(
+            this.storage.getItem(storageKey),
+            normalizedMerchant
+          )
+        : parseStoredDeliveries(
+            this.storage.getItem(storageKey),
+            normalizedMerchant
+          )
+      if (
+        options.requireDurable &&
+        !stored.deliveries[deliveryKey] &&
+        Object.keys(stored.deliveries).length >= MAX_STORED_STOCK_DELIVERIES
+      ) {
+        // Do not discard another order's only pending checkpoint to start
+        // a new stock write. The caller must fail before staging its listing.
+        return false
+      }
       stored.deliveries[deliveryKey] = normalizedPending
       const entries = Object.entries(stored.deliveries).sort(
-        ([, left], [, right]) => right.savedAt - left.savedAt
+        ([leftKey, left], [rightKey, right]) =>
+          right.savedAt - left.savedAt ||
+          (leftKey === deliveryKey ? -1 : rightKey === deliveryKey ? 1 : 0)
       )
       stored.deliveries = Object.fromEntries(
         entries.slice(0, MAX_STORED_STOCK_DELIVERIES)
       )
       this.storage.setItem(storageKey, JSON.stringify(stored))
+      if (options.requireDurable) {
+        const persisted = parseStoredDeliveriesStrict(
+          this.storage.getItem(storageKey),
+          normalizedMerchant
+        ).deliveries[deliveryKey]
+        if (
+          !persisted ||
+          JSON.stringify(persisted) !== JSON.stringify(normalizedPending)
+        ) {
+          return false
+        }
+        this.memoryDeliveries.set(
+          `${normalizedMerchant}:${deliveryKey}`,
+          normalizedPending
+        )
+      }
       return true
     } catch {
       return false
@@ -818,24 +1091,283 @@ export class PendingProductStockDeliveryStore {
   delete(
     merchantPubkey: string,
     orderId: string,
-    productAddressId: string
+    productAddressId: string,
+    options: { requireDurable?: boolean } = {}
   ): boolean {
     const normalizedMerchant = merchantPubkey.trim()
     const deliveryKey = getOrderStockDecisionKey(orderId, productAddressId)
-    this.memoryDeliveries.delete(`${normalizedMerchant}:${deliveryKey}`)
+    const memoryKey = `${normalizedMerchant}:${deliveryKey}`
+    if (!options.requireDurable) this.memoryDeliveries.delete(memoryKey)
 
     const storageKey = getDeliveryStorageKey(normalizedMerchant)
     if (!storageKey || !this.storage) return false
     try {
-      const stored = parseStoredDeliveries(
-        this.storage.getItem(storageKey),
-        normalizedMerchant
-      )
+      const stored = options.requireDurable
+        ? parseStoredDeliveriesStrict(
+            this.storage.getItem(storageKey),
+            normalizedMerchant
+          )
+        : parseStoredDeliveries(
+            this.storage.getItem(storageKey),
+            normalizedMerchant
+          )
       delete stored.deliveries[deliveryKey]
       this.storage.setItem(storageKey, JSON.stringify(stored))
+      if (options.requireDurable) {
+        const persisted = parseStoredDeliveriesStrict(
+          this.storage.getItem(storageKey),
+          normalizedMerchant
+        ).deliveries[deliveryKey]
+        if (persisted) return false
+        this.memoryDeliveries.delete(memoryKey)
+      }
       return true
     } catch {
       return false
     }
   }
+}
+
+type SignedOrderStockCheckpointInput = {
+  merchantPubkey: string
+  orderId: string
+  adjustment: OrderStockAdjustment
+  signedEvent: SignedPublicNostrEvent
+  expectedUnpublishedEventId: string | null
+  assertCurrentWriteBaseline: () => Promise<void>
+  decisionStore: ProductStockDecisionStore
+  pendingStore: PendingProductStockDeliveryStore
+  requestLock?: MerchantStockLockRequest | null
+}
+
+/** Reserve an exact signed stock revision before the generic listing outbox runs. */
+export async function checkpointSignedOrderStockDelivery(
+  input: SignedOrderStockCheckpointInput
+): Promise<true> {
+  return withMerchantStockLock(
+    input.merchantPubkey,
+    () => checkpointSignedOrderStockDeliveryWithHeldLock(input),
+    input.requestLock
+  )
+}
+
+/** Only call while the merchant stock Web Lock is already held. */
+export async function checkpointSignedOrderStockDeliveryWithHeldLock(
+  input: Omit<SignedOrderStockCheckpointInput, "requestLock">
+): Promise<true> {
+  // Another tab may have projected a newer stock revision while this tab
+  // was signing or waiting for the lock.
+  await input.assertCurrentWriteBaseline()
+  const decision = input.decisionStore.getPersisted(
+    input.merchantPubkey,
+    input.orderId,
+    input.adjustment.addressId
+  )
+  if (input.expectedUnpublishedEventId === null) {
+    if (decision) {
+      throw new Error("This order's stock was already handled")
+    }
+  } else if (
+    decision?.kind !== "unpublished" ||
+    decision.localEventId !== input.expectedUnpublishedEventId
+  ) {
+    throw new Error("This order's stock recovery changed in another tab")
+  }
+
+  const decisions = input.decisionStore.getPersistedForMerchant(
+    input.merchantPubkey
+  )
+  if (
+    decisions.some(
+      (candidate) =>
+        candidate.kind !== "declined" &&
+        candidate.adjustment?.key !== input.adjustment.key &&
+        candidate.adjustment?.addressId === input.adjustment.addressId &&
+        candidate.adjustment.sourceEventId === input.adjustment.sourceEventId
+    )
+  ) {
+    throw new Error(
+      "Another order already updated this product revision. Refresh the listing before continuing."
+    )
+  }
+
+  const allPending = input.pendingStore.getPersistedForMerchant(
+    input.merchantPubkey
+  )
+  // Keep a final-decision slot for every outstanding signed checkpoint.
+  // Otherwise a published stock update could never be finalized after
+  // the bounded decision journal fills.
+  const undecidedPendingKeys = new Set(
+    allPending
+      .filter(
+        (pending) =>
+          !input.decisionStore.getPersisted(
+            input.merchantPubkey,
+            pending.orderId,
+            pending.adjustment.addressId
+          )
+      )
+      .map((pending) => pending.adjustment.key)
+  )
+  const reservedDecisionSlots =
+    decisions.length +
+    undecidedPendingKeys.size +
+    (decision || undecidedPendingKeys.has(input.adjustment.key) ? 0 : 1)
+  if (reservedDecisionSlots > MAX_STORED_STOCK_DECISIONS) {
+    throw new Error(
+      "Stock decision storage is full. No product change was staged."
+    )
+  }
+
+  const pendingForProduct = allPending.filter(
+    (pending) => pending.adjustment.addressId === input.adjustment.addressId
+  )
+  for (const pending of pendingForProduct) {
+    const pendingDecision = input.decisionStore.getPersisted(
+      input.merchantPubkey,
+      pending.orderId,
+      pending.adjustment.addressId
+    )
+    if (
+      pendingDecision?.kind === "applied" ||
+      (pendingDecision?.kind === "unpublished" &&
+        pendingDecision.localEventId === pending.signedEvent.id)
+    ) {
+      // The decision was committed first; a failed cleanup may leave an
+      // old checkpoint in storage. Its final decision supersedes it even
+      // when another cleanup attempt also fails.
+      input.pendingStore.delete(
+        input.merchantPubkey,
+        pending.orderId,
+        pending.adjustment.addressId,
+        { requireDurable: true }
+      )
+      continue
+    }
+    if (
+      pending.adjustment.key !== input.adjustment.key ||
+      pending.signedEvent.id !== input.signedEvent.id ||
+      JSON.stringify(pending.adjustment) !== JSON.stringify(input.adjustment)
+    ) {
+      throw new Error(
+        "Another signed stock update for this product is awaiting delivery"
+      )
+    }
+  }
+  if (
+    !input.pendingStore.set(
+      input.merchantPubkey,
+      {
+        orderId: input.orderId,
+        adjustment: input.adjustment,
+        signedEvent: input.signedEvent,
+      },
+      { requireDurable: true }
+    )
+  ) {
+    throw new Error(
+      "Could not save the signed stock update for recovery. No product change was staged."
+    )
+  }
+  return true as const
+}
+
+/** Retry only bytes already reserved for this order, never a stale tab's copy. */
+export async function confirmExactPendingStockDelivery(input: {
+  merchantPubkey: string
+  orderId: string
+  adjustment: OrderStockAdjustment
+  signedEventId: string
+  pendingStore: PendingProductStockDeliveryStore
+  decisionStore: ProductStockDecisionStore
+  requestLock?: MerchantStockLockRequest | null
+}): Promise<true> {
+  return withMerchantStockLock(
+    input.merchantPubkey,
+    () => {
+      const pending = input.pendingStore
+        .getPersistedForMerchant(input.merchantPubkey)
+        .find((candidate) => candidate.adjustment.key === input.adjustment.key)
+      const decision = input.decisionStore.getPersisted(
+        input.merchantPubkey,
+        input.orderId,
+        input.adjustment.addressId
+      )
+      if (
+        !pending ||
+        pending.signedEvent.id !== input.signedEventId ||
+        JSON.stringify(pending.adjustment) !==
+          JSON.stringify(input.adjustment) ||
+        decision?.kind === "applied" ||
+        decision?.kind === "declined" ||
+        (decision?.kind === "unpublished" &&
+          decision.localEventId === input.signedEventId)
+      ) {
+        throw new Error(
+          "This exact stock update is no longer awaiting delivery. Refresh orders before retrying."
+        )
+      }
+      return true as const
+    },
+    input.requestLock
+  )
+}
+
+/** Commit the order decision before retiring its exact pending checkpoint. */
+export async function settleSignedOrderStockDelivery(input: {
+  merchantPubkey: string
+  orderId: string
+  adjustment: OrderStockAdjustment
+  signedEventId: string
+  kind: "applied" | "unpublished"
+  decisionStore: ProductStockDecisionStore
+  pendingStore: PendingProductStockDeliveryStore
+  requestLock?: MerchantStockLockRequest | null
+}): Promise<"saved" | "retry" | "stale"> {
+  return withMerchantStockLock(
+    input.merchantPubkey,
+    () => {
+      const pending = input.pendingStore
+        .getPersistedForMerchant(input.merchantPubkey)
+        .find((candidate) => candidate.adjustment.key === input.adjustment.key)
+      if (
+        !pending ||
+        pending.signedEvent.id !== input.signedEventId ||
+        JSON.stringify(pending.adjustment) !== JSON.stringify(input.adjustment)
+      ) {
+        return "stale"
+      }
+      const decision = input.decisionStore.getPersisted(
+        input.merchantPubkey,
+        input.orderId,
+        input.adjustment.addressId
+      )
+      if (decision?.kind === "applied" || decision?.kind === "declined") {
+        return "stale"
+      }
+      if (
+        !input.decisionStore.set(
+          input.merchantPubkey,
+          input.orderId,
+          input.adjustment.addressId,
+          input.kind,
+          input.adjustment,
+          input.kind === "unpublished" ? input.signedEventId : undefined,
+          { requireDurable: true }
+        )
+      ) {
+        return "retry"
+      }
+      // A failed delete leaves a redundant pending record, but the durable
+      // decision remains authoritative and prevents a second decrement.
+      input.pendingStore.delete(
+        input.merchantPubkey,
+        input.orderId,
+        input.adjustment.addressId,
+        { requireDurable: true }
+      )
+      return "saved"
+    },
+    input.requestLock
+  )
 }

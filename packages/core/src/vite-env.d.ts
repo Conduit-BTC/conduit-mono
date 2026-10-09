@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
   readonly VITE_E2E_RELAY_URL?: string
+  readonly VITE_E2E_PUBLIC_ZAP_RECEIPT_HINTS?: string
   readonly VITE_RELAY_URL?: string
   readonly VITE_DEFAULT_RELAY_URL?: string
   readonly VITE_DEFAULT_RELAYS?: string
@@ -15,6 +16,10 @@ interface ImportMetaEnv {
   readonly VITE_NIP89_MERCHANT_D_TAG?: string
   readonly VITE_ANON_ZAP_SIGNER_URL?: string
   readonly VITE_ANON_ZAP_SIGNER_PUBKEY?: string
+  readonly VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS?: string
+  readonly VITE_CHECKOUT_SPARK_PRICING_URL?: string
+  readonly VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?: string
+  readonly VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST?: string
   readonly VITE_ENABLE_TELEMETRY?: string
   readonly VITE_TELEMETRY_ALLOWED_HOSTS?: string
   readonly VITE_PLAUSIBLE_DOMAIN?: string
@@ -31,6 +36,10 @@ interface ImportMetaEnv {
   readonly VITE_PUBLIC_CONFIG_DIGEST?: string
   readonly VITE_DM_BOOTSTRAP_WRITES?: string
   readonly VITE_LIVE_PRESENCE_ENABLED?: string
+  readonly VITE_QUANTUM_ROUTER_ENABLED?: string
+  readonly VITE_QUANTUM_ROUTER_EXECUTION_ENABLED?: string
+  readonly VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY?: string
+  readonly VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL?: string
   readonly VITE_PRESENCE_WS_URL?: string
   readonly [key: string]: string | undefined
 }

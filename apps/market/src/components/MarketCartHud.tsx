@@ -14,6 +14,7 @@ import {
   getProfilePaymentAddress,
   formatNpub,
   getProfileName,
+  isQuantumRouterEnabled,
   pubkeyToNpub,
   useAuth,
   useProfiles,
@@ -458,7 +459,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const merchantName =
     getProfileName(activeProfile) ??
     `Merchant ${formatNpub(selectedMerchant, 6)}`
-  const zapReady = checkoutCapability.outcome === "zap_candidate"
+  const zapReady =
+    !isQuantumRouterEnabled() && checkoutCapability.outcome === "zap_candidate"
   const startZapOut = () => {
     if (!zapReady || zapStarting || !pubkey || pricingIntent?.status !== "ok") {
       return

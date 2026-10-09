@@ -80,20 +80,79 @@ async function expectVisibleDisjointControls(
       const [firstBox, secondBox, viewport] = await Promise.all([
         first.boundingBox(),
         second.boundingBox(),
-        page.evaluate(() => ({
-          width: innerWidth,
-          height: innerHeight,
-          scrollY,
-          measuredFooterHeight:
-            Number.parseFloat(
-              getComputedStyle(document.documentElement).getPropertyValue(
-                "--market-fixed-footer-height"
-              )
-            ) || 0,
-          footerHidden:
-            document.querySelector("footer")?.getAttribute("aria-hidden") ===
-            "true",
-        })),
+        page.evaluate(() => {
+          const widget = document.querySelector(
+            'button[aria-label="Open messages"]'
+          )?.parentElement
+          const footer = document.querySelector("footer")
+          const atomicTrigger = widget
+            ?.querySelector("button")
+            ?.getBoundingClientRect()
+          const atomicFooterLink = Array.from(
+            document.querySelectorAll<HTMLAnchorElement>("footer a")
+          )
+            .find((link) => link.textContent?.trim() === "Report a Bug")
+            ?.getBoundingClientRect()
+          const atomicIntersects =
+            atomicTrigger && atomicFooterLink
+              ? !(
+                  atomicTrigger.right <= atomicFooterLink.left ||
+                  atomicFooterLink.right <= atomicTrigger.left ||
+                  atomicTrigger.bottom <= atomicFooterLink.top ||
+                  atomicFooterLink.bottom <= atomicTrigger.top
+                )
+              : undefined
+          const widgetStyle = widget ? getComputedStyle(widget) : undefined
+          const transformY = (style: CSSStyleDeclaration | undefined) => {
+            if (!style) return undefined
+            try {
+              return style.transform === "none"
+                ? 0
+                : new DOMMatrixReadOnly(style.transform).m42
+            } catch {
+              return undefined
+            }
+          }
+          return {
+            width: innerWidth,
+            height: innerHeight,
+            scrollY,
+            measuredFooterHeight:
+              Number.parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue(
+                  "--market-fixed-footer-height"
+                )
+              ) || 0,
+            footerHidden: footer?.getAttribute("aria-hidden") === "true",
+            atomicTriggerY: atomicTrigger?.y,
+            atomicTriggerBottom: atomicTrigger?.bottom,
+            atomicFooterLinkTop: atomicFooterLink?.top,
+            atomicFooterHeight: footer?.getBoundingClientRect().height,
+            atomicLayout:
+              atomicIntersects === undefined
+                ? "missing"
+                : atomicIntersects
+                  ? "intersecting"
+                  : "disjoint",
+            widgetMarginBottom: widgetStyle
+              ? Number.parseFloat(widgetStyle.marginBottom)
+              : undefined,
+            widgetTransformY: transformY(widgetStyle),
+            footerTransformY: transformY(
+              footer ? getComputedStyle(footer) : undefined
+            ),
+            widgetHiddenShift: widgetStyle
+              ? Number.parseFloat(
+                  widgetStyle.getPropertyValue("--order-messages-hidden-shift")
+                )
+              : undefined,
+            widgetBottomOffset: widgetStyle
+              ? Number.parseFloat(
+                  widgetStyle.getPropertyValue("--order-messages-bottom-offset")
+                )
+              : undefined,
+          }
+        }),
       ])
       const record = (layout: string) => {
         recordSmokeDiagnostic(test.info(), "footer-layout", {
@@ -112,6 +171,16 @@ async function expectVisibleDisjointControls(
           scrollY: viewport.scrollY,
           measuredFooterHeight: viewport.measuredFooterHeight,
           footerHidden: viewport.footerHidden,
+          widgetMarginBottom: viewport.widgetMarginBottom,
+          widgetTransformY: viewport.widgetTransformY,
+          footerTransformY: viewport.footerTransformY,
+          widgetHiddenShift: viewport.widgetHiddenShift,
+          widgetBottomOffset: viewport.widgetBottomOffset,
+          atomicTriggerY: viewport.atomicTriggerY,
+          atomicTriggerBottom: viewport.atomicTriggerBottom,
+          atomicFooterLinkTop: viewport.atomicFooterLinkTop,
+          atomicFooterHeight: viewport.atomicFooterHeight,
+          atomicLayout: viewport.atomicLayout,
         })
         return layout
       }

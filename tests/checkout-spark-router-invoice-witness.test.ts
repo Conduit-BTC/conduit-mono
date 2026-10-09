@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from "bun:test"
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   buildCheckoutSparkRouterObligations,
   CONDUIT_CHECKOUT_FEE_RECIPIENT,
@@ -19,9 +20,17 @@ import {
 
 const NOW_SECONDS = 1_800_000_000
 const CHECKOUT_ID = "checkout-invoice-witness-1"
-const MERCHANT = "a".repeat(64)
-const SUPPLIER = "b".repeat(64)
-const ORGANIZER = "c".repeat(64)
+const MERCHANT_KEY = generateSecretKey()
+const SUPPLIER_KEY = generateSecretKey()
+const ORGANIZER_KEY = generateSecretKey()
+const MERCHANT = getPublicKey(MERCHANT_KEY)
+const SUPPLIER = getPublicKey(SUPPLIER_KEY)
+const ORGANIZER = getPublicKey(ORGANIZER_KEY)
+const RECIPIENT_SIGNING_KEYS = new Map([
+  [MERCHANT, MERCHANT_KEY],
+  [SUPPLIER, SUPPLIER_KEY],
+  [ORGANIZER, ORGANIZER_KEY],
+])
 
 function invoice(amountSats: number, hashByte: number): string {
   return makeSignedBolt11Fixture({
@@ -82,7 +91,11 @@ function obligations(input: ReturnType<typeof routerInput>) {
 describe("checkout Spark router payout invoice authority", () => {
   it("matches one fresh resolver witness to every merchant, supplier, organizer, and Conduit leg", async () => {
     const input = routerInput()
-    const witnesses = await mockRouterInvoiceWitnesses(input, NOW_SECONDS)
+    const witnesses = await mockRouterInvoiceWitnesses(
+      input,
+      NOW_SECONDS,
+      RECIPIENT_SIGNING_KEYS
+    )
     expect(witnesses).toHaveLength(4)
     expect(() =>
       assertCheckoutSparkRouterInvoiceWitnesses({
@@ -97,7 +110,11 @@ describe("checkout Spark router payout invoice authority", () => {
 
   it("rejects a different, valid invoice for the same recipient and amount", async () => {
     const input = routerInput()
-    const witnesses = await mockRouterInvoiceWitnesses(input, NOW_SECONDS)
+    const witnesses = await mockRouterInvoiceWitnesses(
+      input,
+      NOW_SECONDS,
+      RECIPIENT_SIGNING_KEYS
+    )
     const swapped = {
       ...input,
       routerObligationInputs: {
@@ -133,6 +150,7 @@ describe("checkout Spark router payout invoice authority", () => {
     const witnesses = await mockRouterInvoiceWitnesses(
       input,
       NOW_SECONDS,
+      RECIPIENT_SIGNING_KEYS,
       () => current
     )
     const base = {

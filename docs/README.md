@@ -35,6 +35,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
+  frozen payment authority, isolated-wallet Merchant recovery and historical
+  order compatibility
 - `docs/knowledge/public-event-verification.md`: immutable public admission,
   typed parser and restore boundaries, caller inventory, and browser evidence
 - `docs/knowledge/account-network-evidence-and-authority.md`: shared preference
@@ -64,6 +67,10 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/checkout-spark-native-treasury.md`: one final native Spark
+  collection, exact residual accounting, recovery and funded-validation boundary
+- `docs/knowledge/quantum-router-deployment.md`: public activation and treasury
+  configuration, frozen destination rotation and current checkout admission scope
 - `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
   validation limits, relay hints, and checkout authority.
 - `docs/knowledge/product-search-ranking.md`: ranked product search, scoped
@@ -83,6 +90,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Active Compatibility Exceptions
 
+- `docs/knowledge/checkout-spark-recipient-verification-compat.md`: provider-neutral
+  ordinary receiver qualification, exact invoice association, independent
+  settlement evidence, historical compatibility and live acceptance gates
 - `docs/knowledge/commerce-inbox-recovery.md`: bounded authenticated client-seal
   metadata read compatibility, accounting and maintainer activation/removal gates
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order

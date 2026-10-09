@@ -5,7 +5,7 @@ import type {
   OrderLifecycle,
   OrderEventMarketPickupFulfillmentSchema,
 } from "@conduit/core"
-import { config } from "@conduit/core"
+import { config, orderSchema } from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
@@ -16,6 +16,7 @@ import {
   getOrderFilterPhase,
   getOrderPaymentFailureDetail,
   getOrderPaymentMethodLabel,
+  isBuyerOrderPaid,
   isZeroCostPickupOrder,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
@@ -119,6 +120,163 @@ function baseLifecycle(
     ...overrides,
   }
 }
+
+describe("routed buyer payment truth", () => {
+  const lifecycle = () =>
+    baseLifecycle({
+      checkoutMode: "private_checkout",
+      buyerIdentityKind: "signed_in",
+      checkoutSparkRouterBinding: {
+        checkoutId: "router-checkout",
+        planDigest: "a".repeat(64),
+        walletId: "router-wallet",
+      },
+    })
+
+  it("does not promote funding, stored generic paid state or merchant paid messages", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: lifecycle(),
+      messages: [merchantStatusMessage("paid", "paid", 1_800_000_000_000)],
+    })
+    expect(vm.checkoutSparkRouted).toBe(true)
+    expect(vm.paymentStatus).toBe("not_started")
+    expect(isBuyerOrderPaid(vm)).toBe(false)
+    expect(deriveOrderHeaderStatus(vm).primaryLabel).toBe("Pending")
+    expect(deriveOrderHeaderStatus(vm).detailLabel).toContain(
+      "not yet verified"
+    )
+    expect(computeOrderTimelineStatuses(vm).payment).toBe("waiting")
+    expect(getOrderFilterPhase(vm)).toBe("pending")
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "payment")?.subtitle
+    ).toContain("Payment has not been verified yet")
+  })
+
+  it("uses exact commerce projection independently of optional fee progress", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: lifecycle(),
+      checkoutSparkSettlement: { commerceVerified: true },
+    })
+    expect(isBuyerOrderPaid(vm)).toBe(true)
+    expect(vm.paymentStatus).toBe("paid")
+    expect(getOrderFilterPhase(vm)).toBe("in_progress")
+    expect(deriveOrderHeaderStatus(vm).detailLabel).toBe(
+      "Order payment verified"
+    )
+    expect(computeOrderTimelineStatuses(vm).payment).toBe("complete")
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "payment")?.subtitle
+    ).toContain("verified on this device")
+  })
+
+  it("describes an invoice payment without claiming its recipient is verified", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: lifecycle(),
+      checkoutSparkSettlement: {
+        commerceVerified: false,
+        recipientUnverified: true,
+      },
+    })
+    expect(isBuyerOrderPaid(vm)).toBe(false)
+    expect(deriveOrderHeaderStatus(vm).detailLabel).toBe(
+      "Payment sent; recipient confirmation pending"
+    )
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "payment")?.subtitle
+    ).toContain("Do not pay it again")
+  })
+
+  it("retains historical fulfillment without converting it to settlement proof", () => {
+    for (const status of ["shipped", "complete", "delivered"] as const) {
+      const vm = buildOrderViewModel({
+        orderId: "order-1",
+        lifecycle: lifecycle(),
+        messages: [merchantStatusMessage(status, status, 1_800_000_000_000)],
+      })
+      expect(isBuyerOrderPaid(vm)).toBe(false)
+      expect(computeOrderTimelineStatuses(vm).payment).toBe("waiting")
+      expect(deriveOrderHeaderStatus(vm).primaryLabel).toBe(
+        status === "shipped" ? "Shipped" : "Completed"
+      )
+    }
+  })
+
+  it("does not offer a direct invoice on a routed order", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: lifecycle(),
+      messages: [paymentRequest(merchantInvoice())],
+      nowSeconds: 1_800_000_002,
+    })
+    expect(vm.merchantInvoiceAction).toBeNull()
+    expect(vm.paymentStatus).toBe("not_started")
+  })
+
+  it("keeps the established direct-order paid interpretation", () => {
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      lifecycle: baseLifecycle(),
+    })
+    expect(vm.checkoutSparkRouted).toBe(false)
+    expect(isBuyerOrderPaid(vm)).toBe(true)
+  })
+
+  it("keeps relay-only routed history unverified without a local binding", () => {
+    const payload = orderSchema.parse({
+      id: "order-1",
+      buyerPubkey: "a".repeat(64),
+      merchantPubkey: "b".repeat(64),
+      items: [
+        {
+          productId: `30402:${"b".repeat(64)}:digital-item`,
+          format: "digital",
+          fulfillment: { type: "digital" },
+          quantity: 1,
+          priceAtPurchase: 100,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 100,
+      currency: "SATS",
+      createdAt: 1_800_000_000_000,
+    })
+    const vm = buildOrderViewModel({
+      orderId: "order-1",
+      messages: [
+        {
+          type: "order",
+          id: "c".repeat(64),
+          orderId: "order-1",
+          senderPubkey: payload.buyerPubkey,
+          recipientPubkey: payload.merchantPubkey,
+          createdAt: payload.createdAt,
+          rawContent: JSON.stringify(payload),
+          payload,
+          checkoutPaymentRoute: "spark_router_v1",
+        },
+        {
+          type: "status_update",
+          id: "d".repeat(64),
+          orderId: "order-1",
+          senderPubkey: payload.merchantPubkey,
+          recipientPubkey: payload.buyerPubkey,
+          createdAt: payload.createdAt + 1000,
+          rawContent: "{}",
+          payload: { status: "paid" },
+        },
+      ],
+    })
+    expect(vm.checkoutSparkRouted).toBe(true)
+    expect(isBuyerOrderPaid(vm)).toBe(false)
+    expect(vm.merchantInvoiceAction).toBeNull()
+    expect(deriveOrderHeaderStatus(vm).detailLabel).toContain(
+      "not yet verified"
+    )
+  })
+})
 
 describe("payment failure details", () => {
   const bindingError =
