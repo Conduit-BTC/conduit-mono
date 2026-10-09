@@ -19,8 +19,12 @@ function addressStatus(value: BreezAddressState | null): string {
 export function SparkLightningAddress({
   walletId,
   resolve,
+  disabled = false,
+  onPendingChange,
 }: {
   walletId: string | null
+  disabled?: boolean
+  onPendingChange?(pending: boolean): void
   resolve(walletId: string, register?: boolean): Promise<BreezAddressState>
 }) {
   const [state, setState] = useState<{
@@ -50,9 +54,10 @@ export function SparkLightningAddress({
   }, [walletId, resolve])
   const value = state?.walletId === walletId ? state.value : null
   const setup = async () => {
-    if (!walletId) return
+    if (!walletId || pending || disabled) return
     const selected = walletId
     setPending(true)
+    onPendingChange?.(true)
     setCopyStatus("idle")
     try {
       setState({ walletId: selected, value: await resolve(selected, true) })
@@ -63,6 +68,7 @@ export function SparkLightningAddress({
       })
     } finally {
       setPending(false)
+      onPendingChange?.(false)
     }
   }
   if (!walletId) return null
@@ -117,7 +123,7 @@ export function SparkLightningAddress({
       {canRetry && (
         <Button
           variant="outline"
-          disabled={pending}
+          disabled={pending || disabled}
           aria-busy={pending}
           onClick={() => void setup()}
         >

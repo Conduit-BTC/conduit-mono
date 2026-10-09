@@ -1,5 +1,6 @@
 import {
   db,
+  getAccountSigner,
   getNwcUriFingerprint,
   getWalletDefaultUpdates,
   isWalletNetwork,
@@ -19,9 +20,15 @@ import {
 } from "./spark-recovery"
 
 const MAX_STORED_WALLET_ID_LENGTH = 128
-const MAX_STORED_SPARK_RECOVERY_LENGTH = 4_096
+const MAX_STORED_SPARK_RECOVERY_LENGTH = 8_192
 
-export interface StoredSparkWalletRecovery {
+import type { SignerSparkRecovery } from "./signer-spark-recovery"
+
+export type StoredSparkWalletRecovery =
+  | PasswordSparkWalletRecovery
+  | (SignerSparkRecovery & { legacyRecovery?: PasswordSparkWalletRecovery })
+
+export interface PasswordSparkWalletRecovery {
   type: "password"
   walletId: string
   providerId: "spark"
@@ -68,8 +75,14 @@ export async function registerSparkWalletAtomically(input: {
   store: AtomicSparkWalletRegistrationStore
   register(): Promise<WalletDescriptor>
   recovery: StoredSparkWalletRecovery
+  findExisting?(): Promise<WalletDescriptor | undefined>
+  shouldContinue?: () => boolean
 }): Promise<WalletDescriptor> {
   return input.store.transaction(async () => {
+    if (input.shouldContinue?.() === false)
+      throw new Error("Wallet sign-in changed.")
+    const existing = await input.findExisting?.()
+    if (existing) return existing
     const wallet = await input.register()
     assertSparkRecoveryMatchesWallet(wallet, input.recovery)
     await input.store.putSparkRecovery(wallet.id, input.recovery)
@@ -81,6 +94,8 @@ export async function registerSparkWalletAtomically(input: {
     ) {
       throw new Error("Portable Wallet recovery verification failed.")
     }
+    if (input.shouldContinue?.() === false)
+      throw new Error("Wallet sign-in changed.")
     return wallet
   })
 }
@@ -164,13 +179,29 @@ export class MarketWalletStore
     return db.wallets.toArray()
   }
 
+  async listVisible(ownerPubkey: string | null): Promise<WalletDescriptor[]> {
+    const wallets = await this.list()
+    const visible = await Promise.all(
+      wallets.map(async (wallet) => {
+        if (wallet.providerId !== "spark") return true
+        const recovery = await this.getSparkRecovery(wallet.id)
+        return (
+          !recovery ||
+          recovery.type === "password" ||
+          recovery.ownerPubkey === ownerPubkey
+        )
+      })
+    )
+    return wallets.filter((_wallet, index) => visible[index])
+  }
+
   async put(wallet: WalletDescriptor): Promise<void> {
     await db.wallets.put(wallet)
   }
 
   async setDefault(input: SetWalletDefaultInput): Promise<void> {
-    await db.transaction("rw", db.wallets, async () => {
-      const wallets = await db.wallets.toArray()
+    await db.transaction("rw", db.wallets, db.walletCredentials, async () => {
+      const wallets = await this.listVisible(getAccountSigner()?.pubkey ?? null)
       const updates = getWalletDefaultUpdates(wallets, input)
       if (updates.length > 0) {
         await db.wallets.bulkPut(updates)
@@ -259,11 +290,9 @@ export function getMarketWalletRegistry(): WalletRegistry {
 export function serializeStoredSparkWalletRecovery(
   recovery: StoredSparkWalletRecovery
 ): string {
-  const serialized = JSON.stringify(recovery)
-  if (!parseStoredSparkWalletRecovery(serialized)) {
-    throw new Error("Portable Wallet recovery data is invalid.")
-  }
-  return serialized
+  const parsed = parseStoredSparkWalletRecovery(JSON.stringify(recovery))
+  if (!parsed) throw new Error("Wallet recovery data is invalid.")
+  return JSON.stringify(parsed)
 }
 
 export function parseStoredSparkWalletRecovery(
@@ -289,6 +318,45 @@ export function parseStoredSparkWalletRecovery(
       return null
     }
 
+    if (
+      parsed.type === "signer" &&
+      parsed.version === 1 &&
+      typeof parsed.ownerPubkey === "string" &&
+      /^[0-9a-f]{64}$/.test(parsed.ownerPubkey) &&
+      typeof parsed.identityKey === "string" &&
+      /^[0-9a-f]{64}$/.test(parsed.identityKey) &&
+      typeof parsed.ciphertext === "string" &&
+      parsed.ciphertext.length > 0 &&
+      parsed.ciphertext.length <= 4096
+    ) {
+      const legacyRecovery =
+        parsed.legacyRecovery === undefined
+          ? undefined
+          : parseStoredSparkWalletRecovery(
+              JSON.stringify(parsed.legacyRecovery)
+            )
+      if (
+        parsed.legacyRecovery !== undefined &&
+        (!legacyRecovery ||
+          legacyRecovery.type !== "password" ||
+          legacyRecovery.walletId !== walletId ||
+          legacyRecovery.network !== network ||
+          legacyRecovery.accountNumber !== accountNumber)
+      )
+        return null
+      return {
+        type: "signer",
+        version: 1,
+        walletId,
+        providerId,
+        network,
+        accountNumber,
+        ownerPubkey: parsed.ownerPubkey,
+        identityKey: parsed.identityKey,
+        ciphertext: parsed.ciphertext,
+        ...(legacyRecovery?.type === "password" ? { legacyRecovery } : {}),
+      }
+    }
     const recovery = parsed.recovery
     if (
       parsed.type !== "password" ||

@@ -7,16 +7,69 @@ bounded address-management signing seam. The address client never receives a
 mnemonic, generates a seed, opens another SDK wallet, changes a merchant's
 `lud16`, or participates in checkout-router recovery or settlement.
 
-The current UI is an explicit receive-panel opt-in for an already open wallet.
-It does not implement the later signer-backed primary lifecycle or automatically
-promote device-owned wallets. The same shared address service can be composed by
-that lifecycle once its recovery and authority gates are established.
+On **Wallets**, **My wallets** offers **Create wallet** and a separate
+**Import wallet** flow. Creation generates a random Spark recovery phrase,
+actual account number and default name. Import uses the saved phrase and account
+number, recovering the same Spark identity. Setup requests a `conduit.cash`
+address by default in an enabled build. Signed address recovery always precedes
+registration, including for imports. An existing address remains attached to
+that recovered wallet; changing the public profile address is optional.
 
-To use this slice in an enabled build: create or restore a Spark wallet on
-`/wallet`, open it, choose **Receive**, then **Set up Lightning address**.
-An existing provider-owned address is recovered first. The receive panel shows
-the address, copy action and reusable QR after public lookup succeeds. The
-wallet setup dialog and wallet list remain the existing device-owned flow.
+Wallet cards show the name, balance and receiving address with **Receive** and
+**Send**. Rename, recovery, spending default, history, lock and removal are in
+the overflow menu. Address failure leaves invoice receive and the wallet usable,
+with a retry on the same wallet. Receive cannot be dismissed during address
+registration; address/invoice controls and card actions cannot conflict with
+that pending operation. **External wallets** keeps NWC connections
+separate.
+
+## Sign-in and recovery
+
+New wallets require a connected NIP-44-capable account signer. The existing
+AccountSigner/SessionSigner encrypts a bounded, account/wallet/network/account-
+number-bound recovery record to itself and proves a decrypt round trip before
+committing ciphertext to the existing device-local credential store. This
+follows [Addy's encrypt-to-self storage pattern](https://github.com/dmnyc/addy/blob/8b793241c4f9916b350aefc1ba393de8c9a90c85/src/wallet/storage.ts),
+with explicit binding, capability checks and authority fencing. Conduit has no
+plaintext-storage fallback, never requests the Nostr nsec, and never derives a
+Spark seed from a Nostr key or signature. The account signer can see wallet
+recovery plaintext when encrypting/decrypting it.
+
+The default wallet opens through the same signer after sign-in; a deliberate
+lock requires an explicit open for that session. Revocation closes signer-owned
+sessions even after leaving Wallets. Signing-only or denied encryption cannot
+create a wallet; the UI explains the required capability. Existing password
+wallets remain readable. An explicit one-time migration verifies signer
+round-trip and transactional read-back, retaining the old encrypted recovery
+copy and a previous-password fallback for the same account.
+
+Recovery details include the phrase, actual Spark account number and network,
+and setup requires acknowledgement that they were saved. Credentials are local
+to this browser. Recovery on another device uses those saved details; this PR
+does not provide a relay-backed recovery rollout or promise automatic
+cross-device wallet discovery. Known invalid local recovery blocks new imports;
+matching signer-backed imports reuse the existing registration atomically.
+
+## One public profile address
+
+A wallet's receiving address and the single public Lightning address on a Nostr
+profile are separate. After recovery acknowledgement, the first newly created
+wallet supplies the disclosed default only when a complete latest profile has
+no receiving address. Imports, additional wallets, and spending-default changes
+leave it unchanged. An existing profile address requires **Use the Conduit
+address** or **Keep the current address**. The existing address can already
+receive into the recovered wallet; the UI makes no contrary assumption.
+
+Wallets owns public address editing. Market and Merchant profile pages display
+**Manage in Wallets** and exclude `lud16` from their details-save payloads. The
+shared profile publisher merges a narrow address patch into confirmed complete
+raw profile content, preserving unknown metadata and `lud06`. All profile writes
+share a local/cross-tab lock. Address updates check the address reviewed by the
+user and recheck the frontier after signing, refusing competing profile changes
+or account replacement. An exact complete address patch can update a sparse or
+confirmed empty profile without disabling the generic sparse-profile guard.
+Nostr has no global compare-and-swap: an independent client can still publish a
+later replacement, which requires reviewing the current profile and retrying.
 
 ## Configuration
 
@@ -103,6 +156,22 @@ receive. Failure leaves one-off Lightning invoice receive on the existing wallet
 available. The checkout-scoped ephemeral router remains independent.
 
 ## Reproducible evidence
+
+`tests/signer-wallet-unlock.test.ts` uses real NIP-44 cryptography through
+NIP-07/NIP-46 account boundaries, fresh-session reopen, owner/binding checks,
+denied/unsupported capability and revocation during initialization.
+`tests/profile-publish-workflow.test.ts` covers complete metadata preservation,
+explicit replacement preconditions, competing edits, empty-profile defaults and
+malformed-profile rejection. `e2e/wallet-sign-in.playwright.ts` exercises the
+production page/hooks/store and real NIP-07 encryption with controlled network
+initialization and address results. It covers desktop/mobile creation, saved
+recovery, protected-name import, duplicate import, explicit profile replacement
+and usable address failure. A composed Receive case prevents dismissal and
+conflicting controls during address registration. A legacy migration case retains the old encrypted
+copy and reopens through a fresh Nostr sign-in without a wallet password.
+Recovery traces, screenshots, video and automatic
+page snapshots are disabled; visual artifacts show only empty/finished states.
+These are local controlled tests, not live external-signer or settlement proof.
 
 `tests/breez-lightning-address.test.ts` exercises actual first-party identity
 signatures against a controlled provider, source-defined message fixtures,
