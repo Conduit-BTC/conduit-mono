@@ -4,7 +4,10 @@ import {
   type EventMarketAuthorizationReadResult,
 } from "./event-market-authorization-read"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
-import { db, type CachedEventMarketRosterEvidence } from "../db"
+import {
+  eventMarketEvidenceStore,
+  type EventMarketEvidenceRetention,
+} from "./event-market-evidence-store"
 import {
   orderEventMarketPickupFulfillmentSchema,
   type OrderEventMarketPickupFulfillmentSchema,
@@ -265,12 +268,11 @@ interface RosterReadDependencies {
   load: (coordinate: string) => Promise<SignedPublicNostrEvent[]>
   retain: (
     coordinate: string,
-    events: readonly SignedPublicNostrEvent[]
+    events: readonly SignedPublicNostrEvent[],
+    retention?: EventMarketEvidenceRetention
   ) => Promise<void>
   authorization?: typeof readEventMarketAuthorization
 }
-
-const MAX_RETAINED_MARKET_RECORDS = 2_048
 
 async function fetchSigned(
   filter: Filter,
@@ -280,15 +282,8 @@ async function fetchSigned(
   return result
 }
 
-async function loadRetained(
-  coordinate: string
-): Promise<SignedPublicNostrEvent[]> {
-  const rows = await db.eventMarketRosterEvidence
-    .where("marketCoordinate")
-    .equals(coordinate)
-    .toArray()
-  return admitRows(rows.map((row) => row.signedEvent))
-}
+const loadRetained = eventMarketEvidenceStore.load
+const retainSigned = eventMarketEvidenceStore.retain
 
 /** Exact saved public records for interrupted organizer publication. */
 export async function loadRetainedSignedEventMarketEvidence(
@@ -299,35 +294,6 @@ export async function loadRetainedSignedEventMarketEvidence(
   ])
   if (!coordinate || coordinate.coordinate !== marketCoordinate) return []
   return loadRetained(marketCoordinate)
-}
-
-async function retainSigned(
-  coordinate: string,
-  events: readonly SignedPublicNostrEvent[]
-): Promise<void> {
-  if (events.length === 0) return
-  const rows: CachedEventMarketRosterEvidence[] = [
-    ...new Map(events.map((event) => [event.id, event])).values(),
-  ].map((event) => ({
-    id: `${coordinate}:${event.id}`,
-    marketCoordinate: coordinate,
-    signedEvent: event,
-    cachedAt: Date.now(),
-  }))
-  await db.transaction("rw", db.eventMarketRosterEvidence, async () => {
-    const existing = await db.eventMarketRosterEvidence
-      .where("marketCoordinate")
-      .equals(coordinate)
-      .count()
-    const alreadyStored = await db.eventMarketRosterEvidence.bulkGet(
-      rows.map((row) => row.id)
-    )
-    const newRows = alreadyStored.filter((row) => !row).length
-    if (existing + newRows > MAX_RETAINED_MARKET_RECORDS) {
-      throw new Error("Event Market evidence retention is at capacity.")
-    }
-    await db.eventMarketRosterEvidence.bulkPut(rows)
-  })
 }
 
 /** Persist a signed market, calendar, or authorization event before first relay I/O. */
@@ -367,18 +333,7 @@ const defaultDependencies: RosterReadDependencies & {
   load: loadRetained,
   retain: retainSigned,
   authorization: readEventMarketAuthorization,
-  loadDiscovered: async (authors) => {
-    const authorSet = authors === undefined ? undefined : new Set(authors)
-    const rows = await db.eventMarketRosterEvidence
-      .filter(
-        (row) =>
-          row.signedEvent.kind === EVENT_KINDS.EVENT_MARKET &&
-          (!authorSet || authorSet.has(row.signedEvent.pubkey))
-      )
-      .limit(2_048)
-      .toArray()
-    return admitRows(rows.map((row) => row.signedEvent))
-  },
+  loadDiscovered: eventMarketEvidenceStore.loadDiscovered,
 }
 
 function fanoutOptions(
@@ -1795,7 +1750,16 @@ export async function discoverFutureEventMarkets(
         )?.coordinate ?? null)
       : null
   }
-  function scheduleExact(coordinate: string, refresh = false): Promise<void> {
+  const discoveryDependencies: RosterReadDependencies = {
+    ...dependencies,
+    retain: (coordinate, events) =>
+      dependencies.retain(coordinate, events, "discovery"),
+  }
+  function scheduleExact(
+    coordinate: string,
+    refresh = false,
+    evidence: readonly SignedPublicNostrEvent[] = []
+  ): Promise<void> {
     const parsed = parseAddressableCoordinate(coordinate, [30409])
     if (!parsed || (authorSet && !authorSet.has(parsed.authorPubkey)))
       return Promise.resolve()
@@ -1818,7 +1782,7 @@ export async function discoverFutureEventMarkets(
             signal: input.signal,
           },
           {
-            ...dependencies,
+            ...discoveryDependencies,
             plan: (options) =>
               dependencies.plan({
                 ...options,
@@ -1836,7 +1800,18 @@ export async function discoverFutureEventMarkets(
           emit()
         }
       })
-    const read = prior ? prior.then(execute) : execute()
+    const read = (async () => {
+      // Admission is reserved synchronously. Retain new evidence immediately,
+      // even while an older read is held; only network hydration is sequenced.
+      try {
+        await discoveryDependencies.retain(coordinate, evidence)
+      } catch {
+        incomplete = true
+      }
+      assertCurrent()
+      if (prior) await prior
+      await execute()
+    })()
     void read.catch(() => {})
     scheduled.set(coordinate, read)
     return read
@@ -1933,11 +1908,6 @@ export async function discoverFutureEventMarkets(
           records.set(coordinate, [...(records.get(coordinate) ?? []), event])
         }
         for (const [coordinate, evidence] of records) {
-          try {
-            await dependencies.retain(coordinate, evidence)
-          } catch {
-            incomplete = true
-          }
           assertCurrent()
           const sources = hints.get(coordinate) ?? new Set<string>()
           const changed =
@@ -1947,7 +1917,7 @@ export async function discoverFutureEventMarkets(
           hints.set(coordinate, sources)
           evidence.forEach((event) => observedIds.add(event.id))
           // Exact hydration depends on both signed revisions and observed sources.
-          void scheduleExact(coordinate, changed)
+          void scheduleExact(coordinate, changed, evidence)
         }
       },
     })

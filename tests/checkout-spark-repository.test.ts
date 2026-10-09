@@ -430,7 +430,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(25)
+      expect(upgraded.verno).toBe(26)
       expect(await upgraded.wallets.get("existing-wallet")).toMatchObject({
         label: "existing",
       })
@@ -487,7 +487,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(25)
+      expect(upgraded.verno).toBe(26)
       const repository = new DexieCheckoutSparkRepository(upgraded)
       expect(
         await repository.load(activePlan.checkoutId, activePlan.planDigest)
@@ -530,7 +530,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(25)
+      expect(upgraded.verno).toBe(26)
       expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
         roster
       )
@@ -647,7 +647,7 @@ describe("checkout Spark durable repository", () => {
       const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
       try {
         await upgraded.open()
-        expect(upgraded.verno).toBe(25)
+        expect(upgraded.verno).toBe(26)
         expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
           roster
         )

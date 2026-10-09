@@ -55,7 +55,7 @@ for (const [name, store, schema, row] of [
       const upgraded = new ConduitDB(databaseName, dependencies)
       try {
         await upgraded.open()
-        expect(upgraded.verno).toBe(25)
+        expect(upgraded.verno).toBe(26)
         expect(
           await upgraded
             .table(store)

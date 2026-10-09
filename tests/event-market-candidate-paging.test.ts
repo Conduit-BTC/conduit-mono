@@ -274,6 +274,7 @@ describe("event candidate discovery paging", () => {
       ).not.toContain(source)
       const first = await discoverFutureEventMarkets({}, state.dependencies)
       expect(first.markets).toHaveLength(128)
+      expect(state.retained.size).toBe(128)
       expect(first.continuation?.pendingCoordinates).toHaveLength(1)
       expect(first.markets.every((read) => read.calendar)).toBe(true)
       // Round-trip the state just as a retained query continuation would.

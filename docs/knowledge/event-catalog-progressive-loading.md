@@ -50,6 +50,33 @@ states that availability is checked on selection. Search and merchant filters
 share the event context. Recurring markets require a selected occurrence; share
 links and QR signs retain merchant and occurrence filters.
 
+## Discovery storage
+
+Candidate signatures enter persistent storage only after their coordinate is
+admitted to the 128-coordinate hydration set. Excess candidates retain their
+coordinates and observed relay sources in continuation, without writing their
+signed bodies. Continued hydration fetches those exact coordinates from their
+observed sources.
+
+The shared evidence store accounts for discovery headers, exact roster revisions,
+calendars and deletions together. Background discovery can retain at most 2,048
+records and 8 MiB of serialized UTF-8 rows across scans, audiences and accounts.
+The capacity check and writes share one IndexedDB transaction. At capacity,
+live browsing continues; failed retention yields partial coverage rather than
+claiming durable cache custody. The cache does not evict earlier observations,
+so quota pressure cannot erase a known withdrawal or deletion.
+
+Organizer publication and consequential exact reads retain durable evidence.
+Unclassified legacy rows are also treated as durable; discovery cannot demote
+or prune them. A durable write promotes a matching discovery record. These
+records are outside the background discovery budget and keep the existing
+2,048-record per-coordinate safety limit. This is an admission policy, not a
+retention guarantee for all browser storage. Dexie v26 adds an index for the
+optional discovery size field without rewriting retained rows; quota checks read
+size keys instead of loading every signed payload.
+An upgraded profile requires a build that retains the v26 schema. A rollback
+must preserve that schema and saved evidence, without resetting IndexedDB.
+
 ## Consequential actions
 
 Adding an event product reads its current market and exact product authority

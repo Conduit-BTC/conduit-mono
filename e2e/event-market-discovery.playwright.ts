@@ -80,6 +80,49 @@ for (const audience of ["guest", "following"] as const) {
       await expect(page.getByText(title, { exact: true })).toBeVisible({
         timeout: 20_000,
       })
+      const cache = await page.evaluate(
+        () =>
+          new Promise<{
+            records: number
+            bytes: number
+            schemaVersion: number
+          }>((resolve, reject) => {
+            const request = indexedDB.open("conduit")
+            request.onerror = () => reject(request.error)
+            request.onsuccess = () => {
+              const database = request.result
+              const transaction = database.transaction(
+                "eventMarketRosterEvidence",
+                "readonly"
+              )
+              const cursor = transaction
+                .objectStore("eventMarketRosterEvidence")
+                .index("discoveryBytes")
+                .openKeyCursor(IDBKeyRange.lowerBound(0))
+              let records = 0,
+                bytes = 0
+              cursor.onerror = () => {
+                database.close()
+                reject(cursor.error)
+              }
+              cursor.onsuccess = () => {
+                const row = cursor.result
+                if (row) {
+                  records++
+                  bytes += row.key as number
+                  row.continue()
+                } else {
+                  database.close()
+                  resolve({ records, bytes, schemaVersion: database.version })
+                }
+              }
+            }
+          })
+      )
+      expect(cache.schemaVersion).toBe(260)
+      expect(cache.records).toBeGreaterThanOrEqual(2)
+      expect(cache.records).toBeLessThanOrEqual(2_048)
+      expect(cache.bytes).toBeLessThanOrEqual(8 * 1_024 * 1_024)
       if (audience === "guest") {
         await expect(
           page.getByText("Browsing public events from your selected relays.")
