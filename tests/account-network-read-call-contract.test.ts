@@ -4,6 +4,8 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
+import { config } from "../packages/core/src/config"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 
 import {
   __resetCommerceTestOverrides,
@@ -17,7 +19,7 @@ import {
 } from "../packages/core/src/protocol/commerce"
 import {
   emptyAccountNetworkLocalState,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
 import {
@@ -112,13 +114,15 @@ function finalIoRecorder(openedRelayUrls: string[]) {
   return async (_filter: unknown, options: PublicRelayReadOptions = {}) => {
     const candidates = options.relayUrls ?? []
     const admitted = options.accountPubkey
-      ? await filterEligibleAccountRelayUrls({
-          accountPubkey: options.accountPubkey,
-          authenticatedPubkey: options.authenticatedPubkey,
-          candidateRelayUrls: candidates,
-          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-          repository: options.accountNetworkLocalStateRepository,
-        })
+      ? (
+          await filterEligibleAccountRelayTargets({
+            accountPubkey: options.accountPubkey,
+            authenticatedPubkey: options.authenticatedPubkey,
+            targets: options.relayTargets ?? [],
+            operation: "read",
+            repository: options.accountNetworkLocalStateRepository,
+          })
+        ).map((target) => target.url)
       : [...candidates]
     openedRelayUrls.push(...admitted)
     return {
@@ -317,13 +321,15 @@ describe("account network read call contract", () => {
           guestDirectPlan ??= [...candidates]
         }
         const admitted = options.accountPubkey
-          ? await filterEligibleAccountRelayUrls({
-              accountPubkey: options.accountPubkey,
-              authenticatedPubkey: options.authenticatedPubkey,
-              candidateRelayUrls: candidates,
-              ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-              repository: options.accountNetworkLocalStateRepository,
-            })
+          ? (
+              await filterEligibleAccountRelayTargets({
+                accountPubkey: options.accountPubkey,
+                authenticatedPubkey: options.authenticatedPubkey,
+                targets: options.relayTargets ?? [],
+                operation: "read",
+                repository: options.accountNetworkLocalStateRepository,
+              })
+            ).map((target) => target.url)
           : [...candidates]
         if (options.accountPubkey) openedRelayUrls.push(...admitted)
         const events =
@@ -399,13 +405,15 @@ describe("account network read call contract", () => {
           guestPlan = [...candidates]
         }
         const admitted = options.accountPubkey
-          ? await filterEligibleAccountRelayUrls({
-              accountPubkey: options.accountPubkey,
-              authenticatedPubkey: options.authenticatedPubkey,
-              candidateRelayUrls: candidates,
-              ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-              repository: options.accountNetworkLocalStateRepository,
-            })
+          ? (
+              await filterEligibleAccountRelayTargets({
+                accountPubkey: options.accountPubkey,
+                authenticatedPubkey: options.authenticatedPubkey,
+                targets: options.relayTargets ?? [],
+                operation: "read",
+                repository: options.accountNetworkLocalStateRepository,
+              })
+            ).map((target) => target.url)
           : [...candidates]
         if (options.accountPubkey) openedRelayUrls.push(...admitted)
         return []
@@ -610,6 +618,7 @@ describe("account network read call contract", () => {
   })
 
   it("checks account relay admission on each history page and timestamp boundary", async () => {
+    const historyRelayUrl = config.commerceDmFallbackRelayUrls[0]!
     const secret = generateSecretKey()
     const wraps: SignedNostrEvent[] = Array.from({ length: 50 }, (_, index) =>
       finalizeEvent(
@@ -640,7 +649,7 @@ describe("account network read call contract", () => {
               ...emptyAccountNetworkLocalState(pubkey),
               exclusions: [
                 {
-                  relayUrl: RELAY_URL,
+                  relayUrl: historyRelayUrl,
                   committedAt: 1,
                   relayListFrontier: { eventId: null, createdAt: null },
                   inboxDeclarationFrontier: { eventId: null, createdAt: null },
@@ -695,8 +704,13 @@ describe("account network read call contract", () => {
     const visits: string[] = []
     const options = {
       principalPubkey: ACCOUNT,
-      relayUrl: RELAY_URL,
-      declaredRelayUrls: [RELAY_URL],
+      relayUrl: historyRelayUrl,
+      declaredRelayUrls: [historyRelayUrl],
+      relayTargets: relayTargetsFromUrls([historyRelayUrl], {
+        kind: "compatibility",
+        operation: "read",
+        policy: "inbox_read",
+      }),
       authorization,
       accountNetworkLocalStateRepository: policy,
       read,
@@ -732,7 +746,7 @@ describe("account network read call contract", () => {
     })
     expect(older.status).toBe("source_eose")
     expect(older.range).toMatchObject({
-      relayUrl: RELAY_URL,
+      relayUrl: historyRelayUrl,
       until: 99,
       eose: true,
       observedCount: 0,

@@ -22,10 +22,13 @@ import {
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { config } from "../packages/core/src/config"
+import { planRelayWrites } from "../packages/core/src/protocol/relay-planner"
+import { createRelaySettingsFromPreferences } from "../packages/core/src/protocol/relay-settings"
 
 const PRIVATE_KEY = generateSecretKey()
 const PUBKEY = getPublicKey(PRIVATE_KEY)
-const RELAY_URL = "wss://relay.conduit.market"
+const RELAY_URL = config.appWriteRelayUrls[0]!
 
 class MemoryStorage implements MediaServerPreferencesStorage {
   readonly values = new Map<string, string>()
@@ -90,6 +93,12 @@ async function publishWithExternalSigner(
       storage,
       readRelayUrls: [RELAY_URL],
       publishRelayUrls: [RELAY_URL],
+      planPublish: async (input) =>
+        planRelayWrites({
+          ...input,
+          settings: createRelaySettingsFromPreferences([]),
+          skipHealthFilter: true,
+        }),
       accountNetworkLocalStateRepository,
       fetchEvents,
       publishToRelay: async (input) => {

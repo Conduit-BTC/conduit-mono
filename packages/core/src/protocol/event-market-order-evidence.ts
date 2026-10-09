@@ -11,10 +11,10 @@ import {
   canonicalizeProductSpecifications,
   parseProductEvent,
 } from "./products"
+import { verifySignedEventBatches } from "./relay-reader"
 import { type SignedPublicNostrEvent } from "./signed-event"
 import {
   isVerifiedNostrEvent,
-  verifySignedEvents,
   type VerifiedNostrEvent,
 } from "./verified-public-event"
 import { normalizeCurrencyIdentity } from "../pricing"
@@ -84,15 +84,7 @@ export async function admitEmbeddedEventMarketOrderEvidence(
   const unique = [
     ...new Map(embedded.map((event) => [event.id, event])).values(),
   ]
-  const verified: VerifiedNostrEvent[] = []
-  for (let offset = 0; offset < unique.length; offset += 64) {
-    const batch = await verifySignedEvents(
-      unique.slice(offset, offset + 64),
-      options
-    )
-    verified.push(...batch.events)
-  }
-  return verified
+  return verifySignedEventBatches(unique, { ...options, batchSize: 64 })
 }
 
 /** Exact original evidence authorizes only this already-created order's physical terms. */

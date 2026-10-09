@@ -144,10 +144,9 @@ describe("account Network settings controller contract", () => {
 
     expect(automaticScan).toContain("shouldContinue: () => !cancelled")
     expect(automaticScan).toContain("isRelayEligible: async (relayUrl)")
-    expect(automaticScan).toContain("filterEligibleAccountRelayUrls({")
-    expect(automaticScan).toContain("candidateRelayUrls: [relayUrl]")
-    expect(automaticScan).toContain("appRelayUrls: [relayUrl]")
-    expect(automaticScan).toContain("personalRelayUrls: []")
+    expect(automaticScan).toContain("filterEligibleAccountRelayTargets({")
+    expect(automaticScan).toContain('bucket: "diagnostic_read"')
+    expect(automaticScan).toContain("relayTargetsFromUrls([relayUrl]")
 
     const eligibilityIndex = batch.indexOf(
       "await input.isRelayEligible(relayUrl)"
@@ -253,20 +252,17 @@ describe("account Network settings controller contract", () => {
       "return {\n    view: baseView"
     )
 
-    expect(refresh).toContain("const personalRelayRows = baseView.rows")
+    expect(refresh).toContain("const personalRelayRows = refreshedView.rows")
     expect(refresh).toContain(
-      "const appRelayRows = baseView.appRelays?.rows ?? []"
+      "const appRelayRows = refreshedView.appRelays?.rows ?? []"
     )
     expect(refresh).toContain("shouldContinue: refreshShouldContinue")
     expect(refresh).toContain("isRelayEligible: async (relayUrl)")
-    expect(refresh).toContain("filterEligibleAccountRelayUrls({")
-    expect(refresh).toContain("candidateRelayUrls: [relayUrl]")
-    expect(refresh).toContain("ownerSelectedRelayUrls")
-    expect(refresh).toContain("row.readEnabled || row.publishEnabled")
-    expect(refresh).toContain("row.privateInboxEnabled || row.recoveryReadOnly")
-    expect(refresh).toContain("appRelayUrls:")
-    expect(refresh).toContain("personalRelayUrls:")
-    expect(refresh).toContain("independentRelayUrls:")
+    expect(refresh).toContain("filterEligibleAccountRelayTargets({")
+    expect(refresh).toContain("planAccountNetworkInspectionTargets(refreshed)")
+    expect(refresh).toMatch(
+      /targets:\s*inspectionTargets\.filter\(\s*\(target\) => target\.url === relayUrl\s*\)/
+    )
     expect(refresh).toContain(
       "repository: dexieAccountNetworkLocalStateRepository"
     )

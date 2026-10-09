@@ -13,7 +13,6 @@ import {
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setShippingTestOverrides,
-  __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
   getProductShippingOptionAddress,
   getShippingOptionsByCoordinates,
@@ -22,6 +21,8 @@ import {
   type ParsedShippingOption,
   type ProductSchema,
 } from "@conduit/core"
+import { config } from "@conduit/core"
+import { setAppWritePlanFixture as __setRelayPublishTestOverrides } from "./helpers/app-write-plan"
 import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
 import {
   applyProductFulfillmentIntentForPublication,
@@ -46,6 +47,7 @@ const SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(SECRET)
 const ORGANIZER = "b".repeat(64)
 const START = 1_800_000_000_000
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 
 function product(
   dTag = "listing",
@@ -261,6 +263,7 @@ async function attemptPreservedPublication(input: {
 }
 
 afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   resetFixturePublishers()
   __resetRelayPublishTestOverrides()

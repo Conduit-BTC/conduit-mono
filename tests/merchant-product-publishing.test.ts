@@ -15,7 +15,6 @@ import {
   __resetCommerceTestOverrides,
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
-  __setRelayPublishTestOverrides,
   applyE2eRelayIsolation,
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
@@ -31,6 +30,7 @@ import {
   type PublishWithPlannerResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { setAppWritePlanFixture as __setRelayPublishTestOverrides } from "./helpers/app-write-plan"
 import { parsePrivateOrderProductFields } from "@conduit/core/protocol/products"
 import type {
   CachedProduct,
