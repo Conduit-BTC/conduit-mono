@@ -493,3 +493,29 @@ describe("profile publish content", () => {
     ).toBe(true)
   })
 })
+
+// The details editor cannot replay a stale receiving address.
+it("excludes the Lightning address from both application profile-details payloads", async () => {
+  const { buildProfileDetailsUpdatePayload } = await import("@conduit/core")
+  const { profileFormToUpdatePayload } =
+    await import("../apps/merchant/src/lib/profileForm")
+  const latest = {
+    pubkey: "a".repeat(64),
+    name: "Current",
+    lud16: "new@conduit.cash",
+  }
+  const form = {
+    name: "Edited",
+    displayName: "",
+    about: "",
+    picture: "",
+    banner: "",
+    website: "",
+    nip05: "",
+    lud16: "stale@wallet.example",
+  }
+  expect(buildProfileDetailsUpdatePayload(form, latest)).not.toHaveProperty(
+    "lud16"
+  )
+  expect(profileFormToUpdatePayload(form, latest)).not.toHaveProperty("lud16")
+})

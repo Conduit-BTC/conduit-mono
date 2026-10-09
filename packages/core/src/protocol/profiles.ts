@@ -195,11 +195,41 @@ export function buildProfileUpdatePayload(
   ) as Omit<Profile, "pubkey">
 }
 
-/**
- * Rebase an active profile draft onto the latest signed profile projection.
- * Fields unchanged from the edit baseline follow the remote revision; fields
- * the user changed locally keep the user's draft value.
- */
+/** Profile details never own the public receiving address; Wallets owns it. */
+export function buildProfileDetailsUpdatePayload(
+  profile: Omit<Profile, "pubkey">,
+  latestProfile?: Profile | null
+): Omit<Profile, "pubkey"> {
+  const { lud16: _address, ...details } = profile
+  return buildProfileUpdatePayload(details, latestProfile)
+}
+
+export class ProfileAddressChangedError extends Error {
+  constructor() {
+    super(
+      "Your public Lightning address changed. Review the current address before replacing it."
+    )
+    this.name = "ProfileAddressChangedError"
+  }
+}
+
+export function assertProfileAddressChoice(
+  content: string | undefined,
+  expected: string
+): void {
+  const current: Record<string, unknown> | null = content
+    ? parseProfilePublishContent(content).content
+    : {}
+  const address =
+    typeof current?.lud16 === "string" && current.lud16.trim()
+      ? current.lud16.trim()
+      : typeof current?.lud06 === "string"
+        ? current.lud06.trim()
+        : ""
+  if (address !== expected) throw new ProfileAddressChangedError()
+}
+
+/** Rebase unchanged details onto the latest projection while retaining local edits. */
 export function reconcileProfileFormDraft(
   draft: ProfileFormValues,
   editBaseline: ProfileFormValues,
@@ -312,6 +342,7 @@ export function assertProfilePublishRetained(
 export type PublishProfileOptions = {
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
+  expectedLightningAddress?: string
 }
 
 export async function publishProfile(
@@ -322,7 +353,29 @@ export async function publishProfile(
   return (await publishProfileContext(profile, appId, options)).profile
 }
 
+let profileWriteTail: Promise<unknown> = Promise.resolve()
 export async function publishProfileContext(
+  profile: Omit<Profile, "pubkey">,
+  appId: ConduitAppId,
+  options: PublishProfileOptions = {}
+): Promise<SelectedProfileContext> {
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Signer not connected")
+  const owner = await signer.getPublicKey()
+  const run = () =>
+    publishProfileContextUnlocked(profile, appId, {
+      ...options,
+      shouldContinue: () =>
+        getAccountSigner() === signer && options.shouldContinue?.() !== false,
+    })
+  if (typeof navigator !== "undefined" && navigator.locks)
+    return navigator.locks.request(`conduit:profile-write:${owner}`, run)
+  const pending = profileWriteTail.then(run, run)
+  profileWriteTail = pending.catch(() => undefined)
+  return pending
+}
+
+async function publishProfileContextUnlocked(
   profile: Omit<Profile, "pubkey">,
   appId: ConduitAppId,
   options: PublishProfileOptions = {}
@@ -368,6 +421,19 @@ export async function publishProfileContext(
     )
   }
 
+  if (options.expectedLightningAddress !== undefined) {
+    // Address-only edits must never repair malformed profile content by erasing
+    // unknown fields. A separate profile repair remains an explicit operation.
+    if (latest.frontier?.validity === "malformed")
+      throw new Error(
+        "Repair your profile before changing its Lightning address."
+      )
+    assertProfileAddressChoice(
+      latest.frontier?.rawContent,
+      options.expectedLightningAddress
+    )
+  }
+
   // Build NIP-01 snake_case content, merging partial edits onto loaded context.
   const content = buildNip01ProfilePublishContent({
     profile,
@@ -381,11 +447,40 @@ export async function publishProfileContext(
     tags: appendConduitClientTag([], appId),
     content: JSON.stringify(content),
   }
-  assertSafeReplaceablePublish(draft)
+  const replaceableSafety =
+    options.expectedLightningAddress === undefined
+      ? undefined
+      : {
+          profileAddressPatch: {
+            previousContent: latest.frontier?.rawContent ?? "{}",
+            nextContent: draft.content,
+          },
+        }
+  assertSafeReplaceablePublish(draft, replaceableSafety)
   assertCurrentSession()
   const event = await signer.signEvent(draft)
   assertCurrentSession()
+  if (options.expectedLightningAddress !== undefined) {
+    const current = await fetchProfileContext(pubkey, {
+      authenticatedPubkey,
+      accountPubkey: authenticatedPubkey,
+      shouldContinue: options.shouldContinue,
+      skipCache: true,
+      priority: "visible",
+      requireCompleteEvidence: true,
+      evidenceScope: "profile_edit",
+    })
+    assertCurrentSession()
+    if (
+      (!current.frontier &&
+        (!current.readComplete || current.persistence === "unavailable")) ||
+      current.frontier?.eventId !== latest.frontier?.eventId ||
+      current.freshness !== latest.freshness
+    )
+      throw new ProfilePublishSupersededError()
+  }
   await publishWithPlanner(event, {
+    replaceableSafety,
     intent: "author_event",
     authorPubkey: pubkey,
     authenticatedPubkey,

@@ -33,11 +33,24 @@ export class SessionSignerError extends Error {
 // Relay clients are recreated independently of account authority. The auth
 // provider installs and retires this exact owner, never a relay-client signer.
 let activeAccountSigner: SessionSigner | null = null
+const accountSignerListeners = new Set<() => void>()
+export function subscribeToAccountSignerChanges(
+  listener: () => void
+): () => void {
+  accountSignerListeners.add(listener)
+  return () => {
+    accountSignerListeners.delete(listener)
+  }
+}
+function notifyAccountSignerChanges(): void {
+  for (const listener of accountSignerListeners) listener()
+}
 
 export function activateAccountSigner(signer: SessionSigner): void {
   if (!signer.pubkey) throw new NostrSignerError("invalid_response")
   if (activeAccountSigner !== signer) activeAccountSigner?.invalidateLocal()
   activeAccountSigner = signer
+  notifyAccountSignerChanges()
 }
 
 /** Commit the existing account owner only after protected-read installation. */
@@ -157,6 +170,7 @@ export class SessionSigner implements AccountSigner {
     this.invalidated = true
     this.cancellation.abort(classifyNostrSignerError(cause))
     this.rejectQueued(classifyNostrSignerError(cause))
+    notifyAccountSignerChanges()
   }
 
   /** A deliberate retry may resume history decryption after a declined prompt. */

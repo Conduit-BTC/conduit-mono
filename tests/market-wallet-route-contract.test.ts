@@ -60,63 +60,29 @@ describe("Market wallet route contracts", () => {
     )
   })
 
-  it("renders plural Portable and Connected wallet groups", async () => {
+  it("keeps the simplified wallet page composed from shared wallet controls", async () => {
     const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
-    const recoveryBundleDetails = await readFile(
+    const recovery = await readFile(
       "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
       "utf8"
     )
 
-    expect(content).toContain('title="Portable"')
-    expect(content).toContain('title="Connected"')
-    expect(content).toContain("Add portable wallet")
-    expect(content).toContain("Add a Spark wallet")
-    expect(content).toContain("Spark is the first Portable Wallet provider.")
-    expect(content).toContain("Create Spark wallet")
-    expect(content).toContain("Restore Spark wallet")
-    expect(content).toContain("Save your Spark recovery details")
-    expect(content).toContain("Spark is currently supported.")
-    expect(content).toContain("Spark wallet setup mode")
-    expect(content).toContain("Wallet nickname (optional)")
-    expect(content).toContain("On this device")
-    expect(content).toContain("Advanced recovery settings")
-    expect(content).toContain("MAX_SPARK_ACCOUNT_NUMBER")
-    expect(content).toContain("Change only if the source")
-    expect(content).toContain("wallet specifies a different account number.")
-    expect(content).toContain(
-      "Use this nickname to identify the wallet in Conduit."
-    )
-    expect(content).toContain("Encrypts the recovery phrase in this browser.")
-    expect(content).toContain("is not needed to")
-    expect(content).toContain("BIP39 phrase, Spark account number, and network")
-    expect(content).not.toContain("compatible Spark application")
-    expect(content).not.toContain("The phrase is the cross-application backup")
-    expect(content).not.toContain("Restore from phrase")
+    expect(content).toContain('title="My wallets"')
+    expect(content).toContain('title="External wallets"')
+    expect(content).toContain("Create wallet")
+    expect(content).toContain("Import wallet")
     expect(content).toContain("Connect wallet")
+    expect(content).toContain("ProfileLightningAddressEditor")
     expect(content).toContain("wallets.portableWallets")
     expect(content).toContain("wallets.connectedWallets")
     expect(content).toContain("wallets.setDefaultPaymentWallet")
-    expect(content).toContain("wallets.refreshBalance")
-    expect(content).toContain("getWalletCapabilityPills")
+    expect(content).toContain("DropdownMenuItem")
     expect(content).toContain("Remove from this device")
-    expect(content).toContain("does not delete the Portable Wallet")
-    expect(content).toMatch(
-      /I have the recovery details required to restore this Portable\s+Wallet/
-    )
-    expect(content).not.toContain("does not delete the Spark wallet")
-    expect(content).toContain("getWalletProviderDescription")
-    expect(content).toContain("getWalletNetworkLabel")
-    expect(content).toContain(
-      "Uses real bitcoin and supports Lightning and Spark payments."
-    )
-    expect(content).toContain("This wallet is separate from Bitcoin Mainnet.")
-    expect(recoveryBundleDetails).toContain("Copy recovery details")
+    expect(content).toContain("Advanced settings")
+    expect(content).toContain("MAX_SPARK_ACCOUNT_NUMBER")
+    expect(recovery).toContain("Copy recovery details")
     expect(content).toContain("useShopperPricing")
-    expect(content).toContain("formatBitcoinBaseUnits")
-    expect(content).toContain("sats === 0")
-    expect(content).toContain("Sats the standard")
     expect(content).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
-    expect(content).not.toMatch(/passkey|Breez/i)
   })
 
   it("labels future providers without changing Portable/Connected language", () => {
@@ -364,8 +330,8 @@ describe("Market wallet route contracts", () => {
     expect(hook).toContain('mode === "local-only"')
     expect(hook).toContain("assertLocalSparkWalletRemovalSafe")
     expect(hook).toContain("isSparkWalletManagerInitialized")
-    expect(wallet).toMatch(
-      /disabled=\{pending\}\s+onClick=\{\(event\) => onRemove\(wallet, event\.currentTarget\)\}/
+    expect(wallet).toContain(
+      "<DropdownMenuItem onSelect={() => dialog(onRemove)}>"
     )
     expect(wallet).toContain(
       "This removes the wallet registration and encrypted recovery copy from this browser."
@@ -395,19 +361,15 @@ describe("Market wallet route contracts", () => {
     expect(checkout).toContain(
       'className="mt-3 text-xs leading-5 text-[var(--text-secondary)]"'
     )
-    expect(wallet).toContain('<TabsTrigger value="create" disabled={pending}>')
-    expect(wallet).toContain('<TabsTrigger value="restore" disabled={pending}>')
-    expect(wallet).toMatch(/<TabsContent value="create"/)
-    expect(wallet).toMatch(/<TabsContent value="restore"/)
-    expect(wallet).toContain('aria-label="Spark wallet setup mode"')
-    expect(wallet).not.toContain('aria-pressed={mode === "create"}')
-    expect(wallet).not.toContain('aria-pressed={mode === "restore"}')
+    expect(wallet).toContain('mode === "restore" ?')
+    expect(wallet).toContain('id="portable-mnemonic"')
+    expect(wallet).toContain("required")
     expect(wallet.match(/<form/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
     expect(wallet).toContain('type="submit"')
     expect(wallet).toContain("recoveryHeadingRef.current?.focus()")
     expect(wallet).toContain("restoreDialogFocus")
     expect(wallet).toContain("dialogTriggerRef.current = event.currentTarget")
-    expect(wallet).toContain('runtime.status === "ready" ? "Refresh" : "Retry"')
+    expect(wallet).toContain("Refresh balance")
     expect(wallet).toContain("Payment request copied.")
     expect(wallet).toContain("Copy was blocked. Copy the request manually.")
     expect(recoveryBundleDetails).toContain(
@@ -420,9 +382,8 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toMatch(
       /Copying\s+a recovery phrase puts it on your system clipboard/
     )
-    expect(wallet).toMatch(
-      /await wallets\.createSpark\(walletLabel, password\)\s+setPassword\(""\)/
-    )
+    expect(wallet).toContain("await wallets.createSpark()")
+    expect(wallet).toContain('setMnemonic("")')
     expect(wallet).toContain("error ? (")
   })
 

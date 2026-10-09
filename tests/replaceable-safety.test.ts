@@ -205,3 +205,27 @@ describe("replaceable publish safety", () => {
     ).not.toThrow()
   })
 })
+
+it("allows only an exact complete address patch to bypass the sparse-profile heuristic", () => {
+  const before = JSON.stringify({
+    lud16: "old@wallet.example",
+    custom: { retained: true },
+  })
+  const next = JSON.stringify({
+    lud16: "new@conduit.cash",
+    custom: { retained: true },
+  })
+  expect(() =>
+    assertSafeReplaceablePublish(
+      { kind: EVENT_KINDS.PROFILE, content: next },
+      { profileAddressPatch: { previousContent: before, nextContent: next } }
+    )
+  ).not.toThrow()
+  const erased = JSON.stringify({ lud16: "new@conduit.cash" })
+  expect(() =>
+    assertSafeReplaceablePublish(
+      { kind: EVENT_KINDS.PROFILE, content: erased },
+      { profileAddressPatch: { previousContent: before, nextContent: erased } }
+    )
+  ).toThrow(ReplaceablePublishSafetyError)
+})

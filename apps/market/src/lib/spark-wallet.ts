@@ -297,6 +297,9 @@ export class SparkWalletManager {
   readonly #sendSafety: SparkDirectTransferSafetyStore
   readonly #now: () => number
   readonly #clients = new Map<string, SparkSdkClient>()
+  readonly #closeAttempts = new Map<string, Promise<void>>()
+  readonly #authoritySubscriptions = new Map<string, () => void>()
+  readonly #authorities = new Map<string, () => boolean>()
   readonly #sessionLeases = new Map<string, SparkWalletSessionLease>()
   readonly #sendSafetyScopes = new Map<string, string>()
   readonly #quarantinedWallets = new Set<string>()
@@ -372,6 +375,8 @@ export class SparkWalletManager {
     walletId: string
     mnemonic: string
     accountNumber: number
+    shouldContinue?: () => boolean
+    subscribeRevocation?: (onRevoked: () => void) => () => void
   }): Promise<void> {
     if (!isValidSparkAccountNumber(input.accountNumber)) {
       throw new Error("Enter a valid Spark account number.")
@@ -380,10 +385,28 @@ export class SparkWalletManager {
       walletId: input.walletId,
       accountNumber: input.accountNumber,
       mnemonic: normalizeSparkMnemonic(input.mnemonic),
+      shouldContinue: input.shouldContinue,
+      subscribeRevocation: input.subscribeRevocation,
     })
   }
 
-  async close(walletId: string): Promise<void> {
+  close(walletId: string): Promise<void> {
+    const existing = this.#closeAttempts.get(walletId)
+    if (existing) return existing
+    const attempt = this.#close(walletId)
+    this.#closeAttempts.set(walletId, attempt)
+    const finish = () => {
+      if (this.#closeAttempts.get(walletId) === attempt)
+        this.#closeAttempts.delete(walletId)
+    }
+    void attempt.then(finish, finish)
+    return attempt
+  }
+
+  async #close(walletId: string): Promise<void> {
+    this.#authoritySubscriptions.get(walletId)?.()
+    this.#authoritySubscriptions.delete(walletId)
+    this.#authorities.delete(walletId)
     this.#purgeInvoiceAttempts(walletId)
     this.#purgeSendQuotes(walletId)
     const client = this.#clients.get(walletId)
@@ -468,7 +491,9 @@ export class SparkWalletManager {
 
   isOpen(walletId: string): boolean {
     return (
-      this.#clients.has(walletId) && !this.#quarantinedWallets.has(walletId)
+      this.#clients.has(walletId) &&
+      !this.#quarantinedWallets.has(walletId) &&
+      this.#authorities.get(walletId)?.() !== false
     )
   }
 
@@ -480,7 +505,10 @@ export class SparkWalletManager {
   }
 
   async getBalance(walletId: string): Promise<number> {
-    const info = await this.#getClient(walletId).getInfo({ ensureSynced: true })
+    const client = this.#getClient(walletId)
+    const info = await client.getInfo({ ensureSynced: true })
+    if (this.#getClient(walletId) !== client)
+      throw new Error("Wallet session changed.")
     return info.balanceSats
   }
 
@@ -1136,7 +1164,11 @@ export class SparkWalletManager {
     input: SparkPayInvoiceInput
   ): Promise<SparkPayInvoiceResult> {
     const client = this.#clients.get(walletId)
-    if (!client || this.#quarantinedWallets.has(walletId)) {
+    if (
+      !client ||
+      this.#quarantinedWallets.has(walletId) ||
+      this.#authorities.get(walletId)?.() === false
+    ) {
       return {
         status: "pre_publish_failed",
         reason: "Portable Wallet is locked on this device.",
@@ -1297,6 +1329,8 @@ export class SparkWalletManager {
     walletId: string
     mnemonic: string
     accountNumber: number
+    shouldContinue?: () => boolean
+    subscribeRevocation?: (onRevoked: () => void) => () => void
   }): Promise<void> {
     await this.close(input.walletId)
     const identityKey = await getSparkWalletIdentityKey(
@@ -1318,6 +1352,8 @@ export class SparkWalletManager {
         }
       | undefined
     try {
+      if (input.shouldContinue?.() === false)
+        throw new Error("Wallet sign-in changed.")
       client = await this.#factory.open(input)
       if (client.addEventListener) {
         eventListener = {
@@ -1334,9 +1370,24 @@ export class SparkWalletManager {
           }
         })
       }
+      if (input.shouldContinue?.() === false)
+        throw new Error("Wallet sign-in changed.")
+      if (input.shouldContinue)
+        this.#authorities.set(input.walletId, input.shouldContinue)
       this.#clients.set(input.walletId, client)
       this.#sessionLeases.set(input.walletId, sessionLease)
       this.#sendSafetyScopes.set(input.walletId, sendSafetyScope)
+      if (input.subscribeRevocation)
+        this.#authoritySubscriptions.set(
+          input.walletId,
+          input.subscribeRevocation(() => {
+            // close quarantines synchronously before awaiting SDK cleanup. Failed
+            // cleanup remains inaccessible and can be retried by an explicit open.
+            void this.close(input.walletId).catch(() => {
+              this.#quarantinedWallets.add(input.walletId)
+            })
+          })
+        )
       this.#quarantinedWallets.delete(input.walletId)
       this.#disconnectedWallets.delete(input.walletId)
       if (eventListener) {
@@ -1424,7 +1475,11 @@ export class SparkWalletManager {
 
   #getClient(walletId: string): SparkSdkClient {
     const client = this.#clients.get(walletId)
-    if (!client || this.#quarantinedWallets.has(walletId)) {
+    if (
+      !client ||
+      this.#quarantinedWallets.has(walletId) ||
+      this.#authorities.get(walletId)?.() === false
+    ) {
       throw new Error("Portable Wallet is locked on this device.")
     }
     return client

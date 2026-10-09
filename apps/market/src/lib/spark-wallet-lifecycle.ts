@@ -16,6 +16,8 @@ export interface SparkWalletLifecycleManager {
     walletId: string
     mnemonic: string
     accountNumber: number
+    shouldContinue?: () => boolean
+    subscribeRevocation?: (onRevoked: () => void) => () => void
   }): Promise<void>
   close(walletId: string): Promise<void>
 }
@@ -40,6 +42,8 @@ export async function openRegisteredSparkWallet(
     resolveOpenInput(registration: WalletDescriptor): Promise<{
       mnemonic: string
       accountNumber: number
+      shouldContinue?: () => boolean
+      subscribeRevocation?: (onRevoked: () => void) => () => void
     }>
     afterOpen?(): Promise<void>
   }
