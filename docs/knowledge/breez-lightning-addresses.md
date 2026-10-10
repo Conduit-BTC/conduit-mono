@@ -13,14 +13,18 @@ actual account number and default name. Import uses the saved phrase and account
 number, recovering the same Spark identity. The configured Mainnet real-bitcoin
 notice appears before the primary creation action; clicking that disclosed
 action starts setup. Setup requests a `conduit.cash`
-address by default in an enabled build. Signed address recovery always precedes
-registration, including for imports. An existing address remains attached to
+address in an enabled build after a chosen or generated name is confirmed.
+Signed address recovery always precedes registration, including for imports. An existing address remains attached to
 that recovered wallet; changing the public profile address is optional.
 
 Wallet cards show the name, balance and receiving address with **Receive** and
 **Send**. Rename, recovery, spending default, history, lock and removal are in
 the overflow menu. Address failure leaves invoice receive and the wallet usable,
-with a retry on the same wallet when registration is retryable. Disabled,
+with a name chooser/retry on the same wallet when registration is retryable.
+The chooser uses the existing signed availability/registration API, never
+unregisters an existing address, and never silently substitutes a taken chosen
+name. An ambiguous submission keeps the original candidate before any rename.
+Disabled,
 unsupported-network and invalid-configuration states have distinct explanations
 and do not offer registration retry. Receive cannot be dismissed during address
 registration; address/invoice controls and card actions cannot conflict with
@@ -48,20 +52,25 @@ round-trip and transactional read-back, retaining the old encrypted recovery
 copy and a previous-password fallback for the same account.
 
 Recovery details include the phrase, actual Spark account number and network,
-and setup requires acknowledgement that they were saved. Both apps use the same
-`@conduit/ui` Wallets component and core lifecycle. New setup also encrypts a
+and new creation requires acknowledgement that they were saved. Import confirms
+the existing account/network without repeating the phrase-saving ceremony.
+Both apps use the same `@conduit/ui` Wallets component and core lifecycle. New setup also encrypts a
 versioned recovery record to the same Nostr identity and publishes signed NIP-78
 `kind:30078` records through the existing authenticated executor and exact
 publisher. Signing in on another origin discovers and restores the same wallet
 UUID and Spark identity before registration or a new-wallet attempt. Recovery
-never chooses spending/merchant receiving defaults or edits the public profile.
+never edits the public profile. A separately encrypted main-wallet choice restores
+spending and future invoice defaults; without one, the recovery
+primary is only an initial spending fallback when no local default exists.
 
 Reads are owner-scoped and authenticate through the active account signer.
 The curated rendezvous is relay.conduit.market, relay.damus.io and nos.lol;
 relay exclusions remain effective. Two independent operators must ACK and read
 back the exact encrypted record and primary pointer before sync is ready.
 Discovery queries the exact primary address and then its referenced backup
-by event ID, so unrelated NIP-78 records cannot crowd out the usual wallet.
+by event ID across every eligible recovery relay. Retained and broad-query
+pointers also supply deduplicated references, so split relay views and unrelated
+NIP-78 records cannot crowd out the usual wallet.
 The capped broad scan remains necessary for additional wallets and conflicts.
 Partial/unavailable discovery preserves positive evidence but blocks new
 creation; an unresolved primary reference remains a repair state.
@@ -78,7 +87,10 @@ readiness is observed; failed or incomplete delivery remains unconfirmed.
 Password-encrypted recovery keeps its migration/fallback path. Save the phrase,
 network and actual account number even when sync is ready: relay availability
 and external signer support are independent recovery dependencies. NWC
-credentials, names and spending/receiving preferences remain device-local.
+credentials and custom names remain device-local. Explicit main choices use the
+separate `conduit:spark:main:v1` encrypted coordinate, preserving backup lineage.
+Spending-only and receiving-only overrides remain local. Wallet balances use sats
+in both apps; account-wide currency preference sync is separate follow-up work.
 
 ## One public profile address
 
@@ -90,7 +102,10 @@ leave it unchanged. An existing profile address requires **Use the Conduit
 address** or **Keep the current address**. The existing address can already
 receive into the recovered wallet; the UI makes no contrary assumption.
 
-Wallets owns public address editing. Market and Merchant profile pages display
+Cards offer **Set as public Lightning address**, which opens the same shared
+choice workflow and updates the lower editor after publication. That editor also
+accepts a different receiving destination. Wallets owns public address editing.
+Market and Merchant profile pages display
 **Manage in Wallets** and exclude `lud16` from their details-save payloads. The
 shared profile publisher merges a narrow address patch into confirmed complete
 raw profile content, preserving unknown metadata and `lud06`. All profile writes

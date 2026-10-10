@@ -415,31 +415,36 @@ describe("planPublishRelays", () => {
     ).toMatchObject({ primaryRelayUrls: [] })
   })
 
-  it("carries author intent into an exact owned recovery write", async () => {
-    const relayUrl = "wss://auth.nostr1.com"
-    const event = signedTestEvent({
-      kind: 30078,
-      tags: [["d", "conduit:spark:primary:v1"]],
-      publish: async () => {
-        throw new Error("Use exact authenticated writer")
-      },
+  for (const coordinate of [
+    "conduit:spark:primary:v1",
+    "conduit:spark:main:v1",
+  ]) {
+    it(`carries author intent into an exact owned ${coordinate} recovery write`, async () => {
+      const relayUrl = "wss://auth.nostr1.com"
+      const event = signedTestEvent({
+        kind: 30078,
+        tags: [["d", coordinate]],
+        publish: async () => {
+          throw new Error("Use exact authenticated writer")
+        },
+      })
+      const fixture = await authenticatedPublishInput([relayUrl], { event })
+      fixture.input.intent = "author_event"
+      fixture.input.recipientPubkeys = []
+      let writes = 0
+      __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: async (input) => {
+          writes++
+          expect(input.authorization?.expectedPubkey).toBe(AUTHOR_PUBKEY)
+          return "acked"
+        },
+      })
+      expect(
+        (await publishWithPlanner(event, fixture.input)).successfulRelayUrls
+      ).toEqual([relayUrl])
+      expect(writes).toBe(1)
     })
-    const fixture = await authenticatedPublishInput([relayUrl], { event })
-    fixture.input.intent = "author_event"
-    fixture.input.recipientPubkeys = []
-    let writes = 0
-    __setRelayPublishTestOverrides({
-      publishSignedEventFrameToRelay: async (input) => {
-        writes++
-        expect(input.authorization?.expectedPubkey).toBe(AUTHOR_PUBKEY)
-        return "acked"
-      },
-    })
-    expect(
-      (await publishWithPlanner(event, fixture.input)).successfulRelayUrls
-    ).toEqual([relayUrl])
-    expect(writes).toBe(1)
-  })
+  }
 
   it("uses one foreground NIP-42 writer for an exclusive gift-wrap publish", async () => {
     const relayUrl = "wss://auth.nostr1.com"

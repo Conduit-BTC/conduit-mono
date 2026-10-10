@@ -20,6 +20,7 @@ import {
   useState,
 } from "react"
 import {
+  formatBitcoinBaseUnits,
   type AuthContextValue,
   type BreezAddressState,
   decodeLightningInvoiceMetadata,
@@ -60,6 +61,7 @@ import {
 import type { WalletAddressSuggestion } from "@conduit/core/hooks/useWalletAddress"
 import { SparkLightningAddress } from "./SparkLightningAddress"
 import { SparkRecoveryBundleDetails } from "./SparkRecoveryBundleDetails"
+import { WalletAddressSetup } from "./WalletAddressSetup"
 import {
   type UseWalletsReturn,
   type WalletRuntimeState,
@@ -91,7 +93,7 @@ export function Wallets({
   auth,
   wallets,
   renderAddressEditor,
-  formatSats,
+  formatSats = (sats: number) => formatBitcoinBaseUnits(sats, "sats"),
   footer,
 }: {
   auth: AuthContextValue
@@ -100,7 +102,7 @@ export function Wallets({
     suggestion: WalletAddressSuggestion | null,
     onDismiss: () => void
   ): React.ReactNode
-  formatSats(sats: number): string
+  formatSats?: (sats: number) => string
   footer?: React.ReactNode
 }) {
   const [setupMode, setSetupMode] = useState<PortableWalletMode>("create")
@@ -110,6 +112,14 @@ export function Wallets({
   const [renameWallet, setRenameWallet] = useState<WalletDescriptor | null>(
     null
   )
+  const addressEditorRef = useRef<HTMLDivElement>(null)
+  const suggestAddress = (value: WalletAddressSuggestion) => {
+    setSuggestion(value)
+    requestAnimationFrame(() => {
+      addressEditorRef.current?.scrollIntoView({ block: "center" })
+      addressEditorRef.current?.focus()
+    })
+  }
   const walletsHeadingRef = useRef<HTMLHeadingElement>(null)
   const dialogTriggerRef = useRef<HTMLButtonElement | null>(null)
   const signerReady =
@@ -219,6 +229,20 @@ export function Wallets({
               <>
                 <WalletSection
                   title="My wallets"
+                  recoverySyncByWallet={wallets.recoverySyncByWallet}
+                  onMain={wallets.setMainWallet}
+                  onPublicAddress={
+                    auth.accountPubkey
+                      ? (address) =>
+                          suggestAddress({
+                            address,
+                            ownerPubkey: auth.accountPubkey!,
+                            authGeneration: auth.authGeneration,
+                            firstWallet: false,
+                            imported: false,
+                          })
+                      : undefined
+                  }
                   description={
                     signerReady
                       ? `Self-custodial. Opens with your Nostr sign-in. No separate wallet password. Encrypted recovery can sync between apps.${wallets.hasPasswordWallets ? " Older wallets need their existing password until migrated." : ""}`
@@ -358,7 +382,9 @@ export function Wallets({
         </section>
 
         <RecoverySyncNotice wallets={wallets} />
-        {renderAddressEditor(suggestion, () => setSuggestion(null))}
+        <div ref={addressEditorRef} tabIndex={-1}>
+          {renderAddressEditor(suggestion, () => setSuggestion(null))}
+        </div>
         {footer}
 
         <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
@@ -403,7 +429,7 @@ export function Wallets({
         }}
         wallets={wallets}
         mode={setupMode}
-        onSaved={setSuggestion}
+        onSaved={suggestAddress}
       />
       <RenameWalletDialog
         key={`${auth.accountPubkey}:${auth.authGeneration}:${renameWallet?.id ?? "closed"}`}
@@ -498,6 +524,25 @@ type WalletDialogAction = (
 function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
   return (
     <>
+      {wallets.mainWalletSync === "pending" && (
+        <div
+          role="status"
+          className="grid gap-2 rounded-2xl border border-[var(--border)] p-5 text-sm"
+        >
+          <p>
+            Main-wallet choice sync is pending. This device uses your choice;
+            other apps need to discover it.
+          </p>
+          <Button
+            className="justify-self-start"
+            variant="outline"
+            disabled={wallets.recoverySync === "checking"}
+            onClick={() => void wallets.retryRecovery().catch(() => undefined)}
+          >
+            Sync main-wallet choice
+          </Button>
+        </div>
+      )}
       {wallets.recoverySync !== "idle" && wallets.recoverySync !== "ready" && (
         <section
           role="status"
@@ -557,7 +602,13 @@ function WalletSection({
   onSend,
   onHistory,
   onRemove,
+  onMain,
+  onPublicAddress,
+  recoverySyncByWallet,
 }: {
+  onMain?: UseWalletsReturn["setMainWallet"]
+  onPublicAddress?: (address: string) => void
+  recoverySyncByWallet?: UseWalletsReturn["recoverySyncByWallet"]
   title: string
   description: string
   empty: string
@@ -622,6 +673,9 @@ function WalletSection({
                 providerActionsDisabled={providerActionsDisabled}
                 formatSats={formatSats}
                 addressResolver={addressResolver}
+                onMain={onMain}
+                onPublicAddress={onPublicAddress}
+                recoverySync={recoverySyncByWallet?.[wallet.id]}
                 onRename={onRename}
                 onDefault={onDefault}
                 onReceiving={onReceiving}
@@ -682,7 +736,13 @@ function WalletRow({
   onRemove,
   onRename,
   addressResolver,
+  onMain,
+  onPublicAddress,
+  recoverySync,
 }: {
+  onMain?: UseWalletsReturn["setMainWallet"]
+  onPublicAddress?: (address: string) => void
+  recoverySync?: "ready" | "pending"
   wallet: WalletDescriptor
   displayLabel: string
   runtime: WalletRuntimeState
@@ -729,7 +789,11 @@ function WalletRow({
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate font-medium">{displayLabel}</h3>
             {isDefault && (
-              <StatusPill variant="info">Default spending</StatusPill>
+              <StatusPill variant="info">
+                {wallet.defaultIntents.includes("receive")
+                  ? "Main wallet"
+                  : "Default spending"}
+              </StatusPill>
             )}
             <WalletRuntimePill runtime={runtime} />
           </div>
@@ -738,6 +802,14 @@ function WalletRow({
               ? "Balance unavailable"
               : formatSats(Math.floor(runtime.balanceMsats / 1000))}
           </p>
+          {isSpark && (
+            <p className="text-xs text-[var(--text-muted)]" role="status">
+              Encrypted recovery:{" "}
+              {recoverySync === "ready"
+                ? "Synced"
+                : "Sync pending — keep your saved recovery details."}
+            </p>
+          )}
           {!isSpark && (
             <p className="mt-1 text-xs text-[var(--text-muted)]">
               {getWalletProviderDescription(wallet)}
@@ -760,6 +832,15 @@ function WalletRow({
             <DropdownMenuItem onSelect={() => dialog(onRename)}>
               Rename
             </DropdownMenuItem>
+            {isSpark &&
+              onMain &&
+              (!isDefault || !wallet.defaultIntents.includes("receive")) && (
+                <DropdownMenuItem
+                  onSelect={() => void run(() => onMain(wallet.id))}
+                >
+                  Use as main wallet
+                </DropdownMenuItem>
+              )}
             {!isDefault && wallet.capabilities.includes("pay_invoice") && (
               <DropdownMenuItem
                 onSelect={() => void run(() => onDefault(wallet.id))}
@@ -807,6 +888,7 @@ function WalletRow({
       </div>
       {isSpark && addressResolver && (
         <WalletReceivingAddress
+          onPublicAddress={onPublicAddress}
           walletId={wallet.id}
           runtime={runtime}
           onPendingChange={setPending}
@@ -878,7 +960,9 @@ function WalletReceivingAddress({
   runtime,
   ready,
   resolve,
+  onPublicAddress,
 }: {
+  onPublicAddress?: (address: string) => void
   walletId: string
   runtime: WalletRuntimeState
   onPendingChange(pending: boolean): void
@@ -886,7 +970,6 @@ function WalletReceivingAddress({
   resolve: UseWalletsReturn["getSparkLightningAddress"]
 }) {
   const [state, setState] = useState<BreezAddressState | null>(null)
-  const [pending, setPending] = useState(false)
   useEffect(() => {
     if (!ready) return
     let active = true
@@ -902,31 +985,6 @@ function WalletReceivingAddress({
       active = false
     }
   }, [ready, resolve, walletId, runtime])
-  const retry = async () => {
-    setPending(true)
-    onPendingChange(true)
-    try {
-      setState(await resolve(walletId, true))
-    } catch {
-      setState({ status: "unavailable", reason: "provider_unavailable" })
-    } finally {
-      setPending(false)
-      onPendingChange(false)
-    }
-  }
-  const canRetry =
-    ready &&
-    state !== null &&
-    state.status !== "registered" &&
-    !(
-      state.status === "unavailable" &&
-      [
-        "unconfigured",
-        "unsupported_network",
-        "invalid_configuration",
-        "locked",
-      ].includes(state.reason)
-    )
   return (
     <div className="grid gap-1 text-sm">
       <p className="break-all text-[var(--text-secondary)]">
@@ -937,21 +995,24 @@ function WalletReceivingAddress({
             ? walletAddressStatus(state)
             : "Open wallet to check"}
       </p>
-      {canRetry && (
-        <>
-          <p className="text-xs text-[var(--text-muted)]">
-            Address setup is pending. You can still receive an invoice.
-          </p>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="justify-self-start"
-            disabled={pending}
-            onClick={() => void retry()}
-          >
-            {pending ? "Checking…" : "Retry address setup"}
-          </Button>
-        </>
+      {ready && state?.status !== "registered" && (
+        <WalletAddressSetup
+          walletId={walletId}
+          value={state}
+          resolve={resolve}
+          onChange={setState}
+          onPendingChange={onPendingChange}
+        />
+      )}
+      {state?.status === "registered" && onPublicAddress && (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="justify-self-start"
+          onClick={() => onPublicAddress(state.address)}
+        >
+          Set as public Lightning address
+        </Button>
       )}
       {state?.status === "registered" && state.publicLookup !== "verified" && (
         <p className="text-xs">
@@ -1119,6 +1180,9 @@ function PortableWalletDialog({
   const [error, setError] = useState<string | null>(null)
   const [recovery, setRecovery] = useState<SparkRecoveryBundle | null>(null)
   const [saved, setSaved] = useState(false)
+  const [completedWallet, setCompletedWallet] =
+    useState<WalletDescriptor | null>(null)
+  const [makeMain, setMakeMain] = useState(false)
   const [address, setAddress] = useState<BreezAddressState | null>(null)
   const [recoveredFromRelay, setRecoveredFromRelay] = useState(false)
   const [firstWallet, setFirstWallet] = useState(false)
@@ -1130,10 +1194,44 @@ function PortableWalletDialog({
     setMnemonic("")
     setAccountNumber(String(defaultAccount))
     setRecovery(null)
+    setCompletedWallet(null)
     setAddress(null)
     setSaved(false)
     setError(null)
     onOpenChange(false)
+  }
+  const finish = async () => {
+    if (!completedWallet) return
+    const scope = runScope.current
+    setPending(true)
+    setError(null)
+    try {
+      if (makeMain) await wallets.setMainWallet(completedWallet.id)
+      if (
+        scope !== runScope.current ||
+        !isAuthGenerationCurrent(authGeneration)
+      )
+        return
+      if (address?.status === "registered")
+        onSaved({
+          address: address.address,
+          ownerPubkey: auth.accountPubkey!,
+          authGeneration,
+          firstWallet: firstWallet && !recoveredFromRelay,
+          imported: mode === "restore" || recoveredFromRelay,
+        })
+      close()
+    } catch (caught) {
+      if (scope === runScope.current && isAuthGenerationCurrent(authGeneration))
+        setError(
+          getErrorMessage(
+            caught,
+            "Main-wallet sync is pending. You can finish without changing the main wallet."
+          )
+        )
+    } finally {
+      setPending(false)
+    }
   }
   const submit = useCallback(async () => {
     const scope = ++runScope.current
@@ -1146,12 +1244,13 @@ function PortableWalletDialog({
       const first = wallets.portableWallets.length === 0
       let wallet: WalletDescriptor
       let bundle: SparkRecoveryBundle
+      let imported = mode === "restore"
+      let publicDefaultAllowed = false
       if (mode === "create") {
         const result = await wallets.createSpark()
-        if (current())
-          setRecoveredFromRelay(
-            result.recovered === true || result.publicDefaultAllowed === false
-          )
+        if (current()) setRecoveredFromRelay(result.recovered === true)
+        imported = result.recovered === true
+        publicDefaultAllowed = result.publicDefaultAllowed === true
         wallet = result.wallet
         bundle = {
           mnemonic: result.mnemonic,
@@ -1168,11 +1267,13 @@ function PortableWalletDialog({
           mnemonic,
           accountNumber: number,
         })
-        const revealed = await wallets.revealSparkRecovery(wallet.id)
-        bundle = { ...revealed, network: wallet.network }
+        bundle = { mnemonic, accountNumber: number, network: wallet.network }
       }
       if (!current()) return
-      setFirstWallet(first)
+      setFirstWallet(first && publicDefaultAllowed)
+      setCompletedWallet(wallet)
+      setMakeMain(first || mode === "restore")
+      setSaved(imported)
       setMnemonic("")
       setRecovery(bundle)
       const value = await wallets.getSparkLightningAddress(wallet.id)
@@ -1213,20 +1314,53 @@ function PortableWalletDialog({
         <DialogHeader>
           <DialogTitle>
             {recovery
-              ? "Save your recovery details"
+              ? mode === "restore" || recoveredFromRelay
+                ? "Wallet imported"
+                : "Save your recovery details"
               : mode === "create"
                 ? "Creating your wallet"
                 : "Import wallet"}
           </DialogTitle>
           <DialogDescription>
             {recovery
-              ? "Keep the recovery phrase, actual Spark account number and network together somewhere private. They restore this wallet on another device."
+              ? mode === "restore" || recoveredFromRelay
+                ? "Your existing wallet is recovered. Its public receiving address changes only if you choose."
+                : "Keep the recovery phrase, actual Spark account number and network together somewhere private. They restore this wallet on another device."
               : "Your Nostr signer opens this wallet. No separate wallet password."}
           </DialogDescription>
         </DialogHeader>
         {recovery ? (
           <>
-            <SparkRecoveryBundleDetails {...recovery} />
+            {mode === "restore" || recoveredFromRelay ? (
+              <p className="text-sm">
+                Recovered account {recovery.accountNumber} · {recovery.network}.
+                Keep your existing recovery details.
+              </p>
+            ) : (
+              <SparkRecoveryBundleDetails {...recovery} />
+            )}
+            <p role="status" className="text-sm">
+              Encrypted recovery:{" "}
+              {completedWallet &&
+              wallets.recoverySyncByWallet[completedWallet.id] === "ready"
+                ? "Synced to recovery relays."
+                : "Sync pending. Keep your recovery details before switching apps."}
+            </p>
+            {completedWallet && (
+              <div className="grid gap-2 rounded-xl border border-[var(--border)] p-3">
+                <Label htmlFor="wallet-main">Make this my main wallet</Label>
+                <Switch
+                  id="wallet-main"
+                  checked={makeMain}
+                  disabled={pending}
+                  onCheckedChange={setMakeMain}
+                />
+                <p className="text-pretty text-xs">
+                  Use it for spending and new Merchant invoices in both apps.
+                  Existing invoices and your public address stay unchanged.
+                </p>
+              </div>
+            )}
             {address?.status === "registered" ? (
               <p className="break-all text-sm">
                 Receiving address: {address.address}.{" "}
@@ -1237,36 +1371,33 @@ function PortableWalletDialog({
                     : "Your public profile receiving address stays unchanged."}
               </p>
             ) : (
-              <p className="text-sm">
-                Address setup is pending. Your wallet is usable; retry from its
-                card.
-              </p>
+              completedWallet && (
+                <WalletAddressSetup
+                  walletId={completedWallet.id}
+                  value={address}
+                  resolve={wallets.getSparkLightningAddress}
+                  onChange={setAddress}
+                  onPendingChange={setPending}
+                />
+              )
             )}
-            <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] p-3">
-              <Label htmlFor="recovery-saved">
-                I saved the phrase, Spark account number and network somewhere
-                private
-              </Label>
-              <Switch
-                id="recovery-saved"
-                checked={saved}
-                onCheckedChange={setSaved}
-              />
-            </div>
+            {mode === "create" && !recoveredFromRelay && (
+              <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] p-3">
+                <Label htmlFor="recovery-saved">
+                  I saved the phrase, Spark account number and network somewhere
+                  private
+                </Label>
+                <Switch
+                  id="recovery-saved"
+                  checked={saved}
+                  onCheckedChange={setSaved}
+                />
+              </div>
+            )}
             <DialogFooter>
               <Button
                 disabled={!saved || pending}
-                onClick={() => {
-                  if (address?.status === "registered")
-                    onSaved({
-                      address: address.address,
-                      ownerPubkey: auth.accountPubkey!,
-                      authGeneration: auth.authGeneration,
-                      firstWallet,
-                      imported: mode === "restore" || recoveredFromRelay,
-                    })
-                  close()
-                }}
+                onClick={() => void finish()}
               >
                 Done
               </Button>
@@ -1281,8 +1412,8 @@ function PortableWalletDialog({
             }}
           >
             <p className="text-sm">
-              Recovery is encrypted to your Nostr identity and saved on recovery
-              relays to open this wallet in either app.
+              We encrypt recovery to your Nostr identity and request relay
+              storage. Setup shows whether sync is confirmed or pending.
             </p>
             <div className="grid gap-2">
               <Label htmlFor="portable-mnemonic">Recovery phrase</Label>

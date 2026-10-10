@@ -4,7 +4,6 @@ import {
   useAuth,
   SUPPORTED_SHOPPER_DISPLAY_CURRENCIES,
   type ShopperDisplayCurrency,
-  formatBitcoinBaseUnits,
 } from "@conduit/core"
 import { useWallets } from "@conduit/core/hooks/useWallets"
 import {
@@ -23,16 +22,10 @@ export const Route = createFileRoute("/wallet")({ component: WalletsPage })
 function WalletsPage() {
   const auth = useAuth()
   const wallets = useWallets()
-  const pricing = useShopperPricing()
   return (
     <Wallets
       auth={auth}
       wallets={wallets}
-      formatSats={(sats) =>
-        sats === 0
-          ? formatBitcoinBaseUnits(0, pricing.preference.bitcoinUnit)
-          : pricing.formatSatsAmount(sats).primary
-      }
       renderAddressEditor={(suggestion, onDismiss) => (
         <ProfileLightningAddressEditor
           key={`${auth.accountPubkey}:${auth.authGeneration}`}
@@ -97,7 +90,8 @@ function PriceDisplaySettings() {
       </div>
       <p className="mt-4 text-xs leading-5 text-[var(--text-muted)]">
         ₿10,000 equals 10,000 sats. This preference changes labels only; it
-        never changes a listing, order, invoice, or payment.
+        never changes a listing, order, invoice, or payment. Wallet balances use
+        sats in both apps. Display preferences currently apply on this device.
       </p>
     </section>
   )

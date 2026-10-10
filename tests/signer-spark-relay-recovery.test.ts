@@ -164,6 +164,95 @@ function bundle() {
 }
 
 describe("signer-backed Spark recovery composed foundations", () => {
+  it("restores the latest explicit main choice without changing backup lineage", async () => {
+    const f = fixture()
+    const a = await f.service().prepare(bundle())
+    const primary = await f.service().preparePrimary(a)
+    const b = await f
+      .service()
+      .prepare(bundle(), crypto.randomUUID(), a.eventId)
+    for (const id of [a.eventId, b.eventId, primary])
+      await f.service().deliver(id)
+    const first = await f.service().prepareMain(a)
+    await f.service().deliver(first)
+    const latest = await f.service().prepareMain(b)
+    await f.service().deliver(latest)
+    const fresh = f.service(storage().store)
+    const found = await fresh.discover()
+    expect(found.state).toBe("recoverable")
+    expect(found.primary?.eventId === a.eventId).toBe(true)
+    expect(found.main?.eventId === b.eventId).toBe(true)
+    expect(found.candidates).toHaveLength(2)
+    expect(
+      (await f.store.load(f.owner)).records.some((r) => r.event.id === first)
+    ).toBe(true)
+    expect((await fresh.restore(found.main!)).accountNumber).toBe(1)
+  })
+  for (const source of [
+    "exact",
+    "broad",
+    "retained",
+    "retained-with-malformed-copy",
+  ] as const) {
+    it(`follows ${source} primary evidence across split relay views without authorizing creation`, async () => {
+      const f = fixture()
+      const candidate = await f.service().prepare(bundle())
+      const pointerId = await f.service().preparePrimary(candidate)
+      const journal = await f.store.load(f.owner)
+      const pointer = journal.records.find((r) => r.event.id === pointerId)!
+      const backup = journal.records.find(
+        (r) => r.event.id === candidate.eventId
+      )!
+      const [a, b] = SPARK_RECOVERY_RENDEZVOUS
+      const targetStore = storage().store
+      if (source.startsWith("retained"))
+        await targetStore.retain(f.owner, [pointer])
+      const reads: Array<{ url: string; id?: string }> = []
+      const target = new SparkRecoveryService({
+        signer: f.signer,
+        currentSigner: f.current,
+        store: targetStore,
+        deriveIdentity: deriveSparkRecoveryIdentity,
+        transport: {
+          ...f.transport,
+          read: async (url, _owner, id, _continue, dTag) => {
+            reads.push({ url, id })
+            if (id)
+              return {
+                status: "complete",
+                events:
+                  url === b.url && id === candidate.eventId
+                    ? [backup.event]
+                    : [],
+              }
+            if (
+              url === a.url &&
+              source !== "retained" &&
+              (source === "broad" ? !dTag : !!dTag)
+            )
+              return {
+                status: "partial",
+                events: [
+                  source === "retained-with-malformed-copy"
+                    ? { ...pointer.event, content: "invalid" }
+                    : pointer.event,
+                ],
+              }
+            return { status: "partial", events: [] }
+          },
+        },
+      })
+      const discovered = await target.discover()
+      expect(discovered.primary?.eventId).toBe(candidate.eventId)
+      expect(discovered.coverage).toBe("partial")
+      expect(discovered.creationEligible).toBe(false)
+      expect(reads.filter((r) => r.id === candidate.eventId)).toHaveLength(3)
+      const restored = await target.restore(discovered.primary!)
+      expect("walletId" in restored && restored.walletId).toBe(
+        candidate.walletId
+      )
+    })
+  }
   it("restores an older exact primary and referenced backup beyond 128 unrelated records without authorizing new creation", async () => {
     const f = fixture()
     const candidate = await f.service().prepare(bundle())

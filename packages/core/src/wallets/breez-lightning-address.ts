@@ -40,6 +40,8 @@ export type BreezAddressFailure =
   | "invalid_response"
   | "registration_pending"
   | "names_exhausted"
+  | "name_unavailable"
+  | "invalid_username"
 
 export type BreezAddressState =
   | { status: "unavailable"; reason: BreezAddressFailure }
@@ -165,11 +167,14 @@ export class BreezLightningAddressClient {
   lookup(): Promise<BreezAddressState> {
     return this.#run(false)
   }
-  ensure(): Promise<BreezAddressState> {
-    return this.#run(true)
+  ensure(username?: string): Promise<BreezAddressState> {
+    return this.#run(true, username)
   }
 
-  async #run(register: boolean): Promise<BreezAddressState> {
+  async #run(
+    register: boolean,
+    requestedUsername?: string
+  ): Promise<BreezAddressState> {
     try {
       if (this.#domain !== "conduit.cash")
         throw new AddressError("invalid_configuration")
@@ -186,6 +191,11 @@ export class BreezLightningAddressClient {
         const existing = await this.#recover(identity)
         if (existing) return this.#present(existing)
         if (!register) return { status: "absent" }
+        const selected =
+          requestedUsername === undefined
+            ? undefined
+            : normalizeBreezUsername(requestedUsername)
+        if (selected === null) throw new AddressError("invalid_username")
         let checkpoint = await this.#read(scope)
         if (
           checkpoint &&
@@ -196,6 +206,11 @@ export class BreezLightningAddressClient {
             !["selected", "registering"].includes(checkpoint.phase))
         ) {
           throw new AddressError("storage_unavailable")
+        }
+        if (selected && checkpoint?.username !== selected) {
+          if (checkpoint?.phase === "registering")
+            throw new AddressError("registration_pending")
+          checkpoint = { username: selected, attempts: 1, phase: "selected" }
         }
         for (
           let attempt = checkpoint?.attempts ?? 1;
@@ -223,6 +238,7 @@ export class BreezLightningAddressClient {
             // An earlier request may still be in flight. Never advance its name.
             if (pending.phase === "registering")
               throw new AddressError("registration_pending")
+            if (selected) throw new AddressError("name_unavailable")
             if (attempt === MAX_ATTEMPTS)
               throw new AddressError("names_exhausted")
             checkpoint = {
@@ -262,6 +278,7 @@ export class BreezLightningAddressClient {
               // A retry conflict cannot disprove a prior ambiguous commit.
               if (pending.phase === "registering")
                 throw new AddressError("registration_pending")
+              if (selected) throw new AddressError("name_unavailable")
               if (attempt === MAX_ATTEMPTS) throw error
               checkpoint = {
                 username: this.#generate(scope, attempt + 1),

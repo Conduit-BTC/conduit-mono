@@ -492,7 +492,9 @@ function assertRequest(
         filter.kinds[0] !== 30078 ||
         (filter["#d"] !== undefined &&
           (filter["#d"].length !== 1 ||
-            filter["#d"][0] !== "conduit:spark:primary:v1")) ||
+            !["conduit:spark:primary:v1", "conduit:spark:main:v1"].includes(
+              filter["#d"][0]
+            ))) ||
         (filter.ids !== undefined &&
           (filter.ids.length !== 1 ||
             !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||

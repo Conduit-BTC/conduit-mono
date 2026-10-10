@@ -165,6 +165,50 @@ async function fixture() {
 }
 
 describe("Breez address lifecycle on the existing first-party Spark identity", () => {
+  it("registers the chosen available name on the existing identity", async () => {
+    const f = await fixture()
+    expect(await f.client().ensure(" Alice ")).toMatchObject({
+      status: "registered",
+      address: "alice@conduit.cash",
+    })
+  })
+  it("a taken chosen name never silently falls back to a generated name", async () => {
+    const f = await fixture()
+    f.setOverride(async (operation) =>
+      operation === "available" ? response({ available: false }) : null
+    )
+    expect(await f.client().ensure("alice")).toEqual({
+      status: "unavailable",
+      reason: "name_unavailable",
+    })
+    expect(f.calls.includes("register")).toBe(false)
+  })
+  it("a new name cannot replace an earlier ambiguous submission", async () => {
+    const f = await fixture()
+    f.setOverride(async (operation) => {
+      if (operation === "register") throw new Error("lost response")
+      return null
+    })
+    expect(await f.client().ensure("alice")).toEqual({
+      status: "unavailable",
+      reason: "registration_pending",
+    })
+    const before = f.calls.filter((c) => c === "register").length
+    expect(await f.client().ensure("bob")).toEqual({
+      status: "unavailable",
+      reason: "registration_pending",
+    })
+    expect(f.calls.filter((c) => c === "register").length).toBe(before)
+  })
+  it("choosing a name preserves an already owned protected registration", async () => {
+    const f = await fixture()
+    f.setRegistered("support")
+    expect(await f.client().ensure("alice")).toMatchObject({
+      status: "registered",
+      address: "support@conduit.cash",
+    })
+    expect(f.calls.includes("register")).toBe(false)
+  })
   it("matches independently executed Breez SDK 0.26.1 identity vectors without opening a wallet", async () => {
     const vectors = [
       {
