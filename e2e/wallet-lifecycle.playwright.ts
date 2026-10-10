@@ -1029,7 +1029,8 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
           ).DexieSparkRecoveryStore().load(signer.pubkey)
           const main = state.records.find((r: any) =>
             r.event.tags.some(
-              (t: string[]) => t[0] === "d" && t[1] === "conduit:spark:main:v1"
+              (t: string[]) =>
+                t[0] === "d" && t[1].startsWith("conduit:spark:main:v1")
             )
           )
           ;(window as any).__mainChoiceBefore = {
@@ -1083,7 +1084,8 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
                 records.some((record) =>
                   record.event.tags.some(
                     (tag: string[]) =>
-                      tag[0] === "d" && tag[1] === "conduit:spark:main:v1"
+                      tag[0] === "d" &&
+                      tag[1].startsWith("conduit:spark:main:v1")
                   )
                 )
               ) {
@@ -1099,7 +1101,8 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
             signer.signEvent = async (event: { tags: string[][] }) => {
               if (
                 event.tags.some(
-                  (tag) => tag[0] === "d" && tag[1] === "conduit:spark:main:v1"
+                  (tag) =>
+                    tag[0] === "d" && tag[1].startsWith("conduit:spark:main:v1")
                 )
               )
                 throw new Error("Synthetic main choice failure")
@@ -1140,7 +1143,7 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
             const mains = state.records.filter((r: any) =>
               r.event.tags.some(
                 (t: string[]) =>
-                  t[0] === "d" && t[1] === "conduit:spark:main:v1"
+                  t[0] === "d" && t[1].startsWith("conduit:spark:main:v1")
               )
             )
             const wallets = await (
@@ -1205,3 +1208,126 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
     }
   })
 }
+
+test("fresh Merchant restores mainnet payment and receiving choices after later foreign-network publication @market", async ({
+  page,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await prepareControlledWallet(page)
+    await observeController(page, "market")
+    await installRealTestSigner(page, identity, relay)
+    await page.goto(apps.market + "/wallet")
+    await installControlledWallet(page)
+    await settled(page)
+    const expected = await page.evaluate(
+      async ({ core, recovery, phrase }) => {
+        const signer = (await import(core)).getAccountSigner()
+        const service = (await import(recovery)).getAccountSparkRecovery(signer)
+        const generate = (await import(phrase)).generateSparkMnemonic
+        const root = await service.prepare({
+          mnemonic: generate(),
+          network: "mainnet",
+          accountNumber: 7,
+        })
+        const primaryId = await service.preparePrimary(root)
+        const preferred = await service.prepare(
+          { mnemonic: generate(), network: "mainnet", accountNumber: 8 },
+          undefined,
+          root.eventId
+        )
+        const mainId = await service.prepareMain(preferred)
+        const foreign = await service.prepare(
+          { mnemonic: generate(), network: "regtest", accountNumber: 9 },
+          undefined,
+          root.eventId
+        )
+        const foreignPrimaryId = await service.preparePrimary(foreign)
+        const foreignMainId = await service.prepareMain(foreign)
+        for (const id of [
+          root.eventId,
+          primaryId,
+          preferred.eventId,
+          mainId,
+          foreign.eventId,
+          foreignPrimaryId,
+          foreignMainId,
+        ])
+          await service.deliver(id)
+        return {
+          rootId: root.walletId,
+          preferredId: preferred.walletId,
+          primaryId,
+          mainId,
+          foreignEventId: foreign.eventId,
+        }
+      },
+      { core, recovery, phrase }
+    )
+    const fresh = await page.context().newPage()
+    try {
+      await prepareControlledWallet(fresh)
+      await observeController(fresh, "merchant")
+      await installRealTestSigner(fresh, identity, relay)
+      await fresh.goto(apps.merchant + "/wallet")
+      await installControlledWallet(fresh)
+      await settled(fresh)
+      await expect
+        .poll(() =>
+          fresh.evaluate(
+            () =>
+              Object.values(
+                (window as any).__walletLifecycle.wallets.runtime
+              ).filter((s: any) => s.status === "ready").length
+          )
+        )
+        .toBe(2)
+      const snapshot = await fresh.evaluate(
+        async ({ core, recovery, journal }) => {
+          const { wallets } = (window as any).__walletLifecycle
+          const service = (await import(recovery)).getAccountSparkRecovery(
+            (await import(core)).getAccountSigner()
+          )
+          const signer = (await import(core)).getAccountSigner()
+          const state = await new (
+            await import(journal)
+          ).DexieSparkRecoveryStore().load(signer.pubkey)
+          return {
+            walletIds: wallets.portableWallets.map((w: any) => w.id).sort(),
+            networks: wallets.portableWallets.map((w: any) => w.network),
+            payId: wallets.wallets.find((w: any) =>
+              w.defaultIntents.includes("pay_invoice")
+            )?.id,
+            receiveId: wallets.wallets.find((w: any) =>
+              w.defaultIntents.includes("receive")
+            )?.id,
+            primaryId: service.getVerifiedPrimaryPointerEventId("mainnet"),
+            mainId: service.getVerifiedMainChoiceEventId("mainnet"),
+            retainedIds: state.records.map((r: any) => r.event.id),
+            opens: (window as any).__walletProbe.opens,
+            accounts: (window as any).__walletProbe.openedAccounts.sort(
+              (a: number, b: number) => a - b
+            ),
+          }
+        },
+        { core, recovery, journal }
+      )
+      expect(snapshot.walletIds).toEqual(
+        [expected.rootId, expected.preferredId].sort()
+      )
+      expect(snapshot.networks).toEqual(["mainnet", "mainnet"])
+      expect(snapshot.payId).toBe(expected.preferredId)
+      expect(snapshot.receiveId).toBe(expected.preferredId)
+      expect(snapshot.primaryId).toBe(expected.primaryId)
+      expect(snapshot.mainId).toBe(expected.mainId)
+      expect(snapshot.retainedIds).toContain(expected.foreignEventId)
+      expect(snapshot.opens).toBe(2)
+      expect(snapshot.accounts).toEqual([7, 8])
+      await expect(fresh.getByRole("dialog")).toHaveCount(0)
+    } finally {
+      await fresh.close()
+    }
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})

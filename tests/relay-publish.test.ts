@@ -418,6 +418,10 @@ describe("planPublishRelays", () => {
   for (const coordinate of [
     "conduit:spark:primary:v1",
     "conduit:spark:main:v1",
+    ...["mainnet", "testnet", "signet", "regtest"].flatMap((network) => [
+      `conduit:spark:primary:v1:${network}`,
+      `conduit:spark:main:v1:${network}`,
+    ]),
   ]) {
     it(`carries author intent into an exact owned ${coordinate} recovery write`, async () => {
       const relayUrl = "wss://auth.nostr1.com"
@@ -443,6 +447,32 @@ describe("planPublishRelays", () => {
         (await publishWithPlanner(event, fixture.input)).successfulRelayUrls
       ).toEqual([relayUrl])
       expect(writes).toBe(1)
+    })
+  }
+
+  for (const coordinate of [
+    "conduit:spark:primary:v1:unknown",
+    "conduit:spark:main:v1:mainnet:extra",
+  ]) {
+    it(`rejects unsupported recovery coordinates at the authenticated writer: ${coordinate}`, async () => {
+      const event = signedTestEvent({ kind: 30078, tags: [["d", coordinate]] })
+      const fixture = await authenticatedPublishInput(
+        ["wss://auth.nostr1.com"],
+        { event }
+      )
+      fixture.input.intent = "author_event"
+      fixture.input.recipientPubkeys = []
+      let writes = 0
+      __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: async () => {
+          writes++
+          return "acked"
+        },
+      })
+      await expect(publishWithPlanner(event, fixture.input)).rejects.toThrow(
+        "Relay authentication requires"
+      )
+      expect(writes).toBe(0)
     })
   }
 

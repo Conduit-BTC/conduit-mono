@@ -70,7 +70,8 @@ Reads are owner-scoped and authenticate through the active account signer.
 The curated rendezvous is relay.conduit.market, relay.damus.io and nos.lol;
 relay exclusions remain effective. Two independent operators must ACK and read
 back the exact encrypted record and primary pointer before sync is ready.
-Discovery queries the exact primary address and then its referenced backup
+Discovery queries the exact network-scoped primary/main addresses and legacy v1
+addresses, then each referenced backup
 by event ID across every eligible recovery relay. Retained and broad-query
 pointers also supply deduplicated references, so split relay views and unrelated
 NIP-78 records cannot crowd out the usual wallet.
@@ -125,7 +126,7 @@ network and intent on existing wallet rows. Account replacement cannot change
 another account's choice on a shared external wallet. Unique legacy markers remain
 readable; ambiguous legacy defaults require an explicit choice. Per-intent device
 overrides do not authorize a payment and are never included in relay recovery;
-explicit encrypted main-wallet selection keeps its existing separate coordinate.
+explicit encrypted main-wallet selection uses a separate network-scoped coordinate.
 Merchant exposes only a configured-network default with receiving capability;
 foreign-network evidence cannot invoke that wallet's invoice provider for a
 current-network order. Recovery dialogs clear the password-fallback choice and
@@ -139,7 +140,12 @@ Password-encrypted recovery keeps its migration/fallback path. Save the phrase,
 network and actual account number even when sync is ready: relay availability
 and external signer support are independent recovery dependencies. NWC
 credentials and custom names remain device-local. Explicit main choices use the
-separate `conduit:spark:main:v1` encrypted coordinate, preserving backup lineage.
+separate `conduit:spark:main:v1:<network>` encrypted coordinate; primary pointers
+use `conduit:spark:primary:v1:<network>`. A publication on one network therefore
+cannot replace another network's choice under NIP-01. Networkless v1 choices remain
+readable through their verified backup network. Scoped choices must match that
+network; unresolved or mismatched references remain blocking evidence. Latest main
+selection is per configured network, while all backups retain the common lineage.
 Spending-only and receiving-only overrides remain local. Wallet balances use sats
 in both apps; account-wide currency preference sync is separate follow-up work.
 
@@ -288,7 +294,11 @@ copy and reopens through a fresh Nostr sign-in without a wallet password.
 `e2e/wallet-lifecycle.playwright.ts` composes parallel hook consumers, one native
 initialization without descriptor/fallback/SDK events, lock/retry, device removal
 through account reconnect/reload/explicit import, mixed-network recovery and
-Addy creation blocking. Merchant migration/disconnect uses a local real NIP-47
+Addy creation blocking. Fresh-journal tests use a conforming addressable-event
+replacement relay and verify independent primary/main choices on two networks,
+legacy v1 reads and mismatched-coordinate rejection. A fresh Merchant origin
+restores the intended mainnet spending/receiving defaults after a later regtest
+publication without opening the foreign wallet. Merchant migration/disconnect uses a local real NIP-47
 wallet service and asserts the Wallets document title, late account-change
 compensation and retained legacy recovery. Unsupported-network and unavailable
 coordination cases retain signed-in external and legacy wallet visibility.

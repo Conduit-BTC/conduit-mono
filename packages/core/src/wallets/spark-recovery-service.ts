@@ -14,6 +14,8 @@ import {
   validateAddySparkMnemonic,
   parseSparkPrimaryPointer,
   parseSparkMainWallet,
+  parseSparkRecoveryChoiceAddress,
+  sparkRecoveryChoiceDTag,
   parseSparkRecoveryEnvelope,
   proveSparkRecoveryCapability,
   sparkRecoveryEnvelopeSchema,
@@ -25,6 +27,7 @@ import {
   validateSparkCiphertext,
   validateSparkRecoveryEvent,
   type SparkIdentityDeriver,
+  type SparkRecoveryChoiceDTag,
   type SparkPrimaryPointer,
   type SparkMainWallet,
   type SparkRecoveryBundle,
@@ -61,7 +64,7 @@ export interface SparkRecoveryTransport {
     owner: string,
     eventId: string | undefined,
     shouldContinue: () => boolean,
-    dTag?: typeof SPARK_PRIMARY_D_TAG | typeof SPARK_MAIN_D_TAG
+    dTag?: SparkRecoveryChoiceDTag
   ): Promise<SparkRecoveryRead>
   publish(
     url: string,
@@ -296,6 +299,16 @@ export class SparkRecoveryService {
     SparkRecoveryBundle["network"],
     string | undefined
   >()
+  private readonly verifiedMainChoices = new Map<
+    SparkRecoveryBundle["network"],
+    string | undefined
+  >()
+  getVerifiedMainChoiceEventId(
+    network: SparkRecoveryBundle["network"]
+  ): string | undefined {
+    this.scope.assertCurrent()
+    return this.verifiedMainChoices.get(network)
+  }
   getVerifiedPrimaryPointerEventId(
     network: SparkRecoveryBundle["network"]
   ): string | undefined {
@@ -460,7 +473,14 @@ export class SparkRecoveryService {
       Math.floor(Date.now() / 1000),
       ...state.records
         .filter((r) =>
-          r.event.tags.some((t) => t[0] === "d" && t[1] === SPARK_PRIMARY_D_TAG)
+          r.event.tags.some((t) => {
+            const choice =
+              t[0] === "d" ? parseSparkRecoveryChoiceAddress(t[1]) : undefined
+            return (
+              choice?.type === "primary" &&
+              (!choice.network || choice.network === envelope.network)
+            )
+          })
         )
         .map((r) => r.event.created_at + 1)
     )
@@ -472,7 +492,11 @@ export class SparkRecoveryService {
       backupEventId: candidate.eventId,
       createdAt,
     }
-    const event = await this.sign(SPARK_PRIMARY_D_TAG, pointer, createdAt)
+    const event = await this.sign(
+      sparkRecoveryChoiceDTag("primary", envelope.network),
+      pointer,
+      createdAt
+    )
     await this.retain([this.record(event)])
     this.verifiedPrimaryPointers.set(envelope.network, event.id)
     return event.id
@@ -491,7 +515,14 @@ export class SparkRecoveryService {
       Math.floor(Date.now() / 1000),
       ...state.records
         .filter((r) =>
-          r.event.tags.some((t) => t[0] === "d" && t[1] === SPARK_MAIN_D_TAG)
+          r.event.tags.some((t) => {
+            const choice =
+              t[0] === "d" ? parseSparkRecoveryChoiceAddress(t[1]) : undefined
+            return (
+              choice?.type === "main" &&
+              (!choice.network || choice.network === envelope.network)
+            )
+          })
         )
         .map((r) => r.event.created_at + 1)
     )
@@ -503,13 +534,18 @@ export class SparkRecoveryService {
       backupEventId: candidate.eventId,
       createdAt,
     }
-    const event = await this.sign(SPARK_MAIN_D_TAG, selection, createdAt)
+    const event = await this.sign(
+      sparkRecoveryChoiceDTag("main", envelope.network),
+      selection,
+      createdAt
+    )
     const record = this.record(event)
     // Signer consent finishes before the caller's local transaction. Only the
     // successful commit may activate this choice for future recovery retries.
     const retain = () => this.retain([record])
     if (commit) await commit(retain)
     else await retain()
+    this.verifiedMainChoices.set(envelope.network, event.id)
     return event.id
   }
 
@@ -548,7 +584,7 @@ export class SparkRecoveryService {
     const readAt = async (
       url: string,
       eventId?: string,
-      dTag?: typeof SPARK_PRIMARY_D_TAG | typeof SPARK_MAIN_D_TAG
+      dTag?: SparkRecoveryChoiceDTag
     ): Promise<SparkRecoveryRead> => {
       this.scope.assertCurrent()
       try {
@@ -568,28 +604,42 @@ export class SparkRecoveryService {
     }
     const reads = await Promise.all(
       this.plan.map(async (target) => {
-        const [broad, primary, main] = await Promise.all([
+        const networks = network
+          ? [network]
+          : (["mainnet", "testnet", "signet", "regtest"] as const)
+        const coordinates: SparkRecoveryChoiceDTag[] = [
+          SPARK_PRIMARY_D_TAG,
+          SPARK_MAIN_D_TAG,
+          ...networks.flatMap((n) => [
+            sparkRecoveryChoiceDTag("primary", n),
+            sparkRecoveryChoiceDTag("main", n),
+          ]),
+        ]
+        const choiceReads = Promise.all(
+          coordinates.map(async (dTag) => {
+            const read = await readAt(target.url, undefined, dTag)
+            if (read.events.length > 1) read.status = "partial"
+            return read
+          })
+        )
+        const [broad, choices] = await Promise.all([
           readAt(target.url),
-          readAt(target.url, undefined, SPARK_PRIMARY_D_TAG),
-          readAt(target.url, undefined, SPARK_MAIN_D_TAG),
+          choiceReads,
         ])
-        return { target, primary, results: [broad, primary, main] }
+        return { target, results: [broad, ...choices] }
       })
     )
     const references = new Set<string>()
     const pointerEvidence = new Map(
       saved.records.map((r) => [r.event.id, r.event])
     )
-    for (const { primary, results } of reads) {
-      if (primary.events.length > 1) primary.status = "partial"
+    for (const { results } of reads) {
       for (const event of results.flatMap((read) =>
         read.events.slice(0, MAX_RECORDS)
       )) {
         if (
           event.tags?.some(
-            (tag) =>
-              tag[0] === "d" &&
-              [SPARK_PRIMARY_D_TAG, SPARK_MAIN_D_TAG].includes(tag[1])
+            (tag) => tag[0] === "d" && !!parseSparkRecoveryChoiceAddress(tag[1])
           )
         ) {
           try {
@@ -606,9 +656,7 @@ export class SparkRecoveryService {
     for (const input of pointerEvidence.values()) {
       if (
         !input.tags.some(
-          (tag) =>
-            tag[0] === "d" &&
-            [SPARK_PRIMARY_D_TAG, SPARK_MAIN_D_TAG].includes(tag[1])
+          (tag) => tag[0] === "d" && !!parseSparkRecoveryChoiceAddress(tag[1])
         )
       )
         continue
@@ -616,7 +664,9 @@ export class SparkRecoveryService {
         const event = validateSparkRecoveryEvent(input, this.scope.owner)
         const plaintext = await this.decrypt(event)
         const pointer = event.tags.some(
-          (t) => t[0] === "d" && t[1] === SPARK_PRIMARY_D_TAG
+          (t) =>
+            t[0] === "d" &&
+            parseSparkRecoveryChoiceAddress(t[1])?.type === "primary"
         )
           ? parseSparkPrimaryPointer(plaintext, event)
           : parseSparkMainWallet(plaintext, event)
@@ -679,10 +729,15 @@ export class SparkRecoveryService {
     const envelopes = new Map<string, SparkRecoveryEnvelope>()
     const addyPhrases = new Map<string, string>()
     const pointers: SparkPrimaryPointer[] = []
-    const pointerEvents = new Map<SparkPrimaryPointer, string>()
+    const pointerEvents = new Map<SparkPrimaryPointer, SignedNostrEvent>()
+    const pointerScopes = new Map<
+      SparkPrimaryPointer,
+      SparkRecoveryBundle["network"] | undefined
+    >()
     const mainChoices: Array<{
       event: SignedNostrEvent
       selection: SparkMainWallet
+      network?: SparkRecoveryBundle["network"]
     }> = []
     for (const record of records.values()) {
       const event = record.event
@@ -699,14 +754,17 @@ export class SparkRecoveryService {
           candidates.push({ eventId: event.id, source: "addy" })
           continue
         }
-        if (d === SPARK_PRIMARY_D_TAG) {
+        const choice = parseSparkRecoveryChoiceAddress(d)
+        if (choice?.type === "primary") {
           const pointer = parseSparkPrimaryPointer(plaintext, event)
           pointers.push(pointer)
-          pointerEvents.set(pointer, event.id)
-        } else if (d === SPARK_MAIN_D_TAG)
+          pointerEvents.set(pointer, event)
+          pointerScopes.set(pointer, choice.network)
+        } else if (choice?.type === "main")
           mainChoices.push({
             event,
             selection: parseSparkMainWallet(plaintext, event),
+            network: choice.network,
           })
         else {
           const envelope = parseSparkRecoveryEnvelope(plaintext, event)
@@ -755,10 +813,32 @@ export class SparkRecoveryService {
         (c) =>
           c.eventId === pointer.backupEventId && c.walletId === pointer.walletId
       )
-    const scopedPointers = pointers.filter((pointer) => {
+    const validChoiceScope = (
+      pointer: SparkPrimaryPointer | SparkMainWallet,
+      declared?: SparkRecoveryBundle["network"]
+    ) => {
       const target = findTarget(pointer)
-      return !target || inScope(target)
-    })
+      if (declared && target && target.network !== declared) {
+        invalidCount++
+        return false
+      }
+      return true
+    }
+    const scopedPointers = pointers
+      .filter((pointer) =>
+        validChoiceScope(pointer, pointerScopes.get(pointer))
+      )
+      .filter((pointer) => {
+        const target = findTarget(pointer)
+        return !target || inScope(target)
+      })
+      .sort((a, b) => {
+        const left = pointerEvents.get(a)!
+        const right = pointerEvents.get(b)!
+        return (
+          right.created_at - left.created_at || left.id.localeCompare(right.id)
+        )
+      })
     const roots = new Set(
       scopedCandidates.flatMap((candidate) => {
         const envelope = envelopes.get(candidate.eventId)
@@ -789,11 +869,18 @@ export class SparkRecoveryService {
       (!primary && !knownRoot && relevantCandidates.length > 1)
     // NIP-01 addressable revision order. Older explicit choices remain retained
     // evidence, not conflicting backup roots or permission to create a wallet.
-    const latestMain = mainChoices.sort(
-      (a, b) =>
-        b.event.created_at - a.event.created_at ||
-        a.event.id.localeCompare(b.event.id)
-    )[0]?.selection
+    const latestMainChoice = mainChoices
+      .filter((choice) => validChoiceScope(choice.selection, choice.network))
+      .filter((choice) => {
+        const target = findTarget(choice.selection)
+        return !target || inScope(target)
+      })
+      .sort(
+        (a, b) =>
+          b.event.created_at - a.event.created_at ||
+          a.event.id.localeCompare(b.event.id)
+      )[0]
+    const latestMain = latestMainChoice?.selection
     const latestMainTarget = latestMain ? findTarget(latestMain) : undefined
     const mainInScope =
       latestMain && (!latestMainTarget || inScope(latestMainTarget))
@@ -809,9 +896,16 @@ export class SparkRecoveryService {
       invalidCount === 0 &&
       !hasLocalWallet
     const primaryPointerEventId =
-      !conflict && primary ? pointerEvents.get(scopedPointers[0]) : undefined
-    if (network)
+      !conflict && primary
+        ? pointerEvents.get(scopedPointers[0])?.id
+        : undefined
+    if (network) {
       this.verifiedPrimaryPointers.set(network, primaryPointerEventId)
+      this.verifiedMainChoices.set(
+        network,
+        !conflict && main ? latestMainChoice?.event.id : undefined
+      )
+    }
     return {
       coverage,
       state: conflict

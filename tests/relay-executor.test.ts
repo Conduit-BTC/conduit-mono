@@ -2162,9 +2162,19 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       },
       PRIVATE_KEY_A
     )
-    const mainEvent = finalizeEvent(
-      { ...event, tags: [["d", "conduit:spark:main:v1"]] },
-      PRIVATE_KEY_A
+    const coordinates = [
+      "conduit:spark:primary:v1",
+      "conduit:spark:main:v1",
+      ...["mainnet", "testnet", "signet", "regtest"].flatMap((network) => [
+        `conduit:spark:primary:v1:${network}`,
+        `conduit:spark:main:v1:${network}`,
+      ]),
+    ]
+    const events = new Map(
+      coordinates.map((coordinate) => [
+        coordinate,
+        finalizeEvent({ ...event, tags: [["d", coordinate]] }, PRIVATE_KEY_A),
+      ])
     )
     const harness = new FakeRelayHarness().at("wss://protected.example", {
       onOpen: (socket) => socket.relay(["AUTH", "recovery"]),
@@ -2175,7 +2185,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
           socket.relay([
             "EVENT",
             frame[1],
-            filter["#d"]?.[0] === "conduit:spark:main:v1" ? mainEvent : event,
+            events.get(filter["#d"]?.[0] ?? "conduit:spark:primary:v1"),
           ])
           socket.relay(["EOSE", frame[1]])
         }
@@ -2191,30 +2201,33 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const result = await executor.query(request, { authorization })
     expect(result.events.map((event) => event.id)).toEqual([event.id])
     expect(result.status).toBe("success")
-    const primary = await executor.query(
-      {
-        ...request,
-        filters: [
+    for (const coordinate of coordinates) {
+      const result = await executor.query(
+        {
+          ...request,
+          filters: [{ ...request.filters[0]!, "#d": [coordinate], limit: 1 }],
+        },
+        { authorization }
+      )
+      expect(result.status).toBe("success")
+      expect(result.events.map((e) => e.id)).toEqual([
+        events.get(coordinate)!.id,
+      ])
+    }
+    for (const coordinate of [
+      "conduit:spark:primary:v1:unknown",
+      "conduit:spark:main:v1:mainnet:extra",
+    ]) {
+      await expect(
+        executor.query(
           {
-            ...request.filters[0]!,
-            "#d": ["conduit:spark:primary:v1"],
-            limit: 1,
+            ...request,
+            filters: [{ ...request.filters[0]!, "#d": [coordinate] }],
           },
-        ],
-      },
-      { authorization }
-    )
-    expect(primary.status).toBe("success")
-    const main = await executor.query(
-      {
-        ...request,
-        filters: [
-          { ...request.filters[0]!, "#d": ["conduit:spark:main:v1"], limit: 1 },
-        ],
-      },
-      { authorization }
-    )
-    expect(main.status).toBe("success")
+          { authorization }
+        )
+      ).rejects.toThrow("active owner")
+    }
     await expect(
       executor.query(
         {
