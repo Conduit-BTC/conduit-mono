@@ -347,7 +347,7 @@ export function MarketEventsTimeline({
 
       <section
         aria-label="Event filters"
-        className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+        className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
       >
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
@@ -361,7 +361,7 @@ export function MarketEventsTimeline({
           ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-1.5">
+          <div className="grid gap-1">
             <Label htmlFor="event-organizer-filter">Organizer</Label>
             <Select
               value={search.organizer ?? "all"}
@@ -387,7 +387,7 @@ export function MarketEventsTimeline({
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid gap-1">
             <Label htmlFor="event-location-filter">Location</Label>
             <Select
               value={search.location ? `value:${search.location}` : "all"}
@@ -433,7 +433,7 @@ export function MarketEventsTimeline({
       ) : discovery.futureMarkets.length > 0 ? (
         <div
           className={cn(
-            "rounded-xl px-6 py-12 text-center",
+            "rounded-[var(--radius-md)] px-6 py-12 text-center",
             filteredDiscoveryIncomplete
               ? "border border-[var(--warning)]/40 bg-[var(--warning)]/10"
               : "border border-dashed border-[var(--border)]"

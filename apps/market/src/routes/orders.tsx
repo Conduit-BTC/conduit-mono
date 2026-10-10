@@ -284,7 +284,7 @@ function StatusNotice({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <StatusPill variant={variant}>{title}</StatusPill>
@@ -336,12 +336,13 @@ function OrderListCard({
 }) {
   const itemTitle = row.vm.items[0]?.displayTitle ?? "Order"
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
       data-order-id={row.orderId}
       className={[
-        "w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color]",
+        "w-full rounded-[var(--radius-md)] border p-3 text-left transition-[border-color,background-color]",
         active
           ? // Selected: subtle purple wash from the primary token.
             "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
@@ -383,7 +384,7 @@ function OrderListCard({
               {row.headerStatus.primaryLabel}
             </StatusPill>
             {row.headerStatus.actionNeeded && (
-              <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+              <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
             )}
           </div>
         </div>
@@ -420,12 +421,13 @@ function MobileOrderFilterPills({
         {options.map((option) => {
           const active = tab === option.value
           return (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               key={option.value}
               type="button"
               onClick={() => onChange(option.value)}
               className={[
-                "shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-[border-color,background-color,color]",
+                "shrink-0 rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-[border-color,background-color,color]",
                 active
                   ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--text-primary)]"
                   : "border-[var(--border)] bg-[color-mix(in_srgb,var(--surface-elevated)_92%,transparent)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -467,9 +469,9 @@ function MobileOrdersScroller({
   }, [selectedOrderId])
 
   return (
-    <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+    <section className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
       {rows.length === 0 ? (
-        <div className="rounded-[1.25rem] border border-dashed border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
           No orders match this filter.
         </div>
       ) : (
@@ -486,6 +488,7 @@ function MobileOrdersScroller({
             {rows.map((row) => {
               const active = row.orderId === selectedOrderId
               return (
+                // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                 <button
                   key={row.orderId}
                   type="button"
@@ -495,7 +498,7 @@ function MobileOrdersScroller({
                   }}
                   onClick={() => onSelect(row.orderId)}
                   className={[
-                    "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
+                    "w-[16.5rem] shrink-0 snap-start rounded-[var(--radius-md)] border p-4 text-left transition-[border-color,background-color,transform]",
                     active
                       ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
                       : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
@@ -529,7 +532,7 @@ function MobileOrdersScroller({
                       </span>
                     )}
                     {row.headerStatus.actionNeeded ? (
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
                     ) : null}
                   </div>
                 </button>
@@ -557,7 +560,7 @@ function OrderItemsSection({
   formatSats: (sats: number) => string
 }) {
   return (
-    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
         <ShoppingBag className="h-4 w-4" /> Items
       </h3>
@@ -585,7 +588,7 @@ function OrderItemsSection({
               className="flex items-start justify-between gap-3 text-sm"
             >
               <div className="flex min-w-0 items-start gap-3">
-                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
                   {image ? (
                     <img
                       src={image.url}
@@ -653,7 +656,7 @@ function OrderTimeline({
     [formatSats, vm]
   )
   return (
-    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
       <h2 className="text-lg font-semibold text-[var(--text-primary)]">
         Order progress
       </h2>
@@ -1710,7 +1713,7 @@ function OrderDetail({
       {/* Hero */}
       {!paymentFocused && (
         <>
-          <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
+          <section className="hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 items-center gap-3">
                 <MerchantAvatar
@@ -1768,11 +1771,11 @@ function OrderDetail({
       )}
 
       {!zeroCostPickupOrder && isBuyerOrderPaid(vm) && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
           <p className="text-sm text-[var(--text-secondary)]">
             Had a good experience?
           </p>
-          <MarketProjectTip className="min-h-11 text-primary-500" />
+          <MarketProjectTip className="min-h-11 text-[var(--link-text)]" />
         </div>
       )}
 
@@ -1798,7 +1801,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+              className="mt-3 text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1824,7 +1827,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+              className="mt-3 text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1873,7 +1876,7 @@ function OrderDetail({
             merchant verification.
           </p>
           <div className="mt-4 flex flex-wrap items-end gap-3">
-            <div className="grid min-w-[15rem] gap-1.5">
+            <div className="grid min-w-[15rem] gap-1">
               <label
                 htmlFor={`prior-invoice-${vm.orderId}`}
                 className="text-xs font-medium text-[var(--text-secondary)]"
@@ -1958,7 +1961,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="text-pretty text-sm text-[var(--destructive)]"
+              className="text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1967,7 +1970,7 @@ function OrderDetail({
       )}
 
       {showFinishAcceptedOrderRecovery && showExternalWallet && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
           <Button
             variant="outline"
             className="h-10 w-full px-4 text-sm"
@@ -1980,7 +1983,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="mt-2 text-pretty text-sm text-[var(--destructive)]"
+              className="mt-2 text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1998,7 +2001,7 @@ function OrderDetail({
         >
           <div className="flex flex-wrap items-end gap-3">
             {showPaymentRecoveryAction && (
-              <div className="grid min-w-[15rem] gap-1.5">
+              <div className="grid min-w-[15rem] gap-1">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
                   className="text-xs font-medium text-[var(--text-secondary)]"
@@ -2134,7 +2137,7 @@ function OrderDetail({
             {paymentRecoveryError && (
               <p
                 role="alert"
-                className="w-full text-sm text-[var(--destructive)]"
+                className="w-full text-sm text-[var(--error-text)]"
               >
                 {paymentRecoveryError}
               </p>
@@ -2142,7 +2145,7 @@ function OrderDetail({
             {showPaymentRecoveryAction && wallets.initializationError && (
               <div
                 role="alert"
-                className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
+                className="w-full rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
               >
                 <p className="font-medium text-[var(--text-primary)]">
                   Saved wallets could not be loaded
@@ -2330,7 +2333,7 @@ function OrderDetail({
               return (
                 <section
                   key={pickup.market.coordinate}
-                  className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+                  className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5"
                   data-testid="future-market-order-pickup"
                 >
                   <h3 className="text-sm font-semibold text-[var(--text-primary)]">
@@ -2349,7 +2352,7 @@ function OrderDetail({
                     />
                   </p>
                   {claimCode && (
-                    <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
+                    <div className="mt-4 flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
                       <span className="text-[var(--text-secondary)]">
                         Pickup code
                       </span>
@@ -2378,7 +2381,7 @@ function OrderDetail({
             {/* Shipping address */}
             {/* Shipping address */}
             {vm.shippingAddress && (
-              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                     Shipping address
@@ -2411,7 +2414,8 @@ function OrderDetail({
             )}
 
             {/* Order details (technical, collapsed) */}
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
+              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
               <button
                 type="button"
                 onClick={() => setDetailsOpen((open) => !open)}
@@ -2483,7 +2487,7 @@ function OrderDetail({
             </section>
 
             {/* Need help */}
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                 Need help?
               </h3>
@@ -2517,7 +2521,7 @@ function OrderDetail({
             replyNotice.merchantPubkey === row.merchantPubkey &&
             replyNotice.orderId === vm.orderId &&
             replyNotice.text ? (
-              <p role="status" className="text-sm text-warning">
+              <p role="status" className="text-sm text-[var(--warning-text)]">
                 {replyNotice.text}
               </p>
             ) : null
@@ -3125,7 +3129,7 @@ function OrdersPage() {
           {/* Desktop left rail */}
           {!paymentFocused && (
             <aside className="hidden xl:block">
-              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                 <div className="text-sm font-medium text-[var(--text-primary)]">
                   Your orders
                 </div>
@@ -3154,9 +3158,10 @@ function OrdersPage() {
                     <MobileOrderFilterPills tab={tab} onChange={setTab} />
                   </div>
                   <SheetTrigger asChild>
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
-                      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
+                      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
                     >
                       Browse
                       <ChevronRight className="h-4 w-4" />
@@ -3209,7 +3214,7 @@ function OrdersPage() {
                 historyIncomplete={protectedOrdersReadState !== "complete"}
               />
             ) : (
-              <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
+              <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
                 Select an order to view its status.
               </div>
             )}
@@ -3256,7 +3261,7 @@ function OrderList({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="mt-4 rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+      <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
         No orders match this filter.
       </div>
     )
@@ -3288,8 +3293,8 @@ function EmptyState({
   action?: React.ReactNode
 }) {
   return (
-    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
         <ReceiptText className="h-7 w-7" />
       </div>
       <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">

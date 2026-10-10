@@ -10,6 +10,7 @@ import {
   readAuthenticatedGiftWraps,
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
+import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -129,7 +130,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     await buyerPage.goto(`${marketUrl}/${nip19.npubEncode(merchant.pubkey)}`)
     const product = buyerPage.getByRole("listitem").filter({ hasText: title })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    await product.getByRole("button", { name: "Add", exact: true }).click()
+    await product.getByRole("button", { name: /^Add .+ to cart$/ }).click()
     await buyerPage
       .getByRole("region", { name: "Cart inventory" })
       .getByRole("link", { name: "Continue to checkout" })
@@ -175,6 +176,12 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       .getByRole("button", { name: "Open messages", exact: true })
       .click()
     const messages = merchantPage.getByRole("dialog", { name: "Messages" })
+    await expect(messages).toBeVisible()
+    await inspectCommerceUi(
+      merchantPage,
+      testInfo,
+      "merchant-order-conversation"
+    )
     await messages.getByRole("textbox", { name: "Message" }).fill(reply)
     await messages.getByRole("button", { name: "Send message" }).click()
     await expect(

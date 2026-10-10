@@ -40,10 +40,10 @@ function WalletsPage() {
 function PriceDisplaySettings() {
   const shopperPricing = useShopperPricing()
   return (
-    <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
       <div className="flex items-center gap-2">
         <WalletCards className="h-4 w-4 text-[var(--text-muted)]" />
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Price display
         </h2>
       </div>
@@ -60,7 +60,10 @@ function PriceDisplaySettings() {
               shopperPricing.setCurrency(value as ShopperDisplayCurrency)
             }
           >
-            <SelectTrigger id="display-currency" className="h-11 rounded-xl">
+            <SelectTrigger
+              id="display-currency"
+              className="h-11 rounded-[var(--radius-md)]"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -74,7 +77,7 @@ function PriceDisplaySettings() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4">
+        <div className="flex h-11 items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4">
           <Label
             htmlFor="sats-standard"
             className="cursor-pointer text-sm font-medium"

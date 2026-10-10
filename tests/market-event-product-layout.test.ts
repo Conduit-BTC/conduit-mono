@@ -15,7 +15,7 @@ describe("Market event product layout", () => {
 
     expect(card).toContain("export const PRODUCT_GRID_CLASS_NAME")
     expect(card).toContain(
-      "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+      "grid list-none grid-cols-[repeat(auto-fit,minmax(min(100%,8.5rem),1fr))] gap-2 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
     )
     expect(products.match(/className={PRODUCT_GRID_CLASS_NAME}/g)?.length).toBe(
       2

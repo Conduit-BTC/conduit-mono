@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  getShopperPriceDisplay,
+  getShopperCardPriceDisplay,
   pubkeyToNpub,
   type PricingRateInput,
   type Product,
@@ -29,7 +29,7 @@ import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { ProductVariationSelector } from "./ProductVariationSelector"
 
 export const PRODUCT_GRID_CLASS_NAME =
-  "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
+  "grid list-none grid-cols-[repeat(auto-fit,minmax(min(100%,8.5rem),1fr))] gap-2 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4"
 
 const DESKTOP_HOVER_MEDIA_QUERY = "(min-width: 768px) and (hover: hover)"
 const VARIATION_CONTROLS_SELECTOR =
@@ -151,7 +151,7 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const selectedPriceDisplay = getShopperPriceDisplay(
+  const selectedPriceDisplay = getShopperCardPriceDisplay(
     selectedProduct,
     pricePreference,
     typeof btcUsdRate === "object" ? btcUsdRate : null,
@@ -159,7 +159,7 @@ export function ProductGridCard({
   )
   const summaryMinimum = family?.priceSummary.minimum?.product
   const summaryPriceDisplay = summaryMinimum
-    ? getShopperPriceDisplay(
+    ? getShopperCardPriceDisplay(
         summaryMinimum,
         pricePreference,
         typeof btcUsdRate === "object" ? btcUsdRate : null,
@@ -171,7 +171,10 @@ export function ProductGridCard({
     : summaryPriceDisplay
   const primary =
     !hasReadyFamily && family?.priceSummary.varies === true
-      ? `From ${summaryPriceDisplay.primary}`
+      ? {
+          text: `From ${summaryPriceDisplay.primary.text}`,
+          fullText: `From ${summaryPriceDisplay.primary.fullText}`,
+        }
       : displayedPrice.primary
   const secondary = displayedPrice.secondary
   const approximateUsd = displayedPrice.approximateUsd
@@ -194,8 +197,8 @@ export function ProductGridCard({
     // card's one-pixel border plus its one-pixel outer highlight ring.
     "[@media(min-width:768px)_and_(hover:hover)]:absolute [@media(min-width:768px)_and_(hover:hover)]:-inset-x-0.5 [@media(min-width:768px)_and_(hover:hover)]:z-20 [@media(min-width:768px)_and_(hover:hover)]:border-x-2 [@media(min-width:768px)_and_(hover:hover)]:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:bg-[var(--surface-overlay)] [@media(min-width:768px)_and_(hover:hover)]:p-3",
     panelOpensAbove
-      ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-t-xl"
-      : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-xl",
+      ? "[@media(min-width:768px)_and_(hover:hover)]:bottom-full [@media(min-width:768px)_and_(hover:hover)]:origin-bottom [@media(min-width:768px)_and_(hover:hover)]:border-t-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-t-[var(--radius-md)]"
+      : "[@media(min-width:768px)_and_(hover:hover)]:top-full [@media(min-width:768px)_and_(hover:hover)]:origin-top [@media(min-width:768px)_and_(hover:hover)]:border-b-2 [@media(min-width:768px)_and_(hover:hover)]:rounded-b-[var(--radius-md)]",
     // The collapsed panel scales to zero height so it never adds scrollable
     // space below the last grid row while it is hidden.
     "[@media(min-width:768px)_and_(hover:hover)]:pointer-events-none [@media(min-width:768px)_and_(hover:hover)]:invisible [@media(min-width:768px)_and_(hover:hover)]:opacity-0 [@media(min-width:768px)_and_(hover:hover)]:scale-y-0 [@media(min-width:768px)_and_(hover:hover)]:transition-[opacity,visibility,transform] [@media(min-width:768px)_and_(hover:hover)]:duration-200 motion-reduce:!transition-none",
@@ -209,7 +212,7 @@ export function ProductGridCard({
       className={cn(
         className ?? "h-full",
         "relative",
-        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface)] [@media(min-width:768px)_and_(hover:hover)]:hover:shadow-[var(--shadow-md)] [@media(min-width:768px)_and_(hover:hover)]:hover:ring-1 [@media(min-width:768px)_and_(hover:hover)]:hover:ring-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-1 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-primary-500 motion-reduce:transition-none",
+        "[@media(min-width:768px)_and_(hover:hover)]:overflow-visible [@media(min-width:768px)_and_(hover:hover)]:z-10 [@media(min-width:768px)_and_(hover:hover)]:hover:z-20 [@media(min-width:768px)_and_(hover:hover)]:focus-within:z-20 [@media(min-width:768px)_and_(hover:hover)]:hover:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:hover:bg-[var(--surface)] [@media(min-width:768px)_and_(hover:hover)]:hover:ring-1 [@media(min-width:768px)_and_(hover:hover)]:hover:ring-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-primary-500 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-1 [@media(min-width:768px)_and_(hover:hover)]:focus-within:ring-primary-500 motion-reduce:transition-none",
         hasVariationControls &&
           (panelOpensAbove
             ? "[@media(min-width:768px)_and_(hover:hover)]:hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:hover:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:focus-within:border-t-0 [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:has-[[data-state=open]]:border-t-0"
@@ -231,7 +234,7 @@ export function ProductGridCard({
       imageLoading={imageLoading}
       disableImageHoverZoom
       mediaClassName={cn(
-        "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(0.75rem-1px)]",
+        "[@media(min-width:768px)_and_(hover:hover)]:rounded-t-[calc(var(--radius-md)-1px)]",
         panelOpensAbove &&
           "[@media(min-width:768px)_and_(hover:hover)]:group-hover:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-focus-within:rounded-t-none [@media(min-width:768px)_and_(hover:hover)]:group-has-[[data-state=open]]:rounded-t-none"
       )}

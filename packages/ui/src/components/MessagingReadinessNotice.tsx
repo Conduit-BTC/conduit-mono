@@ -109,13 +109,15 @@ export function MessagingReadinessNotice({
       )}
     >
       <div className="flex min-w-0 items-start gap-3">
-        <MessageCircleMore className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
+        <MessageCircleMore className="mt-0.5 size-4 shrink-0 text-[var(--warning-text)]" />
         <div>
           <div className="font-medium text-[var(--text-primary)]">
             {copy.title}
           </div>
           <div className="mt-1 text-[var(--text-secondary)]">{copy.body}</div>
-          {error ? <div className="mt-1 text-error">{error}</div> : null}
+          {error ? (
+            <div className="mt-1 text-[var(--error-text)]">{error}</div>
+          ) : null}
         </div>
       </div>
       <Button

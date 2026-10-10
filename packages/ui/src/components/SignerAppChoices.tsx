@@ -4,7 +4,8 @@ import { ClaveConnectButton, ClaveMark } from "./ClaveConnectButton"
 import { AMBER_INSTALL_URL, androidSignerConnectUrl } from "./signer-platform"
 
 export type SignerApp = "clave" | "amber"
-const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
+const primaryClassName =
+  "h-12 w-full rounded-[var(--radius-md)] text-base font-semibold"
 
 export function SignerAppChoices({
   platform,

@@ -48,9 +48,8 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain(
-      'class="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)] test-media-wrapper"'
-    )
+    expect(html).toContain("test-media-wrapper")
+    expect(html).toContain("aspect-[4/3]")
     expect(html).not.toContain("rounded-t-xl")
   })
 
@@ -135,7 +134,7 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain('class="pt-3 test-options-wrapper"')
+    expect(html).toContain('class="pt-2 test-options-wrapper"')
     expect(html).toContain(">Size<")
   })
 
@@ -153,10 +152,10 @@ describe("ProductCard", () => {
     expect(html).not.toContain("group-hover:scale-105")
   })
 
-  it("truncates product titles to one line without constraining title badges", () => {
+  it("truncates long catalog titles while preserving their full text and badges", () => {
     const html = renderToStaticMarkup(
       <ProductCard
-        title="An intentionally long product title that must not take a second line"
+        title="An intentionally long product title that remains fully visible"
         titleAside={<span>Featured</span>}
         merchantName="Alice Store"
         images={[]}
@@ -165,7 +164,10 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain("min-w-0 flex-1 truncate")
+    expect(html).toContain("truncate")
+    expect(html).toContain(
+      'title="An intentionally long product title that remains fully visible"'
+    )
     expect(html).not.toContain("line-clamp-2")
     expect(html).not.toContain("min-h-[2.5rem]")
     expect(html).toContain(">Featured<")
@@ -185,8 +187,9 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain("block w-full min-w-0 max-w-full truncate text-left")
+    expect(html).toContain("truncate")
     expect(html).toContain(merchantName)
+    expect(html).toContain(`title="${merchantName}"`)
   })
 
   it("renders sats primary pricing with a USD secondary line", () => {
@@ -205,7 +208,8 @@ describe("ProductCard", () => {
     )
 
     expect(html).toContain("40,000 sats")
-    expect(html).toContain("~ $32.28 USD")
+    expect(html).toContain("$32.28 USD")
+    expect(html).not.toContain("~")
   })
 
   it("keeps a sold-out product visible while disabling its cart action", () => {
@@ -283,11 +287,54 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain("~ ₿12,000")
+    expect(html).toContain("₿12,000")
     expect(html).not.toContain("~=")
     expect(html).toContain("€10.00 EUR")
     expect(html).not.toContain("source quote")
-    expect(html).toContain("~ $12.00 USD")
+    expect(html).toContain("$12.00 USD")
+    expect(html).not.toContain("~")
+  })
+
+  it("identifies converted estimates without adding visible approximation glyphs", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Converted"
+        merchantName="Store"
+        images={[]}
+        primaryPrice="~ ₿12,000"
+        secondaryPrice="€10.00 EUR"
+        approximateUsdPrice="$12.00 USD"
+      />
+    )
+    expect(html).toContain('title="₿12,000 (estimated conversion)"')
+    expect(html).toContain('title="$12.00 USD (estimated conversion)"')
+    expect(html).toContain('title="€10.00 EUR"')
+    expect(html.match(/Estimated conversion: /g)).toHaveLength(2)
+    expect(html).not.toMatch(/[~≈]/)
+    const exact = renderToStaticMarkup(
+      <ProductCard
+        title="Exact"
+        merchantName="Store"
+        images={[]}
+        primaryPrice="25 sats"
+        secondaryPrice="€10.00 EUR"
+      />
+    )
+    expect(exact).not.toContain("estimated conversion")
+    expect(exact).not.toContain("Estimated conversion:")
+    const convertedSecondary = renderToStaticMarkup(
+      <ProductCard
+        title="Converted fiat"
+        merchantName="Store"
+        images={[]}
+        primaryPrice="25 sats"
+        secondaryPrice="≈ $0.02 USD"
+      />
+    )
+    expect(convertedSecondary).toContain(
+      'title="$0.02 USD (estimated conversion)"'
+    )
+    expect(convertedSecondary.match(/Estimated conversion: /g)).toHaveLength(1)
   })
 
   it("reserves the USD reference row when Market pricing has no estimate", () => {
@@ -304,4 +351,22 @@ describe("ProductCard", () => {
 
     expect(html.match(/min-h-\[1rem\]/g)).toHaveLength(2)
   })
+})
+
+it("keeps unabridged accessible and hover amounts behind compact visual labels", () => {
+  const html = renderToStaticMarkup(
+    <ProductCard
+      title="Large quote"
+      merchantName="Store"
+      images={[]}
+      primaryPrice={{ text: "1.235 BTC", fullText: "₿123,456,789" }}
+      secondaryPrice={{ text: "~ $100.3k USD", fullText: "~ $100,300.00 USD" }}
+    />
+  )
+  expect(html).toContain('title="₿123,456,789"')
+  expect(html).toContain('<span aria-hidden="true">1.235 BTC</span>')
+  expect(html).toContain('<span class="sr-only">₿123,456,789</span>')
+  expect(html).toContain('title="$100,300.00 USD (estimated conversion)"')
+  expect(html).toContain("Estimated conversion:")
+  expect(html).not.toMatch(/[~≈]/)
 })

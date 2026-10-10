@@ -164,7 +164,7 @@ function StatCard({
     <Link
       to={to}
       search={search}
-      className="block rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+      className="block rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4  hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -177,7 +177,7 @@ function StatCard({
         </div>
         <span
           data-dashboard-stat-icon
-          className="inline-flex size-11 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
         >
           <Icon aria-hidden={true} className="size-5" />
         </span>
@@ -206,10 +206,10 @@ function ReadinessRow({
   return (
     <Link
       to={to}
-      className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3 transition-colors hover:bg-[var(--surface)]"
+      className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3 transition-colors hover:bg-[var(--surface)]"
     >
       <span className="flex min-w-0 items-center gap-3">
-        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
           <Icon aria-hidden={true} className="h-4 w-4" />
         </span>
         <span className="truncate text-sm font-medium text-[var(--text-primary)]">
@@ -238,7 +238,7 @@ function MerchantReadinessPanel({
     readiness.setupCheckPending && readiness.missingAreas.length === 0
 
   return (
-    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
@@ -462,13 +462,13 @@ function DashboardPage() {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error">
+        <div className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-4 text-sm text-[var(--error-text)]">
           {error}
         </div>
       )}
 
       {!signerConnected && (
-        <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           {status === "restoring"
             ? "Restoring your signer before loading this merchant workspace…"
             : "Connect your signer to manage listings and orders from this merchant workspace."}
@@ -528,7 +528,7 @@ function DashboardPage() {
       )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
-        <section className="self-start rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="self-start rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-balance text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -540,7 +540,7 @@ function DashboardPage() {
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             <Link
               to="/products"
-              className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
+              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -557,7 +557,7 @@ function DashboardPage() {
 
             <Link
               to="/orders"
-              className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
+              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -574,7 +574,7 @@ function DashboardPage() {
           </div>
         </section>
 
-        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
@@ -610,7 +610,7 @@ function DashboardPage() {
             {!cachedConversationsQuery.isLoading &&
               latestConversations.length === 0 &&
               !conversationReadUncertain && (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
                   No buyer orders cached yet. Once Market sends an order to this
                   merchant, it will appear here and in Orders.
                 </div>

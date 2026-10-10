@@ -39,7 +39,7 @@ export function BuyerAvatar({
 }
 
 export function merchantListCardClass(active: boolean): string {
-  return `w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color] ${
+  return `w-full rounded-[var(--radius-md)] border p-3 text-left transition-[border-color,background-color] ${
     active
       ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
       : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
@@ -66,6 +66,7 @@ export function OrderListItem({
     visibleBuyerProfile
   )
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}

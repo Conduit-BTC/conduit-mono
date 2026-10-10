@@ -74,7 +74,7 @@ function Field({
   mono?: boolean
 }) {
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
         {label}
       </div>
@@ -305,7 +305,7 @@ function ProfilePage() {
       )}
 
       {!!profileQuery.error && (
-        <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error">
+        <div className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-4 text-sm text-[var(--error-text)]">
           Failed to load profile:{" "}
           {profileQuery.error instanceof Error
             ? profileQuery.error.message
@@ -315,7 +315,7 @@ function ProfilePage() {
 
       {!profileQuery.isLoading && (
         <>
-          <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-6">
+          <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 items-start gap-4">
                 <Avatar className="h-20 w-20 shrink-0 border border-[var(--border)]">
@@ -347,14 +347,15 @@ function ProfilePage() {
                         />
                       </Badge>
                     ) : null}
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       onClick={() => void copyPubkey()}
-                      className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                     >
                       <span className="font-mono">{shortPubkey}</span>
                       {copied ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        <Check className="h-3.5 w-3.5 text-[var(--success-text)]" />
                       ) : (
                         <Copy className="h-3.5 w-3.5" />
                       )}
@@ -450,7 +451,7 @@ function ProfilePage() {
           ) : null}
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
-            <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-6">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6">
               {!editing ? (
                 <div className="space-y-6">
                   <div>
@@ -499,7 +500,7 @@ function ProfilePage() {
                   className="grid gap-4 md:grid-cols-2"
                   onSubmit={handleSave}
                 >
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="profile-name">Name</Label>
                     <Input
                       id="profile-name"
@@ -515,7 +516,7 @@ function ProfilePage() {
                     />
                   </div>
 
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="profile-display-name">Display name</Label>
                     <Input
                       id="profile-display-name"
@@ -531,11 +532,11 @@ function ProfilePage() {
                     />
                   </div>
 
-                  <div className="grid gap-1.5 md:col-span-2">
+                  <div className="grid gap-1 md:col-span-2">
                     <Label htmlFor="profile-about">About</Label>
                     <Textarea
                       id="profile-about"
-                      className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                      className="min-h-28 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
                       value={form.about}
                       onChange={(event) =>
                         setForm((prev) => ({
@@ -548,7 +549,7 @@ function ProfilePage() {
                     />
                   </div>
 
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="profile-picture">Picture URL</Label>
                     <Input
                       id="profile-picture"
@@ -564,7 +565,7 @@ function ProfilePage() {
                     />
                   </div>
 
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="profile-banner">Banner URL</Label>
                     <Input
                       id="profile-banner"
@@ -580,7 +581,7 @@ function ProfilePage() {
                     />
                   </div>
 
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="profile-nip05">NIP-05</Label>
                     <Input
                       id="profile-nip05"
@@ -596,7 +597,7 @@ function ProfilePage() {
                     />
                   </div>
 
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label>Lightning address</Label>
                     <p className="break-all text-sm">
                       {profileQuery.data?.lud16 || "No Lightning address yet"}
@@ -606,7 +607,7 @@ function ProfilePage() {
                     </a>
                   </div>
 
-                  <div className="grid gap-1.5 md:col-span-2">
+                  <div className="grid gap-1 md:col-span-2">
                     <Label htmlFor="profile-website">Website</Label>
                     <Input
                       id="profile-website"
@@ -623,7 +624,7 @@ function ProfilePage() {
                   </div>
 
                   {updateMutation.error && (
-                    <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error md:col-span-2">
+                    <div className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-4 text-sm text-[var(--error-text)] md:col-span-2">
                       {updateMutation.error instanceof Error
                         ? updateMutation.error.message
                         : "Failed to update profile"}
@@ -634,12 +635,12 @@ function ProfilePage() {
             </section>
 
             <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
-              <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
                 <div className="text-sm font-medium text-[var(--text-primary)]">
                   Profile details
                 </div>
                 <div className="mt-4 space-y-3">
-                  <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                  <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <UserRound className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
@@ -651,7 +652,7 @@ function ProfilePage() {
                     </div>
                   </div>
 
-                  <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                  <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <Zap className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
@@ -667,7 +668,7 @@ function ProfilePage() {
                     </div>
                   </div>
 
-                  <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                  <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <Globe className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">

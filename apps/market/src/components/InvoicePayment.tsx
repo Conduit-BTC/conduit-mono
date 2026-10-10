@@ -159,7 +159,10 @@ export function InvoicePayment({
           </p>
         )}
         {showQr && (
-          <div id={qrId} className="mx-auto w-fit rounded-xl bg-white p-3">
+          <div
+            id={qrId}
+            className="mx-auto w-fit rounded-[var(--radius-md)] bg-white p-3"
+          >
             <QRCodeSVG
               value={bolt11}
               size={156}
@@ -173,7 +176,7 @@ export function InvoicePayment({
         <summary className="cursor-pointer py-2">Payment details</summary>
         {exactAmount && <p className="py-2">Invoice amount: {exactAmount}</p>}
         <p className="mb-2 text-xs">Payment network: Lightning</p>
-        <p className="select-all break-all rounded-xl bg-[var(--surface)] p-3 font-mono text-xs leading-5">
+        <p className="select-all break-all rounded-[var(--radius-md)] bg-[var(--surface)] p-3 font-mono text-xs leading-5">
           {bolt11}
         </p>
       </details>

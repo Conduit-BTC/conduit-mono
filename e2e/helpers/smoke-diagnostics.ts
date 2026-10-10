@@ -3,6 +3,83 @@ import type { TestInfo } from "@playwright/test"
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "price-interaction": {
+      file: "e2e/shared-ui-visual-contract.playwright.ts",
+      fields: {
+        pointerDown: "boolean",
+        pointerUp: "boolean",
+        click: "boolean",
+        connected: "boolean",
+        enabled: "boolean",
+        quantity: "number",
+      },
+    },
+    "fallback-upload": {
+      file: "e2e/merchant-product-image-preview.playwright.ts",
+      fields: {
+        phase: [
+          "setup",
+          "open_draft",
+          "seed_identity",
+          "navigate",
+          "catalog",
+          "open_dialog",
+          "dialog_visible",
+          "wrap_signer",
+          "invalid_file",
+          "valid_file",
+          "restore_draft",
+          "discard_draft",
+          "fresh_file",
+          "publish",
+          "listing_edit",
+          "complete",
+        ],
+        observationAvailable: "boolean",
+        dialogCount: "number",
+        inboxPrompt: "boolean",
+        invalidControls: "number",
+        submitEnabled: "boolean",
+      },
+    },
+    "surface-audit": {
+      file: "e2e/shared-ui-surface-audit.playwright.ts",
+      fields: {
+        phase: [
+          "setup",
+          "navigate",
+          "render",
+          "fonts",
+          "measure",
+          "capture",
+          "complete",
+        ],
+        routeIndex: "number",
+        pendingDocuments: "number",
+        pendingImages: "number",
+        pendingFonts: "number",
+        pendingScripts: "number",
+        navigationError: ["none", "aborted", "interrupted", "timeout", "other"],
+      },
+    },
+    "cart-stale-action": {
+      file: "e2e/market-cart-concurrency.playwright.ts",
+      fields: {
+        phase: [
+          "seed",
+          "navigate",
+          "ready",
+          "remove",
+          "stale_decrease",
+          "stale_increase",
+          "resume",
+          "release",
+          "reload",
+          "complete",
+        ],
+        tabIndex: "number",
+      },
+    },
     "order-reply": {
       file: "e2e/merchant-order-inbox.playwright.ts",
       fields: {
@@ -57,6 +134,23 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         scrollY: "number",
         measuredFooterHeight: "number",
         footerHidden: "boolean",
+      },
+    },
+    "product-dialog-open": {
+      file: "e2e/commerce.playwright.ts",
+      fields: {
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        dialogPresent: "boolean",
+        triggerEnabled: "boolean",
+        fontsAtClick: ["loading", "loaded", "unknown"],
+        triggerX: "number",
+        triggerY: "number",
+        triggerWidth: "number",
+        triggerHeight: "number",
       },
     },
     "product-submit": {
@@ -135,7 +229,15 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
-    "footer-layout" | "product-submit" | "order-reply" | "fallback-recovery",
+    | "price-interaction"
+    | "fallback-upload"
+    | "surface-audit"
+    | "cart-stale-action"
+    | "footer-layout"
+    | "product-submit"
+    | "product-dialog-open"
+    | "order-reply"
+    | "fallback-recovery",
   values: Record<string, unknown>
 ): void {
   const type = `smoke:${kind}`

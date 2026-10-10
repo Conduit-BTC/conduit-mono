@@ -43,7 +43,7 @@ export function SparkRecoveryBundleDetails({
 
   return (
     <>
-      <div className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4">
+      <div className="rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4">
         <p className="select-all font-mono text-sm leading-7 text-[var(--text-primary)]">
           {mnemonic}
         </p>

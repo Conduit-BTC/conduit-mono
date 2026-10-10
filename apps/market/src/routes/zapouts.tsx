@@ -432,8 +432,8 @@ function ZapoutStatePanel({
   icon: ReactNode
 }) {
   return (
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-6 text-center shadow-[var(--shadow-glass-inset)]">
-      <div className="mx-auto flex size-11 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-6 text-center ">
+      <div className="mx-auto flex size-11 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
         {icon}
       </div>
       <h2 className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
@@ -458,7 +458,7 @@ function ZapoutReceiptCard({
     : "Relay unknown"
 
   return (
-    <article className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 shadow-[var(--shadow-glass-inset)] sm:p-5">
+    <article className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4  sm:p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -565,7 +565,7 @@ function ZapoutsPage() {
         </div>
         <Button
           variant="outline"
-          className="h-11 gap-2 rounded-2xl px-4 text-sm"
+          className="h-11 gap-2 rounded-[var(--radius-md)] px-4 text-sm"
           onClick={() => void zapoutsQuery.refetch()}
           disabled={zapoutsQuery.isFetching}
         >
@@ -581,10 +581,10 @@ function ZapoutsPage() {
       {hasCoverageWarning ? (
         <section
           role="status"
-          className="mb-4 flex gap-3 rounded-2xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm"
+          className="mb-4 flex gap-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm"
         >
           <Radio
-            className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]"
+            className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning-text)]"
             aria-hidden="true"
           />
           <div>

@@ -309,7 +309,7 @@ function AuthGateGrace() {
 function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
   return (
     <div className="flex min-h-[50vh] items-center justify-center">
-      <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
+      <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
         <KeyRound className="mx-auto h-5 w-5 animate-pulse text-secondary-300" />
         <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
           Restoring signer
@@ -409,7 +409,7 @@ function ReportBugAction() {
         target="_blank"
         rel="noopener noreferrer"
         referrerPolicy="no-referrer"
-        className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600"
+        className="font-medium text-[var(--link-text)] underline underline-offset-4 hover:text-[var(--link-text)]"
       >
         Report a Bug
       </a>
