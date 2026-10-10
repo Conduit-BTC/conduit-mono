@@ -159,7 +159,9 @@ accepts a different receiving destination. Wallets owns public address editing.
 Market and Merchant profile pages display
 **Manage in Wallets** and exclude `lud16` from their details-save payloads. The
 shared profile publisher merges a narrow address patch into confirmed complete
-raw profile content, preserving unknown metadata and `lud06`. All profile writes
+raw profile content, preserving unknown metadata. Explicit clearing or replacement
+removes the legacy `lud06` receiving field so the saved profile has one intended
+address or none. All profile writes
 share a local/cross-tab lock. Address updates check the address reviewed by the
 user and recheck the frontier after signing, rebasing competing ordinary edits while
 refreshing the choice if the address changed, or refusing account replacement. An exact complete address patch can update a sparse or

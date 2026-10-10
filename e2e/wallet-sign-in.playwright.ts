@@ -38,7 +38,7 @@ async function saveRecovery(page: Page, makeMain = true) {
       .getByRole("heading", { name: "Wallet imported", exact: true })
       .count()
   ) {
-    await expect(dialog.getByLabel("recovery-saved")).toHaveCount(0)
+    await expect(dialog.locator("#recovery-saved")).toHaveCount(0)
   } else {
     await expect(
       dialog.getByRole("heading", { name: "Save your recovery details" })

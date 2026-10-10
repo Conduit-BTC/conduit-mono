@@ -9,6 +9,7 @@ import {
   WalletRegistry,
 } from "@conduit/core"
 import { ConduitDB } from "../packages/core/src/db"
+import { reconcileNwcWalletRegistration } from "../packages/core/src/wallets/wallet-migration"
 import { MarketWalletStore } from "../packages/core/src/wallets/wallet-storage"
 import { sealSignerSparkRecovery } from "../packages/core/src/wallets/signer-spark-recovery"
 import { generateSparkMnemonic } from "../packages/core/src/wallets/spark-recovery"
@@ -217,3 +218,130 @@ test("account replacement during default read aborts the preference transaction"
   )
   expect((await store.list())[0].defaultIntentsByScope).toBeUndefined()
 })
+
+for (const change of ["capability", "network"] as const) {
+  test(`live NWC ${change} reconciliation repairs only the active account default`, async () => {
+    database = new ConduitDB(`wallet-reconcile-${crypto.randomUUID()}`, {
+      indexedDB: new IDBFactory(),
+      IDBKeyRange,
+    })
+    const store = new MarketWalletStore(database)
+    let timestamp = 0
+    const registry = new WalletRegistry(store, { now: () => ++timestamp })
+    const owner = new NDKPrivateKeySigner(
+      Buffer.from(generateSecretKey()).toString("hex")
+    )
+    const other = new NDKPrivateKeySigner(
+      Buffer.from(generateSecretKey()).toString("hex")
+    )
+    connect(owner)
+    const add = (label: string) =>
+      registry.add({
+        kind: "connected",
+        providerId: "nwc",
+        label,
+        network: "mainnet",
+        capabilities: ["pay_invoice", "receive"],
+      })
+    const selected = await add("Selected")
+    const replacement = await add("Replacement")
+    const otherChoice = await add("Other account choice")
+    await registry.setDefault(selected.id, "pay_invoice")
+    connect(other)
+    await registry.setDefault(otherChoice.id, "pay_invoice")
+    connect(owner)
+    await reconcileNwcWalletRegistration({
+      walletId: selected.id,
+      ownerPubkey: owner.pubkey,
+      info: {
+        network: change === "network" ? "testnet" : "mainnet",
+        methods:
+          change === "capability"
+            ? ["make_invoice"]
+            : ["pay_invoice", "make_invoice"],
+      },
+      store,
+    })
+    const defaults = (rows: Awaited<ReturnType<typeof store.listVisible>>) =>
+      rows
+        .filter(
+          (w) =>
+            w.network === "mainnet" && w.defaultIntents.includes("pay_invoice")
+        )
+        .map((w) => w.id)
+    expect(defaults(await store.listVisible(owner.pubkey))).toEqual([
+      replacement.id,
+    ])
+    expect(defaults(await store.listVisible(other.pubkey))).toEqual([
+      otherChoice.id,
+    ])
+    expect(
+      (await store.list()).every((w) => w.defaultIntents.length === 0)
+    ).toBe(true)
+  })
+}
+
+for (const failure of ["account", "write"] as const) {
+  test(`live NWC reconciliation rolls back registration and defaults after ${failure} failure`, async () => {
+    database = new ConduitDB(
+      `wallet-reconcile-rollback-${crypto.randomUUID()}`,
+      {
+        indexedDB: new IDBFactory(),
+        IDBKeyRange,
+      }
+    )
+    const store = new MarketWalletStore(database)
+    let timestamp = 0
+    const registry = new WalletRegistry(store, { now: () => ++timestamp })
+    const owner = new NDKPrivateKeySigner(
+      Buffer.from(generateSecretKey()).toString("hex")
+    )
+    const other = new NDKPrivateKeySigner(
+      Buffer.from(generateSecretKey()).toString("hex")
+    )
+    connect(owner)
+    const add = (label: string) =>
+      registry.add({
+        kind: "connected",
+        providerId: "nwc",
+        label,
+        network: "mainnet",
+        capabilities: ["pay_invoice", "receive"],
+      })
+    const selected = await add("Selected")
+    const replacement = await add("Replacement")
+    await registry.setDefault(selected.id, "pay_invoice")
+    connect(other)
+    await registry.setDefault(replacement.id, "pay_invoice")
+    connect(owner)
+    const scope = active
+    const before = await store.list()
+    if (failure === "account") {
+      const original = store.put.bind(store)
+      store.put = async (wallet) => {
+        await original(wallet)
+        connect(other)
+      }
+    } else {
+      const original = store.setDefault.bind(store)
+      store.setDefault = async (input) => {
+        await original(input)
+        throw new Error("Synthetic scoped-default failure")
+      }
+    }
+    await expect(
+      reconcileNwcWalletRegistration({
+        walletId: selected.id,
+        ownerPubkey: owner.pubkey,
+        info: { network: "mainnet", methods: ["make_invoice"] },
+        store,
+        shouldContinue: () => active === scope,
+      })
+    ).rejects.toThrow(
+      failure === "account"
+        ? "Wallet sign-in changed"
+        : "Synthetic scoped-default failure"
+    )
+    expect(await store.list()).toEqual(before)
+  })
+}

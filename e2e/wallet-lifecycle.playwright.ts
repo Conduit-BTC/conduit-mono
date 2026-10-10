@@ -126,7 +126,7 @@ async function importKnownPhrase(page: Page, addy = false) {
   await expect(
     dialog.getByRole("heading", { name: "Wallet imported", exact: true })
   ).toBeVisible()
-  await expect(dialog.getByLabel("recovery-saved")).toHaveCount(0)
+  await expect(dialog.locator("#recovery-saved")).toHaveCount(0)
   const address = dialog.getByRole("button", {
     name: "Get conduit.cash address",
     exact: true,
@@ -983,3 +983,229 @@ test("Merchant compensates a new NWC migration copy after account replacement an
     disposeRuntimeSignerIdentity(identity)
   }
 })
+
+for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
+  test(`failed ${intent} main-wallet choice is abandoned without defaults or relay publication @market`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const storage =
+      "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts")
+    try {
+      await prepareControlledWallet(page)
+      await observeController(page, "market")
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps.market + "/wallet")
+      await installControlledWallet(page)
+      await settled(page)
+      await page
+        .getByRole("button", { name: "Create wallet", exact: true })
+        .click()
+      const dialog = page.getByRole("dialog")
+      await expect(
+        dialog.getByRole("heading", {
+          name: "Save your recovery details",
+          exact: true,
+        })
+      ).toBeVisible()
+      await expect(
+        dialog.getByText("Checking for your Lightning address…", {
+          exact: true,
+        })
+      ).toHaveCount(0)
+      await dialog.locator("#recovery-saved").check()
+      const getAddress = dialog.getByRole("button", {
+        name: "Get conduit.cash address",
+        exact: true,
+      })
+      if (await getAddress.count()) await getAddress.click()
+      await dialog.getByRole("button", { name: "Done", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      await page.evaluate(
+        async ({ core, journal }) => {
+          const signer = (await import(core)).getAccountSigner()
+          const state = await new (
+            await import(journal)
+          ).DexieSparkRecoveryStore().load(signer.pubkey)
+          const main = state.records.find((r: any) =>
+            r.event.tags.some(
+              (t: string[]) => t[0] === "d" && t[1] === "conduit:spark:main:v1"
+            )
+          )
+          ;(window as any).__mainChoiceBefore = {
+            walletId: (window as any).__walletLifecycle.wallets
+              .portableWallets[0].id,
+            eventId: main.event.id,
+          }
+        },
+        { core, journal }
+      )
+      await page
+        .getByRole("button", { name: "Import wallet", exact: true })
+        .click()
+      await dialog
+        .getByLabel("Recovery phrase", { exact: true })
+        .fill(
+          await page.evaluate(
+            () => (window as any).__walletProbe.importMnemonic
+          )
+        )
+      await dialog.getByText("Advanced settings", { exact: true }).click()
+      await dialog.getByLabel("Spark account number", { exact: true }).fill("7")
+      await dialog
+        .getByRole("button", { name: "Import wallet", exact: true })
+        .click()
+      await expect(
+        dialog.getByRole("heading", { name: "Wallet imported", exact: true })
+      ).toBeVisible()
+      await expect(
+        dialog.getByText("Checking for your Lightning address…", {
+          exact: true,
+        })
+      ).toHaveCount(0)
+      if (await getAddress.count()) await getAddress.click()
+      await page.evaluate(
+        async ({ storage, core, journal, intent }) => {
+          if (intent === "journal") {
+            const recoveryStore = (await import(journal))
+              .DexieSparkRecoveryStore.prototype
+            const original = recoveryStore.retain
+            let injected = false
+            recoveryStore.retain = async function (
+              this: any,
+              owner: string,
+              records: any[],
+              unresolved?: boolean
+            ) {
+              await original.call(this, owner, records, unresolved)
+              if (
+                !injected &&
+                records.some((record) =>
+                  record.event.tags.some(
+                    (tag: string[]) =>
+                      tag[0] === "d" && tag[1] === "conduit:spark:main:v1"
+                  )
+                )
+              ) {
+                injected = true
+                throw new Error("Synthetic main choice failure")
+              }
+            }
+            return
+          }
+          if (intent === "sign") {
+            const signer = (await import(core)).getAccountSigner()
+            const original = signer.signEvent.bind(signer)
+            signer.signEvent = async (event: { tags: string[][] }) => {
+              if (
+                event.tags.some(
+                  (tag) => tag[0] === "d" && tag[1] === "conduit:spark:main:v1"
+                )
+              )
+                throw new Error("Synthetic main choice failure")
+              return original(event)
+            }
+            return
+          }
+          const store = (await import(storage)).getMarketWalletStore()
+          const original = store.setDefault.bind(store)
+          let injected = false
+          store.setDefault = async (input: { intent: string }) => {
+            if (!injected && input.intent === intent) {
+              injected = true
+              throw new Error("Synthetic main choice failure")
+            }
+            return original(input)
+          }
+        },
+        { storage, core, journal, intent }
+      )
+      await expect(
+        page.evaluate(() => {
+          const wallets = (window as any).__walletLifecycle.wallets
+          const imported = wallets.portableWallets.find(
+            (w: any) => w.id !== (window as any).__mainChoiceBefore.walletId
+          )
+          return wallets.setMainWallet(imported.id)
+        })
+      ).rejects.toThrow("Synthetic main choice failure")
+      await dialog
+        .getByRole("switch", { name: "Make this my main wallet", exact: true })
+        .uncheck()
+      await dialog.getByRole("button", { name: "Done", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      const snapshot = () =>
+        page.evaluate(
+          async ({ core, journal, storage }) => {
+            const signer = (await import(core)).getAccountSigner()
+            const state = await new (
+              await import(journal)
+            ).DexieSparkRecoveryStore().load(signer.pubkey)
+            const mains = state.records.filter((r: any) =>
+              r.event.tags.some(
+                (t: string[]) =>
+                  t[0] === "d" && t[1] === "conduit:spark:main:v1"
+              )
+            )
+            const wallets = await (
+              await import(storage)
+            )
+              .getMarketWalletStore()
+              .listVisible(signer.pubkey)
+            const before = (window as any).__mainChoiceBefore
+            return {
+              mainCount: mains.length,
+              mainUnchanged: mains.every(
+                (r: any) => r.event.id === before.eventId
+              ),
+              payFirst:
+                wallets.find((w: any) =>
+                  w.defaultIntents.includes("pay_invoice")
+                )?.id === before.walletId,
+              receiveFirst:
+                wallets.find((w: any) => w.defaultIntents.includes("receive"))
+                  ?.id === before.walletId,
+            }
+          },
+          { core, journal, storage }
+        )
+      const expected = {
+        mainCount: 1,
+        mainUnchanged: true,
+        payFirst: true,
+        receiveFirst: true,
+      }
+      expect(await snapshot()).toEqual(expected)
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.wallets.retryRecovery()
+      )
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.auth.disconnect()
+      )
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.auth.connect({ method: "nip07" })
+      )
+      await settled(page)
+      expect(await snapshot()).toEqual(expected)
+      expect(
+        await page.evaluate(
+          async ({ core, recovery }) => {
+            const signer = (await import(core)).getAccountSigner()
+            const found = await (
+              await import(recovery)
+            )
+              .getAccountSparkRecovery(signer)
+              .discover(true, "mainnet")
+            return (
+              found.main?.walletId ===
+              (window as any).__mainChoiceBefore.walletId
+            )
+          },
+          { core, recovery }
+        )
+      ).toBe(true)
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}

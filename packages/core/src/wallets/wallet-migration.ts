@@ -1,7 +1,6 @@
 import {
   getNwcUriFingerprint,
   getWalletDefaultReplacement,
-  getWalletDefaultUpdates,
   isWalletNetwork,
   parseNwcUri,
   type NwcGetInfoResult,
@@ -34,8 +33,9 @@ export interface LegacyWalletStorage {
 
 export interface NwcWalletRegistrationStore extends Pick<
   WalletRegistryStore,
-  "list" | "put"
+  "list" | "put" | "setDefault"
 > {
+  listVisible(ownerPubkey: string | null): Promise<WalletDescriptor[]>
   transaction<T>(operation: () => Promise<T>): Promise<T>
 }
 
@@ -248,16 +248,24 @@ export function getNwcWalletRegistrationDetails(
 
 export async function reconcileNwcWalletRegistration(input: {
   walletId: string
+  ownerPubkey: string | null
   info: NwcGetInfoResult | null
   store: NwcWalletRegistrationStore
+  shouldContinue?: () => boolean
   now?: () => number
 }): Promise<boolean> {
   if (!input.info) {
     return false
   }
 
+  const assertCurrent = () => {
+    if (input.shouldContinue?.() === false)
+      throw new Error("Wallet sign-in changed.")
+  }
   return input.store.transaction(async () => {
-    let wallets = await input.store.list()
+    assertCurrent()
+    const wallets = await input.store.list()
+    assertCurrent()
     const current = wallets.find(
       (wallet) =>
         wallet.id === input.walletId &&
@@ -293,34 +301,28 @@ export async function reconcileNwcWalletRegistration(input: {
         updatedAt,
       }
       await input.store.put(updated)
-      wallets = wallets.map((wallet) =>
-        wallet.id === updated.id ? updated : wallet
-      )
+      assertCurrent()
     }
 
+    let visible = await input.store.listVisible(input.ownerPubkey)
+    assertCurrent()
     for (const network of new Set([current.network, registration.network])) {
-      const replacement = getWalletDefaultReplacement(wallets, {
+      const replacement = getWalletDefaultReplacement(visible, {
         network,
         intent: "pay_invoice",
       })
       if (!replacement) {
         continue
       }
-      const updates = getWalletDefaultUpdates(wallets, {
+      await input.store.setDefault({
         walletId: replacement.id,
         intent: "pay_invoice",
         updatedAt,
       })
-      for (const update of updates) {
-        await input.store.put(update)
-      }
-      if (updates.length > 0) {
-        changed = true
-        const updatesById = new Map(
-          updates.map((wallet) => [wallet.id, wallet])
-        )
-        wallets = wallets.map((wallet) => updatesById.get(wallet.id) ?? wallet)
-      }
+      assertCurrent()
+      changed = true
+      visible = await input.store.listVisible(input.ownerPubkey)
+      assertCurrent()
     }
 
     return changed

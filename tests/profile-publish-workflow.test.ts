@@ -384,7 +384,42 @@ describe("selected profile publish workflow", () => {
 })
 
 describe("Wallets profile-address publication", () => {
-  it("preserves unknown metadata and lud06 while changing only the reviewed address", async () => {
+  for (const [name, original, address, expected] of [
+    ["clears a sparse lud16 address", { lud16: "old@wallet.example" }, "", {}],
+    ["clears a sparse legacy address", { lud06: "lnurl-legacy" }, "", {}],
+    [
+      "clears legacy receiving fields while preserving metadata",
+      {
+        name: "Current",
+        about: "Biography",
+        lud06: "lnurl-legacy",
+        extension: { keep: [1, 2] },
+      },
+      "",
+      { name: "Current", about: "Biography", extension: { keep: [1, 2] } },
+    ],
+    [
+      "replaces legacy receiving fields with one intended address",
+      { lud06: "lnurl-legacy", extension: { keep: true } },
+      "new@conduit.cash",
+      { lud16: "new@conduit.cash", extension: { keep: true } },
+    ],
+  ] as const) {
+    it(name, async () => {
+      events = [profileEvent(JSON.stringify(original))]
+      await publishProfileContext({ lud16: address }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress:
+          "lud16" in original ? original.lud16 : original.lud06,
+      })
+      expect(published).toHaveLength(1)
+      expect(JSON.parse(published[0]!.content)).toEqual(expected)
+      expect(
+        (await loadSelectedProfileContext(PUBKEY)).frontier?.rawContent
+      ).toBe(published[0]!.content)
+    })
+  }
+  it("preserves unknown metadata while replacing both reviewed receiving fields", async () => {
     const original = {
       name: "Current",
       about: "Biography",
@@ -399,10 +434,33 @@ describe("Wallets profile-address publication", () => {
       expectedLightningAddress: original.lud16,
     })
     expect(published).toHaveLength(1)
+    const { lud06: _legacy, ...metadata } = original
     expect(JSON.parse(published[0]!.content)).toEqual({
-      ...original,
+      ...metadata,
       lud16: "new@conduit.cash",
     })
+  })
+  it("rejects unrelated metadata edits through the address-only workflow", async () => {
+    events = [
+      profileEvent(
+        JSON.stringify({
+          name: "Retained",
+          about: "Biography",
+          lud16: "old@wallet.example",
+        })
+      ),
+    ]
+    await expect(
+      publishProfileContext(
+        { lud16: "new@conduit.cash", name: "Erase" },
+        "market",
+        {
+          authenticatedPubkey: PUBKEY,
+          expectedLightningAddress: "old@wallet.example",
+        }
+      )
+    ).rejects.toThrow("Choose the public Lightning address")
+    expect(published).toHaveLength(0)
   })
   it("requires a fresh choice after a competing address change", async () => {
     events = [
