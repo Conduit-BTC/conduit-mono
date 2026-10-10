@@ -18,6 +18,7 @@ import {
 } from "./helpers/real-nip07-signer"
 
 import { measureTextContrast } from "./helpers/rendered-contrast"
+import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -36,7 +37,7 @@ async function inspect(page: Page, info: TestInfo, name: string) {
     path: join(directory, `${info.project.name}-${name}.png`),
     fullPage: true,
     mask: [
-      page.locator("input,textarea,.font-mono"),
+      page.locator("input,textarea,.font-mono,.tabular-nums"),
       page.getByRole("button", { name: /Open.*account menu/ }),
     ],
   })
@@ -59,7 +60,9 @@ for (const theme of ["day-market", "night-market"]) {
   }, info) => {
     const identity = createRuntimeSignerIdentity()
     const { pubkey } = identity
+    const wallet = createDeterministicNwcWallet({ relayUrl: TEST_RELAY_URL })
     try {
+      await wallet.start()
       const title =
         "Colombia coffee gift set with an exceptionally long catalog name"
       const createdAt = Math.floor(Date.now() / 1000)
@@ -156,11 +159,18 @@ for (const theme of ["day-market", "night-market"]) {
         await inspect(page, info, `profile-edit-${theme}-${width}`)
         await page.getByRole("button", { name: "Cancel", exact: true }).click()
         await page.goto(`${merchantUrl}/payments`)
-        await expect(
-          page.getByText("Zap support detected", { exact: true })
-        ).toBeVisible()
+        await expect(page).toHaveURL(`${merchantUrl}/wallet`)
+        await wallet.configureMerchantConnection(async (uri) => {
+          await page.evaluate(
+            ({ pubkey, uri }) =>
+              localStorage.setItem(`conduit:merchant:nwc_uri:${pubkey}`, uri),
+            { pubkey, uri }
+          )
+        })
+        await page.reload()
+        await expect(page.getByText("Ready", { exact: true })).toBeVisible()
         const success = page
-          .getByText("Zap support detected", { exact: true })
+          .getByText("Ready", { exact: true })
           .locator("..")
           .locator("svg")
         const color = await success.evaluate((el) => getComputedStyle(el).color)
@@ -168,16 +178,16 @@ for (const theme of ["day-market", "night-market"]) {
           await page.locator("h1").evaluate((el) => getComputedStyle(el).color)
         )
         await expectReadable(
-          page.getByText("PAYMENT METHOD", { exact: true }),
+          page.getByRole("heading", { name: "My wallets", exact: true }),
           info,
-          "payment-method-contrast"
+          "wallets-owned-contrast"
         )
         await expectReadable(
-          page.getByText("AUTOMATIC PAYMENT VERIFICATION", { exact: true }),
+          page.getByRole("heading", { name: "External wallets", exact: true }),
           info,
-          "payment-verification-contrast"
+          "wallets-external-contrast"
         )
-        await inspect(page, info, `payments-ready-${theme}-${width}`)
+        await inspect(page, info, `wallets-ready-${theme}-${width}`)
         await page.goto(`${merchantUrl}/network`)
         await expectReadable(
           page.getByRole("button", { name: /^Disable Read for / }).first(),
@@ -217,6 +227,7 @@ for (const theme of ["day-market", "night-market"]) {
         await expectReadable(legalLink, info, "legal-link-hover-contrast")
       }
     } finally {
+      await wallet.close()
       disposeRuntimeSignerIdentity(identity)
     }
   })

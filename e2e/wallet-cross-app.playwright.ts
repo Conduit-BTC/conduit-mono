@@ -1,5 +1,6 @@
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
+import type { WalletDescriptor } from "@conduit/core"
 import {
   prepareControlledWallet,
   installControlledWallet,
@@ -12,6 +13,8 @@ import {
 } from "./helpers/real-nip07-signer"
 import { publishTestRelayEvents } from "./helpers/auth"
 const core = "/@fs" + path.resolve("packages/core/src/index.ts")
+const storage =
+  "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts")
 const relay = "ws://127.0.0.1:" + process.env.PLAYWRIGHT_RELAY_PORT
 const apps = {
   market: "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"),
@@ -319,15 +322,20 @@ for (const from of ["market", "merchant"] as const) {
         )
         .toEqual([1, 7])
       const state = await target.evaluate(
-        async ({ core, selected }) => {
-          const { db } = await import(core)
-          const descriptor = await db.wallets.get(selected)
+        async ({ core, storage, selected }) => {
+          const { getAccountSigner } = await import(core)
+          const { getMarketWalletStore } = await import(storage)
+          const descriptor = (
+            await getMarketWalletStore().listVisible(
+              getAccountSigner()?.pubkey ?? null
+            )
+          ).find((wallet: WalletDescriptor) => wallet.id === selected)!
           return {
             intents: descriptor.defaultIntents,
             registrations: (window as any).__walletProbe.registrations,
           }
         },
-        { core, selected }
+        { core, storage, selected }
       )
       expect(state.intents.sort()).toEqual(["pay_invoice", "receive"])
       expect(state.registrations).toBe(0)

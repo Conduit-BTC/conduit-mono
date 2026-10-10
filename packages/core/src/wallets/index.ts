@@ -43,6 +43,8 @@ export interface WalletDescriptor {
   capabilities: WalletCapability[]
   status: WalletLifecycleStatus
   defaultIntents: WalletDefaultIntent[]
+  /** Device-local choices by account/network; never included in relay recovery. */
+  defaultIntentsByScope?: Record<string, WalletDefaultIntent[]>
   createdAt: number
   updatedAt: number
 }
