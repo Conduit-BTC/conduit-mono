@@ -24,6 +24,7 @@ import {
   SPARK_RECOVERY_PREFIX,
   parseSparkRecoveryEnvelope,
 } from "../packages/core/src/wallets/spark-recovery-contract"
+import { assertWalletCreationDiscovery } from "../packages/core/src/wallets/account-spark-recovery"
 import { deriveSparkRecoveryIdentity } from "../packages/core/src/wallets/spark-sdk"
 
 const databases: ConduitDB[] = []
@@ -164,6 +165,149 @@ function bundle() {
 }
 
 describe("signer-backed Spark recovery composed foundations", () => {
+  it("keeps foreign recovery evidence while deciding creation only for the active network", async () => {
+    const f = fixture()
+    const foreign = await f
+      .service()
+      .prepare({ ...bundle(), network: "regtest", accountNumber: 7 })
+    await f.service().preparePrimary(foreign)
+    const mainnet = await f.service().discover(false, "mainnet")
+    expect(mainnet.state).toBe("absent_within_scope")
+    expect(mainnet.creationEligible).toBe(true)
+    expect(mainnet.candidates).toHaveLength(0)
+    expect(mainnet.otherNetworkCandidates).toHaveLength(1)
+    expect(mainnet.primary).toBeUndefined()
+    expect(() => assertWalletCreationDiscovery(mainnet)).not.toThrow()
+    const active = await f.service().prepare(bundle())
+    const additional = await f
+      .service()
+      .prepare(bundle(), crypto.randomUUID(), active.eventId)
+    const mixed = await f.service().discover(false, "mainnet")
+    expect(mixed.state).toBe("recoverable") // The signed root backup verifies the common lineage.
+    await f.service().preparePrimary(active)
+    const resolved = await f.service().discover(false, "mainnet")
+    expect(resolved.state).toBe("recoverable")
+    expect(resolved.candidates.map((c) => c.eventId).sort()).toEqual(
+      [active.eventId, additional.eventId].sort()
+    )
+    expect(resolved.otherNetworkCandidates).toHaveLength(1)
+    expect((await f.store.load(f.owner)).records).toHaveLength(5)
+    f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[0].url)
+    expect(() => assertWalletCreationDiscovery(resolved)).not.toThrow()
+    const partial = await f.service().discover(false, "mainnet")
+    expect(() => assertWalletCreationDiscovery(partial)).toThrow()
+  })
+  it("recovers a verified active lineage from a fresh store while the latest primary is on another network", async () => {
+    const f = fixture()
+    const a = await f.service().prepare(bundle())
+    const b = await f
+      .service()
+      .prepare(bundle(), crypto.randomUUID(), a.eventId)
+    const foreign = await f
+      .service()
+      .prepare({ ...bundle(), network: "regtest" })
+    const pointer = await f.service().preparePrimary(foreign)
+    const records = (await f.store.load(f.owner)).records
+    for (const target of SPARK_RECOVERY_RENDEZVOUS)
+      f.relays.set(
+        target.url,
+        new Map(
+          records
+            .filter((r) =>
+              [a.eventId, b.eventId, foreign.eventId, pointer].includes(
+                r.event.id
+              )
+            )
+            .map((r) => [r.event.id, r.event])
+        )
+      )
+    const service = f.service(storage().store)
+    const found = await service.discover(false, "mainnet")
+    expect(found.state).toBe("recoverable")
+    expect(found.candidates).toHaveLength(2)
+    expect(found.otherNetworkCandidates).toHaveLength(1)
+    expect(found.primaryPointerEventId).toBeUndefined()
+    expect(service.getVerifiedPrimaryPointerEventId("mainnet")).toBeUndefined()
+    expect(() => assertWalletCreationDiscovery(found)).not.toThrow()
+    for (const candidate of found.candidates)
+      expect((await service.restore(candidate)).network).toBe("mainnet")
+  })
+  it("retains unknown positive pointer evidence even when known backups are on another network", async () => {
+    const f = fixture()
+    const foreign = await f
+      .service()
+      .prepare({ ...bundle(), network: "regtest" })
+    const pointerId = await f.service().preparePrimary(foreign)
+    const pointer = (await f.store.load(f.owner)).records.find(
+      (r) => r.event.id === pointerId
+    )!
+    const target = f.service(storage().store)
+    f.relays.set(
+      SPARK_RECOVERY_RENDEZVOUS[0].url,
+      new Map([[pointer.event.id, pointer.event]])
+    )
+    const unknown = await target.discover(false, "mainnet")
+    expect(unknown.state).toBe("unresolved")
+    expect(() => assertWalletCreationDiscovery(unknown)).toThrow()
+  })
+  it("blocks a valid Addy backup until explicit source import produces a verified Conduit backup", async () => {
+    const f = fixture()
+    const source = { ...bundle(), accountNumber: 7 }
+    const event = f.sign({
+      kind: 30078,
+      created_at: 100,
+      tags: [["d", "spark-wallet-backup"]],
+      content: f.encrypt(source.mnemonic),
+    })
+    f.relays.set(SPARK_RECOVERY_RENDEZVOUS[0].url, new Map([[event.id, event]]))
+    const before = await f.service().discover(false, "mainnet")
+    expect(before.state).toBe("recoverable")
+    expect(() => assertWalletCreationDiscovery(before)).toThrow("Addy")
+    const imported = await f
+      .service()
+      .restore(before.candidates[0]!, { network: "mainnet", accountNumber: 7 })
+    expect(imported.accountNumber).toBe(7)
+    expect(imported.mnemonic === source.mnemonic).toBe(true)
+    expect(() =>
+      assertWalletCreationDiscovery(before, [event.id])
+    ).not.toThrow()
+    const candidate = await f.service().prepare(imported)
+    await f.service().preparePrimary(candidate)
+    const after = await f.service().discover(false, "mainnet")
+    expect(after.state).toBe("recoverable")
+    expect(after.candidates.find((c) => c.source === "addy")?.resolved).toBe(
+      true
+    )
+    expect(() => assertWalletCreationDiscovery(after)).not.toThrow()
+    const otherNetwork = await f.service().discover(false, "regtest")
+    expect(() => assertWalletCreationDiscovery(otherNetwork)).toThrow("Addy")
+  })
+  it("preserves account-local device removal through recovery writes and transactional rollback", async () => {
+    const f = fixture()
+    const c = await f.service().prepare(bundle())
+    await f.store.setDeviceRemoved(f.owner, c.walletId!, true)
+    await f.service().preparePrimary(c)
+    await f.service().discover()
+    expect((await f.store.load(f.owner)).removedWalletIds).toEqual([
+      c.walletId!,
+    ])
+    const other = fixture()
+    expect((await f.store.load(other.owner)).removedWalletIds).toBeUndefined()
+    await expect(
+      Promise.resolve(
+        f.db.transaction("rw", f.db.sparkRecoveryEvidence, async () => {
+          await f.store.setDeviceRemoved(f.owner, c.walletId!, false)
+          throw new Error("Removal rollback")
+        })
+      )
+    ).rejects.toThrow("Removal rollback")
+    expect((await f.store.load(f.owner)).removedWalletIds).toEqual([
+      c.walletId!,
+    ])
+    await f.store.setDeviceRemoved(f.owner, c.walletId!, false)
+    expect((await f.store.load(f.owner)).removedWalletIds).toEqual([])
+    expect((await f.store.load(f.owner)).records).toHaveLength(2)
+  })
   it("restores the latest explicit main choice without changing backup lineage", async () => {
     const f = fixture()
     const a = await f.service().prepare(bundle())

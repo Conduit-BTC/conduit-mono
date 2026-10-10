@@ -143,7 +143,15 @@ export function Wallets({
   const [historyWallet, setHistoryWallet] = useState<WalletDescriptor | null>(
     null
   )
+  const authScopeRef = useRef({
+    account: auth.accountPubkey,
+    generation: auth.authGeneration,
+  })
   useLayoutEffect(() => {
+    authScopeRef.current = {
+      account: auth.accountPubkey,
+      generation: auth.authGeneration,
+    }
     setSuggestion(null)
     setPortableOpen(false)
     setUnlockWallet(null)
@@ -178,9 +186,17 @@ export function Wallets({
     trigger,
     password = false
   ) => {
-    const generation = auth.authGeneration
+    const scope = authScopeRef.current
     const method = await wallets.getSparkRecoveryType(wallet.id)
-    if (!auth.isAuthGenerationCurrent(generation)) return
+    // Legacy device recovery is available while signed out. The connected-only
+    // signer fence still governs signer actions; every dialog uses a live scope.
+    if (authScopeRef.current !== scope) return
+    if (
+      method !== "password" &&
+      !password &&
+      !auth.isAuthGenerationCurrent(scope.generation)
+    )
+      return
     if (method === "password" || password) {
       setPreviousPassword(password)
       openWalletDialog(setUnlockWallet, wallet, trigger)

@@ -23,6 +23,30 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
       owner
     )
   }
+  /** Shares the wallet-removal transaction; relay writes preserve these decisions. */
+  async setDeviceRemoved(
+    owner: string,
+    walletId: string,
+    removed: boolean
+  ): Promise<void> {
+    await this.database.transaction(
+      "rw",
+      this.database.sparkRecoveryEvidence,
+      async () => {
+        const current = await this.load(owner)
+        const ids = new Set(current.removedWalletIds ?? [])
+        if (removed) ids.add(walletId)
+        else ids.delete(walletId)
+        const next = validateSparkRecoveryState(
+          { ...current, removedWalletIds: [...ids] },
+          owner
+        )
+        await this.database.sparkRecoveryEvidence.put(next)
+        if (JSON.stringify(await this.load(owner)) !== JSON.stringify(next))
+          throw new SparkRecoveryError("storage_unavailable")
+      }
+    )
+  }
   async retain(
     owner: string,
     records: SparkRecoveryRecord[],

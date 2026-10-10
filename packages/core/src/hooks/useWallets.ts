@@ -144,7 +144,11 @@ export interface UseWalletsReturn {
     walletId: string
   ): Promise<"password" | "signer" | "signer-with-password-fallback" | null>
   renameWallet(walletId: string, label: string): Promise<void>
-  connectNwc(uri: string, label?: string): Promise<WalletDescriptor>
+  connectNwc(
+    uri: string,
+    label?: string,
+    options?: { shouldContinue?: () => boolean }
+  ): Promise<WalletDescriptor>
   createSpark(label?: string): Promise<{
     wallet: WalletDescriptor
     mnemonic: string
@@ -301,10 +305,15 @@ export function useWallets(
           const journal = ownerPubkey
             ? await new DexieSparkRecoveryStore().load(ownerPubkey)
             : null
-          const primary = journal?.records.find((r) =>
-            r.event.tags.some(
-              (t) => t[0] === "d" && t[1] === "conduit:spark:primary:v1"
-            )
+          const signer = getAccountSigner()
+          const primaryEventId =
+            signer?.pubkey === ownerPubkey
+              ? getAccountSparkRecovery(
+                  signer
+                ).getVerifiedPrimaryPointerEventId(getSparkWalletNetwork())
+              : undefined
+          const primary = journal?.records.find(
+            (r) => r.event.id === primaryEventId
           )
           const sync: UseWalletsReturn["recoverySyncByWallet"] = {}
           const main = journal?.records
@@ -468,7 +477,7 @@ export function useWallets(
       return
     }
     void retryInitialization()
-  }, [enabled, retryInitialization])
+  }, [enabled, auth.accountPubkey, retryInitialization])
 
   useEffect(() => {
     if (!enabled || walletSubscriptionEpoch === 0) return
@@ -521,13 +530,23 @@ export function useWallets(
       return
     }
     let active = true
+    const runtimeUpdates = new Map<string, number>()
     const unsubscribe = manager.subscribe((walletId) => {
       if (!active) {
         return
       }
-      void refreshSparkBalance(walletId, manager, setRuntime).catch(
-        () => undefined
-      )
+      const owner = ownerRef.current
+      const revision = (runtimeUpdates.get(walletId) ?? 0) + 1
+      runtimeUpdates.set(walletId, revision)
+      void refreshSparkBalance(walletId, manager, (update) => {
+        if (
+          active &&
+          runtimeUpdates.get(walletId) === revision &&
+          ownerRef.current === owner &&
+          walletsRef.current.some((wallet) => wallet.id === walletId)
+        )
+          setRuntime(update)
+      }).catch(() => undefined)
     })
     return () => {
       active = false
@@ -675,7 +694,14 @@ export function useWallets(
   )
 
   const connectNwc = useCallback(
-    async (uri: string, label?: string) => {
+    async (
+      uri: string,
+      label?: string,
+      options?: { shouldContinue?: () => boolean }
+    ) => {
+      const signer = getAccountSigner()
+      const shouldContinue = () =>
+        getAccountSigner() === signer && options?.shouldContinue?.() !== false
       const connection = parseNwcUri(uri)
       const temporaryWalletId = `pending-${crypto.randomUUID()}`
       const temporarySession = getBuyerNwcSession(temporaryWalletId)
@@ -700,7 +726,9 @@ export function useWallets(
               capabilities: registration.capabilities,
             }),
           ensureDefault,
+          shouldContinue,
         })
+        if (!shouldContinue()) throw new Error("Wallet sign-in changed.")
         const session = getBuyerNwcSession(connectedWallet.id)
         session.setConnection(connection)
         void session.warm()
@@ -799,8 +827,13 @@ export function useWallets(
       assertWalletSignerCurrent(signer)
       setRecoverySync("checking")
       const service = getAccountSparkRecovery(signer)
-      const discovery = await service.discover()
-      const restored = await restoreAccountSparkWallets(signer, discovery)
+      const network = getSparkWalletNetwork()
+      const discovery = await service.discover(false, network)
+      const restored = await restoreAccountSparkWallets(
+        signer,
+        discovery,
+        network
+      )
       assertWalletSignerCurrent(signer)
       const visible = await store.listVisible(signer.pubkey)
       const selected =
@@ -826,13 +859,12 @@ export function useWallets(
       await refreshAfterCommittedWalletMutation()
       let pending = false
       const journal = await new DexieSparkRecoveryStore().load(signer.pubkey)
-      const primaryRecord = journal.records.find((record) =>
-        record.event.tags.some(
-          (tag) => tag[0] === "d" && tag[1] === "conduit:spark:primary:v1"
-        )
+      const primaryRecord = journal.records.find(
+        (record) => record.event.id === discovery.primaryPointerEventId
       )
       for (const wallet of await store.listVisible(signer.pubkey)) {
-        if (wallet.providerId !== "spark") continue
+        if (wallet.providerId !== "spark" || wallet.network !== network)
+          continue
         const credential = await store.getSparkRecovery(wallet.id)
         if (credential?.type !== "signer") {
           pending ||= credential?.type === "password"
@@ -889,6 +921,10 @@ export function useWallets(
       await refreshAfterCommittedWalletMutation()
       setRecoverySync(
         discovery.state === "conflict" ||
+          discovery.state === "unresolved" ||
+          discovery.candidates.some(
+            (candidate) => candidate.source === "addy" && !candidate.resolved
+          ) ||
           discovery.invalidCount ||
           discovery.unresolvedObserved
           ? "blocked"
@@ -948,7 +984,10 @@ export function useWallets(
             signer,
             wallet.id,
             { mnemonic, network, accountNumber },
-            { rootBackupEventId: discovery.primary?.eventId }
+            {
+              rootBackupEventId:
+                discovery.lineageRootEventId ?? discovery.primary?.eventId,
+            }
           )
           if (isWalletSignerCurrent(signer))
             setRecoverySync(ready ? "ready" : "pending")
@@ -959,7 +998,10 @@ export function useWallets(
         await refreshAfterCommittedWalletMutation()
         let publicDefaultAllowed = false
         try {
-          const afterSetup = await getAccountSparkRecovery(signer).discover()
+          const afterSetup = await getAccountSparkRecovery(signer).discover(
+            false,
+            network
+          )
           publicDefaultAllowed =
             afterSetup.coverage === "complete" &&
             afterSetup.state !== "conflict" &&
@@ -991,8 +1033,21 @@ export function useWallets(
       const signer = requireWalletSigner()
       return runAccountWalletSetup(signer, async () => {
         const { discovery } = await synchronizeRecovery(signer)
-        assertWalletCreationDiscovery(discovery)
         const network = getSparkWalletNetwork()
+        const resolvedAddyEventIds: string[] = []
+        for (const candidate of discovery.candidates) {
+          if (candidate.source !== "addy" || candidate.resolved) continue
+          const bundle = await getAccountSparkRecovery(signer).restore(
+            candidate,
+            {
+              network,
+              accountNumber: input.accountNumber,
+            }
+          )
+          if (bundle.mnemonic === normalizeSparkMnemonic(input.mnemonic))
+            resolvedAddyEventIds.push(candidate.eventId)
+        }
+        assertWalletCreationDiscovery(discovery, resolvedAddyEventIds)
         let walletId: string | undefined
         for (const candidate of discovery.candidates) {
           if (candidate.source !== "conduit_v1") continue
@@ -1012,6 +1067,12 @@ export function useWallets(
           walletId,
           restored: !!walletId,
         })
+        assertWalletSignerCurrent(signer)
+        await new DexieSparkRecoveryStore().setDeviceRemoved(
+          signer.pubkey,
+          wallet.id,
+          false
+        )
         try {
           const ready = await backUpAccountSparkWallet(
             signer,
@@ -1021,7 +1082,10 @@ export function useWallets(
               network,
               accountNumber: input.accountNumber,
             },
-            { rootBackupEventId: discovery.primary?.eventId }
+            {
+              rootBackupEventId:
+                discovery.lineageRootEventId ?? discovery.primary?.eventId,
+            }
           )
           if (isWalletSignerCurrent(signer))
             setRecoverySync(ready ? "ready" : "pending")
@@ -1071,9 +1135,25 @@ export function useWallets(
       const signer = !password && !migrate ? getAccountSigner() : undefined
       const previous = signer && signerWalletOpens.get(signer)?.get(walletId)
       if (signer && previous) {
-        await previous
-        assertWalletSignerCurrent(signer)
-        await refreshSparkBalance(walletId, manager, setRuntime)
+        try {
+          await previous
+          assertWalletSignerCurrent(signer)
+          await refreshSparkBalance(walletId, manager, setRuntime)
+        } catch (error) {
+          if (isWalletSignerCurrent(signer))
+            setRuntime((current) => ({
+              ...current,
+              [walletId]: {
+                status: "error",
+                balanceMsats: null,
+                error: getErrorMessage(
+                  error,
+                  "Could not unlock Portable Wallet."
+                ),
+              },
+            }))
+          throw error
+        }
         return
       }
       if (signer && manager.isOpen(walletId)) {
@@ -1347,6 +1427,18 @@ export function useWallets(
         return
       }
 
+      const recovery =
+        requestedWallet.providerId === "spark"
+          ? await store.getSparkRecovery(walletId)
+          : null
+      const signer = recovery?.type === "signer" ? requireWalletSigner() : null
+      if (
+        signer &&
+        recovery?.type === "signer" &&
+        signer.pubkey !== recovery.ownerPubkey
+      )
+        throw new Error("Wallet sign-in changed.")
+
       const removeCurrentRegistration = async (
         mode: SparkWalletRemovalMode = "coordinated"
       ): Promise<boolean> => {
@@ -1392,6 +1484,14 @@ export function useWallets(
           closeBuyerNwcSession(wallet.id)
         }
         await store.transaction(async () => {
+          if (signer) {
+            assertWalletSignerCurrent(signer)
+            await new DexieSparkRecoveryStore().setDeviceRemoved(
+              signer.pubkey,
+              wallet.id,
+              true
+            )
+          }
           await registry.remove(wallet.id)
           const remaining = (await store.listVisible(ownerRef.current)).filter(
             (candidate) =>
@@ -1405,17 +1505,21 @@ export function useWallets(
           if (replacement) {
             await registry.setDefault(replacement.id, "pay_invoice")
           }
+          if (signer) assertWalletSignerCurrent(signer)
         })
         return true
       }
 
-      const removed =
+      const remove = () =>
         requestedWallet.providerId === "spark"
-          ? await runSparkWalletRemoval({
+          ? runSparkWalletRemoval({
               walletId,
               remove: removeCurrentRegistration,
             })
-          : await removeCurrentRegistration()
+          : removeCurrentRegistration()
+      const removed = signer
+        ? await runAccountWalletSetup(signer, remove)
+        : await remove()
       if (removed) {
         await refreshAfterCommittedWalletMutation()
       }
@@ -1449,7 +1553,11 @@ export function useWallets(
         if (stored?.type === "signer" && stored.ownerPubkey === signer.pubkey) {
           const attempted =
             automaticWalletOpens.get(signer) ?? new Set<string>()
-          if (attempted.has(wallet.id)) continue
+          if (
+            attempted.has(wallet.id) &&
+            !signerWalletOpens.get(signer)?.has(wallet.id)
+          )
+            continue
           attempted.add(wallet.id)
           automaticWalletOpens.set(signer, attempted)
           void unlockSpark(wallet.id, "", false, {
@@ -1499,7 +1607,7 @@ export function useWallets(
       const signer = requireWalletSigner()
       await runAccountWalletSetup(signer, async () => {
         const service = getAccountSparkRecovery(signer)
-        const discovery = await service.discover()
+        const discovery = await service.discover(false, getSparkWalletNetwork())
         if (
           discovery.state === "conflict" ||
           discovery.invalidCount ||
@@ -1682,8 +1790,21 @@ async function refreshSparkBalance(
     React.SetStateAction<Record<string, WalletRuntimeState>>
   >
 ): Promise<void> {
+  const locked = () =>
+    setRuntime((current) => ({
+      ...current,
+      [walletId]: { status: "locked", balanceMsats: null, error: null },
+    }))
+  if (!manager.isOpen(walletId)) {
+    locked()
+    return
+  }
   try {
     const balanceSats = await manager.getBalance(walletId)
+    if (!manager.isOpen(walletId)) {
+      locked()
+      return
+    }
     setRuntime((current) => ({
       ...current,
       [walletId]: {
@@ -1693,6 +1814,10 @@ async function refreshSparkBalance(
       },
     }))
   } catch (error) {
+    if (!manager.isOpen(walletId)) {
+      locked()
+      return
+    }
     setRuntime((current) => ({
       ...current,
       [walletId]: {

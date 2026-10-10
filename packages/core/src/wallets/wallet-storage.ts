@@ -113,6 +113,7 @@ export async function registerNwcWalletAtomically(input: {
   listWallets(): Promise<WalletDescriptor[]>
   register(): Promise<WalletDescriptor>
   ensureDefault(wallet: WalletDescriptor): Promise<void>
+  shouldContinue?: () => boolean
 }): Promise<{ wallet: WalletDescriptor; created: boolean }> {
   const normalizedUri = input.uri.trim()
   if (!normalizedUri) {
@@ -120,6 +121,8 @@ export async function registerNwcWalletAtomically(input: {
   }
 
   return input.store.transaction(async () => {
+    if (input.shouldContinue?.() === false)
+      throw new Error("Wallet sign-in changed.")
     const existingWalletIds =
       await input.store.findWalletIdsByUri(normalizedUri)
     const registeredWallets = await input.listWallets()
@@ -145,6 +148,8 @@ export async function registerNwcWalletAtomically(input: {
       await input.store.deleteNwcCredential(existingWalletId)
     }
     if (existingWallet) {
+      if (input.shouldContinue?.() === false)
+        throw new Error("Wallet sign-in changed.")
       return { wallet: existingWallet, created: false }
     }
 
@@ -164,6 +169,8 @@ export async function registerNwcWalletAtomically(input: {
     if (!verifiedWallet) {
       throw new Error("Connected Wallet descriptor verification failed.")
     }
+    if (input.shouldContinue?.() === false)
+      throw new Error("Wallet sign-in changed.")
     return { wallet: verifiedWallet, created: true }
   })
 }
@@ -172,7 +179,11 @@ export class MarketWalletStore
   implements WalletRegistryStore, NwcCredentialStore
 {
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
-    return db.transaction("rw", db.wallets, db.walletCredentials, operation)
+    return db.transaction(
+      "rw",
+      [db.wallets, db.walletCredentials, db.sparkRecoveryEvidence],
+      operation
+    )
   }
 
   async list(): Promise<WalletDescriptor[]> {
