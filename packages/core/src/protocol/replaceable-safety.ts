@@ -142,13 +142,15 @@ function isExactProfileAddressPatch(
     if (
       !isRecord(before) ||
       !isRecord(after) ||
-      typeof after.lud16 !== "string"
+      (Object.hasOwn(after, "lud16") && typeof after.lud16 !== "string") ||
+      Object.hasOwn(after, "lud06")
     )
       return false
     const keys = new Set([...Object.keys(before), ...Object.keys(after)])
     for (const key of keys) {
       if (
         key !== "lud16" &&
+        key !== "lud06" &&
         (!Object.hasOwn(before, key) ||
           !Object.hasOwn(after, key) ||
           JSON.stringify(before[key]) !== JSON.stringify(after[key]))

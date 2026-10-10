@@ -103,6 +103,7 @@ describe("live NWC wallet registration reconciliation", () => {
     await expect(
       reconcileNwcWalletRegistration({
         walletId: "nwc",
+        ownerPubkey: null,
         info: {
           network: "testnet",
           methods: ["pay_invoice", "get_balance"],
@@ -160,6 +161,7 @@ describe("live NWC wallet registration reconciliation", () => {
     await expect(
       reconcileNwcWalletRegistration({
         walletId: "nwc",
+        ownerPubkey: null,
         info: {
           methods: ["pay_invoice", "get_balance"],
         },
@@ -183,12 +185,18 @@ describe("live NWC wallet registration reconciliation", () => {
   })
 })
 
-function createMemoryStore(): WalletRegistryStore & NwcCredentialStore {
+function createMemoryStore(): WalletRegistryStore &
+  NwcCredentialStore & {
+    listVisible(ownerPubkey: string | null): Promise<WalletDescriptor[]>
+  } {
   const wallets = new Map<string, WalletDescriptor>()
   const credentials = new Map<string, string>()
 
   return {
     async list() {
+      return [...wallets.values()]
+    },
+    async listVisible() {
       return [...wallets.values()]
     },
     async put(wallet) {

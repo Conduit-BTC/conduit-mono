@@ -441,6 +441,16 @@ async function publishProfileContextUnlocked(
     latestProfile: latest.profile,
     latestContent: latest.frontier?.rawContent,
   })
+  if (options.expectedLightningAddress !== undefined) {
+    // Explicit address edits own both receiving fields. Leaving legacy lud06
+    // would keep a cleared address or a competing destination discoverable.
+    if (
+      !hasOwnProfileField(profile, "lud16") ||
+      Object.keys(profile).some((field) => field !== "lud16")
+    )
+      throw new Error("Choose the public Lightning address to save.")
+    delete content.lud06
+  }
   const draft: UnsignedNostrEvent = {
     kind: EVENT_KINDS.PROFILE,
     pubkey: pubkey,

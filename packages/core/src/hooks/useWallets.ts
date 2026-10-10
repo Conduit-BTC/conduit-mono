@@ -563,6 +563,10 @@ export function useWallets(
     if (!enabled) return
     const unsubscribes: Array<() => void> = []
     let active = true
+    const owner = ownerRef.current
+    const signer = getAccountSigner()
+    const current = () =>
+      active && ownerRef.current === owner && getAccountSigner() === signer
 
     for (const wallet of wallets) {
       if (wallet.providerId !== "nwc") {
@@ -595,8 +599,10 @@ export function useWallets(
           }
           const changed = await reconcileNwcWalletRegistration({
             walletId: wallet.id,
+            ownerPubkey: owner,
             info: snapshot.info,
             store,
+            shouldContinue: current,
           })
           if (changed && active) {
             await refreshAfterCommittedWalletMutation()
@@ -1641,11 +1647,20 @@ export function useWallets(
           throw new Error(
             "Sync this wallet's recovery before making it your main wallet."
           )
-        const eventId = await service.prepareMain(candidate)
+        // Sign outside storage, then activate the relay choice and both local
+        // intents together. Failed writes leave nothing for recovery to retry.
+        const eventId = await service.prepareMain(candidate, (retain) =>
+          store.transaction(async () => {
+            assertWalletSignerCurrent(signer)
+            await registry.setDefault(walletId, "pay_invoice")
+            assertWalletSignerCurrent(signer)
+            await registry.setDefault(walletId, "receive")
+            assertWalletSignerCurrent(signer)
+            await retain()
+            assertWalletSignerCurrent(signer)
+          })
+        )
         assertWalletSignerCurrent(signer)
-        await registry.setDefault(walletId, "pay_invoice")
-        assertWalletSignerCurrent(signer)
-        await registry.setDefault(walletId, "receive")
         const result = await service.deliver(eventId)
         assertWalletSignerCurrent(signer)
         setMainWalletSync(result.ready ? "ready" : "pending")

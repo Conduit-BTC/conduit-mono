@@ -479,7 +479,10 @@ export class SparkRecoveryService {
   }
 
   /** Explicit account main-wallet choice, independent of immutable backup roots. */
-  async prepareMain(candidate: SparkRecoveryCandidate): Promise<string> {
+  async prepareMain(
+    candidate: SparkRecoveryCandidate,
+    commit?: (retain: () => Promise<void>) => Promise<void>
+  ): Promise<string> {
     const state = await this.load()
     const envelope = await this.restore(candidate)
     if (!("walletId" in envelope))
@@ -501,7 +504,12 @@ export class SparkRecoveryService {
       createdAt,
     }
     const event = await this.sign(SPARK_MAIN_D_TAG, selection, createdAt)
-    await this.retain([this.record(event)])
+    const record = this.record(event)
+    // Signer consent finishes before the caller's local transaction. Only the
+    // successful commit may activate this choice for future recovery retries.
+    const retain = () => this.retain([record])
+    if (commit) await commit(retain)
+    else await retain()
     return event.id
   }
 
