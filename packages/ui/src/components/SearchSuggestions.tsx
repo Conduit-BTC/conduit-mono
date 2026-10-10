@@ -178,7 +178,7 @@ export function SearchSuggestions({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-overlay)] shadow-[var(--shadow-md)]",
+        "overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-overlay)] shadow-[var(--shadow-md)]",
         className
       )}
     >
@@ -233,7 +233,7 @@ export function SearchSuggestions({
                     onMouseEnter={() => onActiveIndexChange(index)}
                     onClick={() => onSelect(item, index)}
                     className={cn(
-                      "flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-left text-sm transition-colors",
+                      "flex cursor-pointer items-center gap-3 rounded-[var(--radius-md)] px-2 py-2 text-left text-sm transition-colors",
                       "text-[var(--text-primary)]",
                       active ? "bg-[var(--muted)]" : "hover:bg-[var(--muted)]"
                     )}

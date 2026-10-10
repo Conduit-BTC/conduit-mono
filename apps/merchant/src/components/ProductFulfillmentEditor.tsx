@@ -16,7 +16,7 @@ export function ProductFulfillmentEditor({
   onIntentChange: (intent: ProductFulfillmentChoice) => void
 }) {
   return (
-    <div className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+    <div className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
       <Label htmlFor="product-fulfillment">Shop fulfillment</Label>
       <Select
         value={intent}

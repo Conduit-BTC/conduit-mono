@@ -113,7 +113,7 @@ function FutureEventProductCard({
             shippingAvailable={hasEventShippingChoice(product)}
           />
           {error ? (
-            <span role="alert" className="block text-[var(--destructive)]">
+            <span role="alert" className="block text-[var(--error-text)]">
               {error}
             </span>
           ) : null}
@@ -481,7 +481,7 @@ export function FutureEventMarketPage({
           shareLabel={selectedMerchant ? "Share this view" : "Share event"}
         >
           {series ? (
-            <div className="max-w-sm space-y-1">
+            <div className="max-w-sm grid grid-cols-1 gap-1 [&>p]:mt-1">
               <Label htmlFor="event-market-date">Choose date</Label>
               <Select
                 value={selectedDate?.occurrence.coordinate ?? ""}
@@ -534,7 +534,7 @@ export function FutureEventMarketPage({
         catalog.marketRead.coverage !== "complete") ? (
         <p
           role="status"
-          className="rounded-lg border border-[var(--border)] p-4"
+          className="rounded-[var(--radius-md)] border border-[var(--border)] p-4"
         >
           More products may be available. Item availability is checked when you
           add it to your cart.
@@ -641,7 +641,7 @@ export function FutureEventMarketPage({
         </Button>
       ) : null}
       {shareUrl && qrUrl && calendar ? (
-        <div className="space-y-2 rounded-xl border border-[var(--border)] p-4">
+        <div className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
           <h2 className="font-semibold">
             {selectedMerchant ? "Merchant booth QR code" : "Event QR code"}
           </h2>

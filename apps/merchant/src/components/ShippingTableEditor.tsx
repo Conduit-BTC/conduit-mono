@@ -77,7 +77,7 @@ export function ShippingTableEditor({
   return (
     <section
       aria-label={`${title} rates`}
-      className="space-y-4 rounded-2xl border border-[var(--border)] p-3 sm:p-4"
+      className="min-w-0 space-y-4 border-t border-[var(--border)] pt-4"
     >
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-balance text-lg font-semibold">{title}</h3>
@@ -129,7 +129,7 @@ export function ShippingTableEditor({
                         {countryName ?? "Choose origin country"}
                       </p>
                     ) : (
-                      <div className="space-y-1.5">
+                      <div className="space-y-1">
                         <Label htmlFor={`${rule.id}-country`}>Country</Label>
                         <Combobox
                           id={`${rule.id}-country`}
@@ -196,7 +196,7 @@ export function ShippingTableEditor({
                         />
                       )}
                     </div>
-                    <div className="min-w-0 space-y-1.5">
+                    <div className="min-w-0 space-y-1">
                       <Label htmlFor={`${rule.id}-postal`}>Postal prefix</Label>
                       <Input
                         id={`${rule.id}-postal`}
@@ -336,7 +336,7 @@ export function ShippingTableEditor({
               Add country
             </Button>
           )}
-          <div className="space-y-1.5 border-t border-[var(--border)] pt-4">
+          <div className="space-y-1 border-t border-[var(--border)] pt-4">
             <Label htmlFor={`${kind}-free-threshold`}>Free shipping from</Label>
             <InputWithSuffix
               id={`${kind}-free-threshold`}

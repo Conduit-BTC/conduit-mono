@@ -192,7 +192,7 @@ export function OrderConversationMessage({
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[92%] rounded-[1.1rem] border p-3 text-sm ${
+        className={`max-w-[92%] rounded-[var(--radius-md)] border p-3 text-sm ${
           mine
             ? "border-secondary-500/30 bg-secondary-500/12"
             : "border-[var(--border)] bg-[var(--surface-elevated)]"
@@ -240,7 +240,7 @@ export function OrderConversationMessage({
               return (
                 <div
                   key={`${message.id}-${item.productId}`}
-                  className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2"
+                  className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-2"
                 >
                   {image ? (
                     <img

@@ -20,6 +20,7 @@ import {
   type ProfileFormValues,
 } from "@conduit/core"
 import {
+  PageLayout,
   Avatar,
   AvatarFallback,
   AvatarImage,
@@ -57,7 +58,7 @@ const REQUIRED_FIELDS: (keyof ProfileFormValues)[] = [
 
 function RequiredMark() {
   return (
-    <span className="ml-0.5 text-[var(--warning)]" aria-hidden="true">
+    <span className="ml-0.5 text-[var(--warning-text)]" aria-hidden="true">
       *
     </span>
   )
@@ -255,14 +256,14 @@ function ProfilePage() {
   }
 
   return (
-    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_40%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
+        <section className="min-w-0">
           <div className="space-y-8">
             {/* Page header */}
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-heading text-3xl font-semibold text-[var(--text-primary)]">
                   Store Profile
                 </h1>
                 <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
@@ -284,14 +285,15 @@ function ProfilePage() {
               !complete &&
               profileQuery.data &&
               !editing && (
-                <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
-                  <div className="text-sm text-[var(--warning)]">
+                <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning-text)]" />
+                  <div className="text-sm text-[var(--warning-text)]">
                     <span className="font-semibold">
                       Profile needs completion.
                     </span>{" "}
                     Add a display name, photo, and bio so buyers can find and
                     trust your store.{" "}
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       className="underline underline-offset-2 hover:opacity-80"
@@ -311,7 +313,7 @@ function ProfilePage() {
             )}
 
             {!!profileQuery.error && (
-              <div className="rounded-2xl border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] p-4 text-sm text-[var(--destructive)]">
+              <div className="rounded-[var(--radius-md)] border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] p-4 text-sm text-[var(--error-text)]">
                 Failed to load profile:{" "}
                 {profileQuery.error instanceof Error
                   ? profileQuery.error.message
@@ -323,7 +325,7 @@ function ProfilePage() {
             {!editing && profileQuery.data && (
               <section className="space-y-4">
                 <div>
-                  <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+                  <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--link-text)]">
                     IDENTITY
                   </div>
                   <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
@@ -331,7 +333,7 @@ function ProfilePage() {
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] shadow-[var(--shadow-glass-inset)]">
+                <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] ">
                   {/* Banner */}
                   {profileBannerUrl ? (
                     <div className="h-32 w-full overflow-hidden sm:h-44">
@@ -344,7 +346,7 @@ function ProfilePage() {
                       />
                     </div>
                   ) : (
-                    <div className="h-16 w-full bg-gradient-to-r from-[var(--surface-elevated)] to-[var(--surface)]" />
+                    <div className="h-16 w-full bg-[var(--surface)]" />
                   )}
 
                   <div className="px-6 pb-6">
@@ -427,7 +429,7 @@ function ProfilePage() {
                         </div>
                       )}
                       {storefrontUrl && (
-                        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+                        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
                           <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
                             <Store className="h-3.5 w-3.5" />
                             Public identity
@@ -443,6 +445,7 @@ function ProfilePage() {
                               {storefrontUrl}
                             </a>
                             <div className="flex shrink-0 items-center gap-2">
+                              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                               <button
                                 type="button"
                                 aria-label={
@@ -454,7 +457,7 @@ function ProfilePage() {
                                 className={[
                                   "inline-flex h-8 w-8 items-center justify-center rounded-full border transition-colors",
                                   copiedStoreLink
-                                    ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)]"
+                                    ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success-text)]"
                                     : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                                 ].join(" ")}
                               >
@@ -490,6 +493,7 @@ function ProfilePage() {
                           <p className="break-all font-mono text-xs text-[var(--text-secondary)]">
                             {npub}
                           </p>
+                          {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                           <button
                             type="button"
                             aria-label={copiedPubkey ? "Copied" : "Copy npub"}
@@ -497,7 +501,7 @@ function ProfilePage() {
                             className={[
                               "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
                               copiedPubkey
-                                ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)]"
+                                ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success-text)]"
                                 : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                             ].join(" ")}
                           >
@@ -519,17 +523,17 @@ function ProfilePage() {
             {editing && (
               <section className="space-y-4">
                 <div>
-                  <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+                  <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--link-text)]">
                     IDENTITY
                   </div>
                   <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
                     Fields marked{" "}
-                    <span className="text-[var(--warning)]">*</span> are
+                    <span className="text-[var(--warning-text)]">*</span> are
                     required for a complete profile.
                   </div>
                 </div>
 
-                <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                <div className="min-w-0 border-t border-[var(--border)] pt-5">
                   <div className="flex items-center justify-between pb-4">
                     <span className="text-[1rem] font-semibold text-[var(--text-primary)]">
                       Edit Profile
@@ -555,7 +559,7 @@ function ProfilePage() {
                     onSubmit={handleSave}
                   >
                     {/* Display Name (required) */}
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="profile-display-name">
                         Display Name
                         <RequiredMark />
@@ -581,7 +585,7 @@ function ProfilePage() {
                     </div>
 
                     {/* Username / name */}
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="profile-name">Username</Label>
                       <Input
                         id="profile-name"
@@ -595,7 +599,7 @@ function ProfilePage() {
                     </div>
 
                     {/* About (required, full width) */}
-                    <div className="grid gap-1.5 md:col-span-2">
+                    <div className="grid gap-1 md:col-span-2">
                       <Label htmlFor="profile-about">
                         About
                         <RequiredMark />
@@ -621,7 +625,7 @@ function ProfilePage() {
                     </div>
 
                     {/* Picture URL (required) */}
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="profile-picture">
                         Profile Picture URL
                         <RequiredMark />
@@ -646,7 +650,7 @@ function ProfilePage() {
                     </div>
 
                     {/* Banner URL */}
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="profile-banner">Banner Image URL</Label>
                       <Input
                         id="profile-banner"
@@ -663,7 +667,7 @@ function ProfilePage() {
                     </div>
 
                     {/* NIP-05 */}
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="profile-nip05">NIP-05 Identifier</Label>
                       <Input
                         id="profile-nip05"
@@ -680,7 +684,7 @@ function ProfilePage() {
                     </div>
 
                     {/* Lightning Address */}
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="profile-lud16">Lightning Address</Label>
                       <Input
                         id="profile-lud16"
@@ -697,7 +701,7 @@ function ProfilePage() {
                     </div>
 
                     {/* Website */}
-                    <div className="grid gap-1.5 md:col-span-2">
+                    <div className="grid gap-1 md:col-span-2">
                       <Label htmlFor="profile-website">Website</Label>
                       <Input
                         id="profile-website"
@@ -719,7 +723,7 @@ function ProfilePage() {
                         <div className="mb-2 text-xs font-medium text-[var(--text-secondary)]">
                           Preview
                         </div>
-                        <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+                        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
                           {formBannerUrl ? (
                             <div className="h-24 w-full overflow-hidden">
                               <img
@@ -731,7 +735,7 @@ function ProfilePage() {
                               />
                             </div>
                           ) : (
-                            <div className="h-12 bg-gradient-to-r from-[var(--surface-elevated)] to-[var(--surface)]" />
+                            <div className="h-12 bg-[var(--surface)]" />
                           )}
                           <div className="-mt-6 flex items-end gap-3 px-4 pb-3">
                             <Avatar className="h-12 w-12 border-4 border-[var(--surface-elevated)]">
@@ -773,7 +777,7 @@ function ProfilePage() {
                     ) : null}
 
                     {updateMutation.error && (
-                      <div className="md:col-span-2 rounded-2xl border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] p-3 text-sm text-[var(--destructive)]">
+                      <div className="md:col-span-2 rounded-[var(--radius-md)] border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] p-3 text-sm text-[var(--error-text)]">
                         {updateMutation.error instanceof Error
                           ? updateMutation.error.message
                           : "Failed to update profile"}
@@ -812,6 +816,6 @@ function ProfilePage() {
           </div>
         </section>
       </div>
-    </div>
+    </PageLayout>
   )
 }

@@ -90,7 +90,7 @@ const commerceNavItems: CommerceNavItem[] = [
 ]
 
 const navItemClassName =
-  "group relative flex min-h-10 w-full min-w-0 items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+  "group relative flex min-h-10 w-full min-w-0 items-center gap-3 rounded-[var(--radius-md)] border border-transparent px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
 
 function MerchantAvatarFallback() {
   return (
@@ -108,7 +108,7 @@ function MerchantAvatarFallback() {
 
 export function MerchantBrandLockup() {
   return (
-    <span className="inline-flex min-w-0 items-center gap-3 select-none">
+    <span className="inline-flex min-w-0 items-center gap-2 select-none sm:gap-3">
       <span
         data-merchant-brand-logo=""
         className="h-8 w-6 shrink-0 overflow-hidden min-[420px]:w-[6.75rem]"
@@ -122,7 +122,7 @@ export function MerchantBrandLockup() {
           draggable="false"
         />
       </span>
-      <span className="shrink-0 border-l border-[var(--border)] pl-3 pr-1 font-display text-xl font-medium text-[var(--text-primary)]">
+      <span className="shrink-0 border-l border-[var(--border)] pl-2 pr-1 font-display sm:pl-3 text-xl font-medium text-[var(--text-primary)]">
         merchant
       </span>
     </span>
@@ -170,7 +170,7 @@ function CommerceNavLink({
       className={navItemClassName}
       activeProps={{
         className:
-          "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+          "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] ",
       }}
     >
       <Icon className="size-4 shrink-0" />
@@ -195,7 +195,7 @@ function InformationNavLinks({
         className={navItemClassName}
         activeProps={{
           className:
-            "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+            "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] ",
         }}
       >
         <Info className="size-4 shrink-0" />
@@ -271,8 +271,8 @@ function NetworkBadge() {
       className={cn(
         "mt-4 border",
         config.lightningNetwork === "mock"
-          ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
-          : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
+          ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning-text)]"
+          : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info-text)]"
       )}
     >
       {config.lightningNetwork}
@@ -294,7 +294,7 @@ function AccountMenuLink({
   return (
     <DropdownMenuItem
       asChild
-      className="min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
+      className="min-h-11 cursor-pointer rounded-[var(--radius-md)] px-3 py-2 text-[15px] font-medium text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
     >
       <Link to={to} onClick={onNavigate}>
         <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
@@ -334,10 +334,11 @@ export function MerchantAccountMenu() {
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
+        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <button
           type="button"
           aria-label="Open merchant account menu"
-          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[16px] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
         >
           <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
             <AvatarImage
@@ -369,7 +370,7 @@ export function MerchantAccountMenu() {
       <DropdownMenuContent
         align="end"
         sideOffset={10}
-        className="w-[14rem] rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
+        className="w-[14rem] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
       >
         <AccountMenuLink
           to="/profile"
@@ -387,7 +388,7 @@ export function MerchantAccountMenu() {
         </AccountMenuLink>
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
         <DropdownMenuItem
-          className="min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+          className="min-h-11 cursor-pointer rounded-[var(--radius-md)] px-3 py-2 text-[15px] font-medium text-[var(--error-text)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error-text)]"
           onSelect={() => {
             setOpen(false)
             disconnect()
@@ -438,7 +439,7 @@ export function MerchantMobileNav() {
         <Button
           variant="ghost"
           size="sm"
-          className="size-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md lg:hidden"
+          className="size-11 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] lg:hidden"
           aria-label="Open menu"
         >
           <Menu className="size-5" />
@@ -447,7 +448,7 @@ export function MerchantMobileNav() {
       <SheetContent
         side="left"
         showCloseButton={false}
-        className="h-dvh w-[min(320px,calc(100vw-1rem))] gap-0 overflow-hidden border-y-0 border-l-0 border-r border-[var(--border)] bg-[var(--surface-dialog)] p-0"
+        className="h-dvh w-[min(320px,calc(100vw-1rem))] min-[420px]:w-[360px] gap-0 overflow-hidden border-y-0 border-l-0 border-r border-[var(--border)] bg-[var(--surface-dialog)] p-0"
       >
         <SheetTitle className="sr-only">Conduit Merchant navigation</SheetTitle>
         <MerchantNavigationPanel
@@ -456,7 +457,7 @@ export function MerchantMobileNav() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="size-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md"
+                className="size-11 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]"
                 aria-label="Close"
               >
                 <X className="size-5" />
@@ -493,7 +494,7 @@ function MerchantNavigationPanel({
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--surface-dialog)] pb-6 pl-[max(1.5rem,env(safe-area-inset-left))] pr-[max(1.5rem,env(safe-area-inset-right))]"
     >
       <div className="flex h-[calc(5rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 pt-[env(safe-area-inset-top)] min-[360px]:gap-2">
-        <MerchantLogoLink />
+        <MerchantLogoLink className="shrink-0" />
         {headerAction}
       </div>
 

@@ -223,7 +223,7 @@ export function ShopperTrustCard({
   return (
     <section
       aria-labelledby={titleId}
-      className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"
+      className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3

@@ -683,6 +683,54 @@ export function formatSourcePrice(source: SourcePriceQuote): string {
   return `${source.amount.toLocaleString()} ${source.normalizedCurrency}`
 }
 
+/** Card labels retain the unabridged value for details and accessibility. */
+export type CardPriceLabel = { text: string; fullText: string }
+
+function compactNumber(
+  amount: number,
+  locale: string,
+  currency?: string
+): string {
+  return new Intl.NumberFormat(locale, {
+    notation: "compact",
+    maximumSignificantDigits: 4,
+    ...(currency ? { style: "currency", currency } : {}),
+  })
+    .formatToParts(amount)
+    .map((part) =>
+      part.type === "compact" && part.value === "K" ? "k" : part.value
+    )
+    .join("")
+}
+
+function cardFiat(amount: number, currency: string, locale: string): string {
+  return amount >= 1_000
+    ? compactNumber(amount, locale, currency)
+    : formatFiatPrice(amount, currency, locale)
+}
+
+function cardBitcoin(
+  sats: number,
+  unit: BitcoinDisplayUnit,
+  locale: string
+): string {
+  return sats >= SATS_PER_BTC
+    ? `${compactNumber(sats / SATS_PER_BTC, locale)} BTC`
+    : formatBitcoinBaseUnits(sats, unit, locale)
+}
+
+function cardUsd(sats: number, rate: PricingRateInput, locale: string): string {
+  const btcUsdRate = getBtcUsdRate(rate)
+  if (!btcUsdRate) return "USD unavailable"
+  const usd = (sats / SATS_PER_BTC) * btcUsdRate
+  if (usd > 0 && usd < 0.01) return "~ $0.01 USD"
+  return `~ ${cardFiat(usd, "USD", locale)} USD`
+}
+
+function cardLabel(text: string, fullText: string): CardPriceLabel {
+  return { text, fullText }
+}
+
 function getDisplaySource(price: CommercePriceLike): SourcePriceQuote | null {
   if (price.sourcePrice) return price.sourcePrice
   if (!Number.isFinite(price.price) || !price.currency.trim()) return null
@@ -692,14 +740,19 @@ function getDisplaySource(price: CommercePriceLike): SourcePriceQuote | null {
 function formatSourceForPreference(
   source: SourcePriceQuote,
   preference: ShopperPricePreference,
-  locale: string
+  locale: string,
+  compact = false
 ): string {
   if (isSatsLikeCurrency(source.normalizedCurrency)) {
-    return formatBitcoinBaseUnits(source.amount, preference.bitcoinUnit, locale)
+    return (compact ? cardBitcoin : formatBitcoinBaseUnits)(
+      source.amount,
+      preference.bitcoinUnit,
+      locale
+    )
   }
 
   if (isMsatsLikeCurrency(source.normalizedCurrency)) {
-    return formatBitcoinBaseUnits(
+    return (compact ? cardBitcoin : formatBitcoinBaseUnits)(
       source.amount / MSATS_PER_SAT,
       preference.bitcoinUnit,
       locale
@@ -707,14 +760,18 @@ function formatSourceForPreference(
   }
 
   if (isBtcLikeCurrency(source.normalizedCurrency)) {
-    return `${source.amount.toLocaleString(locale, {
-      maximumFractionDigits: 8,
-    })} ${source.normalizedCurrency}`
+    return `${
+      compact && source.amount >= 1
+        ? compactNumber(source.amount, locale)
+        : source.amount.toLocaleString(locale, {
+            maximumFractionDigits: 8,
+          })
+    } ${source.normalizedCurrency}`
   }
 
   if (isFiatCurrencyCode(source.normalizedCurrency)) {
     try {
-      return `${formatFiatPrice(
+      return `${(compact ? cardFiat : formatFiatPrice)(
         source.amount,
         source.normalizedCurrency,
         locale
@@ -730,16 +787,18 @@ function formatSourceForPreference(
 function formatSourceContext(
   source: SourcePriceQuote,
   preference: ShopperPricePreference,
-  locale: string
+  locale: string,
+  compact = false
 ): string {
-  return formatSourceForPreference(source, preference, locale)
+  return formatSourceForPreference(source, preference, locale, compact)
 }
 
 function unavailableShopperDisplay(
   state: Exclude<ShopperPriceDisplayState, "ready">,
   preference: ShopperPricePreference,
   source: SourcePriceQuote | null,
-  locale: string
+  locale: string,
+  compact = false
 ): ShopperPriceDisplay {
   const primary =
     state === "rate_stale"
@@ -753,7 +812,9 @@ function unavailableShopperDisplay(
   return {
     state,
     primary,
-    secondary: source ? formatSourceContext(source, preference, locale) : null,
+    secondary: source
+      ? formatSourceContext(source, preference, locale, compact)
+      : null,
     approximateUsd: null,
     displayCurrency: preference.currency,
     sats: null,
@@ -776,7 +837,8 @@ function getApproximateUsdReference(
   preference: ShopperPricePreference,
   source: SourcePriceQuote | null,
   quote: BtcUsdRateQuote | null,
-  options: ShopperPriceDisplayOptions
+  options: ShopperPriceDisplayOptions,
+  compact = false
 ): string | null {
   if (
     preference.currency === "USD" ||
@@ -790,14 +852,17 @@ function getApproximateUsdReference(
     return null
   }
 
-  return formatApproxUsdFromSats(sats, quote)
+  return compact
+    ? cardUsd(sats, quote, options.locale ?? "en-US")
+    : formatApproxUsdFromSats(sats, quote)
 }
 
-export function getShopperPriceDisplay(
+function prepareShopperPriceDisplay(
   price: CommercePriceLike,
   preference: ShopperPricePreference = DEFAULT_SHOPPER_PRICE_PREFERENCE,
   quote: BtcUsdRateQuote | null = null,
-  options: ShopperPriceDisplayOptions = {}
+  options: ShopperPriceDisplayOptions = {},
+  compact = false
 ): ShopperPriceDisplay {
   const normalizedPreference = normalizeShopperPricePreference(preference)
   const locale = options.locale ?? "en-US"
@@ -810,7 +875,11 @@ export function getShopperPriceDisplay(
     return {
       state: "ready",
       primary: "Free",
-      secondary: formatBitcoinBaseUnits(0, "sats", locale),
+      secondary: (compact ? cardBitcoin : formatBitcoinBaseUnits)(
+        0,
+        "sats",
+        locale
+      ),
       approximateUsd: null,
       displayCurrency: normalizedPreference.currency,
       sats: 0,
@@ -850,13 +919,13 @@ export function getShopperPriceDisplay(
         : null)
     return {
       state: "ready",
-      primary: formatFiatPrice(
+      primary: (compact ? cardFiat : formatFiatPrice)(
         source.amount,
         normalizedPreference.currency,
         locale
       ),
       secondary: displaySats
-        ? formatBitcoinBaseUnits(
+        ? (compact ? cardBitcoin : formatBitcoinBaseUnits)(
             displaySats.sats,
             normalizedPreference.bitcoinUnit,
             locale
@@ -868,7 +937,8 @@ export function getShopperPriceDisplay(
             normalizedPreference,
             source,
             quote,
-            options
+            options,
+            compact
           )
         : null,
       displayCurrency: normalizedPreference.currency,
@@ -883,7 +953,8 @@ export function getShopperPriceDisplay(
       "rate_required",
       normalizedPreference,
       source,
-      locale
+      locale,
+      compact
     )
   }
 
@@ -899,7 +970,8 @@ export function getShopperPriceDisplay(
       "rate_stale",
       normalizedPreference,
       source,
-      locale
+      locale,
+      compact
     )
   }
 
@@ -926,7 +998,8 @@ export function getShopperPriceDisplay(
       state,
       normalizedPreference,
       source,
-      locale
+      locale,
+      compact
     )
   }
 
@@ -937,21 +1010,24 @@ export function getShopperPriceDisplay(
         isMsatsLikeCurrency(source.normalizedCurrency))
     return {
       state: "ready",
-      primary: `${sats.approximate ? "~ " : ""}${formatBitcoinBaseUnits(
+      primary: `${sats.approximate ? "~ " : ""}${(compact
+        ? cardBitcoin
+        : formatBitcoinBaseUnits)(
         sats.sats,
         normalizedPreference.bitcoinUnit,
         locale
       )}`,
       secondary:
         source && !sourceIsNative
-          ? formatSourceContext(source, normalizedPreference, locale)
+          ? formatSourceContext(source, normalizedPreference, locale, compact)
           : null,
       approximateUsd: getApproximateUsdReference(
         sats.sats,
         normalizedPreference,
         source,
         quote,
-        options
+        options,
+        compact
       ),
       displayCurrency: normalizedPreference.currency,
       sats: sats.sats,
@@ -970,7 +1046,8 @@ export function getShopperPriceDisplay(
       "rate_required",
       normalizedPreference,
       source,
-      locale
+      locale,
+      compact
     )
   }
 
@@ -981,20 +1058,21 @@ export function getShopperPriceDisplay(
       "invalid",
       normalizedPreference,
       source,
-      locale
+      locale,
+      compact
     )
   }
 
   return {
     state: "ready",
-    primary: `~ ${formatFiatPrice(
+    primary: `~ ${(compact ? cardFiat : formatFiatPrice)(
       displayAmount,
       normalizedPreference.currency,
       locale
     )}`,
     secondary: source
-      ? formatSourceContext(source, normalizedPreference, locale)
-      : formatBitcoinBaseUnits(
+      ? formatSourceContext(source, normalizedPreference, locale, compact)
+      : (compact ? cardBitcoin : formatBitcoinBaseUnits)(
           sats.sats,
           normalizedPreference.bitcoinUnit,
           locale
@@ -1004,12 +1082,53 @@ export function getShopperPriceDisplay(
       normalizedPreference,
       source,
       quote,
-      options
+      options,
+      compact
     ),
     displayCurrency: normalizedPreference.currency,
     sats: sats.sats,
     approximate: true,
     source,
+  }
+}
+
+export function getShopperPriceDisplay(
+  price: CommercePriceLike,
+  preference: ShopperPricePreference = DEFAULT_SHOPPER_PRICE_PREFERENCE,
+  quote: BtcUsdRateQuote | null = null,
+  options: ShopperPriceDisplayOptions = {}
+): ShopperPriceDisplay {
+  return prepareShopperPriceDisplay(price, preference, quote, options)
+}
+
+/** Catalog-only formatting; transactional display and numeric authority are unchanged. */
+export function getShopperCardPriceDisplay(
+  price: CommercePriceLike,
+  preference: ShopperPricePreference = DEFAULT_SHOPPER_PRICE_PREFERENCE,
+  quote: BtcUsdRateQuote | null = null,
+  options: ShopperPriceDisplayOptions = {}
+) {
+  // Use one freshness instant for both labels at the stale-rate boundary.
+  const cardOptions = { ...options, nowMs: options.nowMs ?? Date.now() }
+  const full = prepareShopperPriceDisplay(price, preference, quote, cardOptions)
+  const compact = prepareShopperPriceDisplay(
+    price,
+    preference,
+    quote,
+    cardOptions,
+    true
+  )
+  return {
+    ...full,
+    primary: cardLabel(compact.primary, full.primary),
+    secondary:
+      full.secondary === null
+        ? null
+        : cardLabel(compact.secondary!, full.secondary),
+    approximateUsd:
+      full.approximateUsd === null
+        ? null
+        : cardLabel(compact.approximateUsd!, full.approximateUsd),
   }
 }
 
@@ -1072,9 +1191,10 @@ export function getShopperSatsDisplay(
   }
 }
 
-export function getProductPriceDisplay(
+function prepareProductPriceDisplay(
   product: CommercePriceLike,
-  rateInput: PricingRateInput = null
+  rateInput: PricingRateInput = null,
+  compact = false
 ): { primary: string; secondary: string | null } {
   const sats = getPriceSats(product, rateInput)
   const source =
@@ -1086,24 +1206,67 @@ export function getProductPriceDisplay(
   if (!sats) {
     return {
       primary: "Price unavailable",
-      secondary: source ? formatSourcePrice(source) : "Conversion unavailable",
+      secondary: source
+        ? compact
+          ? formatSourceForPreference(
+              source,
+              DEFAULT_SHOPPER_PRICE_PREFERENCE,
+              "en-US",
+              true
+            )
+          : formatSourcePrice(source)
+        : "Conversion unavailable",
     }
   }
 
-  const primary = `${sats.approximate ? "~ " : ""}${formatSats(sats.sats)}`
+  const primary = `${sats.approximate ? "~ " : ""}${compact ? cardBitcoin(sats.sats, "sats", "en-US") : formatSats(sats.sats)}`
 
   if (sats.approximate && source) {
-    return { primary, secondary: formatSourcePrice(source) }
+    return {
+      primary,
+      secondary: compact
+        ? formatSourceForPreference(
+            source,
+            DEFAULT_SHOPPER_PRICE_PREFERENCE,
+            "en-US",
+            true
+          )
+        : formatSourcePrice(source),
+    }
   }
 
   if (getBtcUsdRate(rateInput)) {
     return {
       primary,
-      secondary: formatApproxUsdFromSats(sats.sats, rateInput),
+      secondary: compact
+        ? cardUsd(sats.sats, rateInput, "en-US")
+        : formatApproxUsdFromSats(sats.sats, rateInput),
     }
   }
 
   return { primary, secondary: null }
+}
+
+export function getProductPriceDisplay(
+  product: CommercePriceLike,
+  rateInput: PricingRateInput = null
+) {
+  return prepareProductPriceDisplay(product, rateInput)
+}
+
+export function getProductCardPriceDisplay(
+  product: CommercePriceLike,
+  rateInput: PricingRateInput = null
+) {
+  const full = prepareProductPriceDisplay(product, rateInput)
+  const compact = prepareProductPriceDisplay(product, rateInput, true)
+  return {
+    primary: cardLabel(compact.primary, full.primary),
+    secondary:
+      full.secondary === null
+        ? null
+        : cardLabel(compact.secondary!, full.secondary),
+  }
 }
 
 export function getComparablePriceValue(

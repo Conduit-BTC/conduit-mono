@@ -42,7 +42,7 @@ export function ProductVariationSelector({
       onKeyDown={(event) => event.stopPropagation()}
     >
       {model.axes.map((axis) => (
-        <div key={axis.key} className="space-y-1.5">
+        <div key={axis.key} className="space-y-1">
           <label
             className={cn(
               "font-medium text-[var(--text-secondary)]",

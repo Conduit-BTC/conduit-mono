@@ -35,6 +35,7 @@ import {
   type ShopperShippingPreset,
 } from "@conduit/core"
 import {
+  PageLayout,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -151,14 +152,14 @@ function UnlockPanel({
   return (
     <section>
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Unlock shipping preset
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
           Enter the password that protects this relay-stored preset.
         </p>
       </div>
-      <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] p-5 shadow-[var(--shadow-glass-inset)]">
+      <div className="mt-3 min-w-0 border-t border-[var(--border)] pt-5">
         <div className="grid max-w-md gap-2">
           <Label htmlFor="preset-unlock-password">Password</Label>
           <Input
@@ -168,7 +169,7 @@ function UnlockPanel({
             value={password}
             disabled={busy}
             maxLength={SHOPPER_PRESET_PASSWORD_MAX_BYTES}
-            className="h-11 rounded-xl"
+            className="h-11 rounded-[var(--radius-md)]"
             onChange={(event) => setPassword(event.target.value)}
           />
           <p
@@ -186,13 +187,13 @@ function UnlockPanel({
           />
         </div>
         {message && (
-          <p className="mt-4 text-sm text-[var(--error)]" role="alert">
+          <p className="mt-4 text-sm text-[var(--error-text)]" role="alert">
             {message}
           </p>
         )}
         <div className="mt-5 flex flex-wrap gap-2">
           <Button
-            className="rounded-xl"
+            className="rounded-[var(--radius-md)]"
             disabled={busy || !!passwordError}
             onClick={() => void unlock()}
           >
@@ -201,7 +202,7 @@ function UnlockPanel({
           </Button>
           <Button
             variant="outline"
-            className="rounded-xl"
+            className="rounded-[var(--radius-md)]"
             disabled={busy}
             onClick={onReplace}
           >
@@ -230,7 +231,10 @@ function UnlockPolicySelect({
         disabled={disabled}
         onValueChange={(next) => onChange(next as ShopperPresetsUnlockPolicy)}
       >
-        <SelectTrigger id="preset-unlock-policy" className="h-11 rounded-xl">
+        <SelectTrigger
+          id="preset-unlock-policy"
+          className="h-11 rounded-[var(--radius-md)]"
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -474,7 +478,7 @@ function PreferencesPage() {
       ) : null}
       <section>
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
             Shipping address
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
@@ -483,7 +487,7 @@ function PreferencesPage() {
           </p>
           {clearedRemotePreset && (
             <div
-              className="mt-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]"
+              className="mt-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]"
               role="status"
             >
               No checkout preset is currently saved. Enter new defaults to
@@ -491,7 +495,7 @@ function PreferencesPage() {
             </div>
           )}
         </div>
-        <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <div className="mt-3 min-w-0 border-t border-[var(--border)] pt-5">
           <div className="grid gap-4 sm:grid-cols-2">
             <PresetInput
               id="preset-recipient"
@@ -512,8 +516,8 @@ function PreferencesPage() {
                 placeholder="Choose a country"
                 searchPlaceholder="Search countries"
                 emptyText="No supported countries found."
-                triggerClassName="h-11 rounded-xl bg-[var(--surface-elevated)]"
-                contentClassName="rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+                triggerClassName="h-11 rounded-[var(--radius-md)] bg-[var(--surface-elevated)]"
+                contentClassName="rounded-[var(--radius-md)] border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
               />
               <div className="min-h-5">
                 <p
@@ -585,13 +589,13 @@ function PreferencesPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Checkout defaults
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
           Choose the payment path and price display used by Market.
         </p>
-        <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <div className="mt-3 min-w-0 border-t border-[var(--border)] pt-5">
           <div className="grid gap-5 sm:grid-cols-2 sm:items-end">
             <div className="grid content-start gap-2">
               <Label htmlFor="preset-payment-rail">
@@ -609,7 +613,7 @@ function PreferencesPage() {
               >
                 <SelectTrigger
                   id="preset-payment-rail"
-                  className="h-11 rounded-xl"
+                  className="h-11 rounded-[var(--radius-md)]"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -639,7 +643,7 @@ function PreferencesPage() {
               >
                 <SelectTrigger
                   id="preset-display-currency"
-                  className="h-11 rounded-xl"
+                  className="h-11 rounded-[var(--radius-md)]"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -652,7 +656,7 @@ function PreferencesPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 sm:col-span-2">
+            <div className="flex h-11 items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 sm:col-span-2">
               <Label htmlFor="preset-sats-standard" className="cursor-pointer">
                 Display Bitcoin amounts in sats
               </Label>
@@ -676,16 +680,16 @@ function PreferencesPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Encryption
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
           Protect this preset with a password that is separate from your signer.
         </p>
-        <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <div className="mt-3 min-w-0 border-t border-[var(--border)] pt-5">
           <div className="flex gap-3 text-sm text-[var(--text-secondary)]">
             <ShieldCheck
-              className="mt-0.5 size-5 shrink-0 text-[var(--success)]"
+              className="mt-0.5 size-5 shrink-0 text-[var(--success-text)]"
               aria-hidden="true"
             />
             <p className="leading-6">
@@ -735,11 +739,11 @@ function PreferencesPage() {
 
       <div
         id="preferences-save-requirements"
-        className="rounded-[1.5rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] px-5 py-4 shadow-[var(--shadow-glass-inset)]"
+        className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] px-5 py-4 "
         aria-live="polite"
       >
         {saveBlockers.length === 0 ? (
-          <div className="flex items-center gap-2 text-sm font-medium text-[var(--success)]">
+          <div className="flex items-center gap-2 text-sm font-medium text-[var(--success-text)]">
             <CircleCheck className="size-4" aria-hidden="true" />
             Ready to save
           </div>
@@ -747,7 +751,7 @@ function PreferencesPage() {
           <>
             <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
               <CircleAlert
-                className="size-4 text-[var(--warning)]"
+                className="size-4 text-[var(--warning-text)]"
                 aria-hidden="true"
               />
               {saveBlockers.length} save requirement
@@ -764,7 +768,7 @@ function PreferencesPage() {
 
       {resultMessage && (
         <div
-          className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]"
+          className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]"
           role="status"
         >
           {resultMessage}
@@ -776,7 +780,7 @@ function PreferencesPage() {
           <Button
             variant="outline"
             size="sm"
-            className="rounded-xl"
+            className="rounded-[var(--radius-md)]"
             disabled={busy || !presets.signerReady}
             onClick={() => void presets.refresh()}
           >
@@ -787,7 +791,7 @@ function PreferencesPage() {
             <Button
               variant="outline"
               size="sm"
-              className="rounded-xl"
+              className="rounded-[var(--radius-md)]"
               onClick={lock}
               disabled={busy}
             >
@@ -799,7 +803,7 @@ function PreferencesPage() {
             <Button
               variant="outline"
               size="sm"
-              className="rounded-xl"
+              className="rounded-[var(--radius-md)]"
               onClick={() => setClearOpen(true)}
               disabled={
                 busy ||
@@ -813,7 +817,7 @@ function PreferencesPage() {
           )}
         </div>
         <Button
-          className="h-11 rounded-2xl px-5"
+          className="h-11 rounded-[var(--radius-md)] px-5"
           onClick={() => void save()}
           disabled={busy || !presets.signerReady || saveBlockers.length > 0}
           aria-describedby="preferences-save-requirements"
@@ -862,13 +866,13 @@ function PreferencesFrame({
   children: ReactNode
 }) {
   return (
-    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--secondary-500)_14%,transparent),transparent_35%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
+        <section className="min-w-0">
           <div className="space-y-8">
             <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <h1 className="font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="font-heading text-3xl font-semibold text-[var(--text-primary)]">
                   Preferences
                 </h1>
                 <p className="mt-4 max-w-xl text-base leading-7 text-[var(--text-secondary)]">
@@ -889,17 +893,17 @@ function PreferencesFrame({
           </div>
         </section>
       </div>
-    </div>
+    </PageLayout>
   )
 }
 
 function PriceDisplaySettings() {
   const shopperPricing = useShopperPricing()
   return (
-    <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
+    <section>
       <div className="flex items-center gap-2">
         <WalletCards className="h-4 w-4 text-[var(--text-muted)]" />
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Price display
         </h2>
       </div>
@@ -907,7 +911,7 @@ function PriceDisplaySettings() {
         This changes labels only; listings, invoices, and payments keep their
         original values.
       </p>
-      <div className="mt-4 grid gap-5 sm:grid-cols-2 sm:items-end">
+      <div className="mt-3 grid min-w-0 gap-5 border-t border-[var(--border)] pt-5 sm:grid-cols-2 sm:items-end">
         <div className="grid gap-2">
           <Label htmlFor="display-currency">Preferred currency</Label>
           <Select
@@ -916,7 +920,10 @@ function PriceDisplaySettings() {
               shopperPricing.setCurrency(value as ShopperDisplayCurrency)
             }
           >
-            <SelectTrigger id="display-currency" className="h-11 rounded-xl">
+            <SelectTrigger
+              id="display-currency"
+              className="h-11 rounded-[var(--radius-md)]"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -930,7 +937,7 @@ function PriceDisplaySettings() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4">
+        <div className="flex min-h-11 items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4">
           <Label
             htmlFor="sats-standard"
             className="cursor-pointer text-sm font-medium"
@@ -985,7 +992,7 @@ function PresetInput({
         autoComplete={autoComplete}
         maxLength={maxLength}
         required={required}
-        className="h-11 rounded-xl"
+        className="h-11 rounded-[var(--radius-md)]"
         onChange={(event) => onChange(event.target.value)}
       />
       <div className={helperRows === 2 ? "min-h-10" : "min-h-5"}>

@@ -51,7 +51,7 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 
 - Use a dark, high-contrast base with luminous brand accents.
 - Keep structure calm: background, card, and border tones should recede so content and actions stand out.
-- Use purple as the core brand/action color, orange as a warm secondary accent, rose as a decorative highlight, and semantic colors for status.
+- Use the brand palette for actions and status: purple for primary actions, orange for attention, red for errors, green for confirmed success, and violet for information.
 - Favor deliberate typography hierarchy over extra decoration.
 - Use the shared tokens first; only add a new token when an existing one cannot express the intended role.
 
@@ -97,14 +97,21 @@ Typography is defined in `packages/ui/src/styles/typography.css`.
 
 ### Font Roles
 
-- `--font-display`: `Bricolage Grotesque` for strong brand moments and large headlines
-- `--font-heading`: `Bricolage Grotesque` for section titles and structured headings
-- `--font-body`: `Bricolage Grotesque` for paragraphs, forms, tables, and general UI copy
+- `--font-display`: `Poppins` for strong brand moments and large headlines
+- `--font-heading`: `Poppins` for section titles and structured headings
+- `--font-body`: `Poppins` for paragraphs, forms, tables, and general UI copy
 - `--font-mono`: system monospace stack for ids, pubkeys, technical metadata, and dense utility labels
+
+Poppins follows the primary type specimen in Conduit Design’s Brand Identity
+board (node `1153:44953`). The shared package bundles the same normal-style
+Latin WOFF2 files used by the landing site in weights 400, 500, 600 and 700, with
+the SIL Open Font License in `src/assets/fonts/Poppins-OFL.txt`. Fonts load from
+the app’s own assets with `font-display: swap`; no font service request or
+proprietary font is required. Other scripts use the system fallback stack.
 
 ### When To Use Each Font
 
-- Use `display` for hero titles, logo-adjacent lockups, and standout marketing moments.
+- Use `display` for large headlines and standout marketing moments. Use existing image/vector artwork for the logo; do not reproduce the wordmark with a runtime font.
 - Use `heading` for dashboards, section headings, card titles, and interface labels that need clarity.
 - Use `body` for all general reading and control text.
 - Use `mono` only for technical strings such as pubkeys, IDs, invoice references, and relay-like metadata.
@@ -113,13 +120,21 @@ Typography is defined in `packages/ui/src/styles/typography.css`.
 
 Use the `voice-*` scale from `packages/ui/src/styles/typography.css` when possible.
 
-- `voice-xs`, `voice-sm`, `voice-base`, `voice-lg` for supporting copy and product UI
+- `voice-base` (16 / 24) for normal reading, inputs and selectors
+- `voice-sm` (14 / 21) for short support text, labels, status and compact data
+- `voice-xs` (12 / 18) only for nonessential annotations, never instructions, prices, status or actions
+- `voice-lg` (18 / 27) for emphasis inside product UI
 - `voice-xl` to `voice-4xl` for headings inside app surfaces
 - `voice-5xl` and `voice-6xl` for landing and brand-heavy display moments
 
 Guidance:
 
-- Prefer a smaller number of clear typographic levels.
+- Prefer a smaller number of clear typographic levels. Keep body copy at weight 400, labels/actions at 500, and headings/prices at 600. Do not make paragraphs bold to compensate for small text.
+- Default line height is 1.5, including text without a size utility. Use 1.4 for compact headings; avoid single-spaced wrapping titles.
+- Poppins UI uses normal letter spacing. Do not inherit tightened display tracking for cards, dialogs or reading text.
+- Keep input/select values at 16 px on every viewport. Compact buttons retain at least 14 px text; density changes padding rather than making the label tiny.
+- Text controls use minimum heights so enlarged or spaced text can grow. Keep intentional horizontal scrolling within the named table region.
+- Workbench Preview controls include 200% root text and the WCAG text-spacing overrides. These are layout stress checks, not a substitute for browser zoom, physical-device or assistive-technology testing.
 - Avoid mixing display font into dense dashboard/table areas.
 - Avoid long blocks of all-caps text; reserve uppercase for tags, overlines, and tiny metadata.
 
@@ -131,10 +146,10 @@ Defined in `packages/ui/src/styles/theme.css`:
 
 - `primary-*`: brand purple, main action color
 - `secondary-*`: orange, warm support/action accent
-- `tertiary-*`: rose, decorative glow/highlight accent
-- `accent-*`: indigo, utility accent when purple is already occupied
+- `tertiary-*`: rose, decorative legacy accent only
+- `accent-*`: violet, informational and utility accent
 - `neutral-*`: gray scale for structure and type support
-- `success`, `warning`, `error`, `info`: semantic system colors
+- `success`, `warning`, `error`, `info`: green, orange, red and violet utility signals
 
 ### Semantic Tokens
 
@@ -151,15 +166,32 @@ Use these first in app code:
 - `--text-muted`
 - `--ring`
 
-### Figma / Asset Mapping
+### Brand Source And Derived UI Colors
 
-- `#05001D` -> `--background`
-- `#BB00FF` -> `--primary-500`
-- `#D32973` -> `--project-tip-heart` for the shared project-tip heart
-- merchant pink/rose glows -> `--tertiary-500`
-- dark card tones around `#211E31` -> express through `--surface`, `--surface-elevated`, and `--surface-dialog`
-- white text/icons -> `--text-primary` or token foreground equivalents
+The color authority is Conduit Design, Brand Identity, **Brand elements / Colors**
+(node `1153:44774`, the palette in the brand guide). The five source swatches are:
 
+| Swatch | Exact value | Shared anchor / palette role                                     |
+| ------ | ----------- | ---------------------------------------------------------------- |
+| Ink    | `#05001D`   | `--brand-ink`, Night Market background, orange-action foreground |
+| Purple | `#BB00FF`   | `--brand-purple`, `--primary-500`                                |
+| Orange | `#F7771B`   | `--brand-orange`, `--secondary-500`, warning signal              |
+| Rose   | `#D32973`   | `--brand-rose`, decorative legacy accent only                    |
+| Violet | `#5521C3`   | `--brand-violet`, `--accent-500`, informational signal           |
+
+The other palette steps are derived UI shades/tints with the source hue and
+saturation; they are not additional brand-guide swatches. Neutral surfaces remain
+shared theme infrastructure. Night Market muted text uses neutral-400 and Day
+Market uses neutral-600 so placeholders and lower-emphasis copy remain readable.
+The light supporting-grey token is unchanged. Use semantic foreground roles for readable copy:
+exact orange, purple and rose do not all pass small-text contrast on both base
+surfaces. Orange actions pair the exact orange fill with ink text. Destructive
+actions use a proper red fill, darkened enough for readable white labels. Error
+copy uses red semantic foregrounds. Success uses green fills/icons and readable
+green foregrounds in both themes. `--brand-red` is the approved red utility
+anchor; the historical rose swatch is decorative and never an error signal.
+
+The Foundations workbench shows the exact anchors beside live status components.
 Use token mapping rather than copying raw asset colors into components.
 
 ## Color Usage Rules
@@ -180,28 +212,36 @@ Use token mapping rather than copying raw asset colors into components.
 ### Text
 
 - Use `text-[var(--text-primary)]` for default foreground text.
+- Use `--link-text` for purple links and text emphasis, including hover states. Keep `--primary-500` for brand fills and borders.
 - Use `text-[var(--text-secondary)]` for supporting copy.
-- Use `text-[var(--text-muted)]` for tiny metadata, hints, and inactive labels.
+- Use `text-[var(--text-secondary)]` for readable metadata and hints. Use `--text-muted` for lower-emphasis readable text and placeholders, with contrast verified on the actual surface. Disabled controls have their own explicit disabled treatment; do not use faint text to imply disabled state.
 - Prefer `--text-secondary` over ad hoc opacity on `--text-primary` unless a specific art direction calls for it.
 
 ### Actions And Emphasis
 
 - Use `primary` for primary CTAs, active filters, selection, and brand emphasis.
 - Use `secondary` for warm support states, merchant/signer accents, and warm highlights.
-- Use `tertiary` for decorative radial glows and accent lighting, not as the main CTA color.
-- Use `accent` sparingly when a non-purple utility distinction is helpful.
+- Use `error` and the destructive action tokens for errors and destructive actions. Keep `tertiary` for deliberate decorative rose highlights only.
+- Use `accent` for information and deliberate violet utility emphasis.
 
 ### Status Colors
 
-- Use `success`, `warning`, `error`, and `info` tokens for system state.
+- Use `success`, `warning`, `error`, and `info` for signal fills. Use the matching `--success-text`, `--warning-text`, `--error-text`, and `--info-text` roles for readable state labels in both themes.
+- Ready/success uses green and a checkmark, warning uses brand orange, error uses proper red, and information uses violet. Small success/error/information text uses readable shades in Day Market and tints in Night Market. Day Market warning labels use a darker readable orange foreground; exact orange remains the signal color. Always preserve explicit words and distinct icons.
+- Passive status uses `StatusPill` (historical export name): icon and text, without a capsule. Use a small rectangular `Badge` for attention or classification, plain text for routine counts, and a real pressed/removable control for an active filter.
 - Do not use Tailwind palette shortcuts like `text-emerald-400`, `text-amber-300`, or `bg-fuchsia-500` in app UI.
 
 ### Shadows And Effects
 
-- Use Tailwind shadow tokens (`shadow-sm`, `shadow-md`, `shadow-lg`, `shadow-xl`) when they fit.
-- Use `shadow-[var(--shadow-glass-inset)]` for the recurring glass top-edge highlight.
+- Persistent content is flat by default. Use spacing and rules before adding a containing card.
+- Reserve depth for overlays. Do not add glass highlights or hover shadows to passive labels, product listings or settings groups.
 - Use `shadow-[var(--shadow-dialog)]` for dialog depth.
 - Decorative glow effects should derive from token colors via `color-mix(...)`, not raw `rgba(...)` values.
+
+### Field Spacing
+
+- Labels render as blocks with a readable line height. `Field` uses a 4 px label-to-control gap and 8 px before help or error text.
+- Do not rely on vertical margins on inline labels; they do not establish the intended label-to-control separation.
 
 ## Hardcoded Value Policy
 
@@ -220,8 +260,8 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 ### Surfaces
 
 - Keep most panels restrained and readable.
-- Let texture come from subtle border, blur, and highlight treatment rather than heavy gradients everywhere.
-- Reserve stronger gradients for onboarding, confirmations, charts, and brand storytelling moments.
+- Let product imagery, merchant identity, type and aligned information provide character. Avoid repeating a panel around every section or nesting panels solely for visual grouping.
+- Do not use decorative gradients or glass highlights in app pages, onboarding, settings, or status. Product imagery and merchant-provided banners retain their own artwork. The existing tip celebration is a named, isolated motion effect; it is not a surface recipe.
 
 ### Motion
 
@@ -238,21 +278,22 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 ### Radius And Shape
 
 - Use the radius tokens from `theme.css` and Tailwind config.
-- Larger panels may use `rounded-[2rem]` when they are hero surfaces or modal shells.
-- Smaller controls should stay within the shared radius system.
+- Default to 4 px for tags/media/segmented choices, 8 px for contained cards and 12 px for dialogs. Most buttons and fields retain the established small control radius.
+- Settings use headings and rules. Product cards retain one 8 px-radius bordered surface: media uses the same outer curvature minus the border thickness, including hover/variation panels. Catalog titles and merchant names truncate to one line, retain full accessible text and native titles, and reveal details through the product/store action. Use 8 px phone body padding and grid gaps; primary Bitcoin prices are readable orange at 14 px and remain alongside Add. Hide the visible Add label only below 360 px while retaining its full accessible name and 44 px target. Nonessential secondary conversion estimates may use 12 px and truncate. Cards omit approximation glyphs; payment and checkout precision remains unchanged. Options/notices may add necessary content, while ordinary catalog identity does not grow with name length. Avoid adding another frame inside it.
+- Fully round geometry belongs to avatars, switches and genuine circular controls. Do not use a capsule as the default for status, metadata or navigation.
 
-## Approved Patterns
+## Shared Patterns
 
 ### Standard Card
 
 ```tsx
-<section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+<section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
 ```
 
-### Elevated Input Or Nested Panel
+### Selected Control Surface
 
 ```tsx
-<div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+<div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)]">
 ```
 
 ### Dialog Shell
@@ -261,11 +302,9 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 <DialogContent className="border-[var(--border)] bg-[var(--surface-dialog)] shadow-[var(--shadow-dialog)]" />
 ```
 
-### Decorative Glow Using Tokens
+### Settings Composition
 
-```tsx
-<div className="bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_16%,transparent),transparent_36%)]" />
-```
+Use `PageLayout` and `PageHeader` for the page, and shared preference sections or headings with rules for settings groups. Avoid a page card containing more cards. Use one contained card only where identity, selectable content, a notice or a distinct interaction requires it.
 
 ### Active Brand State
 

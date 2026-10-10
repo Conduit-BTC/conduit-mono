@@ -520,7 +520,7 @@ describe("Market wallet route contracts", () => {
       /const prepare = async \(\) => \{[\s\S]{0,1200}hasUnresolvedSparkSend\(wallet\.id\)[\s\S]{0,160}setOutcome\("ambiguous"\)/
     )
     expect(wallet).toMatch(
-      /outcome === "ambiguous"\s+\? "rounded-xl border[^"]*text-\[var\(--text-secondary\)\] outline-none"/
+      /outcome === "ambiguous"\s+\? "rounded-\[var\(--radius-md\)\] border[^"]*text-\[var\(--text-secondary\)\] outline-none"/
     )
   })
 

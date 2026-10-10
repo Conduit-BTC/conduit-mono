@@ -64,11 +64,11 @@ export function ProductShippingMeasurements({
   return (
     <section
       aria-label={label}
-      className="space-y-3 rounded-xl border border-[var(--border)] p-3"
+      className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3"
     >
       <div className="grid grid-cols-2 gap-3">
         {!hideMeasurements && (
-          <div className="min-w-0 space-y-1.5">
+          <div className="min-w-0 space-y-1">
             <Label htmlFor={`${idPrefix}-shipping-weight`}>
               Shipping weight
             </Label>
@@ -88,7 +88,7 @@ export function ProductShippingMeasurements({
             />
           </div>
         )}
-        <div className="min-w-0 space-y-1.5">
+        <div className="min-w-0 space-y-1">
           <Label htmlFor={`${idPrefix}-weight-unit`}>Weight unit</Label>
           <Select
             disabled={disabled}
@@ -118,7 +118,7 @@ export function ProductShippingMeasurements({
         </summary>
         {form.shippingPricingMode === "weight_table" && (
           <div className="mt-2 grid grid-cols-2 gap-3">
-            <div className="min-w-0 space-y-1.5">
+            <div className="min-w-0 space-y-1">
               <Label htmlFor={`${idPrefix}-packing-weight`}>
                 Extra packing weight
               </Label>
@@ -133,7 +133,7 @@ export function ProductShippingMeasurements({
                 }
               />
             </div>
-            <div className="min-w-0 space-y-1.5">
+            <div className="min-w-0 space-y-1">
               <Label htmlFor={`${idPrefix}-handling-charge`}>
                 Handling per item
               </Label>
@@ -160,7 +160,7 @@ export function ProductShippingMeasurements({
                 ["shippingHeightCm", "Height"],
               ] as const
             ).map(([field, label]) => (
-              <div key={field} className="min-w-0 space-y-1.5">
+              <div key={field} className="min-w-0 space-y-1">
                 <Label htmlFor={`${idPrefix}-${field}`}>{label}</Label>
                 <InputWithSuffix
                   id={`${idPrefix}-${field}`}
@@ -178,7 +178,10 @@ export function ProductShippingMeasurements({
         )}
       </details>
       {warnings.map((warning) => (
-        <p key={warning} className="text-pretty text-sm text-warning">
+        <p
+          key={warning}
+          className="text-pretty text-sm text-[var(--warning-text)]"
+        >
           {warning}
         </p>
       ))}
@@ -186,7 +189,7 @@ export function ProductShippingMeasurements({
         <p
           id={`${idPrefix}-shipping-weight-error`}
           role="alert"
-          className="text-pretty text-sm text-error"
+          className="text-pretty text-sm text-[var(--error-text)]"
         >
           {error}
         </p>

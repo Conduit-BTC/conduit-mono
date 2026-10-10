@@ -1,30 +1,37 @@
 /*
  * Conduit Design System
- * HSL-based color tokens with 11-level scales
- * Based on Figma: Conduit High-Fi - Website
+ * Brand anchors: Conduit Design / Brand Identity / Brand elements colors.
+ * Figma node 1153:44774. Non-500 HSL steps are derived UI shades and tints.
  */
 
 :root,
 :root[data-theme="night-market"] {
   color-scheme: dark;
-  --theme-color: #0a0614;
+  /* Exact source swatches. Keep these separate from derived UI colors. */
+  --brand-ink: #05001d;
+  --brand-purple: #bb00ff;
+  --brand-orange: #f7771b;
+  --brand-rose: #d32973; /* Decorative legacy anchor; never utility error. */
+  --brand-red: #ef4444;
+  --brand-violet: #5521c3;
+  --theme-color: var(--brand-ink);
   --cash-app-green: #00e013;
-  --project-tip-heart: #d32973;
+  --project-tip-heart: var(--brand-rose);
 
   /* Base hue/saturation for color calculations */
   --base-h: 0;
   --base-s: 0%;
 
   /* Primary - Purple */
-  --primary-h: 280;
-  --primary-s: 94%;
+  --primary-h: 284;
+  --primary-s: 100%;
   --primary-50: hsla(var(--primary-h), var(--primary-s), 97%, 1);
   --primary-100: hsla(var(--primary-h), var(--primary-s), 94%, 1);
   --primary-150: hsla(var(--primary-h), var(--primary-s), 90%, 1);
   --primary-200: hsla(var(--primary-h), var(--primary-s), 85%, 1);
   --primary-300: hsla(var(--primary-h), var(--primary-s), 75%, 1);
   --primary-400: hsla(var(--primary-h), var(--primary-s), 65%, 1);
-  --primary-500: hsla(var(--primary-h), var(--primary-s), 50%, 1);
+  --primary-500: var(--brand-purple);
   --primary-600: hsla(var(--primary-h), var(--primary-s), 40%, 1);
   --primary-700: hsla(var(--primary-h), var(--primary-s), 30%, 1);
   --primary-800: hsla(var(--primary-h), var(--primary-s), 20%, 1);
@@ -32,15 +39,15 @@
   --primary-950: hsla(var(--primary-h), var(--primary-s), 6%, 1);
 
   /* Secondary - Orange */
-  --secondary-h: 24;
-  --secondary-s: 77%;
+  --secondary-h: 25.09;
+  --secondary-s: 93.22%;
   --secondary-50: hsla(var(--secondary-h), var(--secondary-s), 97%, 1);
   --secondary-100: hsla(var(--secondary-h), var(--secondary-s), 94%, 1);
   --secondary-150: hsla(var(--secondary-h), var(--secondary-s), 90%, 1);
   --secondary-200: hsla(var(--secondary-h), var(--secondary-s), 85%, 1);
   --secondary-300: hsla(var(--secondary-h), var(--secondary-s), 75%, 1);
   --secondary-400: hsla(var(--secondary-h), var(--secondary-s), 65%, 1);
-  --secondary-500: hsla(var(--secondary-h), var(--secondary-s), 50%, 1);
+  --secondary-500: var(--brand-orange);
   --secondary-600: hsla(var(--secondary-h), var(--secondary-s), 40%, 1);
   --secondary-700: hsla(var(--secondary-h), var(--secondary-s), 30%, 1);
   --secondary-800: hsla(var(--secondary-h), var(--secondary-s), 20%, 1);
@@ -48,31 +55,31 @@
   --secondary-950: hsla(var(--secondary-h), var(--secondary-s), 6%, 1);
 
   /* Tertiary - Rose */
-  --tertiary-h: 338;
-  --tertiary-s: 54%;
+  --tertiary-h: 333.88;
+  --tertiary-s: 67.46%;
   --tertiary-50: hsla(var(--tertiary-h), var(--tertiary-s), 97%, 1);
   --tertiary-100: hsla(var(--tertiary-h), var(--tertiary-s), 94%, 1);
   --tertiary-150: hsla(var(--tertiary-h), var(--tertiary-s), 90%, 1);
   --tertiary-200: hsla(var(--tertiary-h), var(--tertiary-s), 85%, 1);
   --tertiary-300: hsla(var(--tertiary-h), var(--tertiary-s), 75%, 1);
   --tertiary-400: hsla(var(--tertiary-h), var(--tertiary-s), 65%, 1);
-  --tertiary-500: hsla(var(--tertiary-h), var(--tertiary-s), 50%, 1);
+  --tertiary-500: var(--brand-rose);
   --tertiary-600: hsla(var(--tertiary-h), var(--tertiary-s), 40%, 1);
   --tertiary-700: hsla(var(--tertiary-h), var(--tertiary-s), 30%, 1);
   --tertiary-800: hsla(var(--tertiary-h), var(--tertiary-s), 20%, 1);
   --tertiary-900: hsla(var(--tertiary-h), var(--tertiary-s), 12%, 1);
   --tertiary-950: hsla(var(--tertiary-h), var(--tertiary-s), 6%, 1);
 
-  /* Accent - Indigo */
-  --accent-h: 255;
-  --accent-s: 67%;
+  /* Accent - Violet */
+  --accent-h: 259.26;
+  --accent-s: 71.05%;
   --accent-50: hsla(var(--accent-h), var(--accent-s), 97%, 1);
   --accent-100: hsla(var(--accent-h), var(--accent-s), 94%, 1);
   --accent-150: hsla(var(--accent-h), var(--accent-s), 90%, 1);
   --accent-200: hsla(var(--accent-h), var(--accent-s), 85%, 1);
   --accent-300: hsla(var(--accent-h), var(--accent-s), 75%, 1);
   --accent-400: hsla(var(--accent-h), var(--accent-s), 65%, 1);
-  --accent-500: hsla(var(--accent-h), var(--accent-s), 50%, 1);
+  --accent-500: var(--brand-violet);
   --accent-600: hsla(var(--accent-h), var(--accent-s), 40%, 1);
   --accent-700: hsla(var(--accent-h), var(--accent-s), 30%, 1);
   --accent-800: hsla(var(--accent-h), var(--accent-s), 20%, 1);
@@ -95,11 +102,21 @@
   --neutral-900: hsla(var(--neutral-h), var(--neutral-s), 10%, 1);
   --neutral-950: hsla(var(--neutral-h), var(--neutral-s), 5%, 1);
 
-  /* Semantic Colors */
+  /* Utility signals remain recognizable independently of the brand accents. */
   --success: hsla(142, 71%, 45%, 1);
-  --warning: hsla(38, 92%, 50%, 1);
-  --error: hsla(0, 84%, 60%, 1);
-  --info: hsla(217, 91%, 60%, 1);
+  --warning: var(--brand-orange);
+  --error: var(--brand-red);
+  --info: var(--brand-violet);
+
+  /* Readable copy on base surfaces. These are UI roles, not extra brand swatches. */
+  --success-text: hsla(142, 71%, 55%, 1);
+  --warning-text: var(--brand-orange);
+  --error-text: var(--brand-red);
+  --info-text: var(--accent-300);
+  --link-text: var(--primary-300);
+  --destructive-action: hsla(0, 72%, 51%, 1);
+  --destructive-action-hover: hsla(0, 74%, 42%, 1);
+  --bitcoin-price: var(--brand-orange);
 
   /* Text on colored/dark surfaces (e.g. gradient buttons, filled badges) */
   --on-primary: hsla(0, 0%, 100%, 1);
@@ -114,7 +131,7 @@
    * shadcn/ui semantic tokens (canonical)
    * Keep these as the primary contract for shared UI components.
    */
-  --background: #05001d;
+  --background: var(--brand-ink);
   --foreground: var(--neutral-50);
 
   --card: rgba(255, 255, 255, 0.04);
@@ -127,7 +144,7 @@
   --primary-foreground: white;
 
   --secondary: var(--secondary-500);
-  --secondary-foreground: white;
+  --secondary-foreground: var(--brand-ink);
 
   --muted: rgba(255, 255, 255, 0.06);
   --muted-foreground: var(--neutral-300);
@@ -145,7 +162,7 @@
    */
   --text-primary: var(--foreground);
   --text-secondary: var(--muted-foreground);
-  --text-muted: var(--neutral-500);
+  --text-muted: var(--neutral-400);
   --text-inverse: var(--background);
 
   /* Back-compat surfaces */
@@ -217,6 +234,15 @@
   --foreground: var(--neutral-900);
   --theme-color: var(--background);
 
+  /* Foreground roles retain their hue with enough contrast for small copy. */
+  --warning-text: hsla(25, 100%, 30%, 1);
+  --success: hsla(142, 72%, 35%, 1);
+  --success-text: hsla(142, 72%, 24%, 1);
+  --error-text: hsla(0, 74%, 42%, 1);
+  --bitcoin-price: hsla(25, 100%, 34%, 1);
+  --info-text: var(--brand-violet);
+  --link-text: var(--primary-600);
+
   /* Tier 1 - base panels / cards */
   --card: white;
   --card-foreground: var(--foreground);
@@ -230,7 +256,7 @@
 
   --text-primary: var(--foreground);
   --text-secondary: var(--muted-foreground);
-  --text-muted: var(--neutral-500);
+  --text-muted: var(--neutral-600);
   --text-inverse: white;
 
   /* Semantic surface aliases */

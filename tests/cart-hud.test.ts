@@ -26,13 +26,13 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("var(--primary-500)_9%,transparent")
     expect(source).toContain("var(--primary-500)_10%,transparent")
     expect(source).toContain("var(--primary-500)_5%,transparent")
-    expect(source).toContain("shadow-[var(--shadow-glass-inset)]")
+    expect(source).not.toContain("shadow-[var(--shadow-glass-inset)]")
     expect(source).toContain("market-cart-hud-surface")
     expect(styles).toContain("var(--background) 92%, transparent")
     expect(styles).toContain("var(--warning) 1%, var(--surface)")
     expect(source).toContain('aria-label="Cart products"')
     expect(source).toContain("linear-gradient(to right")
-    expect(source).toContain("rounded-xl border-0 p-1")
+    expect(source).toContain("rounded-[var(--radius-md)] border-0 p-1")
     expect(source).toContain('displayedGroups.length > 1 && "pr-[50%]"')
     // Three-column header: shrink-free glyph, minmax(0,1fr) merchant rail,
     // shrink-free disclosure + CTA controls. No magic width subtraction.

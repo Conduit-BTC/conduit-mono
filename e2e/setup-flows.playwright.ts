@@ -2569,6 +2569,15 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await expect(
     page.getByRole("heading", { name: "Unlock shipping preset" })
   ).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Price display", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("combobox", { name: "Preferred currency" })
+  ).toBeEnabled()
+  await expect(
+    page.getByRole("switch", { name: "Sats the standard" })
+  ).toBeEnabled()
   const unlockPassword = page.getByLabel("Password", { exact: true })
   await expect(unlockPassword).toHaveAttribute("maxlength", "1024")
   await page.getByRole("button", { name: "Replace forgotten preset" }).click()

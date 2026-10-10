@@ -19,7 +19,7 @@ describe("SegmentedControl", () => {
       /^<div class="inline-flex[^>]*role="group" aria-label="Perspective"/
     )
     expect(html).toMatch(
-      /<button type="button"[^>]*bg-\[var\(--surface-elevated\)\][^>]*aria-pressed="true"/
+      /<button type="button"[^>]*bg-\[var\(--text-primary\)\][^>]*aria-pressed="true"/
     )
     expect(html).toMatch(/<button type="button" disabled=""[^>]*opacity-45/)
   })
@@ -39,7 +39,7 @@ describe("SegmentedControl", () => {
 
     expect(html).toMatch(/^<nav aria-label="Browse" class="inline-flex/)
     expect(html).toContain(
-      '<a href="/products" aria-current="page" class="inline-flex h-9'
+      '<a href="/products" aria-current="page" class="inline-flex h-11'
     )
     expect(html).not.toContain("<button")
     expect(html).not.toContain("type=")

@@ -10,7 +10,7 @@ export function ProfileBanner({ src }: ProfileBannerProps) {
   return (
     <div
       data-profile-banner
-      className="relative h-28 w-full overflow-hidden bg-gradient-to-r from-[var(--surface-elevated)] to-[var(--surface)] sm:h-40 lg:h-48"
+      className="relative h-28 w-full overflow-hidden bg-[var(--surface)] sm:h-40 lg:h-48"
     >
       {bannerSrc ? (
         <img

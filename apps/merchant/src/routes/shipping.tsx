@@ -19,7 +19,7 @@ import {
   type MerchantShippingRevision,
   type MerchantShippingSettings,
 } from "@conduit/core"
-import { Badge, Button, SignedActionStatus } from "@conduit/ui"
+import { PageLayout, Badge, Button, SignedActionStatus } from "@conduit/ui"
 import { MerchantShippingPolicyEditor } from "../components/MerchantShippingPolicyEditor"
 import { ListingAreaPicker } from "../components/ListingAreaPicker"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
@@ -302,21 +302,21 @@ function ShippingPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <section className="min-w-0">
           <div className="space-y-8">
             {/* Header */}
             <div className="space-y-5">
               <div>
-                <h1 className="text-balance font-display text-4xl font-semibold text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-heading text-3xl font-semibold text-[var(--text-primary)]">
                   Shipping
                 </h1>
               </div>
             </div>
 
             <MerchantShippingPolicyEditor key={pubkey ?? "none"} />
-            <details className="rounded-2xl border border-[var(--border)] p-4 sm:p-5">
+            <details className="rounded-[var(--radius-md)] border border-[var(--border)] p-4 sm:p-5">
               <summary className="cursor-pointer text-balance font-semibold">
                 <span>Listing area and fixed-shipping defaults</span>
                 {retainedSettings && (
@@ -370,7 +370,7 @@ function ShippingPage() {
                 </section>
                 <section className="space-y-4">
                   <div>
-                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--link-text)]">
                       DESTINATIONS
                     </div>
                     <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
@@ -379,7 +379,7 @@ function ShippingPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                  <div className="min-w-0 border-t border-[var(--border)] pt-5">
                     <div className="space-y-4">
                       <ShippingDestinationsEditor
                         config={config}
@@ -394,7 +394,7 @@ function ShippingPage() {
 
                       {/* Plain-language summary */}
                       {config.countries.length > 0 && (
-                        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+                        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
                           <p className="text-xs font-medium text-[var(--text-secondary)] mb-1">
                             Summary
                           </p>
@@ -448,7 +448,7 @@ function ShippingPage() {
                     <div className="space-y-2">
                       <p
                         role="status"
-                        className="text-sm text-[var(--warning)]"
+                        className="text-sm text-[var(--warning-text)]"
                       >
                         Signed settings arrived while you were editing. Load
                         them before saving to preserve their destination rules
@@ -470,7 +470,7 @@ function ShippingPage() {
                   {retainedSettings && (
                     <p
                       role="status"
-                      className="text-pretty text-sm text-warning"
+                      className="text-pretty text-sm text-[var(--warning-text)]"
                     >
                       Your previously signed settings are preserved. Retry the
                       relay read before saving changes.
@@ -493,6 +493,6 @@ function ShippingPage() {
           </div>
         </section>
       </div>
-    </div>
+    </PageLayout>
   )
 }
