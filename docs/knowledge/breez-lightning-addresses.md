@@ -60,8 +60,12 @@ Reads are owner-scoped and authenticate through the active account signer.
 The curated rendezvous is relay.conduit.market, relay.damus.io and nos.lol;
 relay exclusions remain effective. Two independent operators must ACK and read
 back the exact encrypted record and primary pointer before sync is ready.
+Discovery queries the exact primary address and then its referenced backup
+by event ID, so unrelated NIP-78 records cannot crowd out the usual wallet.
+The capped broad scan remains necessary for additional wallets and conflicts.
 Partial/unavailable discovery preserves positive evidence but blocks new
-creation. Malformed/conflicting evidence remains a repair state. An encrypted
+creation; an unresolved primary reference remains a repair state.
+Malformed/conflicting evidence remains a repair state. An encrypted
 root reference distinguishes deliberate additional wallets from simultaneous
 first setups on different origins. Browser locks serialize one origin only;
 conflicting roots are retained and block another creation. Nostr has no global
@@ -69,6 +73,8 @@ compare-and-swap.
 
 Sign-in only reads/restores. Existing device-only recovery is published only by
 **Sync wallet recovery**, which discloses encrypt-to-self and relay storage.
+The shared surface confirms relay recovery only when backup and primary
+readiness is observed; failed or incomplete delivery remains unconfirmed.
 Password-encrypted recovery keeps its migration/fallback path. Save the phrase,
 network and actual account number even when sync is ready: relay availability
 and external signer support are independent recovery dependencies. NWC
@@ -218,7 +224,11 @@ NIP-44/signatures and an isolated NIP-42 relay, including concurrent setup.
 `tests/signer-spark-relay-recovery.test.ts` uses real cryptography and first-party
 identity derivation for fresh-store restore, partial discovery, immutable
 retries, revocation and conflicts. Exact Merchant settlement and immutable
-invoice bindings have focused workflow/adapter regressions. These are local
+invoice bindings have focused workflow/adapter regressions. Merchant-authored
+requests own invoice selection and receiving bindings; a buyer proof cannot
+substitute a different same-value invoice. Confirmation always checks the
+payment hash encoded in the invoice, including when no buyer proof is present.
+These are local
 controlled tests, not live external-signer, public-relay or funded settlement
 proof.
 

@@ -2182,6 +2182,29 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const result = await executor.query(request, { authorization })
     expect(result.events.map((event) => event.id)).toEqual([event.id])
     expect(result.status).toBe("success")
+    const primary = await executor.query(
+      {
+        ...request,
+        filters: [
+          {
+            ...request.filters[0]!,
+            "#d": ["conduit:spark:primary:v1"],
+            limit: 1,
+          },
+        ],
+      },
+      { authorization }
+    )
+    expect(primary.status).toBe("success")
+    await expect(
+      executor.query(
+        {
+          ...request,
+          filters: [{ ...request.filters[0]!, "#d": ["other-app:primary"] }],
+        },
+        { authorization }
+      )
+    ).rejects.toThrow("active owner")
     await expect(
       executor.query(
         {

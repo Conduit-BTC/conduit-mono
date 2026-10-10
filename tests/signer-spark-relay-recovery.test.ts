@@ -104,14 +104,22 @@ function fixture(
       relays.set(url, events)
       return "acked"
     },
-    read: async (url, _owner, id): Promise<SparkRecoveryRead> => {
+    read: async (
+      url,
+      _owner,
+      id,
+      _continue,
+      dTag
+    ): Promise<SparkRecoveryRead> => {
       afterRead?.()
       return unavailable.has(url)
         ? { status: "unavailable", events: [] }
         : {
             status: "complete",
             events: [...(relays.get(url)?.values() ?? [])].filter(
-              (e) => !id || e.id === id
+              (e) =>
+                (!id || e.id === id) &&
+                (!dTag || e.tags.some((t) => t[0] === "d" && t[1] === dTag))
             ),
           }
     },
@@ -156,6 +164,98 @@ function bundle() {
 }
 
 describe("signer-backed Spark recovery composed foundations", () => {
+  it("restores an older exact primary and referenced backup beyond 128 unrelated records without authorizing new creation", async () => {
+    const f = fixture()
+    const candidate = await f.service().prepare(bundle())
+    const pointer = await f.service().preparePrimary(candidate)
+    await f.service().deliver(candidate.eventId)
+    await f.service().deliver(pointer)
+    const unrelated = Array.from({ length: 129 }, (_, index) =>
+      f.sign({
+        kind: 30078,
+        created_at: 2000000000 + index,
+        tags: [["d", `other-app:${index}`]],
+        content: "unrelated",
+      })
+    )
+    for (const events of f.relays.values())
+      for (const event of unrelated) events.set(event.id, event)
+    const reads: Array<{ id?: string; dTag?: string }> = []
+    const transport: SparkRecoveryTransport = {
+      ...f.transport,
+      read: async (url, owner, id, cont, dTag) => {
+        reads.push({ id, dTag })
+        const read = await f.transport.read(url, owner, id, cont, dTag)
+        return {
+          ...read,
+          events: read.events
+            .sort((a, b) => b.created_at - a.created_at)
+            .slice(0, id || dTag ? 1 : 128),
+        }
+      },
+    }
+    const target = new SparkRecoveryService({
+      signer: f.signer,
+      currentSigner: f.current,
+      store: storage().store,
+      transport,
+      deriveIdentity: deriveSparkRecoveryIdentity,
+    })
+    const discovery = await target.discover()
+    expect(discovery.primary?.eventId).toBe(candidate.eventId)
+    expect(discovery.coverage).toBe("partial")
+    expect(discovery.creationEligible).toBe(false)
+    expect(reads.some((read) => read.dTag === "conduit:spark:primary:v1")).toBe(
+      true
+    )
+    expect(reads.some((read) => read.id === candidate.eventId)).toBe(true)
+    const restored = await target.restore(discovery.primary!)
+    expect(
+      "walletId" in restored && restored.walletId === candidate.walletId
+    ).toBe(true)
+  })
+  it("retains positive backups but blocks setup when the primary references a missing backup", async () => {
+    const f = fixture()
+    const visible = await f.service().prepare(bundle())
+    const missing = await f
+      .service()
+      .prepare(bundle(), undefined, visible.eventId)
+    const pointer = await f.service().preparePrimary(missing)
+    await f.service().deliver(visible.eventId)
+    await f.service().deliver(pointer)
+    const target = f.service(storage().store)
+    const discovery = await target.discover()
+    expect(discovery.candidates.map((candidate) => candidate.eventId)).toEqual([
+      visible.eventId,
+    ])
+    expect(discovery.primary).toBeUndefined()
+    expect(discovery.state).toBe("unresolved")
+    expect(discovery.creationEligible).toBe(false)
+    expect("walletId" in (await target.restore(discovery.candidates[0]!))).toBe(
+      true
+    )
+  })
+  it("an unavailable exact primary lookup cannot authorize creation despite an empty broad read", async () => {
+    const f = fixture()
+    const transport: SparkRecoveryTransport = {
+      ...f.transport,
+      read: async (_url, _owner, _id, _cont, dTag) => ({
+        status: dTag ? "unavailable" : "complete",
+        events: [],
+      }),
+    }
+    const target = new SparkRecoveryService({
+      signer: f.signer,
+      currentSigner: f.current,
+      store: storage().store,
+      transport,
+      deriveIdentity: deriveSparkRecoveryIdentity,
+    })
+    const discovery = await target.discover()
+    expect(discovery.creationEligible).toBe(false)
+    expect(discovery.coverage).toBe("partial")
+  })
+
   for (const method of ["nip07", "nip46"] as const)
     it(`proves actual NIP-44 v2 and signatures through the ${method} session owner`, async () => {
       const f = fixture({ method })

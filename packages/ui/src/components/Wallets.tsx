@@ -221,7 +221,7 @@ export function Wallets({
                   title="My wallets"
                   description={
                     signerReady
-                      ? `Self-custodial. Opens with your Nostr sign-in. No separate wallet password. Encrypted recovery syncs through relays between apps.${wallets.hasPasswordWallets ? " Older wallets need their existing password until migrated." : ""}`
+                      ? `Self-custodial. Opens with your Nostr sign-in. No separate wallet password. Encrypted recovery can sync between apps.${wallets.hasPasswordWallets ? " Older wallets need their existing password until migrated." : ""}`
                       : "Self-custodial. Connect a Nostr signer with NIP-44 encryption to create or import a wallet."
                   }
                   empty="Create or import your first wallet."
@@ -365,14 +365,20 @@ export function Wallets({
           <div className="flex items-start gap-3">
             <KeyRound className="mt-1 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
             <p>
-              New wallet recovery is encrypted to your Nostr identity and saved
-              on recovery relays. Save your phrase, account number and network
-              to recover elsewhere. Your Nostr signer can see the recovery
-              details when encrypting or opening the wallet. External wallet
-              authorizations are stored on this device. Copying a recovery
-              phrase puts it on your system clipboard, where other apps or sync
-              services may retain it. Never include wallet secrets in support
-              reports, telemetry, screenshots, or public issues.
+              New wallet recovery is encrypted to your Nostr identity.
+              {wallets.recoverySync === "ready" &&
+              wallets.portableWallets.some(
+                (wallet) => wallet.providerId === "spark"
+              )
+                ? " Encrypted relay recovery is confirmed."
+                : " Relay recovery is not confirmed yet."}{" "}
+              Save your phrase, account number and network to recover elsewhere.
+              Your Nostr signer can see the recovery details when encrypting or
+              opening the wallet. External wallet authorizations are stored on
+              this device. Copying a recovery phrase puts it on your system
+              clipboard, where other apps or sync services may retain it. Never
+              include wallet secrets in support reports, telemetry, screenshots,
+              or public issues.
             </p>
           </div>
           <a
@@ -511,9 +517,9 @@ function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
             </p>
           )}
           <p className="text-sm text-[var(--text-secondary)]">
-            Sync encrypts your wallet recovery to your Nostr identity and saves
-            it on recovery relays, so you can open the same wallet in Market and
-            Merchant.
+            Sync requests relay storage of recovery encrypted to your Nostr
+            identity. Wait for confirmed recovery before relying on it in
+            another app.
           </p>
           <Button
             variant="outline"
