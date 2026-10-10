@@ -53,6 +53,43 @@ afterEach(() => {
   active = undefined
 })
 for (const method of ["nip07", "nip46"] as const) {
+  it(`${method} deliberate opening retries after denied automatic decryption without resuming background work`, async () => {
+    const { signer, provider } = install(method)
+    const mnemonic = generateSparkMnemonic()
+    const sealed = await sealSignerSparkRecovery(mnemonic, binding)
+    const decrypt = provider.decrypt.bind(provider)
+    let denied = true
+    let requests = 0
+    provider.decrypt = async (...args) => {
+      requests++
+      if (denied) throw new Error("Signer permission denied")
+      return decrypt(...args)
+    }
+    await expect(
+      openSignerSparkRecovery(sealed, binding, signer, {
+        priority: "background",
+      })
+    ).rejects.toThrow("authorization_denied")
+    denied = false
+    await expect(
+      openSignerSparkRecovery(sealed, binding, signer, {
+        priority: "background",
+      })
+    ).rejects.toThrow("paused")
+    expect(requests).toBe(1)
+    expect(
+      await openSignerSparkRecovery(sealed, binding, signer, {
+        priority: "foreground",
+      })
+    ).toBe(mnemonic)
+    expect(requests).toBe(2)
+    await expect(
+      openSignerSparkRecovery(sealed, binding, signer, {
+        priority: "background",
+      })
+    ).rejects.toThrow("paused")
+    expect(requests).toBe(2)
+  })
   it(`${method} account boundary reopens ciphertext with a fresh session and no wallet password`, async () => {
     const { signer, provider } = install(method)
     const mnemonic = generateSparkMnemonic()

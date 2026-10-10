@@ -1,6 +1,7 @@
 import {
   getAccountSigner,
   isWalletNetwork,
+  SessionSigner,
   type AccountSigner,
 } from "@conduit/core"
 
@@ -95,15 +96,15 @@ export async function sealSignerSparkRecovery(
 export async function openSignerSparkRecovery(
   recovery: SignerSparkRecovery,
   binding: SparkRecoveryBinding,
-  signer = requireWalletSigner()
+  signer = requireWalletSigner(),
+  options: { priority?: "foreground" | "background" } = {}
 ): Promise<string> {
   assertWalletSignerCurrent(signer)
   if (recovery.ownerPubkey !== (await signer.getPublicKey()))
     throw new Error("Sign in with this wallet's Nostr identity.")
-  const plaintext = await signer.decryptNip44(
-    recovery.ownerPubkey,
-    recovery.ciphertext
-  )
+  const plaintext = await (signer instanceof SessionSigner
+    ? signer.decryptNip44(recovery.ownerPubkey, recovery.ciphertext, options)
+    : signer.decryptNip44(recovery.ownerPubkey, recovery.ciphertext))
   assertWalletSignerCurrent(signer)
   if (plaintext.length > 2048)
     throw new Error("Wallet recovery data is invalid.")
@@ -137,7 +138,8 @@ export async function openSignerSparkRecovery(
 export async function recoverStoredSparkMnemonic(
   stored: StoredSparkWalletRecovery,
   binding: SparkRecoveryBinding,
-  password = ""
+  password = "",
+  options: { priority?: "foreground" | "background" } = {}
 ): Promise<{ mnemonic: string; signer?: AccountSigner }> {
   if (stored.type === "password")
     return {
@@ -164,7 +166,7 @@ export async function recoverStoredSparkMnemonic(
   }
   const signer = requireWalletSigner()
   return {
-    mnemonic: await openSignerSparkRecovery(stored, binding, signer),
+    mnemonic: await openSignerSparkRecovery(stored, binding, signer, options),
     signer,
   }
 }

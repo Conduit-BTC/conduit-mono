@@ -353,8 +353,10 @@ New Spark wallets are scoped to the Nostr account and use verified signer-backed
 NIP-44 recovery encryption without a separate wallet password. The independently
 generated Spark seed is never derived from a Nostr key; apps never receive nsec.
 Logout or account replacement closes and hides signer-owned sessions without
-removing encrypted recovery or funds. The main wallet opens through the signer
-after sign-in; a deliberate lock retains explicit Open.
+removing encrypted recovery or funds. Discovered signer-owned wallets on the
+configured network open through the signer on Wallets without a Conduit unlock
+dialog. External signer consent may still be required; a deliberate lock or
+denied opening retains a direct Open action.
 
 Legacy password-encrypted device wallets retain signed-out access and explicit
 migration. Migration verifies signer encryption/read-back and keeps the old

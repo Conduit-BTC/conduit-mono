@@ -129,6 +129,7 @@ export function Wallets({
   const [unlockWallet, setUnlockWallet] = useState<WalletDescriptor | null>(
     null
   )
+  const [previousPassword, setPreviousPassword] = useState(false)
   const [recoveryWallet, setRecoveryWallet] = useState<WalletDescriptor | null>(
     null
   )
@@ -171,6 +172,21 @@ export function Wallets({
       }
       walletsHeadingRef.current?.focus()
     })
+  }
+  const openWallet: WalletDialogAction = async (
+    wallet,
+    trigger,
+    password = false
+  ) => {
+    const generation = auth.authGeneration
+    const method = await wallets.getSparkRecoveryType(wallet.id)
+    if (!auth.isAuthGenerationCurrent(generation)) return
+    if (method === "password" || password) {
+      setPreviousPassword(password)
+      openWalletDialog(setUnlockWallet, wallet, trigger)
+    } else {
+      await wallets.unlockSpark(wallet.id)
+    }
   }
 
   return (
@@ -307,9 +323,8 @@ export function Wallets({
                   onDefault={wallets.setDefaultPaymentWallet}
                   onReceiving={wallets.setReceivingWallet}
                   onRefresh={wallets.refreshBalance}
-                  onUnlock={(wallet, trigger) =>
-                    openWalletDialog(setUnlockWallet, wallet, trigger)
-                  }
+                  onUnlock={openWallet}
+                  getRecoveryType={wallets.getSparkRecoveryType}
                   onRecovery={(wallet, trigger) =>
                     openWalletDialog(setRecoveryWallet, wallet, trigger)
                   }
@@ -356,9 +371,8 @@ export function Wallets({
                   onDefault={wallets.setDefaultPaymentWallet}
                   onReceiving={wallets.setReceivingWallet}
                   onRefresh={wallets.refreshBalance}
-                  onUnlock={(wallet, trigger) =>
-                    openWalletDialog(setUnlockWallet, wallet, trigger)
-                  }
+                  onUnlock={openWallet}
+                  getRecoveryType={wallets.getSparkRecoveryType}
                   onRecovery={(wallet, trigger) =>
                     openWalletDialog(setRecoveryWallet, wallet, trigger)
                   }
@@ -451,6 +465,8 @@ export function Wallets({
         wallets={wallets}
       />
       <UnlockWalletDialog
+        key={`${auth.accountPubkey}:${auth.authGeneration}:${unlockWallet?.id ?? "closed"}:${previousPassword}`}
+        previousPassword={previousPassword}
         signerReady={signerReady}
         wallet={unlockWallet}
         onOpenChange={(open) => {
@@ -518,8 +534,9 @@ export function Wallets({
 
 type WalletDialogAction = (
   wallet: WalletDescriptor,
-  trigger: HTMLButtonElement
-) => void
+  trigger: HTMLButtonElement,
+  previousPassword?: boolean
+) => void | Promise<void>
 
 function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
   return (
@@ -596,6 +613,7 @@ function WalletSection({
   onReceiving,
   onRefresh,
   onUnlock,
+  getRecoveryType,
   onRecovery,
   onLock,
   onReceive,
@@ -625,6 +643,7 @@ function WalletSection({
   onReceiving: (walletId: string) => Promise<void>
   onRefresh: (walletId: string) => Promise<void>
   onUnlock: WalletDialogAction
+  getRecoveryType: UseWalletsReturn["getSparkRecoveryType"]
   onRecovery: WalletDialogAction
   onLock: (walletId: string) => Promise<void>
   onReceive: WalletDialogAction
@@ -681,6 +700,7 @@ function WalletSection({
                 onReceiving={onReceiving}
                 onRefresh={onRefresh}
                 onUnlock={onUnlock}
+                getRecoveryType={getRecoveryType}
                 onRecovery={onRecovery}
                 onLock={onLock}
                 onReceive={onReceive}
@@ -728,6 +748,7 @@ function WalletRow({
   onReceiving,
   onRefresh,
   onUnlock,
+  getRecoveryType,
   onRecovery,
   onLock,
   onReceive,
@@ -753,6 +774,7 @@ function WalletRow({
   onReceiving: (walletId: string) => Promise<void>
   onRefresh: (walletId: string) => Promise<void>
   onUnlock: WalletDialogAction
+  getRecoveryType: UseWalletsReturn["getSparkRecoveryType"]
   onRecovery: WalletDialogAction
   onLock: (walletId: string) => Promise<void>
   onReceive: WalletDialogAction
@@ -766,6 +788,11 @@ function WalletRow({
   const [error, setError] = useState<string | null>(null)
   const menuTrigger = useRef<HTMLButtonElement>(null)
   const isSpark = wallet.providerId === "spark"
+  const recoveryMethod = useSparkRecoveryState(
+    isSpark ? wallet.id : null,
+    getRecoveryType,
+    wallet
+  )
   const ready = runtime.status === "ready" && !providerActionsDisabled
   const isDefault = wallet.defaultIntents.includes("pay_invoice")
   const run = async (action: () => Promise<void>) => {
@@ -866,6 +893,21 @@ function WalletRow({
                 History
               </DropdownMenuItem>
             )}
+            {isSpark &&
+              recoveryMethod.status === "ready" &&
+              recoveryMethod.legacyPassword && (
+                <DropdownMenuItem
+                  onSelect={() => {
+                    const trigger = menuTrigger.current
+                    if (trigger)
+                      void run(async () => {
+                        await onUnlock(wallet, trigger, true)
+                      })
+                  }}
+                >
+                  Use previous password
+                </DropdownMenuItem>
+              )}
             {ready && (
               <DropdownMenuItem
                 onSelect={() => void run(() => onRefresh(wallet.id))}
@@ -914,9 +956,16 @@ function WalletRow({
               providerActionsDisabled ||
               runtime.status === "connecting"
             }
-            onClick={(event) => onUnlock(wallet, event.currentTarget)}
+            onClick={(event) => {
+              const trigger = event.currentTarget
+              void run(async () => {
+                await onUnlock(wallet, trigger)
+              })
+            }}
           >
-            Open wallet
+            {runtime.status === "connecting" || pending
+              ? "Opening…"
+              : "Open wallet"}
           </Button>
         ) : (
           <>
@@ -1102,7 +1151,8 @@ function WalletRuntimePill({ runtime }: { runtime: WalletRuntimeState }) {
 
 function useSparkRecoveryState(
   walletId: string | null,
-  hasRecovery: UseWalletsReturn["getSparkRecoveryType"]
+  hasRecovery: UseWalletsReturn["getSparkRecoveryType"],
+  revision?: WalletDescriptor
 ): SparkRecoveryState {
   const [state, setState] = useState<SparkRecoveryState>({
     status: "idle",
@@ -1148,7 +1198,7 @@ function useSparkRecoveryState(
     return () => {
       current = false
     }
-  }, [hasRecovery, walletId])
+  }, [hasRecovery, walletId, revision])
 
   return state
 }
@@ -1694,14 +1744,16 @@ function UnlockWalletDialog({
   wallet,
   onOpenChange,
   wallets,
+  previousPassword = false,
 }: {
   signerReady: boolean
   wallet: WalletDescriptor | null
   onOpenChange: (open: boolean) => void
   wallets: UseWalletsReturn
+  previousPassword?: boolean
 }) {
   const [migrate, setMigrate] = useState(false)
-  const [useLegacyPassword, setUseLegacyPassword] = useState(false)
+  const [useLegacyPassword, setUseLegacyPassword] = useState(previousPassword)
   const [password, setPassword] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1744,7 +1796,8 @@ function UnlockWalletDialog({
           <DialogTitle>Unlock {wallet?.label}</DialogTitle>
           <DialogDescription>
             {recoveryState.status === "ready" &&
-            recoveryState.method === "signer"
+            recoveryState.method === "signer" &&
+            !useLegacyPassword
               ? "Confirm the request in your Nostr signer. No wallet password is needed."
               : "Enter the existing wallet password. You can switch this wallet to Nostr sign-in after verifying recovery."}
           </DialogDescription>
@@ -1798,7 +1851,7 @@ function UnlockWalletDialog({
               }
             >
               {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-              {recoveryState.method === "signer"
+              {recoveryState.method === "signer" && !useLegacyPassword
                 ? "Open with Nostr"
                 : migrate
                   ? "Open and use Nostr sign-in"

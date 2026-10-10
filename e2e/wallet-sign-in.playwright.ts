@@ -419,13 +419,32 @@ test("legacy migration keeps its old encrypted copy and fresh sign-in reopens wi
     await page.getByLabel("Manage Legacy wallet").click()
     await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
     await page.getByRole("button", { name: "Open wallet", exact: true }).click()
-    await expect(
-      page.getByLabel("Wallet password", { exact: true })
-    ).toHaveCount(0)
+    await expect(page.getByRole("dialog")).toHaveCount(0)
+    await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+    await page.getByLabel("Manage Legacy wallet").click()
+    await page
+      .getByRole("menuitem", { name: "Use previous password", exact: true })
+      .click()
     await expect(
       page.getByLabel("Use the previous wallet password")
     ).toBeVisible()
-    await page.getByRole("button", { name: "Open with Nostr" }).click()
+    await expect(
+      page.getByLabel("Wallet password", { exact: true })
+    ).toBeVisible()
+    await page.evaluate(() => {
+      const input = document.getElementById(
+        "unlock-password"
+      ) as HTMLInputElement
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Unlock", exact: true })
+      .click()
     await expect(page.getByText("Ready", { exact: true })).toBeVisible()
     // A new document gets a fresh account session and the same encrypted local
     // wallet. The fixture controls the network layer before initialization.

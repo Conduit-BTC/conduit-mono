@@ -43,8 +43,11 @@ plaintext-storage fallback, never requests the Nostr nsec, and never derives a
 Spark seed from a Nostr key or signature. The account signer can see wallet
 recovery plaintext when encrypting/decrypting it.
 
-The default wallet opens through the same signer after sign-in; a deliberate
-lock requires an explicit open for that session. Revocation closes signer-owned
+Discovered signer-owned wallets on the configured network open through the same
+signer on Wallets, without a Conduit unlock dialog or opening click. Any permission
+prompt belongs to the external signer. A deliberate lock or denied automatic
+opening requires one explicit Open action for that session; simultaneous opening
+requests share the same operation. Revocation closes signer-owned
 sessions even after leaving Wallets. Signing-only or denied encryption cannot
 create a wallet; the UI explains the required capability. Existing password
 wallets remain readable. An explicit one-time migration verifies signer

@@ -102,6 +102,10 @@ import {
 const NWC_MOUNT_WARM_MAX_AGE_MS = 30_000
 const deliberatelyLockedWallets = new WeakMap<AccountSigner, Set<string>>()
 const automaticWalletOpens = new WeakMap<AccountSigner, Set<string>>()
+const signerWalletOpens = new WeakMap<
+  AccountSigner,
+  Map<string, Promise<void>>
+>()
 
 export type WalletRuntimeState =
   | {
@@ -381,8 +385,14 @@ export function useWallets(
             const next = { ...current }
             for (const wallet of nextWallets) {
               if (wallet.providerId === "spark") {
+                const signer = getAccountSigner()
                 next[wallet.id] =
-                  openSparkRuntime.get(wallet.id) ?? lockedRuntime()
+                  openSparkRuntime.get(wallet.id) ??
+                  (signer && signerWalletOpens.get(signer)?.has(wallet.id)
+                    ? { status: "connecting", balanceMsats: null, error: null }
+                    : current[wallet.id]?.status === "error"
+                      ? current[wallet.id]
+                      : lockedRuntime())
               } else if (wallet.providerId === "nwc") {
                 next[wallet.id] = getNwcRuntimeState(
                   nextNwcSnapshots[wallet.id]
@@ -1051,90 +1061,132 @@ export function useWallets(
   ])
 
   const unlockSpark = useCallback(
-    async (walletId: string, password = "", migrate = false) => {
+    async (
+      walletId: string,
+      password = "",
+      migrate = false,
+      options: { priority?: "foreground" | "background" } = {}
+    ) => {
       const manager = requireSparkManager()
-      setRuntime((current) => ({
-        ...current,
-        [walletId]: {
-          status: "connecting",
-          balanceMsats: null,
-          error: null,
-        },
-      }))
-      try {
-        await openRegisteredSparkWallet({
-          walletId,
-          manager,
-          expectedNetwork: getSparkWalletNetwork(),
-          listWallets: () => registry.list(),
-          resolveOpenInput: async (registration) => {
-            const stored = await store.getSparkRecovery(walletId)
-            if (!stored) {
-              throw new Error("Portable Wallet recovery data is unavailable.")
-            }
-            const binding = getSparkRecoveryBinding(registration, stored)
-            const recovered = await recoverStoredSparkMnemonic(
-              stored,
-              binding,
-              password
-            )
-            const mnemonic = recovered.mnemonic
-            const signer =
-              recovered.signer ?? (migrate ? requireWalletSigner() : undefined)
-            if (migrate && stored.type === "password" && signer) {
-              const sealed = await sealSignerSparkRecovery(
-                mnemonic,
-                binding,
-                signer
-              )
-              await store.transaction(async () => {
-                assertWalletSignerCurrent(signer)
-                const current = await store.getSparkRecovery(walletId)
-                if (JSON.stringify(current) !== JSON.stringify(stored))
-                  throw new Error(
-                    "Wallet recovery changed. Reopen it before migrating."
-                  )
-                const migrated = { ...sealed, legacyRecovery: stored }
-                await store.putSparkRecovery(walletId, migrated)
-                if (
-                  serializeStoredSparkWalletRecovery(
-                    (await store.getSparkRecovery(walletId))!
-                  ) !== serializeStoredSparkWalletRecovery(migrated)
-                )
-                  throw new Error("Wallet migration could not be verified.")
-                assertWalletSignerCurrent(signer)
-              })
-            }
-            return {
-              mnemonic,
-              accountNumber: stored.accountNumber,
-              ...(signer
-                ? {
-                    shouldContinue: () => isWalletSignerCurrent(signer),
-                    subscribeRevocation: (listener: () => void) =>
-                      subscribeToAccountSignerChanges(() => {
-                        if (!isWalletSignerCurrent(signer)) listener()
-                      }),
-                  }
-                : {}),
-            }
-          },
-          afterOpen: () => refreshSparkBalance(walletId, manager, setRuntime),
-        })
-        if (migrate) {
-          setRecoverySync("pending")
-          await refreshAfterCommittedWalletMutation()
+      const signer = !password && !migrate ? getAccountSigner() : undefined
+      const previous = signer && signerWalletOpens.get(signer)?.get(walletId)
+      if (signer && previous) {
+        await previous
+        assertWalletSignerCurrent(signer)
+        await refreshSparkBalance(walletId, manager, setRuntime)
+        return
+      }
+      if (signer && manager.isOpen(walletId)) {
+        const stored = await store.getSparkRecovery(walletId)
+        assertWalletSignerCurrent(signer)
+        if (stored?.type === "signer" && stored.ownerPubkey === signer.pubkey) {
+          await refreshSparkBalance(walletId, manager, setRuntime)
+          return
         }
-      } catch (error) {
+      }
+      const open = async () => {
         setRuntime((current) => ({
           ...current,
           [walletId]: {
-            status: "error",
+            status: "connecting",
             balanceMsats: null,
-            error: getErrorMessage(error, "Could not unlock Portable Wallet."),
+            error: null,
           },
         }))
-        throw error
+        try {
+          await openRegisteredSparkWallet({
+            walletId,
+            manager,
+            expectedNetwork: getSparkWalletNetwork(),
+            listWallets: () => registry.list(),
+            resolveOpenInput: async (registration) => {
+              const stored = await store.getSparkRecovery(walletId)
+              if (!stored) {
+                throw new Error("Portable Wallet recovery data is unavailable.")
+              }
+              const binding = getSparkRecoveryBinding(registration, stored)
+              const recovered = await recoverStoredSparkMnemonic(
+                stored,
+                binding,
+                password,
+                { priority: options.priority ?? "foreground" }
+              )
+              const mnemonic = recovered.mnemonic
+              const signer =
+                recovered.signer ??
+                (migrate ? requireWalletSigner() : undefined)
+              if (migrate && stored.type === "password" && signer) {
+                const sealed = await sealSignerSparkRecovery(
+                  mnemonic,
+                  binding,
+                  signer
+                )
+                await store.transaction(async () => {
+                  assertWalletSignerCurrent(signer)
+                  const current = await store.getSparkRecovery(walletId)
+                  if (JSON.stringify(current) !== JSON.stringify(stored))
+                    throw new Error(
+                      "Wallet recovery changed. Reopen it before migrating."
+                    )
+                  const migrated = { ...sealed, legacyRecovery: stored }
+                  await store.putSparkRecovery(walletId, migrated)
+                  if (
+                    serializeStoredSparkWalletRecovery(
+                      (await store.getSparkRecovery(walletId))!
+                    ) !== serializeStoredSparkWalletRecovery(migrated)
+                  )
+                    throw new Error("Wallet migration could not be verified.")
+                  assertWalletSignerCurrent(signer)
+                })
+              }
+              return {
+                mnemonic,
+                accountNumber: stored.accountNumber,
+                ...(signer
+                  ? {
+                      shouldContinue: () => isWalletSignerCurrent(signer),
+                      subscribeRevocation: (listener: () => void) =>
+                        subscribeToAccountSignerChanges(() => {
+                          if (!isWalletSignerCurrent(signer)) listener()
+                        }),
+                    }
+                  : {}),
+              }
+            },
+            afterOpen: () => refreshSparkBalance(walletId, manager, setRuntime),
+          })
+          if (migrate) {
+            setRecoverySync("pending")
+            await refreshAfterCommittedWalletMutation()
+          }
+          if (signer && isWalletSignerCurrent(signer))
+            deliberatelyLockedWallets.get(signer)?.delete(walletId)
+        } catch (error) {
+          if (!signer || isWalletSignerCurrent(signer))
+            setRuntime((current) => ({
+              ...current,
+              [walletId]: {
+                status: "error",
+                balanceMsats: null,
+                error: getErrorMessage(
+                  error,
+                  "Could not unlock Portable Wallet."
+                ),
+              },
+            }))
+          throw error
+        }
+      }
+      const attempt = open()
+      if (!signer) return attempt
+      const openings =
+        signerWalletOpens.get(signer) ?? new Map<string, Promise<void>>()
+      openings.set(walletId, attempt)
+      signerWalletOpens.set(signer, openings)
+      try {
+        await attempt
+      } finally {
+        if (openings.get(walletId) === attempt) openings.delete(walletId)
       }
     },
     [registry, store, refreshAfterCommittedWalletMutation]
@@ -1377,30 +1429,34 @@ export function useWallets(
     void (async () => {
       if (
         !active ||
+        !enabled ||
+        !getSparkWalletManager() ||
         !signer?.capabilities.nip44 ||
         auth.signerReadiness !== "ready"
       )
         return
-      const wallet = walletsRef.current.find(
+      const candidates = walletsRef.current.filter(
         (wallet) =>
           wallet.providerId === "spark" &&
           wallet.network === getSparkWalletNetwork() &&
-          wallet.defaultIntents.includes("pay_invoice") &&
           !getSparkWalletManager()?.isOpen(wallet.id) &&
           !deliberatelyLockedWallets.get(signer)?.has(wallet.id)
       )
-      if (!wallet) return
-      const stored = await store.getSparkRecovery(wallet.id)
-      if (!active || !isWalletSignerCurrent(signer)) return
-      if (stored?.type === "signer" && stored.ownerPubkey === signer.pubkey) {
-        const attempted = automaticWalletOpens.get(signer) ?? new Set<string>()
-        if (attempted.has(wallet.id)) return
-        attempted.add(wallet.id)
-        automaticWalletOpens.set(signer, attempted)
-        try {
-          await unlockSpark(wallet.id)
-        } catch {
-          /* The wallet error and Open action allow a deliberate retry. */
+      for (const wallet of candidates) {
+        if (!active || !isWalletSignerCurrent(signer)) return
+        const stored = await store.getSparkRecovery(wallet.id)
+        if (!active || !isWalletSignerCurrent(signer)) return
+        if (stored?.type === "signer" && stored.ownerPubkey === signer.pubkey) {
+          const attempted =
+            automaticWalletOpens.get(signer) ?? new Set<string>()
+          if (attempted.has(wallet.id)) continue
+          attempted.add(wallet.id)
+          automaticWalletOpens.set(signer, attempted)
+          void unlockSpark(wallet.id, "", false, {
+            priority: "background",
+          }).catch(() => {
+            /* The wallet error and Open action allow a deliberate retry. */
+          })
         }
       }
     })().catch(() => {
@@ -1410,6 +1466,7 @@ export function useWallets(
       active = false
     }
   }, [
+    enabled,
     auth.accountPubkey,
     auth.authGeneration,
     auth.signerReadiness,
