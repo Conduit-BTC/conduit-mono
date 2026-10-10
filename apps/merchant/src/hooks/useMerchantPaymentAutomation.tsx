@@ -20,6 +20,8 @@ import {
 } from "react"
 import {
   getProfilePaymentAddress,
+  config,
+  getWalletNetworkFromLightningConfig,
   getAccountSigner,
   clearProtectedReadAuthenticationSuppression,
   getMerchantConversationList,
@@ -100,8 +102,12 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   const nwc = useNwcConnection()
   const wallets = useWallets({ enabled: status === "connected" })
   const receivingWallet =
-    wallets.wallets.find((wallet) =>
-      wallet.defaultIntents.includes("receive")
+    wallets.wallets.find(
+      (wallet) =>
+        wallet.network ===
+          getWalletNetworkFromLightningConfig(config.lightningNetwork) &&
+        wallet.capabilities.includes("receive") &&
+        wallet.defaultIntents.includes("receive")
     ) ?? null
   const availableSparkWallets = wallets.portableWallets.filter((wallet) =>
     getSparkWalletManager()?.canVerifyReceiving(wallet.id)
@@ -144,9 +150,10 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
     migratedConnection.current = { key: migrationKey, uri }
     void migrateAccountNwcConnection({
       uri,
-      connect: () => wallets.connectNwc(uri, undefined, { shouldContinue }),
+      connect: (onRegistered) =>
+        wallets.connectNwc(uri, undefined, { shouldContinue, onRegistered }),
       credentialStore: getMarketWalletStore(),
-      listWallets: () => getMarketWalletRegistry().list(),
+      registry: getMarketWalletRegistry(),
       shouldContinue,
       retireLegacy: () => retireMigratedUri(uri),
     }).catch(() => {

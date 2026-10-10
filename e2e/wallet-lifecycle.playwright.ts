@@ -136,6 +136,61 @@ async function importKnownPhrase(page: Page, addy = false) {
   await expect(dialog).toHaveCount(0)
 }
 
+async function seedLegacyPasswordWallet(page: Page) {
+  await page.evaluate(
+    async ({ core }) => {
+      const { db } = await import(core)
+      const random = (length: number) =>
+        btoa(
+          String.fromCharCode(...crypto.getRandomValues(new Uint8Array(length)))
+        )
+      const id = crypto.randomUUID()
+      const timestamp = Date.now()
+      await db.transaction(
+        "rw",
+        [db.wallets, db.walletCredentials],
+        async () => {
+          await db.wallets.put({
+            id,
+            kind: "portable",
+            providerId: "spark",
+            label: "Legacy fence",
+            network: "mainnet",
+            capabilities: ["receive", "balance"],
+            status: "locked",
+            defaultIntents: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+          await db.walletCredentials.put({
+            walletId: id,
+            providerId: "spark",
+            credential: JSON.stringify({
+              type: "password",
+              walletId: id,
+              providerId: "spark",
+              network: "mainnet",
+              accountNumber: 1,
+              recovery: {
+                version: 2,
+                kdf: "PBKDF2-SHA-256",
+                cipher: "AES-GCM",
+                iterations: 100_000,
+                salt: random(16),
+                iv: random(12),
+                ciphertext: random(48),
+              },
+            }),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+        }
+      )
+    },
+    { core }
+  )
+}
+
 test("legacy device dialogs allow signed-out recovery but retire a pending lookup on account change @market", async ({
   page,
 }) => {
@@ -147,60 +202,7 @@ test("legacy device dialogs allow signed-out recovery but retire a pending looku
     await page.goto(apps.market + "/wallet")
     await installControlledWallet(page)
     await settled(page)
-    await page.evaluate(
-      async ({ core }) => {
-        const { db } = await import(core)
-        const random = (length: number) =>
-          btoa(
-            String.fromCharCode(
-              ...crypto.getRandomValues(new Uint8Array(length))
-            )
-          )
-        const id = crypto.randomUUID()
-        const timestamp = Date.now()
-        await db.transaction(
-          "rw",
-          [db.wallets, db.walletCredentials],
-          async () => {
-            await db.wallets.put({
-              id,
-              kind: "portable",
-              providerId: "spark",
-              label: "Legacy fence",
-              network: "mainnet",
-              capabilities: ["receive", "balance"],
-              status: "locked",
-              defaultIntents: [],
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            })
-            await db.walletCredentials.put({
-              walletId: id,
-              providerId: "spark",
-              credential: JSON.stringify({
-                type: "password",
-                walletId: id,
-                providerId: "spark",
-                network: "mainnet",
-                accountNumber: 1,
-                recovery: {
-                  version: 2,
-                  kdf: "PBKDF2-SHA-256",
-                  cipher: "AES-GCM",
-                  iterations: 100_000,
-                  salt: random(16),
-                  iv: random(12),
-                  ciphertext: random(48),
-                },
-              }),
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            })
-          }
-        )
-      },
-      { core }
-    )
+    await seedLegacyPasswordWallet(page)
     await expect(
       page.getByRole("button", { name: "Open wallet", exact: true })
     ).toBeVisible()
@@ -259,6 +261,122 @@ test("legacy device dialogs allow signed-out recovery but retire a pending looku
     disposeRuntimeSignerIdentity(identity)
   }
 })
+
+for (const unavailable of ["signet", "coordination"] as const) {
+  test(`unavailable Spark ${unavailable} still loads signed-in external and legacy wallets @market`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const wallet = createDeterministicNwcWallet({ relayUrl: relay })
+    try {
+      await wallet.start()
+      if (unavailable === "signet") {
+        await page.route("**/packages/core/src/config.ts*", async (route) => {
+          const response = await route.fetch()
+          const body = await response.text()
+          if (!body.includes("const config ="))
+            throw new Error("Network configuration seam changed")
+          await route.fulfill({
+            response,
+            body: body + '\nconfig.lightningNetwork = "signet";\n',
+          })
+        })
+      } else {
+        await page.route(
+          "**/packages/core/src/wallets/spark-wallet-lease.ts*",
+          async (route) => {
+            const response = await route.fetch()
+            const body = await response.text()
+            const marker =
+              "return !requireCrossTabLock || lockManager !== null;"
+            if (body.split(marker).length !== 2)
+              throw new Error("Spark coordination seam changed")
+            await route.fulfill({
+              response,
+              body: body.replace(marker, "return false;"),
+            })
+          }
+        )
+      }
+      await observeController(page, "merchant")
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps.merchant + "/wallet")
+      await seedLegacyPasswordWallet(page)
+      await wallet.configureMerchantConnection(async (uri) => {
+        await page.evaluate(
+          async ({ core, uri }) => {
+            const { db } = await import(core)
+            const id = crypto.randomUUID()
+            const now = Date.now()
+            await db.transaction(
+              "rw",
+              [db.wallets, db.walletCredentials],
+              async () => {
+                await db.wallets.put({
+                  id,
+                  kind: "connected",
+                  providerId: "nwc",
+                  label: "External capability",
+                  network: "mainnet",
+                  capabilities: ["pay_invoice", "balance", "receive"],
+                  defaultIntents: [],
+                  status: "registered",
+                  createdAt: now,
+                  updatedAt: now,
+                })
+                await db.walletCredentials.put({
+                  walletId: id,
+                  providerId: "nwc",
+                  credential: uri,
+                  createdAt: now,
+                  updatedAt: now,
+                })
+              }
+            )
+          },
+          { core, uri }
+        )
+      })
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.wallets.retryInitialization()
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const { wallets, auth } = (window as any).__walletLifecycle
+            return {
+              signedIn: auth.signerReadiness === "ready",
+              loading: wallets.loading,
+              error: wallets.initializationError,
+              external: wallets.connectedWallets.length,
+              legacy: wallets.portableWallets.length,
+              spark: wallets.sparkAvailability.status,
+              externalStatus:
+                wallets.runtime[wallets.connectedWallets[0]?.id]?.status,
+            }
+          })
+        )
+        .toEqual({
+          signedIn: true,
+          loading: false,
+          error: null,
+          external: 1,
+          legacy: 1,
+          spark: "unavailable",
+          externalStatus: "ready",
+        })
+      await expect(
+        page.getByText("External capability", { exact: true })
+      ).toBeVisible()
+      await expect(
+        page.getByText("Legacy fence", { exact: true })
+      ).toBeVisible()
+    } finally {
+      await wallet.close()
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}
 
 test("parallel consumers share one native open and observe ready, lock and retry without incidental events @market", async ({
   page,
@@ -722,6 +840,145 @@ test("Merchant retires the verified legacy NWC owner and Disconnect survives rel
     ).toEqual({ legacy: false, wallets: 0, credentials: 0, legacyHook: false })
   } finally {
     await page.close()
+    await wallet.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+test("Merchant compensates a new NWC migration copy after account replacement and retains legacy recovery @merchant", async ({
+  page,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const wallet = createDeterministicNwcWallet({ relayUrl: relay })
+  try {
+    await wallet.start()
+    await observeController(page, "merchant")
+    await page.addInitScript(() => {
+      const fixture = window as any
+      fixture.__holdNwcMigration = () =>
+        new Promise<void>((resolve) => {
+          fixture.__nwcMigrationPaused = true
+          fixture.__releaseNwcMigration = resolve
+        })
+    })
+    await page.route(
+      "**/packages/core/src/wallets/wallet-migration.ts*",
+      async (route) => {
+        const response = await route.fetch()
+        const body = await response.text()
+        const marker = "return await input.credentialStore.transaction("
+        if (body.split(marker).length !== 2)
+          throw new Error(
+            "Post-registration migration observation seam changed"
+          )
+        await route.fulfill({
+          response,
+          body: body.replace(
+            marker,
+            "if (window.__holdNwcMigration) await window.__holdNwcMigration(); " +
+              marker
+          ),
+        })
+      }
+    )
+    await installRealTestSigner(page, identity, relay)
+    await page.goto(apps.merchant + "/wallet")
+    await wallet.configureMerchantConnection(async (uri) => {
+      await page.evaluate(
+        ({ pubkey, uri }) =>
+          localStorage.setItem(`conduit:merchant:nwc_uri:${pubkey}`, uri),
+        { pubkey: identity.pubkey, uri }
+      )
+    })
+    await page.reload()
+    await expect
+      .poll(() => page.evaluate(() => !!(window as any).__nwcMigrationPaused))
+      .toBe(true)
+    const copiedId = await page.evaluate(
+      async ({ core }) => {
+        const { db } = await import(core)
+        const rows = await db.wallets.toArray()
+        if (rows.length !== 1 || (await db.walletCredentials.count()) !== 1)
+          throw new Error("Migration copy did not commit before the barrier")
+        return rows[0].id
+      },
+      { core }
+    )
+    await page.evaluate(() =>
+      (window as any).__walletLifecycle.auth.disconnect()
+    )
+    await page.evaluate(() => (window as any).__releaseNwcMigration())
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async ({ core, pubkey, copiedId, sessions }) => {
+            const { db } = await import(core)
+            return {
+              wallets: await db.wallets.count(),
+              credentials: await db.walletCredentials.count(),
+              legacy: !!localStorage.getItem(
+                `conduit:merchant:nwc_uri:${pubkey}`
+              ),
+              attached: !!(await import(sessions)).getBuyerNwcSessionSnapshots([
+                copiedId,
+              ])[copiedId]?.connection,
+            }
+          },
+          {
+            core,
+            pubkey: identity.pubkey,
+            copiedId,
+            sessions:
+              "/@fs" +
+              path.resolve("packages/core/src/wallets/buyer-nwc-session.ts"),
+          }
+        )
+      )
+      .toEqual({ wallets: 0, credentials: 0, legacy: true, attached: false })
+    await page.evaluate(async () => {
+      delete (window as any).__holdNwcMigration
+      await (window as any).__walletLifecycle.auth.connect({ method: "nip07" })
+    })
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async ({ core, pubkey }) => {
+            const { db } = await import(core)
+            return {
+              wallets: await db.wallets.count(),
+              credentials: await db.walletCredentials.count(),
+              legacy: !!localStorage.getItem(
+                `conduit:merchant:nwc_uri:${pubkey}`
+              ),
+            }
+          },
+          { core, pubkey: identity.pubkey }
+        )
+      )
+      .toEqual({ wallets: 1, credentials: 1, legacy: false })
+    await page.evaluate(async () => {
+      const { wallets } = (window as any).__walletLifecycle
+      await wallets.removeWallet(wallets.connectedWallets[0].id)
+    })
+    await page.reload()
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async ({ core, pubkey }) => {
+            const { db } = await import(core)
+            return {
+              wallets: await db.wallets.count(),
+              credentials: await db.walletCredentials.count(),
+              legacy: !!localStorage.getItem(
+                `conduit:merchant:nwc_uri:${pubkey}`
+              ),
+            }
+          },
+          { core, pubkey: identity.pubkey }
+        )
+      )
+      .toEqual({ wallets: 0, credentials: 0, legacy: false })
+  } finally {
     await wallet.close()
     disposeRuntimeSignerIdentity(identity)
   }

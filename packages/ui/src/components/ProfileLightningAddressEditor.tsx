@@ -22,7 +22,7 @@ export function ProfileLightningAddressEditor({
     onDismiss,
   } = controller
   return (
-    <section className="grid gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+    <section className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
       <h2 className="text-balance text-lg font-semibold">
         Public Lightning address
       </h2>
@@ -40,7 +40,7 @@ export function ProfileLightningAddressEditor({
             Current address: {existing || "None"}
           </p>
           {scopedSuggestion && (
-            <div className="grid gap-3 rounded-xl border border-[var(--border)] p-3">
+            <div className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
               <p className="break-all text-sm">
                 This wallet receives at {scopedSuggestion.address}.
               </p>

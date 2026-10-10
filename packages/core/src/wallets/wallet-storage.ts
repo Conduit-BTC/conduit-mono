@@ -3,6 +3,7 @@ import {
   getAccountSigner,
   getNwcUriFingerprint,
   getWalletDefaultUpdates,
+  readAuthSession,
   isWalletNetwork,
   WalletRegistry,
   type SetWalletDefaultInput,
@@ -178,16 +179,22 @@ export async function registerNwcWalletAtomically(input: {
 export class MarketWalletStore
   implements WalletRegistryStore, NwcCredentialStore
 {
+  constructor(private readonly database = db) {}
+
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
-    return db.transaction(
+    return this.database.transaction(
       "rw",
-      [db.wallets, db.walletCredentials, db.sparkRecoveryEvidence],
+      [
+        this.database.wallets,
+        this.database.walletCredentials,
+        this.database.sparkRecoveryEvidence,
+      ],
       operation
     )
   }
 
   async list(): Promise<WalletDescriptor[]> {
-    return db.wallets.toArray()
+    return this.database.wallets.toArray()
   }
 
   async listVisible(ownerPubkey: string | null): Promise<WalletDescriptor[]> {
@@ -203,44 +210,104 @@ export class MarketWalletStore
         )
       })
     )
-    return wallets.filter((_wallet, index) => visible[index])
+    return resolveWalletDefaults(
+      wallets.filter((_wallet, index) => visible[index]),
+      ownerPubkey
+    )
   }
 
   async put(wallet: WalletDescriptor): Promise<void> {
-    await db.wallets.put(wallet)
+    await this.database.wallets.put(wallet)
+  }
+
+  async rename(walletId: string, label: string): Promise<void> {
+    const signer = getAccountSigner()
+    const owner = getWalletPreferenceOwner()
+    await this.transaction(async () => {
+      const [visible, wallet] = await Promise.all([
+        this.listVisible(owner),
+        this.database.wallets.get(walletId),
+      ])
+      if (!wallet || !visible.some((candidate) => candidate.id === walletId))
+        throw new Error("Wallet is no longer available.")
+      if (getAccountSigner() !== signer || getWalletPreferenceOwner() !== owner)
+        throw new Error("Wallet sign-in changed.")
+      // A projected default is read state; rename changes only the stored label.
+      await this.database.wallets.put({ ...wallet, label })
+      if (getAccountSigner() !== signer || getWalletPreferenceOwner() !== owner)
+        throw new Error("Wallet sign-in changed.")
+    })
   }
 
   async setDefault(input: SetWalletDefaultInput): Promise<void> {
     const signer = getAccountSigner()
-    await db.transaction("rw", db.wallets, db.walletCredentials, async () => {
-      const wallets = await this.listVisible(signer?.pubkey ?? null)
-      if (getAccountSigner() !== signer)
-        throw new Error("Wallet sign-in changed.")
-      const updates = getWalletDefaultUpdates(wallets, input)
-      if (updates.length > 0) {
-        await db.wallets.bulkPut(updates)
-        if (getAccountSigner() !== signer)
+    const owner = getWalletPreferenceOwner()
+    await this.database.transaction(
+      "rw",
+      this.database.wallets,
+      this.database.walletCredentials,
+      async () => {
+        const wallets = await this.listVisible(owner)
+        if (
+          getAccountSigner() !== signer ||
+          getWalletPreferenceOwner() !== owner
+        )
+          throw new Error("Wallet sign-in changed.")
+        const updates = new Map(
+          getWalletDefaultUpdates(wallets, input).map((wallet) => [
+            wallet.id,
+            wallet,
+          ])
+        )
+        const selected = wallets.find((wallet) => wallet.id === input.walletId)!
+        const originals = new Map(
+          (await this.list()).map((wallet) => [wallet.id, wallet])
+        )
+        const scope = walletDefaultScope(owner, selected.network)
+        const scoped = wallets
+          .filter((wallet) => wallet.network === selected.network)
+          .map((wallet) => {
+            const original = originals.get(wallet.id)!
+            return {
+              ...original,
+              defaultIntentsByScope: {
+                ...original.defaultIntentsByScope,
+                [scope]: [...(updates.get(wallet.id) ?? wallet).defaultIntents],
+              },
+              updatedAt: input.updatedAt,
+            }
+          })
+        await this.database.wallets.bulkPut(scoped)
+        if (
+          getAccountSigner() !== signer ||
+          getWalletPreferenceOwner() !== owner
+        )
           throw new Error("Wallet sign-in changed.")
       }
-    })
+    )
   }
 
   async delete(id: string): Promise<void> {
-    await db.transaction("rw", db.wallets, db.walletCredentials, async () => {
-      await db.walletCredentials.delete(id)
-      await db.wallets.delete(id)
-    })
+    await this.database.transaction(
+      "rw",
+      this.database.wallets,
+      this.database.walletCredentials,
+      async () => {
+        await this.database.walletCredentials.delete(id)
+        await this.database.wallets.delete(id)
+      }
+    )
   }
 
   async findWalletIdsByUri(uri: string): Promise<string[]> {
-    const credentials = await db.walletCredentials.toArray()
+    const credentials = await this.database.walletCredentials.toArray()
     return findMatchingNwcCredentialWalletIds(credentials, uri)
   }
 
   async putNwcCredential(walletId: string, uri: string): Promise<void> {
-    const existing = await db.walletCredentials.get(walletId)
+    const existing = await this.database.walletCredentials.get(walletId)
     const now = Date.now()
-    await db.walletCredentials.put({
+    await this.database.walletCredentials.put({
       walletId,
       providerId: "nwc",
       credential: uri,
@@ -250,12 +317,12 @@ export class MarketWalletStore
   }
 
   async getNwcCredential(walletId: string): Promise<string | null> {
-    const credential = await db.walletCredentials.get(walletId)
+    const credential = await this.database.walletCredentials.get(walletId)
     return credential?.providerId === "nwc" ? credential.credential : null
   }
 
   async deleteNwcCredential(walletId: string): Promise<void> {
-    await db.walletCredentials.delete(walletId)
+    await this.database.walletCredentials.delete(walletId)
   }
 
   async putSparkRecovery(
@@ -265,9 +332,9 @@ export class MarketWalletStore
     if (recovery.walletId !== walletId || recovery.providerId !== "spark") {
       throw new Error("Portable Wallet recovery binding is invalid.")
     }
-    const existing = await db.walletCredentials.get(walletId)
+    const existing = await this.database.walletCredentials.get(walletId)
     const now = Date.now()
-    await db.walletCredentials.put({
+    await this.database.walletCredentials.put({
       walletId,
       providerId: "spark",
       credential: serializeStoredSparkWalletRecovery(recovery),
@@ -279,7 +346,7 @@ export class MarketWalletStore
   async getSparkRecovery(
     walletId: string
   ): Promise<StoredSparkWalletRecovery | null> {
-    const credential = await db.walletCredentials.get(walletId)
+    const credential = await this.database.walletCredentials.get(walletId)
     if (credential?.providerId !== "spark") {
       return null
     }
@@ -288,6 +355,67 @@ export class MarketWalletStore
       ? recovery
       : null
   }
+}
+
+function getWalletPreferenceOwner(): string | null {
+  const signer = getAccountSigner()
+  if (signer) return signer.pubkey
+  // A retained remote account is local identity context, not signer authority.
+  const session = readAuthSession()
+  return session?.type === "nip46" ? session.userPubkey : null
+}
+
+function walletDefaultScope(
+  owner: string | null,
+  network: WalletNetwork
+): string {
+  return `${owner ?? "device"}:${network}`
+}
+
+function resolveWalletDefaults(
+  wallets: WalletDescriptor[],
+  owner: string | null
+): WalletDescriptor[] {
+  const scopedNetworks = new Set(
+    wallets
+      .filter((wallet) =>
+        Object.hasOwn(
+          wallet.defaultIntentsByScope ?? {},
+          walletDefaultScope(owner, wallet.network)
+        )
+      )
+      .map((wallet) => wallet.network)
+  )
+  const projected = wallets.map((wallet) => {
+    const intents = scopedNetworks.has(wallet.network)
+      ? (wallet.defaultIntentsByScope?.[
+          walletDefaultScope(owner, wallet.network)
+        ] ?? [])
+      : wallet.defaultIntents
+    return {
+      ...wallet,
+      defaultIntents: Array.isArray(intents)
+        ? [...new Set(intents)].filter(
+            (intent) =>
+              (intent === "pay_invoice" || intent === "receive") &&
+              wallet.capabilities.includes(intent)
+          )
+        : [],
+    }
+  })
+  const counts = new Map<string, number>()
+  for (const wallet of projected)
+    for (const intent of wallet.defaultIntents) {
+      const key = `${wallet.network}:${intent}`
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+  // Ambiguous legacy markers require an explicit choice, not an arbitrary winner.
+  return projected.map((wallet) => ({
+    ...wallet,
+    defaultIntents: wallet.defaultIntents.filter(
+      (intent) => counts.get(`${wallet.network}:${intent}`) === 1
+    ),
+  }))
 }
 
 let walletStore: MarketWalletStore | null = null

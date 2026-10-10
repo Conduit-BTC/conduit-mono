@@ -62,6 +62,7 @@ import {
 } from "../wallets/spark-wallet-lifecycle"
 import {
   getNwcWalletRegistrationDetails,
+  type NwcWalletRegistration,
   migrateLegacyNwcWallet,
   reconcileNwcWalletRegistration,
 } from "../wallets/wallet-migration"
@@ -147,7 +148,10 @@ export interface UseWalletsReturn {
   connectNwc(
     uri: string,
     label?: string,
-    options?: { shouldContinue?: () => boolean }
+    options?: {
+      shouldContinue?: () => boolean
+      onRegistered?: (registration: NwcWalletRegistration) => void
+    }
   ): Promise<WalletDescriptor>
   createSpark(label?: string): Promise<{
     wallet: WalletDescriptor
@@ -306,11 +310,12 @@ export function useWallets(
             ? await new DexieSparkRecoveryStore().load(ownerPubkey)
             : null
           const signer = getAccountSigner()
+          const configuration = getSparkConfiguration()
           const primaryEventId =
-            signer?.pubkey === ownerPubkey
+            signer?.pubkey === ownerPubkey && configuration.status === "ready"
               ? getAccountSparkRecovery(
                   signer
-                ).getVerifiedPrimaryPointerEventId(getSparkWalletNetwork())
+                ).getVerifiedPrimaryPointerEventId(configuration.network)
               : undefined
           const primary = journal?.records.find(
             (r) => r.event.id === primaryEventId
@@ -697,7 +702,10 @@ export function useWallets(
     async (
       uri: string,
       label?: string,
-      options?: { shouldContinue?: () => boolean }
+      options?: {
+        shouldContinue?: () => boolean
+        onRegistered?: (registration: NwcWalletRegistration) => void
+      }
     ) => {
       const signer = getAccountSigner()
       const shouldContinue = () =>
@@ -713,7 +721,7 @@ export function useWallets(
           info,
           getWalletNetworkFromLightningConfig(config.lightningNetwork)
         )
-        const { wallet: connectedWallet } = await registerNwcWalletAtomically({
+        const result = await registerNwcWalletAtomically({
           store,
           uri,
           listWallets: () => registry.list(),
@@ -728,6 +736,8 @@ export function useWallets(
           ensureDefault,
           shouldContinue,
         })
+        options?.onRegistered?.(result)
+        const connectedWallet = result.wallet
         if (!shouldContinue()) throw new Error("Wallet sign-in changed.")
         const session = getBuyerNwcSession(connectedWallet.id)
         session.setConnection(connection)
@@ -1420,7 +1430,7 @@ export function useWallets(
 
   const removeWallet = useCallback(
     async (walletId: string, options: { recoveryConfirmed?: boolean } = {}) => {
-      const requestedWallet = (await registry.list()).find(
+      const requestedWallet = (await store.listVisible(ownerRef.current)).find(
         (candidate) => candidate.id === walletId
       )
       if (!requestedWallet) {
@@ -1656,11 +1666,7 @@ export function useWallets(
   )
   const renameWallet = useCallback(
     async (walletId: string, label: string) => {
-      const wallet = (await store.listVisible(ownerRef.current)).find(
-        (w) => w.id === walletId
-      )
-      if (!wallet) throw new Error("Wallet is no longer available.")
-      await store.put({ ...wallet, label: requireWalletLabel(label) })
+      await store.rename(walletId, requireWalletLabel(label))
       await refreshAfterCommittedWalletMutation()
     },
     [store, refreshAfterCommittedWalletMutation]

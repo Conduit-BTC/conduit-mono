@@ -107,12 +107,29 @@ changes to every hook consumer. A wallet opens once; all consumers derive readin
 from the same available native session, without waiting for an SDK event. Legacy
 password dialogs use a live account/generation fence that also permits signed-out
 device recovery. Signer actions retain the connected authority fence.
+Generic Wallets loading does not require Spark availability: unsupported networks
+or unavailable session coordination leave external and legacy wallets usable.
 
 Merchant's legacy account-scoped NWC connection is retired only after shared
 descriptor and credential read-back verifies the same parsed connection. Account
 or credential replacement fences the migration; failure preserves the legacy path.
+A late fence compensates only the new shared descriptor/credential registered by
+that attempt and closes its native session. A pre-existing shared connection is
+never removed. Once legacy retirement occurs, a later verification-transaction
+failure retains the durable shared copy instead of deleting the last credential.
 Mounted legacy consumers observe the existing Merchant storage signal and retire
 together. Shared Disconnect therefore stays disconnected after reload.
+
+Spending and receiving defaults are device-local choices scoped to the account,
+network and intent on existing wallet rows. Account replacement cannot change
+another account's choice on a shared external wallet. Unique legacy markers remain
+readable; ambiguous legacy defaults require an explicit choice. Per-intent device
+overrides do not authorize a payment and are never included in relay recovery;
+explicit encrypted main-wallet selection keeps its existing separate coordinate.
+Merchant exposes only a configured-network default with receiving capability;
+foreign-network evidence cannot invoke that wallet's invoice provider for a
+current-network order. Recovery dialogs clear the password-fallback choice and
+sensitive state on dismissal and when the selected wallet changes.
 
 Sign-in only reads/restores. Existing device-only recovery is published only by
 **Sync wallet recovery**, which discloses encrypt-to-self and relay storage.
@@ -270,10 +287,20 @@ copy and reopens through a fresh Nostr sign-in without a wallet password.
 initialization without descriptor/fallback/SDK events, lock/retry, device removal
 through account reconnect/reload/explicit import, mixed-network recovery and
 Addy creation blocking. Merchant migration/disconnect uses a local real NIP-47
-wallet service and asserts the Wallets document title. The existing sensitive
+wallet service and asserts the Wallets document title, late account-change
+compensation and retained legacy recovery. Unsupported-network and unavailable
+coordination cases retain signed-in external and legacy wallet visibility.
+The Commerce journey confirms the committed receiving default before full-page
+navigation; the image retry case waits for a controlled NIP-07 restoration before
+opening the account-owned draft. The existing sensitive
 dialog dismissal smoke retains password clearing, recovery acknowledgement reset
 and focus restoration. NWC failure/read-back/account-replacement regressions use
-the shared atomic registration boundary. These remain controlled local evidence.
+the shared atomic registration boundary. A two-account IndexedDB/signer case
+checks independent defaults by network and intent after replacement and reopen.
+The full Commerce journey retains an older foreign-network default and requires
+zero calls to its invoice provider. Recovery switches from a verified previous
+password to a signer-only wallet, retaining phrase access and focus restoration.
+These remain controlled local evidence.
 
 Recovery traces, screenshots and video are disabled; retained visual artifacts
 show only empty/finished states.

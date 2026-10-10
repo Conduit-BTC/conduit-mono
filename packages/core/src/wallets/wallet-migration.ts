@@ -12,6 +12,8 @@ import {
   type WalletRegistryStore,
 } from "@conduit/core"
 import { registerNwcWalletAtomically } from "./wallet-storage"
+import { closeBuyerNwcSession } from "./buyer-nwc-session"
+import { notifyWalletChangeFallback } from "./wallet-change-fallback"
 
 const LEGACY_NWC_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const LEGACY_NWC_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
@@ -43,34 +45,75 @@ export type LegacyNwcMigrationResult =
   | { status: "already_migrated"; wallet: WalletDescriptor }
   | { status: "migrated"; wallet: WalletDescriptor }
 
-/** Retire an account's legacy connection only after the shared copy reads back. */
+export interface NwcWalletRegistration {
+  wallet: WalletDescriptor
+  created: boolean
+}
+
+/** Retire the legacy owner after read-back; compensate only this migration's new copy. */
 export async function migrateAccountNwcConnection(input: {
   uri: string
-  connect(): Promise<WalletDescriptor>
+  connect(
+    onRegistered: (registration: NwcWalletRegistration) => void
+  ): Promise<WalletDescriptor>
   credentialStore: NwcCredentialStore
-  listWallets(): Promise<WalletDescriptor[]>
+  registry: Pick<WalletRegistry, "list" | "remove">
   shouldContinue(): boolean
   retireLegacy(): boolean
 }): Promise<boolean> {
   if (!input.shouldContinue()) return false
-  const wallet = await input.connect()
-  return input.credentialStore.transaction(async () => {
-    if (!input.shouldContinue()) return false
-    const credential = await input.credentialStore.getNwcCredential(wallet.id)
-    const registered = (await input.listWallets()).find(
-      (candidate) => candidate.id === wallet.id
-    )
-    if (
-      !credential ||
-      !registered ||
-      registered.providerId !== "nwc" ||
-      registered.kind !== "connected" ||
-      getNwcUriFingerprint(credential) !== getNwcUriFingerprint(input.uri)
-    )
-      throw new Error("Connected Wallet migration verification failed.")
-    if (!input.shouldContinue()) return false
-    return input.retireLegacy()
-  })
+  let registration: NwcWalletRegistration | undefined
+  let retired = false
+  try {
+    const wallet = await input.connect((result) => {
+      registration = result
+    })
+    return await input.credentialStore.transaction(async () => {
+      if (!input.shouldContinue()) return false
+      const credential = await input.credentialStore.getNwcCredential(wallet.id)
+      const registered = (await input.registry.list()).find(
+        (candidate) => candidate.id === wallet.id
+      )
+      if (
+        !credential ||
+        !registered ||
+        registered.providerId !== "nwc" ||
+        registered.kind !== "connected" ||
+        getNwcUriFingerprint(credential) !== getNwcUriFingerprint(input.uri)
+      )
+        throw new Error("Connected Wallet migration verification failed.")
+      if (!input.shouldContinue()) return false
+      retired = input.retireLegacy()
+      return retired
+    })
+  } finally {
+    if (!retired && registration?.created) {
+      const walletId = registration.wallet.id
+      const removed = await input.credentialStore.transaction(async () => {
+        const registered = (await input.registry.list()).find(
+          (candidate) => candidate.id === walletId
+        )
+        const credential =
+          await input.credentialStore.getNwcCredential(walletId)
+        if (
+          (registered &&
+            (registered.providerId !== "nwc" ||
+              registered.kind !== "connected")) ||
+          (credential &&
+            getNwcUriFingerprint(credential) !==
+              getNwcUriFingerprint(input.uri))
+        )
+          return false
+        await input.credentialStore.deleteNwcCredential(walletId)
+        await input.registry.remove(walletId)
+        return true
+      })
+      if (removed) {
+        closeBuyerNwcSession(walletId)
+        notifyWalletChangeFallback()
+      }
+    }
+  }
 }
 
 export async function migrateLegacyNwcWallet(input: {

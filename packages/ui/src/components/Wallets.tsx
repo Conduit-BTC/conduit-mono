@@ -80,6 +80,8 @@ import type {
   SparkSendRequest,
 } from "@conduit/core/wallets/spark-wallet"
 import { getWalletProviderDescription } from "@conduit/core/wallets/wallet-provider-label"
+import { Field } from "./Field"
+import { PageLayout } from "./Layout"
 
 type SparkRecoveryState =
   | { status: "idle" }
@@ -206,10 +208,10 @@ export function Wallets({
   }
 
   return (
-    <div className="mx-auto max-w-[64rem] py-2 sm:py-6">
+    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="space-y-6">
-        <section className="overflow-hidden rounded-[2.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-dialog)]">
-          <div className="border-b border-[var(--border)] bg-[image:radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--secondary-500)_16%,transparent),transparent_42%)] p-5 sm:p-8">
+        <section className="min-w-0">
+          <div className="border-b border-[var(--border)] p-5 sm:p-8">
             <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <h1
@@ -227,7 +229,7 @@ export function Wallets({
             {wallets.initializationError ? (
               <div
                 role="alert"
-                className="flex flex-col gap-4 rounded-2xl border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_8%,transparent)] p-4 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_8%,transparent)] p-4 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div>
                   <p className="font-medium text-[var(--text-primary)]">
@@ -250,7 +252,7 @@ export function Wallets({
             ) : wallets.sparkAvailability.status === "unavailable" ? (
               <div
                 role="status"
-                className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_9%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]"
+                className="rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_9%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]"
               >
                 <p className="font-medium">My wallets are unavailable</p>
                 <p className="mt-1">{wallets.sparkAvailability.reason}</p>
@@ -417,7 +419,7 @@ export function Wallets({
         </div>
         {footer}
 
-        <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
           <div className="flex items-start gap-3">
             <KeyRound className="mt-1 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
             <p>
@@ -524,7 +526,7 @@ export function Wallets({
         wallets={wallets}
       />
       <RecoveryWalletDialog
-        key={`${auth.accountPubkey}:${auth.authGeneration}`}
+        key={`recovery:${auth.accountPubkey}:${auth.authGeneration}:${recoveryWallet?.id ?? "closed"}`}
         wallet={recoveryWallet}
         onOpenChange={(open) => {
           if (!open) {
@@ -544,7 +546,7 @@ export function Wallets({
         }}
         wallets={wallets}
       />
-    </div>
+    </PageLayout>
   )
 }
 
@@ -560,7 +562,7 @@ function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
       {wallets.mainWalletSync === "pending" && (
         <div
           role="status"
-          className="grid gap-2 rounded-2xl border border-[var(--border)] p-5 text-sm"
+          className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] p-5 text-sm"
         >
           <p>
             Main-wallet choice sync is pending. This device uses your choice;
@@ -579,7 +581,7 @@ function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
       {wallets.recoverySync !== "idle" && wallets.recoverySync !== "ready" && (
         <section
           role="status"
-          className="grid gap-3 rounded-2xl border border-[var(--border)] p-5"
+          className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-5"
         >
           <p>
             {wallets.recoverySync === "checking"
@@ -689,7 +691,7 @@ function WalletSection({
       </div>
 
       <div className="mt-3">{actions}</div>
-      <div className="mt-3 overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
+      <div className="mt-3 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
         {loading ? (
           <WalletSectionLoading title={title} />
         ) : wallets.length === 0 ? (
@@ -741,7 +743,7 @@ function WalletSectionLoading({ title }: { title: string }) {
     >
       {[0, 1].map((index) => (
         <div key={index} className="flex items-center gap-3" aria-hidden="true">
-          <div className="h-11 w-11 shrink-0 rounded-2xl bg-[var(--surface-elevated)]" />
+          <div className="h-11 w-11 shrink-0 rounded-[var(--radius-md)] bg-[var(--surface-elevated)]" />
           <div className="min-w-0 flex-1 space-y-2">
             <div className="h-4 w-36 max-w-full rounded bg-[var(--surface-elevated)]" />
             <div className="h-3 w-52 max-w-full rounded bg-[var(--surface-elevated)]" />
@@ -1413,7 +1415,7 @@ function PortableWalletDialog({
                 : "Sync pending. Keep your recovery details before switching apps."}
             </p>
             {completedWallet && (
-              <div className="grid gap-2 rounded-xl border border-[var(--border)] p-3">
+              <div className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
                 <Label htmlFor="wallet-main">Make this my main wallet</Label>
                 <Switch
                   id="wallet-main"
@@ -1448,7 +1450,7 @@ function PortableWalletDialog({
               )
             )}
             {mode === "create" && !recoveredFromRelay && (
-              <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] p-3">
+              <div className="flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
                 <Label htmlFor="recovery-saved">
                   I saved the phrase, Spark account number and network somewhere
                   private
@@ -1481,40 +1483,48 @@ function PortableWalletDialog({
               We encrypt recovery to your Nostr identity and request relay
               storage. Setup shows whether sync is confirmed or pending.
             </p>
-            <div className="grid gap-2">
-              <Label htmlFor="portable-mnemonic">Recovery phrase</Label>
-              <Textarea
-                id="portable-mnemonic"
-                value={mnemonic}
-                onChange={(event) => setMnemonic(event.target.value)}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                required
-                disabled={pending}
-              />
-            </div>
-            <details className="rounded-xl border border-[var(--border)] p-3">
+            <Field
+              id="portable-mnemonic"
+              label="Recovery phrase"
+              description="Use the recovery phrase from the original wallet. Keep its Spark account number and network with it."
+            >
+              {(props) => (
+                <Textarea
+                  {...props}
+                  value={mnemonic}
+                  onChange={(event) => setMnemonic(event.target.value)}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  required
+                  disabled={pending}
+                />
+              )}
+            </Field>
+            <details className="rounded-[var(--radius-md)] border border-[var(--border)] p-3">
               <summary className="cursor-pointer text-sm">
                 Advanced settings
               </summary>
-              <div className="mt-3 grid gap-2">
-                <Label htmlFor="portable-account">Spark account number</Label>
-                <Input
+              <div className="mt-3">
+                <Field
                   id="portable-account"
-                  type="number"
-                  min={0}
-                  max={MAX_SPARK_ACCOUNT_NUMBER}
-                  step={1}
-                  value={accountNumber}
-                  onChange={(event) => setAccountNumber(event.target.value)}
-                  disabled={pending}
-                />
-                <p className="text-xs">
-                  Default: {defaultAccount}. Use the number saved with the
-                  source wallet.
-                </p>
+                  label="Spark account number"
+                  description={`Default: ${defaultAccount}. Use the number saved with the source wallet.`}
+                >
+                  {(props) => (
+                    <Input
+                      {...props}
+                      type="number"
+                      min={0}
+                      max={MAX_SPARK_ACCOUNT_NUMBER}
+                      step={1}
+                      value={accountNumber}
+                      onChange={(event) => setAccountNumber(event.target.value)}
+                      disabled={pending}
+                    />
+                  )}
+                </Field>
               </div>
             </details>
             {error && (
@@ -2369,7 +2379,7 @@ function SendWalletDialog({
               ref={successStatusRef}
               role="status"
               tabIndex={-1}
-              className="rounded-xl border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] outline-none"
+              className="rounded-[var(--radius-md)] border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] outline-none"
             >
               {sentMethod === "spark"
                 ? "Spark transfer sent."
@@ -2389,7 +2399,7 @@ function SendWalletDialog({
                     event.preventDefault()
                     if (!pending) void confirm()
                   }}
-                  className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-4 text-sm text-[var(--text-secondary)]"
+                  className="rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-4 text-sm text-[var(--text-secondary)]"
                 >
                   <h3
                     ref={reviewHeadingRef}
@@ -2805,7 +2815,7 @@ function WalletHistoryDialog({
             No payment history yet.
           </p>
         ) : (
-          <div className="divide-y divide-[var(--border)] overflow-hidden rounded-xl border border-[var(--border)]">
+          <div className="divide-y divide-[var(--border)] overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)]">
             {payments.map((payment) => (
               <div
                 key={payment.id}
@@ -2871,6 +2881,7 @@ function RecoveryWalletDialog({
   )
 
   const close = () => {
+    setUseLegacyPassword(false)
     setPassword("")
     setRecovery(null)
     setPending(false)
@@ -3026,7 +3037,7 @@ function RemoveWalletDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         {portable && (
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-3">
+          <div className="flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-3">
             <Label htmlFor="remove-recovery" className="leading-5">
               I have the recovery details required to restore this Portable
               Wallet

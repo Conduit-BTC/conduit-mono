@@ -995,7 +995,39 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
 
   await dialog.locator("form").getByRole("button", { name: "Close" }).click()
   await expect(dialog).toBeHidden()
+  // Hold the real NIP-07 restore to exercise the ownership boundary on reload.
+  await page.addInitScript(() => {
+    const fixture = window as unknown as {
+      nostr: { getPublicKey(): Promise<string> }
+      __productDraftRestorePending?: boolean
+      __releaseProductDraftRestore?: () => void
+    }
+    const getPublicKey = fixture.nostr.getPublicKey.bind(fixture.nostr)
+    let held = false
+    fixture.nostr.getPublicKey = async () => {
+      if (!held) {
+        held = true
+        await new Promise<void>((resolve) => {
+          fixture.__productDraftRestorePending = true
+          fixture.__releaseProductDraftRestore = resolve
+        })
+      }
+      return getPublicKey()
+    }
+  })
   await page.reload()
+  await expect
+    .poll(() =>
+      page.evaluate(() => Boolean((window as any).__productDraftRestorePending))
+    )
+    .toBe(true)
+  const accountMenu = page.getByRole("button", {
+    name: "Open merchant account menu",
+    exact: true,
+  })
+  await expect(accountMenu).not.toBeVisible()
+  await page.evaluate(() => (window as any).__releaseProductDraftRestore())
+  await expect(accountMenu).toBeVisible()
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
   await expect(

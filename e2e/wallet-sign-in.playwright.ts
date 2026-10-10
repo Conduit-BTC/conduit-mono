@@ -446,6 +446,9 @@ test("legacy migration keeps its old encrypted copy and fresh sign-in reopens wi
       .getByRole("button", { name: "Unlock", exact: true })
       .click()
     await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+    const legacyPassword = await page.evaluate(
+      () => (window as any).__walletProbe.legacyPassword as string
+    )
     // A new document gets a fresh account session and the same encrypted local
     // wallet. The fixture controls the network layer before initialization.
     await page.goto(`${market}/products`)
@@ -464,6 +467,54 @@ test("legacy migration keeps its old encrypted copy and fresh sign-in reopens wi
         core
       )
     ).toEqual({ wallets: 1, opens: 1, account: 7, registrations: 0 })
+    await page
+      .getByRole("button", { name: "Create wallet", exact: true })
+      .click()
+    await saveRecovery(page, false)
+    await page.getByLabel("Manage Legacy wallet").click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+    let recoveryDialog = page.getByRole("dialog")
+    await recoveryDialog.getByLabel("Use the previous wallet password").check()
+    await page.evaluate((password) => {
+      const input = document.getElementById(
+        "recovery-password"
+      ) as HTMLInputElement
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )!.set!.call(input, password)
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    }, legacyPassword)
+    await recoveryDialog
+      .getByRole("button", { name: "Show recovery phrase", exact: true })
+      .click()
+    await recoveryDialog
+      .getByRole("button", { name: "Done", exact: true })
+      .click()
+    await expect(page.getByLabel("Manage Legacy wallet")).toBeFocused()
+    await page.getByLabel("Manage Conduit Wallet").click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+    recoveryDialog = page.getByRole("dialog")
+    await expect(
+      recoveryDialog.getByLabel("Wallet password", { exact: true })
+    ).toHaveCount(0)
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Show recovery phrase",
+        exact: true,
+      })
+    ).toBeEnabled()
+    await recoveryDialog
+      .getByRole("button", { name: "Show recovery phrase", exact: true })
+      .click()
+    await recoveryDialog
+      .getByRole("button", { name: "Done", exact: true })
+      .click()
+    await expect(page.getByLabel("Manage Conduit Wallet")).toBeFocused()
   } finally {
     disposeRuntimeSignerIdentity(identity)
   }

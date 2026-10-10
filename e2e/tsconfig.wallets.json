@@ -15,13 +15,18 @@
     "paths": {
       "@conduit/core": ["../packages/core/src"],
       "@conduit/core/*": ["../packages/core/src/*"],
-      "/src/*": ["../apps/market/src/*"]
+      "/src/*": ["../apps/market/src/*"],
+      "@conduit/ui/theme": ["../packages/ui/src/theme/index.ts"]
     },
     "jsx": "react-jsx"
   },
   "include": [
     "wallet-sign-in.playwright.ts",
     "wallet-cross-app.playwright.ts",
-    "wallet-lifecycle.playwright.ts"
+    "wallet-lifecycle.playwright.ts",
+    "shared-ui-composition.playwright.ts",
+    "shared-ui-populated-audit.playwright.ts",
+    "commerce.playwright.ts",
+    "merchant-product-image-preview.playwright.ts"
   ]
 }
