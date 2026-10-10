@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  getShopperPriceDisplay,
+  getShopperCardPriceDisplay,
   pubkeyToNpub,
   type PricingRateInput,
   type Product,
@@ -151,7 +151,7 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const selectedPriceDisplay = getShopperPriceDisplay(
+  const selectedPriceDisplay = getShopperCardPriceDisplay(
     selectedProduct,
     pricePreference,
     typeof btcUsdRate === "object" ? btcUsdRate : null,
@@ -159,7 +159,7 @@ export function ProductGridCard({
   )
   const summaryMinimum = family?.priceSummary.minimum?.product
   const summaryPriceDisplay = summaryMinimum
-    ? getShopperPriceDisplay(
+    ? getShopperCardPriceDisplay(
         summaryMinimum,
         pricePreference,
         typeof btcUsdRate === "object" ? btcUsdRate : null,
@@ -171,7 +171,10 @@ export function ProductGridCard({
     : summaryPriceDisplay
   const primary =
     !hasReadyFamily && family?.priceSummary.varies === true
-      ? `From ${summaryPriceDisplay.primary}`
+      ? {
+          text: `From ${summaryPriceDisplay.primary.text}`,
+          fullText: `From ${summaryPriceDisplay.primary.fullText}`,
+        }
       : displayedPrice.primary
   const secondary = displayedPrice.secondary
   const approximateUsd = displayedPrice.approximateUsd

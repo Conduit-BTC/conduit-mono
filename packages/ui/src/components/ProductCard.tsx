@@ -4,7 +4,7 @@ import {
   type PointerEventHandler,
   type ReactNode,
 } from "react"
-import type { ProductImage } from "@conduit/core"
+import type { CardPriceLabel, ProductImage } from "@conduit/core"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import { ProductImageFrame } from "./ProductImageFrame"
@@ -19,9 +19,9 @@ export interface ProductCardProps {
   merchantName: string
   merchantNamePending?: boolean
   images: readonly ProductCardImage[]
-  primaryPrice: string
-  secondaryPrice?: string | null
-  approximateUsdPrice?: string | null
+  primaryPrice: string | CardPriceLabel
+  secondaryPrice?: string | CardPriceLabel | null
+  approximateUsdPrice?: string | CardPriceLabel | null
   imageLoading?: "eager" | "lazy"
   /** Disable the image-only hover zoom when a parent supplies card-level motion. */
   disableImageHoverZoom?: boolean
@@ -49,18 +49,33 @@ export interface ProductCardProps {
 }
 
 function renderCardPrice(
-  value: string | null | undefined,
+  value: string | CardPriceLabel | null | undefined,
   estimated = false
 ): ReactNode {
   if (!value) return "\u00a0"
-  const text = value.replace(/[~≈]\s*/g, "")
-  const isEstimate = estimated || /[~≈]/.test(value)
+  const fullText = (typeof value === "string" ? value : value.fullText).replace(
+    /[~≈]\s*/g,
+    ""
+  )
+  const text = (typeof value === "string" ? value : value.text).replace(
+    /[~≈]\s*/g,
+    ""
+  )
+  const isEstimate =
+    estimated || /[~≈]/.test(typeof value === "string" ? value : value.fullText)
   return (
-    <span title={isEstimate ? `${text} (estimated conversion)` : text}>
+    <span title={isEstimate ? `${fullText} (estimated conversion)` : fullText}>
       {isEstimate ? (
         <span className="sr-only">Estimated conversion: </span>
       ) : null}
-      {text}
+      {text === fullText ? (
+        text
+      ) : (
+        <>
+          <span aria-hidden="true">{text}</span>
+          <span className="sr-only">{fullText}</span>
+        </>
+      )}
     </span>
   )
 }
@@ -206,26 +221,30 @@ export function ProductCard({
           <div
             data-slot="product-price"
             className={cn(
-              "min-w-min flex-1 tabular-nums",
+              "min-w-0 max-w-full flex-[1_1_max-content] tabular-nums",
               actionLayout === "stacked" && "basis-full",
               cartQuantity > 0 && "min-w-20"
             )}
           >
             <div
               className={cn(
-                "min-h-5 whitespace-nowrap text-sm font-semibold",
-                /₿|\bsats?\b|\bBTC\b/i.test(primaryPrice)
+                "min-h-5 break-words text-sm font-semibold",
+                /₿|\bsats?\b|\bBTC\b/i.test(
+                  typeof primaryPrice === "string"
+                    ? primaryPrice
+                    : primaryPrice.text
+                )
                   ? "text-[var(--bitcoin-price)]"
                   : "text-[var(--text-primary)]"
               )}
             >
               {renderCardPrice(primaryPrice)}
             </div>
-            <div className="min-h-[1rem] w-0 min-w-full truncate text-xs text-[var(--text-secondary)]">
+            <div className="min-h-[1rem] min-w-0 break-words text-xs text-[var(--text-secondary)]">
               {renderCardPrice(secondaryPrice)}
             </div>
             {approximateUsdPrice !== undefined ? (
-              <div className="min-h-[1rem] w-0 min-w-full truncate text-xs text-[var(--text-secondary)]">
+              <div className="min-h-[1rem] min-w-0 break-words text-xs text-[var(--text-secondary)]">
                 {renderCardPrice(approximateUsdPrice, true)}
               </div>
             ) : null}

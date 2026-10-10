@@ -198,3 +198,137 @@ for (const theme of ["day-market", "night-market"]) {
     }
   })
 }
+
+for (const theme of ["day-market", "night-market"]) {
+  test(`compact large prices stay inside neighboring cards in ${theme} @market`, async ({
+    page,
+  }, info) => {
+    await page.addInitScript(
+      ({ key, theme }) => localStorage.setItem(key, theme),
+      { key: THEME_STORAGE_KEY, theme }
+    )
+    await page.goto(`${marketUrl}/products`)
+    await page.evaluate(async () => {
+      const container = document.createElement("div")
+      container.id = "price-harness"
+      container.style.cssText =
+        "position:relative;z-index:100;padding:12px;background:var(--background)"
+      document.body.append(container)
+      const fixture =
+        await import("/src/test-fixtures/shared-ui-density-harness.tsx")
+      fixture.mountSharedUiPriceHarness(container)
+    })
+    const catalog = page.getByTestId("compact-prices")
+    await expect(catalog.getByText("$100.3k", { exact: true })).toBeVisible()
+    await expect(catalog.getByText("$1.403M", { exact: true })).toBeVisible()
+    await expect(catalog.getByText("$1.403B", { exact: true })).toBeVisible()
+    await expect(catalog.getByText("$1M", { exact: true })).toBeVisible()
+    await expect(catalog.getByText("1 BTC", { exact: true })).toBeVisible()
+    for (const width of [320, 375, 768]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.evaluate(() => document.fonts.ready)
+      for (const enlarged of [false, true]) {
+        await page.evaluate(
+          (enlarged) =>
+            (document.documentElement.style.fontSize = enlarged ? "200%" : ""),
+          enlarged
+        )
+        const bounds = await catalog.getByRole("link").evaluateAll(
+          (cards, minimumActionHeight) =>
+            cards.map((card) => {
+              const box = card.getBoundingClientRect()
+              const price = card.querySelector('[data-slot="product-price"]')!
+              const spans = price.querySelectorAll('span[aria-hidden="true"]')
+              const fragments = [
+                ...(spans.length
+                  ? spans
+                  : price.querySelectorAll("span[title]")),
+              ].flatMap((el) => {
+                const r = document.createRange()
+                r.selectNodeContents(el)
+                return [...r.getClientRects()].map((x) => ({
+                  left: x.left,
+                  right: x.right,
+                }))
+              })
+              const actions = [
+                ...card.querySelectorAll('[role="group"] button'),
+              ].map((el) => el.getBoundingClientRect())
+              return {
+                contained: fragments.every(
+                  (r) => r.left >= box.left - 1 && r.right <= box.right + 1
+                ),
+                actions: actions.every(
+                  (a) =>
+                    a.left >= box.left - 1 &&
+                    a.right <= box.right + 1 &&
+                    a.height >= minimumActionHeight
+                ),
+              }
+            }),
+          width < 768 ? 44 : 32
+        )
+        expect(
+          bounds.every((b) => b.contained),
+          `${width}px ${enlarged ? "enlarged" : "normal"} price fragments`
+        ).toBe(true)
+        expect(bounds.every((b) => b.actions)).toBe(true)
+      }
+      await page.evaluate(() => (document.documentElement.style.fontSize = ""))
+    }
+    await page.setViewportSize({ width: 320, height: 900 })
+    const btcCard = catalog
+      .getByRole("link")
+      .filter({ hasText: "₿100,000,000" })
+    const add = btcCard.getByRole("button", {
+      name: "Add Large price to cart",
+      exact: true,
+    })
+    // Keyboard activation checks focus preservation; Safari does not focus buttons on pointer clicks.
+    await add.focus()
+    await add.press("Enter")
+    await expect(
+      btcCard.getByRole("button", { name: "Remove one Large price from cart" })
+    ).toBeFocused()
+    await btcCard
+      .getByRole("button", { name: "Add one more Large price to cart" })
+      .click()
+    await expect(
+      btcCard.getByRole("group", { name: "Cart action for Large price" })
+    ).toContainText("2")
+    const quantityBounds = await btcCard.evaluate((card) => {
+      const box = card.getBoundingClientRect()
+      return [...card.querySelectorAll('[role="group"] button')].every((el) => {
+        const action = el.getBoundingClientRect()
+        return (
+          action.left >= box.left - 1 &&
+          action.right <= box.right + 1 &&
+          action.height >= 44
+        )
+      })
+    })
+    expect(quantityBounds).toBe(true)
+    await expect(
+      btcCard.locator('[data-slot="product-price"] span[title]').first()
+    ).toHaveAttribute("title", "₿100,000,000")
+    await expect(
+      page
+        .getByTestId("merchant-compact-price")
+        .getByText("1.235 BTC", { exact: true })
+    ).toBeVisible()
+    if (process.env.PLAYWRIGHT_UI_SCREENSHOT_DIR) {
+      await mkdir(process.env.PLAYWRIGHT_UI_SCREENSHOT_DIR, { recursive: true })
+      for (const row of [2, 4, 5]) {
+        await catalog
+          .locator("ul")
+          .nth(row)
+          .screenshot({
+            path: join(
+              process.env.PLAYWRIGHT_UI_SCREENSHOT_DIR,
+              `compact-prices-${row}-${info.project.name}-${theme}.png`
+            ),
+          })
+      }
+    }
+  })
+}

@@ -20,7 +20,7 @@ import {
   getListingAvailabilityDisplay,
   getMerchantStorefront,
   getProductImageCandidates,
-  getProductPriceDisplay,
+  getProductCardPriceDisplay,
   getAccountSigner,
   type SignedPublicNostrEvent,
   isCommerceReadIncomplete,
@@ -3008,7 +3008,7 @@ function ProductsPage() {
           {visibleProducts.map((item) => {
             const priceProduct =
               item.family?.priceSummary.minimum?.product ?? item.product
-            const { primary, secondary } = getProductPriceDisplay(
+            const { primary, secondary } = getProductCardPriceDisplay(
               priceProduct,
               btcUsdRateQuery.data ?? null
             )
@@ -3101,7 +3101,10 @@ function ProductsPage() {
                   images={getProductImageCandidates(item.product)}
                   primaryPrice={
                     item.family?.priceSummary.varies
-                      ? `From ${primary}`
+                      ? {
+                          text: `From ${primary.text}`,
+                          fullText: `From ${primary.fullText}`,
+                        }
                       : primary
                   }
                   secondaryPrice={secondary}

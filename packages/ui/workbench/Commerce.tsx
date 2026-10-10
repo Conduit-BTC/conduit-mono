@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { ArrowRight, Package } from "lucide-react"
+import { getShopperCardPriceDisplay } from "@conduit/core"
 import {
   ActionRow,
   Button,
@@ -145,6 +146,36 @@ export function Commerce({
               />
             </>
           )}
+        </div>
+        <h3 className="text-lg font-semibold">Compact large prices</h3>
+        <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,8.5rem),1fr))] gap-2">
+          {[
+            { price: 123456789, currency: "SATS" },
+            { price: 100300, currency: "USD" },
+            { price: 1403000, currency: "USD" },
+          ].map((product) => {
+            const price = getShopperCardPriceDisplay(product, {
+              currency: product.currency === "USD" ? "USD" : "BITCOIN",
+              bitcoinUnit: "bitcoin",
+            })
+            return (
+              <ProductCard
+                key={product.price}
+                title="Compact price example"
+                merchantName="Sample store"
+                images={[]}
+                primaryPrice={price.primary}
+                secondaryPrice={price.secondary}
+                action={
+                  <ProductCartAction
+                    title="Compact price example"
+                    cartQuantity={0}
+                    onAddToCart={() => setReviewed(true)}
+                  />
+                }
+              />
+            )
+          })}
         </div>
         <h3 className="text-lg font-semibold">Product options</h3>
         <SampleProduct

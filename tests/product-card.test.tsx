@@ -352,3 +352,21 @@ describe("ProductCard", () => {
     expect(html.match(/min-h-\[1rem\]/g)).toHaveLength(2)
   })
 })
+
+it("keeps unabridged accessible and hover amounts behind compact visual labels", () => {
+  const html = renderToStaticMarkup(
+    <ProductCard
+      title="Large quote"
+      merchantName="Store"
+      images={[]}
+      primaryPrice={{ text: "1.235 BTC", fullText: "₿123,456,789" }}
+      secondaryPrice={{ text: "~ $100.3k USD", fullText: "~ $100,300.00 USD" }}
+    />
+  )
+  expect(html).toContain('title="₿123,456,789"')
+  expect(html).toContain('<span aria-hidden="true">1.235 BTC</span>')
+  expect(html).toContain('<span class="sr-only">₿123,456,789</span>')
+  expect(html).toContain('title="$100,300.00 USD (estimated conversion)"')
+  expect(html).toContain("Estimated conversion:")
+  expect(html).not.toMatch(/[~≈]/)
+})
