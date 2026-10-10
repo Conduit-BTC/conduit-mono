@@ -937,7 +937,7 @@ function PriceDisplaySettings() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex min-h-11 items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4">
+        <div className="flex min-h-11 flex-wrap items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2">
           <Label
             htmlFor="sats-standard"
             className="cursor-pointer text-sm font-medium"
@@ -946,6 +946,7 @@ function PriceDisplaySettings() {
           </Label>
           <Switch
             id="sats-standard"
+            className="ml-auto"
             checked={shopperPricing.preference.bitcoinUnit === "sats"}
             onCheckedChange={shopperPricing.setSatsStandard}
           />
