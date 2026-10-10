@@ -246,7 +246,7 @@ describe("Market cart HUD policy", () => {
       "utf8"
     )
     const wallets = readFileSync(
-      new URL("../apps/market/src/hooks/useWallets.ts", import.meta.url),
+      new URL("../packages/core/src/hooks/useWallets.ts", import.meta.url),
       "utf8"
     )
 

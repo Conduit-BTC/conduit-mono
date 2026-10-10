@@ -1,3 +1,4 @@
+import type { ReceivingWalletBinding } from "@conduit/core/wallets/receiving"
 import {
   decodeLightningInvoiceAmount,
   type MerchantConversationSummary,
@@ -16,6 +17,7 @@ export interface MerchantPaymentVerificationCandidate {
   buyerPubkey: string
   evidenceMessageId: string
   invoice: string
+  receivingWallet?: ReceivingWalletBinding
   paymentHash?: string
   expectedAmountMsats: number
   orderCreatedAt: number
@@ -121,7 +123,11 @@ export function getMerchantNwcAddressStatus({
 function findCandidate(
   conversation: MerchantConversationSummary
 ): MerchantPaymentVerificationCandidate | null {
-  if (getMerchantConversationQueue(conversation) !== "verify_payment") {
+  if (
+    !["verify_payment", "unpaid_review"].includes(
+      getMerchantConversationQueue(conversation)
+    )
+  ) {
     return null
   }
 
@@ -145,11 +151,21 @@ function findCandidate(
         message.payload.verification?.state !== "verification_failed" &&
         message.payload.verification?.state !== "disputed"
     )
-  if (evidence?.type !== "payment_proof" || !evidence.payload.invoice) {
-    return null
-  }
-
-  const invoice = evidence.payload.invoice.trim()
+  const merchantInvoice = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.type === "payment_request" &&
+        message.senderPubkey === conversation.merchantPubkey &&
+        message.recipientPubkey === conversation.buyerPubkey
+    )
+  const invoice =
+    evidence?.type === "payment_proof" && evidence.payload.invoice
+      ? evidence.payload.invoice.trim()
+      : merchantInvoice?.type === "payment_request"
+        ? merchantInvoice.payload.invoice.trim()
+        : ""
+  if (!invoice) return null
   const decoded = decodeLightningInvoiceAmount(invoice)
   if (decoded.msats === null || decoded.msats <= 0) return null
 
@@ -159,7 +175,8 @@ function findCandidate(
       (message) =>
         message.type === "payment_request" &&
         message.senderPubkey === conversation.merchantPubkey &&
-        message.recipientPubkey === conversation.buyerPubkey
+        message.recipientPubkey === conversation.buyerPubkey &&
+        message.payload.invoice.trim().toLowerCase() === invoice.toLowerCase()
     )
   const matchesMerchantInvoice =
     latestMerchantInvoice?.type === "payment_request" &&
@@ -177,9 +194,17 @@ function findCandidate(
   return {
     orderId: conversation.orderId,
     buyerPubkey: conversation.buyerPubkey,
-    evidenceMessageId: evidence.id,
+    evidenceMessageId: evidence?.id ?? merchantInvoice!.id,
     invoice,
-    paymentHash: evidence.payload.paymentHash?.trim() || undefined,
+    ...(matchesMerchantInvoice &&
+    latestMerchantInvoice.type === "payment_request" &&
+    latestMerchantInvoice.payload.receivingWallet
+      ? { receivingWallet: latestMerchantInvoice.payload.receivingWallet }
+      : {}),
+    paymentHash:
+      evidence?.type === "payment_proof"
+        ? evidence.payload.paymentHash?.trim() || undefined
+        : undefined,
     expectedAmountMsats: decoded.msats,
     orderCreatedAt: order.payload.createdAt,
     delivery:

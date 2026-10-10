@@ -200,7 +200,7 @@ function ReadinessRow({
   pending?: boolean
   statusLabel?: string
   statusVariant?: "warning" | "success" | "info" | "error" | "neutral"
-  to: "/" | "/profile" | "/payments" | "/shipping" | "/network"
+  to: "/" | "/profile" | "/wallet" | "/shipping" | "/network"
   icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>
 }) {
   return (
@@ -279,10 +279,10 @@ function MerchantReadinessPanel({
           icon={UserRound}
         />
         <ReadinessRow
-          label="Payments"
+          label="Wallets"
           complete={readiness.paymentsComplete}
           pending={readiness.paymentsCheckPending}
-          to="/payments"
+          to="/wallet"
           icon={Wallet}
         />
         <ReadinessRow

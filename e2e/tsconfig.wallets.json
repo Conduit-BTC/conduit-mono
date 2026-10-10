@@ -1,0 +1,23 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node", "vite/client"],
+    "typeRoots": [
+      "../node_modules/.bun/node_modules/@types",
+      "../node_modules/.bun/node_modules"
+    ],
+    "paths": {
+      "@conduit/core": ["../packages/core/src"],
+      "@conduit/core/*": ["../packages/core/src/*"],
+      "/src/*": ["../apps/market/src/*"]
+    },
+    "jsx": "react-jsx"
+  },
+  "include": ["wallet-sign-in.playwright.ts", "wallet-cross-app.playwright.ts"]
+}

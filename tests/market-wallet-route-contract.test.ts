@@ -9,7 +9,7 @@ import {
 describe("Market wallet route contracts", () => {
   it("lets the shared NWC parser validate wallet connection strings", async () => {
     const content = await readFile(
-      "apps/market/src/hooks/useWallets.ts",
+      "packages/core/src/hooks/useWallets.ts",
       "utf8"
     )
 
@@ -18,8 +18,10 @@ describe("Market wallet route contracts", () => {
   })
 
   it("observes committed wallet mutations and reloads prepared state", async () => {
-    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
-    const route = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
+    const route =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
     const database = await readFile("packages/core/src/db/index.ts", "utf8")
     const finalizations =
       hook.match(/await refreshAfterCommittedWalletMutation\(\)/g) ?? []
@@ -46,7 +48,7 @@ describe("Market wallet route contracts", () => {
   })
 
   it("serializes Spark unlock and removal and cleans removed manager state on reload", async () => {
-    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
+    const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
 
     expect(hook.match(/await openRegisteredSparkWallet\(\{/g)).toHaveLength(1)
     expect(hook).toContain("await sparkManager.closeWalletsExcept(")
@@ -61,9 +63,11 @@ describe("Market wallet route contracts", () => {
   })
 
   it("keeps the simplified wallet page composed from shared wallet controls", async () => {
-    const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const content =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
     const recovery = await readFile(
-      "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
+      "packages/ui/src/components/SparkRecoveryBundleDetails.tsx",
       "utf8"
     )
 
@@ -323,8 +327,10 @@ describe("Market wallet route contracts", () => {
   })
 
   it("keeps local Spark removal available when provider actions are unavailable", async () => {
-    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(hook).toContain("runSparkWalletRemoval")
     expect(hook).toContain('mode === "local-only"')
@@ -348,10 +354,12 @@ describe("Market wallet route contracts", () => {
       "utf8"
     )
     const recoveryBundleDetails = await readFile(
-      "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
+      "packages/ui/src/components/SparkRecoveryBundleDetails.tsx",
       "utf8"
     )
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(targetContent).toContain(
       "w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]"
@@ -380,7 +388,7 @@ describe("Market wallet route contracts", () => {
     ).toHaveLength(1)
     expect(wallet.match(/<SparkRecoveryBundleDetails /g)).toHaveLength(2)
     expect(wallet).toMatch(
-      /Copying\s+a recovery phrase puts it on your system clipboard/
+      /Copying\s+a\s+recovery\s+phrase\s+puts\s+it\s+on\s+your\s+system\s+clipboard/
     )
     expect(wallet).toContain("await wallets.createSpark()")
     expect(wallet).toContain('setMnemonic("")')
@@ -388,7 +396,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("invalidates stale receive requests when their inputs change", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain("const clearRequest = (announceInvalidation")
     expect(wallet).toMatch(
@@ -412,7 +422,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("bounds history loading without trapping the wallet dialog", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain("SPARK_HISTORY_LOAD_TIMEOUT_MS")
     expect(wallet).toContain("Payment history took too long to load")
@@ -426,7 +438,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("makes reviewed Lightning sends the default while retaining advanced Spark transfers", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain('useState<"lightning" | "spark">("lightning")')
     expect(wallet).toContain(
@@ -463,7 +477,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("keeps ambiguous Spark sends locked until explicit acknowledgement", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain("hasUnresolvedSparkSend")
     expect(wallet).toContain("acknowledgeUnresolvedSparkSend")

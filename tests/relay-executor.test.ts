@@ -2152,6 +2152,53 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toBe(false)
   })
 
+  it("reads signed owner app-data without inbox recipient tags and rejects other authors", async () => {
+    const event = finalizeEvent(
+      {
+        kind: 30078,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["d", "conduit:spark:primary:v1"]],
+        content: "ciphertext-fixture",
+      },
+      PRIVATE_KEY_A
+    )
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "recovery"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] === "REQ") {
+          socket.relay(["EVENT", frame[1], event])
+          socket.relay(["EOSE", frame[1]])
+        }
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+    const request = {
+      relayUrls: ["wss://protected.example"],
+      operation: "account_recovery_read" as const,
+      filters: [{ kinds: [30078], authors: [PUBKEY_A], limit: 128 }],
+    }
+    const result = await executor.query(request, { authorization })
+    expect(result.events.map((event) => event.id)).toEqual([event.id])
+    expect(result.status).toBe("success")
+    await expect(
+      executor.query(
+        {
+          ...request,
+          filters: [{ ...request.filters[0]!, authors: [PUBKEY_B] }],
+        },
+        { authorization }
+      )
+    ).rejects.toThrow("active owner")
+    await expect(
+      executor.query(
+        { ...request, filters: [{ ...request.filters[0]!, kinds: [1059] }] },
+        { authorization }
+      )
+    ).rejects.toThrow("kind 30078")
+  })
+
   it("snapshots recipient filters before asynchronous connection work", async () => {
     const wireRecipients: string[] = []
     const harness = new FakeRelayHarness().at("wss://protected.example", {

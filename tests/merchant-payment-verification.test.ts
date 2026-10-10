@@ -100,6 +100,44 @@ function invoiceOnlyConversation(orderId: string): MerchantConversationSummary {
 }
 
 describe("merchant NWC payment verification", () => {
+  it("uses the merchant-authored original destination without a buyer proof or current profile address", async () => {
+    const original = {
+      walletId: "original",
+      providerId: "spark" as const,
+      network: "mainnet" as const,
+      requestId: "original-request",
+    }
+    const input = invoiceOnlyConversation("bound-order")
+    const request = input.messages!.find(
+      (message) => message.type === "payment_request"
+    )!
+    if (request.type !== "payment_request") throw new Error("Missing invoice")
+    request.payload.receivingWallet = original
+    const candidate = getMerchantPaymentVerificationCandidates([input])[0]!
+    expect(candidate.receivingWallet).toEqual(original)
+    let confirmations = 0
+    const result = await verifyMerchantPaymentCandidates({
+      candidates: [candidate],
+      confirmedEvidence: new Set(),
+      lookupInvoice: async (supplied) => {
+        expect(supplied.receivingWallet).toEqual(original)
+        return {
+          type: "incoming",
+          state: "settled",
+          invoice,
+          paymentHash: "payment-hash",
+          amountMsats: 100000,
+          settledAt: 1700000010,
+        }
+      },
+      publishConfirmation: async () => {
+        confirmations++
+      },
+    })
+    expect(result.verified).toBe(1)
+    expect(confirmations).toBe(1)
+  })
+
   it("retries pending evidence and suppresses a published confirmation", async () => {
     const candidate = getMerchantPaymentVerificationCandidates([
       conversation(),
