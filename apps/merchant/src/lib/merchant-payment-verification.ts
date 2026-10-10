@@ -1,6 +1,7 @@
 import type { ReceivingWalletBinding } from "@conduit/core/wallets/receiving"
 import {
   decodeLightningInvoiceAmount,
+  decodeLightningInvoicePaymentHash,
   type MerchantConversationSummary,
   type NwcLookupInvoiceResult,
 } from "@conduit/core"
@@ -159,29 +160,41 @@ function findCandidate(
         message.senderPubkey === conversation.merchantPubkey &&
         message.recipientPubkey === conversation.buyerPubkey
     )
+  const proofInvoice =
+    evidence?.type === "payment_proof"
+      ? evidence.payload.invoice?.trim()
+      : undefined
+  const matchingMerchantInvoice = proofInvoice
+    ? [...messages]
+        .reverse()
+        .find(
+          (message) =>
+            message.type === "payment_request" &&
+            message.senderPubkey === conversation.merchantPubkey &&
+            message.recipientPubkey === conversation.buyerPubkey &&
+            message.payload.invoice.trim().toLowerCase() ===
+              proofInvoice.toLowerCase()
+        )
+    : merchantInvoice
+  // A buyer report cannot replace a merchant-issued invoice or its destination.
+  // An older exact request retains its original wallet binding after later edits.
+  if (merchantInvoice && proofInvoice && !matchingMerchantInvoice) return null
   const invoice =
-    evidence?.type === "payment_proof" && evidence.payload.invoice
-      ? evidence.payload.invoice.trim()
-      : merchantInvoice?.type === "payment_request"
-        ? merchantInvoice.payload.invoice.trim()
-        : ""
+    matchingMerchantInvoice?.type === "payment_request"
+      ? matchingMerchantInvoice.payload.invoice.trim()
+      : (proofInvoice ?? "")
   if (!invoice) return null
   const decoded = decodeLightningInvoiceAmount(invoice)
-  if (decoded.msats === null || decoded.msats <= 0) return null
-
-  const latestMerchantInvoice = [...messages]
-    .reverse()
-    .find(
-      (message) =>
-        message.type === "payment_request" &&
-        message.senderPubkey === conversation.merchantPubkey &&
-        message.recipientPubkey === conversation.buyerPubkey &&
-        message.payload.invoice.trim().toLowerCase() === invoice.toLowerCase()
-    )
+  const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+  if (decoded.msats === null || decoded.msats <= 0 || !paymentHash) return null
+  if (
+    evidence?.type === "payment_proof" &&
+    evidence.payload.paymentHash &&
+    evidence.payload.paymentHash.trim().toLowerCase() !== paymentHash
+  )
+    return null
   const matchesMerchantInvoice =
-    latestMerchantInvoice?.type === "payment_request" &&
-    latestMerchantInvoice.payload.invoice.trim().toLowerCase() ===
-      invoice.toLowerCase()
+    matchingMerchantInvoice?.type === "payment_request"
   const orderCurrency = order.payload.currency.trim().toUpperCase()
   const matchesSatsOrder =
     (orderCurrency === "SAT" || orderCurrency === "SATS") &&
@@ -194,17 +207,14 @@ function findCandidate(
   return {
     orderId: conversation.orderId,
     buyerPubkey: conversation.buyerPubkey,
-    evidenceMessageId: evidence?.id ?? merchantInvoice!.id,
+    evidenceMessageId: evidence?.id ?? matchingMerchantInvoice!.id,
     invoice,
     ...(matchesMerchantInvoice &&
-    latestMerchantInvoice.type === "payment_request" &&
-    latestMerchantInvoice.payload.receivingWallet
-      ? { receivingWallet: latestMerchantInvoice.payload.receivingWallet }
+    matchingMerchantInvoice.type === "payment_request" &&
+    matchingMerchantInvoice.payload.receivingWallet
+      ? { receivingWallet: matchingMerchantInvoice.payload.receivingWallet }
       : {}),
-    paymentHash:
-      evidence?.type === "payment_proof"
-        ? evidence.payload.paymentHash?.trim() || undefined
-        : undefined,
+    paymentHash,
     expectedAmountMsats: decoded.msats,
     orderCreatedAt: order.payload.createdAt,
     delivery:
@@ -258,6 +268,9 @@ export function isNwcSettlementMatch(
     return false
   }
   if (settlement.amountMsats !== candidate.expectedAmountMsats) return false
+  const invoiceHash = decodeLightningInvoicePaymentHash(candidate.invoice)
+  if (!invoiceHash || settlement.paymentHash.toLowerCase() !== invoiceHash)
+    return false
   if (
     candidate.paymentHash &&
     settlement.paymentHash.toLowerCase() !== candidate.paymentHash.toLowerCase()

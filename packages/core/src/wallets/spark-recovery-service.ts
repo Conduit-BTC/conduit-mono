@@ -57,7 +57,8 @@ export interface SparkRecoveryTransport {
     url: string,
     owner: string,
     eventId: string | undefined,
-    shouldContinue: () => boolean
+    shouldContinue: () => boolean,
+    dTag?: typeof SPARK_PRIMARY_D_TAG
   ): Promise<SparkRecoveryRead>
   publish(
     url: string,
@@ -467,31 +468,88 @@ export class SparkRecoveryService {
     const records = new Map(saved.records.map((r) => [r.event.id, r]))
     const sources: SparkRecoveryDiscovery["sources"] = []
     let invalidCount = 0
-    // Relay reads are independent and bounded; signer decryption and journal
-    // attachment remain ordered under the initiating account authority.
+    // Primary coordinates cannot be crowded out by unrelated NIP-78 records.
+    // Broad coverage still governs creation; exact positive evidence only restores.
+    const readAt = async (
+      url: string,
+      eventId?: string,
+      dTag?: typeof SPARK_PRIMARY_D_TAG
+    ): Promise<SparkRecoveryRead> => {
+      this.scope.assertCurrent()
+      try {
+        const read = await this.input.transport.read(
+          url,
+          this.scope.owner,
+          eventId,
+          this.continues,
+          dTag
+        )
+        this.scope.assertCurrent()
+        return read
+      } catch {
+        this.scope.assertCurrent()
+        return { status: "unavailable", events: [] }
+      }
+    }
     const reads = await Promise.all(
       this.plan.map(async (target) => {
-        this.scope.assertCurrent()
-        let read: SparkRecoveryRead
-        try {
-          read = await this.input.transport.read(
-            target.url,
-            this.scope.owner,
-            undefined,
-            this.continues
-          )
-        } catch {
-          this.scope.assertCurrent()
-          read = { status: "unavailable", events: [] }
-        }
-        this.scope.assertCurrent()
-        return { target, read }
+        const [broad, primary] = await Promise.all([
+          readAt(target.url),
+          readAt(target.url, undefined, SPARK_PRIMARY_D_TAG),
+        ])
+        return { target, primary, results: [broad, primary] }
       })
     )
-    for (const { target, read } of reads) {
-      const status = read.events.length >= MAX_RECORDS ? "partial" : read.status
+    const references: Array<{
+      url: string
+      eventId: string
+      results: SparkRecoveryRead[]
+    }> = []
+    // Serialize signer decryption; referenced network reads remain independent.
+    for (const { target, primary, results } of reads) {
+      if (primary.events.length > 1) primary.status = "partial"
+      for (const input of primary.events.slice(0, 1)) {
+        try {
+          const event = validateSparkRecoveryEvent(input, this.scope.owner)
+          const pointer = parseSparkPrimaryPointer(
+            await this.decrypt(event),
+            event
+          )
+          references.push({
+            url: target.url,
+            eventId: pointer.backupEventId,
+            results,
+          })
+        } catch (error) {
+          this.scope.assertCurrent()
+          if (
+            error instanceof NostrSignerError &&
+            error.code !== "invalid_response" &&
+            error.code !== "unavailable"
+          )
+            throw error
+          invalidCount++
+        }
+      }
+    }
+    await Promise.all(
+      references.map(async ({ url, eventId, results }) => {
+        results.push(await readAt(url, eventId))
+      })
+    )
+    for (const { target, results } of reads) {
+      const statuses = results.map((read) =>
+        read.events.length >= MAX_RECORDS ? "partial" : read.status
+      )
+      const status = statuses.every((value) => value === "complete")
+        ? "complete"
+        : statuses.every((value) => value === "unavailable")
+          ? "unavailable"
+          : "partial"
       sources.push({ url: target.url, status })
-      for (const input of read.events.slice(0, MAX_RECORDS)) {
+      for (const input of results.flatMap((read) =>
+        read.events.slice(0, MAX_RECORDS)
+      )) {
         // NIP-01 has exact #d matching, no namespace prefix filter. Never decrypt unrelated app records.
         if (
           !input.tags?.some(
@@ -585,11 +643,13 @@ export class SparkRecoveryService {
       coverage,
       state: conflict
         ? "conflict"
-        : candidates.length
-          ? "recoverable"
-          : creationEligible
-            ? "absent_within_scope"
-            : "unresolved",
+        : pointers.length && !primary
+          ? "unresolved"
+          : candidates.length
+            ? "recoverable"
+            : creationEligible
+              ? "absent_within_scope"
+              : "unresolved",
       candidates,
       primary: conflict ? undefined : primary,
       invalidCount,

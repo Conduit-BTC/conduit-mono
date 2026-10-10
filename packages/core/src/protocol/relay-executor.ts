@@ -484,12 +484,15 @@ function assertRequest(
     for (const filter of request.filters) {
       if (
         Object.keys(filter).some(
-          (key) => !["authors", "ids", "kinds", "limit"].includes(key)
+          (key) => !["authors", "ids", "kinds", "limit", "#d"].includes(key)
         ) ||
         filter.authors?.length !== 1 ||
         filter.authors[0] !== authorization.expectedPubkey ||
         filter.kinds?.length !== 1 ||
         filter.kinds[0] !== 30078 ||
+        (filter["#d"] !== undefined &&
+          (filter["#d"].length !== 1 ||
+            filter["#d"][0] !== "conduit:spark:primary:v1")) ||
         (filter.ids !== undefined &&
           (filter.ids.length !== 1 ||
             !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||

@@ -457,22 +457,52 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await publishPrivateInbox(buyerPage, marketUrl, buyer)
     await publishPrivateInbox(merchantPage, merchantUrl, merchant)
 
-    await merchantPage.goto(`${merchantUrl}/payments`)
+    await merchantPage.goto(`${merchantUrl}/wallet`)
     await expect(
-      merchantPage.getByRole("heading", { name: "Payments", exact: true })
+      merchantPage.getByRole("heading", { name: "My wallets", exact: true })
     ).toBeVisible()
     await wallet.configureMerchantConnection(async (connectionString) => {
-      await merchantPage.getByLabel("Connection string").fill(connectionString)
+      await merchantPage
+        .getByRole("button", { name: "Connect wallet", exact: true })
+        .click()
+      await merchantPage
+        .getByLabel("Wallet label", { exact: true })
+        .fill("Commerce NWC")
+      await merchantPage
+        .getByLabel("NWC connection string", { exact: true })
+        .fill(connectionString)
+      await merchantPage
+        .getByRole("button", { name: "Connect", exact: true })
+        .click()
     })
-    await merchantPage
-      .getByRole("button", { name: "Connect wallet", exact: true })
-      .click()
     await expect(
-      merchantPage.getByText("Verification ready", { exact: true })
+      merchantPage.getByText("Commerce NWC", { exact: true })
     ).toBeVisible({ timeout: 20_000 })
     await expect(
-      merchantPage.getByText("Receiving address matches", { exact: true })
+      merchantPage.getByText("Connected via NWC", { exact: true })
+    ).toBeVisible({ timeout: 20_000 })
+    await expect(
+      merchantPage.getByText("Choose this wallet at checkout.", {
+        exact: true,
+      })
     ).toBeVisible()
+    await expect(
+      merchantPage.getByText(`Current address: ${merchantLud16}`, {
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      merchantPage.getByText(
+        "Payments are checked automatically against the original invoice in its receiving wallet.",
+        { exact: false }
+      )
+    ).toBeVisible({ timeout: 20_000 })
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
+      .click()
+    await merchantPage
+      .getByRole("menuitem", { name: "Use for new invoices", exact: true })
+      .click()
 
     await publishProduct(merchantPage, productTitle)
     await expect
@@ -634,12 +664,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     const invoiceSource = merchantPage.locator("#invoice-source")
     await expect(invoiceSource).toBeVisible({ timeout: 30_000 })
     await invoiceSource.click()
-    const nwcOption = merchantPage.getByRole("option", {
-      name: "Connected wallet (NWC)",
+    const receivingWalletOption = merchantPage.getByRole("option", {
+      name: "My receiving wallet",
       exact: true,
     })
-    await expect(nwcOption).toBeEnabled({ timeout: 20_000 })
-    await nwcOption.click()
+    await expect(receivingWalletOption).toBeEnabled({ timeout: 20_000 })
+    await receivingWalletOption.click()
     await expect(
       merchantPage.getByLabel("Amount", { exact: true })
     ).toHaveValue("21")

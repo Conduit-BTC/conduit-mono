@@ -14,7 +14,7 @@ import { type SparkRecoveryTransport } from "./spark-recovery-service"
 export function createSparkRecoveryReader(
   executor: CommerceRelayExecutor = commerceRelayExecutor
 ): SparkRecoveryTransport["read"] {
-  return async (url, owner, eventId, shouldContinue) => {
+  return async (url, owner, eventId, shouldContinue, dTag) => {
     if (!shouldContinue()) throw new SparkRecoveryError("transport_unavailable")
     const targets = [
       {
@@ -44,7 +44,8 @@ export function createSparkRecoveryReader(
             authors: [owner],
             kinds: [SPARK_RECOVERY_KIND],
             ...(eventId ? { ids: [eventId] } : {}),
-            limit: 128,
+            ...(dTag ? { "#d": [dTag] } : {}),
+            limit: eventId || dTag ? 1 : 128,
           },
         ],
       },
