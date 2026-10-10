@@ -1,8 +1,8 @@
 # Wallets Specification
 
-This document defines the wallet model used by Conduit Market. Wallet ownership
-is independent from a user's Nostr identity, and Conduit-operated services never
-receive or control wallet credentials or funds.
+This document defines the shared wallet model used by Market and Merchant. New
+self-custodial wallets belong to the signed-in Nostr account. Conduit-operated
+services never receive plaintext wallet credentials or control funds.
 
 ## Terminology
 
@@ -16,8 +16,11 @@ receive or control wallet credentials or funds.
   an optional device-local nickname, and a provider may have multiple
   instances.
 
-Spark must not be called "the Conduit wallet." Future providers must fit the
-Portable/Connected model without changing this terminology.
+The shared Wallets surface calls these sections **My wallets** and **External
+wallets**. Default names use **Conduit Wallet**, numbered when needed. This is
+product branding, not a custody or provider claim: Spark remains the single wallet
+provider and signer runtime. Recovery details identify the actual Spark account
+number and network; custom names remain device-local.
 
 ## Ownership and key boundary
 
@@ -46,26 +49,27 @@ records in `walletCredentials`. Spark recovery records are encrypted envelopes;
 NWC connection URIs remain confined to the Connected Wallet provider record.
 Neither table is relay-synced.
 
-Wallet ownership is device-local and independent of Nostr sign-in state.
-`/wallet` remains available without a connected signer. Signing out must not
-remove, hide, or switch wallets, and signing in as a different pubkey must not
-implicitly reassign them. The UI must make this shared-browser-profile boundary
-clear anywhere account ownership could otherwise be inferred. Connecting or
-disconnecting a signer must never unlock or remove a wallet.
+New wallets require a connected account signer with verified NIP-44 encryption.
+Signing out or switching accounts closes and hides that account's signer-backed
+sessions without deleting recovery or funds. Sign-in restores account recovery and
+opens the main wallet through the signer; a deliberate lock requires explicit
+opening. Legacy password-encrypted device wallets retain their existing signed-out
+unlock and recovery path and are never silently reassigned to an account.
 
 ## Local unlock and portable recovery
 
-Each Spark wallet has a user-chosen local password. Market derives an
-encryption key with PBKDF2-SHA-256 and stores only an AES-GCM encrypted recovery
-envelope in the device-local credential store. The password is not a wallet
-seed or the source wallet's password, is not stored, and is not needed to
-recover the wallet in another browser or application.
+New wallets use signer-backed encryption without a separate wallet password.
+Legacy PBKDF2/AES-GCM password envelopes remain readable. Explicit migration
+verifies a signer encrypt/decrypt round trip and transactional read-back, retaining
+the old encrypted envelope and its password fallback. Unsupported or denied
+encryption never falls back to plaintext. The Spark seed remains independent of
+the Nostr key, which never enters app code.
 
 The portable recovery bundle is the BIP39 mnemonic, explicit Spark account
-number, and network. Market can restore the same account from that bundle
-without Conduit services or a connected Nostr signer. Compatibility with
-another application must be verified for that specific application before it
-is advertised. Market presents all three values to the wallet owner when a
+number, and network. The bundle can restore the same Spark account independently
+of Conduit in a compatible client. Importing into Market or Merchant uses the
+connected signer to protect the local credential and encrypted relay backup.
+Compatibility with another application must be verified before it is advertised. Market presents all three values to the wallet owner when a
 wallet is created and on an authenticated local recovery request, before the
 owner relies on that recovery path.
 
@@ -84,7 +88,7 @@ Market maintains a collection of wallet instances. Each descriptor contains:
 - a locally generated opaque identifier;
 - kind (`portable` or `connected`);
 - provider identifier;
-- user-facing device-local label, generated from `Spark wallet` when an
+- user-facing device-local label, generated from `Conduit Wallet` when an
   optional nickname is omitted;
 - network;
 - declared capabilities;
@@ -209,14 +213,13 @@ Spark setup and restore identify the actual network. Before a Mainnet wallet is
 created or restored, the owner is informed that it uses real bitcoin and
 supports Lightning and Spark payments. Restore accepts the recovery phrase and
 any non-standard account number needed for the intended wallet. The owner is
-informed that a nickname is local and not backed up, and that the local password
-encrypts the recovery phrase in this browser; it is neither the source wallet's
-password nor required for recovery elsewhere.
+informed that a nickname is local and not backed up. New wallet recovery uses the
+account signer; older password wallets keep their migration and recovery path.
 
-The route is a device-owned surface and must render while signed out. Identity
-sign-in may still be required for order messaging and other Nostr workflows,
-but never merely to create, restore, unlock, receive with, or remove a local
-Portable Wallet.
+The route renders while signed out, with sign-in required for new account-backed
+creation/import and signer-backed access. Legacy device-wallet access remains
+available through its existing password. Logout never deletes network funds or
+the independent phrase/account/network recovery bundle.
 
 Sensitive and destructive flow state resets whenever the flow is dismissed or
 closed, including Cancel, close, Escape, and outside dismissal where supported.

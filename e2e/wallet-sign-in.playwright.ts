@@ -23,21 +23,43 @@ async function enterWallets(page: Page) {
     page.getByRole("heading", { name: "My wallets", exact: true })
   ).toBeVisible()
 }
-async function saveRecovery(page: Page) {
+async function saveRecovery(page: Page, makeMain = true) {
+  const dialog = page.getByRole("dialog")
   await expect(
-    page.getByRole("heading", { name: "Save your recovery details" })
+    dialog.getByRole("heading", {
+      name: /^(Wallet imported|Save your recovery details)$/,
+    })
   ).toBeVisible()
   await expect(
-    page.getByLabel(
-      "I saved the phrase, Spark account number and network somewhere private"
-    )
-  ).toBeVisible()
-  await page
-    .getByLabel(
-      "I saved the phrase, Spark account number and network somewhere private"
-    )
-    .click()
-  await page.getByRole("button", { name: "Done", exact: true }).click()
+    dialog.getByText("Checking for your Lightning address…", { exact: true })
+  ).toHaveCount(0)
+  if (
+    await dialog
+      .getByRole("heading", { name: "Wallet imported", exact: true })
+      .count()
+  ) {
+    await expect(dialog.getByLabel("recovery-saved")).toHaveCount(0)
+  } else {
+    await expect(
+      dialog.getByRole("heading", { name: "Save your recovery details" })
+    ).toBeVisible()
+    await dialog
+      .getByLabel(
+        "I saved the phrase, Spark account number and network somewhere private"
+      )
+      .check()
+  }
+  const chooser = dialog.getByRole("button", {
+    name: "Get conduit.cash address",
+    exact: true,
+  })
+  if (await chooser.count()) await chooser.click()
+  if (!makeMain)
+    await dialog
+      .getByLabel("Make this my main wallet", { exact: true })
+      .uncheck()
+  await dialog.getByRole("button", { name: "Done", exact: true }).click()
+  await expect(dialog).toHaveCount(0)
 }
 async function existingProfile(page: Page) {
   await page.evaluate(async (moduleUrl) => {
@@ -459,7 +481,7 @@ test("receive keeps pending address setup visible and blocks conflicting control
       probe.delayRegistration = true
     })
     await dialog
-      .getByRole("button", { name: "Set up Lightning address", exact: true })
+      .getByRole("button", { name: "Retry address setup", exact: true })
       .click()
     await expect(
       dialog.getByRole("button", { name: "Setting up address…" })

@@ -8,7 +8,9 @@ import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
   installRealTestSigner,
+  signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
+import { publishTestRelayEvents } from "./helpers/auth"
 const core = "/@fs" + path.resolve("packages/core/src/index.ts")
 const relay = "ws://127.0.0.1:" + process.env.PLAYWRIGHT_RELAY_PORT
 const apps = {
@@ -32,16 +34,240 @@ async function wallets(page: Page) {
     return ids
   }, core)
 }
-async function saved(page: Page) {
+async function saved(page: Page, makeMain = true) {
+  const dialog = page.getByRole("dialog")
   await expect(
-    page.getByRole("heading", { name: "Save your recovery details" })
+    dialog.getByRole("heading", {
+      name: /^(Wallet imported|Save your recovery details)$/,
+    })
   ).toBeVisible()
-  await page
-    .getByLabel(
-      "I saved the phrase, Spark account number and network somewhere private"
-    )
-    .check()
-  await page.getByRole("button", { name: "Done", exact: true }).click()
+  await expect(
+    dialog.getByText("Checking for your Lightning address…", { exact: true })
+  ).toHaveCount(0)
+  if (
+    await dialog
+      .getByRole("heading", { name: "Wallet imported", exact: true })
+      .count()
+  ) {
+    await expect(dialog.getByLabel("recovery-saved")).toHaveCount(0)
+  } else {
+    await expect(
+      dialog.getByRole("heading", { name: "Save your recovery details" })
+    ).toBeVisible()
+    await dialog
+      .getByLabel(
+        "I saved the phrase, Spark account number and network somewhere private"
+      )
+      .check()
+  }
+  const chooser = dialog.getByRole("button", {
+    name: "Get conduit.cash address",
+    exact: true,
+  })
+  if (await chooser.count()) await chooser.click()
+  if (!makeMain)
+    await dialog
+      .getByLabel("Make this my main wallet", { exact: true })
+      .uncheck()
+  await dialog.getByRole("button", { name: "Done", exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+}
+
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} chooses a name and applies its card address to latest complete metadata @market @merchant`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    try {
+      await publishTestRelayEvents([
+        signRuntimeTestEvent(identity, {
+          kind: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          content: JSON.stringify({
+            name: "Wallet fixture",
+            about: "Original",
+            lud16: "current@wallet.example",
+            custom: { retain: true },
+          }),
+        }),
+      ])
+      await prepareControlledWallet(page)
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps[app] + "/wallet")
+      await installControlledWallet(page)
+      await page
+        .getByRole("button", { name: "Create wallet", exact: true })
+        .click()
+      const dialog = page.getByRole("dialog")
+      await expect(dialog.getByLabel("Conduit address name")).toBeVisible()
+      await dialog.getByLabel("Conduit address name").fill("shop-main")
+      await saved(page)
+      await expect(
+        page.getByLabel("Lightning address", { exact: true })
+      ).toHaveValue("current@wallet.example")
+      await page
+        .getByRole("button", { name: "Keep the current address", exact: true })
+        .click()
+      await page
+        .getByRole("button", {
+          name: "Set as public Lightning address",
+          exact: true,
+        })
+        .click()
+      await page.evaluate(
+        async ({ core, app }) => {
+          await (
+            await import(core)
+          ).publishProfileContext({ about: "Competing ordinary edit" }, app)
+        },
+        { core, app }
+      )
+      await page
+        .getByRole("button", { name: "Use the Conduit address", exact: true })
+        .click()
+      await expect(
+        page.getByLabel("Lightning address", { exact: true })
+      ).toHaveValue("shop-main@conduit.cash")
+      const metadata = await page.evaluate(async (core) => {
+        const { fetchProfileContext, getAccountSigner } = await import(core)
+        const owner = getAccountSigner().pubkey
+        const context = await fetchProfileContext(owner, {
+          authenticatedPubkey: owner,
+          accountPubkey: owner,
+          skipCache: true,
+          requireCompleteEvidence: true,
+          evidenceScope: "profile_edit",
+        })
+        const raw = JSON.parse(context.frontier.rawContent)
+        return { name: raw.name, about: raw.about, custom: raw.custom }
+      }, core)
+      expect(metadata).toEqual({
+        name: "Wallet fixture",
+        about: "Competing ordinary edit",
+        custom: { retain: true },
+      })
+      await expect(page.getByText("Main wallet", { exact: true })).toBeVisible()
+      await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
+      await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+      await expect(
+        page.getByRole("button", { name: "Open wallet", exact: true })
+      ).toBeVisible()
+      await page
+        .getByLabel(
+          app === "market" ? "Open account menu" : "Open merchant account menu"
+        )
+        .click()
+      await page
+        .getByRole("menuitem", { name: "Disconnect", exact: true })
+        .click()
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as any).__walletProbe?.disconnects ?? 0)
+        )
+        .toBeGreaterThan(0)
+      if (app === "merchant") await page.goto(apps[app] + "/wallet")
+      await expect(
+        page.getByRole("button", { name: /^Manage Conduit Wallet/ })
+      ).toHaveCount(0)
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}
+for (const from of ["market", "merchant"] as const) {
+  test(`${from} imports a second main wallet and restores that selection across origins @market @merchant`, async ({
+    browser,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const context = await browser.newContext()
+    const source = await context.newPage()
+    const target = await context.newPage()
+    const to = from === "market" ? "merchant" : "market"
+    try {
+      for (const page of [source, target]) {
+        await prepareControlledWallet(page)
+        await installRealTestSigner(page, identity, relay)
+      }
+      await source.goto(apps[from] + "/wallet")
+      await installControlledWallet(source)
+      await source
+        .getByRole("button", { name: "Create wallet", exact: true })
+        .click()
+      await saved(source)
+      await expect(
+        source.getByLabel("Lightning address", { exact: true })
+      ).toHaveValue("wallet1@conduit.cash")
+      const first = (await wallets(source))[0]
+      await source
+        .getByRole("button", { name: "Import wallet", exact: true })
+        .click()
+      await source
+        .getByLabel("Recovery phrase", { exact: true })
+        .fill(
+          await source.evaluate(
+            () => (window as any).__walletProbe.importMnemonic
+          )
+        )
+      await source.getByText("Advanced settings", { exact: true }).click()
+      await source.getByLabel("Spark account number", { exact: true }).fill("7")
+      await source
+        .getByRole("dialog")
+        .getByRole("button", { name: "Import wallet", exact: true })
+        .click()
+      await saved(source)
+      await source
+        .getByRole("button", { name: "Keep the current address", exact: true })
+        .click()
+      const ids = await wallets(source)
+      expect(ids).toHaveLength(2)
+      const selected = ids.find((id) => id !== first)!
+      await expect(
+        source.getByLabel("Lightning address", { exact: true })
+      ).toHaveValue("wallet1@conduit.cash")
+      await target.goto(apps[to] + "/wallet")
+      await installControlledWallet(target, false, "support@conduit.cash")
+      await expect.poll(async () => (await wallets(target)).length).toBe(2)
+      await expect
+        .poll(() =>
+          target.evaluate(() => (window as any).__walletProbe.lastAccount)
+        )
+        .toBe(7)
+      const state = await target.evaluate(
+        async ({ core, selected }) => {
+          const { db } = await import(core)
+          const descriptor = await db.wallets.get(selected)
+          return {
+            intents: descriptor.defaultIntents,
+            registrations: (window as any).__walletProbe.registrations,
+          }
+        },
+        { core, selected }
+      )
+      expect(state.intents.sort()).toEqual(["pay_invoice", "receive"])
+      expect(state.registrations).toBe(0)
+      expect((await wallets(target)).sort()).toEqual(ids.sort())
+      await expect(
+        target.getByLabel("Lightning address", { exact: true })
+      ).toHaveValue("wallet1@conduit.cash")
+      await expect(
+        target.getByText("Main wallet", { exact: true })
+      ).toBeVisible()
+      await expect(
+        target.getByRole("button", { name: "Open wallet", exact: true })
+      ).toHaveCount(1)
+      // Only the non-main wallet stays closed; the selected imported identity
+      // opens with the signer and retains its existing receiving registration.
+      await expect(
+        target.getByText("Receiving address: support@conduit.cash", {
+          exact: true,
+        })
+      ).toBeVisible()
+    } finally {
+      await context.close()
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
 }
 for (const size of [
   { name: "desktop", width: 1280, height: 900 },
@@ -94,21 +320,13 @@ for (const size of [
             })
           ).toBeVisible()
 
-          await installControlledWallet(target)
-
-          await target.evaluate(() => {
-            ;(window as any).__walletProbe.restoredAddress =
-              "wallet1@conduit.cash"
-          })
+          await installControlledWallet(target, false, "wallet1@conduit.cash")
           await expect.poll(async () => (await wallets(target)).length).toBe(1)
 
           expect(await wallets(target)).toEqual(sourceIds)
-          await target
-            .getByRole("button", { name: "Open wallet", exact: true })
-            .click()
-          await target
-            .getByRole("button", { name: "Open with Nostr", exact: true })
-            .click()
+          await expect(
+            target.getByRole("button", { name: "Open wallet", exact: true })
+          ).toHaveCount(0)
           await expect(
             target.getByRole("button", { name: "Receive", exact: true })
           ).toBeVisible()
@@ -195,21 +413,13 @@ for (const size of [
             })
           ).toBeVisible()
 
-          await installControlledWallet(target)
-
-          await target.evaluate(() => {
-            ;(window as any).__walletProbe.restoredAddress =
-              "support@conduit.cash"
-          })
+          await installControlledWallet(target, false, "support@conduit.cash")
           await expect.poll(async () => (await wallets(target)).length).toBe(1)
 
           expect(await wallets(target)).toEqual(sourceIds)
-          await target
-            .getByRole("button", { name: "Open wallet", exact: true })
-            .click()
-          await target
-            .getByRole("button", { name: "Open with Nostr", exact: true })
-            .click()
+          await expect(
+            target.getByRole("button", { name: "Open wallet", exact: true })
+          ).toHaveCount(0)
           await expect(
             target.getByRole("button", { name: "Receive", exact: true })
           ).toBeVisible()
@@ -275,7 +485,7 @@ test("simultaneous setup across origins retains conflicts and never creates anot
         page.getByRole("button", { name: "Create wallet", exact: true }).click()
       )
     )
-    await Promise.all(pages.map(saved))
+    await Promise.all(pages.map((page) => saved(page, false)))
     for (const page of pages) {
       await page
         .getByRole("button", { name: "Sync wallet recovery", exact: true })

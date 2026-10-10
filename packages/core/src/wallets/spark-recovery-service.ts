@@ -13,17 +13,20 @@ import {
   parseAddySparkMnemonic,
   validateAddySparkMnemonic,
   parseSparkPrimaryPointer,
+  parseSparkMainWallet,
   parseSparkRecoveryEnvelope,
   proveSparkRecoveryCapability,
   sparkRecoveryEnvelopeSchema,
   SparkRecoveryError,
   SPARK_PRIMARY_D_TAG,
+  SPARK_MAIN_D_TAG,
   SPARK_RECOVERY_KIND,
   SPARK_RECOVERY_PREFIX,
   validateSparkCiphertext,
   validateSparkRecoveryEvent,
   type SparkIdentityDeriver,
   type SparkPrimaryPointer,
+  type SparkMainWallet,
   type SparkRecoveryBundle,
   type SparkRecoveryEnvelope,
 } from "./spark-recovery-contract"
@@ -58,7 +61,7 @@ export interface SparkRecoveryTransport {
     owner: string,
     eventId: string | undefined,
     shouldContinue: () => boolean,
-    dTag?: typeof SPARK_PRIMARY_D_TAG
+    dTag?: typeof SPARK_PRIMARY_D_TAG | typeof SPARK_MAIN_D_TAG
   ): Promise<SparkRecoveryRead>
   publish(
     url: string,
@@ -104,6 +107,7 @@ export interface SparkRecoveryDiscovery {
   state: "absent_within_scope" | "recoverable" | "conflict" | "unresolved"
   candidates: SparkRecoveryCandidate[]
   primary?: SparkRecoveryCandidate
+  main?: SparkRecoveryCandidate
   invalidCount: number
   sources: { url: string; status: SparkRecoveryRead["status"] }[]
   /** Only a bounded prerequisite for a later explicit lifecycle; never global absence. */
@@ -441,6 +445,33 @@ export class SparkRecoveryService {
     return event.id
   }
 
+  /** Explicit account main-wallet choice, independent of immutable backup roots. */
+  async prepareMain(candidate: SparkRecoveryCandidate): Promise<string> {
+    const state = await this.load()
+    const envelope = await this.restore(candidate)
+    if (!("walletId" in envelope))
+      throw new SparkRecoveryError("invalid_record")
+    const createdAt = Math.max(
+      Math.floor(Date.now() / 1000),
+      ...state.records
+        .filter((r) =>
+          r.event.tags.some((t) => t[0] === "d" && t[1] === SPARK_MAIN_D_TAG)
+        )
+        .map((r) => r.event.created_at + 1)
+    )
+    const selection: SparkMainWallet = {
+      format: "conduit.spark.main",
+      version: 1,
+      ownerPubkey: this.scope.owner,
+      walletId: envelope.walletId,
+      backupEventId: candidate.eventId,
+      createdAt,
+    }
+    const event = await this.sign(SPARK_MAIN_D_TAG, selection, createdAt)
+    await this.retain([this.record(event)])
+    return event.id
+  }
+
   async restore(
     candidate: SparkRecoveryCandidate,
     addySource?: Pick<SparkRecoveryBundle, "network" | "accountNumber">
@@ -473,7 +504,7 @@ export class SparkRecoveryService {
     const readAt = async (
       url: string,
       eventId?: string,
-      dTag?: typeof SPARK_PRIMARY_D_TAG
+      dTag?: typeof SPARK_PRIMARY_D_TAG | typeof SPARK_MAIN_D_TAG
     ): Promise<SparkRecoveryRead> => {
       this.scope.assertCurrent()
       try {
@@ -493,48 +524,78 @@ export class SparkRecoveryService {
     }
     const reads = await Promise.all(
       this.plan.map(async (target) => {
-        const [broad, primary] = await Promise.all([
+        const [broad, primary, main] = await Promise.all([
           readAt(target.url),
           readAt(target.url, undefined, SPARK_PRIMARY_D_TAG),
+          readAt(target.url, undefined, SPARK_MAIN_D_TAG),
         ])
-        return { target, primary, results: [broad, primary] }
+        return { target, primary, results: [broad, primary, main] }
       })
     )
-    const references: Array<{
-      url: string
-      eventId: string
-      results: SparkRecoveryRead[]
-    }> = []
-    // Serialize signer decryption; referenced network reads remain independent.
-    for (const { target, primary, results } of reads) {
+    const references = new Set<string>()
+    const pointerEvidence = new Map(
+      saved.records.map((r) => [r.event.id, r.event])
+    )
+    for (const { primary, results } of reads) {
       if (primary.events.length > 1) primary.status = "partial"
-      for (const input of primary.events.slice(0, 1)) {
-        try {
-          const event = validateSparkRecoveryEvent(input, this.scope.owner)
-          const pointer = parseSparkPrimaryPointer(
-            await this.decrypt(event),
-            event
+      for (const event of results.flatMap((read) =>
+        read.events.slice(0, MAX_RECORDS)
+      )) {
+        if (
+          event.tags?.some(
+            (tag) =>
+              tag[0] === "d" &&
+              [SPARK_PRIMARY_D_TAG, SPARK_MAIN_D_TAG].includes(tag[1])
           )
-          references.push({
-            url: target.url,
-            eventId: pointer.backupEventId,
-            results,
-          })
-        } catch (error) {
-          this.scope.assertCurrent()
-          if (
-            error instanceof NostrSignerError &&
-            error.code !== "invalid_response" &&
-            error.code !== "unavailable"
-          )
-            throw error
-          invalidCount++
+        ) {
+          try {
+            const verified = validateSparkRecoveryEvent(event, this.scope.owner)
+            pointerEvidence.set(verified.id, verified)
+          } catch {
+            invalidCount++
+          }
         }
       }
     }
+    // Serialize signer decryption. Signed references survive omissions and are
+    // followed across the whole bounded plan, not only their source relay.
+    for (const input of pointerEvidence.values()) {
+      if (
+        !input.tags.some(
+          (tag) =>
+            tag[0] === "d" &&
+            [SPARK_PRIMARY_D_TAG, SPARK_MAIN_D_TAG].includes(tag[1])
+        )
+      )
+        continue
+      try {
+        const event = validateSparkRecoveryEvent(input, this.scope.owner)
+        const plaintext = await this.decrypt(event)
+        const pointer = event.tags.some(
+          (t) => t[0] === "d" && t[1] === SPARK_PRIMARY_D_TAG
+        )
+          ? parseSparkPrimaryPointer(plaintext, event)
+          : parseSparkMainWallet(plaintext, event)
+        references.add(pointer.backupEventId)
+      } catch (error) {
+        this.scope.assertCurrent()
+        if (
+          error instanceof NostrSignerError &&
+          error.code !== "invalid_response" &&
+          error.code !== "unavailable"
+        )
+          throw error
+        invalidCount++
+      }
+    }
+    if (references.size > MAX_RECORDS) throw new SparkRecoveryError("conflict")
     await Promise.all(
-      references.map(async ({ url, eventId, results }) => {
-        results.push(await readAt(url, eventId))
+      reads.map(async ({ target, results }) => {
+        results.push(
+          ...(await Promise.all(
+            [...references].map((eventId) => readAt(target.url, eventId))
+          ))
+        )
       })
     )
     for (const { target, results } of reads) {
@@ -573,6 +634,10 @@ export class SparkRecoveryService {
     const candidates: SparkRecoveryCandidate[] = []
     const roots = new Set<string>()
     const pointers: SparkPrimaryPointer[] = []
+    const mainChoices: Array<{
+      event: SignedNostrEvent
+      selection: SparkMainWallet
+    }> = []
     for (const record of records.values()) {
       const event = record.event
       const d = event.tags.find((t) => t[0] === "d")?.[1]
@@ -590,6 +655,11 @@ export class SparkRecoveryService {
         }
         if (d === SPARK_PRIMARY_D_TAG)
           pointers.push(parseSparkPrimaryPointer(plaintext, event))
+        else if (d === SPARK_MAIN_D_TAG)
+          mainChoices.push({
+            event,
+            selection: parseSparkMainWallet(plaintext, event),
+          })
         else {
           const envelope = parseSparkRecoveryEnvelope(plaintext, event)
           if ((await this.identity(envelope)) !== envelope.identityPublicKey)
@@ -633,6 +703,20 @@ export class SparkRecoveryService {
       roots.size > 1 ||
       pointerTargets.size > 1 ||
       (!primary && candidates.length > 1)
+    // NIP-01 addressable revision order. Older explicit choices remain retained
+    // evidence, not conflicting backup roots or permission to create a wallet.
+    const latestMain = mainChoices.sort(
+      (a, b) =>
+        b.event.created_at - a.event.created_at ||
+        a.event.id.localeCompare(b.event.id)
+    )[0]?.selection
+    const main = latestMain
+      ? candidates.find(
+          (c) =>
+            c.eventId === latestMain.backupEventId &&
+            c.walletId === latestMain.walletId
+        )
+      : undefined
     const creationEligible =
       coverage === "complete" &&
       records.size === 0 &&
@@ -643,7 +727,7 @@ export class SparkRecoveryService {
       coverage,
       state: conflict
         ? "conflict"
-        : pointers.length && !primary
+        : (pointers.length && !primary) || (latestMain && !main)
           ? "unresolved"
           : candidates.length
             ? "recoverable"
@@ -652,6 +736,7 @@ export class SparkRecoveryService {
               : "unresolved",
       candidates,
       primary: conflict ? undefined : primary,
+      main: conflict ? undefined : main,
       invalidCount,
       sources,
       unresolvedObserved: saved.unresolvedObserved,

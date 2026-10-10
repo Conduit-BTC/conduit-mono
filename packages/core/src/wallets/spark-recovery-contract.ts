@@ -23,6 +23,7 @@ import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 export const SPARK_RECOVERY_KIND = 30078
 export const SPARK_RECOVERY_PREFIX = "conduit:spark:wallet:v1:"
 export const SPARK_PRIMARY_D_TAG = "conduit:spark:primary:v1"
+export const SPARK_MAIN_D_TAG = "conduit:spark:main:v1"
 export const MAX_SPARK_ACCOUNT_NUMBER = 0x7fffffff
 export const MAX_SPARK_RECOVERY_BYTES = 2048
 const MAX_CIPHERTEXT_CHARS = 4096
@@ -60,6 +61,10 @@ export const sparkPrimaryPointerSchema = z.strictObject({
   createdAt: timestamp,
 })
 export type SparkPrimaryPointer = z.infer<typeof sparkPrimaryPointerSchema>
+const sparkMainWalletSchema = sparkPrimaryPointerSchema.extend({
+  format: z.literal("conduit.spark.main"),
+})
+export type SparkMainWallet = z.infer<typeof sparkMainWalletSchema>
 export type SparkRecoveryBundle = Pick<
   SparkRecoveryEnvelope,
   "mnemonic" | "network" | "accountNumber"
@@ -165,6 +170,7 @@ export function validateSparkRecoveryEvent(
 export function isSparkRecoveryAddress(value: string): boolean {
   return (
     value === SPARK_PRIMARY_D_TAG ||
+    value === SPARK_MAIN_D_TAG ||
     value === "spark-wallet-backup" ||
     /^spark-wallet-backup:[0-9a-f]{16}$/.test(value) ||
     (value.startsWith(SPARK_RECOVERY_PREFIX) &&
@@ -222,6 +228,21 @@ export function parseSparkPrimaryPointer(
     !result.success ||
     result.data.ownerPubkey !== event.pubkey ||
     event.tags.find((t) => t[0] === "d")?.[1] !== SPARK_PRIMARY_D_TAG ||
+    result.data.createdAt !== event.created_at
+  )
+    throw new SparkRecoveryError("invalid_record")
+  return result.data
+}
+
+export function parseSparkMainWallet(
+  value: string,
+  event: SignedNostrEvent
+): SparkMainWallet {
+  const result = sparkMainWalletSchema.safeParse(parsePayload(value))
+  if (
+    !result.success ||
+    result.data.ownerPubkey !== event.pubkey ||
+    event.tags.find((t) => t[0] === "d")?.[1] !== SPARK_MAIN_D_TAG ||
     result.data.createdAt !== event.created_at
   )
     throw new SparkRecoveryError("invalid_record")

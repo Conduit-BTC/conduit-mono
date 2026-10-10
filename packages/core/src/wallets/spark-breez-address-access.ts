@@ -42,7 +42,10 @@ export function createSparkBreezAddressAccess(input: {
     domain: import.meta.env?.VITE_BREEZ_LNURL_DOMAIN,
   })
   let client: BreezLightningAddressClient | null = null
-  const run = async (register: boolean): Promise<BreezAddressState> => {
+  const run = async (
+    register: boolean,
+    username?: string
+  ): Promise<BreezAddressState> => {
     if (configuration.status === "unavailable")
       return { status: "unavailable", reason: configuration.reason }
     if (!input.signer)
@@ -66,10 +69,10 @@ export function createSparkBreezAddressAccess(input: {
         },
       },
     })
-    return register ? client.ensure() : client.lookup()
+    return register ? client.ensure(username) : client.lookup()
   }
   return {
     lookupBreezAddress: () => run(false),
-    ensureBreezAddress: () => run(true),
+    ensureBreezAddress: (username?: string) => run(true, username),
   }
 }

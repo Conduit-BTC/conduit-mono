@@ -64,8 +64,10 @@ Read only the rows the change actually touches. A route can cross several rows.
   installed mode is a UX gate, not key authority.
   Apps must not generate, store, or derive account keys. The bounded guest-order
   key and isolated device-local Portable Wallet credential boundaries are distinct
-  exceptions; neither creates a Nostr account. The device-owned `/wallet`
-  surface works without a connected signer.
+  exceptions; neither creates a Nostr account. New account-scoped wallets use
+  verified signer-backed encryption and close on logout/account replacement.
+  Legacy password-encrypted device wallets retain signed-out access and an
+  explicit migration/fallback path. See `docs/specs/wallets.md`.
 - Test identities are ordinary newly generated Nostr keys from a CSPRNG, used
   in controlled test processes and the signer-owned test surface. They are not
   a separate class of non-account key. No fixed credential may enter source or

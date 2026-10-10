@@ -12,6 +12,10 @@ export async function prepareControlledWallet(page: Page) {
         accountNumber: number
         walletId: string
       }) {
+        if (!fixtureWindow.__walletProbe)
+          await new Promise<void>((resolve) => {
+            fixtureWindow.__walletFixtureReady = resolve
+          })
         const probe = fixtureWindow.__walletProbe
         probe.opens++
         probe.lastAccount = input.accountNumber
@@ -21,6 +25,8 @@ export async function prepareControlledWallet(page: Page) {
         if (fixtureWindow.__walletSetupBarrier)
           await fixtureWindow.__walletSetupBarrier()
         let registered = imported || recovered
+        let registrationPending = false
+        let selectedName: string | undefined
         const lookup = async () =>
           probe.addressUnavailableReason
             ? { status: "unavailable", reason: probe.addressUnavailableReason }
@@ -31,12 +37,14 @@ export async function prepareControlledWallet(page: Page) {
                     ? probe.restoredAddress
                     : imported
                       ? "support@conduit.cash"
-                      : `wallet${probe.registrations}@conduit.cash`,
+                      : `${selectedName ?? `wallet${probe.registrations}`}@conduit.cash`,
                   lnurl: "https://conduit.cash/lnurlp/test",
                   publicLookup: "verified",
                   zap: { status: "unsupported" },
                 }
-              : { status: "absent" }
+              : registrationPending
+                ? { status: "unavailable", reason: "registration_pending" }
+                : { status: "absent" }
         return {
           async disconnect() {
             probe.disconnects++
@@ -50,16 +58,20 @@ export async function prepareControlledWallet(page: Page) {
           async lookupBreezAddress() {
             return lookup()
           },
-          async ensureBreezAddress() {
+          async ensureBreezAddress(username?: string) {
             if (registered) return lookup()
             if (probe.delayRegistration)
               await new Promise<void>((resolve) => {
                 probe.releaseRegistration = resolve
               })
-            if (probe.failRegistration)
+            if (probe.failRegistration) {
+              registrationPending = true
               return { status: "unavailable", reason: "registration_pending" }
+            }
+            selectedName = username
             probe.registrations++
             registered = true
+            registrationPending = false
             return lookup()
           },
           async receivePayment() {
@@ -95,13 +107,15 @@ export async function prepareControlledWallet(page: Page) {
 }
 export async function installControlledWallet(
   page: Page,
-  failRegistration = false
+  failRegistration = false,
+  restoredAddress?: string
 ) {
   await page.evaluate(
-    async ({ failRegistration, modulePath }) => {
+    async ({ failRegistration, modulePath, restoredAddress }) => {
       const recovery = await import("/@fs" + modulePath)
       Object.assign(window, {
         __walletProbe: {
+          restoredAddress,
           registrations: 0,
           opens: 0,
           disconnects: 0,
@@ -111,8 +125,10 @@ export async function installControlledWallet(
           lastAccount: -1,
         },
       })
+      ;(window as any).__walletFixtureReady?.()
     },
     {
+      restoredAddress,
       failRegistration,
       modulePath: path.resolve("packages/core/src/wallets/spark-recovery.ts"),
     }

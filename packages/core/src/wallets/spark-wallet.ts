@@ -156,7 +156,7 @@ export interface SparkSdkClient {
   ): Promise<NwcLookupInvoiceResult>
 
   lookupBreezAddress?(): Promise<BreezAddressState>
-  ensureBreezAddress?(): Promise<BreezAddressState>
+  ensureBreezAddress?(username?: string): Promise<BreezAddressState>
   addEventListener?(listener: () => void): Promise<string>
   removeEventListener?(listenerId: string): Promise<boolean>
   disconnect(): Promise<void>
@@ -360,7 +360,8 @@ export class SparkWalletManager {
 
   async getLightningAddress(
     walletId: string,
-    register = false
+    register = false,
+    username?: string
   ): Promise<BreezAddressState> {
     let client: SparkSdkClient
     try {
@@ -372,7 +373,7 @@ export class SparkWalletManager {
       ? client.ensureBreezAddress
       : client.lookupBreezAddress
     if (!operation) return { status: "unavailable", reason: "unconfigured" }
-    const result = await operation.call(client)
+    const result = await operation.call(client, username)
     // Ignore address results if the exact session was locked/replaced meanwhile.
     if (
       this.#clients.get(walletId) !== client ||

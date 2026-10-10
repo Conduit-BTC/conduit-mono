@@ -42,7 +42,6 @@ function WalletsPage() {
           )}
         </div>
       }
-      formatSats={(sats) => `${sats.toLocaleString()} sats`}
       renderAddressEditor={(suggestion, onDismiss) => (
         <AddressEditor
           key={`${auth.accountPubkey}:${auth.authGeneration}`}

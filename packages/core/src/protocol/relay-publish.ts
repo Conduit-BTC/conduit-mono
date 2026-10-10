@@ -304,7 +304,8 @@ function assertRelayAuthenticationConfiguration(
           (tag) =>
             tag[0] === "d" &&
             (tag[1]?.startsWith("conduit:spark:wallet:v1:") ||
-              tag[1] === "conduit:spark:primary:v1")
+              tag[1] === "conduit:spark:primary:v1" ||
+              tag[1] === "conduit:spark:main:v1")
         ))
     ) ||
     !input.exclusiveRelayUrls ||

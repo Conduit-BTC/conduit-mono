@@ -2162,12 +2162,21 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       },
       PRIVATE_KEY_A
     )
+    const mainEvent = finalizeEvent(
+      { ...event, tags: [["d", "conduit:spark:main:v1"]] },
+      PRIVATE_KEY_A
+    )
     const harness = new FakeRelayHarness().at("wss://protected.example", {
       onOpen: (socket) => socket.relay(["AUTH", "recovery"]),
       onSend: (socket, frame) => {
         if (frame[0] === "AUTH") respondToAuth(socket, frame)
         if (frame[0] === "REQ") {
-          socket.relay(["EVENT", frame[1], event])
+          const filter = frame[2] as { "#d"?: string[] }
+          socket.relay([
+            "EVENT",
+            frame[1],
+            filter["#d"]?.[0] === "conduit:spark:main:v1" ? mainEvent : event,
+          ])
           socket.relay(["EOSE", frame[1]])
         }
       },
@@ -2196,6 +2205,16 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       { authorization }
     )
     expect(primary.status).toBe("success")
+    const main = await executor.query(
+      {
+        ...request,
+        filters: [
+          { ...request.filters[0]!, "#d": ["conduit:spark:main:v1"], limit: 1 },
+        ],
+      },
+      { authorization }
+    )
+    expect(main.status).toBe("success")
     await expect(
       executor.query(
         {
