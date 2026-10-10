@@ -46,7 +46,7 @@ test("Breez address controls preserve the invoice fallback when unconfigured @ma
   )
   const control = page.locator("#address-control-fixture")
   await expect(control.getByRole("status")).toHaveText(
-    "Lightning addresses are currently unavailable."
+    "Lightning addresses are not enabled in this build."
   )
   await expect(control).toContainText(
     "You can create a Lightning invoice below"

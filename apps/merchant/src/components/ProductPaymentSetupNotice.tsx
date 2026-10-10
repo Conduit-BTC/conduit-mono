@@ -67,7 +67,7 @@ export function ProductPaymentSetupNotice({
         </div>
       </div>
       <Button asChild size="sm" variant="outline" className="shrink-0">
-        <Link to="/payments">Set up payments</Link>
+        <Link to="/wallet">Manage in Wallets</Link>
       </Button>
     </div>
   )

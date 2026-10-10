@@ -1,3 +1,7 @@
+import {
+  prepareControlledWallet,
+  installControlledWallet,
+} from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import {
@@ -12,108 +16,6 @@ const core = `/@fs${path.resolve("packages/core/src/index.ts")}`
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
-async function prepareControlledWallet(page: Page) {
-  // Replace network initialization at the existing single manager's factory.
-  // Production modules and UI/hooks/storage/signers otherwise run unchanged.
-  await page.addInitScript(() => {
-    const fixtureWindow = window as any
-    fixtureWindow.__walletFixtureFactory = {
-      network: "mainnet",
-      async open(input: {
-        mnemonic: string
-        accountNumber: number
-        walletId: string
-      }) {
-        const probe = fixtureWindow.__walletProbe
-        probe.opens++
-        probe.lastAccount = input.accountNumber
-        probe.savedMnemonic = input.mnemonic
-        const imported = input.mnemonic === probe.importMnemonic
-        let registered = imported
-        const lookup = async () =>
-          registered
-            ? {
-                status: "registered",
-                address: imported
-                  ? "support@conduit.cash"
-                  : `wallet${probe.registrations}@conduit.cash`,
-                lnurl: "https://conduit.cash/lnurlp/test",
-                publicLookup: "verified",
-                zap: { status: "unsupported" },
-              }
-            : { status: "absent" }
-        return {
-          async disconnect() {
-            probe.disconnects++
-          },
-          async getInfo() {
-            return { balanceSats: 0 }
-          },
-          async listPayments() {
-            return { payments: [] }
-          },
-          async lookupBreezAddress() {
-            return lookup()
-          },
-          async ensureBreezAddress() {
-            if (registered) return lookup()
-            if (probe.delayRegistration)
-              await new Promise<void>((resolve) => {
-                probe.releaseRegistration = resolve
-              })
-            if (probe.failRegistration)
-              return { status: "unavailable", reason: "registration_pending" }
-            probe.registrations++
-            registered = true
-            return lookup()
-          },
-          async receivePayment() {
-            return { paymentRequest: "controlled-invoice", fee: 0n }
-          },
-          async prepareSendPayment() {
-            throw new Error("Controlled unfunded wallet")
-          },
-          async sendPayment() {
-            throw new Error("No payment is authorized in this test")
-          },
-        }
-      },
-    }
-  })
-  await page.route("**/src/lib/spark-sdk.ts*", async (route) => {
-    const response = await route.fetch()
-    const body = await response.text()
-    const marker = "new FirstPartySparkSdkFactory("
-    if (body.split(marker).length !== 2)
-      throw new Error("Wallet factory fixture seam changed")
-    await route.fulfill({
-      response,
-      body: body.replace(
-        marker,
-        "window.__walletFixtureFactory ?? new FirstPartySparkSdkFactory("
-      ),
-    })
-  })
-}
-async function installControlledWallet(page: Page, failRegistration = false) {
-  await page.evaluate(
-    async ({ failRegistration }) => {
-      const recovery = await import("/src/lib/spark-recovery.ts")
-      Object.assign(window, {
-        __walletProbe: {
-          registrations: 0,
-          opens: 0,
-          disconnects: 0,
-          failRegistration,
-          importMnemonic: recovery.generateSparkMnemonic(),
-          savedMnemonic: "",
-          lastAccount: -1,
-        },
-      })
-    },
-    { failRegistration }
-  )
-}
 async function enterWallets(page: Page) {
   await page.getByLabel("Open account menu").click()
   await page.getByRole("menuitem", { name: "Wallets", exact: true }).click()
@@ -422,15 +324,15 @@ test("legacy migration keeps its old encrypted copy and fresh sign-in reopens wi
       probe.legacyPassword = crypto.randomUUID()
       const binding = {
         walletId: crypto.randomUUID(),
-        providerId: "spark",
-        network: "mainnet",
+        providerId: "spark" as const,
+        network: "mainnet" as const,
         accountNumber: 7,
       }
       const store = getMarketWalletStore()
       const registry = getMarketWalletRegistry()
       const recovery = {
         ...binding,
-        type: "password",
+        type: "password" as const,
         recovery: await encryptSparkMnemonic(
           probe.importMnemonic,
           probe.legacyPassword,
@@ -584,6 +486,6 @@ test("receive keeps pending address setup visible and blocks conflicting control
     await dialog.getByRole("button", { name: "Done", exact: true }).click()
     await expect(dialog).toHaveCount(0)
   } finally {
-    disposeRuntimeSignerIdentity(identity.id)
+    expect(disposeRuntimeSignerIdentity(identity)).toBe(true)
   }
 })

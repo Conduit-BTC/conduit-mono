@@ -22,9 +22,14 @@ export function getWalletNetworkFromLightningConfig(
 }
 
 export type WalletCapability =
-  "pay_invoice" | "receive" | "balance" | "history" | "spark_transfer"
+  | "pay_invoice"
+  | "receive"
+  | "verify_invoice"
+  | "balance"
+  | "history"
+  | "spark_transfer"
 
-export type WalletDefaultIntent = "pay_invoice"
+export type WalletDefaultIntent = "pay_invoice" | "receive"
 
 export type WalletLifecycleStatus =
   "registered" | "connecting" | "ready" | "unavailable" | "locked" | "error"

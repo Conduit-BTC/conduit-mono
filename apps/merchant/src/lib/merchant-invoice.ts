@@ -1,3 +1,8 @@
+import { createWalletReceivingInvoice } from "@conduit/core/wallets/wallet-receiving"
+import {
+  receivingWalletBindingSchema,
+  type ReceivingWalletBinding,
+} from "@conduit/core/wallets/receiving"
 import {
   getProfilePaymentAddress,
   loadSelectedProfileContext,
@@ -31,6 +36,7 @@ export type MerchantPendingInvoice = StoredMerchantPendingInvoice
 export type MerchantInvoiceActionSource = Exclude<MerchantInvoiceSource, "mock">
 
 export type MerchantInvoiceSelection =
+  | { type: "wallet"; walletId: string }
   | { type: "profile_lud16" }
   | { type: "webln" }
   | { type: "nwc"; connection: NwcConnection }
@@ -87,6 +93,12 @@ export interface MerchantInvoiceLockManager {
 
 export interface MerchantInvoiceDependencies {
   store: MerchantPendingInvoiceStore
+  makeWalletInvoice?(
+    owner: string,
+    walletId: string,
+    amountSats: number,
+    description?: string
+  ): Promise<{ invoice: string; receivingWallet: ReceivingWalletBinding }>
   getProfileLud16(merchantPubkey: string): Promise<string | null>
   fetchLnurlPayMetadata(lud16: string): Promise<LnurlPayMetadata>
   fetchLnurlInvoice(
@@ -129,6 +141,7 @@ export interface MerchantInvoiceModule {
 }
 
 const MERCHANT_INVOICE_SOURCES: readonly MerchantInvoiceSource[] = [
+  "wallet",
   "profile_lud16",
   "webln",
   "nwc",
@@ -181,6 +194,8 @@ function parseStoredPendingInvoice(
     (value.note !== undefined && typeof value.note !== "string") ||
     (value.delivery !== "buyer_and_self" && value.delivery !== "self_only") ||
     !MERCHANT_INVOICE_SOURCES.includes(value.source) ||
+    (value.receivingWallet !== undefined &&
+      !receivingWalletBindingSchema.safeParse(value.receivingWallet).success) ||
     !Number.isSafeInteger(value.invoiceExpiresAt) ||
     (value.deliveryState !== "pending" && value.deliveryState !== "sent") ||
     !Number.isSafeInteger(value.updatedAt)
@@ -317,7 +332,11 @@ async function acquireInvoice(
   amountMsats: number,
   orderId: string,
   dependencies: MerchantInvoiceDependencies
-): Promise<{ invoice: string; source: MerchantInvoiceSource }> {
+): Promise<{
+  invoice: string
+  source: MerchantInvoiceSource
+  receivingWallet?: ReceivingWalletBinding
+}> {
   const memo = `Conduit order ${orderId}`
   if (dependencies.isMockPayments()) {
     return {
@@ -327,6 +346,18 @@ async function acquireInvoice(
   }
 
   switch (source.type) {
+    case "wallet": {
+      if (!dependencies.makeWalletInvoice)
+        throw new Error("Wallet invoice creation is unavailable.")
+      const result = await dependencies.makeWalletInvoice(
+        merchantPubkey,
+        source.walletId,
+        amountSats,
+        memo
+      )
+      return { ...result, source: "wallet" }
+    }
+
     case "profile_lud16": {
       const lud16 = normalizeLud16(
         await dependencies.getProfileLud16(merchantPubkey)
@@ -390,6 +421,9 @@ function toPublishInput(
     ],
     payload: {
       invoice: pending.invoice,
+      ...(pending.receivingWallet
+        ? { receivingWallet: pending.receivingWallet }
+        : {}),
       amount: amountSats,
       currency: "SATS",
       ...(pending.note ? { note: pending.note } : {}),
@@ -630,6 +664,9 @@ export function createMerchantInvoiceModule(
           ...(input.note?.trim() ? { note: input.note.trim() } : {}),
           delivery: input.delivery,
           source: acquired.source,
+          ...(acquired.receivingWallet
+            ? { receivingWallet: acquired.receivingWallet }
+            : {}),
           deliveryState: "pending",
           updatedAt: now,
         }
@@ -713,6 +750,7 @@ export function createDefaultMerchantInvoiceModule(
   return createMerchantInvoiceModule({
     store,
     getProfileLud16: getStoredMerchantProfileLud16,
+    makeWalletInvoice: createWalletReceivingInvoice,
     fetchLnurlPayMetadata,
     fetchLnurlInvoice,
     makeWeblnInvoice: weblnMakeInvoice,

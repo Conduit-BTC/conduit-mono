@@ -28,6 +28,21 @@ const LEGACY_NWC_URI =
   "&relay=wss%3A%2F%2Fwallet.example"
 
 describe("NWC wallet registration details", () => {
+  it("recognizes receiving and verification grants without spending permission", () => {
+    expect(
+      getNwcWalletRegistrationDetails(
+        { network: "mainnet", methods: ["make_invoice", "lookup_invoice"] },
+        "mainnet"
+      ).capabilities
+    ).toEqual(["receive", "verify_invoice"])
+    expect(
+      getNwcWalletRegistrationDetails(
+        { network: "mainnet", methods: ["lookup_invoice"] },
+        "mainnet"
+      ).capabilities
+    ).toEqual(["verify_invoice"])
+  })
+
   it("does not grant payment capability without a verified wallet network", () => {
     expect(
       getNwcWalletRegistrationDetails(

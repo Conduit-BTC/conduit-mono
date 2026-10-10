@@ -15,7 +15,6 @@ import {
   pubkeyToNpub,
   reconcileProfileFormDraft,
   useAuth,
-  inferConduitAppOrigin,
   useProfile,
   useUpdateProfile,
   type ProfileFormValues,
@@ -401,10 +400,7 @@ function ProfilePage() {
                           </p>
                         </div>
                       )}
-                      <a
-                        className="text-sm underline"
-                        href={`${inferConduitAppOrigin("market")}/wallet`}
-                      >
+                      <a className="text-sm underline" href={"/wallet"}>
                         Manage in Wallets
                       </a>
                       {profileData?.lud16 && (
@@ -691,10 +687,7 @@ function ProfilePage() {
                       <p className="break-all text-sm">
                         {profileData?.lud16 || "No Lightning address yet"}
                       </p>
-                      <a
-                        className="text-sm underline"
-                        href={`${inferConduitAppOrigin("market")}/wallet`}
-                      >
+                      <a className="text-sm underline" href={"/wallet"}>
                         Manage in Wallets
                       </a>
                     </div>

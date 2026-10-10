@@ -1,6 +1,6 @@
 # Breez-hosted Lightning addresses
 
-Market's optional `conduit.cash` address management uses Breez's hosted service.
+Market and Merchant's optional `conduit.cash` address management uses Breez's hosted service.
 The first-party Spark provider remains the sole wallet and session owner. It
 passes its own `DefaultSparkSigner` to the existing Spark wallet, then exposes a
 bounded address-management signing seam. The address client never receives a
@@ -10,7 +10,9 @@ mnemonic, generates a seed, opens another SDK wallet, changes a merchant's
 On **Wallets**, **My wallets** offers **Create wallet** and a separate
 **Import wallet** flow. Creation generates a random Spark recovery phrase,
 actual account number and default name. Import uses the saved phrase and account
-number, recovering the same Spark identity. Setup requests a `conduit.cash`
+number, recovering the same Spark identity. The configured Mainnet real-bitcoin
+notice appears before the primary creation action; clicking that disclosed
+action starts setup. Setup requests a `conduit.cash`
 address by default in an enabled build. Signed address recovery always precedes
 registration, including for imports. An existing address remains attached to
 that recovered wallet; changing the public profile address is optional.
@@ -18,7 +20,9 @@ that recovered wallet; changing the public profile address is optional.
 Wallet cards show the name, balance and receiving address with **Receive** and
 **Send**. Rename, recovery, spending default, history, lock and removal are in
 the overflow menu. Address failure leaves invoice receive and the wallet usable,
-with a retry on the same wallet. Receive cannot be dismissed during address
+with a retry on the same wallet when registration is retryable. Disabled,
+unsupported-network and invalid-configuration states have distinct explanations
+and do not offer registration retry. Receive cannot be dismissed during address
 registration; address/invoice controls and card actions cannot conflict with
 that pending operation. **External wallets** keeps NWC connections
 separate.
@@ -44,11 +48,31 @@ round-trip and transactional read-back, retaining the old encrypted recovery
 copy and a previous-password fallback for the same account.
 
 Recovery details include the phrase, actual Spark account number and network,
-and setup requires acknowledgement that they were saved. Credentials are local
-to this browser. Recovery on another device uses those saved details; this PR
-does not provide a relay-backed recovery rollout or promise automatic
-cross-device wallet discovery. Known invalid local recovery blocks new imports;
-matching signer-backed imports reuse the existing registration atomically.
+and setup requires acknowledgement that they were saved. Both apps use the same
+`@conduit/ui` Wallets component and core lifecycle. New setup also encrypts a
+versioned recovery record to the same Nostr identity and publishes signed NIP-78
+`kind:30078` records through the existing authenticated executor and exact
+publisher. Signing in on another origin discovers and restores the same wallet
+UUID and Spark identity before registration or a new-wallet attempt. Recovery
+never chooses spending/merchant receiving defaults or edits the public profile.
+
+Reads are owner-scoped and authenticate through the active account signer.
+The curated rendezvous is relay.conduit.market, relay.damus.io and nos.lol;
+relay exclusions remain effective. Two independent operators must ACK and read
+back the exact encrypted record and primary pointer before sync is ready.
+Partial/unavailable discovery preserves positive evidence but blocks new
+creation. Malformed/conflicting evidence remains a repair state. An encrypted
+root reference distinguishes deliberate additional wallets from simultaneous
+first setups on different origins. Browser locks serialize one origin only;
+conflicting roots are retained and block another creation. Nostr has no global
+compare-and-swap.
+
+Sign-in only reads/restores. Existing device-only recovery is published only by
+**Sync wallet recovery**, which discloses encrypt-to-self and relay storage.
+Password-encrypted recovery keeps its migration/fallback path. Save the phrase,
+network and actual account number even when sync is ready: relay availability
+and external signer support are independent recovery dependencies. NWC
+credentials, names and spending/receiving preferences remain device-local.
 
 ## One public profile address
 
@@ -65,8 +89,8 @@ Wallets owns public address editing. Market and Merchant profile pages display
 shared profile publisher merges a narrow address patch into confirmed complete
 raw profile content, preserving unknown metadata and `lud06`. All profile writes
 share a local/cross-tab lock. Address updates check the address reviewed by the
-user and recheck the frontier after signing, refusing competing profile changes
-or account replacement. An exact complete address patch can update a sparse or
+user and recheck the frontier after signing, rebasing competing ordinary edits while
+refreshing the choice if the address changed, or refusing account replacement. An exact complete address patch can update a sparse or
 confirmed empty profile without disabling the generic sparse-profile guard.
 Nostr has no global compare-and-swap: an independent client can still publish a
 later replacement, which requires reviewing the current profile and retrying.
@@ -103,7 +127,7 @@ new-name policy does not enforce provider-wide namespace controls.
 A disabled profile or missing configuration leaves address setup unavailable.
 Mainnet is the only network enabled for this hosted domain. Provider
 configuration and repository-managed rollout enablement are separate conditions.
-Other apps can consume the core client when their Spark session seam is ready.
+Market and Merchant consume the same single Spark session seam.
 
 Breez must allow the domain for that key. The dedicated apex uses a CNAME/ALIAS
 or provider flattening to `breez.tips`. Cloudflare must use DNS only. No Conduit
@@ -155,6 +179,24 @@ neither registration nor an advertised NIP-57 key establishes real or offline
 receive. Failure leaves one-off Lightning invoice receive on the existing wallet
 available. The checkout-scoped ephemeral router remains independent.
 
+## Merchant payment confirmation
+
+Merchant Payments redirects to Wallets; profiles only display **Manage in
+Wallets**. There is no separate verification or advertised-zap setup. **Use for
+new invoices** deliberately selects a receiving wallet independently of spending
+defaults and the profile address. Signed payment requests and pending-invoice
+journals retain the original wallet ID/provider/network and Spark request ID.
+Address changes and delivery retries cannot replace that invoice or destination.
+Older LNURL/NWC invoices require exact incoming evidence in a known wallet.
+
+Open Spark sessions use the first-party native invoice lookup. Settlement needs
+the exact invoice, payment hash, amount, completed transfer and matching payment
+preimage. External wallets need `lookup_invoice`; `make_invoice` is needed only
+for creation, without spending permission. Balance changes, address availability
+and advertised zap keys never confirm an order. Keep Merchant open and the
+original wallet open/reconnected for checks. Account switches fence lookup,
+signing, durable publication and results.
+
 ## Reproducible evidence
 
 `tests/signer-wallet-unlock.test.ts` uses real NIP-44 cryptography through
@@ -169,9 +211,16 @@ recovery, protected-name import, duplicate import, explicit profile replacement
 and usable address failure. A composed Receive case prevents dismissal and
 conflicting controls during address registration. A legacy migration case retains the old encrypted
 copy and reopens through a fresh Nostr sign-in without a wallet password.
-Recovery traces, screenshots, video and automatic
-page snapshots are disabled; visual artifacts show only empty/finished states.
-These are local controlled tests, not live external-signer or settlement proof.
+Recovery traces, screenshots and video are disabled; retained visual artifacts
+show only empty/finished states.
+`e2e/wallet-cross-app.playwright.ts` exercises both origins with real
+NIP-44/signatures and an isolated NIP-42 relay, including concurrent setup.
+`tests/signer-spark-relay-recovery.test.ts` uses real cryptography and first-party
+identity derivation for fresh-store restore, partial discovery, immutable
+retries, revocation and conflicts. Exact Merchant settlement and immutable
+invoice bindings have focused workflow/adapter regressions. These are local
+controlled tests, not live external-signer, public-relay or funded settlement
+proof.
 
 `tests/breez-lightning-address.test.ts` exercises actual first-party identity
 signatures against a controlled provider, source-defined message fixtures,
@@ -213,7 +262,7 @@ Use only team-controlled wallets and approved small-value payments. Keep payment
 and recovery material out of logs, traces, screenshots and tracker attachments.
 
 1. Confirm the public-client key, allowed domain, deployed v2 address-management
-   interface and CORS from the actual Market/preview origins.
+   interface and CORS from the actual Market/Merchant/preview origins.
 2. Verify DNS/TLS, signed recovery/availability/registration, authenticated
    read-back, and public `/.well-known/lnurlp/<username>` lookup. Retry after a
    lost response and restore on a second device; preserve the same account.
@@ -223,7 +272,9 @@ and recovery material out of logs, traces, screenshots and tracker attachments.
    wallet; a changed balance alone is insufficient.
 4. Close the receiving browser, pay the address, reopen the same first-party
    wallet and reconcile the exact receive. Validate simultaneous Market/Merchant
-   sessions only once Merchant has the provider seam; do not assume it today.
+   sessions with the shared provider seam on actual deployed origins. Verify
+   NIP-07/NIP-46 permissions, encrypted recovery read-back on two independent
+   public relays, logout and fresh-device restore.
 5. Use the existing NIP-57 zap-request validation and verify a real matching
    provider-signed receipt. Advertised `allowsNostr`/`nostrPubkey` alone is not
    zap or interoperability proof.
@@ -241,3 +292,8 @@ and recovery material out of logs, traces, screenshots and tracker attachments.
 - [Breez account/identity derivation](https://github.com/breez/spark-sdk/blob/eb8be531d1bdb9e9d08cdf39e7800fbbded67397/crates/spark/src/signer/default_signer.rs)
 - [LUD-16](https://github.com/lnurl/luds/blob/luds/16.md)
 - [NIP-57](https://github.com/nostr-protocol/nips/blob/master/57.md)
+
+- [Addy encrypted wallet recovery](https://github.com/dmnyc/addy/blob/8b793241c4f9916b350aefc1ba393de8c9a90c85/src/wallet/storage.ts)
+- [NIP-78 application data](https://github.com/nostr-protocol/nips/blob/master/78.md)
+- [NIP-44 encryption](https://github.com/nostr-protocol/nips/blob/master/44.md)
+- [NIP-47 invoice capabilities](https://github.com/nostr-protocol/nips/blob/master/47.md)

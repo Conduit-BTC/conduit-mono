@@ -391,6 +391,9 @@ export function parseOrderMessageRumorEvent(
 
   if (type === "payment_request") {
     const payload = paymentRequestMessageSchema.parse({
+      ...(json?.receivingWallet
+        ? { receivingWallet: json.receivingWallet }
+        : {}),
       invoice: getString(json?.invoice) ?? event.content.trim(),
       amount:
         parseNumericTag(event.tags ?? [], "amount") ?? getNumber(json?.amount),

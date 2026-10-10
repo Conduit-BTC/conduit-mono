@@ -3149,3 +3149,57 @@ function makeInvalidAmountReceiveInvoice(
     ],
   })
 }
+
+describe("exact receiving invoice confirmation", () => {
+  it("requires the original invoice, amount, hash, settled transfer and valid preimage", async () => {
+    const invoice = makeLightningInvoice(ZERO_PREIMAGE_PAYMENT_HASH, 1000)
+    let native = {
+      ...createLightningReceiveResult(invoice),
+      status: "TRANSFER_COMPLETED",
+      paymentPreimage: ZERO_PREIMAGE,
+      updatedAt: new Date(1800000010000).toISOString(),
+    }
+    const wallet = createNativeWallet({
+      async createLightningInvoice() {
+        return native
+      },
+      async getLightningReceiveRequest() {
+        return native
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+    const issued = await client.createReceivingInvoice!({ amountSats: 1000 })
+    expect(issued.invoice).toBe(invoice)
+    expect(issued.receivingWallet.requestId).toBe(native.id)
+    expect(
+      (await client.lookupReceivingInvoice!(invoice, native.id)).state
+    ).toBe("settled")
+    native = { ...native, paymentPreimage: "01".repeat(32) }
+    expect(
+      (await client.lookupReceivingInvoice!(invoice, native.id)).state
+    ).toBe("pending")
+    native = {
+      ...native,
+      paymentPreimage: ZERO_PREIMAGE,
+      status: "LIGHTNING_PAYMENT_RECEIVED",
+    }
+    expect(
+      (await client.lookupReceivingInvoice!(invoice, native.id)).state
+    ).toBe("pending")
+    native = {
+      ...native,
+      status: "TRANSFER_COMPLETED",
+      invoice: { ...native.invoice, paymentHash: "11".repeat(32) },
+    }
+    await expect(
+      client.lookupReceivingInvoice!(invoice, native.id)
+    ).rejects.toThrow("Conflicting")
+    await expect(
+      client.lookupReceivingInvoice!(
+        makeReceiveInvoice({ amountSats: 2000 }),
+        native.id
+      )
+    ).rejects.toThrow("original")
+    await client.disconnect()
+  })
+})

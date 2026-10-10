@@ -378,7 +378,8 @@ export async function publishProfileContext(
 async function publishProfileContextUnlocked(
   profile: Omit<Profile, "pubkey">,
   appId: ConduitAppId,
-  options: PublishProfileOptions = {}
+  options: PublishProfileOptions = {},
+  rebaseAttempt = 0
 ): Promise<SelectedProfileContext> {
   buildNip01ProfilePublishContent({ profile })
   const signer = getAccountSigner()
@@ -472,12 +473,29 @@ async function publishProfileContextUnlocked(
     })
     assertCurrentSession()
     if (
+      current.frontier?.validity === "malformed" ||
       (!current.frontier &&
-        (!current.readComplete || current.persistence === "unavailable")) ||
-      current.frontier?.eventId !== latest.frontier?.eventId ||
-      current.freshness !== latest.freshness
+        (!current.readComplete || current.persistence === "unavailable"))
     )
       throw new ProfilePublishSupersededError()
+    assertProfileAddressChoice(
+      current.frontier?.rawContent,
+      options.expectedLightningAddress
+    )
+    if (
+      current.frontier?.eventId !== latest.frontier?.eventId ||
+      current.freshness !== latest.freshness
+    ) {
+      if (rebaseAttempt >= 2) throw new ProfilePublishSupersededError()
+      // Discard stale signed bytes and merge only the intended address into the
+      // latest complete metadata. The same account must approve the new event.
+      return publishProfileContextUnlocked(
+        profile,
+        appId,
+        options,
+        rebaseAttempt + 1
+      )
+    }
   }
   await publishWithPlanner(event, {
     replaceableSafety,

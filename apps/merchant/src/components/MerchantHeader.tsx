@@ -66,7 +66,7 @@ type CommerceNavRoute =
   | "/products"
   | "/events"
   | "/orders"
-  | "/payments"
+  | "/wallet"
   | "/shipping"
   | "/messages"
 
@@ -84,7 +84,7 @@ const commerceNavItems: CommerceNavItem[] = [
   { to: "/products", label: "Products", icon: Package },
   { to: "/events", label: "Events", icon: CalendarDays },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
-  { to: "/payments", label: "Payments", icon: CreditCard, hasReadiness: true },
+  { to: "/wallet", label: "Wallets", icon: CreditCard, hasReadiness: true },
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
   { to: "/messages", label: "Messages", icon: MessageCircle },
 ]
@@ -243,7 +243,7 @@ function MerchantNavLinks({
             key={item.to}
             item={item}
             incomplete={
-              item.hasReadiness && item.to === "/payments"
+              item.hasReadiness && item.to === "/wallet"
                 ? paymentsIncomplete
                 : item.hasReadiness && item.to === "/shipping"
                   ? shippingIncomplete

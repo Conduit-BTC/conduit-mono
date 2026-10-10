@@ -444,7 +444,7 @@ describe("Wallets profile-address publication", () => {
       extension: { keep: true },
     })
   })
-  it("refuses a concurrent profile change during signer consent", async () => {
+  it("rebases an address onto competing ordinary edits during signer consent", async () => {
     const original = profileEvent(
       JSON.stringify({
         name: "Current",
@@ -456,6 +456,7 @@ describe("Wallets profile-address publication", () => {
       JSON.stringify({
         name: "Changed",
         about: "New biography",
+        extension: { concurrent: true },
         lud16: "old@wallet.example",
       }),
       NOW + 40
@@ -465,13 +466,17 @@ describe("Wallets profile-address publication", () => {
     afterNetwork = () => {
       if (++reads >= 2) events = [changed]
     }
-    await expect(
-      publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
-        authenticatedPubkey: PUBKEY,
-        expectedLightningAddress: "old@wallet.example",
-      })
-    ).rejects.toBeInstanceOf(ProfilePublishSupersededError)
-    expect(published).toHaveLength(0)
+    await publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: "old@wallet.example",
+    })
+    expect(published).toHaveLength(1)
+    expect(JSON.parse(published[0]!.content)).toEqual({
+      name: "Changed",
+      about: "New biography",
+      extension: { concurrent: true },
+      lud16: "new@conduit.cash",
+    })
   })
   it("allows the disclosed default only after confirming an empty complete profile", async () => {
     await publishProfileContext({ lud16: "new@conduit.cash" }, "market", {

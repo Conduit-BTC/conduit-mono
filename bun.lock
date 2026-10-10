@@ -162,11 +162,13 @@
       "name": "@conduit/core",
       "version": "0.0.1",
       "dependencies": {
+        "@buildonspark/spark-sdk": "0.13.0",
         "@getalby/sdk": "^8.0.3",
         "@noble/ciphers": "^2.4.0",
         "@noble/curves": "^2.4.0",
         "@noble/hashes": "^2.4.0",
         "@nostr-dev-kit/ndk": "^3.0.3",
+        "@scure/bip39": "2.4.0",
         "clsx": "^2.1.1",
         "country-list": "^2.4.1",
         "dexie": "^4.4.6",
