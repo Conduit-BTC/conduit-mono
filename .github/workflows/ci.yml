@@ -106,8 +106,8 @@ jobs:
         with:
           bun-version: "1.3.5"
       - run: bun install --frozen-lockfile
-      - name: Enforce no hardcoded colors outside theme.css
-        run: bun test tests/no-hardcoded-colors.test.ts
+      - name: Enforce shared UI owners, controls and presentation policy
+        run: bun run ui:check
 
   telemetry-policy:
     runs-on: ubuntu-latest

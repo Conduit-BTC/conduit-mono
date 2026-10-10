@@ -70,7 +70,7 @@ export function OrderMessagesWidget({
       }}
     >
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="inset-0 left-0 top-0 flex h-dvh max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-[var(--surface)] p-0 sm:inset-auto sm:bottom-24 sm:right-6 sm:left-auto sm:top-auto sm:h-[32rem] sm:max-h-[calc(100dvh-7rem)] sm:w-[calc(100vw-2rem)] sm:max-w-sm sm:translate-x-0 sm:translate-y-0 sm:rounded-xl sm:border sm:border-[var(--border)]">
+        <DialogContent className="inset-0 left-0 top-0 flex h-dvh max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 bg-[var(--surface)] p-0 sm:inset-auto sm:bottom-24 sm:right-6 sm:left-auto sm:top-auto sm:h-[32rem] sm:max-h-[calc(100dvh-7rem)] sm:w-[calc(100vw-2rem)] sm:max-w-sm sm:translate-x-0 sm:translate-y-0 sm:rounded-[var(--radius-lg)] sm:border sm:border-[var(--border)]">
           <div className="border-b border-[var(--border)] p-4 pr-12">
             <DialogTitle className="text-sm font-semibold text-[var(--text-primary)]">
               {title}
@@ -140,7 +140,7 @@ export function OrderMessagesWidget({
               {error && (
                 <p
                   id={errorId}
-                  className="mt-2 text-xs text-error"
+                  className="mt-2 text-xs text-[var(--error-text)]"
                   role="alert"
                 >
                   {error}

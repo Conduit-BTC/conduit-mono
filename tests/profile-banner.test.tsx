@@ -38,9 +38,8 @@ describe("ProfileBanner", () => {
 
     expect(html).toContain("data-profile-banner")
     expect(html).toContain("h-28")
-    expect(html).toContain("bg-gradient-to-r")
-    expect(html).toContain("from-[var(--surface-elevated)]")
-    expect(html).toContain("to-[var(--surface)]")
+    expect(html).not.toContain("gradient")
+    expect(html).toContain("bg-[var(--surface)]")
     expect(html).not.toContain("<img")
   })
 

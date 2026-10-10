@@ -14,7 +14,7 @@ const countryOptions = SHIPPING_COUNTRIES.map(({ code, name }) => ({
   value: code,
   label: name,
 }))
-const panel = "space-y-4 rounded-2xl border border-[var(--border)] p-3 sm:p-4"
+const panel = "space-y-4 border-t border-[var(--border)] pt-4"
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Check the preview values."
 }
@@ -88,7 +88,7 @@ export function ShippingPolicyPreview({
         Preview a basket
       </summary>
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-country">Preview destination</Label>
           <Combobox
             id="shipping-preview-country"
@@ -99,7 +99,7 @@ export function ShippingPolicyPreview({
             onValueChange={setCountry}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-region">
             Preview state / region
           </Label>
@@ -110,7 +110,7 @@ export function ShippingPolicyPreview({
             placeholder="Optional, for example US-CA"
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-postal">Preview postal code</Label>
           <Input
             id="shipping-preview-postal"
@@ -119,7 +119,7 @@ export function ShippingPolicyPreview({
             placeholder="Optional"
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-first-weight">
             First item weight
           </Label>
@@ -131,7 +131,7 @@ export function ShippingPolicyPreview({
             onValueChange={setFirstWeight}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-quantity">First item quantity</Label>
           <Input
             id="shipping-preview-quantity"
@@ -140,7 +140,7 @@ export function ShippingPolicyPreview({
             onChange={(e) => setQuantity(e.target.value)}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-second-weight">
             Second item weight
           </Label>
@@ -152,7 +152,7 @@ export function ShippingPolicyPreview({
             onValueChange={setSecondWeight}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           <Label htmlFor="shipping-preview-subtotal">Basket subtotal</Label>
           <InputWithSuffix
             suffix={

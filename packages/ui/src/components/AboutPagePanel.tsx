@@ -137,7 +137,7 @@ function FieldRow({
   technical?: boolean
 }) {
   return (
-    <div className="flex min-w-0 gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+    <div className="flex min-w-0 gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
       <div className="mt-0.5 text-[var(--text-muted)]" aria-hidden="true">
         {icon}
       </div>
@@ -159,7 +159,7 @@ function FieldRow({
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex min-w-0 max-w-full items-center gap-1 text-primary-500 underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="inline-flex min-w-0 max-w-full items-center gap-1 text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               <span className="min-w-0 [overflow-wrap:anywhere]">{value}</span>
               <ExternalLink className="size-3.5 shrink-0" aria-hidden="true" />
@@ -217,7 +217,10 @@ function CopyControl({ label, value }: { label: string; value: string }) {
         onClick={() => void handleCopy()}
       >
         {status === "copied" ? (
-          <Check className="size-4 text-[var(--success)]" aria-hidden="true" />
+          <Check
+            className="size-4 text-[var(--success-text)]"
+            aria-hidden="true"
+          />
         ) : (
           <Copy className="size-4" aria-hidden="true" />
         )}
@@ -228,7 +231,7 @@ function CopyControl({ label, value }: { label: string; value: string }) {
         className={cn(
           "min-h-4 text-xs",
           status === "error"
-            ? "text-[var(--error)]"
+            ? "text-[var(--error-text)]"
             : "text-[var(--text-muted)]"
         )}
       >
@@ -240,7 +243,7 @@ function CopyControl({ label, value }: { label: string; value: string }) {
 
 function LogoMark({ src, appName }: { src: string; appName: string }) {
   return (
-    <div className="flex size-16 shrink-0 items-center justify-center rounded-2xl bg-primary-500 p-3 shadow-sm">
+    <div className="flex size-16 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary-500 p-3 shadow-sm">
       <img
         src={src}
         alt={`${appName} logo`}
@@ -269,7 +272,7 @@ function ContributorCard({
       href={contributor.profileUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className="group flex min-w-0 items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-primary-500/60 hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="group flex min-w-0 items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-primary-500/60 hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
       <Avatar className="size-11 border border-[var(--border)] bg-[var(--surface)]">
         <AvatarImage
@@ -282,7 +285,7 @@ function ContributorCard({
         </AvatarFallback>
       </Avatar>
       <div className="min-w-0">
-        <div className="truncate text-sm font-semibold text-[var(--text-primary)] group-hover:text-primary-500">
+        <div className="truncate text-sm font-semibold text-[var(--text-primary)] group-hover:text-[var(--link-text)]">
           {contributor.login}
         </div>
         <div className="text-xs tabular-nums text-[var(--text-secondary)]">
@@ -307,7 +310,7 @@ function ReleaseChannelBadge({ channel }: { channel: string }) {
   }
 
   return (
-    <div className="inline-flex w-fit rounded-lg border border-[var(--warning)] px-3 py-1 text-xs font-semibold text-[var(--warning)]">
+    <div className="inline-flex w-fit rounded-[var(--radius-md)] border border-[var(--warning)] px-3 py-1 text-xs font-semibold text-[var(--warning-text)]">
       {channel} build
     </div>
   )
@@ -325,7 +328,7 @@ function AboutHero({
   releaseChannel: string
 }) {
   return (
-    <header className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm sm:p-8">
+    <header className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm sm:p-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start">
           <LogoMark src={logoSrc} appName={appName} />
@@ -362,7 +365,10 @@ function HowConduitWorks() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="p-5">
-          <Globe2 className="size-5 text-primary-500" aria-hidden="true" />
+          <Globe2
+            className="size-5 text-[var(--link-text)]"
+            aria-hidden="true"
+          />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             Multiple relays
           </h3>
@@ -375,7 +381,10 @@ function HowConduitWorks() {
         </Card>
 
         <Card className="p-5">
-          <LockKeyhole className="size-5 text-primary-500" aria-hidden="true" />
+          <LockKeyhole
+            className="size-5 text-[var(--link-text)]"
+            aria-hidden="true"
+          />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             Public and private data
           </h3>
@@ -387,7 +396,10 @@ function HowConduitWorks() {
         </Card>
 
         <Card className="p-5">
-          <KeyRound className="size-5 text-primary-500" aria-hidden="true" />
+          <KeyRound
+            className="size-5 text-[var(--link-text)]"
+            aria-hidden="true"
+          />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             You stay in control
           </h3>
@@ -433,7 +445,7 @@ function OpenStandards({
                   href={protocol.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 underline-offset-4 hover:text-primary-500 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  className="inline-flex items-center gap-1 underline-offset-4 hover:text-[var(--link-text)] hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   {protocol.name}
                   <ExternalLink className="size-3.5" aria-hidden="true" />
@@ -450,7 +462,7 @@ function OpenStandards({
         href={inventoryUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 text-sm font-semibold text-primary-500 underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         Explore all supported protocols and current limits
         <ExternalLink className="size-4" aria-hidden="true" />
@@ -528,8 +540,8 @@ function SourceAndSupportCard({
         </Button>
       </div>
 
-      <details className="mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)]">
-        <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+      <details className="mt-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
+        <summary className="cursor-pointer rounded-[var(--radius-md)] px-4 py-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
           Build details
         </summary>
         <dl className="grid gap-3 border-t border-[var(--border)] p-4">
@@ -566,8 +578,8 @@ function TechnicalDetailsCard({ identity }: { identity: AboutPageIdentity }) {
         can identify event types this app knows how to handle.
       </p>
 
-      <details className="mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)]">
-        <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+      <details className="mt-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
+        <summary className="cursor-pointer rounded-[var(--radius-md)] px-4 py-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
           Nostr app handler metadata
         </summary>
         <div className="border-t border-[var(--border)] p-4">
@@ -677,7 +689,7 @@ function ContributorsCard({
       {contributorDataAvailable && contributorDataIsStale ? (
         <div
           role="status"
-          className="mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+          className="mt-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
         >
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
             This contributor snapshot is out of date. The counts below reflect
@@ -697,7 +709,7 @@ function ContributorsCard({
       ) : (
         <div
           role="status"
-          className="mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+          className="mt-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
         >
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
             Contributor details could not be refreshed for this build.

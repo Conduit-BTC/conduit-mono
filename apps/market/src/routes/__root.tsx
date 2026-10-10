@@ -483,7 +483,7 @@ function MarketProductRootError({ error }: { error: unknown }) {
         showReload
       >
         <div className="space-y-2 text-sm">
-          <ReportBugLink className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600" />
+          <ReportBugLink className="font-medium text-[var(--link-text)] underline underline-offset-4 hover:text-[var(--link-text)]" />
           <p className="text-xs leading-5 text-[var(--text-muted)]">
             Do not include private keys, wallet secrets, payment credentials, or
             sensitive personal information.

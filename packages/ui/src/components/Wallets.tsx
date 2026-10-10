@@ -2423,7 +2423,7 @@ function SendWalletDialog({
                         {quote.feeSats.toLocaleString()} sats
                       </dd>
                     </div>
-                    <div className="flex items-start justify-between gap-4 border-t border-[var(--border-subtle)] pt-2">
+                    <div className="flex items-start justify-between gap-4 border-t border-[var(--border)] pt-2">
                       <dt>
                         {quote.method === "lightning"
                           ? "Maximum total"
@@ -2444,7 +2444,7 @@ function SendWalletDialog({
                       </dd>
                     </div>
                   </dl>
-                  <div className="mt-3 border-t border-[var(--border-subtle)] pt-3">
+                  <div className="mt-3 border-t border-[var(--border)] pt-3">
                     <p className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
                       Payment request
                     </p>
@@ -2615,7 +2615,7 @@ function SendWalletDialog({
                 tabIndex={-1}
                 className={
                   outcome === "ambiguous"
-                    ? "rounded-xl border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)] outline-none"
+                    ? "rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)] outline-none"
                     : "text-sm text-[var(--text-secondary)] outline-none"
                 }
               >

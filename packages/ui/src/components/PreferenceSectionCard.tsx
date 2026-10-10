@@ -23,10 +23,7 @@ export function PreferenceSectionCard({
   return (
     <section
       aria-labelledby={headingId}
-      className={cn(
-        "overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-glass-inset)]",
-        className
-      )}
+      className={cn("min-w-0 border-y border-[var(--border)]", className)}
       {...props}
     >
       <header className="flex flex-col gap-4 p-4 sm:flex-row sm:items-start sm:justify-between sm:p-5">

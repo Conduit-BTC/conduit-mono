@@ -16,6 +16,7 @@ export function DirectConversationListItem({
   onClick: () => void
 }) {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}

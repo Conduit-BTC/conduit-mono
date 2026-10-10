@@ -110,11 +110,15 @@ async function readObjectUrlAudit(page: Page): Promise<ObjectUrlAudit> {
 
 async function openProductDialogWithSigner(
   page: Page,
-  options: { configuredServerUrl?: string } = {}
+  options: {
+    configuredServerUrl?: string
+    onPhase?: (phase: string) => void
+  } = {}
 ) {
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   const configuredCreatedAt = Math.floor(Date.now() / 1_000) + 1
+  options.onPhase?.("seed_identity")
   await seedTestRelayIdentity(secretKey)
   await installTestSigner(page, pubkey, { secretKey })
   if (options.configuredServerUrl) {
@@ -130,7 +134,9 @@ async function openProductDialogWithSigner(
       ),
     ])
   }
+  options.onPhase?.("navigate")
   await page.goto(`${merchantUrl}/products`)
+  options.onPhase?.("catalog")
   // Each fixture owns a fresh empty catalog. Let its initial reads settle
   // before opening the dialog so mobile layout changes cannot race the click.
   await expect(page.getByText("No listings yet", { exact: true })).toBeVisible({
@@ -138,9 +144,12 @@ async function openProductDialogWithSigner(
   })
   const addProduct = page.getByRole("button", { name: "Add product" }).first()
   await expect(addProduct).toBeEnabled({ timeout: 20_000 })
+  options.onPhase?.("open_dialog")
   await addProduct.click()
   const dialog = page.getByRole("dialog", { name: "Add product" })
+  options.onPhase?.("dialog_visible")
   await expect(dialog).toBeVisible({ timeout: 20_000 })
+  options.onPhase?.("wrap_signer")
   await page.evaluate(() => {
     const browserWindow = window as unknown as {
       nostr: {
@@ -159,6 +168,40 @@ async function openProductDialogWithSigner(
   })
   return { configuredCreatedAt, dialog, pubkey, secretKey }
 }
+
+test.afterEach(async ({ page }, info) => {
+  if (
+    !info.title.startsWith("fallback upload is disclosed") ||
+    info.status === info.expectedStatus
+  )
+    return
+  const existing = info.annotations.find(
+    (entry) => entry.type === "smoke:fallback-upload"
+  )
+  const { phase } = JSON.parse(existing?.description ?? "{}") as {
+    phase?: string
+  }
+  let observations: Record<string, number | boolean>
+  try {
+    observations = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]')
+      const submit = dialog?.querySelector('button[type="submit"]')
+      return {
+        observationAvailable: true,
+        dialogCount: document.querySelectorAll('[role="dialog"]').length,
+        inboxPrompt: !!document.querySelector('[role="alertdialog"]'),
+        invalidControls:
+          dialog?.querySelectorAll(':invalid,[aria-invalid="true"]').length ??
+          0,
+        submitEnabled: !!submit && !submit.hasAttribute("disabled"),
+      }
+    })
+  } catch {
+    // Preserve the original failure when timeout teardown has closed the page.
+    observations = { observationAvailable: false }
+  }
+  recordSmokeDiagnostic(info, "fallback-upload", { phase, ...observations })
+})
 
 test("loaded product preview stays visible while its title changes @merchant", async ({
   page,
@@ -569,8 +612,11 @@ test("legacy Blossom auth retries once with the same signed event @merchant", as
 
 test("fallback upload is disclosed, intercepted, and mobile responsive @merchant", async ({
   page,
-}) => {
+}, info) => {
   test.setTimeout(90_000)
+  const phase = (phase: string) =>
+    recordSmokeDiagnostic(info, "fallback-upload", { phase })
+  phase("setup")
   await page.setViewportSize({ width: 390, height: 844 })
   await installObjectUrlAudit(page)
   const state = await interceptBlossom(page, fallbackServer, {
@@ -578,7 +624,8 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       createHash("sha256").update(readFileSync(image192)).digest("hex"),
     ]),
   })
-  const { dialog } = await openProductDialogWithSigner(page)
+  phase("open_draft")
+  const { dialog } = await openProductDialogWithSigner(page, { onPhase: phase })
   await expect(
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible({ timeout: 20_000 })
@@ -606,6 +653,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     disclosureBox?.y ?? Number.NEGATIVE_INFINITY
   )
 
+  phase("invalid_file")
   await dialog.locator("#product-image-file").setInputFiles({
     name: "invalid.png",
     mimeType: "image/png",
@@ -625,6 +673,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     dialog.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
+  phase("valid_file")
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
@@ -665,6 +714,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     )
   ).toEqual([24242])
 
+  phase("restore_draft")
   await dialog.locator("form").getByRole("button", { name: "Close" }).click()
   await expect(dialog).toBeHidden()
   await page.getByRole("button", { name: "Add product" }).first().click()
@@ -676,6 +726,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     })
   ).toBeDisabled()
 
+  phase("discard_draft")
   page.once("dialog", (confirmation) => confirmation.accept())
   await resumedDialog.getByRole("button", { name: "Discard changes" }).click()
   await expect(resumedDialog).toBeHidden()
@@ -687,6 +738,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       exact: true,
     })
   ).toBeEnabled()
+  phase("fresh_file")
   await freshDialog.locator("#product-image-file").setInputFiles(image512)
   await expect(freshDialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
@@ -700,6 +752,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     await tags.fill(tag)
     await tags.press("Enter")
   }
+  phase("publish")
   await freshDialog
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
@@ -707,6 +760,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await expect(
     page.getByText("Fallback image listing", { exact: true }).first()
   ).toBeVisible({ timeout: 15_000 })
+  phase("listing_edit")
   await page.getByRole("button", { name: "Edit", exact: true }).first().click()
   const editDialog = page.getByRole("dialog", { name: "Edit listing" })
   await expect(editDialog).toBeVisible()
@@ -717,6 +771,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     })
   ).toBeDisabled()
   expect(state.putCount).toBe(2)
+  phase("complete")
 })
 
 test("a pristine new-product draft releases its consumed fallback claim @merchant", async ({

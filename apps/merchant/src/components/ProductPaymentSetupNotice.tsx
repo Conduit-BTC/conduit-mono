@@ -52,10 +52,10 @@ export function ProductPaymentSetupNotice({
   return (
     <div
       role="status"
-      className="flex flex-col gap-3 rounded-xl border border-warning/30 bg-warning/10 p-4 sm:flex-row sm:items-center sm:justify-between"
+      className="flex flex-col gap-3 rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 sm:flex-row sm:items-center sm:justify-between"
     >
       <div className="flex min-w-0 gap-3">
-        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning-text)]" />
         <div>
           <p className="text-sm font-medium text-[var(--text-primary)]">
             Lightning payments are not set up

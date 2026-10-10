@@ -94,6 +94,7 @@ function FilterRemoveButton({
   onClick: () => void
 }) {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
@@ -296,7 +297,7 @@ function ProductsPage() {
   return (
     <div className="space-y-5">
       {search.authRequired && (
-        <section className="rounded-2xl border border-secondary-500/30 bg-secondary-500/10 p-4 sm:p-5">
+        <section className="rounded-[var(--radius-md)] border border-secondary-500/30 bg-secondary-500/10 p-4 sm:p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="max-w-2xl">
               <div className="text-xs font-medium uppercase tracking-[0.18em] text-secondary-300">
@@ -396,7 +397,7 @@ function ProductsPage() {
                   onCheckedChange={() => updateSearch({ tag: undefined })}
                   className="justify-between gap-3"
                 >
-                  <span className="font-semibold text-primary-500">
+                  <span className="font-semibold text-[var(--link-text)]">
                     All categories
                   </span>
                   <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
@@ -449,7 +450,7 @@ function ProductsPage() {
                 onCheckedChange={() => updateSearch({ merchant: undefined })}
                 className="justify-between gap-3"
               >
-                <span className="font-semibold text-primary-500">
+                <span className="font-semibold text-[var(--link-text)]">
                   All merchants
                 </span>
                 <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
