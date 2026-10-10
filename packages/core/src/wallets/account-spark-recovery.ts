@@ -105,8 +105,20 @@ export async function runAccountWalletSetup<T>(
 }
 
 export function assertWalletCreationDiscovery(
-  discovery: SparkRecoveryDiscovery
+  discovery: SparkRecoveryDiscovery,
+  resolvedAddyEventIds: readonly string[] = []
 ): void {
+  if (
+    discovery.candidates.some(
+      (candidate) =>
+        candidate.source === "addy" &&
+        !candidate.resolved &&
+        !resolvedAddyEventIds.includes(candidate.eventId)
+    )
+  )
+    throw new Error(
+      "An Addy recovery backup needs its original network and Spark account number. Import that recovery phrase with those details before creating another wallet."
+    )
   if (
     discovery.coverage !== "complete" ||
     discovery.invalidCount ||
@@ -122,14 +134,24 @@ export function assertWalletCreationDiscovery(
 
 export async function restoreAccountSparkWallets(
   signer: AccountSigner,
-  discovery: SparkRecoveryDiscovery
+  discovery: SparkRecoveryDiscovery,
+  network: SparkRecoveryBundle["network"]
 ): Promise<Array<{ walletId: string } & SparkRecoveryBundle>> {
   assertWalletSignerCurrent(signer)
   const store = getMarketWalletStore()
   const registry = getMarketWalletRegistry()
+  const removed = new Set(
+    (await new DexieSparkRecoveryStore().load(signer.pubkey))
+      .removedWalletIds ?? []
+  )
   const restored: Array<{ walletId: string } & SparkRecoveryBundle> = []
   for (const candidate of discovery.candidates) {
-    if (candidate.source !== "conduit_v1" || !candidate.walletId) continue
+    if (
+      candidate.source !== "conduit_v1" ||
+      !candidate.walletId ||
+      removed.has(candidate.walletId)
+    )
+      continue
     if (
       (await store.listVisible(signer.pubkey)).some(
         (wallet) => wallet.id === candidate.walletId
@@ -137,7 +159,7 @@ export async function restoreAccountSparkWallets(
     )
       continue
     const bundle = await getAccountSparkRecovery(signer).restore(candidate)
-    if (!("walletId" in bundle)) continue
+    if (!("walletId" in bundle) || bundle.network !== network) continue
     assertWalletSignerCurrent(signer)
     const recovery = await sealSignerSparkRecovery(
       bundle.mnemonic,
@@ -208,19 +230,17 @@ export async function backUpAccountSparkWallet(
       candidate = { walletId, eventId: record.event.id, source: "conduit_v1" }
   }
   if (!candidate) {
-    const discovery = await service.discover()
+    const discovery = await service.discover(false, bundle.network)
     candidate = await service.prepare(
       bundle,
       walletId,
-      lineage ? lineage.rootBackupEventId : discovery.primary?.eventId
+      lineage
+        ? lineage.rootBackupEventId
+        : (discovery.lineageRootEventId ?? discovery.primary?.eventId)
     )
   }
-  const state = await store.load(signer.pubkey)
-  let pointer = state.records.find((record) =>
-    record.event.tags.some(
-      (tag) => tag[0] === "d" && tag[1] === "conduit:spark:primary:v1"
-    )
-  )?.event.id
+  const discovery = await service.discover(false, bundle.network)
+  let pointer = discovery.primaryPointerEventId
   if (!pointer) pointer = await service.preparePrimary(candidate)
   const backup = await service.deliver(candidate.eventId)
   const primary = await service.deliver(pointer)

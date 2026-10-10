@@ -83,6 +83,37 @@ first setups on different origins. Browser locks serialize one origin only;
 conflicting roots are retained and block another creation. Nostr has no global
 compare-and-swap.
 
+Recovery decisions use the configured Spark network. Signed, identity-verified
+backups from other networks remain in the encrypted journal, but are neither
+registered nor opened by this build. Their known network does not authorize an
+unknown or missing reference: partial coverage, malformed records and unresolved
+positive pointers still block creation. Active-network primary references also
+govern backup readiness; a different network's ACK cannot confirm it.
+
+A valid Addy bare-phrase backup has no network or account number. Create stays
+blocked with an instruction to import its phrase using the original network and
+actual Spark account number. Import never invents these parameters. A verified
+Conduit backup of that same phrase records the explicit source import; the Addy
+event remains retained. Conflicting or incomplete discovery still requires repair.
+
+**Remove from this device** atomically records an account-scoped local decision
+alongside descriptor/credential removal. Sign-in, reload and recovery retry
+respect that decision. Explicit successful import of the same wallet clears it.
+The decision is never published; encrypted relay recovery and funds remain intact.
+Account setup/removal share the existing origin-local account lock.
+
+The single Spark manager broadcasts initialization and quarantine/close lifecycle
+changes to every hook consumer. A wallet opens once; all consumers derive readiness
+from the same available native session, without waiting for an SDK event. Legacy
+password dialogs use a live account/generation fence that also permits signed-out
+device recovery. Signer actions retain the connected authority fence.
+
+Merchant's legacy account-scoped NWC connection is retired only after shared
+descriptor and credential read-back verifies the same parsed connection. Account
+or credential replacement fences the migration; failure preserves the legacy path.
+Mounted legacy consumers observe the existing Merchant storage signal and retire
+together. Shared Disconnect therefore stays disconnected after reload.
+
 Sign-in only reads/restores. Existing device-only recovery is published only by
 **Sync wallet recovery**, which discloses encrypt-to-self and relay storage.
 The shared surface confirms relay recovery only when backup and primary
@@ -235,6 +266,15 @@ recovery, protected-name import, duplicate import, explicit profile replacement
 and usable address failure. A composed Receive case prevents dismissal and
 conflicting controls during address registration. A legacy migration case retains the old encrypted
 copy and reopens through a fresh Nostr sign-in without a wallet password.
+`e2e/wallet-lifecycle.playwright.ts` composes parallel hook consumers, one native
+initialization without descriptor/fallback/SDK events, lock/retry, device removal
+through account reconnect/reload/explicit import, mixed-network recovery and
+Addy creation blocking. Merchant migration/disconnect uses a local real NIP-47
+wallet service and asserts the Wallets document title. The existing sensitive
+dialog dismissal smoke retains password clearing, recovery acknowledgement reset
+and focus restoration. NWC failure/read-back/account-replacement regressions use
+the shared atomic registration boundary. These remain controlled local evidence.
+
 Recovery traces, screenshots and video are disabled; retained visual artifacts
 show only empty/finished states.
 `e2e/wallet-cross-app.playwright.ts` exercises both origins with real

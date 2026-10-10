@@ -19,5 +19,9 @@
     },
     "jsx": "react-jsx"
   },
-  "include": ["wallet-sign-in.playwright.ts", "wallet-cross-app.playwright.ts"]
+  "include": [
+    "wallet-sign-in.playwright.ts",
+    "wallet-cross-app.playwright.ts",
+    "wallet-lifecycle.playwright.ts"
+  ]
 }

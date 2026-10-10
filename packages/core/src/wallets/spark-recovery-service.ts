@@ -87,6 +87,8 @@ export interface SparkRecoveryState {
   unresolvedObserved: boolean
   ownerPubkey: string
   records: SparkRecoveryRecord[]
+  /** Device-local decisions; never published or merged from relay events. */
+  removedWalletIds?: string[]
 }
 /** Ciphertext-only account journal; merge never removes a retained signed candidate. */
 export interface SparkRecoveryStore {
@@ -101,11 +103,17 @@ export interface SparkRecoveryCandidate {
   eventId: string
   walletId?: string
   source: "conduit_v1" | "addy"
+  network?: SparkRecoveryBundle["network"]
+  /** A Conduit backup of the same phrase records the explicit source import. */
+  resolved?: boolean
 }
 export interface SparkRecoveryDiscovery {
   coverage: "complete" | "partial" | "unavailable"
   state: "absent_within_scope" | "recoverable" | "conflict" | "unresolved"
   candidates: SparkRecoveryCandidate[]
+  otherNetworkCandidates?: SparkRecoveryCandidate[]
+  lineageRootEventId?: string
+  primaryPointerEventId?: string
   primary?: SparkRecoveryCandidate
   main?: SparkRecoveryCandidate
   invalidCount: number
@@ -160,7 +168,15 @@ export function validateSparkRecoveryState(
     if (
       input.ownerPubkey !== owner ||
       typeof input.unresolvedObserved !== "boolean" ||
-      input.records.length > MAX_RECORDS
+      input.records.length > MAX_RECORDS ||
+      (input.removedWalletIds !== undefined &&
+        (!Array.isArray(input.removedWalletIds) ||
+          input.removedWalletIds.length > MAX_RECORDS ||
+          new Set(input.removedWalletIds).size !==
+            input.removedWalletIds.length ||
+          input.removedWalletIds.some(
+            (id) => typeof id !== "string" || !id.length || id.length > 128
+          )))
     )
       throw new SparkRecoveryError("invalid_record")
     const records = input.records.map((r) => {
@@ -213,6 +229,9 @@ export function validateSparkRecoveryState(
       ownerPubkey: owner,
       records,
       unresolvedObserved: input.unresolvedObserved,
+      ...(input.removedWalletIds
+        ? { removedWalletIds: [...input.removedWalletIds] }
+        : {}),
     }
   } catch {
     throw new SparkRecoveryError("invalid_record")
@@ -261,6 +280,9 @@ export function mergeSparkRecoveryRecords(
       ownerPubkey: current.ownerPubkey,
       records: [...records.values()],
       unresolvedObserved: current.unresolvedObserved || unresolvedObserved,
+      ...(current.removedWalletIds
+        ? { removedWalletIds: current.removedWalletIds }
+        : {}),
     },
     current.ownerPubkey
   )
@@ -270,6 +292,16 @@ export class SparkRecoveryService {
   private readonly scope: ReturnType<typeof bindSparkRecoveryAccount>
   private readonly current: () => AccountSigner | undefined
   private readonly plan: SparkRecoveryRelay[]
+  private readonly verifiedPrimaryPointers = new Map<
+    SparkRecoveryBundle["network"],
+    string | undefined
+  >()
+  getVerifiedPrimaryPointerEventId(
+    network: SparkRecoveryBundle["network"]
+  ): string | undefined {
+    this.scope.assertCurrent()
+    return this.verifiedPrimaryPointers.get(network)
+  }
   constructor(
     private readonly input: {
       signer: AccountSigner
@@ -442,6 +474,7 @@ export class SparkRecoveryService {
     }
     const event = await this.sign(SPARK_PRIMARY_D_TAG, pointer, createdAt)
     await this.retain([this.record(event)])
+    this.verifiedPrimaryPointers.set(envelope.network, event.id)
     return event.id
   }
 
@@ -494,7 +527,10 @@ export class SparkRecoveryService {
     return envelope
   }
 
-  async discover(hasLocalWallet = false): Promise<SparkRecoveryDiscovery> {
+  async discover(
+    hasLocalWallet = false,
+    network?: SparkRecoveryBundle["network"]
+  ): Promise<SparkRecoveryDiscovery> {
     const saved = await this.load()
     const records = new Map(saved.records.map((r) => [r.event.id, r]))
     const sources: SparkRecoveryDiscovery["sources"] = []
@@ -632,8 +668,10 @@ export class SparkRecoveryService {
     if (records.size > MAX_RECORDS) throw new SparkRecoveryError("conflict")
     await this.retain([...records.values()], invalidCount > 0)
     const candidates: SparkRecoveryCandidate[] = []
-    const roots = new Set<string>()
+    const envelopes = new Map<string, SparkRecoveryEnvelope>()
+    const addyPhrases = new Map<string, string>()
     const pointers: SparkPrimaryPointer[] = []
+    const pointerEvents = new Map<SparkPrimaryPointer, string>()
     const mainChoices: Array<{
       event: SignedNostrEvent
       selection: SparkMainWallet
@@ -649,13 +687,15 @@ export class SparkRecoveryService {
         const plaintext = await this.decrypt(event)
         // Validate the legacy phrase/address now. Actual source parameters remain required at restore.
         if (d.startsWith("spark-wallet-backup")) {
-          validateAddySparkMnemonic(plaintext, event)
+          addyPhrases.set(event.id, validateAddySparkMnemonic(plaintext, event))
           candidates.push({ eventId: event.id, source: "addy" })
           continue
         }
-        if (d === SPARK_PRIMARY_D_TAG)
-          pointers.push(parseSparkPrimaryPointer(plaintext, event))
-        else if (d === SPARK_MAIN_D_TAG)
+        if (d === SPARK_PRIMARY_D_TAG) {
+          const pointer = parseSparkPrimaryPointer(plaintext, event)
+          pointers.push(pointer)
+          pointerEvents.set(pointer, event.id)
+        } else if (d === SPARK_MAIN_D_TAG)
           mainChoices.push({
             event,
             selection: parseSparkMainWallet(plaintext, event),
@@ -664,11 +704,12 @@ export class SparkRecoveryService {
           const envelope = parseSparkRecoveryEnvelope(plaintext, event)
           if ((await this.identity(envelope)) !== envelope.identityPublicKey)
             throw new SparkRecoveryError("identity_mismatch")
-          roots.add(envelope.rootBackupEventId ?? event.id)
+          envelopes.set(event.id, envelope)
           candidates.push({
             eventId: event.id,
             walletId: envelope.walletId,
             source: "conduit_v1",
+            network: envelope.network,
           })
         }
       } catch (error) {
@@ -688,21 +729,56 @@ export class SparkRecoveryService {
       : sources.every((s) => s.status === "unavailable")
         ? "unavailable"
         : "partial"
+    // Retain every signed record, but decide restoration/creation for the
+    // configured network. An unknown target or bare Addy phrase stays relevant.
+    const inScope = (candidate: SparkRecoveryCandidate) =>
+      !network || candidate.source === "addy" || candidate.network === network
+    const scopedCandidates = candidates.filter(inScope)
+    for (const candidate of scopedCandidates) {
+      if (candidate.source !== "addy") continue
+      candidate.resolved = [...envelopes.values()].some(
+        (envelope) =>
+          (!network || envelope.network === network) &&
+          envelope.mnemonic === addyPhrases.get(candidate.eventId)
+      )
+    }
+    const findTarget = (pointer: SparkPrimaryPointer | SparkMainWallet) =>
+      candidates.find(
+        (c) =>
+          c.eventId === pointer.backupEventId && c.walletId === pointer.walletId
+      )
+    const scopedPointers = pointers.filter((pointer) => {
+      const target = findTarget(pointer)
+      return !target || inScope(target)
+    })
+    const roots = new Set(
+      scopedCandidates.flatMap((candidate) => {
+        const envelope = envelopes.get(candidate.eventId)
+        return envelope ? [envelope.rootBackupEventId ?? candidate.eventId] : []
+      })
+    )
     const pointerTargets = new Set(
-      pointers.map((p) => `${p.backupEventId}:${p.walletId}`)
+      scopedPointers.map((p) => `${p.backupEventId}:${p.walletId}`)
     )
     const primary =
-      pointers.length && pointerTargets.size === 1
-        ? candidates.find(
-            (c) =>
-              c.eventId === pointers[0].backupEventId &&
-              c.walletId === pointers[0].walletId
-          )
+      scopedPointers.length && pointerTargets.size === 1
+        ? findTarget(scopedPointers[0])
         : undefined
+    // A verified root backup or primary on another network can identify the
+    // common lineage without selecting or opening a wallet on that network.
+    const knownRoot =
+      [...roots].some((root) => envelopes.has(root)) ||
+      pointers.some((pointer) => {
+        const target = findTarget(pointer)
+        return target && roots.has(target.eventId)
+      })
+    const relevantCandidates = scopedCandidates.filter(
+      (candidate) => candidate.source !== "addy" || !candidate.resolved
+    )
     const conflict =
       roots.size > 1 ||
       pointerTargets.size > 1 ||
-      (!primary && candidates.length > 1)
+      (!primary && !knownRoot && relevantCandidates.length > 1)
     // NIP-01 addressable revision order. Older explicit choices remain retained
     // evidence, not conflicting backup roots or permission to create a wallet.
     const latestMain = mainChoices.sort(
@@ -710,31 +786,41 @@ export class SparkRecoveryService {
         b.event.created_at - a.event.created_at ||
         a.event.id.localeCompare(b.event.id)
     )[0]?.selection
-    const main = latestMain
-      ? candidates.find(
-          (c) =>
-            c.eventId === latestMain.backupEventId &&
-            c.walletId === latestMain.walletId
-        )
-      : undefined
+    const latestMainTarget = latestMain ? findTarget(latestMain) : undefined
+    const mainInScope =
+      latestMain && (!latestMainTarget || inScope(latestMainTarget))
+    const main = mainInScope ? latestMainTarget : undefined
     const creationEligible =
       coverage === "complete" &&
-      records.size === 0 &&
+      (network
+        ? relevantCandidates.length === 0 &&
+          !scopedPointers.length &&
+          !mainInScope
+        : records.size === 0) &&
       !saved.unresolvedObserved &&
       invalidCount === 0 &&
       !hasLocalWallet
+    const primaryPointerEventId =
+      !conflict && primary ? pointerEvents.get(scopedPointers[0]) : undefined
+    if (network)
+      this.verifiedPrimaryPointers.set(network, primaryPointerEventId)
     return {
       coverage,
       state: conflict
         ? "conflict"
-        : (pointers.length && !primary) || (latestMain && !main)
+        : (scopedPointers.length && !primary) || (mainInScope && !main)
           ? "unresolved"
-          : candidates.length
+          : relevantCandidates.length
             ? "recoverable"
             : creationEligible
               ? "absent_within_scope"
               : "unresolved",
-      candidates,
+      candidates: scopedCandidates,
+      otherNetworkCandidates: candidates.filter(
+        (candidate) => !inScope(candidate)
+      ),
+      lineageRootEventId: roots.size === 1 ? [...roots][0] : undefined,
+      primaryPointerEventId,
       primary: conflict ? undefined : primary,
       main: conflict ? undefined : main,
       invalidCount,

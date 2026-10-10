@@ -1,5 +1,10 @@
 import { useWallets } from "@conduit/core/hooks/useWallets"
 import { getSparkWalletManager } from "@conduit/core/wallets/spark-sdk"
+import { migrateAccountNwcConnection } from "@conduit/core/wallets/wallet-migration"
+import {
+  getMarketWalletStore,
+  getMarketWalletRegistry,
+} from "@conduit/core/wallets/wallet-storage"
 import { lookupAccountReceivingInvoice } from "@conduit/core/wallets/wallet-receiving"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -31,7 +36,7 @@ import {
   verifyMerchantPaymentCandidates,
   type MerchantNwcAddressStatus,
 } from "../lib/merchant-payment-verification"
-import { getNwcConnectionCacheKey } from "../lib/readiness"
+import { getNwcConnectionCacheKey, getNwcUriStorageKey } from "../lib/readiness"
 import { useNwcConnection } from "./useNwcConnection"
 
 type VerificationRunState = {
@@ -112,20 +117,50 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   const signerConnected = status === "connected" && !!pubkey
   const connectionKey = merchantConnectionKey(nwc)
 
-  const migratedConnection = useRef<string | null>(null)
+  const migratedConnection = useRef<{ key: string; uri: string } | null>(null)
+  const retireMigratedUri = nwc.retireMigratedUri
   useEffect(() => {
+    if (!nwc.rawUri) migratedConnection.current = null
+    const migrationKey = `${authGeneration}:${pubkey}:${connectionKey}`
     if (
+      status !== "connected" ||
       !pubkey ||
       !nwc.rawUri ||
       wallets.loading ||
-      migratedConnection.current === `${pubkey}:${connectionKey}`
+      (migratedConnection.current?.key === migrationKey &&
+        migratedConnection.current.uri === nwc.rawUri)
     )
       return
-    migratedConnection.current = `${pubkey}:${connectionKey}`
-    void wallets.connectNwc(nwc.rawUri).catch(() => {
-      /* Leave the existing connection usable; retry through Wallets. */
+    const uri = nwc.rawUri
+    const storageKey = getNwcUriStorageKey(pubkey)
+    const signer = getAccountSigner()
+    if (signer?.pubkey !== pubkey) return
+    const shouldContinue = () =>
+      authGenerationRef.current === authGeneration &&
+      getAccountSigner() === signer &&
+      !!storageKey &&
+      localStorage.getItem(storageKey) === uri
+    if (!shouldContinue()) return
+    migratedConnection.current = { key: migrationKey, uri }
+    void migrateAccountNwcConnection({
+      uri,
+      connect: () => wallets.connectNwc(uri, undefined, { shouldContinue }),
+      credentialStore: getMarketWalletStore(),
+      listWallets: () => getMarketWalletRegistry().list(),
+      shouldContinue,
+      retireLegacy: () => retireMigratedUri(uri),
+    }).catch(() => {
+      /* Preserve the legacy connection if registration or read-back fails. */
     })
-  }, [pubkey, nwc.rawUri, wallets, connectionKey])
+  }, [
+    pubkey,
+    nwc.rawUri,
+    retireMigratedUri,
+    wallets,
+    status,
+    connectionKey,
+    authGeneration,
+  ])
 
   const infoQuery = useQuery({
     queryKey: ["merchant-nwc-info", pubkey ?? "none", connectionKey],

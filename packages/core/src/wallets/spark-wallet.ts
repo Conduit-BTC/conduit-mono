@@ -427,6 +427,7 @@ export class SparkWalletManager {
       return
     }
     this.#quarantinedWallets.add(walletId)
+    this.#invalidate(walletId)
     const sessionLease = this.#sessionLeases.get(walletId)
     const eventListener = this.#eventListeners.get(walletId)
     const cleanupErrors: unknown[] = []
@@ -1438,6 +1439,7 @@ export class SparkWalletManager {
       if (eventListener) {
         this.#eventListeners.set(input.walletId, eventListener)
       }
+      this.#invalidate(input.walletId)
     } catch (error) {
       const cleanupErrors: unknown[] = []
       if (eventListener) {
@@ -1505,12 +1507,6 @@ export class SparkWalletManager {
       const walletIds = [...this.#pendingInvalidations]
       this.#pendingInvalidations.clear()
       for (const invalidatedWalletId of walletIds) {
-        if (
-          !this.#clients.has(invalidatedWalletId) ||
-          this.#quarantinedWallets.has(invalidatedWalletId)
-        ) {
-          continue
-        }
         for (const subscriber of this.#subscribers) {
           subscriber(invalidatedWalletId)
         }
