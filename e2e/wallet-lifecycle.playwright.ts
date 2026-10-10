@@ -1120,15 +1120,11 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
         },
         { storage, core, journal, intent }
       )
-      await expect(
-        page.evaluate(() => {
-          const wallets = (window as any).__walletLifecycle.wallets
-          const imported = wallets.portableWallets.find(
-            (w: any) => w.id !== (window as any).__mainChoiceBefore.walletId
-          )
-          return wallets.setMainWallet(imported.id)
-        })
-      ).rejects.toThrow("Synthetic main choice failure")
+      await dialog.getByRole("button", { name: "Done", exact: true }).click()
+      await expect(dialog.getByRole("alert")).toHaveText(
+        "Synthetic main choice failure",
+        { timeout: 15_000 }
+      )
       await dialog
         .getByRole("switch", { name: "Make this my main wallet", exact: true })
         .uncheck()
