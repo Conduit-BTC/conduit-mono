@@ -18,6 +18,7 @@ export async function prepareControlledWallet(page: Page) {
           })
         const probe = fixtureWindow.__walletProbe
         probe.opens++
+        probe.openedAccounts.push(input.accountNumber)
         probe.lastAccount = input.accountNumber
         probe.savedMnemonic = input.mnemonic
         const imported = input.mnemonic === probe.importMnemonic
@@ -118,6 +119,7 @@ export async function installControlledWallet(
           restoredAddress,
           registrations: 0,
           opens: 0,
+          openedAccounts: [],
           disconnects: 0,
           failRegistration,
           importMnemonic: recovery.generateSparkMnemonic(),

@@ -52,8 +52,10 @@ Neither table is relay-synced.
 New wallets require a connected account signer with verified NIP-44 encryption.
 Signing out or switching accounts closes and hides that account's signer-backed
 sessions without deleting recovery or funds. Sign-in restores account recovery and
-opens the main wallet through the signer; a deliberate lock requires explicit
-opening. Legacy password-encrypted device wallets retain their existing signed-out
+opens discovered signer-owned wallets on the configured network through the signer
+on Wallets without a Conduit unlock dialog. External signer consent may still be
+required; deliberate lock or denied opening retains a direct Open action.
+Legacy password-encrypted device wallets retain their existing signed-out
 unlock and recovery path and are never silently reassigned to an account.
 
 ## Local unlock and portable recovery

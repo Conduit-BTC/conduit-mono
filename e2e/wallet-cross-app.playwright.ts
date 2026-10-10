@@ -73,6 +73,31 @@ async function saved(page: Page, makeMain = true) {
   await expect(dialog).toHaveCount(0)
 }
 
+async function gateWalletSigner(page: Page) {
+  await page.evaluate(async (moduleUrl) => {
+    const { db } = await import(moduleUrl)
+    const credential = (await db.walletCredentials.toArray())[0]
+    const ciphertext = JSON.parse(credential.credential).ciphertext
+    const fixture = window as any
+    const decrypt = fixture.nostr.nip44.decrypt
+    const gate = { mode: "deny", entered: 0, exited: 0, release: () => {} }
+    fixture.__walletSignerGate = gate
+    fixture.nostr.nip44.decrypt = async (peer: string, value: string) => {
+      if (value !== ciphertext) return decrypt(peer, value)
+      gate.entered++
+      try {
+        if (gate.mode === "deny") throw new Error("Signer permission denied")
+        await new Promise<void>((resolve) => {
+          gate.release = resolve
+        })
+        return await decrypt(peer, value)
+      } finally {
+        gate.exited++
+      }
+    }
+  }, core)
+}
+
 for (const app of ["market", "merchant"] as const) {
   test(`${app} chooses a name and applies its card address to latest complete metadata @market @merchant`, async ({
     page,
@@ -153,6 +178,55 @@ for (const app of ["market", "merchant"] as const) {
       await expect(
         page.getByRole("button", { name: "Open wallet", exact: true })
       ).toBeVisible()
+      await gateWalletSigner(page)
+      await page
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      await expect(page.getByRole("dialog")).toHaveCount(0)
+      await expect(
+        page.getByRole("alert").filter({ hasText: "authorization_denied" })
+      ).toBeVisible()
+      expect(
+        await page.evaluate(() => (window as any).__walletProbe.opens)
+      ).toBe(1)
+      await page.evaluate(() => {
+        ;(window as any).__walletSignerGate.mode = "hold"
+      })
+      await page
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as any).__walletSignerGate.entered)
+        )
+        .toBe(2)
+      // A descriptor reload while external permission is pending must retain
+      // Opening and must not initialize another native wallet session.
+      await page.evaluate(async (moduleUrl) => {
+        const { db } = await import(moduleUrl)
+        const wallet = (await db.wallets.toArray())[0]
+        await db.wallets.update(wallet.id, { label: "Conduit Wallet renamed" })
+      }, core)
+      await expect(
+        page.getByRole("button", { name: "Opening…", exact: true })
+      ).toBeDisabled()
+      await expect(page.getByRole("dialog")).toHaveCount(0)
+      await page.evaluate(() => (window as any).__walletSignerGate.release())
+      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      expect(
+        await page.evaluate(() => (window as any).__walletProbe.opens)
+      ).toBe(2)
+      await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
+      await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+      await page
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as any).__walletSignerGate.entered)
+        )
+        .toBe(3)
+      await expect(page.getByRole("dialog")).toHaveCount(0)
       await page
         .getByLabel(
           app === "market" ? "Open account menu" : "Open merchant account menu"
@@ -161,6 +235,15 @@ for (const app of ["market", "merchant"] as const) {
       await page
         .getByRole("menuitem", { name: "Disconnect", exact: true })
         .click()
+      await page.evaluate(() => (window as any).__walletSignerGate.release())
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as any).__walletSignerGate.exited)
+        )
+        .toBe(3)
+      expect(
+        await page.evaluate(() => (window as any).__walletProbe.opens)
+      ).toBe(2)
       await expect
         .poll(() =>
           page.evaluate(() => (window as any).__walletProbe?.disconnects ?? 0)
@@ -230,9 +313,11 @@ for (const from of ["market", "merchant"] as const) {
       await expect.poll(async () => (await wallets(target)).length).toBe(2)
       await expect
         .poll(() =>
-          target.evaluate(() => (window as any).__walletProbe.lastAccount)
+          target.evaluate(() =>
+            (window as any).__walletProbe.openedAccounts.sort()
+          )
         )
-        .toBe(7)
+        .toEqual([1, 7])
       const state = await target.evaluate(
         async ({ core, selected }) => {
           const { db } = await import(core)
@@ -255,14 +340,15 @@ for (const from of ["market", "merchant"] as const) {
       ).toBeVisible()
       await expect(
         target.getByRole("button", { name: "Open wallet", exact: true })
-      ).toHaveCount(1)
-      // Only the non-main wallet stays closed; the selected imported identity
-      // opens with the signer and retains its existing receiving registration.
+      ).toHaveCount(0)
+      await expect(target.getByRole("dialog")).toHaveCount(0)
+      await expect(target.getByText("Ready", { exact: true })).toHaveCount(2)
+      // All recovered signer-backed wallets open, independent of main selection.
       await expect(
         target.getByText("Receiving address: support@conduit.cash", {
           exact: true,
         })
-      ).toBeVisible()
+      ).toHaveCount(2)
     } finally {
       await context.close()
       disposeRuntimeSignerIdentity(identity)
