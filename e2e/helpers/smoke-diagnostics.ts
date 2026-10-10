@@ -3,6 +3,45 @@ import type { TestInfo } from "@playwright/test"
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "price-interaction": {
+      file: "e2e/shared-ui-visual-contract.playwright.ts",
+      fields: {
+        pointerDown: "boolean",
+        pointerUp: "boolean",
+        click: "boolean",
+        connected: "boolean",
+        enabled: "boolean",
+        quantity: "number",
+      },
+    },
+    "fallback-upload": {
+      file: "e2e/merchant-product-image-preview.playwright.ts",
+      fields: {
+        phase: [
+          "setup",
+          "open_draft",
+          "seed_identity",
+          "navigate",
+          "catalog",
+          "open_dialog",
+          "dialog_visible",
+          "wrap_signer",
+          "invalid_file",
+          "valid_file",
+          "restore_draft",
+          "discard_draft",
+          "fresh_file",
+          "publish",
+          "listing_edit",
+          "complete",
+        ],
+        observationAvailable: "boolean",
+        dialogCount: "number",
+        inboxPrompt: "boolean",
+        invalidControls: "number",
+        submitEnabled: "boolean",
+      },
+    },
     "surface-audit": {
       file: "e2e/shared-ui-surface-audit.playwright.ts",
       fields: {
@@ -190,6 +229,8 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "price-interaction"
+    | "fallback-upload"
     | "surface-audit"
     | "cart-stale-action"
     | "footer-layout"

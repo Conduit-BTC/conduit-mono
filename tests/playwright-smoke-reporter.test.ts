@@ -359,6 +359,37 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 
+  it("bounds compact-price pointer and upload diagnostics to their owning files", () => {
+    for (const [kind, file, values, expected] of [
+      [
+        "price-interaction",
+        "e2e/shared-ui-visual-contract.playwright.ts",
+        { click: false, quantity: 1 },
+        { kind: "price-interaction", click: false, quantity: 1 },
+      ],
+      [
+        "fallback-upload",
+        "e2e/merchant-product-image-preview.playwright.ts",
+        { phase: "publish", inboxPrompt: true },
+        { kind: "fallback-upload", phase: "publish", inboxPrompt: true },
+      ],
+    ] as const) {
+      const annotation = {
+        type: `smoke:${kind}`,
+        description: JSON.stringify({
+          ...values,
+          url: "private-value",
+          pubkey: "private-value",
+          content: "private-value",
+        }),
+      }
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([expected])
+      expect(
+        safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+      ).toEqual([])
+    }
+  })
+
   it("allows only fixed surface phases and scalar pending-resource observations", () => {
     const annotation = {
       type: "smoke:surface-audit",

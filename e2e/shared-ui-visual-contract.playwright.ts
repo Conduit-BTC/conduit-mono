@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { expect, test } from "@playwright/test"
 import { THEME_STORAGE_KEY } from "@conduit/ui/theme"
 import { installTestSigner, TEST_MERCHANT_PUBKEY } from "./helpers/auth"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { measureTextContrast } from "./helpers/rendered-contrast"
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -246,12 +247,61 @@ for (const theme of ["day-market", "night-market"]) {
     await expect(
       btcCard.getByRole("button", { name: "Remove one Large price from cart" })
     ).toBeFocused()
-    await btcCard
-      .getByRole("button", { name: "Add one more Large price to cart" })
-      .click()
-    await expect(
-      btcCard.getByRole("group", { name: "Cart action for Large price" })
-    ).toContainText("2")
+    const increment = btcCard.getByRole("button", {
+      name: "Add one more Large price to cart",
+    })
+    const probe = await increment.evaluateHandle((element) => {
+      const delivered = { pointerDown: false, pointerUp: false, click: false }
+      const listeners = ["pointerdown", "pointerup", "click"].map((type) => {
+        const listener = (event: Event) => {
+          if (
+            !(event.target instanceof Node) ||
+            !element.contains(event.target)
+          )
+            return
+          if (type === "pointerdown") delivered.pointerDown = true
+          if (type === "pointerup") delivered.pointerUp = true
+          if (type === "click") delivered.click = true
+        }
+        document.addEventListener(type, listener, {
+          capture: true,
+          passive: true,
+        })
+        return { type, listener }
+      })
+      return {
+        read() {
+          return {
+            ...delivered,
+            connected: element.isConnected,
+            enabled: !element.hasAttribute("disabled"),
+            quantity: Number(
+              element
+                .closest('[role="group"]')
+                ?.querySelector('[aria-live="polite"]')?.textContent ?? -1
+            ),
+          }
+        },
+        dispose() {
+          for (const { type, listener } of listeners)
+            document.removeEventListener(type, listener, true)
+        },
+      }
+    })
+    try {
+      await increment.click()
+      await expect(
+        btcCard.getByRole("group", { name: "Cart action for Large price" })
+      ).toContainText("2")
+    } finally {
+      recordSmokeDiagnostic(
+        info,
+        "price-interaction",
+        await probe.evaluate((value) => value.read())
+      )
+      await probe.evaluate((value) => value.dispose())
+      await probe.dispose()
+    }
     const quantityBounds = await btcCard.evaluate((card) => {
       const box = card.getBoundingClientRect()
       return [...card.querySelectorAll('[role="group"] button')].every((el) => {
