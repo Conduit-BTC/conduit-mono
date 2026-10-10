@@ -20,7 +20,7 @@ import {
   getListingAvailabilityDisplay,
   getMerchantStorefront,
   getProductImageCandidates,
-  getProductPriceDisplay,
+  getProductCardPriceDisplay,
   getAccountSigner,
   type SignedPublicNostrEvent,
   isCommerceReadIncomplete,
@@ -534,7 +534,7 @@ function ProductDeliveryStatusNotice({
     notice.failedRelayUrls.length > 0
 
   return (
-    <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0" role="status" aria-live="polite">
           <div className="flex flex-wrap items-center gap-2">
@@ -579,7 +579,7 @@ function ProductDeliveryStatusNotice({
         </div>
       </div>
       {showRelayDetails && (
-        <div className="mt-3 grid gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-5">
+        <div className="mt-3 grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-5">
           <div className="break-all">
             <span className="font-medium text-[var(--text-primary)]">
               Attempted:
@@ -633,7 +633,7 @@ function ListingAvailabilitySummary({
 
   if (item.product.type === "variable" && item.variationForm.supported) {
     return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
         <StatusPill variant="info" className="text-[10px]">
           Variable product
         </StatusPill>
@@ -647,7 +647,7 @@ function ListingAvailabilitySummary({
 
   if (!item.variationForm.supported) {
     return (
-      <article className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+      <article className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 text-sm text-[var(--warning-text)]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="font-semibold text-[var(--text-primary)]">
@@ -671,7 +671,7 @@ function ListingAvailabilitySummary({
   }
 
   return (
-    <article className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+    <article className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 text-sm text-[var(--warning-text)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold text-[var(--text-primary)]">
@@ -2669,7 +2669,7 @@ function ProductsPage() {
       </div>
 
       {eventContextReference ? (
-        <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+        <section className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
           <h2 className="text-xl font-semibold">
             Products for {contextName ?? "this Event Market"}
           </h2>
@@ -2726,7 +2726,7 @@ function ProductsPage() {
               return (
                 <div
                   key={item.addressId}
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] p-3"
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3"
                 >
                   <div>
                     <p className="font-medium">{item.product.title}</p>
@@ -2782,13 +2782,13 @@ function ProductsPage() {
       ) : null}
 
       {!accountPubkey && (
-        <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           Connect your signer to create and manage listings.
         </div>
       )}
 
       {accountPubkey && hasResumableCreateDraft && (
-        <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
           <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
             <div>
               <h2 className="text-lg font-semibold text-[var(--text-primary)]">
@@ -2810,14 +2810,14 @@ function ProductsPage() {
             </Button>
           </div>
           {draftContinuationError && (
-            <p role="alert" className="mt-3 text-sm text-error">
+            <p role="alert" className="mt-3 text-sm text-[var(--error-text)]">
               {draftContinuationError}
             </p>
           )}
         </section>
       )}
 
-      <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
+      <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 ">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px_180px]">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
@@ -2939,7 +2939,7 @@ function ProductsPage() {
             {Array.from({ length: 6 }).map((_, index) => (
               <div
                 key={index}
-                className="min-h-[22rem] animate-pulse rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)]"
+                className="min-h-[22rem] animate-pulse rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]"
               />
             ))}
           </div>
@@ -2947,7 +2947,7 @@ function ProductsPage() {
 
         {!productsInitialLoading &&
           resultPresentation.visibility === "compact" && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.4rem] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
               <span>
                 {resultPresentation.kind === "degraded_empty"
                   ? "Listings couldn't be loaded. Retry before relying on an empty catalog."
@@ -2967,7 +2967,7 @@ function ProductsPage() {
 
         {!productsInitialLoading &&
           resultPresentation.kind === "complete_empty" && (
-            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
+            <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
               <div className="text-lg font-semibold text-[var(--text-primary)]">
                 No listings yet
               </div>
@@ -2993,7 +2993,7 @@ function ProductsPage() {
 
         {!productsInitialLoading &&
           resultPresentation.kind === "filter_empty" && (
-            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+            <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
               No listings match the current search or category filter.
             </div>
           )}
@@ -3008,7 +3008,7 @@ function ProductsPage() {
           {visibleProducts.map((item) => {
             const priceProduct =
               item.family?.priceSummary.minimum?.product ?? item.product
-            const { primary, secondary } = getProductPriceDisplay(
+            const { primary, secondary } = getProductCardPriceDisplay(
               priceProduct,
               btcUsdRateQuery.data ?? null
             )
@@ -3073,6 +3073,7 @@ function ProductsPage() {
                   />
                 )}
                 <ProductCard
+                  actionLayout="stacked"
                   title={item.product.title}
                   titleAside={
                     <div className="flex flex-col items-end gap-1">
@@ -3100,7 +3101,10 @@ function ProductsPage() {
                   images={getProductImageCandidates(item.product)}
                   primaryPrice={
                     item.family?.priceSummary.varies
-                      ? `From ${primary}`
+                      ? {
+                          text: `From ${primary.text}`,
+                          fullText: `From ${primary.fullText}`,
+                        }
                       : primary
                   }
                   secondaryPrice={secondary}
@@ -3249,7 +3253,7 @@ function ProductsPage() {
                 })
               }}
             >
-              <div className="grid gap-1.5">
+              <div className="grid gap-1">
                 <Label htmlFor="product-title">Title</Label>
                 <Input
                   ref={productTitleInputRef}
@@ -3263,11 +3267,11 @@ function ProductsPage() {
                 />
               </div>
 
-              <div className="grid gap-1.5">
+              <div className="grid gap-1">
                 <Label htmlFor="product-summary">Summary</Label>
                 <Textarea
                   id="product-summary"
-                  className="min-h-28 rounded-xl bg-[var(--surface-elevated)] ring-primary/20 transition"
+                  className="min-h-28 rounded-[var(--radius-md)] bg-[var(--surface-elevated)] ring-primary/20 transition"
                   value={form.summary}
                   onChange={(event) =>
                     setForm((prev) => ({
@@ -3280,7 +3284,7 @@ function ProductsPage() {
               </div>
 
               <div className="grid gap-3 sm:grid-cols-4">
-                <div className="grid gap-1.5">
+                <div className="grid gap-1">
                   <Label htmlFor="product-price">
                     {form.variations.enabled ? "Base price" : "Price"}
                   </Label>
@@ -3308,7 +3312,7 @@ function ProductsPage() {
                   />
                 </div>
 
-                <div className="grid gap-1.5">
+                <div className="grid gap-1">
                   <Label htmlFor="product-currency">Currency</Label>
                   <Select
                     value={form.currency}
@@ -3330,7 +3334,7 @@ function ProductsPage() {
                 </div>
 
                 {preservingFulfillment ? (
-                  <div className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+                  <div className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
                     <p className="text-sm font-medium">
                       Current fulfillment is kept
                     </p>
@@ -3374,7 +3378,7 @@ function ProductsPage() {
                 )}
                 {!preservingFulfillment &&
                   form.shippingPricingMode !== "weight_table" && (
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label htmlFor="product-shipping">
                         Shipping (
                         {getProductShippingCurrencyLabel(form.currency)})
@@ -3415,7 +3419,7 @@ function ProductsPage() {
                       />
                     </div>
                   )}
-                <div className="grid gap-1.5 sm:col-span-2">
+                <div className="grid gap-1 sm:col-span-2">
                   <Label htmlFor="product-stock">
                     {form.variations.enabled
                       ? "Default stock quantity"
@@ -3445,7 +3449,7 @@ function ProductsPage() {
                   className={cn(
                     "self-end text-pretty text-xs leading-5 sm:col-span-2 sm:pb-2",
                     productFormValidation.errors.stock
-                      ? "text-error"
+                      ? "text-[var(--error-text)]"
                       : "text-[var(--text-muted)]"
                   )}
                 >
@@ -3457,7 +3461,7 @@ function ProductsPage() {
                 {productFormValidation.errors.price && (
                   <p
                     id="product-price-error"
-                    className="text-pretty text-xs leading-5 text-error sm:col-span-4"
+                    className="text-pretty text-xs leading-5 text-[var(--error-text)] sm:col-span-4"
                   >
                     {productFormValidation.errors.price}
                   </p>
@@ -3475,7 +3479,7 @@ function ProductsPage() {
                   </div>
                 )}
                 {!preservingFulfillment && !productIsDigital && (
-                  <div className="space-y-1.5 sm:col-span-4">
+                  <div className="grid grid-cols-1 gap-1 sm:col-span-4 [&>p]:mt-1">
                     <Label htmlFor="product-shipping-method">
                       Shipping pricing
                     </Label>
@@ -3514,7 +3518,7 @@ function ProductsPage() {
                     {productTableWarning && (
                       <p
                         role="status"
-                        className="text-pretty text-xs text-warning"
+                        className="text-pretty text-xs text-[var(--warning-text)]"
                       >
                         {productTableWarning}
                       </p>
@@ -3522,7 +3526,7 @@ function ProductsPage() {
                     {productTableError && (
                       <p
                         role="alert"
-                        className="text-pretty text-sm text-error"
+                        className="text-pretty text-sm text-[var(--error-text)]"
                       >
                         {productTableError}
                       </p>
@@ -3537,7 +3541,7 @@ function ProductsPage() {
                         className={cn(
                           "text-pretty text-xs leading-5 sm:col-span-4",
                           productFormValidation.errors.shippingCost
-                            ? "text-error"
+                            ? "text-[var(--error-text)]"
                             : "text-[var(--text-muted)]"
                         )}
                       >
@@ -3551,7 +3555,7 @@ function ProductsPage() {
                       </div>
                       <label
                         className={cn(
-                          "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
+                          "flex items-start gap-3 rounded-[var(--radius-md)] border p-3 text-sm sm:col-span-4",
                           productIsDigital
                             ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
                             : "cursor-pointer",
@@ -3561,6 +3565,7 @@ function ProductsPage() {
                         )}
                         aria-disabled={productIsDigital}
                       >
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
                           type="checkbox"
                           checked={productCoordinatesShipping}
@@ -3589,7 +3594,7 @@ function ProductsPage() {
                             className={cn(
                               "text-pretty text-xs leading-5",
                               productCoordinatesShipping
-                                ? "text-warning"
+                                ? "text-[var(--warning-text)]"
                                 : "text-[var(--text-muted)]"
                             )}
                           >
@@ -3601,13 +3606,14 @@ function ProductsPage() {
                       </label>
                       <label
                         className={cn(
-                          "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
+                          "flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
                           presetShippingZoneUnavailable
                             ? "cursor-not-allowed border-dashed opacity-60"
                             : "cursor-pointer"
                         )}
                         aria-disabled={presetShippingZoneUnavailable}
                       >
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
                           type="checkbox"
                           checked={
@@ -3648,7 +3654,7 @@ function ProductsPage() {
                       </label>
 
                       {customShippingZoneActive && (
-                        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+                        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
                           <div className="space-y-1">
                             <div className="text-sm font-medium text-[var(--text-primary)]">
                               Custom shipping destinations
@@ -3678,8 +3684,9 @@ function ProductsPage() {
                   )}
               </div>
 
-              <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+              <div className="grid gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
                 <label className="flex items-start gap-3 text-sm">
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <input
                     type="checkbox"
                     checked={form.publicZapEnabled}
@@ -3703,7 +3710,8 @@ function ProductsPage() {
                 </label>
 
                 {form.format === "physical" ? (
-                  <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] p-3">
+                  <label className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <input
                       type="checkbox"
                       checked={form.eventGuestContactOptional === true}
@@ -3729,7 +3737,7 @@ function ProductsPage() {
                     </span>
                   </label>
                 ) : null}
-                <div className="grid gap-1.5">
+                <div className="grid gap-1">
                   <Label htmlFor="product-zap-message-policy">
                     Zap message policy
                   </Label>
@@ -3761,7 +3769,7 @@ function ProductsPage() {
                 </div>
               </div>
 
-              <div className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+              <div className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="text-sm font-medium text-[var(--text-primary)]">
@@ -3813,14 +3821,20 @@ function ProductsPage() {
                 </p>
                 {(signedShippingQuery.isError ||
                   signedShippingQuery.data?.state === "unavailable") && (
-                  <p role="status" className="text-xs text-[var(--warning)]">
+                  <p
+                    role="status"
+                    className="text-xs text-[var(--warning-text)]"
+                  >
                     Shipping defaults could not be checked on relays. Check
                     Shipping before publishing if you expect a ships from
                     default.
                   </p>
                 )}
                 {shippingCacheUnavailable && (
-                  <p role="status" className="text-xs text-[var(--warning)]">
+                  <p
+                    role="status"
+                    className="text-xs text-[var(--warning-text)]"
+                  >
                     Shipping defaults loaded from relays, but this device could
                     not cache them.
                   </p>
@@ -3899,7 +3913,7 @@ function ProductsPage() {
                 }
               />
 
-              <div className="grid gap-2 rounded-xl border border-[var(--border)] p-3">
+              <div className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
                 <Label>Event participation</Label>
                 {eventContextCoordinate ? (
                   <>
@@ -3907,6 +3921,7 @@ function ProductsPage() {
                       {contextName ?? "Selected Event Market"}
                     </p>
                     <label className="flex items-center gap-2 text-sm">
+                      {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                       <input
                         type="checkbox"
                         checked={!!form.futureEventMarketReference}
@@ -3951,11 +3966,12 @@ function ProductsPage() {
                   placeholder="gear, hardware, demo"
                 />
               </div>
-              <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+              <fieldset className="grid gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                 <legend className="px-1 text-sm font-semibold text-[var(--text-primary)]">
                   Product options
                 </legend>
                 <label className="flex items-start gap-3 text-sm">
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <input
                     type="checkbox"
                     checked={form.variations.enabled}
@@ -3985,7 +4001,7 @@ function ProductsPage() {
                   <p
                     role="status"
                     aria-live="polite"
-                    className="text-pretty text-xs leading-5 text-warning"
+                    className="text-pretty text-xs leading-5 text-[var(--warning-text)]"
                   >
                     Saving will remove {productVariationRemovalCount} previously
                     published combination
@@ -4044,9 +4060,9 @@ function ProductsPage() {
                       {form.variations.axes.map((axis) => (
                         <div
                           key={axis.id}
-                          className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
+                          className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
                         >
-                          <div className="grid gap-1.5">
+                          <div className="grid gap-1">
                             <Label
                               htmlFor={`product-variation-axis-${axis.id}`}
                             >
@@ -4081,7 +4097,7 @@ function ProductsPage() {
                               }
                             />
                           </div>
-                          <div className="grid gap-1.5">
+                          <div className="grid gap-1">
                             <Label
                               htmlFor={`product-variation-values-${axis.id}`}
                             >
@@ -4134,9 +4150,9 @@ function ProductsPage() {
                       className={cn(
                         "text-xs leading-5",
                         productVariationGenerationMessage
-                          ? "text-warning"
+                          ? "text-[var(--warning-text)]"
                           : productFormValidation.errors.variations
-                            ? "text-error"
+                            ? "text-[var(--error-text)]"
                             : "text-[var(--text-muted)]"
                       )}
                     >
@@ -4200,7 +4216,7 @@ function ProductsPage() {
                                 key={combination.identity}
                                 role="group"
                                 aria-label={`Variation ${combination.label}`}
-                                className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                                className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
                               >
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <div className="min-w-0">
@@ -4309,6 +4325,7 @@ function ProductsPage() {
                                         Stock
                                       </Label>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                                         <input
                                           type="checkbox"
                                           checked={combination.inheritStock}
@@ -4365,6 +4382,7 @@ function ProductsPage() {
                                         Variation images
                                       </span>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                                         <input
                                           type="checkbox"
                                           checked={combination.inheritImages}
@@ -4385,7 +4403,7 @@ function ProductsPage() {
                                       </label>
                                     </div>
                                     {combination.inheritImages ? (
-                                      <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-muted)]">
+                                      <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] px-3 py-2 text-pretty text-xs leading-5 text-[var(--text-muted)]">
                                         {form.images.length === 0
                                           ? "No base product images yet."
                                           : form.images.length === 1
@@ -4482,6 +4500,7 @@ function ProductsPage() {
                                           : `Shipping (${form.currency})`}
                                       </Label>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                                         <input
                                           type="checkbox"
                                           checked={combination.inheritShipping}
@@ -4636,7 +4655,7 @@ function ProductsPage() {
                   ref={signerRestoredNoticeRef}
                   role="status"
                   tabIndex={-1}
-                  className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  className="rounded-[var(--radius-md)] border border-success/30 bg-success/10 px-4 py-3 text-sm leading-6 text-[var(--text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >
                   Signer reconnected. Review your draft, then choose{" "}
                   {editing ? "Save changes" : "Publish product"} when ready.
@@ -4651,7 +4670,7 @@ function ProductsPage() {
                     "text-pretty text-xs leading-5",
                     draftStorageAvailable
                       ? "text-[var(--text-muted)]"
-                      : "text-error"
+                      : "text-[var(--error-text)]"
                   )}
                 >
                   {draftStorageAvailable
@@ -4661,7 +4680,10 @@ function ProductsPage() {
               )}
 
               {draftContinuationError && (
-                <p role="alert" className="text-pretty text-xs text-error">
+                <p
+                  role="alert"
+                  className="text-pretty text-xs text-[var(--error-text)]"
+                >
                   {draftContinuationError}
                 </p>
               )}

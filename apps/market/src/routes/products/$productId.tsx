@@ -58,7 +58,10 @@ import {
   getProfileNip05,
 } from "../../components/MerchantIdentity"
 import { ProductDescriptionMarkdown } from "../../components/ProductDescriptionMarkdown"
-import { ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import {
+  ProductGridCardSkeleton,
+  PRODUCT_GRID_CLASS_NAME,
+} from "../../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../../components/ResolvedProductGridCard"
 import { ProductVariationSelector } from "../../components/ProductVariationSelector"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
@@ -707,13 +710,13 @@ function ProductPage() {
               {Array.from({ length: 4 }).map((_, index) => (
                 <div
                   key={index}
-                  className="aspect-square animate-pulse rounded-lg border border-[var(--border)] bg-[var(--surface)]"
+                  className="aspect-square animate-pulse rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]"
                 />
               ))}
             </div>
           )}
-          <div className="min-h-[22rem] animate-pulse rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:min-h-[32rem]" />
-          <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+          <div className="min-h-[22rem] animate-pulse rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] lg:min-h-[32rem]" />
+          <div className="space-y-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6">
             <div className="h-5 w-24 animate-pulse rounded bg-[var(--surface-elevated)]" />
             <div className="h-8 w-4/5 animate-pulse rounded bg-[var(--surface-elevated)]" />
             <div className="h-20 animate-pulse rounded bg-[var(--surface-elevated)]" />
@@ -724,8 +727,8 @@ function ProductPage() {
 
       {!productQuery.isInitialLoading &&
         productResultPresentation.kind === "degraded_empty" && (
-          <section className="rounded-3xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-8 text-center sm:p-10">
-            <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--warning)]/40 bg-[var(--surface)] text-[var(--warning)]">
+          <section className="rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-8 text-center sm:p-10">
+            <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--surface)] text-[var(--warning-text)]">
               <SearchX className="h-6 w-6" />
             </div>
             <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -750,8 +753,8 @@ function ProductPage() {
 
       {!productQuery.isInitialLoading &&
         productResultPresentation.kind === "complete_empty" && (
-          <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
-            <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
+          <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
+            <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
               <SearchX className="h-6 w-6" />
             </div>
             <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -770,8 +773,8 @@ function ProductPage() {
         )}
 
       {productUnavailable && product && listingAvailabilityDisplay && (
-        <section className="rounded-3xl border border-warning/30 bg-warning/10 p-8 text-center sm:p-10">
-          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-warning/30 bg-warning/10 text-warning">
+        <section className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-8 text-center sm:p-10">
+          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 text-[var(--warning-text)]">
             <SearchX className="h-6 w-6" />
           </div>
           <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -784,7 +787,7 @@ function ProductPage() {
               ? "This listing uses a product format the current Market client cannot safely support yet."
               : "This listing is not visible in Market or available for checkout right now."}
           </p>
-          <div className="mx-auto mt-4 max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+          <div className="mx-auto mt-4 max-w-xl rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
             Current state:{" "}
             <span className="font-medium text-[var(--text-primary)]">
               {listingAvailabilityDisplay.label}
@@ -814,13 +817,14 @@ function ProductPage() {
             {hasMultipleImages && (
               <div className="hidden max-h-[calc(100vh-11rem)] self-start overflow-y-auto pr-1 lg:flex lg:flex-col lg:gap-3">
                 {images.map((image, index) => (
+                  // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                   <button
                     key={`${image.url}-${index}`}
                     type="button"
                     onClick={() => setSelectedImageIndex(index)}
-                    className={`h-20 w-20 shrink-0 overflow-hidden rounded-xl border bg-[var(--surface)] transition-colors ${
+                    className={`h-20 w-20 shrink-0 overflow-hidden rounded-[var(--radius-md)] border bg-[var(--surface)] transition-colors ${
                       selectedImageIndex === index
-                        ? "border-secondary-400 shadow-[var(--shadow-glass-inset)]"
+                        ? "border-secondary-400 "
                         : "border-[var(--border)] hover:border-[var(--text-secondary)]"
                     }`}
                     aria-label={`Show image ${index + 1}`}
@@ -838,7 +842,7 @@ function ProductPage() {
               </div>
             )}
 
-            <div className="w-full min-w-0 max-w-[calc(100vw-2rem)] self-start justify-self-stretch overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:max-w-full">
+            <div className="w-full min-w-0 max-w-[calc(100vw-2rem)] self-start justify-self-stretch overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] lg:max-w-full">
               <div className="flex aspect-square w-full max-w-full items-center justify-center overflow-hidden bg-[var(--background)] p-3 sm:aspect-[4/3] sm:p-6 lg:max-h-[calc(100vh-11rem)]">
                 <img
                   src={selectedImage?.url}
@@ -852,13 +856,14 @@ function ProductPage() {
               {hasMultipleImages && (
                 <div className="flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain border-t border-[var(--border)] p-3 lg:hidden">
                   {images.map((image, index) => (
+                    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                     <button
                       key={`${image.url}-${index}`}
                       type="button"
                       onClick={() => setSelectedImageIndex(index)}
-                      className={`h-16 w-16 shrink-0 overflow-hidden rounded-lg border bg-[var(--surface)] transition-colors ${
+                      className={`h-16 w-16 shrink-0 overflow-hidden rounded-[var(--radius-md)] border bg-[var(--surface)] transition-colors ${
                         selectedImageIndex === index
-                          ? "border-secondary-400 shadow-[var(--shadow-glass-inset)]"
+                          ? "border-secondary-400 "
                           : "border-[var(--border)]"
                       }`}
                       aria-label={`Show image ${index + 1}`}
@@ -877,8 +882,8 @@ function ProductPage() {
               )}
             </div>
 
-            <aside className="w-full min-w-0 max-w-full self-start rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-              <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+            <aside className="w-full min-w-0 max-w-full self-start rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+              <div className="w-full min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
                 <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
                   Shop at
                 </div>
@@ -985,7 +990,7 @@ function ProductPage() {
                   />
                 ) : null}
 
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
                     {priceDisplay?.primary}
                   </div>
@@ -1008,9 +1013,9 @@ function ProductPage() {
                 {typeof selectedProduct?.stock === "number" && (
                   <div
                     role="status"
-                    className={`rounded-xl border px-4 py-3 text-sm ${
+                    className={`rounded-[var(--radius-md)] border px-4 py-3 text-sm ${
                       productSoldOut
-                        ? "border-warning/40 bg-warning/10 text-warning"
+                        ? "border-warning/40 bg-warning/10 text-[var(--warning-text)]"
                         : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
                     }`}
                   >
@@ -1026,6 +1031,7 @@ function ProductPage() {
                       productSoldOut ? "opacity-50" : ""
                     }`}
                   >
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       disabled={productSoldOut || productCartBlocked}
@@ -1040,6 +1046,7 @@ function ProductPage() {
                     <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium text-[var(--text-primary)]">
                       {quantity}
                     </div>
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
                       disabled={
@@ -1134,12 +1141,12 @@ function ProductPage() {
                 </div>
 
                 {cartActionError ? (
-                  <p role="alert" className="text-sm text-[var(--error)]">
+                  <p role="alert" className="text-sm text-[var(--error-text)]">
                     {cartActionError}
                   </p>
                 ) : null}
                 {productFulfillmentNotice || showPickupIdentityNotice ? (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
+                  <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
                     {showPickupIdentityNotice &&
                     productPickupHandoff &&
                     pickupHandlerIdentity ? (
@@ -1200,12 +1207,13 @@ function ProductPage() {
           </div>
 
           <section className="grid min-w-0 max-w-full items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
-            <div className="min-w-0 max-w-full space-y-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+            <div className="min-w-0 max-w-full space-y-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold text-[var(--text-primary)]">
                   Details
                 </h2>
                 {product.tags.length > 4 && (
+                  // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                   <button
                     type="button"
                     className="text-xs font-medium text-secondary-400 transition-colors hover:text-secondary-300"
@@ -1247,9 +1255,10 @@ function ProductPage() {
                     />
                   </div>
                   {descriptionMetrics.canExpand && (
+                    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                     <button
                       type="button"
-                      className="inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-medium text-secondary-400 transition-colors hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                      className="inline-flex h-8 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-xs font-medium text-secondary-400 transition-colors hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                       aria-expanded={showFullDescription}
                       onClick={() =>
                         setShowFullDescription((current) => !current)
@@ -1267,7 +1276,7 @@ function ProductPage() {
                 </div>
 
                 {(product.location || updatedLabel) && (
-                  <dl className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm sm:grid-cols-2">
+                  <dl className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm sm:grid-cols-2">
                     {product.location && (
                       <div>
                         <dt className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
@@ -1308,7 +1317,7 @@ function ProductPage() {
               </div>
             </div>
 
-            <div className="min-w-0 max-w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-7 text-[var(--text-secondary)]">
+            <div className="min-w-0 max-w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-7 text-[var(--text-secondary)]">
               <div className="font-medium text-[var(--text-primary)]">
                 Buying with Conduit
               </div>
@@ -1338,7 +1347,7 @@ function ProductPage() {
             </div>
 
             {relatedProductsQuery.isInitialLoading && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
+              <ul className={PRODUCT_GRID_CLASS_NAME}>
                 {Array.from({ length: 4 }).map((_, index) => (
                   <li key={index} className="h-full">
                     <ProductGridCardSkeleton />
@@ -1350,7 +1359,7 @@ function ProductPage() {
             {!relatedProductsQuery.isInitialLoading &&
               !relatedProductsQuery.isHydrating &&
               relatedProductsPresentation.kind === "degraded_empty" && (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6 text-sm text-[var(--text-primary)]">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6 text-sm text-[var(--text-primary)]">
                   <span>More products couldn&apos;t be loaded.</span>
                   <Button
                     type="button"
@@ -1367,13 +1376,13 @@ function ProductPage() {
             {!relatedProductsQuery.isInitialLoading &&
               !relatedProductsQuery.isHydrating &&
               relatedProductsPresentation.kind === "complete_empty" && (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
                   This merchant has not published additional products yet.
                 </div>
               )}
 
             {relatedProducts.length > 0 && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
+              <ul className={PRODUCT_GRID_CLASS_NAME}>
                 {relatedProducts.map((relatedProduct, index) => {
                   return (
                     <li key={relatedProduct.id} className="h-full">

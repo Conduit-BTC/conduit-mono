@@ -74,7 +74,7 @@ export function CommerceInboxRecovery({
   return (
     <section
       aria-label="Inbox history and recovery"
-      className="space-y-3 rounded-xl border border-[var(--border)] p-4 xl:shrink-0"
+      className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4 xl:shrink-0"
     >
       <details className="text-sm text-[var(--text-secondary)]">
         <summary className="min-h-11 cursor-pointer py-2">
@@ -173,7 +173,7 @@ export function CommerceInboxRecovery({
         ) : null}
       </div>
       {error ? (
-        <p role="alert" className="text-sm text-error">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           Recovery is incomplete. Saved records are available for another
           attempt.
         </p>
@@ -195,7 +195,7 @@ export function CommerceInboxRecovery({
                 record.category === "commerce" ? (
                   <article
                     key={record.provenance.rumorId}
-                    className="space-y-2 rounded-lg border border-[var(--border)] p-3 text-sm"
+                    className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3 text-sm"
                   >
                     <p className="font-medium">
                       {record.fields.messageType ?? "Unknown commerce type"} ·{" "}

@@ -160,7 +160,7 @@ function MerchantsPage() {
         {directory.isUnavailable ? (
           <div
             role="status"
-            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-[var(--border)] px-4 py-4 text-sm text-[var(--text-muted)]"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border)] px-4 py-4 text-sm text-[var(--text-muted)]"
           >
             <p>Merchants could not be loaded from this perspective.</p>
             <Button
@@ -173,7 +173,7 @@ function MerchantsPage() {
             </Button>
           </div>
         ) : directory.filteredSellers.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
+          <p className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
             {directory.sellers.length === 0
               ? directory.isFetching
                 ? "Loading listings from your perspective..."
@@ -232,7 +232,7 @@ function MerchantsPage() {
             </span>
           </div>
           {directory.networkAccounts.length === 0 ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-[var(--border)] px-4 py-4 text-sm text-[var(--text-muted)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-dashed border-[var(--border)] px-4 py-4 text-sm text-[var(--text-muted)]">
               <p>
                 {directory.eligibilityState === "loading"
                   ? "Checking eligible accounts..."
@@ -262,7 +262,7 @@ function MerchantsPage() {
                 <li key={match.pubkey}>
                   <Link
                     {...getAccountSuggestionTarget(match)}
-                    className="flex h-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                    className="flex h-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                   >
                     <Avatar className="size-11 shrink-0">
                       {match.profile.picture ? (

@@ -78,16 +78,17 @@ describe("identity surface contracts", () => {
     expect(content).not.toContain("useRelaySettings")
   })
 
-  it("keeps verified NIP-05 shields on the Conduit primary color", async () => {
+  it("keeps verified NIP-05 shields on the readable Conduit purple role", async () => {
     const content = await readFile(
       "apps/market/src/components/MerchantIdentity.tsx",
       "utf8"
     )
 
     expect(content).toContain("ShieldCheck")
-    expect(content).toContain("text-primary-500")
+    expect(content).toContain("text-[var(--link-text)]")
+    expect(content).not.toContain("text-primary-500")
     expect(content).toContain("CircleAlert")
-    expect(content).toContain("text-[var(--warning)]")
+    expect(content).toContain("text-[var(--warning-text)]")
     expect(content).toContain('display?: "full" | "icon"')
     expect(content).toContain("aria-label={tooltip}")
     expect(content).toContain("title={tooltip}")

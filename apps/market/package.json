@@ -9,7 +9,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.{ts,tsx}\""
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "dev:ui": "vite --config vite.ui.config.ts",
+    "build:ui": "vite build --config vite.ui.config.ts",
+    "preview:ui": "vite preview --config vite.ui.config.ts"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "0.13.0",

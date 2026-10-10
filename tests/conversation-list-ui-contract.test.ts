@@ -34,7 +34,7 @@ describe("conversation list search", () => {
       expect(source).toContain("xl:hidden")
       expect(source).toContain("hidden min-w-0")
       expect(source).toContain(
-        "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface"
+        "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface"
       )
       expect(source).toContain("min-h-[36rem]")
       expect(source).toContain(

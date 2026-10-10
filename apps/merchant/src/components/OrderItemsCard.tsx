@@ -195,7 +195,7 @@ export function OrderItemsCard({
   return (
     <section
       aria-labelledby={headingId}
-      className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+      className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5"
     >
       <h3
         id={headingId}
@@ -220,7 +220,7 @@ export function OrderItemsCard({
 
           return (
             <li key={key} className="flex items-start gap-3 text-sm">
-              <div className="size-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+              <div className="size-12 shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
                 {image ? (
                   <img
                     src={image}
@@ -303,7 +303,7 @@ export function OrderItemsCard({
       {shippingDisplay.warning && (
         <p
           role="alert"
-          className="mt-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-pretty text-xs leading-5 text-warning"
+          className="mt-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-pretty text-xs leading-5 text-[var(--warning-text)]"
         >
           {shippingDisplay.warning}
         </p>
@@ -312,7 +312,7 @@ export function OrderItemsCard({
       {discrepancySats !== null && discrepancySats !== 0 && (
         <p
           role="alert"
-          className="mt-3 text-pretty rounded-md border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning"
+          className="mt-3 text-pretty rounded-md border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-[var(--warning-text)]"
         >
           This recorded breakdown differs from the order total by{" "}
           {formatMerchantOrderAmount(Math.abs(discrepancySats), "SATS")}. Review

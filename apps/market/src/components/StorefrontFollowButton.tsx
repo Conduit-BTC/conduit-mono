@@ -55,7 +55,7 @@ export function StorefrontFollowButton({
       className={cn(
         "group h-11 max-w-full shrink-0 px-4 text-sm",
         showFollowing &&
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
+          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]  hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
         isBusy && writesAvailable && "disabled:opacity-100"
       )}
       onClick={onClick}

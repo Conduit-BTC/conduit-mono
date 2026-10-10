@@ -20,9 +20,9 @@ import {
 } from "@conduit/core"
 import { isProductLegalPath } from "@conduit/ui"
 import { initializeTheme } from "@conduit/ui/theme"
-import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Medium.ttf?url"
-import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
-import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
+import poppinsMediumUrl from "../../../packages/ui/src/assets/fonts/poppins-latin-500.woff2?url"
+import poppinsRegularUrl from "../../../packages/ui/src/assets/fonts/poppins-latin-400.woff2?url"
+import poppinsSemiBoldUrl from "../../../packages/ui/src/assets/fonts/poppins-latin-600.woff2?url"
 import { routeTree } from "./routeTree.gen"
 import { ShopperPresetsProvider } from "./hooks/useShopperPresets"
 import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
@@ -41,9 +41,9 @@ const router = createRouter({ routeTree })
 const SHOW_DEVTOOLS =
   import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 const criticalMarketFontUrls = [
-  bricolageRegularUrl,
-  bricolageMediumUrl,
-  bricolageSemiBoldUrl,
+  poppinsRegularUrl,
+  poppinsMediumUrl,
+  poppinsSemiBoldUrl,
 ]
 const isProductLegalEntry = isProductLegalPath(window.location.pathname)
 
@@ -55,7 +55,7 @@ function preloadCriticalMarketFonts() {
     link.rel = "preload"
     link.as = "font"
     link.href = url
-    link.type = "font/ttf"
+    link.type = "font/woff2"
     link.crossOrigin = "anonymous"
     document.head.appendChild(link)
   }

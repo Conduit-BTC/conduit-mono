@@ -59,7 +59,7 @@ export function ProductCombinationMatrix({
     <section
       aria-labelledby={headingId}
       aria-describedby={validationMessageId}
-      className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+      className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="grid gap-1">
@@ -110,7 +110,7 @@ export function ProductCombinationMatrix({
         role="region"
         aria-label="Combination availability matrix"
         tabIndex={0}
-        className="max-h-80 overflow-auto rounded-lg border border-[var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary-500)]/50"
+        className="max-h-80 overflow-auto rounded-[var(--radius-md)] border border-[var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary-500)]/50"
       >
         <table className="w-full min-w-max border-collapse text-left text-sm">
           <caption className="sr-only">

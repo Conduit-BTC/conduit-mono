@@ -17,7 +17,7 @@ export function SearchInput({
       <Input
         type="search"
         className={cn(
-          "h-11 rounded-xl pl-9 pr-3 focus-visible:ring-primary-500/30 focus-visible:ring-offset-0",
+          "h-11 rounded-[var(--radius-sm)] pl-9 pr-3 focus-visible:ring-primary-500/30 focus-visible:ring-offset-0",
           className
         )}
         {...props}

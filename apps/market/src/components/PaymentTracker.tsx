@@ -144,12 +144,12 @@ export function PaymentTracker({
   return (
     <section
       aria-label="Lightning payment status"
-      className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-6 shadow-[var(--shadow-md)]"
+      className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-6"
     >
       {/* Header -- a distinct tonal card so it doesn't read like a step. */}
       <header
         style={headerStyle}
-        className="flex items-center gap-4 rounded-xl border p-4"
+        className="flex items-center gap-4 rounded-[var(--radius-md)] border p-4"
       >
         <span
           aria-hidden="true"
@@ -192,7 +192,7 @@ export function PaymentTracker({
             return (
               <div
                 role="alert"
-                className="mt-4 rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-3 text-sm text-[var(--text-primary)]"
+                className="mt-4 rounded-[var(--radius-md)] border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-3 text-sm text-[var(--text-primary)]"
               >
                 <p className="font-medium">{parsed.summary}</p>
                 <ul className="mt-2 space-y-1">
@@ -216,7 +216,7 @@ export function PaymentTracker({
           return (
             <div
               role="alert"
-              className="mt-4 rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
+              className="mt-4 rounded-[var(--radius-md)] border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
             >
               {input.errorMessage}
             </div>
@@ -229,7 +229,7 @@ export function PaymentTracker({
       {outcome === "proof_retry_needed" && (
         <div
           role="status"
-          className="mt-4 rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
+          className="mt-4 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
         >
           Your payment went through. The receipt proof didn't reach the merchant
           over Nostr — they can still confirm the payment from the Lightning

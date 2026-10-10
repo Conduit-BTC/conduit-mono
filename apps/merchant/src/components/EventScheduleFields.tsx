@@ -201,7 +201,7 @@ export function EventScheduleFields({
         </Select>
       </div>
       {mode === "weekly" || mode === "monthly" ? (
-        <div className="space-y-4 rounded-xl border border-[var(--border)] p-4">
+        <div className="space-y-4 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
           {mode === "weekly" ? (
             <fieldset>
               <legend className="mb-2 text-sm font-medium">Repeat on</legend>
@@ -331,7 +331,7 @@ export function EventScheduleFields({
           {rows.map((row, index) => (
             <div
               key={row.id}
-              className="space-y-3 rounded-xl border border-[var(--border)] p-4"
+              className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4"
             >
               <div className="flex items-center justify-between gap-3">
                 <h4 className="text-balance font-medium">Date {index + 1}</h4>

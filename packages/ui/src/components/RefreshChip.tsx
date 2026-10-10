@@ -135,7 +135,7 @@ function RefreshChip({
             refreshingPhase
               ? "text-[var(--text-secondary)]"
               : renderedPhase === "done"
-                ? "text-[var(--success)]"
+                ? "text-[var(--success-text)]"
                 : "text-[var(--text-secondary)]"
           )}
         >
@@ -176,7 +176,7 @@ function RefreshChip({
               className={cn(
                 "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
                 renderedPhase === "done"
-                  ? "opacity-100 text-[var(--success)]"
+                  ? "opacity-100 text-[var(--success-text)]"
                   : "opacity-0"
               )}
             >

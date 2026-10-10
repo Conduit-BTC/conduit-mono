@@ -49,6 +49,7 @@ function PostalTagInput({
             className="flex items-center gap-1 py-0.5 font-mono text-xs"
           >
             {tag}
+            {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
             <button
               type="button"
               className="ml-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
@@ -59,6 +60,7 @@ function PostalTagInput({
             </button>
           </Badge>
         ))}
+        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <input
           id={inputId}
           className="min-w-24 flex-1 bg-transparent text-xs text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
@@ -94,7 +96,9 @@ function CountryRow({
     <div
       className={cn(
         "space-y-3 border border-[var(--border)] bg-[var(--surface-elevated)]",
-        compact ? "rounded-xl p-3" : "rounded-2xl p-4"
+        compact
+          ? "rounded-[var(--radius-md)] p-3"
+          : "rounded-[var(--radius-md)] p-4"
       )}
     >
       <div className="flex items-center justify-between">
@@ -105,7 +109,7 @@ function CountryRow({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 w-7 p-0 text-[var(--text-muted)] hover:text-error"
+          className="h-7 w-7 p-0 text-[var(--text-muted)] hover:text-[var(--error-text)]"
           onClick={onRemove}
           aria-label={`Remove ${entry.name}`}
         >
@@ -161,7 +165,7 @@ function CountrySelector({
       searchPlaceholder="Search countries to add..."
       emptyText="No countries available."
       triggerClassName="h-9 max-w-xs text-sm"
-      contentClassName="overflow-hidden rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)] p-1"
+      contentClassName="overflow-hidden rounded-[var(--radius-md)] border-[var(--border-overlay)] bg-[var(--surface-overlay)] p-1"
       listClassName="max-h-[min(14rem,var(--radix-popover-content-available-height))] overscroll-contain pr-1 [scrollbar-gutter:stable] sm:max-h-[min(18rem,var(--radix-popover-content-available-height))]"
       searchInTrigger
     />

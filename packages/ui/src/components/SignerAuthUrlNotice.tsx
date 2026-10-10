@@ -14,7 +14,7 @@ export function SignerAuthUrlNotice({
     <aside
       role="status"
       aria-live="polite"
-      className="fixed inset-x-4 bottom-4 z-[70] mx-auto max-w-lg rounded-[1.25rem] border border-warning/35 bg-[var(--surface-dialog)] p-4 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] sm:bottom-6"
+      className="fixed inset-x-4 bottom-4 z-[70] mx-auto max-w-lg rounded-[var(--radius-md)] border border-warning/35 bg-[var(--surface-dialog)] p-4 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] sm:bottom-6"
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">

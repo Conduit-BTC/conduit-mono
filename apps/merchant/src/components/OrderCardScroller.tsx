@@ -42,6 +42,7 @@ export function OrderCardScroller({
         const statusDisplay = getMerchantConversationStatusDisplay(conversation)
         const name = buyerName(conversation.buyerPubkey, conversation)
         return (
+          // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
           <button
             key={conversation.id}
             type="button"
@@ -50,7 +51,7 @@ export function OrderCardScroller({
               else cardRefs.current.delete(conversation.id)
             }}
             onClick={() => onSelect(conversation)}
-            className={`w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform] ${
+            className={`w-[16.5rem] shrink-0 snap-start rounded-[var(--radius-md)] border p-4 text-left transition-[border-color,background-color,transform] ${
               active
                 ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
                 : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"

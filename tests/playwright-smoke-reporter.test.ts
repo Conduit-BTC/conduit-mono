@@ -359,6 +359,156 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 
+  it("bounds compact-price pointer and upload diagnostics to their owning files", () => {
+    for (const [kind, file, values, expected] of [
+      [
+        "price-interaction",
+        "e2e/shared-ui-visual-contract.playwright.ts",
+        { click: false, quantity: 1 },
+        { kind: "price-interaction", click: false, quantity: 1 },
+      ],
+      [
+        "fallback-upload",
+        "e2e/merchant-product-image-preview.playwright.ts",
+        { phase: "publish", inboxPrompt: true },
+        { kind: "fallback-upload", phase: "publish", inboxPrompt: true },
+      ],
+    ] as const) {
+      const annotation = {
+        type: `smoke:${kind}`,
+        description: JSON.stringify({
+          ...values,
+          url: "private-value",
+          pubkey: "private-value",
+          content: "private-value",
+        }),
+      }
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([expected])
+      expect(
+        safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+      ).toEqual([])
+    }
+  })
+
+  it("allows only fixed surface phases and scalar pending-resource observations", () => {
+    const annotation = {
+      type: "smoke:surface-audit",
+      description: JSON.stringify({
+        phase: "navigate",
+        routeIndex: 4,
+        pendingImages: 2,
+        navigationError: "aborted",
+        url: "private-value",
+        pubkey: "private-value",
+        message: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "surface-audit",
+        phase: "navigate",
+        routeIndex: 4,
+        pendingImages: 2,
+        navigationError: "aborted",
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            phase: "private-value",
+            url: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it("allows only fixed cart phases without cart contents or identity", () => {
+    const annotation = {
+      type: "smoke:cart-stale-action",
+      description: JSON.stringify({
+        phase: "stale_decrease",
+        tabIndex: 1,
+        items: "private-value",
+        pubkey: "private-value",
+        url: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/market-cart-concurrency.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      { kind: "cart-stale-action", phase: "stale_decrease", tabIndex: 1 },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([])
+  })
+
+  it("allows only content-free product-dialog observations from commerce", () => {
+    const annotation = {
+      type: "smoke:product-dialog-open",
+      description: JSON.stringify({
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        dialogMounted: false,
+        dialogRemoved: false,
+        dialogPresent: false,
+        triggerEnabled: true,
+        fontsAtClick: "loading",
+        triggerX: 212.345,
+        triggerWidth: Infinity,
+        triggerHeight: "private-value",
+        pubkey: "private-value",
+        connectionString: "private-value",
+        message: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([
+      {
+        kind: "product-dialog-open",
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        dialogMounted: false,
+        dialogRemoved: false,
+        dialogPresent: false,
+        triggerEnabled: true,
+        fontsAtClick: "loading",
+        triggerX: 212.3,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+        {
+          ...annotation,
+          description:
+            '{"fontsAtClick":"private-value","clickOnTrigger":"private-value"}',
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("keeps stalled-journey phases file-bound and strips unapproved values", () => {
     for (const fixture of [
       {
