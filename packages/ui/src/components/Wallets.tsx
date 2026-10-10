@@ -1414,6 +1414,11 @@ function PortableWalletDialog({
                 ? "Synced to recovery relays."
                 : "Sync pending. Keep your recovery details before switching apps."}
             </p>
+            {error && (
+              <p role="alert" className="text-sm">
+                {error}
+              </p>
+            )}
             {completedWallet && (
               <div className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
                 <Label htmlFor="wallet-main">Make this my main wallet</Label>
