@@ -3,6 +3,44 @@ import type { TestInfo } from "@playwright/test"
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "surface-audit": {
+      file: "e2e/shared-ui-surface-audit.playwright.ts",
+      fields: {
+        phase: [
+          "setup",
+          "navigate",
+          "render",
+          "fonts",
+          "measure",
+          "capture",
+          "complete",
+        ],
+        routeIndex: "number",
+        pendingDocuments: "number",
+        pendingImages: "number",
+        pendingFonts: "number",
+        pendingScripts: "number",
+        navigationError: ["none", "aborted", "interrupted", "timeout", "other"],
+      },
+    },
+    "cart-stale-action": {
+      file: "e2e/market-cart-concurrency.playwright.ts",
+      fields: {
+        phase: [
+          "seed",
+          "navigate",
+          "ready",
+          "remove",
+          "stale_decrease",
+          "stale_increase",
+          "resume",
+          "release",
+          "reload",
+          "complete",
+        ],
+        tabIndex: "number",
+      },
+    },
     "order-reply": {
       file: "e2e/merchant-order-inbox.playwright.ts",
       fields: {
@@ -152,6 +190,8 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "surface-audit"
+    | "cart-stale-action"
     | "footer-layout"
     | "product-submit"
     | "product-dialog-open"

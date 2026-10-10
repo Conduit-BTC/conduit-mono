@@ -359,6 +359,73 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 
+  it("allows only fixed surface phases and scalar pending-resource observations", () => {
+    const annotation = {
+      type: "smoke:surface-audit",
+      description: JSON.stringify({
+        phase: "navigate",
+        routeIndex: 4,
+        pendingImages: 2,
+        navigationError: "aborted",
+        url: "private-value",
+        pubkey: "private-value",
+        message: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "surface-audit",
+        phase: "navigate",
+        routeIndex: 4,
+        pendingImages: 2,
+        navigationError: "aborted",
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            phase: "private-value",
+            url: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it("allows only fixed cart phases without cart contents or identity", () => {
+    const annotation = {
+      type: "smoke:cart-stale-action",
+      description: JSON.stringify({
+        phase: "stale_decrease",
+        tabIndex: 1,
+        items: "private-value",
+        pubkey: "private-value",
+        url: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/market-cart-concurrency.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      { kind: "cart-stale-action", phase: "stale_decrease", tabIndex: 1 },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([])
+  })
+
   it("allows only content-free product-dialog observations from commerce", () => {
     const annotation = {
       type: "smoke:product-dialog-open",
