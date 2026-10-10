@@ -169,7 +169,7 @@ for (const theme of ["day-market", "night-market"]) {
       const container = document.createElement("div")
       container.id = "price-harness"
       container.style.cssText =
-        "position:relative;z-index:100;padding:12px;background:var(--background)"
+        "position:fixed;inset:0;overflow:auto;z-index:100;padding:12px;background:var(--background)"
       document.body.append(container)
       const fixture =
         await import("/src/test-fixtures/shared-ui-density-harness.tsx")
@@ -259,7 +259,12 @@ for (const theme of ["day-market", "night-market"]) {
             !element.contains(event.target)
           )
             return
-          if (type === "pointerdown") delivered.pointerDown = true
+          if (type === "pointerdown") {
+            delivered.pointerDown = true
+            // Model unrelated catalog hydration during a held pointer press.
+            // The component fixture must retain its own viewport geometry.
+            document.getElementById("root")!.style.height = "6000px"
+          }
           if (type === "pointerup") delivered.pointerUp = true
           if (type === "click") delivered.click = true
         }
@@ -289,7 +294,7 @@ for (const theme of ["day-market", "night-market"]) {
       }
     })
     try {
-      await increment.click()
+      await increment.click({ delay: 100 })
       await expect(
         btcCard.getByRole("group", { name: "Cart action for Large price" })
       ).toContainText("2")
