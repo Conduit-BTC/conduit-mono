@@ -212,6 +212,7 @@ Use token mapping rather than copying raw asset colors into components.
 ### Text
 
 - Use `text-[var(--text-primary)]` for default foreground text.
+- Use `--link-text` for purple links and text emphasis, including hover states. Keep `--primary-500` for brand fills and borders.
 - Use `text-[var(--text-secondary)]` for supporting copy.
 - Use `text-[var(--text-secondary)]` for readable metadata and hints. Use `--text-muted` for lower-emphasis readable text and placeholders, with contrast verified on the actual surface. Disabled controls have their own explicit disabled treatment; do not use faint text to imply disabled state.
 - Prefer `--text-secondary` over ad hoc opacity on `--text-primary` unless a specific art direction calls for it.

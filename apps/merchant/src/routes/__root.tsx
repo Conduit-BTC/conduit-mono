@@ -409,7 +409,7 @@ function ReportBugAction() {
         target="_blank"
         rel="noopener noreferrer"
         referrerPolicy="no-referrer"
-        className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600"
+        className="font-medium text-[var(--link-text)] underline underline-offset-4 hover:text-[var(--link-text)]"
       >
         Report a Bug
       </a>

@@ -191,7 +191,7 @@ function RoleToggle({
       className={cn(
         "inline-flex min-h-11 items-center justify-center rounded-[var(--radius-sm)] border px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         enabled
-          ? "border-primary-400 bg-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] text-[var(--primary-500)]"
+          ? "border-primary-400 bg-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] text-[var(--link-text)]"
           : "border-[var(--border-overlay)] bg-transparent text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
       )}
     >
@@ -253,7 +253,7 @@ function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
       className={cn(
         "relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--surface-elevated)]",
         commerce &&
-          "bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--primary-500)]"
+          "bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--link-text)]"
       )}
     >
       {iconUrl ? (

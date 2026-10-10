@@ -1775,7 +1775,7 @@ function OrderDetail({
           <p className="text-sm text-[var(--text-secondary)]">
             Had a good experience?
           </p>
-          <MarketProjectTip className="min-h-11 text-primary-500" />
+          <MarketProjectTip className="min-h-11 text-[var(--link-text)]" />
         </div>
       )}
 

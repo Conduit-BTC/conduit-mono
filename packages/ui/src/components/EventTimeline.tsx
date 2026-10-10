@@ -206,7 +206,7 @@ export function EventTimelineViewport({
         aria-label="Now"
         className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 py-2 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4"
       >
-        <span className="self-center text-right text-sm font-semibold text-primary-500">
+        <span className="self-center text-right text-sm font-semibold text-[var(--link-text)]">
           Now
         </span>
         <span className="relative min-h-8" aria-hidden="true">

@@ -3031,7 +3031,7 @@ function OrdersWorkspace() {
                           <p className="text-sm text-[var(--text-secondary)]">
                             Glad you fulfilled this order? Support the project.
                           </p>
-                          <MerchantProjectTip className="min-h-11 text-primary-500" />
+                          <MerchantProjectTip className="min-h-11 text-[var(--link-text)]" />
                         </div>
                       </section>
                     )}

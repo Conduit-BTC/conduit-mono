@@ -44,7 +44,7 @@ const NIP05_INDICATORS = {
   valid: {
     Icon: ShieldCheck,
     label: "Verified NIP-05",
-    color: "text-primary-500",
+    color: "text-[var(--link-text)]",
   },
   invalid: {
     Icon: CircleAlert,

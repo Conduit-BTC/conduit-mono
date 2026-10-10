@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { expect, test } from "@playwright/test"
 import { THEME_STORAGE_KEY } from "@conduit/ui/theme"
 import { installTestSigner, TEST_MERCHANT_PUBKEY } from "./helpers/auth"
+import { measureTextContrast } from "./helpers/rendered-contrast"
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -96,56 +97,11 @@ for (const theme of ["day-market", "night-market"]) {
         elements.map((el) => el.getBoundingClientRect().height)
       )
     for (const height of stepTitles) expect(height).toBeLessThanOrEqual(48)
-    const contrast = await page
-      .getByTestId("semantic-states")
-      .evaluate((root) => {
-        const components = (value: string) => {
-          const n = value.match(/[\d.]+/g)!.map(Number)
-          return value.startsWith("color(srgb")
-            ? n.map((v, i) => (i < 3 ? v * 255 : v))
-            : n
-        }
-        const rgb = (value: string) => components(value).slice(0, 3)
-        const over = (fg: number[], bg: number[], alpha: number) =>
-          fg.map((v, i) => v * alpha + bg[i] * (1 - alpha))
-        const luminance = (c: number[]) =>
-          c
-            .map((v) => v / 255)
-            .map((v) =>
-              v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
-            )
-            .reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0)
-        const background = (el: Element): number[] => {
-          const value = getComputedStyle(el).backgroundColor
-          const numbers = components(value)
-          const alpha = numbers[3] ?? 1
-          return alpha === 1
-            ? numbers.slice(0, 3)
-            : over(
-                numbers.slice(0, 3),
-                el.parentElement
-                  ? background(el.parentElement)
-                  : [255, 255, 255],
-                alpha
-              )
-        }
-        return [
-          ...root.querySelectorAll("[data-testid]"),
-          document.querySelector(
-            "[data-testid=density-catalog] [data-slot=product-price] > div"
-          )!,
-        ].map((el) => {
-          const color = rgb(getComputedStyle(el).color),
-            bg = background(el)
-          const a = luminance(color),
-            b = luminance(bg)
-          return {
-            id: el.getAttribute("data-testid") ?? "bitcoin-price",
-            color,
-            ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
-          }
-        })
-      })
+    const contrast = await measureTextContrast(
+      page.locator(
+        "[data-testid=semantic-states] [data-testid], [data-testid=density-catalog] [data-slot=product-price] > div"
+      )
+    )
     await info.attach("rendered-contrast", {
       body: JSON.stringify(contrast),
       contentType: "application/json",

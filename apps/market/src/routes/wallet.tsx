@@ -464,7 +464,7 @@ function WalletSection({
     <section>
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
             {title}
           </h2>
           <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
@@ -2659,7 +2659,7 @@ function PriceDisplaySettings() {
     <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
       <div className="flex items-center gap-2">
         <WalletCards className="h-4 w-4 text-[var(--text-muted)]" />
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Price display
         </h2>
       </div>

@@ -159,7 +159,7 @@ function FieldRow({
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex min-w-0 max-w-full items-center gap-1 text-primary-500 underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="inline-flex min-w-0 max-w-full items-center gap-1 text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               <span className="min-w-0 [overflow-wrap:anywhere]">{value}</span>
               <ExternalLink className="size-3.5 shrink-0" aria-hidden="true" />
@@ -285,7 +285,7 @@ function ContributorCard({
         </AvatarFallback>
       </Avatar>
       <div className="min-w-0">
-        <div className="truncate text-sm font-semibold text-[var(--text-primary)] group-hover:text-primary-500">
+        <div className="truncate text-sm font-semibold text-[var(--text-primary)] group-hover:text-[var(--link-text)]">
           {contributor.login}
         </div>
         <div className="text-xs tabular-nums text-[var(--text-secondary)]">
@@ -365,7 +365,10 @@ function HowConduitWorks() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="p-5">
-          <Globe2 className="size-5 text-primary-500" aria-hidden="true" />
+          <Globe2
+            className="size-5 text-[var(--link-text)]"
+            aria-hidden="true"
+          />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             Multiple relays
           </h3>
@@ -378,7 +381,10 @@ function HowConduitWorks() {
         </Card>
 
         <Card className="p-5">
-          <LockKeyhole className="size-5 text-primary-500" aria-hidden="true" />
+          <LockKeyhole
+            className="size-5 text-[var(--link-text)]"
+            aria-hidden="true"
+          />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             Public and private data
           </h3>
@@ -390,7 +396,10 @@ function HowConduitWorks() {
         </Card>
 
         <Card className="p-5">
-          <KeyRound className="size-5 text-primary-500" aria-hidden="true" />
+          <KeyRound
+            className="size-5 text-[var(--link-text)]"
+            aria-hidden="true"
+          />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
             You stay in control
           </h3>
@@ -436,7 +445,7 @@ function OpenStandards({
                   href={protocol.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 underline-offset-4 hover:text-primary-500 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  className="inline-flex items-center gap-1 underline-offset-4 hover:text-[var(--link-text)] hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   {protocol.name}
                   <ExternalLink className="size-3.5" aria-hidden="true" />
@@ -453,7 +462,7 @@ function OpenStandards({
         href={inventoryUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 text-sm font-semibold text-primary-500 underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         Explore all supported protocols and current limits
         <ExternalLink className="size-4" aria-hidden="true" />

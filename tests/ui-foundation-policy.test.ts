@@ -117,7 +117,7 @@ describe("shared UI foundation policy", () => {
   it("uses readable semantic foreground roles across app and shared surfaces", async () => {
     const sources = await readUiSources()
     const rawForeground =
-      /(?:text-\[var\(--(?:info|error)\)\]|text-(?:info|error)(?![\w-]))/g
+      /(?:text-\[var\(--(?:info|error|primary-500|brand-purple)\)\]|text-(?:info|error|primary-500)(?![\w-]))/g
     expect(
       sources.flatMap((source) =>
         [...source.content.matchAll(rawForeground)].map((match) => ({

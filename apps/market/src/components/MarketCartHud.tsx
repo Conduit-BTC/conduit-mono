@@ -503,7 +503,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         <div className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
           <span
             aria-hidden="true"
-            className="flex h-10 w-8 shrink-0 items-center justify-center text-primary-500"
+            className="flex h-10 w-8 shrink-0 items-center justify-center text-[var(--link-text)]"
           >
             <ShoppingCart className="h-6 w-6" />
           </span>
@@ -711,7 +711,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <Link
                           to="/products/$productId"
                           params={{ productId: item.productId }}
-                          className="block truncate text-sm font-medium text-[var(--text-primary)] hover:text-primary-500"
+                          className="block truncate text-sm font-medium text-[var(--text-primary)] hover:text-[var(--link-text)]"
                         >
                           {item.title}
                         </Link>

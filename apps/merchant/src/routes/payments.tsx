@@ -227,7 +227,7 @@ function PaymentsPage() {
 
               {busyStatus && (
                 <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] px-4 py-3.5">
-                  <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--primary-500)]" />
+                  <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--link-text)]" />
                   <div className="text-sm leading-6">
                     <div className="font-semibold text-[var(--text-primary)]">
                       {busyStatus.title}
@@ -252,7 +252,7 @@ function PaymentsPage() {
                 {/* Lightning Address section */}
                 <section className="space-y-4">
                   <div>
-                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--link-text)]">
                       PAYMENT METHOD
                     </div>
                   </div>
@@ -423,7 +423,7 @@ function NwcAutomationSection() {
   return (
     <section className="space-y-4">
       <div>
-        <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+        <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--link-text)]">
           AUTOMATIC PAYMENT VERIFICATION
         </div>
         <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">

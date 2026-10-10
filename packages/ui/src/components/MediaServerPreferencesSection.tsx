@@ -275,7 +275,7 @@ export function MediaServerPreferencesSection({
                 className="flex min-w-0 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-2"
               >
                 <span
-                  className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-xs font-semibold tabular-nums text-[var(--primary-500)]"
+                  className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-xs font-semibold tabular-nums text-[var(--link-text)]"
                   aria-hidden="true"
                 >
                   {index + 1}

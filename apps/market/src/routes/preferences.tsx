@@ -151,7 +151,7 @@ function UnlockPanel({
   return (
     <section>
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Unlock shipping preset
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
@@ -477,7 +477,7 @@ function PreferencesPage() {
       ) : null}
       <section>
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
             Shipping address
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
@@ -588,7 +588,7 @@ function PreferencesPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Checkout defaults
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
@@ -679,7 +679,7 @@ function PreferencesPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--link-text)]">
           Encryption
         </h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">

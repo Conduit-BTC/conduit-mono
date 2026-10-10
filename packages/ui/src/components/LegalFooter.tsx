@@ -16,7 +16,7 @@ export interface LegalFooterProps {
 }
 
 export const legalFooterActionClassName =
-  "min-h-11 shrink-0 gap-1.5 px-2 text-[11px] font-medium text-[var(--text-primary)] hover:text-primary-500 sm:text-xs"
+  "min-h-11 shrink-0 gap-1.5 px-2 text-[11px] font-medium text-[var(--text-primary)] hover:text-[var(--link-text)] sm:text-xs"
 
 const footerLinkClassName =
   "transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

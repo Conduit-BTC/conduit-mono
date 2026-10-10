@@ -370,7 +370,7 @@ function ShippingPage() {
                 </section>
                 <section className="space-y-4">
                   <div>
-                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--link-text)]">
                       DESTINATIONS
                     </div>
                     <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">

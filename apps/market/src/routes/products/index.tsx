@@ -397,7 +397,7 @@ function ProductsPage() {
                   onCheckedChange={() => updateSearch({ tag: undefined })}
                   className="justify-between gap-3"
                 >
-                  <span className="font-semibold text-primary-500">
+                  <span className="font-semibold text-[var(--link-text)]">
                     All categories
                   </span>
                   <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
@@ -450,7 +450,7 @@ function ProductsPage() {
                 onCheckedChange={() => updateSearch({ merchant: undefined })}
                 className="justify-between gap-3"
               >
-                <span className="font-semibold text-primary-500">
+                <span className="font-semibold text-[var(--link-text)]">
                   All merchants
                 </span>
                 <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
