@@ -321,17 +321,15 @@ export function useWallets(
             (r) => r.event.id === primaryEventId
           )
           const sync: UseWalletsReturn["recoverySyncByWallet"] = {}
-          const main = journal?.records
-            .filter((r) =>
-              r.event.tags.some(
-                (t) => t[0] === "d" && t[1] === "conduit:spark:main:v1"
-              )
-            )
-            .sort(
-              (a, b) =>
-                b.event.created_at - a.event.created_at ||
-                a.event.id.localeCompare(b.event.id)
-            )[0]
+          const mainEventId =
+            signer?.pubkey === ownerPubkey && configuration.status === "ready"
+              ? getAccountSparkRecovery(signer).getVerifiedMainChoiceEventId(
+                  configuration.network
+                )
+              : undefined
+          const main = journal?.records.find(
+            (record) => record.event.id === mainEventId
+          )
           for (const wallet of nextWallets.filter(
             (w) => w.providerId === "spark"
           )) {
@@ -920,17 +918,12 @@ export function useWallets(
         })
         pending ||= !ready
       }
-      const mainRecord = journal.records
-        .filter((r) =>
-          r.event.tags.some(
-            (t) => t[0] === "d" && t[1] === "conduit:spark:main:v1"
-          )
-        )
-        .sort(
-          (a, b) =>
-            b.event.created_at - a.event.created_at ||
-            a.event.id.localeCompare(b.event.id)
-        )[0]
+      const mainEventId = service.getVerifiedMainChoiceEventId(
+        getSparkWalletNetwork()
+      )
+      const mainRecord = journal.records.find(
+        (record) => record.event.id === mainEventId
+      )
       if (mainRecord && publishExisting)
         await service.deliver(mainRecord.event.id)
       assertWalletSignerCurrent(signer)

@@ -22,15 +22,23 @@ import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 export const SPARK_RECOVERY_KIND = 30078
 export const SPARK_RECOVERY_PREFIX = "conduit:spark:wallet:v1:"
-export const SPARK_PRIMARY_D_TAG = "conduit:spark:primary:v1"
-export const SPARK_MAIN_D_TAG = "conduit:spark:main:v1"
+export {
+  SPARK_PRIMARY_D_TAG,
+  SPARK_MAIN_D_TAG,
+  sparkRecoveryChoiceDTag,
+  parseSparkRecoveryChoiceAddress,
+  type SparkRecoveryChoiceDTag,
+} from "./spark-recovery-address"
+import {
+  parseSparkRecoveryChoiceAddress,
+  sparkRecoveryNetworkSchema as network,
+} from "./spark-recovery-address"
 export const MAX_SPARK_ACCOUNT_NUMBER = 0x7fffffff
 export const MAX_SPARK_RECOVERY_BYTES = 2048
 const MAX_CIPHERTEXT_CHARS = 4096
 const opaqueId = z.uuid()
 const pubkey = z.string().regex(/^[0-9a-f]{64}$/)
 const timestamp = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
-const network = z.enum(["mainnet", "testnet", "signet", "regtest"])
 const accountNumber = z.number().int().min(0).max(MAX_SPARK_ACCOUNT_NUMBER)
 
 export const sparkRecoveryEnvelopeSchema = z.strictObject({
@@ -169,8 +177,7 @@ export function validateSparkRecoveryEvent(
 }
 export function isSparkRecoveryAddress(value: string): boolean {
   return (
-    value === SPARK_PRIMARY_D_TAG ||
-    value === SPARK_MAIN_D_TAG ||
+    !!parseSparkRecoveryChoiceAddress(value) ||
     value === "spark-wallet-backup" ||
     /^spark-wallet-backup:[0-9a-f]{16}$/.test(value) ||
     (value.startsWith(SPARK_RECOVERY_PREFIX) &&
@@ -227,7 +234,8 @@ export function parseSparkPrimaryPointer(
   if (
     !result.success ||
     result.data.ownerPubkey !== event.pubkey ||
-    event.tags.find((t) => t[0] === "d")?.[1] !== SPARK_PRIMARY_D_TAG ||
+    parseSparkRecoveryChoiceAddress(event.tags.find((t) => t[0] === "d")?.[1])
+      ?.type !== "primary" ||
     result.data.createdAt !== event.created_at
   )
     throw new SparkRecoveryError("invalid_record")
@@ -242,7 +250,8 @@ export function parseSparkMainWallet(
   if (
     !result.success ||
     result.data.ownerPubkey !== event.pubkey ||
-    event.tags.find((t) => t[0] === "d")?.[1] !== SPARK_MAIN_D_TAG ||
+    parseSparkRecoveryChoiceAddress(event.tags.find((t) => t[0] === "d")?.[1])
+      ?.type !== "main" ||
     result.data.createdAt !== event.created_at
   )
     throw new SparkRecoveryError("invalid_record")

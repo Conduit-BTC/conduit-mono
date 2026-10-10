@@ -45,6 +45,7 @@ function fixture(
     nip44?: boolean
     encrypt?: NostrKeySigner["encryptNip44"]
     timeoutMs?: number
+    conformingReplacement?: boolean
   } = {}
 ) {
   const secret = generateSecretKey()
@@ -101,6 +102,23 @@ function fixture(
       if (unavailable.has(url)) return "timed_out"
       frames.push(JSON.stringify(event))
       const events = relays.get(url) ?? new Map()
+      if (options.conformingReplacement) {
+        const coordinate = event.tags.find((tag) => tag[0] === "d")?.[1]
+        for (const previous of events.values()) {
+          if (
+            previous.pubkey !== event.pubkey ||
+            previous.kind !== event.kind ||
+            previous.tags.find((tag) => tag[0] === "d")?.[1] !== coordinate
+          )
+            continue
+          if (
+            previous.created_at > event.created_at ||
+            (previous.created_at === event.created_at && previous.id < event.id)
+          )
+            return "acked"
+          events.delete(previous.id)
+        }
+      }
       events.set(event.id, structuredClone(event))
       relays.set(url, events)
       return "acked"
@@ -796,4 +814,121 @@ describe("signer-backed Spark recovery composed foundations", () => {
       )
     ).toBe(false)
   })
+})
+
+it("fresh journals retain primary and main choices independently across network replacement", async () => {
+  const f = fixture({ conformingReplacement: true })
+  const service = f.service()
+  const root = await service.prepare({
+    mnemonic: generateSparkMnemonic(),
+    network: "mainnet",
+    accountNumber: 7,
+  })
+  const rootPointer = await service.preparePrimary(root)
+  const preferred = await service.prepare(
+    { mnemonic: generateSparkMnemonic(), network: "mainnet", accountNumber: 8 },
+    undefined,
+    root.eventId
+  )
+  const preferredMain = await service.prepareMain(preferred)
+  const foreign = await service.prepare(
+    { mnemonic: generateSparkMnemonic(), network: "regtest", accountNumber: 9 },
+    undefined,
+    root.eventId
+  )
+  const foreignPointer = await service.preparePrimary(foreign)
+  const foreignMain = await service.prepareMain(foreign)
+  for (const id of [
+    root.eventId,
+    rootPointer,
+    preferred.eventId,
+    preferredMain,
+    foreign.eventId,
+    foreignPointer,
+    foreignMain,
+  ])
+    await service.deliver(id)
+  const fresh = f.service(storage().store)
+  const mainnet = await fresh.discover(false, "mainnet")
+  expect(mainnet.invalidCount).toBe(0)
+  expect(mainnet.primary?.walletId).toBe(root.walletId)
+  expect(mainnet.main?.walletId).toBe(preferred.walletId)
+  const regtest = await f.service(storage().store).discover(false, "regtest")
+  expect(regtest.invalidCount).toBe(0)
+  expect(regtest.primary?.walletId).toBe(foreign.walletId)
+  expect(regtest.main?.walletId).toBe(foreign.walletId)
+  expect(mainnet.otherNetworkCandidates.map((c) => c.walletId)).toEqual([
+    foreign.walletId,
+  ])
+  expect(regtest.otherNetworkCandidates.map((c) => c.walletId).sort()).toEqual(
+    [root.walletId, preferred.walletId].sort()
+  )
+})
+
+it("fresh journals read legacy networkless choices using the verified backup network", async () => {
+  const f = fixture({ conformingReplacement: true })
+  const service = f.service()
+  const root = await service.prepare(bundle())
+  const primaryId = await service.preparePrimary(root)
+  const mainId = await service.prepareMain(root)
+  const records = (await f.store.load(f.owner)).records
+  const events = records.map(({ event }) => {
+    const type =
+      event.id === primaryId
+        ? "primary"
+        : event.id === mainId
+          ? "main"
+          : undefined
+    return type
+      ? f.sign({ ...event, tags: [["d", `conduit:spark:${type}:v1`]] })
+      : event
+  })
+  for (const target of SPARK_RECOVERY_RENDEZVOUS)
+    f.relays.set(target.url, new Map(events.map((event) => [event.id, event])))
+  const fresh = f.service(storage().store)
+  const found = await fresh.discover(false, "mainnet")
+  expect(found.invalidCount).toBe(0)
+  expect(found.primary?.walletId).toBe(root.walletId)
+  expect(found.main?.walletId).toBe(root.walletId)
+  expect(fresh.getVerifiedPrimaryPointerEventId("mainnet")).toBe(
+    events.find((event) => event.tags[0][1] === "conduit:spark:primary:v1")!.id
+  )
+  expect(fresh.getVerifiedMainChoiceEventId("mainnet")).toBe(
+    events.find((event) => event.tags[0][1] === "conduit:spark:main:v1")!.id
+  )
+  expect((await fresh.restore(found.main!)).network).toBe("mainnet")
+})
+
+it("mismatched network choice coordinates retain evidence and block Create without selecting a wallet", async () => {
+  const f = fixture()
+  const service = f.service()
+  const root = await service.prepare(bundle())
+  const primaryId = await service.preparePrimary(root)
+  const mainId = await service.prepareMain(root)
+  const records = (await f.store.load(f.owner)).records
+  const events = records.map(({ event }) => {
+    const type =
+      event.id === primaryId
+        ? "primary"
+        : event.id === mainId
+          ? "main"
+          : undefined
+    return type
+      ? f.sign({ ...event, tags: [["d", `conduit:spark:${type}:v1:regtest`]] })
+      : event
+  })
+  for (const target of SPARK_RECOVERY_RENDEZVOUS)
+    f.relays.set(target.url, new Map(events.map((event) => [event.id, event])))
+  const local = storage()
+  const fresh = f.service(local.store)
+  const found = await fresh.discover(false, "mainnet")
+  expect(found.invalidCount).toBe(2)
+  expect(found.primary).toBeUndefined()
+  expect(found.main).toBeUndefined()
+  expect(found.creationEligible).toBe(false)
+  expect(() => assertWalletCreationDiscovery(found)).toThrow()
+  expect(
+    (await local.store.load(f.owner)).records.map((r) => r.event.id).sort()
+  ).toEqual(events.map((e) => e.id).sort())
+  expect(fresh.getVerifiedMainChoiceEventId("mainnet")).toBeUndefined()
 })

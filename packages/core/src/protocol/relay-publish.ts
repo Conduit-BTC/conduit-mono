@@ -47,6 +47,8 @@ import {
 } from "./relay-authority"
 import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
+import { parseSparkRecoveryChoiceAddress } from "../wallets/spark-recovery-address"
+
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
 const CRITICAL_RETRY_PUBLISH_TIMEOUT_MS = 15_000
@@ -304,8 +306,7 @@ function assertRelayAuthenticationConfiguration(
           (tag) =>
             tag[0] === "d" &&
             (tag[1]?.startsWith("conduit:spark:wallet:v1:") ||
-              tag[1] === "conduit:spark:primary:v1" ||
-              tag[1] === "conduit:spark:main:v1")
+              !!parseSparkRecoveryChoiceAddress(tag[1]))
         ))
     ) ||
     !input.exclusiveRelayUrls ||
