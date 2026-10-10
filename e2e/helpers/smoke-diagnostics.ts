@@ -134,6 +134,9 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         scrollY: "number",
         measuredFooterHeight: "number",
         footerHidden: "boolean",
+        triggerMarginBottom: "number",
+        triggerTransformY: "number",
+        footerTransformY: "number",
       },
     },
     "product-dialog-open": {

@@ -77,24 +77,59 @@ async function expectVisibleDisjointControls(
 ): Promise<void> {
   await expect
     .poll(async () => {
-      const [firstBox, secondBox, viewport] = await Promise.all([
-        first.boundingBox(),
-        second.boundingBox(),
-        page.evaluate(() => ({
-          width: innerWidth,
-          height: innerHeight,
-          scrollY,
-          measuredFooterHeight:
-            Number.parseFloat(
-              getComputedStyle(document.documentElement).getPropertyValue(
-                "--market-fixed-footer-height"
-              )
-            ) || 0,
-          footerHidden:
-            document.querySelector("footer")?.getAttribute("aria-hidden") ===
-            "true",
-        })),
+      const [firstHandle, secondHandle] = await Promise.all([
+        first.elementHandle(),
+        second.elementHandle(),
       ])
+      // Both controls and chrome metrics must describe the same animation frame.
+      // Separate protocol calls can compare a moving trigger with a later footer.
+      const snapshot = await page.evaluate(
+        ({ firstElement, secondElement }) => {
+          const box = (element: Element | null) => {
+            if (!element?.isConnected) return null
+            const { x, y, width, height } = element.getBoundingClientRect()
+            if (
+              width <= 0 ||
+              height <= 0 ||
+              getComputedStyle(element).visibility !== "visible"
+            )
+              return null
+            return { x, y, width, height }
+          }
+          const rootStyle = getComputedStyle(document.documentElement)
+          const widget = firstElement?.parentElement
+          const footer = document.querySelector("footer")
+          const translateY = (element: Element | null | undefined) => {
+            if (!element) return 0
+            const transform = getComputedStyle(element).transform
+            return transform === "none"
+              ? 0
+              : new DOMMatrixReadOnly(transform).m42
+          }
+          return {
+            firstBox: box(firstElement),
+            secondBox: box(secondElement),
+            viewport: {
+              width: innerWidth,
+              height: innerHeight,
+              scrollY,
+              measuredFooterHeight:
+                Number.parseFloat(
+                  rootStyle.getPropertyValue("--market-fixed-footer-height")
+                ) || 0,
+              footerHidden: footer?.getAttribute("aria-hidden") === "true",
+              triggerMarginBottom: widget
+                ? Number.parseFloat(getComputedStyle(widget).marginBottom)
+                : 0,
+              triggerTransformY: translateY(widget),
+              footerTransformY: translateY(footer),
+            },
+          }
+        },
+        { firstElement: firstHandle, secondElement: secondHandle }
+      )
+      await Promise.all([firstHandle?.dispose(), secondHandle?.dispose()])
+      const { firstBox, secondBox, viewport } = snapshot
       const record = (layout: string) => {
         recordSmokeDiagnostic(test.info(), "footer-layout", {
           phase,
@@ -112,6 +147,9 @@ async function expectVisibleDisjointControls(
           scrollY: viewport.scrollY,
           measuredFooterHeight: viewport.measuredFooterHeight,
           footerHidden: viewport.footerHidden,
+          triggerMarginBottom: viewport.triggerMarginBottom,
+          triggerTransformY: viewport.triggerTransformY,
+          footerTransformY: viewport.footerTransformY,
         })
         return layout
       }
