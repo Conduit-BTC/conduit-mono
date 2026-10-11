@@ -158,15 +158,21 @@ for (const area of ["market", "merchant"] as const) {
             )
           } catch (error) {
             const message = error instanceof Error ? error.message : ""
-            navigationError = /interrupted/i.test(message)
-              ? "interrupted"
-              : /aborted|cancelled|canceled|NSURLErrorCancelled|ERR_ABORTED/i.test(
-                    message
-                  )
-                ? "aborted"
-                : /timeout/i.test(message)
-                  ? "timeout"
-                  : "other"
+            navigationError = /crash/i.test(message)
+              ? "crashed"
+              : /closed|disposed|detached/i.test(message)
+                ? "closed"
+                : /internal error/i.test(message)
+                  ? "internal"
+                  : /interrupted/i.test(message)
+                    ? "interrupted"
+                    : /aborted|cancelled|canceled|NSURLErrorCancelled|ERR_ABORTED/i.test(
+                          message
+                        )
+                      ? "aborted"
+                      : /timeout/i.test(message)
+                        ? "timeout"
+                        : "other"
             record()
             throw error
           }

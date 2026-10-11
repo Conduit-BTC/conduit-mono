@@ -368,6 +368,17 @@ describe("bounded smoke failure diagnostics", () => {
         { kind: "price-interaction", click: false, quantity: 1 },
       ],
       [
+        "footer-follow",
+        "e2e/mobile-safari-baseline.playwright.ts",
+        { phase: "hidden", footerTop: 700, footerHidden: false },
+        {
+          kind: "footer-follow",
+          phase: "hidden",
+          footerTop: 700,
+          footerHidden: false,
+        },
+      ],
+      [
         "fallback-upload",
         "e2e/merchant-product-image-preview.playwright.ts",
         { phase: "publish", inboxPrompt: true },

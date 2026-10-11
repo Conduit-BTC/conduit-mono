@@ -93,7 +93,7 @@ export interface SparkRecoveryState {
   /** Device-local decisions; never published or merged from relay events. */
   removedWalletIds?: string[]
 }
-/** Ciphertext-only account journal; merge never removes a retained signed candidate. */
+/** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
   load(owner: string): Promise<SparkRecoveryState>
   retain(
@@ -126,6 +126,41 @@ export interface SparkRecoveryDiscovery {
   creationEligible: boolean
 }
 const MAX_RECORDS = 128
+// Backups and networkless legacy evidence have separate bounded budgets.
+// Network-scoped choices retain at most one revision per NIP-01 coordinate.
+const MAX_JOURNAL_INPUT_RECORDS = MAX_RECORDS * 16
+
+function compactSparkRecoveryChoices(
+  records: SparkRecoveryRecord[]
+): SparkRecoveryRecord[] {
+  const retained: SparkRecoveryRecord[] = []
+  const choices = new Map<string, SparkRecoveryRecord>()
+  let backups = 0
+  let legacyChoices = 0
+  for (const record of records) {
+    const dTag = record.event.tags.find((tag) => tag[0] === "d")?.[1]
+    const choice = parseSparkRecoveryChoiceAddress(dTag)
+    if (!choice?.network) {
+      // A legacy coordinate can reference different networks. Preserve that
+      // evidence until it has an explicit network; never discard wallet backups.
+      if (choice) legacyChoices++
+      else backups++
+      retained.push(record)
+      continue
+    }
+    const current = choices.get(dTag!)
+    if (
+      !current ||
+      record.event.created_at > current.event.created_at ||
+      (record.event.created_at === current.event.created_at &&
+        record.event.id < current.event.id)
+    )
+      choices.set(dTag!, record)
+  }
+  if (backups > MAX_RECORDS || legacyChoices > MAX_RECORDS)
+    throw new SparkRecoveryError("invalid_record")
+  return [...retained, ...choices.values()]
+}
 
 export function planSparkRecoveryRelays(
   userRelayUrls: readonly string[] = []
@@ -171,7 +206,7 @@ export function validateSparkRecoveryState(
     if (
       input.ownerPubkey !== owner ||
       typeof input.unresolvedObserved !== "boolean" ||
-      input.records.length > MAX_RECORDS ||
+      input.records.length > MAX_JOURNAL_INPUT_RECORDS ||
       (input.removedWalletIds !== undefined &&
         (!Array.isArray(input.removedWalletIds) ||
           input.removedWalletIds.length > MAX_RECORDS ||
@@ -230,7 +265,7 @@ export function validateSparkRecoveryState(
       throw new SparkRecoveryError("invalid_record")
     return {
       ownerPubkey: owner,
-      records,
+      records: compactSparkRecoveryChoices(records),
       unresolvedObserved: input.unresolvedObserved,
       ...(input.removedWalletIds
         ? { removedWalletIds: [...input.removedWalletIds] }
@@ -723,8 +758,22 @@ export class SparkRecoveryService {
         }
       }
     }
-    if (records.size > MAX_RECORDS) throw new SparkRecoveryError("conflict")
-    await this.retain([...records.values()], invalidCount > 0)
+    let retainedRecords: SparkRecoveryRecord[]
+    try {
+      retainedRecords = validateSparkRecoveryState(
+        {
+          ownerPubkey: this.scope.owner,
+          records: [...records.values()],
+          unresolvedObserved: invalidCount > 0,
+        },
+        this.scope.owner
+      ).records
+    } catch {
+      throw new SparkRecoveryError("conflict")
+    }
+    records.clear()
+    for (const record of retainedRecords) records.set(record.event.id, record)
+    await this.retain(retainedRecords, invalidCount > 0)
     const candidates: SparkRecoveryCandidate[] = []
     const envelopes = new Map<string, SparkRecoveryEnvelope>()
     const addyPhrases = new Map<string, string>()
@@ -795,8 +844,8 @@ export class SparkRecoveryService {
       : sources.every((s) => s.status === "unavailable")
         ? "unavailable"
         : "partial"
-    // Retain every signed record, but decide restoration/creation for the
-    // configured network. An unknown target or bare Addy phrase stays relevant.
+    // Retain every backup and the current scoped choices, but decide restoration/
+    // creation for the configured network. Unknown targets and Addy stay relevant.
     const inScope = (candidate: SparkRecoveryCandidate) =>
       !network || candidate.source === "addy" || candidate.network === network
     const scopedCandidates = candidates.filter(inScope)
@@ -867,8 +916,8 @@ export class SparkRecoveryService {
       roots.size > 1 ||
       pointerTargets.size > 1 ||
       (!primary && !knownRoot && relevantCandidates.length > 1)
-    // NIP-01 addressable revision order. Older explicit choices remain retained
-    // evidence, not conflicting backup roots or permission to create a wallet.
+    // NIP-01 addressable revision order. Legacy history remains evidence,
+    // not permission to create a wallet or substitute another network's choice.
     const latestMainChoice = mainChoices
       .filter((choice) => validChoiceScope(choice.selection, choice.network))
       .filter((choice) => {

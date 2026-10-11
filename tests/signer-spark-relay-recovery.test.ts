@@ -347,6 +347,16 @@ describe("signer-backed Spark recovery composed foundations", () => {
     expect(found.candidates).toHaveLength(2)
     expect(
       (await f.store.load(f.owner)).records.some((r) => r.event.id === first)
+    ).toBe(false)
+    expect(
+      (await f.store.load(f.owner)).records.some(
+        (r) => r.event.id === a.eventId
+      )
+    ).toBe(true)
+    expect(
+      (await f.store.load(f.owner)).records.some(
+        (r) => r.event.id === b.eventId
+      )
     ).toBe(true)
     expect((await fresh.restore(found.main!)).accountNumber).toBe(1)
   })

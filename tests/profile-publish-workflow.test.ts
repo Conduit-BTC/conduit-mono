@@ -557,3 +557,114 @@ describe("Wallets profile-address publication", () => {
     expect(published).toHaveLength(0)
   })
 })
+
+describe("reviewed Lightning address normalization", () => {
+  for (const field of ["lud16", "lud06"] as const) {
+    for (const next of ["new@wallet.example", ""] as const) {
+      it(`edits a padded ${field} baseline for ${next ? "replacement" : "deletion"}`, async () => {
+        const baseline =
+          field === "lud16"
+            ? "  OLD@wallet.example  "
+            : "  https://wallet.example/LNURL/Token  "
+        events = [
+          profileEvent(
+            JSON.stringify({ [field]: baseline, extension: { keep: true } })
+          ),
+        ]
+        await publishProfileContext({ lud16: next }, "market", {
+          authenticatedPubkey: PUBKEY,
+          expectedLightningAddress: baseline,
+        })
+        const content = JSON.parse(published[0]!.content)
+        expect(published.length).toBe(1)
+        expect(content.extension.keep).toBe(true)
+        expect(content.lud06 === undefined).toBe(true)
+        expect(content.lud16 === (next || undefined)).toBe(true)
+      })
+    }
+  }
+  it("normalizes a padded lud16 while preserving complete metadata", async () => {
+    const baseline = "  OLD@wallet.example  "
+    events = [
+      profileEvent(
+        JSON.stringify({ lud16: baseline, extension: { keep: true } })
+      ),
+    ]
+    await publishProfileContext({ lud16: "old@wallet.example" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: baseline,
+    })
+    expect(published.length).toBe(1)
+    expect(
+      JSON.parse(published[0]!.content).lud16 === "old@wallet.example"
+    ).toBe(true)
+    expect(JSON.parse(published[0]!.content).extension.keep).toBe(true)
+  })
+  it("rebases a padded reviewed address over a case-only address and ordinary metadata edit", async () => {
+    const baseline = "  OLD@wallet.example  "
+    events = [
+      profileEvent(
+        JSON.stringify({ lud16: baseline, extension: { keep: true } })
+      ),
+    ]
+    let reads = 0
+    afterNetwork = () => {
+      if (++reads === 2)
+        events = [
+          profileEvent(
+            JSON.stringify({
+              lud16: "old@wallet.example",
+              name: "Updated elsewhere",
+              extension: { keep: true, added: true },
+            }),
+            NOW + 31
+          ),
+        ]
+    }
+    await publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: baseline,
+    })
+    expect(published.length).toBe(1)
+    const content = JSON.parse(published[0]!.content)
+    expect(content.name === "Updated elsewhere").toBe(true)
+    expect(content.extension.keep && content.extension.added).toBe(true)
+    expect(content.lud16 === "new@wallet.example").toBe(true)
+  })
+  it("rejects a competing destination after signing a padded baseline", async () => {
+    const baseline = "  OLD@wallet.example  "
+    events = [profileEvent(JSON.stringify({ lud16: baseline }))]
+    let reads = 0
+    afterNetwork = () => {
+      if (++reads === 2)
+        events = [
+          profileEvent(
+            JSON.stringify({ lud16: "competing@wallet.example" }),
+            NOW + 31
+          ),
+        ]
+    }
+    await expect(
+      publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: baseline,
+      })
+    ).rejects.toThrow("address changed")
+    expect(reads).toBe(2)
+    expect(published.length).toBe(0)
+  })
+  it("preserves case-sensitive legacy receiving URL paths in the choice fence", async () => {
+    events = [
+      profileEvent(
+        JSON.stringify({ lud06: "https://wallet.example/LNURL/token" })
+      ),
+    ]
+    await expect(
+      publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: "https://wallet.example/LNURL/Token",
+      })
+    ).rejects.toThrow("address changed")
+    expect(published.length).toBe(0)
+  })
+})
