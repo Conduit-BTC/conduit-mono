@@ -213,6 +213,13 @@ export class ProfileAddressChangedError extends Error {
   }
 }
 
+function normalizeProfileAddressChoice(value: string): string {
+  const trimmed = value.trim()
+  // Lightning addresses and bech32 LNURLs are case-insensitive. Legacy URLs
+  // retain case-sensitive paths; an old invalid value must still be removable.
+  return /^https?:\/\//i.test(trimmed) ? trimmed : trimmed.toLowerCase()
+}
+
 export function assertProfileAddressChoice(
   content: string | undefined,
   expected: string
@@ -226,7 +233,11 @@ export function assertProfileAddressChoice(
       : typeof current?.lud06 === "string"
         ? current.lud06.trim()
         : ""
-  if (address !== expected) throw new ProfileAddressChangedError()
+  if (
+    normalizeProfileAddressChoice(address) !==
+    normalizeProfileAddressChoice(expected)
+  )
+    throw new ProfileAddressChangedError()
 }
 
 /** Rebase unchanged details onto the latest projection while retaining local edits. */

@@ -976,15 +976,20 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
 test("ambiguous fallback retries only the same prepared hash after reload @merchant", async ({
   page,
 }) => {
+  const mark = (phase: string) =>
+    recordSmokeDiagnostic(test.info(), "fallback-upload", { phase })
+  mark("setup")
   test.setTimeout(90_000)
   const state = await interceptBlossom(page, fallbackServer, {
     abortFirstOnce: true,
   })
+  mark("open_draft")
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.getByLabel("Title").fill("Ambiguous fallback draft")
+  mark("valid_file")
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(
     dialog.getByText("The upload did not finish. Retry this image.", {
@@ -1015,6 +1020,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
       return getPublicKey()
     }
   })
+  mark("navigate")
   await page.reload()
   await expect
     .poll(() =>
@@ -1026,8 +1032,10 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     exact: true,
   })
   await expect(accountMenu).not.toBeVisible()
+  mark("restore_draft")
   await page.evaluate(() => (window as any).__releaseProductDraftRestore())
   await expect(accountMenu).toBeVisible()
+  mark("open_dialog")
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
   await expect(
@@ -1037,6 +1045,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
+  mark("invalid_file")
   await resumed.locator("#product-image-file").setInputFiles(image512)
   await expect(
     resumed.getByText("Choose the same image you previously tried to upload.", {
@@ -1051,6 +1060,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
+  mark("fresh_file")
   await resumed.locator("#product-image-file").setInputFiles(image192)
   await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//

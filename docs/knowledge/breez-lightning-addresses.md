@@ -91,6 +91,14 @@ unknown or missing reference: partial coverage, malformed records and unresolved
 positive pointers still block creation. Active-network primary references also
 govern backup readiness; a different network's ACK cannot confirm it.
 
+The encrypted journal compacts superseded network-scoped primary/main choices
+using NIP-01 revision order, including lowest-event-ID ties. Load, atomic retain
+and discovery use the same normalization. Every wallet backup remains retained;
+backup capacity and bounded legacy networkless choice evidence have independent
+128-record budgets. Surviving signed bytes and monotonic ACK/read-back/export
+metadata remain intact. Late history writes cannot restore a superseded choice.
+Unresolved positive choices still block creation rather than falling back.
+
 A valid Addy bare-phrase backup has no network or account number. Create stays
 blocked with an instruction to import its phrase using the original network and
 actual Spark account number. Import never invents these parameters. A verified
@@ -312,6 +320,15 @@ checks independent defaults by network and intent after replacement and reopen.
 The full Commerce journey retains an older foreign-network default and requires
 zero calls to its invoice provider. Recovery switches from a verified previous
 password to a signer-only wallet, retaining phrase access and focus restoration.
+Padded public-address baselines use the same trim/case comparison before and
+after signer consent. Genuine destination changes remain rejected; case-sensitive
+legacy URL paths and competing ordinary metadata remain preserved. Both app
+editors replace a padded legacy value and clear it through the real publisher.
+`tests/spark-recovery-journal-compaction.test.ts` composes real signer crypto,
+Dexie, addressable relay replacement, delivery/read-back and fresh-journal
+restore. It covers a full choice journal, all 128 backups, other networks,
+legacy evidence, late writers, unresolved targets and transaction rollback.
+Its provider identity derivation is controlled, not live Spark proof.
 These remain controlled local evidence.
 
 Recovery traces, screenshots and video are disabled; retained visual artifacts

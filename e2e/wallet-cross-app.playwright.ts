@@ -680,7 +680,7 @@ for (const app of ["market", "merchant"] as const) {
           kind: 0,
           created_at: Math.floor(Date.now() / 1000),
           tags: [],
-          content: JSON.stringify({ ...metadata, lud06: "lnurl-legacy" }),
+          content: JSON.stringify({ ...metadata, lud06: "  lnurl-legacy  " }),
         }),
       ])
       await prepareControlledWallet(page)
@@ -688,7 +688,7 @@ for (const app of ["market", "merchant"] as const) {
       await page.goto(apps[app] + "/wallet")
       await installControlledWallet(page)
       const address = page.getByLabel("Lightning address", { exact: true })
-      await expect(address).toHaveValue("lnurl-legacy")
+      await expect(address).toHaveValue("  lnurl-legacy  ")
       const retained = () =>
         page.evaluate(async (core) => {
           const { fetchProfileContext, getAccountSigner } = await import(core)
