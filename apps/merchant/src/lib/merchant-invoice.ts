@@ -242,6 +242,27 @@ export class DexieMerchantPendingInvoiceStore implements MerchantPendingInvoiceS
   }
 }
 
+/** Resolve only the exact device-retained issuer; missing authority needs manual review. */
+export async function loadMerchantInvoiceReceivingAuthority(
+  input: MerchantInvoiceScope & { invoice: string; amountMsats: number },
+  store: MerchantPendingInvoiceStore = new DexieMerchantPendingInvoiceStore()
+): Promise<ReceivingWalletBinding | null> {
+  const scope = validateScope(input)
+  const saved = await store.get(scope.merchantPubkey, scope.orderId)
+  if (
+    !saved ||
+    saved.merchantPubkey !== scope.merchantPubkey ||
+    saved.buyerPubkey !== scope.buyerPubkey ||
+    saved.orderId !== scope.orderId ||
+    saved.source !== "wallet" ||
+    saved.amountMsats !== input.amountMsats ||
+    saved.invoice.trim().toLowerCase() !== input.invoice.trim().toLowerCase()
+  )
+    return null
+  const binding = receivingWalletBindingSchema.safeParse(saved.receivingWallet)
+  return binding.success ? binding.data : null
+}
+
 function assertAmount(amountSats: number): number {
   if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
     throw new Error("Invoice amount must be a positive whole number of sats.")
@@ -421,9 +442,6 @@ function toPublishInput(
     ],
     payload: {
       invoice: pending.invoice,
-      ...(pending.receivingWallet
-        ? { receivingWallet: pending.receivingWallet }
-        : {}),
       amount: amountSats,
       currency: "SATS",
       ...(pending.note ? { note: pending.note } : {}),

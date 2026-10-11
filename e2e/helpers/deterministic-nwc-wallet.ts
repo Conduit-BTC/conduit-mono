@@ -84,6 +84,7 @@ export type DeterministicNwcWalletOptions = {
   network?: "mainnet" | "testnet"
   lud16?: string
   nowSeconds?: () => number
+  claimUnissuedSettled?: boolean
 }
 
 function runtimeNwcKeyPair(): { pubkey: string; secret: string } {
@@ -334,6 +335,19 @@ export function createDeterministicNwcWallet(
     },
     async lookupInvoice(request: Nip47LookupInvoiceRequest) {
       counters.lookupInvoice += 1
+      if (!invoice && options.claimUnissuedSettled && request.invoice) {
+        return {
+          result: toTransaction({
+            invoice: request.invoice,
+            amountMsats: 100_000,
+            createdAt: nowSeconds() - 5,
+            description: "Controlled unissued settlement claim",
+            expiresAt: nowSeconds() + 3_600,
+            settledAt: nowSeconds(),
+          }),
+          error: undefined,
+        }
+      }
       if (!invoice || !requestMatchesInvoice(request, invoice)) {
         return {
           result: undefined,

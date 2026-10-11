@@ -299,6 +299,51 @@ async function waitForPrivateRumor(input: {
   }
 }
 
+async function expectPrivateInvoiceHasNoWalletRouting(
+  input: Parameters<typeof waitForPrivateRumor>[0]
+): Promise<void> {
+  const wraps = await readAuthenticatedGiftWraps(
+    input.recipient,
+    TEST_RELAY_URL
+  )
+  let matched = 0
+  let exposed = 0
+  for (const wrap of wraps) {
+    const rumor = parseCanonicalRuntimePrivateRumor({
+      ...input,
+      inboxOwner: input.recipient,
+      wrap,
+    })
+    if (
+      !rumor ||
+      !rumor.tags.some(
+        ([name, value]) => name === "type" && value === "payment_request"
+      ) ||
+      !rumor.tags.some(
+        ([name, value]) => name === "order" && value === input.orderId
+      )
+    )
+      continue
+    matched += 1
+    const payload = JSON.parse(rumor.content) as Record<string, unknown>
+    if (
+      [
+        "receivingWallet",
+        "walletId",
+        "providerId",
+        "network",
+        "requestId",
+      ].some((key) => Object.hasOwn(payload, key))
+    )
+      exposed += 1
+  }
+  // Keep decrypted content and local routing identifiers out of test diagnostics.
+  expect({ received: matched > 0, exposedRoutingFields: exposed }).toEqual({
+    received: true,
+    exposedRoutingFields: 0,
+  })
+}
+
 async function publishProduct(
   page: Page,
   title: string,
@@ -869,6 +914,13 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       })
       .toBe(true)
     await waitForPrivateRumor({
+      orderId,
+      recipient: buyer,
+      sender: merchant,
+      type: "payment_request",
+      wrapperKeyAssignments,
+    })
+    await expectPrivateInvoiceHasNoWalletRouting({
       orderId,
       recipient: buyer,
       sender: merchant,

@@ -39,6 +39,7 @@ import {
   type MerchantNwcAddressStatus,
 } from "../lib/merchant-payment-verification"
 import { getNwcConnectionCacheKey, getNwcUriStorageKey } from "../lib/readiness"
+import { loadMerchantInvoiceReceivingAuthority } from "../lib/merchant-invoice"
 import { useNwcConnection } from "./useNwcConnection"
 
 type VerificationRunState = {
@@ -227,7 +228,6 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   }, [conversationReadUnavailable, conversationsQuery.isFetching])
 
   const verifyCandidates = useCallback(async () => {
-    const connection = nwc.connection
     const initiatingSigner = getAccountSigner()
     if (
       !initiatingSigner ||
@@ -261,12 +261,18 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
         confirmedEvidence,
         lookupInvoice: async (candidate) => {
           assertCurrentAuthority()
+          const receivingWallet = await loadMerchantInvoiceReceivingAuthority({
+            merchantPubkey: pubkey,
+            buyerPubkey: candidate.buyerPubkey,
+            orderId: candidate.orderId,
+            invoice: candidate.invoice,
+            amountMsats: candidate.expectedAmountMsats,
+          })
+          assertCurrentAuthority()
           const result = await lookupAccountReceivingInvoice({
             owner: pubkey,
             invoice: candidate.invoice,
-            receivingWallet: candidate.receivingWallet,
-            wallets: wallets.wallets,
-            legacyConnection: connection,
+            receivingWallet: receivingWallet ?? undefined,
           })
           assertCurrentAuthority()
           return result
@@ -356,8 +362,6 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
     canVerifyPayments,
     candidates,
     conversationReadUnavailable,
-    nwc.connection,
-    wallets.wallets,
     pubkey,
     queryClient,
     signerConnected,

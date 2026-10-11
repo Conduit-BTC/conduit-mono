@@ -1,4 +1,3 @@
-import { receivingWalletBindingSchema } from "../wallets/receiving"
 import { z } from "zod"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 import {
@@ -1284,7 +1283,6 @@ export const orderStatusSchema = z.union([orderStatusEnum, z.string().min(1)])
 export type OrderStatusSchema = z.infer<typeof orderStatusSchema>
 
 export const paymentRequestMessageSchema = z.object({
-  receivingWallet: receivingWalletBindingSchema.optional(),
   invoice: z.string().min(1),
   amount: z.number().min(0).optional(),
   currency: z.string().min(1).optional(),
