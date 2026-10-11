@@ -114,8 +114,8 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("useShopperPricing")
     expect(content).toContain("formatBitcoinBaseUnits")
     expect(content).toContain("sats === 0")
-    expect(content).toContain("Sats the standard")
-    expect(content).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
+    expect(content).not.toContain("Sats the standard")
+    expect(content).not.toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
     expect(content).not.toMatch(/passkey|Breez/i)
   })
 

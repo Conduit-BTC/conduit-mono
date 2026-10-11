@@ -25,13 +25,16 @@ describe("Market shopper price display contract", () => {
   })
 
   it("offers connected shoppers the constrained currency and sats controls", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const preferences = await readFile(
+      "apps/market/src/routes/preferences.tsx",
+      "utf8"
+    )
 
-    expect(wallet).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
-    expect(wallet).toContain("Preferred currency")
-    expect(wallet).toContain("Sats the standard")
-    expect(wallet).toContain("₿10,000 equals 10,000 sats")
-    expect(wallet).toContain(
+    expect(preferences).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
+    expect(preferences).toContain("Preferred currency")
+    expect(preferences).toContain("Sats the standard")
+    expect(preferences).toContain("₿10,000 equals 10,000 sats")
+    expect(preferences).toContain(
       "never changes a listing, order, invoice, or payment"
     )
   })
