@@ -1,11 +1,9 @@
-import type { WalletDescriptor } from "./index"
 import {
   nwcMakeInvoice,
   nwcLookupInvoice,
   nwcGetInfo,
   parseNwcUri,
   type NwcLookupInvoiceResult,
-  type NwcConnection,
 } from "../protocol/nwc"
 import { getAccountSigner } from "../protocol/session-signer"
 import { getMarketWalletStore } from "./wallet-storage"
@@ -119,64 +117,22 @@ export async function lookupWalletReceivingInvoice(
   return result
 }
 
-/** Legacy invoices have no wallet binding; exact incoming evidence is required. */
+/** Only device-retained original authority can authorize automatic settlement. */
 export async function lookupAccountReceivingInvoice(input: {
   owner: string
   invoice: string
   receivingWallet?: ReceivingWalletBinding
-  wallets: readonly WalletDescriptor[]
-  legacyConnection?: NwcConnection | null
 }): Promise<NwcLookupInvoiceResult> {
   const signer = getAccountSigner()
-  const assertCurrent = () => {
-    if (
-      !signer ||
-      signer.pubkey !== input.owner ||
-      getAccountSigner() !== signer
-    )
-      throw new Error("Your Nostr sign-in changed.")
-  }
-  assertCurrent()
-  if (input.receivingWallet)
-    return lookupWalletReceivingInvoice(
-      input.owner,
-      input.receivingWallet,
-      input.invoice
-    )
-  for (const wallet of input.wallets) {
-    if (wallet.providerId !== "spark" && wallet.providerId !== "nwc") continue
-    if (
-      !wallet.capabilities.includes("receive") &&
-      !wallet.capabilities.includes("verify_invoice")
-    )
-      continue
-    try {
-      const result = await lookupWalletReceivingInvoice(
-        input.owner,
-        {
-          walletId: wallet.id,
-          providerId: wallet.providerId === "spark" ? "spark" : "nwc",
-          network: wallet.network,
-        },
-        input.invoice
-      )
-      assertCurrent()
-      if (result.type === "incoming" && result.state === "settled")
-        return result
-    } catch {
-      assertCurrent()
-    }
-  }
-  if (!input.legacyConnection)
+  if (!signer || signer.pubkey !== input.owner)
+    throw new Error("Your Nostr sign-in changed.")
+  if (!input.receivingWallet)
     throw new Error(
-      "Open or reconnect the original receiving wallet to check this invoice."
+      "The original receiving authority is unavailable. Review this payment manually."
     )
-  const result = await nwcLookupInvoice(
-    input.legacyConnection,
-    { invoice: input.invoice },
-    10000,
-    "merchant"
+  return lookupWalletReceivingInvoice(
+    input.owner,
+    input.receivingWallet,
+    input.invoice
   )
-  assertCurrent()
-  return result
 }

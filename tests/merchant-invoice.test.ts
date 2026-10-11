@@ -3,6 +3,7 @@ import { RelayPublishDiagnosticsError } from "@conduit/core"
 
 import {
   createMerchantInvoiceModule,
+  loadMerchantInvoiceReceivingAuthority,
   DexieMerchantPendingInvoiceStore,
   type MerchantInvoiceDependencies,
   type MerchantPendingInvoice,
@@ -892,6 +893,30 @@ it("retains original wallet binding and invoice when the public address changes 
   expect(dependencies.makeWalletInvoice).toHaveBeenCalledTimes(1)
   expect(published[0].payload.invoice).toBe(INVOICE)
   expect(published[1].payload.invoice).toBe(INVOICE)
-  expect(published[1].payload.receivingWallet).toEqual(binding)
+  for (const input of published) {
+    expect(input.payload).not.toHaveProperty("receivingWallet")
+    expect(JSON.stringify(input.payload)).not.toContain(binding.walletId)
+    expect(JSON.stringify(input.payload)).not.toContain(binding.requestId)
+  }
+  const target = {
+    ...createInput(),
+    invoice: INVOICE,
+    amountMsats: createInput().amountSats * 1_000,
+  }
+  expect(await loadMerchantInvoiceReceivingAuthority(target, store)).toEqual(
+    binding
+  )
+  for (const changed of [
+    { invoice: "unrelated-invoice" },
+    { amountMsats: target.amountMsats + 1 },
+    { buyerPubkey: "02".repeat(32) },
+    { orderId: "unrelated-order" },
+  ])
+    expect(
+      await loadMerchantInvoiceReceivingAuthority(
+        { ...target, ...changed },
+        store
+      )
+    ).toBeNull()
   expect(address).toBe("new@conduit.cash")
 })

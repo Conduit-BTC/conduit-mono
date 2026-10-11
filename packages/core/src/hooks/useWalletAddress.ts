@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useAuth, useProfile, useUpdateProfile } from "@conduit/core"
+import { isValidLud16Address } from "../protocol/lightning"
 
 export interface WalletAddressSuggestion {
   address: string
@@ -78,8 +79,9 @@ export function useWalletAddress({
   }, [existing, owner, generation])
   const save = async (address: string) => {
     if (!owner || !current() || publisher.isPending) return
-    address = address.trim()
-    if (address && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+    address = address.trim().toLowerCase()
+    setSaved(false)
+    if (address && !isValidLud16Address(address)) {
       setError("Enter a Lightning address, such as name@conduit.cash.")
       return
     }
@@ -115,11 +117,17 @@ export function useWalletAddress({
       auth.signerReadiness !== "ready"
     )
       return
-    const key = `${scope}:${scopedSuggestion.address}`
+    const address = scopedSuggestion.address.trim().toLowerCase()
+    const key = `${scope}:${address}`
     if (autoAttempt.current === key) return
     autoAttempt.current = key
+    setSaved(false)
+    if (!isValidLud16Address(address)) {
+      setError("Enter a Lightning address, such as name@conduit.cash.")
+      return
+    }
     publisher.mutate(
-      { lud16: scopedSuggestion.address },
+      { lud16: address },
       {
         onSuccess() {
           if (current()) onDismiss()

@@ -156,6 +156,8 @@ export function Wallets({
     }
     setSuggestion(null)
     setPortableOpen(false)
+    setConnectedOpen(false)
+    dialogTriggerRef.current = null
     setUnlockWallet(null)
     setRecoveryWallet(null)
     setReceiveWallet(null)
@@ -164,6 +166,9 @@ export function Wallets({
     setRemoveWallet(null)
     setRenameWallet(null)
   }, [auth.accountPubkey, auth.authGeneration])
+  const isDialogScopeCurrent = () =>
+    authScopeRef.current.account === auth.accountPubkey &&
+    authScopeRef.current.generation === auth.authGeneration
   const openWalletDialog = (
     setter: React.Dispatch<React.SetStateAction<WalletDescriptor | null>>,
     wallet: WalletDescriptor,
@@ -174,8 +179,10 @@ export function Wallets({
   }
   const restoreDialogFocus = () => {
     const trigger = dialogTriggerRef.current
+    const scope = authScopeRef.current
     dialogTriggerRef.current = null
     requestAnimationFrame(() => {
+      if (authScopeRef.current !== scope) return
       if (trigger?.isConnected && !trigger.disabled) {
         trigger.focus()
         return
@@ -456,6 +463,7 @@ export function Wallets({
         key={`${auth.accountPubkey}:${auth.authGeneration}:${setupMode}`}
         open={portableOpen}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           setPortableOpen(open)
           if (!open) restoreDialogFocus()
         }}
@@ -468,6 +476,7 @@ export function Wallets({
         wallet={renameWallet}
         wallets={wallets}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setRenameWallet(null)
             restoreDialogFocus()
@@ -475,8 +484,10 @@ export function Wallets({
         }}
       />
       <ConnectedWalletDialog
+        key={`${auth.accountPubkey}:${auth.authGeneration}:${connectedOpen}`}
         open={connectedOpen}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           setConnectedOpen(open)
           if (!open) restoreDialogFocus()
         }}
@@ -488,6 +499,7 @@ export function Wallets({
         signerReady={signerReady}
         wallet={unlockWallet}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setUnlockWallet(null)
             restoreDialogFocus()
@@ -496,8 +508,11 @@ export function Wallets({
         wallets={wallets}
       />
       <ReceiveWalletDialog
+        auth={auth}
+        key={`receive:${auth.accountPubkey}:${auth.authGeneration}:${receiveWallet?.id ?? "closed"}`}
         wallet={receiveWallet}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setReceiveWallet(null)
             restoreDialogFocus()
@@ -506,8 +521,11 @@ export function Wallets({
         wallets={wallets}
       />
       <SendWalletDialog
+        auth={auth}
+        key={`send:${auth.accountPubkey}:${auth.authGeneration}:${sendWallet?.id ?? "closed"}`}
         wallet={sendWallet}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setSendWallet(null)
             restoreDialogFocus()
@@ -516,8 +534,10 @@ export function Wallets({
         wallets={wallets}
       />
       <WalletHistoryDialog
+        key={`history:${auth.accountPubkey}:${auth.authGeneration}:${historyWallet?.id ?? "closed"}`}
         wallet={historyWallet}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setHistoryWallet(null)
             restoreDialogFocus()
@@ -529,6 +549,7 @@ export function Wallets({
         key={`recovery:${auth.accountPubkey}:${auth.authGeneration}:${recoveryWallet?.id ?? "closed"}`}
         wallet={recoveryWallet}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setRecoveryWallet(null)
             restoreDialogFocus()
@@ -537,8 +558,11 @@ export function Wallets({
         wallets={wallets}
       />
       <RemoveWalletDialog
+        auth={auth}
+        key={`remove:${auth.accountPubkey}:${auth.authGeneration}:${removeWallet?.id ?? "closed"}`}
         wallet={removeWallet}
         onOpenChange={(open) => {
+          if (!isDialogScopeCurrent()) return
           if (!open) {
             setRemoveWallet(null)
             restoreDialogFocus()
@@ -1895,15 +1919,36 @@ function UnlockWalletDialog({
   )
 }
 
+function useWalletDialogCurrent(
+  auth: AuthContextValue,
+  wallet: WalletDescriptor | null
+) {
+  const scope = `${auth.accountPubkey}:${auth.authGeneration}:${wallet?.id ?? "closed"}`
+  const scopeRef = useRef<string | null>(scope)
+  useLayoutEffect(() => {
+    scopeRef.current = scope
+    return () => {
+      scopeRef.current = null
+    }
+  }, [scope])
+  // UI scope includes signed-out legacy device recovery. Core enforces signer
+  // authority for wallet operations; replacement/unmount retires these results.
+  return useCallback(() => scopeRef.current === scope, [scope])
+}
+
 function ReceiveWalletDialog({
+  auth,
   wallet,
   onOpenChange,
   wallets,
 }: {
+  auth: AuthContextValue
   wallet: WalletDescriptor | null
   onOpenChange: (open: boolean) => void
   wallets: UseWalletsReturn
 }) {
+  const current = useWalletDialogCurrent(auth, wallet)
+
   const [amount, setAmount] = useState("")
   const [addressPending, setAddressPending] = useState(false)
   const [request, setRequest] = useState("")
@@ -1931,6 +1976,7 @@ function ReceiveWalletDialog({
   }
 
   const close = () => {
+    if (!current()) return
     setAmount("")
     setRequest("")
     setPendingAction(null)
@@ -1941,7 +1987,7 @@ function ReceiveWalletDialog({
   }
 
   const createLightningInvoice = async () => {
-    if (!wallet) return
+    if (!wallet || !current()) return
     setPendingAction("lightning")
     clearRequest()
     try {
@@ -1952,25 +1998,32 @@ function ReceiveWalletDialog({
       ) {
         throw new Error("Enter a whole-number amount greater than zero.")
       }
-      setRequest(await wallets.receiveSparkLightning(wallet.id, amountSats))
+      const nextRequest = await wallets.receiveSparkLightning(
+        wallet.id,
+        amountSats
+      )
+      if (current()) setRequest(nextRequest)
     } catch (caught) {
+      if (!current()) return
       setError(getErrorMessage(caught, "Could not create invoice."))
     } finally {
-      setPendingAction(null)
+      if (current()) setPendingAction(null)
     }
   }
 
   const createSparkAddress = async () => {
-    if (!wallet) return
+    if (!wallet || !current()) return
     setPendingAction("spark-address")
     setAmount("")
     clearRequest()
     try {
-      setRequest(await wallets.getSparkAddress(wallet.id))
+      const nextRequest = await wallets.getSparkAddress(wallet.id)
+      if (current()) setRequest(nextRequest)
     } catch (caught) {
+      if (!current()) return
       setError(getErrorMessage(caught, "Could not read Spark address."))
     } finally {
-      setPendingAction(null)
+      if (current()) setPendingAction(null)
     }
   }
 
@@ -1978,9 +2031,9 @@ function ReceiveWalletDialog({
     setCopyStatus("idle")
     try {
       await navigator.clipboard.writeText(request)
-      setCopyStatus("copied")
+      if (current()) setCopyStatus("copied")
     } catch {
-      setCopyStatus("error")
+      if (current()) setCopyStatus("error")
     }
   }
 
@@ -2109,14 +2162,18 @@ function ReceiveWalletDialog({
 }
 
 function SendWalletDialog({
+  auth,
   wallet,
   onOpenChange,
   wallets,
 }: {
+  auth: AuthContextValue
   wallet: WalletDescriptor | null
   onOpenChange: (open: boolean) => void
   wallets: UseWalletsReturn
 }) {
+  const current = useWalletDialogCurrent(auth, wallet)
+
   const [method, setMethod] = useState<"lightning" | "spark">("lightning")
   const [paymentRequest, setPaymentRequest] = useState("")
   const [amount, setAmount] = useState("")
@@ -2173,6 +2230,7 @@ function SendWalletDialog({
         requestAnimationFrame(() => resultAlertRef.current?.focus())
       }
     } catch (caught) {
+      if (!current()) return
       setOutcome("ambiguous")
       setError(
         getErrorMessage(
@@ -2182,9 +2240,10 @@ function SendWalletDialog({
       )
       requestAnimationFrame(() => resultAlertRef.current?.focus())
     }
-  }, [hasUnresolvedSparkSend, wallet])
+  }, [hasUnresolvedSparkSend, wallet, current])
 
   const close = () => {
+    if (!current()) return
     if (wallet && quote && outcome !== "ambiguous") {
       wallets.discardSparkSendQuote(wallet.id, quote.id)
     }
@@ -2242,7 +2301,7 @@ function SendWalletDialog({
   }
 
   const prepare = async () => {
-    if (!wallet) return
+    if (!wallet || !current()) return
     setPending(true)
     setError(null)
     try {
@@ -2270,10 +2329,12 @@ function SendWalletDialog({
         }
       }
       const nextQuote = await wallets.prepareSparkSend(wallet.id, request)
+      if (!current()) return
       setReviewedPaymentRequest(paymentRequestSnapshot)
       setQuote(nextQuote)
       requestAnimationFrame(() => reviewHeadingRef.current?.focus())
     } catch (caught) {
+      if (!current()) return
       let nextError = getErrorMessage(
         caught,
         "Could not prepare the Spark payment."
@@ -2292,16 +2353,17 @@ function SendWalletDialog({
       setError(nextError)
       requestAnimationFrame(() => resultAlertRef.current?.focus())
     } finally {
-      setPending(false)
+      if (current()) setPending(false)
     }
   }
 
   const confirm = async () => {
-    if (!wallet || !quote) return
+    if (!wallet || !quote || !current()) return
     setPending(true)
     setError(null)
     try {
       const result = await wallets.confirmSparkSend(wallet.id, quote.id)
+      if (!current()) return
       if (result.status === "sent") {
         setSentMethod(result.method)
         setOutcome("sent")
@@ -2317,6 +2379,7 @@ function SendWalletDialog({
       setError(result.reason)
       requestAnimationFrame(() => resultAlertRef.current?.focus())
     } catch (caught) {
+      if (!current()) return
       setOutcome("ambiguous")
       setError(
         getErrorMessage(
@@ -2326,18 +2389,19 @@ function SendWalletDialog({
       )
       requestAnimationFrame(() => resultAlertRef.current?.focus())
     } finally {
-      setPending(false)
+      if (current()) setPending(false)
     }
   }
 
   const acknowledgeUnresolvedPayment = () => {
-    if (!wallet) return
+    if (!wallet || !current()) return
     setPending(true)
     setError(null)
     try {
       acknowledgeUnresolvedSparkSend(wallet.id)
       close()
     } catch (caught) {
+      if (!current()) return
       setError(
         getErrorMessage(
           caught,
@@ -2346,7 +2410,7 @@ function SendWalletDialog({
       )
       requestAnimationFrame(() => resultAlertRef.current?.focus())
     } finally {
-      setPending(false)
+      if (current()) setPending(false)
     }
   }
 
@@ -2987,19 +3051,24 @@ function RecoveryWalletDialog({
 }
 
 function RemoveWalletDialog({
+  auth,
   wallet,
   onOpenChange,
   wallets,
 }: {
+  auth: AuthContextValue
   wallet: WalletDescriptor | null
   onOpenChange: (open: boolean) => void
   wallets: UseWalletsReturn
 }) {
+  const current = useWalletDialogCurrent(auth, wallet)
+
   const [confirmed, setConfirmed] = useState(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const close = () => {
+    if (!current()) return
     setConfirmed(false)
     setPending(false)
     setError(null)
@@ -3007,7 +3076,7 @@ function RemoveWalletDialog({
   }
 
   const remove = async () => {
-    if (!wallet) return
+    if (!wallet || !current()) return
     setPending(true)
     setError(null)
     try {
@@ -3016,9 +3085,10 @@ function RemoveWalletDialog({
       })
       close()
     } catch (caught) {
+      if (!current()) return
       setError(getErrorMessage(caught, "Could not remove wallet."))
     } finally {
-      setPending(false)
+      if (current()) setPending(false)
     }
   }
 

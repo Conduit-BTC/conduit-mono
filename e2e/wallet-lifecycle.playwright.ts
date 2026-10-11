@@ -8,6 +8,7 @@ import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
   installRealTestSigner,
+  replaceRealTestSigner,
 } from "./helpers/real-nip07-signer"
 import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
 
@@ -1331,3 +1332,450 @@ test("fresh Merchant restores mainnet payment and receiving choices after later 
     disposeRuntimeSignerIdentity(identity)
   }
 })
+
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} sensitive wallet dialogs reset on identity and generation replacement @market`, async ({
+    page,
+  }) => {
+    const first = createRuntimeSignerIdentity()
+    const second = createRuntimeSignerIdentity()
+    const replace = async (identity: typeof first) => {
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.auth.disconnect()
+      )
+      await replaceRealTestSigner(page, identity)
+      await page.evaluate(async () => {
+        await (window as any).__walletLifecycle.auth.connect({
+          method: "nip07",
+        })
+      })
+      await settled(page)
+    }
+    const restored = async () => {
+      await seedBackup(page)
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.wallets.retryRecovery()
+      )
+      await settled(page)
+      await expect(
+        page.getByRole("button", { name: "Receive", exact: true }).first()
+      ).toBeEnabled()
+    }
+    try {
+      await prepareControlledWallet(page)
+      await installRealTestSigner(page, first, relay)
+      await observeController(page, app)
+      await page.goto(apps[app] + "/wallet")
+      await installControlledWallet(page)
+      await settled(page)
+      await restored()
+      await page
+        .getByRole("button", { name: "Receive", exact: true })
+        .first()
+        .click()
+      let dialog = page.getByRole("dialog")
+      await dialog.locator("#receive-amount").fill("77")
+      await dialog
+        .getByRole("button", { name: "Create Lightning invoice", exact: true })
+        .click()
+      await expect(dialog.locator("#receive-request")).toBeVisible()
+      await replace(second)
+      await restored()
+      await page
+        .getByRole("button", { name: "Receive", exact: true })
+        .first()
+        .click()
+      dialog = page.getByRole("dialog")
+      await expect(dialog.locator("#receive-amount")).toHaveValue("")
+      await expect(dialog.locator("#receive-request")).toHaveCount(0)
+      await dialog.getByRole("button", { name: "Done", exact: true }).click()
+      await page
+        .getByRole("button", { name: "Send", exact: true })
+        .first()
+        .click()
+      dialog = page.getByRole("dialog")
+      await dialog.locator("textarea").fill("draft from the previous identity")
+      await replace(first)
+      await settled(page)
+      await page
+        .getByRole("button", { name: "Send", exact: true })
+        .first()
+        .click()
+      dialog = page.getByRole("dialog")
+      await expect(dialog.locator("textarea")).toHaveValue("")
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
+      await page
+        .getByRole("button", { name: /^Manage / })
+        .first()
+        .click()
+      await page
+        .getByRole("menuitem", { name: "Remove from this device", exact: true })
+        .click()
+      await page.getByRole("alertdialog").locator("#remove-recovery").check()
+      await replace(second)
+      await settled(page)
+      await page
+        .getByRole("button", { name: /^Manage / })
+        .first()
+        .click()
+      await page
+        .getByRole("menuitem", { name: "Remove from this device", exact: true })
+        .click()
+      await expect(
+        page.getByRole("alertdialog").locator("#remove-recovery")
+      ).not.toBeChecked()
+      await expect(
+        page
+          .getByRole("alertdialog")
+          .getByRole("button", { name: "Remove from this device", exact: true })
+      ).toBeDisabled()
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: "Cancel", exact: true })
+        .click()
+      await page.evaluate(() => {
+        ;(window as any).__walletProbe.delayReceive = true
+      })
+      await page
+        .getByRole("button", { name: "Receive", exact: true })
+        .first()
+        .click()
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Create Lightning invoice", exact: true })
+        .click()
+      await expect
+        .poll(() =>
+          page.evaluate(() => !!(window as any).__walletProbe.receiveStarted)
+        )
+        .toBe(true)
+      await page.evaluate(() => {
+        ;(window as any).__releaseOldReceive = (
+          window as any
+        ).__walletProbe.releaseReceive
+      })
+      await replace(first)
+      await settled(page)
+      await page
+        .getByRole("button", { name: "Receive", exact: true })
+        .first()
+        .click()
+      await page.evaluate(() => (window as any).__releaseOldReceive())
+      await expect(
+        page.getByRole("dialog").locator("#receive-request")
+      ).toHaveCount(0)
+      await expect(page.getByRole("dialog").getByRole("alert")).toHaveCount(0)
+      await expect(
+        page.getByRole("dialog").locator("#receive-amount")
+      ).toHaveValue("")
+    } finally {
+      disposeRuntimeSignerIdentity(first)
+      disposeRuntimeSignerIdentity(second)
+    }
+  })
+}
+
+test("unbound invoices cannot borrow unrelated NWC settlement; retained original authority still verifies @market", async ({
+  page,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const original = createDeterministicNwcWallet({
+    relayUrl: relay,
+    network: "mainnet",
+  })
+  const unrelated = createDeterministicNwcWallet({
+    relayUrl: relay,
+    network: "mainnet",
+    claimUnissuedSettled: true,
+  })
+  const receiving =
+    "/@fs" + path.resolve("packages/core/src/wallets/wallet-receiving.ts")
+  const verification =
+    "/@fs" +
+    path.resolve("apps/merchant/src/lib/merchant-payment-verification.ts")
+  try {
+    await original.start()
+    await unrelated.start()
+    await installRealTestSigner(page, identity, relay)
+    await observeController(page, "market")
+    await page.goto(apps.market + "/wallet")
+    await settled(page)
+    await original.configureMerchantConnection(async (uri) => {
+      await page.evaluate(async (uri) => {
+        ;(window as any).__originalReceiver = (
+          await (window as any).__walletLifecycle.wallets.connectNwc(uri)
+        ).id
+      }, uri)
+    })
+    await unrelated.configureMerchantConnection(async (uri) => {
+      await page.evaluate(async (uri) => {
+        await (window as any).__walletLifecycle.wallets.connectNwc(uri)
+      }, uri)
+    })
+    await page.evaluate(
+      async ({ receiving }) => {
+        const owner = (window as any).__walletLifecycle.auth.accountPubkey
+        const issued = await (
+          await import(receiving)
+        ).createWalletReceivingInvoice(
+          owner,
+          (window as any).__originalReceiver,
+          100
+        )
+        ;(window as any).__originalIssued = issued
+      },
+      { receiving, core }
+    )
+    const check = (bound: boolean) =>
+      page.evaluate(
+        async ({ receiving, verification, core, bound }) => {
+          const controller = (window as any).__walletLifecycle
+          const issued = (window as any).__originalIssued
+          const candidate = {
+            orderId: "original-order",
+            buyerPubkey: controller.auth.accountPubkey,
+            evidenceMessageId: "original-evidence",
+            invoice: issued.invoice,
+            paymentHash: (await import(core)).decodeLightningInvoicePaymentHash(
+              issued.invoice
+            ),
+            expectedAmountMsats: 100_000,
+            orderCreatedAt: Math.floor(Date.now() / 1000) - 10,
+            delivery: "buyer_and_self",
+          }
+          let confirmations = 0
+          const result = await (
+            await import(verification)
+          ).verifyMerchantPaymentCandidates({
+            candidates: [candidate],
+            confirmedEvidence: new Set(),
+            lookupInvoice: () =>
+              import(receiving).then((module) =>
+                module.lookupAccountReceivingInvoice({
+                  owner: controller.auth.accountPubkey,
+                  invoice: issued.invoice,
+                  receivingWallet: bound ? issued.receivingWallet : undefined,
+                  wallets: controller.wallets.wallets,
+                })
+              ),
+            publishConfirmation: async () => {
+              confirmations++
+            },
+          })
+          return {
+            verified: result.verified,
+            failures: result.lookupFailures,
+            confirmations,
+          }
+        },
+        { receiving, verification, core, bound }
+      )
+    expect(await check(false)).toEqual({
+      verified: 0,
+      failures: 1,
+      confirmations: 0,
+    })
+    expect(original.snapshot().counters.lookupInvoice).toBe(0)
+    expect(unrelated.snapshot().counters.lookupInvoice).toBe(0)
+    await original.payLastInvoice()
+    expect(await check(true)).toEqual({
+      verified: 1,
+      failures: 0,
+      confirmations: 1,
+    })
+    expect(original.snapshot().counters.lookupInvoice).toBe(1)
+    expect(unrelated.snapshot().counters.lookupInvoice).toBe(0)
+    const retained = await page.evaluate(() => (window as any).__originalIssued)
+    await page.reload()
+    await settled(page)
+    await page.evaluate((issued) => {
+      ;(window as any).__originalIssued = issued
+    }, retained)
+    expect(await check(true)).toEqual({
+      verified: 1,
+      failures: 0,
+      confirmations: 1,
+    })
+    expect(original.snapshot().counters.lookupInvoice).toBe(2)
+    expect(unrelated.snapshot().counters.lookupInvoice).toBe(0)
+  } finally {
+    await unrelated.close()
+    await original.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+test("external and password removals bypass a full signer recovery exclusion journal @market", async ({
+  page,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const external = createDeterministicNwcWallet({
+    relayUrl: relay,
+    network: "mainnet",
+  })
+  try {
+    await external.start()
+    await installRealTestSigner(page, identity, relay)
+    await observeController(page, "market")
+    await page.goto(apps.market + "/wallet")
+    await settled(page)
+    await page.evaluate(
+      async ({ journal }) => {
+        const store = new (await import(journal)).DexieSparkRecoveryStore()
+        const owner = (window as any).__walletLifecycle.auth.accountPubkey
+        for (let i = 0; i < 128; i++)
+          await store.setDeviceRemoved(owner, `retained-removal-${i}`, true)
+      },
+      { journal }
+    )
+    await seedLegacyPasswordWallet(page)
+    await external.configureMerchantConnection(async (uri) => {
+      await page.evaluate(async (uri) => {
+        const controller = (window as any).__walletLifecycle.wallets
+        for (let i = 0; i < 3; i++) {
+          const connected = await controller.connectNwc(uri)
+          await controller.removeWallet(connected.id)
+        }
+      }, uri)
+    })
+    await page.evaluate(async () => {
+      const controller = (window as any).__walletLifecycle.wallets
+      const legacy = controller.portableWallets.find(
+        (wallet: any) => wallet.label === "Legacy fence"
+      )
+      if (!legacy) throw new Error("Legacy fixture was not observed")
+      await controller.removeWallet(legacy.id, { recoveryConfirmed: true })
+    })
+    expect(
+      await page.evaluate(
+        async ({ journal }) => {
+          const owner = (window as any).__walletLifecycle.auth.accountPubkey
+          const ids = (
+            await new (await import(journal)).DexieSparkRecoveryStore().load(
+              owner
+            )
+          ).removedWalletIds
+          return {
+            count: ids.length,
+            original: ids.every((id: string) =>
+              id.startsWith("retained-removal-")
+            ),
+          }
+        },
+        { journal }
+      )
+    ).toEqual({ count: 128, original: true })
+  } finally {
+    await external.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} public-address saves and suggestions use the shared Lightning resolver validator @market`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    try {
+      await installRealTestSigner(page, identity, relay)
+      await observeController(page, app)
+      await page.route(
+        "**/packages/core/src/hooks/useWalletAddress.ts*",
+        async (route) => {
+          const response = await route.fetch()
+          let body = await response.text()
+          const marker = /return \{\s*owner,/
+          if ([...body.matchAll(/return \{\s*owner,/g)].length !== 1)
+            throw new Error("Address controller observation seam changed")
+          body = body.replace(
+            marker,
+            "return window.__profileAddressControl = {\n    owner,"
+          )
+          body = body.replace(
+            "const scopedSuggestion =",
+            "suggestion = window.__forcedAddressSuggestion ?? suggestion; const scopedSuggestion ="
+          )
+          await route.fulfill({ response, body })
+        }
+      )
+      await page.goto(apps[app] + "/wallet")
+      await settled(page)
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => !!(window as any).__profileAddressControl?.confirmed
+          )
+        )
+        .toBe(true)
+      await page.evaluate(() => {
+        const auth = (window as any).__walletLifecycle.auth
+        ;(window as any).__forcedAddressSuggestion = {
+          ownerPubkey: auth.accountPubkey,
+          authGeneration: auth.authGeneration,
+          address: "bad@domain..example",
+          firstWallet: true,
+          imported: false,
+        }
+        ;(window as any).__profileAddressControl.setDraft(
+          "force suggestion render"
+        )
+      })
+      await expect(
+        page.getByText(
+          "Enter a Lightning address, such as name@conduit.cash.",
+          { exact: true }
+        )
+      ).toBeVisible()
+      await page.evaluate(() => {
+        ;(window as any).__forcedAddressSuggestion = null
+      })
+      for (const address of [
+        "bad@domain..example",
+        "name@.example.com",
+        "name@@example.com",
+        "name@domain.1",
+        "name@例.example",
+      ]) {
+        expect(
+          await page.evaluate(
+            async ({ core, address }) => {
+              const controller = (window as any).__profileAddressControl
+              await controller.save(address)
+              return {
+                valid: (await import(core)).isValidLud16Address(address),
+                saved: (window as any).__profileAddressControl.saved,
+              }
+            },
+            { core, address }
+          )
+        ).toEqual({ valid: false, saved: false })
+        await expect(
+          page.getByText(
+            "Enter a Lightning address, such as name@conduit.cash.",
+            { exact: true }
+          )
+        ).toBeVisible()
+      }
+      await page
+        .getByLabel("Lightning address", { exact: true })
+        .fill(" Mixed.Case@Example.COM ")
+      await page
+        .getByRole("button", { name: "Save public address", exact: true })
+        .click()
+      await expect(
+        page.getByText("Current address: mixed.case@example.com", {
+          exact: true,
+        })
+      ).toBeVisible()
+      await page.getByLabel("Lightning address", { exact: true }).fill("")
+      await page
+        .getByRole("button", { name: "Save public address", exact: true })
+        .click()
+      await expect(
+        page.getByText("Current address: None", { exact: true })
+      ).toBeVisible()
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}

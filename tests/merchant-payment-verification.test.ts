@@ -105,7 +105,7 @@ describe("merchant NWC payment verification", () => {
       "lnbc1000n",
       "02".repeat(32)
     )
-    original.payload.receivingWallet = {
+    ;(original.payload as any).receivingWallet = {
       walletId: "original",
       providerId: "spark",
       network: "mainnet",
@@ -137,13 +137,13 @@ describe("merchant NWC payment verification", () => {
     const later = invoiceOnlyConversation("earlier-invoice").messages![1]!
     if (original.type !== "payment_request" || later.type !== "payment_request")
       throw new Error("Missing request")
-    original.payload.receivingWallet = {
+    ;(original.payload as any).receivingWallet = {
       walletId: "original",
       providerId: "spark",
       network: "mainnet",
     }
     later.payload.invoice = minimalBolt11Invoice("lnbc1000n", "02".repeat(32))
-    later.payload.receivingWallet = {
+    ;(later.payload as any).receivingWallet = {
       walletId: "later",
       providerId: "spark",
       network: "mainnet",
@@ -151,7 +151,7 @@ describe("merchant NWC payment verification", () => {
     input.messages = [input.messages![0]!, original, later, input.messages![1]!]
     const candidate = getMerchantPaymentVerificationCandidates([input])[0]!
     expect(candidate.invoice).toBe(invoice)
-    expect(candidate.receivingWallet?.walletId).toBe("original")
+    expect(candidate).not.toHaveProperty("receivingWallet")
   })
   it("binds invoice-only settlement to the invoice's encoded hash", () => {
     const candidate = getMerchantPaymentVerificationCandidates([
@@ -191,15 +191,15 @@ describe("merchant NWC payment verification", () => {
       (message) => message.type === "payment_request"
     )!
     if (request.type !== "payment_request") throw new Error("Missing invoice")
-    request.payload.receivingWallet = original
+    ;(request.payload as any).receivingWallet = original
     const candidate = getMerchantPaymentVerificationCandidates([input])[0]!
-    expect(candidate.receivingWallet).toEqual(original)
+    expect(candidate).not.toHaveProperty("receivingWallet")
     let confirmations = 0
     const result = await verifyMerchantPaymentCandidates({
       candidates: [candidate],
       confirmedEvidence: new Set(),
       lookupInvoice: async (supplied) => {
-        expect(supplied.receivingWallet).toEqual(original)
+        expect(supplied).not.toHaveProperty("receivingWallet")
         return {
           type: "incoming",
           state: "settled",

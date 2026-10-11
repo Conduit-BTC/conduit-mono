@@ -1,4 +1,3 @@
-import type { ReceivingWalletBinding } from "@conduit/core/wallets/receiving"
 import {
   decodeLightningInvoiceAmount,
   decodeLightningInvoicePaymentHash,
@@ -18,7 +17,6 @@ export interface MerchantPaymentVerificationCandidate {
   buyerPubkey: string
   evidenceMessageId: string
   invoice: string
-  receivingWallet?: ReceivingWalletBinding
   paymentHash?: string
   expectedAmountMsats: number
   orderCreatedAt: number
@@ -177,7 +175,7 @@ function findCandidate(
         )
     : merchantInvoice
   // A buyer report cannot replace a merchant-issued invoice or its destination.
-  // An older exact request retains its original wallet binding after later edits.
+  // An older exact request retains its original invoice after later edits.
   if (merchantInvoice && proofInvoice && !matchingMerchantInvoice) return null
   const invoice =
     matchingMerchantInvoice?.type === "payment_request"
@@ -209,11 +207,6 @@ function findCandidate(
     buyerPubkey: conversation.buyerPubkey,
     evidenceMessageId: evidence?.id ?? matchingMerchantInvoice!.id,
     invoice,
-    ...(matchesMerchantInvoice &&
-    matchingMerchantInvoice.type === "payment_request" &&
-    matchingMerchantInvoice.payload.receivingWallet
-      ? { receivingWallet: matchingMerchantInvoice.payload.receivingWallet }
-      : {}),
     paymentHash,
     expectedAmountMsats: decoded.msats,
     orderCreatedAt: order.payload.createdAt,

@@ -493,8 +493,12 @@ describe("Market wallet route contracts", () => {
       /wallet && quote && outcome !== "ambiguous"[\s\S]{0,100}discardSparkSendQuote/
     )
     expect(wallet).toContain('outcome === "ambiguous"')
-    expect(wallet).toMatch(
-      /const prepare = async \(\) => \{[\s\S]{0,1200}hasUnresolvedSparkSend\(wallet\.id\)[\s\S]{0,160}setOutcome\("ambiguous"\)/
+    const prepareSource =
+      wallet
+        .split("const prepare = async () => {")[1]
+        ?.split("const confirm = async () => {")[0] ?? ""
+    expect(prepareSource).toMatch(
+      /if \(hasUnresolvedSparkSend\(wallet\.id\)\) \{\s*setOutcome\("ambiguous"\)/
     )
     expect(wallet).toMatch(
       /outcome === "ambiguous"\s+\? "rounded-\[var\(--radius-md\)\] border[^"]*text-\[var\(--text-secondary\)\] outline-none"/
