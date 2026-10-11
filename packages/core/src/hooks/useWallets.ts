@@ -399,13 +399,21 @@ export function useWallets(
             for (const wallet of nextWallets) {
               if (wallet.providerId === "spark") {
                 const signer = getAccountSigner()
-                next[wallet.id] =
-                  openSparkRuntime.get(wallet.id) ??
-                  (signer && signerWalletOpens.get(signer)?.has(wallet.id)
+                // Recovery metadata reads can outlive a manager open/close.
+                // Apply the snapshot only while its wallet is still open, and
+                // retain a newer open state when the snapshot predates it.
+                next[wallet.id] = getSparkWalletManager()?.isOpen(wallet.id)
+                  ? (openSparkRuntime.get(wallet.id) ??
+                    current[wallet.id] ?? {
+                      status: "connecting",
+                      balanceMsats: null,
+                      error: null,
+                    })
+                  : signer && signerWalletOpens.get(signer)?.has(wallet.id)
                     ? { status: "connecting", balanceMsats: null, error: null }
                     : current[wallet.id]?.status === "error"
                       ? current[wallet.id]
-                      : lockedRuntime())
+                      : lockedRuntime()
               } else if (wallet.providerId === "nwc") {
                 next[wallet.id] = getNwcRuntimeState(
                   nextNwcSnapshots[wallet.id]

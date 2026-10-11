@@ -359,6 +359,11 @@ describe("bounded smoke failure diagnostics", () => {
       {
         type: "smoke:commerce-journey",
         description: JSON.stringify({
+          buyerObservationAvailable: true,
+          buyerLifecyclePaid: true,
+          buyerProofSent: true,
+          buyerPaidMessages: 0,
+          buyerMessageDialogVisible: true,
           phase: "merchant_order",
           elapsedSeconds: 180,
           phaseSeconds: 100,
@@ -382,6 +387,11 @@ describe("bounded smoke failure diagnostics", () => {
     )
     expect(safe).toEqual({
       kind: "commerce-journey",
+      buyerObservationAvailable: true,
+      buyerLifecyclePaid: true,
+      buyerProofSent: true,
+      buyerPaidMessages: 0,
+      buyerMessageDialogVisible: true,
       phase: "merchant_order",
       elapsedSeconds: 180,
       phaseSeconds: 100,

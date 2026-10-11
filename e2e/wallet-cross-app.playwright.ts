@@ -895,3 +895,134 @@ for (const app of ["market", "merchant"] as const) {
     }
   }
 }
+
+test("wallet reload cannot overwrite a newer lock state @market", async ({
+  page,
+}) => {
+  test.setTimeout(20_000)
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await prepareControlledWallet(page)
+    await installRealTestSigner(page, identity, relay)
+    await page.goto(apps.market + "/wallet")
+    await installControlledWallet(page)
+    await page
+      .getByRole("button", { name: "Create wallet", exact: true })
+      .click()
+    await saved(page)
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await page.evaluate(
+      async ({ core, managerUrl }) => {
+        const { db } = await import(core)
+        const { getSparkWalletManager } = await import(managerUrl)
+        const manager = getSparkWalletManager()
+        const read = manager.getBalance.bind(manager)
+        const probe = (window as any).__walletProbe
+        probe.reloadHeld = false
+        probe.releaseReload = () => {}
+        const gate = new Promise<void>((resolve) => {
+          probe.releaseReload = () => {
+            probe.reloadReleased = true
+            resolve()
+          }
+        })
+        manager.getBalance = async (id: string) => {
+          const balance = await read(id)
+          if (!probe.reloadReleased) {
+            probe.reloadHeld = true
+            await gate
+          }
+          return balance
+        }
+        const wallet = (await db.wallets.toArray())[0]
+        await db.wallets.update(wallet.id, { label: "Reload gated wallet" })
+      },
+      {
+        core,
+        managerUrl:
+          "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
+      }
+    )
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__walletProbe.reloadHeld))
+      .toBe(true)
+    await page
+      .getByRole("button", { name: /^Manage / })
+      .first()
+      .click()
+    await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+    await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
+    await page.evaluate(() => (window as any).__walletProbe.releaseReload())
+    await expect(
+      page.getByLabel("Manage Reload gated wallet", { exact: true })
+    ).toBeVisible()
+    await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(0)
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+test("wallet reload cannot overwrite a newer open state @market", async ({
+  page,
+}) => {
+  test.setTimeout(20_000)
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await prepareControlledWallet(page)
+    await installRealTestSigner(page, identity, relay)
+    await page.goto(apps.market + "/wallet")
+    await installControlledWallet(page)
+    await page
+      .getByRole("button", { name: "Create wallet", exact: true })
+      .click()
+    await saved(page)
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await page
+      .getByRole("button", { name: /^Manage / })
+      .first()
+      .click()
+    await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+    await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
+    await page.evaluate(
+      async ({ core, storage }) => {
+        const { db } = await import(core)
+        const { getMarketWalletStore } = await import(storage)
+        const store = getMarketWalletStore()
+        const read = store.getSparkRecovery.bind(store)
+        const probe = (window as any).__walletProbe
+        probe.recoveryReads = 0
+        probe.reloadHeld = false
+        const gate = new Promise<void>((resolve) => {
+          probe.releaseReload = resolve
+        })
+        store.getSparkRecovery = async (id: string) => {
+          const recovery = await read(id)
+          // listVisible is the first credential read; reload's metadata read
+          // follows its runtime snapshot and is the second read.
+          if (++probe.recoveryReads === 2) {
+            probe.reloadHeld = true
+            await gate
+          }
+          return recovery
+        }
+        const wallet = (await db.wallets.toArray())[0]
+        await db.wallets.update(wallet.id, { label: "Reload gated wallet" })
+      },
+      { core, storage }
+    )
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__walletProbe.reloadHeld))
+      .toBe(true)
+    await page.getByRole("button", { name: "Open wallet", exact: true }).click()
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await page.evaluate(() => (window as any).__walletProbe.releaseReload())
+    await expect(
+      page.getByLabel("Manage Reload gated wallet", { exact: true })
+    ).toBeVisible()
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.getByText("Locked", { exact: true })).toHaveCount(0)
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})

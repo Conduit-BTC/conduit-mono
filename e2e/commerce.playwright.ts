@@ -560,8 +560,10 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
   let slowestSeconds = 0
   let cleanupStarted = false
   let cleanupComplete = false
+  let buyerPaidObservation: Record<string, number | boolean> = {}
   const recordJourney = () =>
     recordSmokeDiagnostic(testInfo, "commerce-journey", {
+      ...buyerPaidObservation,
       phase: currentPhase,
       elapsedSeconds: (performance.now() - started) / 1000,
       phaseSeconds: (performance.now() - phaseStarted) / 1000,
@@ -1085,9 +1087,34 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await buyerPage
       .getByRole("button", { name: "Open messages", exact: true })
       .click()
-    await expect(
-      buyerPage.getByText("Status: Paid", { exact: true })
-    ).toBeVisible({ timeout: 30_000 })
+    try {
+      await expect(
+        buyerPage.getByText("Status: Paid", { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+    } catch (error) {
+      try {
+        const completion = await readBuyerLifecycleCompletion(
+          buyerPage,
+          orderId
+        )
+        buyerPaidObservation = {
+          buyerObservationAvailable: true,
+          buyerLifecyclePaid: completion.paymentPaid,
+          buyerProofSent: completion.proofSent,
+          buyerPaidMessages: await buyerPage
+            .getByText("Status: Paid", { exact: true })
+            .count(),
+          buyerMessageDialogVisible: await buyerPage
+            .getByRole("dialog", { name: "Messages", exact: true })
+            .isVisible(),
+        }
+      } catch {
+        // Diagnostic reads must not replace the original assertion failure.
+        buyerPaidObservation = { buyerObservationAvailable: false }
+      }
+      recordJourney()
+      throw error
+    }
 
     phase("reload")
     await Promise.all([merchantPage.reload(), buyerPage.reload()])

@@ -92,6 +92,11 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
     "commerce-journey": {
       file: "e2e/commerce.playwright.ts",
       fields: {
+        buyerObservationAvailable: "boolean",
+        buyerLifecyclePaid: "boolean",
+        buyerProofSent: "boolean",
+        buyerPaidMessages: "number",
+        buyerMessageDialogVisible: "boolean",
         phase: commerceJourneyPhases,
         elapsedSeconds: "number",
         phaseSeconds: "number",
