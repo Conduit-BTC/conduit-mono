@@ -85,8 +85,9 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Advanced settings")
     expect(content).toContain("MAX_SPARK_ACCOUNT_NUMBER")
     expect(recovery).toContain("Copy recovery details")
-    expect(content).toContain("useShopperPricing")
-    expect(content).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
+    expect(content).not.toContain("useShopperPricing")
+    expect(content).not.toContain("Sats the standard")
+    expect(content).not.toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
   })
 
   it("labels future providers without changing Portable/Connected language", () => {
