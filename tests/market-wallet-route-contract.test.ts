@@ -9,7 +9,7 @@ import {
 describe("Market wallet route contracts", () => {
   it("lets the shared NWC parser validate wallet connection strings", async () => {
     const content = await readFile(
-      "apps/market/src/hooks/useWallets.ts",
+      "packages/core/src/hooks/useWallets.ts",
       "utf8"
     )
 
@@ -18,8 +18,10 @@ describe("Market wallet route contracts", () => {
   })
 
   it("observes committed wallet mutations and reloads prepared state", async () => {
-    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
-    const route = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
+    const route =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
     const database = await readFile("packages/core/src/db/index.ts", "utf8")
     const finalizations =
       hook.match(/await refreshAfterCommittedWalletMutation\(\)/g) ?? []
@@ -46,7 +48,7 @@ describe("Market wallet route contracts", () => {
   })
 
   it("serializes Spark unlock and removal and cleans removed manager state on reload", async () => {
-    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
+    const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
 
     expect(hook.match(/await openRegisteredSparkWallet\(\{/g)).toHaveLength(1)
     expect(hook).toContain("await sparkManager.closeWalletsExcept(")
@@ -60,63 +62,32 @@ describe("Market wallet route contracts", () => {
     )
   })
 
-  it("renders plural Portable and Connected wallet groups", async () => {
-    const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
-    const recoveryBundleDetails = await readFile(
-      "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
+  it("keeps the simplified wallet page composed from shared wallet controls", async () => {
+    const content =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
+    const recovery = await readFile(
+      "packages/ui/src/components/SparkRecoveryBundleDetails.tsx",
       "utf8"
     )
 
-    expect(content).toContain('title="Portable"')
-    expect(content).toContain('title="Connected"')
-    expect(content).toContain("Add portable wallet")
-    expect(content).toContain("Add a Spark wallet")
-    expect(content).toContain("Spark is the first Portable Wallet provider.")
-    expect(content).toContain("Create Spark wallet")
-    expect(content).toContain("Restore Spark wallet")
-    expect(content).toContain("Save your Spark recovery details")
-    expect(content).toContain("Spark is currently supported.")
-    expect(content).toContain("Spark wallet setup mode")
-    expect(content).toContain("Wallet nickname (optional)")
-    expect(content).toContain("On this device")
-    expect(content).toContain("Advanced recovery settings")
-    expect(content).toContain("MAX_SPARK_ACCOUNT_NUMBER")
-    expect(content).toContain("Change only if the source")
-    expect(content).toContain("wallet specifies a different account number.")
-    expect(content).toContain(
-      "Use this nickname to identify the wallet in Conduit."
-    )
-    expect(content).toContain("Encrypts the recovery phrase in this browser.")
-    expect(content).toContain("is not needed to")
-    expect(content).toContain("BIP39 phrase, Spark account number, and network")
-    expect(content).not.toContain("compatible Spark application")
-    expect(content).not.toContain("The phrase is the cross-application backup")
-    expect(content).not.toContain("Restore from phrase")
+    expect(content).toContain('title="My wallets"')
+    expect(content).toContain('title="External wallets"')
+    expect(content).toContain("Create wallet")
+    expect(content).toContain("Import wallet")
     expect(content).toContain("Connect wallet")
+    expect(content).toContain("ProfileLightningAddressEditor")
     expect(content).toContain("wallets.portableWallets")
     expect(content).toContain("wallets.connectedWallets")
     expect(content).toContain("wallets.setDefaultPaymentWallet")
-    expect(content).toContain("wallets.refreshBalance")
-    expect(content).toContain("getWalletCapabilityPills")
+    expect(content).toContain("DropdownMenuItem")
     expect(content).toContain("Remove from this device")
-    expect(content).toContain("does not delete the Portable Wallet")
-    expect(content).toMatch(
-      /I have the recovery details required to restore this Portable\s+Wallet/
-    )
-    expect(content).not.toContain("does not delete the Spark wallet")
-    expect(content).toContain("getWalletProviderDescription")
-    expect(content).toContain("getWalletNetworkLabel")
-    expect(content).toContain(
-      "Uses real bitcoin and supports Lightning and Spark payments."
-    )
-    expect(content).toContain("This wallet is separate from Bitcoin Mainnet.")
-    expect(recoveryBundleDetails).toContain("Copy recovery details")
-    expect(content).toContain("useShopperPricing")
-    expect(content).toContain("formatBitcoinBaseUnits")
-    expect(content).toContain("sats === 0")
+    expect(content).toContain("Advanced settings")
+    expect(content).toContain("MAX_SPARK_ACCOUNT_NUMBER")
+    expect(recovery).toContain("Copy recovery details")
+    expect(content).not.toContain("useShopperPricing")
     expect(content).not.toContain("Sats the standard")
     expect(content).not.toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
-    expect(content).not.toMatch(/passkey|Breez/i)
   })
 
   it("labels future providers without changing Portable/Connected language", () => {
@@ -357,15 +328,17 @@ describe("Market wallet route contracts", () => {
   })
 
   it("keeps local Spark removal available when provider actions are unavailable", async () => {
-    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(hook).toContain("runSparkWalletRemoval")
     expect(hook).toContain('mode === "local-only"')
     expect(hook).toContain("assertLocalSparkWalletRemovalSafe")
     expect(hook).toContain("isSparkWalletManagerInitialized")
-    expect(wallet).toMatch(
-      /disabled=\{pending\}\s+onClick=\{\(event\) => onRemove\(wallet, event\.currentTarget\)\}/
+    expect(wallet).toContain(
+      "<DropdownMenuItem onSelect={() => dialog(onRemove)}>"
     )
     expect(wallet).toContain(
       "This removes the wallet registration and encrypted recovery copy from this browser."
@@ -382,10 +355,12 @@ describe("Market wallet route contracts", () => {
       "utf8"
     )
     const recoveryBundleDetails = await readFile(
-      "apps/market/src/components/SparkRecoveryBundleDetails.tsx",
+      "packages/ui/src/components/SparkRecoveryBundleDetails.tsx",
       "utf8"
     )
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(targetContent).toContain(
       "w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]"
@@ -395,19 +370,15 @@ describe("Market wallet route contracts", () => {
     expect(checkout).toContain(
       'className="mt-3 text-xs leading-5 text-[var(--text-secondary)]"'
     )
-    expect(wallet).toContain('<TabsTrigger value="create" disabled={pending}>')
-    expect(wallet).toContain('<TabsTrigger value="restore" disabled={pending}>')
-    expect(wallet).toMatch(/<TabsContent value="create"/)
-    expect(wallet).toMatch(/<TabsContent value="restore"/)
-    expect(wallet).toContain('aria-label="Spark wallet setup mode"')
-    expect(wallet).not.toContain('aria-pressed={mode === "create"}')
-    expect(wallet).not.toContain('aria-pressed={mode === "restore"}')
+    expect(wallet).toContain('mode === "restore" ?')
+    expect(wallet).toContain('id="portable-mnemonic"')
+    expect(wallet).toContain("required")
     expect(wallet.match(/<form/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
     expect(wallet).toContain('type="submit"')
     expect(wallet).toContain("recoveryHeadingRef.current?.focus()")
     expect(wallet).toContain("restoreDialogFocus")
     expect(wallet).toContain("dialogTriggerRef.current = event.currentTarget")
-    expect(wallet).toContain('runtime.status === "ready" ? "Refresh" : "Retry"')
+    expect(wallet).toContain("Refresh balance")
     expect(wallet).toContain("Payment request copied.")
     expect(wallet).toContain("Copy was blocked. Copy the request manually.")
     expect(recoveryBundleDetails).toContain(
@@ -418,16 +389,17 @@ describe("Market wallet route contracts", () => {
     ).toHaveLength(1)
     expect(wallet.match(/<SparkRecoveryBundleDetails /g)).toHaveLength(2)
     expect(wallet).toMatch(
-      /Copying\s+a recovery phrase puts it on your system clipboard/
+      /Copying\s+a\s+recovery\s+phrase\s+puts\s+it\s+on\s+your\s+system\s+clipboard/
     )
-    expect(wallet).toMatch(
-      /await wallets\.createSpark\(walletLabel, password\)\s+setPassword\(""\)/
-    )
+    expect(wallet).toContain("await wallets.createSpark()")
+    expect(wallet).toContain('setMnemonic("")')
     expect(wallet).toContain("error ? (")
   })
 
   it("invalidates stale receive requests when their inputs change", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain("const clearRequest = (announceInvalidation")
     expect(wallet).toMatch(
@@ -451,7 +423,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("bounds history loading without trapping the wallet dialog", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain("SPARK_HISTORY_LOAD_TIMEOUT_MS")
     expect(wallet).toContain("Payment history took too long to load")
@@ -465,7 +439,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("makes reviewed Lightning sends the default while retaining advanced Spark transfers", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain('useState<"lightning" | "spark">("lightning")')
     expect(wallet).toContain(
@@ -502,7 +478,9 @@ describe("Market wallet route contracts", () => {
   })
 
   it("keeps ambiguous Spark sends locked until explicit acknowledgement", async () => {
-    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+    const wallet =
+      (await await readFile("packages/ui/src/components/Wallets.tsx", "utf8")) +
+      (await readFile("apps/market/src/routes/wallet.tsx", "utf8"))
 
     expect(wallet).toContain("hasUnresolvedSparkSend")
     expect(wallet).toContain("acknowledgeUnresolvedSparkSend")
@@ -516,8 +494,12 @@ describe("Market wallet route contracts", () => {
       /wallet && quote && outcome !== "ambiguous"[\s\S]{0,100}discardSparkSendQuote/
     )
     expect(wallet).toContain('outcome === "ambiguous"')
-    expect(wallet).toMatch(
-      /const prepare = async \(\) => \{[\s\S]{0,1200}hasUnresolvedSparkSend\(wallet\.id\)[\s\S]{0,160}setOutcome\("ambiguous"\)/
+    const prepareSource =
+      wallet
+        .split("const prepare = async () => {")[1]
+        ?.split("const confirm = async () => {")[0] ?? ""
+    expect(prepareSource).toMatch(
+      /if \(hasUnresolvedSparkSend\(wallet\.id\)\) \{\s*setOutcome\("ambiguous"\)/
     )
     expect(wallet).toMatch(
       /outcome === "ambiguous"\s+\? "rounded-\[var\(--radius-md\)\] border[^"]*text-\[var\(--text-secondary\)\] outline-none"/

@@ -362,28 +362,47 @@ export async function readAuthenticatedGiftWraps(
  * Playwright runner. Only public identity and relay preferences are serialized
  * into the page.
  */
+const pageSignerIdentities = new WeakMap<Page, RuntimeSignerIdentity>()
+
+export async function replaceRealTestSigner(
+  page: Page,
+  identity: RuntimeSignerIdentity
+): Promise<void> {
+  requireIdentitySecret(identity)
+  if (!pageSignerIdentities.has(page))
+    throw new Error("Install the runtime signer before replacing it.")
+  pageSignerIdentities.set(page, identity)
+  await page.evaluate((pubkey) => {
+    ;(
+      window as unknown as { nostr: { getPublicKey(): Promise<string> } }
+    ).nostr.getPublicKey = async () => pubkey
+  }, identity.pubkey)
+}
+
 export async function installRealTestSigner(
   page: Page,
   identity: RuntimeSignerIdentity,
   relayUrl: string
 ): Promise<void> {
   requireIdentitySecret(identity)
+  pageSignerIdentities.set(page, identity)
+  const activeIdentity = () => pageSignerIdentities.get(page)!
   const signBinding = "__conduitRealSignEvent"
   const encryptBinding = "__conduitRealNip44Encrypt"
   const decryptBinding = "__conduitRealNip44Decrypt"
 
   await page.exposeFunction(signBinding, (event: EventTemplate) =>
-    signRuntimeTestEvent(identity, event)
+    signRuntimeTestEvent(activeIdentity(), event)
   )
   await page.exposeFunction(
     encryptBinding,
     (peerPubkey: string, plaintext: string) =>
-      encryptRuntimeTestPayload(identity, peerPubkey, plaintext)
+      encryptRuntimeTestPayload(activeIdentity(), peerPubkey, plaintext)
   )
   await page.exposeFunction(
     decryptBinding,
     (peerPubkey: string, ciphertext: string) =>
-      decryptRuntimeTestPayload(identity, peerPubkey, ciphertext)
+      decryptRuntimeTestPayload(activeIdentity(), peerPubkey, ciphertext)
   )
 
   await page.addInitScript(

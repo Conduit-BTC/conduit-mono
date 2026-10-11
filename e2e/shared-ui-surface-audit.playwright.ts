@@ -45,7 +45,7 @@ const routes = {
     "/orders",
     "/messages",
     "/profile",
-    "/payments",
+    "/wallet",
     "/shipping",
     "/network",
     "/about",
@@ -158,17 +158,33 @@ for (const area of ["market", "merchant"] as const) {
             )
           } catch (error) {
             const message = error instanceof Error ? error.message : ""
-            navigationError = /interrupted/i.test(message)
-              ? "interrupted"
-              : /aborted/i.test(message)
-                ? "aborted"
-                : /timeout/i.test(message)
-                  ? "timeout"
-                  : "other"
+            navigationError = /crash/i.test(message)
+              ? "crashed"
+              : /closed|disposed|detached/i.test(message)
+                ? "closed"
+                : /internal error/i.test(message)
+                  ? "internal"
+                  : /interrupted/i.test(message)
+                    ? "interrupted"
+                    : /aborted|cancelled|canceled|NSURLErrorCancelled|ERR_ABORTED/i.test(
+                          message
+                        )
+                      ? "aborted"
+                      : /timeout/i.test(message)
+                        ? "timeout"
+                        : "other"
             record()
             throw error
           }
           mark("render")
+          if (route === "/wallet") {
+            await expect(page).toHaveURL(
+              `${area === "market" ? marketUrl : merchantUrl}/wallet`
+            )
+            await expect(
+              page.getByRole("button", { name: "Create wallet", exact: true })
+            ).toBeVisible()
+          }
           await page.locator("#root").waitFor({ state: "visible" })
           mark("fonts")
           // WebKit can hold FontFaceSet.ready behind unrelated images. Await
@@ -304,3 +320,30 @@ for (const area of ["market", "merchant"] as const) {
     })
   }
 }
+
+test("Merchant legacy Payments opens Wallets before the next route navigation @merchant", async ({
+  page,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await installRealTestSigner(page, identity, TEST_RELAY_URL)
+    await page.goto(`${merchantUrl}/payments`, {
+      waitUntil: "domcontentloaded",
+    })
+    await expect(page).toHaveURL(`${merchantUrl}/wallet`)
+    await expect(
+      page.getByRole("button", { name: "Create wallet", exact: true })
+    ).toBeVisible()
+    await expect(page).toHaveTitle(/Wallets/)
+    await page.goto(`${merchantUrl}/shipping`, {
+      waitUntil: "domcontentloaded",
+    })
+    await expect(page).toHaveURL(`${merchantUrl}/shipping`)
+    await expect(page.getByRole("heading").first()).toBeVisible()
+    await expect(
+      page.getByText("Something went wrong", { exact: true })
+    ).not.toBeVisible()
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})

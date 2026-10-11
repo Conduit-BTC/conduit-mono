@@ -382,3 +382,289 @@ describe("selected profile publish workflow", () => {
     )
   })
 })
+
+describe("Wallets profile-address publication", () => {
+  for (const [name, original, address, expected] of [
+    ["clears a sparse lud16 address", { lud16: "old@wallet.example" }, "", {}],
+    ["clears a sparse legacy address", { lud06: "lnurl-legacy" }, "", {}],
+    [
+      "clears legacy receiving fields while preserving metadata",
+      {
+        name: "Current",
+        about: "Biography",
+        lud06: "lnurl-legacy",
+        extension: { keep: [1, 2] },
+      },
+      "",
+      { name: "Current", about: "Biography", extension: { keep: [1, 2] } },
+    ],
+    [
+      "replaces legacy receiving fields with one intended address",
+      { lud06: "lnurl-legacy", extension: { keep: true } },
+      "new@conduit.cash",
+      { lud16: "new@conduit.cash", extension: { keep: true } },
+    ],
+  ] as const) {
+    it(name, async () => {
+      events = [profileEvent(JSON.stringify(original))]
+      await publishProfileContext({ lud16: address }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress:
+          "lud16" in original ? original.lud16 : original.lud06,
+      })
+      expect(published).toHaveLength(1)
+      expect(JSON.parse(published[0]!.content)).toEqual(expected)
+      expect(
+        (await loadSelectedProfileContext(PUBKEY)).frontier?.rawContent
+      ).toBe(published[0]!.content)
+    })
+  }
+  it("preserves unknown metadata while replacing both reviewed receiving fields", async () => {
+    const original = {
+      name: "Current",
+      about: "Biography",
+      lud16: "old@wallet.example",
+      lud06: "lnurl-legacy",
+      custom: { flags: [1, "keep"] },
+      display_name: "Display",
+    }
+    events = [profileEvent(JSON.stringify(original))]
+    await publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: original.lud16,
+    })
+    expect(published).toHaveLength(1)
+    const { lud06: _legacy, ...metadata } = original
+    expect(JSON.parse(published[0]!.content)).toEqual({
+      ...metadata,
+      lud16: "new@conduit.cash",
+    })
+  })
+  it("rejects unrelated metadata edits through the address-only workflow", async () => {
+    events = [
+      profileEvent(
+        JSON.stringify({
+          name: "Retained",
+          about: "Biography",
+          lud16: "old@wallet.example",
+        })
+      ),
+    ]
+    await expect(
+      publishProfileContext(
+        { lud16: "new@conduit.cash", name: "Erase" },
+        "market",
+        {
+          authenticatedPubkey: PUBKEY,
+          expectedLightningAddress: "old@wallet.example",
+        }
+      )
+    ).rejects.toThrow("Choose the public Lightning address")
+    expect(published).toHaveLength(0)
+  })
+  it("requires a fresh choice after a competing address change", async () => {
+    events = [
+      profileEvent(
+        JSON.stringify({
+          name: "Current",
+          about: "Biography",
+          lud16: "changed@wallet.example",
+        })
+      ),
+    ]
+    await expect(
+      publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: "reviewed@wallet.example",
+      })
+    ).rejects.toThrow("address changed")
+    expect(published).toHaveLength(0)
+  })
+  it("rebases an address choice over a completed competing profile-details edit", async () => {
+    events = [
+      profileEvent(
+        JSON.stringify({
+          name: "Edited elsewhere",
+          about: "Updated biography",
+          lud16: "old@wallet.example",
+          extension: { keep: true },
+        })
+      ),
+    ]
+    await publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: "old@wallet.example",
+    })
+    expect(JSON.parse(published[0]!.content)).toEqual({
+      name: "Edited elsewhere",
+      about: "Updated biography",
+      lud16: "new@conduit.cash",
+      extension: { keep: true },
+    })
+  })
+  it("rebases an address onto competing ordinary edits during signer consent", async () => {
+    const original = profileEvent(
+      JSON.stringify({
+        name: "Current",
+        about: "Biography",
+        lud16: "old@wallet.example",
+      })
+    )
+    const changed = profileEvent(
+      JSON.stringify({
+        name: "Changed",
+        about: "New biography",
+        extension: { concurrent: true },
+        lud16: "old@wallet.example",
+      }),
+      NOW + 40
+    )
+    events = [original]
+    let reads = 0
+    afterNetwork = () => {
+      if (++reads >= 2) events = [changed]
+    }
+    await publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: "old@wallet.example",
+    })
+    expect(published).toHaveLength(1)
+    expect(JSON.parse(published[0]!.content)).toEqual({
+      name: "Changed",
+      about: "New biography",
+      extension: { concurrent: true },
+      lud16: "new@conduit.cash",
+    })
+  })
+  it("allows the disclosed default only after confirming an empty complete profile", async () => {
+    await publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: "",
+    })
+    expect(published).toHaveLength(1)
+    expect(JSON.parse(published[0]!.content)).toEqual({
+      lud16: "new@conduit.cash",
+    })
+  })
+  it("never uses address-only updates to repair malformed profiles", async () => {
+    events = [profileEvent("not JSON")]
+    await expect(
+      publishProfileContext({ lud16: "new@conduit.cash" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: "",
+      })
+    ).rejects.toThrow("Repair your profile")
+    expect(published).toHaveLength(0)
+  })
+})
+
+describe("reviewed Lightning address normalization", () => {
+  for (const field of ["lud16", "lud06"] as const) {
+    for (const next of ["new@wallet.example", ""] as const) {
+      it(`edits a padded ${field} baseline for ${next ? "replacement" : "deletion"}`, async () => {
+        const baseline =
+          field === "lud16"
+            ? "  OLD@wallet.example  "
+            : "  https://wallet.example/LNURL/Token  "
+        events = [
+          profileEvent(
+            JSON.stringify({ [field]: baseline, extension: { keep: true } })
+          ),
+        ]
+        await publishProfileContext({ lud16: next }, "market", {
+          authenticatedPubkey: PUBKEY,
+          expectedLightningAddress: baseline,
+        })
+        const content = JSON.parse(published[0]!.content)
+        expect(published.length).toBe(1)
+        expect(content.extension.keep).toBe(true)
+        expect(content.lud06 === undefined).toBe(true)
+        expect(content.lud16 === (next || undefined)).toBe(true)
+      })
+    }
+  }
+  it("normalizes a padded lud16 while preserving complete metadata", async () => {
+    const baseline = "  OLD@wallet.example  "
+    events = [
+      profileEvent(
+        JSON.stringify({ lud16: baseline, extension: { keep: true } })
+      ),
+    ]
+    await publishProfileContext({ lud16: "old@wallet.example" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: baseline,
+    })
+    expect(published.length).toBe(1)
+    expect(
+      JSON.parse(published[0]!.content).lud16 === "old@wallet.example"
+    ).toBe(true)
+    expect(JSON.parse(published[0]!.content).extension.keep).toBe(true)
+  })
+  it("rebases a padded reviewed address over a case-only address and ordinary metadata edit", async () => {
+    const baseline = "  OLD@wallet.example  "
+    events = [
+      profileEvent(
+        JSON.stringify({ lud16: baseline, extension: { keep: true } })
+      ),
+    ]
+    let reads = 0
+    afterNetwork = () => {
+      if (++reads === 2)
+        events = [
+          profileEvent(
+            JSON.stringify({
+              lud16: "old@wallet.example",
+              name: "Updated elsewhere",
+              extension: { keep: true, added: true },
+            }),
+            NOW + 31
+          ),
+        ]
+    }
+    await publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: baseline,
+    })
+    expect(published.length).toBe(1)
+    const content = JSON.parse(published[0]!.content)
+    expect(content.name === "Updated elsewhere").toBe(true)
+    expect(content.extension.keep && content.extension.added).toBe(true)
+    expect(content.lud16 === "new@wallet.example").toBe(true)
+  })
+  it("rejects a competing destination after signing a padded baseline", async () => {
+    const baseline = "  OLD@wallet.example  "
+    events = [profileEvent(JSON.stringify({ lud16: baseline }))]
+    let reads = 0
+    afterNetwork = () => {
+      if (++reads === 2)
+        events = [
+          profileEvent(
+            JSON.stringify({ lud16: "competing@wallet.example" }),
+            NOW + 31
+          ),
+        ]
+    }
+    await expect(
+      publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: baseline,
+      })
+    ).rejects.toThrow("address changed")
+    expect(reads).toBe(2)
+    expect(published.length).toBe(0)
+  })
+  it("preserves case-sensitive legacy receiving URL paths in the choice fence", async () => {
+    events = [
+      profileEvent(
+        JSON.stringify({ lud06: "https://wallet.example/LNURL/token" })
+      ),
+    ]
+    await expect(
+      publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: "https://wallet.example/LNURL/Token",
+      })
+    ).rejects.toThrow("address changed")
+    expect(published.length).toBe(0)
+  })
+})

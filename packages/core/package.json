@@ -20,7 +20,8 @@
     "./telemetry-contract": "./src/telemetry-contract.ts",
     "./db": "./src/db/index.ts",
     "./context/*": "./src/context/*.tsx",
-    "./hooks/*": "./src/hooks/*.ts"
+    "./hooks/*": "./src/hooks/*.ts",
+    "./wallets/*": "./src/wallets/*.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -41,7 +42,9 @@
     "posthog-js": "^1.435.7",
     "tailwind-merge": "^3.7.0",
     "tldts": "7.4.16",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "@buildonspark/spark-sdk": "0.13.0",
+    "@scure/bip39": "2.4.0"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",

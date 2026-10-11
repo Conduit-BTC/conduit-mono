@@ -396,7 +396,7 @@ describe("app account-network read propagation", () => {
       source("packages/core/src/hooks/useUpdateProfile.ts"),
       source("apps/market/src/routes/profile.tsx"),
       source("apps/merchant/src/routes/profile.tsx"),
-      source("apps/merchant/src/routes/payments.tsx"),
+      source("packages/core/src/hooks/useWalletAddress.ts"),
       source("apps/market/src/routes/checkout.tsx"),
     ])
 
@@ -406,10 +406,13 @@ describe("app account-network read propagation", () => {
     expect(updateHook).toContain("authorityRef.current.authenticatedPubkey")
     expect(updateHook).toContain("authorityRef.current.authGeneration")
     expect(updateHook).toContain("publishProfileContext(profile, appId, {")
-    for (const caller of [marketProfile, merchantProfile, merchantPayments]) {
+    for (const caller of [marketProfile, merchantProfile]) {
       expect(caller).toContain("authenticatedPubkey,")
       expect(caller).toContain("authGeneration,")
     }
+    expect(merchantPayments).toContain("authenticatedPubkey: owner")
+    expect(merchantPayments).toContain("authGeneration: generation")
+    expect(merchantPayments).toContain("shouldContinue: current")
     expect(checkout).toContain(
       "shouldContinue: () => authGenerationRef.current === authGeneration"
     )

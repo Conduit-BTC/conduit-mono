@@ -14,3 +14,8 @@ export * from "./theme"
 export { cn } from "./utils"
 
 export * from "./event-timeline-presentation"
+
+export { Wallets } from "./components/Wallets"
+export { ProfileLightningAddressEditor } from "./components/ProfileLightningAddressEditor"
+export { SparkLightningAddress } from "./components/SparkLightningAddress"
+export { SparkRecoveryBundleDetails } from "./components/SparkRecoveryBundleDetails"

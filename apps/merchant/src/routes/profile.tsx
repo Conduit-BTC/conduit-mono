@@ -402,6 +402,9 @@ function ProfilePage() {
                           </p>
                         </div>
                       )}
+                      <a className="text-sm underline" href={"/wallet"}>
+                        Manage in Wallets
+                      </a>
                       {profileData?.lud16 && (
                         <div>
                           <div className="text-xs font-medium text-[var(--text-secondary)]">
@@ -683,21 +686,14 @@ function ProfilePage() {
                       />
                     </div>
 
-                    {/* Lightning Address */}
                     <div className="grid gap-1">
-                      <Label htmlFor="profile-lud16">Lightning Address</Label>
-                      <Input
-                        id="profile-lud16"
-                        value={form.lud16}
-                        onChange={(e) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            lud16: e.target.value,
-                          }))
-                        }
-                        placeholder="name@wallet-provider.com"
-                        maxLength={100}
-                      />
+                      <Label>Lightning address</Label>
+                      <p className="break-all text-sm">
+                        {profileData?.lud16 || "No Lightning address yet"}
+                      </p>
+                      <a className="text-sm underline" href={"/wallet"}>
+                        Manage in Wallets
+                      </a>
                     </div>
 
                     {/* Website */}

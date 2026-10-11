@@ -772,6 +772,12 @@ function ProductPage() {
           </section>
         )}
 
+      {cartActionError ? (
+        <p role="alert" className="text-sm text-[var(--error-text)]">
+          {cartActionError}
+        </p>
+      ) : null}
+
       {productUnavailable && product && listingAvailabilityDisplay && (
         <section className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-8 text-center sm:p-10">
           <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 text-[var(--warning-text)]">
@@ -1140,11 +1146,6 @@ function ProductPage() {
                   </Button>
                 </div>
 
-                {cartActionError ? (
-                  <p role="alert" className="text-sm text-[var(--error-text)]">
-                    {cartActionError}
-                  </p>
-                ) : null}
                 {productFulfillmentNotice || showPickupIdentityNotice ? (
                   <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
                     {showPickupIdentityNotice &&

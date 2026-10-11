@@ -59,7 +59,16 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         pendingImages: "number",
         pendingFonts: "number",
         pendingScripts: "number",
-        navigationError: ["none", "aborted", "interrupted", "timeout", "other"],
+        navigationError: [
+          "none",
+          "aborted",
+          "interrupted",
+          "timeout",
+          "closed",
+          "crashed",
+          "internal",
+          "other",
+        ],
       },
     },
     "cart-stale-action": {
@@ -116,6 +125,23 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         ],
       },
     },
+    "footer-follow": {
+      file: "e2e/mobile-safari-baseline.playwright.ts",
+      fields: {
+        phase: ["initial", "hidden", "returned"],
+        footerTop: "number",
+        cartBottom: "number",
+        scrollY: "number",
+        viewportHeight: "number",
+        footerHidden: "boolean",
+        scrollEvents: "number",
+        lastScrollY: "number",
+        lastDelta: "number",
+        mainHeight: "number",
+        maxScrollY: "number",
+        mobileQueryMatches: "boolean",
+      },
+    },
     "footer-layout": {
       file: "e2e/mobile-safari-baseline.playwright.ts",
       fields: {
@@ -134,10 +160,30 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         scrollY: "number",
         measuredFooterHeight: "number",
         footerHidden: "boolean",
+        triggerMarginBottom: "number",
+        triggerTransformY: "number",
+        footerTransformY: "number",
       },
     },
     "product-dialog-open": {
       file: "e2e/commerce.playwright.ts",
+      fields: {
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        dialogPresent: "boolean",
+        triggerEnabled: "boolean",
+        fontsAtClick: ["loading", "loaded", "unknown"],
+        triggerX: "number",
+        triggerY: "number",
+        triggerWidth: "number",
+        triggerHeight: "number",
+      },
+    },
+    "variation-dialog-open": {
+      file: "e2e/merchant-variation-shipping.playwright.ts",
       fields: {
         pointerDownOnTrigger: "boolean",
         pointerUpOnTrigger: "boolean",
@@ -233,9 +279,11 @@ export function recordSmokeDiagnostic(
     | "fallback-upload"
     | "surface-audit"
     | "cart-stale-action"
+    | "footer-follow"
     | "footer-layout"
     | "product-submit"
     | "product-dialog-open"
+    | "variation-dialog-open"
     | "order-reply"
     | "fallback-recovery",
   values: Record<string, unknown>

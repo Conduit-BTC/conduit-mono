@@ -8,7 +8,16 @@ import {
   type TestInfo,
 } from "@playwright/test"
 import { THEME_STORAGE_KEY } from "@conduit/ui/theme"
-import { installTestSigner, TEST_MERCHANT_PUBKEY } from "./helpers/auth"
+import {
+  installTestSigner,
+  TEST_MERCHANT_PUBKEY,
+  TEST_RELAY_URL,
+} from "./helpers/auth"
+import {
+  createRuntimeSignerIdentity,
+  disposeRuntimeSignerIdentity,
+  installRealTestSigner,
+} from "./helpers/real-nip07-signer"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -57,45 +66,67 @@ async function screenshot(page: Page, info: TestInfo, name: string) {
 }
 
 for (const theme of ["day-market", "night-market"] as const) {
-  test(`shared wallet setup and restore composition in ${theme} @market`, async ({
+  test(`shared wallet import composition and sensitive draft clearing in ${theme} @market`, async ({
     page,
   }, info) => {
-    await page.addInitScript(
-      ({ key, theme }) => localStorage.setItem(key, theme),
-      { key: THEME_STORAGE_KEY, theme }
-    )
-    await page.goto(`${marketUrl}/wallet`)
-    await expect(
-      page.getByRole("heading", { name: "Wallets", exact: true })
-    ).toBeVisible()
-    await expectContained(page)
-    const trigger = page.getByRole("button", {
-      name: "Add portable wallet",
-      exact: true,
-    })
-    await trigger.click()
-    const dialog = page.getByRole("dialog", { name: "Add a Spark wallet" })
-    const nickname = dialog.getByLabel("Wallet nickname (optional)")
-    const field = await expectSharedField(nickname)
-    expect(field.description).toBeTruthy()
-    await expect(page.locator(`[id="${field.description}"]`)).toContainText(
-      "stored only in this browser"
-    )
-    await dialog.getByRole("tab", { name: "Restore", exact: true }).click()
-    await expectSharedField(
-      dialog.getByLabel("Recovery phrase", { exact: true })
-    )
-    await expect(
-      dialog.getByLabel("Recovery phrase", { exact: true })
-    ).toHaveAttribute("required", "")
-    await expectContained(page)
-    await screenshot(page, info, `wallet-restore-${theme}`)
-    await page.keyboard.press("Escape")
-    await expect(dialog).not.toBeVisible()
-    await expect(trigger).toBeFocused()
-    await trigger.click()
-    await expect(nickname).toHaveValue("")
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
+    const identity = createRuntimeSignerIdentity()
+    try {
+      await installRealTestSigner(page, identity, TEST_RELAY_URL)
+      await page.addInitScript(
+        ({ key, theme }) => localStorage.setItem(key, theme),
+        { key: THEME_STORAGE_KEY, theme }
+      )
+      await page.goto(`${marketUrl}/wallet`)
+      await expect(
+        page.getByRole("heading", { name: "Wallets", exact: true })
+      ).toBeVisible()
+      await expectContained(page)
+      const trigger = page.getByRole("button", {
+        name: "Import wallet",
+        exact: true,
+      })
+      await expect(trigger).toBeEnabled()
+      await trigger.click()
+      const dialog = page.getByRole("dialog", {
+        name: "Import wallet",
+        exact: true,
+      })
+      const phrase = dialog.getByLabel("Recovery phrase", { exact: true })
+      const field = await expectSharedField(phrase)
+      expect(field.description).toBeTruthy()
+      await expect(page.locator(`[id="${field.description}"]`)).toContainText(
+        "original wallet"
+      )
+      await expect(phrase).toHaveAttribute("required", "")
+      await dialog
+        .locator("summary")
+        .filter({ hasText: "Advanced settings" })
+        .click()
+      const account = dialog.getByLabel("Spark account number", { exact: true })
+      const accountField = await expectSharedField(account)
+      expect(accountField.description).toBeTruthy()
+      await expect(
+        page.locator(`[id="${accountField.description}"]`)
+      ).toContainText("number saved with the source wallet")
+      await phrase.fill("synthetic private draft")
+      await account.fill("7")
+      await expectContained(page)
+      await screenshot(page, info, `wallet-restore-${theme}`)
+      await page.keyboard.press("Escape")
+      await expect(dialog).not.toBeVisible()
+      await expect(trigger).toBeFocused()
+      await trigger.click()
+      await expect(phrase).toHaveValue("")
+      await dialog
+        .locator("summary")
+        .filter({ hasText: "Advanced settings" })
+        .click()
+      await expect(account).toHaveValue("1")
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
+      await expect(trigger).toBeFocused()
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
   })
 
   test(`shared Events page composition in ${theme} @merchant`, async ({

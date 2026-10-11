@@ -1,3 +1,11 @@
+import { useWallets } from "@conduit/core/hooks/useWallets"
+import { getSparkWalletManager } from "@conduit/core/wallets/spark-sdk"
+import { migrateAccountNwcConnection } from "@conduit/core/wallets/wallet-migration"
+import {
+  getMarketWalletStore,
+  getMarketWalletRegistry,
+} from "@conduit/core/wallets/wallet-storage"
+import { lookupAccountReceivingInvoice } from "@conduit/core/wallets/wallet-receiving"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   createContext,
@@ -12,11 +20,12 @@ import {
 } from "react"
 import {
   getProfilePaymentAddress,
-  loadSelectedProfileContext,
+  config,
+  getWalletNetworkFromLightningConfig,
+  getAccountSigner,
   clearProtectedReadAuthenticationSuppression,
   getMerchantConversationList,
   nwcGetInfo,
-  nwcLookupInvoice,
   publishMerchantOrderMessage,
   useAuth,
   useProfile,
@@ -29,7 +38,8 @@ import {
   verifyMerchantPaymentCandidates,
   type MerchantNwcAddressStatus,
 } from "../lib/merchant-payment-verification"
-import { getNwcConnectionCacheKey } from "../lib/readiness"
+import { getNwcConnectionCacheKey, getNwcUriStorageKey } from "../lib/readiness"
+import { loadMerchantInvoiceReceivingAuthority } from "../lib/merchant-invoice"
 import { useNwcConnection } from "./useNwcConnection"
 
 type VerificationRunState = {
@@ -51,8 +61,14 @@ interface MerchantPaymentAutomationState {
   canLookupInvoices: boolean
   canCreateInvoices: boolean
   canVerifyPayments: boolean
+  wallets: ReturnType<typeof useWallets>
+  receivingWalletId: string | null
   run: VerificationRunState
   retry: () => void
+}
+
+function merchantConnectionKey(nwc: ReturnType<typeof useNwcConnection>) {
+  return nwc.connection ? getNwcConnectionCacheKey(nwc.rawUri) : "none"
 }
 
 const MerchantPaymentAutomationContext =
@@ -63,6 +79,15 @@ export function MerchantPaymentAutomationProvider({
 }: {
   children: ReactNode
 }) {
+  const value = useMerchantPaymentAutomationState()
+  return (
+    <MerchantPaymentAutomationContext.Provider value={value}>
+      {children}
+    </MerchantPaymentAutomationContext.Provider>
+  )
+}
+
+function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -76,6 +101,19 @@ export function MerchantPaymentAutomationProvider({
     shouldContinue: () => authGenerationRef.current === authGeneration,
   })
   const nwc = useNwcConnection()
+  const wallets = useWallets({ enabled: status === "connected" })
+  const receivingWallet =
+    wallets.wallets.find(
+      (wallet) =>
+        wallet.network ===
+          getWalletNetworkFromLightningConfig(config.lightningNetwork) &&
+        wallet.capabilities.includes("receive") &&
+        wallet.defaultIntents.includes("receive")
+    ) ?? null
+  const availableSparkWallets = wallets.portableWallets.filter((wallet) =>
+    getSparkWalletManager()?.canVerifyReceiving(wallet.id)
+  )
+
   const confirmedEvidenceRef = useRef(new Set<string>())
   const runningRef = useRef(false)
   const [run, setRun] = useState<VerificationRunState>({
@@ -84,9 +122,53 @@ export function MerchantPaymentAutomationProvider({
     verified: 0,
   })
   const signerConnected = status === "connected" && !!pubkey
-  const connectionKey = nwc.connection
-    ? getNwcConnectionCacheKey(nwc.rawUri)
-    : "none"
+  const connectionKey = merchantConnectionKey(nwc)
+
+  const migratedConnection = useRef<{ key: string; uri: string } | null>(null)
+  const retireMigratedUri = nwc.retireMigratedUri
+  useEffect(() => {
+    if (!nwc.rawUri) migratedConnection.current = null
+    const migrationKey = `${authGeneration}:${pubkey}:${connectionKey}`
+    if (
+      status !== "connected" ||
+      !pubkey ||
+      !nwc.rawUri ||
+      wallets.loading ||
+      (migratedConnection.current?.key === migrationKey &&
+        migratedConnection.current.uri === nwc.rawUri)
+    )
+      return
+    const uri = nwc.rawUri
+    const storageKey = getNwcUriStorageKey(pubkey)
+    const signer = getAccountSigner()
+    if (signer?.pubkey !== pubkey) return
+    const shouldContinue = () =>
+      authGenerationRef.current === authGeneration &&
+      getAccountSigner() === signer &&
+      !!storageKey &&
+      localStorage.getItem(storageKey) === uri
+    if (!shouldContinue()) return
+    migratedConnection.current = { key: migrationKey, uri }
+    void migrateAccountNwcConnection({
+      uri,
+      connect: (onRegistered) =>
+        wallets.connectNwc(uri, undefined, { shouldContinue, onRegistered }),
+      credentialStore: getMarketWalletStore(),
+      registry: getMarketWalletRegistry(),
+      shouldContinue,
+      retireLegacy: () => retireMigratedUri(uri),
+    }).catch(() => {
+      /* Preserve the legacy connection if registration or read-back fails. */
+    })
+  }, [
+    pubkey,
+    nwc.rawUri,
+    retireMigratedUri,
+    wallets,
+    status,
+    connectionKey,
+    authGeneration,
+  ])
 
   const infoQuery = useQuery({
     queryKey: ["merchant-nwc-info", pubkey ?? "none", connectionKey],
@@ -105,9 +187,11 @@ export function MerchantPaymentAutomationProvider({
   const canCreateInvoices = info?.methods.includes("make_invoice") ?? false
   const canLookupInvoices = info?.methods.includes("lookup_invoice") ?? false
   const canVerifyPayments =
-    canLookupInvoices &&
-    addressStatus !== "mismatch" &&
-    addressStatus !== "missing_profile"
+    canLookupInvoices ||
+    availableSparkWallets.length > 0 ||
+    Object.values(wallets.nwcSnapshots).some((snapshot) =>
+      snapshot.info?.methods.includes("lookup_invoice")
+    )
 
   const conversationsQuery = useQuery({
     queryKey: ["merchant-payment-verification", pubkey ?? "none"],
@@ -130,7 +214,7 @@ export function MerchantPaymentAutomationProvider({
   useEffect(() => {
     confirmedEvidenceRef.current = new Set<string>()
     setRun({ status: "idle", checked: 0, verified: 0 })
-  }, [addressStatus, nwc.connection, pubkey, authGeneration])
+  }, [pubkey, authGeneration])
 
   useEffect(() => {
     if (!conversationReadUnavailable || conversationsQuery.isFetching) return
@@ -144,11 +228,12 @@ export function MerchantPaymentAutomationProvider({
   }, [conversationReadUnavailable, conversationsQuery.isFetching])
 
   const verifyCandidates = useCallback(async () => {
-    const connection = nwc.connection
+    const initiatingSigner = getAccountSigner()
     if (
+      !initiatingSigner ||
+      initiatingSigner.pubkey !== pubkey ||
       !pubkey ||
       !signerConnected ||
-      !connection ||
       !canVerifyPayments ||
       conversationReadUnavailable ||
       runningRef.current
@@ -162,21 +247,12 @@ export function MerchantPaymentAutomationProvider({
     let localHistoryUnavailable = 0
     const confirmedEvidence = confirmedEvidenceRef.current
 
-    const assertCurrentProfileAuthority = async () => {
-      const current = await loadSelectedProfileContext(pubkey)
-      if (authGenerationRef.current !== authGeneration) {
+    const assertCurrentAuthority = () => {
+      if (
+        authGenerationRef.current !== authGeneration ||
+        getAccountSigner() !== initiatingSigner
+      )
         throw new Error("The connected account changed. Check payments again.")
-      }
-      const currentStatus = getMerchantNwcAddressStatus({
-        profileLud16: getProfilePaymentAddress(current),
-        connectionLud16: connection.lud16,
-        walletLud16: info?.lud16,
-      })
-      if (currentStatus === "mismatch" || currentStatus === "missing_profile") {
-        throw new Error(
-          "The current profile no longer confirms this payment wallet."
-        )
-      }
     }
 
     try {
@@ -184,16 +260,25 @@ export function MerchantPaymentAutomationProvider({
         candidates,
         confirmedEvidence,
         lookupInvoice: async (candidate) => {
-          await assertCurrentProfileAuthority()
-          return nwcLookupInvoice(
-            connection,
-            { invoice: candidate.invoice },
-            10_000,
-            "merchant"
-          )
+          assertCurrentAuthority()
+          const receivingWallet = await loadMerchantInvoiceReceivingAuthority({
+            merchantPubkey: pubkey,
+            buyerPubkey: candidate.buyerPubkey,
+            orderId: candidate.orderId,
+            invoice: candidate.invoice,
+            amountMsats: candidate.expectedAmountMsats,
+          })
+          assertCurrentAuthority()
+          const result = await lookupAccountReceivingInvoice({
+            owner: pubkey,
+            invoice: candidate.invoice,
+            receivingWallet: receivingWallet ?? undefined,
+          })
+          assertCurrentAuthority()
+          return result
         },
         publishConfirmation: async (candidate) => {
-          await assertCurrentProfileAuthority()
+          assertCurrentAuthority()
           const delivery = await publishMerchantOrderMessage({
             merchantPubkey: pubkey,
             buyerPubkey: candidate.buyerPubkey,
@@ -204,7 +289,9 @@ export function MerchantPaymentAutomationProvider({
             delivery: candidate.delivery,
             signerInteraction: "background_external",
             authenticatedPubkey: signerConnected ? pubkey : null,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
+            shouldContinue: () =>
+              authGenerationRef.current === authGeneration &&
+              getAccountSigner() === initiatingSigner,
           })
           if (delivery.localHistory === "unavailable")
             localHistoryUnavailable += 1
@@ -272,11 +359,9 @@ export function MerchantPaymentAutomationProvider({
     }
   }, [
     authGeneration,
-    info?.lud16,
     canVerifyPayments,
     candidates,
     conversationReadUnavailable,
-    nwc.connection,
     pubkey,
     queryClient,
     signerConnected,
@@ -324,6 +409,8 @@ export function MerchantPaymentAutomationProvider({
       canLookupInvoices,
       canCreateInvoices,
       canVerifyPayments,
+      wallets,
+      receivingWalletId: receivingWallet?.id ?? null,
       run,
       retry,
     }),
@@ -341,14 +428,12 @@ export function MerchantPaymentAutomationProvider({
       nwc.setUri,
       retry,
       run,
+      receivingWallet?.id,
+      wallets,
     ]
   )
 
-  return (
-    <MerchantPaymentAutomationContext.Provider value={value}>
-      {children}
-    </MerchantPaymentAutomationContext.Provider>
-  )
+  return value
 }
 
 export function useMerchantPaymentAutomation(): MerchantPaymentAutomationState {

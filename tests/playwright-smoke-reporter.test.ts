@@ -368,6 +368,17 @@ describe("bounded smoke failure diagnostics", () => {
         { kind: "price-interaction", click: false, quantity: 1 },
       ],
       [
+        "footer-follow",
+        "e2e/mobile-safari-baseline.playwright.ts",
+        { phase: "hidden", footerTop: 700, footerHidden: false },
+        {
+          kind: "footer-follow",
+          phase: "hidden",
+          footerTop: 700,
+          footerHidden: false,
+        },
+      ],
+      [
         "fallback-upload",
         "e2e/merchant-product-image-preview.playwright.ts",
         { phase: "publish", inboxPrompt: true },
@@ -457,56 +468,68 @@ describe("bounded smoke failure diagnostics", () => {
     ).toEqual([])
   })
 
-  it("allows only content-free product-dialog observations from commerce", () => {
-    const annotation = {
-      type: "smoke:product-dialog-open",
-      description: JSON.stringify({
-        pointerDownOnTrigger: true,
-        pointerUpOnTrigger: false,
-        clickOnTrigger: false,
-        dialogMounted: false,
-        dialogRemoved: false,
-        dialogPresent: false,
-        triggerEnabled: true,
-        fontsAtClick: "loading",
-        triggerX: 212.345,
-        triggerWidth: Infinity,
-        triggerHeight: "private-value",
-        pubkey: "private-value",
-        connectionString: "private-value",
-        message: "private-value",
-      }),
-    }
-    expect(
-      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
-    ).toEqual([
-      {
-        kind: "product-dialog-open",
-        pointerDownOnTrigger: true,
-        pointerUpOnTrigger: false,
-        clickOnTrigger: false,
-        dialogMounted: false,
-        dialogRemoved: false,
-        dialogPresent: false,
-        triggerEnabled: true,
-        fontsAtClick: "loading",
-        triggerX: 212.3,
-      },
-    ])
-    expect(
-      safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
-        annotation,
-      ])
-    ).toEqual([])
-    expect(
-      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+  it("keeps content-free dialog observations bound to each owning fixture", () => {
+    for (const [kind, file, otherOwner] of [
+      [
+        "product-dialog-open",
+        "e2e/commerce.playwright.ts",
+        "e2e/merchant-variation-shipping.playwright.ts",
+      ],
+      [
+        "variation-dialog-open",
+        "e2e/merchant-variation-shipping.playwright.ts",
+        "e2e/commerce.playwright.ts",
+      ],
+    ] as const) {
+      const annotation = {
+        type: `smoke:${kind}`,
+        description: JSON.stringify({
+          pointerDownOnTrigger: true,
+          pointerUpOnTrigger: false,
+          clickOnTrigger: false,
+          dialogMounted: false,
+          dialogRemoved: false,
+          dialogPresent: false,
+          triggerEnabled: true,
+          fontsAtClick: "loading",
+          triggerX: 212.345,
+          triggerWidth: Infinity,
+          triggerHeight: "private-value",
+          pubkey: "private-value",
+          connectionString: "private-value",
+          message: "private-value",
+        }),
+      }
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([
         {
-          ...annotation,
-          description:
-            '{"fontsAtClick":"private-value","clickOnTrigger":"private-value"}',
+          kind,
+          pointerDownOnTrigger: true,
+          pointerUpOnTrigger: false,
+          clickOnTrigger: false,
+          dialogMounted: false,
+          dialogRemoved: false,
+          dialogPresent: false,
+          triggerEnabled: true,
+          fontsAtClick: "loading",
+          triggerX: 212.3,
         },
       ])
-    ).toEqual([])
+      expect(
+        safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
+          annotation,
+        ])
+      ).toEqual([])
+      expect(
+        safeSmokeDiagnostics(file, [
+          {
+            ...annotation,
+            description:
+              '{"fontsAtClick":"private-value","clickOnTrigger":"private-value"}',
+          },
+        ])
+      ).toEqual([])
+      expect(safeSmokeDiagnostics(otherOwner, [annotation])).toEqual([])
+    }
   })
 
   it("keeps stalled-journey phases file-bound and strips unapproved values", () => {

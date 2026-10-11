@@ -77,24 +77,59 @@ async function expectVisibleDisjointControls(
 ): Promise<void> {
   await expect
     .poll(async () => {
-      const [firstBox, secondBox, viewport] = await Promise.all([
-        first.boundingBox(),
-        second.boundingBox(),
-        page.evaluate(() => ({
-          width: innerWidth,
-          height: innerHeight,
-          scrollY,
-          measuredFooterHeight:
-            Number.parseFloat(
-              getComputedStyle(document.documentElement).getPropertyValue(
-                "--market-fixed-footer-height"
-              )
-            ) || 0,
-          footerHidden:
-            document.querySelector("footer")?.getAttribute("aria-hidden") ===
-            "true",
-        })),
+      const [firstHandle, secondHandle] = await Promise.all([
+        first.elementHandle(),
+        second.elementHandle(),
       ])
+      // Both controls and chrome metrics must describe the same animation frame.
+      // Separate protocol calls can compare a moving trigger with a later footer.
+      const snapshot = await page.evaluate(
+        ({ firstElement, secondElement }) => {
+          const box = (element: Element | null) => {
+            if (!element?.isConnected) return null
+            const { x, y, width, height } = element.getBoundingClientRect()
+            if (
+              width <= 0 ||
+              height <= 0 ||
+              getComputedStyle(element).visibility !== "visible"
+            )
+              return null
+            return { x, y, width, height }
+          }
+          const rootStyle = getComputedStyle(document.documentElement)
+          const widget = firstElement?.parentElement
+          const footer = document.querySelector("footer")
+          const translateY = (element: Element | null | undefined) => {
+            if (!element) return 0
+            const transform = getComputedStyle(element).transform
+            return transform === "none"
+              ? 0
+              : new DOMMatrixReadOnly(transform).m42
+          }
+          return {
+            firstBox: box(firstElement),
+            secondBox: box(secondElement),
+            viewport: {
+              width: innerWidth,
+              height: innerHeight,
+              scrollY,
+              measuredFooterHeight:
+                Number.parseFloat(
+                  rootStyle.getPropertyValue("--market-fixed-footer-height")
+                ) || 0,
+              footerHidden: footer?.getAttribute("aria-hidden") === "true",
+              triggerMarginBottom: widget
+                ? Number.parseFloat(getComputedStyle(widget).marginBottom)
+                : 0,
+              triggerTransformY: translateY(widget),
+              footerTransformY: translateY(footer),
+            },
+          }
+        },
+        { firstElement: firstHandle, secondElement: secondHandle }
+      )
+      await Promise.all([firstHandle?.dispose(), secondHandle?.dispose()])
+      const { firstBox, secondBox, viewport } = snapshot
       const record = (layout: string) => {
         recordSmokeDiagnostic(test.info(), "footer-layout", {
           phase,
@@ -112,6 +147,9 @@ async function expectVisibleDisjointControls(
           scrollY: viewport.scrollY,
           measuredFooterHeight: viewport.measuredFooterHeight,
           footerHidden: viewport.footerHidden,
+          triggerMarginBottom: viewport.triggerMarginBottom,
+          triggerTransformY: viewport.triggerTransformY,
+          footerTransformY: viewport.footerTransformY,
         })
         return layout
       }
@@ -877,33 +915,94 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("market cart follows the hidden and returning mobile footer @market", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 320, height: 700 })
-    await seedMarketCart(page)
-    await page.goto(`${marketUrl}/products`)
-    const cart = page.getByRole("region", { name: "Cart inventory" })
-    const footer = page.locator("footer")
-    await expect(cart).toBeVisible()
-    const bottomDistance = () =>
-      cart.evaluate((element) => {
-        const wrapperBottom =
-          element.parentElement!.getBoundingClientRect().bottom
-        const footerTop = document
-          .querySelector("footer")!
-          .getBoundingClientRect().top
-        return Math.abs(footerTop - wrapperBottom)
+    let phase = "initial"
+    try {
+      await page.setViewportSize({ width: 320, height: 700 })
+      await page.addInitScript(() => {
+        const probe = ((window as any).__footerScrollProbe = {
+          count: 0,
+          last: scrollY,
+          delta: 0,
+        })
+        window.addEventListener(
+          "scroll",
+          () => {
+            probe.delta = scrollY - probe.last
+            probe.last = scrollY
+            probe.count++
+          },
+          { passive: true }
+        )
       })
-    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
-    // Give the actual scroll-driven chrome a long page without changing controls.
-    await page.locator("main").evaluate((main) => {
-      main.style.minHeight = `${innerHeight * 3}px`
-    })
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-    await expect(footer).toHaveAttribute("aria-hidden", "true")
-    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
-    await page.evaluate(() => window.scrollBy(0, -64))
-    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
-    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
-    await assertMobileViewport(page)
+      await seedMarketCart(page)
+      await page.goto(`${marketUrl}/products`)
+      const cart = page.getByRole("region", { name: "Cart inventory" })
+      const footer = page.locator("footer")
+      await expect(cart).toBeVisible()
+
+      const bottomDistance = async () => {
+        const metrics = await cart.evaluate((element) => ({
+          footerTop: document.querySelector("footer")!.getBoundingClientRect()
+            .top,
+          cartBottom: element.parentElement!.getBoundingClientRect().bottom,
+          scrollY,
+          viewportHeight: innerHeight,
+          footerHidden:
+            document.querySelector("footer")!.getAttribute("aria-hidden") ===
+            "true",
+        }))
+        recordSmokeDiagnostic(test.info(), "footer-follow", {
+          phase,
+          ...metrics,
+        })
+        return Math.abs(metrics.footerTop - metrics.cartBottom)
+      }
+      await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+      // Give the actual scroll-driven chrome a long page without changing controls.
+      await page.locator("main").evaluate((main) => {
+        main.style.minHeight = `${innerHeight * 3}px`
+      })
+      phase = "hidden"
+      recordSmokeDiagnostic(test.info(), "footer-follow", { phase })
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+      await expect(footer).toHaveAttribute("aria-hidden", "true")
+      await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+      phase = "returned"
+      recordSmokeDiagnostic(test.info(), "footer-follow", { phase })
+      await page.evaluate(() => window.scrollBy(0, -64))
+      await expect(footer).not.toHaveAttribute("aria-hidden", "true")
+      await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+      await assertMobileViewport(page)
+    } finally {
+      // Diagnostic collection must never replace the original failure.
+      const snapshot = await page
+        .evaluate(() => {
+          const footer = document.querySelector("footer")
+          const cart = document.querySelector('[aria-label="Cart inventory"]')
+          const probe = (window as any).__footerScrollProbe
+          return {
+            footerTop: footer?.getBoundingClientRect().top ?? 0,
+            cartBottom:
+              cart?.parentElement?.getBoundingClientRect().bottom ?? 0,
+            footerHidden: footer?.getAttribute("aria-hidden") === "true",
+            scrollY,
+            viewportHeight: innerHeight,
+            mainHeight:
+              document.querySelector("main")?.getBoundingClientRect().height ??
+              0,
+            maxScrollY: document.documentElement.scrollHeight - innerHeight,
+            mobileQueryMatches: matchMedia("(max-width: 639px)").matches,
+            scrollEvents: probe?.count ?? 0,
+            lastScrollY: probe?.last ?? 0,
+            lastDelta: probe?.delta ?? 0,
+          }
+        })
+        .catch(() => ({}))
+      recordSmokeDiagnostic(test.info(), "footer-follow", {
+        phase,
+        ...snapshot,
+      })
+    }
   })
 
   test("market order messages stay clear of the returning mobile footer @market", async ({

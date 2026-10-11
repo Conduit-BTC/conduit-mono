@@ -299,6 +299,51 @@ async function waitForPrivateRumor(input: {
   }
 }
 
+async function expectPrivateInvoiceHasNoWalletRouting(
+  input: Parameters<typeof waitForPrivateRumor>[0]
+): Promise<void> {
+  const wraps = await readAuthenticatedGiftWraps(
+    input.recipient,
+    TEST_RELAY_URL
+  )
+  let matched = 0
+  let exposed = 0
+  for (const wrap of wraps) {
+    const rumor = parseCanonicalRuntimePrivateRumor({
+      ...input,
+      inboxOwner: input.recipient,
+      wrap,
+    })
+    if (
+      !rumor ||
+      !rumor.tags.some(
+        ([name, value]) => name === "type" && value === "payment_request"
+      ) ||
+      !rumor.tags.some(
+        ([name, value]) => name === "order" && value === input.orderId
+      )
+    )
+      continue
+    matched += 1
+    const payload = JSON.parse(rumor.content) as Record<string, unknown>
+    if (
+      [
+        "receivingWallet",
+        "walletId",
+        "providerId",
+        "network",
+        "requestId",
+      ].some((key) => Object.hasOwn(payload, key))
+    )
+      exposed += 1
+  }
+  // Keep decrypted content and local routing identifiers out of test diagnostics.
+  expect({ received: matched > 0, exposedRoutingFields: exposed }).toEqual({
+    received: true,
+    exposedRoutingFields: 0,
+  })
+}
+
 async function publishProduct(
   page: Page,
   title: string,
@@ -493,6 +538,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
   const wrapperKeyAssignments = new Map<string, string>()
   const productTitle = `Hermetic commerce ${Date.now().toString(36)}`
   let wallet: DeterministicNwcWallet | null = null
+  let foreignWallet: DeterministicNwcWallet | null = null
   let buyerContext: BrowserContext | null = null
   let merchantContext: BrowserContext | null = null
 
@@ -512,6 +558,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       relayUrl: TEST_RELAY_URL,
     })
     await wallet.start()
+    foreignWallet = createDeterministicNwcWallet({
+      lud16: "foreign@commerce.example",
+      network: "mainnet",
+      relayUrl: TEST_RELAY_URL,
+    })
+    await foreignWallet.start()
 
     const contextOptions = {
       viewport: testInfo.project.use.viewport,
@@ -547,21 +599,119 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await publishPrivateInbox(buyerPage, marketUrl, buyer)
     await publishPrivateInbox(merchantPage, merchantUrl, merchant)
 
-    await merchantPage.goto(`${merchantUrl}/payments`)
+    await merchantPage.goto(`${merchantUrl}/wallet`)
     await expect(
-      merchantPage.getByRole("heading", { name: "Payments", exact: true })
+      merchantPage.getByRole("heading", { name: "My wallets", exact: true })
     ).toBeVisible()
-    await wallet.configureMerchantConnection(async (connectionString) => {
-      await merchantPage.getByLabel("Connection string").fill(connectionString)
-    })
+    // Retain an older mainnet default while this app creates testnet invoices.
+    await foreignWallet.configureMerchantConnection(
+      async (connectionString) => {
+        await merchantPage
+          .getByRole("button", { name: "Connect wallet", exact: true })
+          .click()
+        await merchantPage
+          .getByLabel("Wallet label", { exact: true })
+          .fill("Foreign NWC")
+        await merchantPage
+          .getByLabel("NWC connection string", { exact: true })
+          .fill(connectionString)
+        await merchantPage
+          .getByRole("button", { name: "Connect", exact: true })
+          .click()
+      }
+    )
+    await expect(
+      merchantPage.getByRole("heading", { name: "Foreign NWC", exact: true })
+    ).toBeVisible()
+    // Retain a valid older device registry with the foreign wallet first;
+    // random opaque IDs must not decide whether this regression passes.
+    await merchantPage.evaluate(
+      async (moduleUrl) => {
+        const { db } = await import(moduleUrl)
+        await db.transaction(
+          "rw",
+          [db.wallets, db.walletCredentials],
+          async () => {
+            const descriptor = (await db.wallets.toArray()).find(
+              (w: any) => w.label === "Foreign NWC"
+            )
+            const credential = await db.walletCredentials.get(descriptor.id)
+            await db.wallets.delete(descriptor.id)
+            await db.walletCredentials.delete(descriptor.id)
+            await db.wallets.put({
+              ...descriptor,
+              id: "0000-foreign-network",
+              createdAt: 1,
+            })
+            await db.walletCredentials.put({
+              ...credential,
+              walletId: "0000-foreign-network",
+            })
+          }
+        )
+      },
+      "/@fs" + process.cwd() + "/packages/core/src/index.ts"
+    )
     await merchantPage
-      .getByRole("button", { name: "Connect wallet", exact: true })
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
+      .click()
+    await merchantPage
+      .getByRole("menuitem", { name: "Use for new invoices", exact: true })
       .click()
     await expect(
-      merchantPage.getByText("Verification ready", { exact: true })
+      merchantPage
+        .getByRole("heading", { name: "Foreign NWC", exact: true })
+        .locator("..")
+        .getByText("Main wallet", { exact: true })
+    ).toBeVisible()
+    await wallet.configureMerchantConnection(async (connectionString) => {
+      await merchantPage
+        .getByRole("button", { name: "Connect wallet", exact: true })
+        .click()
+      await merchantPage
+        .getByLabel("Wallet label", { exact: true })
+        .fill("Commerce NWC")
+      await merchantPage
+        .getByLabel("NWC connection string", { exact: true })
+        .fill(connectionString)
+      await merchantPage
+        .getByRole("button", { name: "Connect", exact: true })
+        .click()
+    })
+    await expect(
+      merchantPage.getByText("Commerce NWC", { exact: true })
     ).toBeVisible({ timeout: 20_000 })
     await expect(
-      merchantPage.getByText("Receiving address matches", { exact: true })
+      merchantPage.getByText("Connected via NWC", { exact: true })
+    ).toHaveCount(2, { timeout: 20_000 })
+    await expect(
+      merchantPage.getByText("Choose this wallet at checkout.", {
+        exact: true,
+      })
+    ).toHaveCount(2)
+    await expect(
+      merchantPage.getByText(`Current address: ${merchantLud16}`, {
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      merchantPage.getByText(
+        "Payments are checked automatically against the original invoice in its receiving wallet.",
+        { exact: false }
+      )
+    ).toBeVisible({ timeout: 20_000 })
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
+      .click()
+    await merchantPage
+      .getByRole("menuitem", { name: "Use for new invoices", exact: true })
+      .click()
+    // Confirm the asynchronous default commit before a full-page navigation.
+    await expect(
+      merchantPage
+        .getByRole("heading", { name: "Commerce NWC", exact: true })
+        .locator("..")
+        .getByText("Main wallet", { exact: true })
     ).toBeVisible()
 
     await publishProduct(merchantPage, productTitle, testInfo)
@@ -724,12 +874,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     const invoiceSource = merchantPage.locator("#invoice-source")
     await expect(invoiceSource).toBeVisible({ timeout: 30_000 })
     await invoiceSource.click()
-    const nwcOption = merchantPage.getByRole("option", {
-      name: "Connected wallet (NWC)",
+    const receivingWalletOption = merchantPage.getByRole("option", {
+      name: "My receiving wallet",
       exact: true,
     })
-    await expect(nwcOption).toBeEnabled({ timeout: 20_000 })
-    await nwcOption.click()
+    await expect(receivingWalletOption).toBeEnabled({ timeout: 20_000 })
+    await receivingWalletOption.click()
     await expect(
       merchantPage.getByLabel("Amount", { exact: true })
     ).toHaveValue("21")
@@ -742,6 +892,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     })
     await expect(generateInvoice).toBeEnabled({ timeout: 20_000 })
     await generateInvoice.click()
+    await expect
+      .poll(() => ({
+        active: wallet!.snapshot().counters.makeInvoice,
+        foreign: foreignWallet!.snapshot().counters.makeInvoice,
+      }))
+      .toEqual({ active: 1, foreign: 0 })
     await expect(
       merchantPage.getByText(
         "Invoice generated and sent to the buyer's relay",
@@ -758,6 +914,13 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       })
       .toBe(true)
     await waitForPrivateRumor({
+      orderId,
+      recipient: buyer,
+      sender: merchant,
+      type: "payment_request",
+      wrapperKeyAssignments,
+    })
+    await expectPrivateInvoiceHasNoWalletRouting({
       orderId,
       recipient: buyer,
       sender: merchant,
@@ -901,11 +1064,13 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
           wrapperKeyAssignments,
         })) === 1
     ).toBe(true)
+    expect(foreignWallet.snapshot().counters.makeInvoice).toBe(0)
   } finally {
     await Promise.allSettled([
       buyerContext?.close(),
       merchantContext?.close(),
       wallet?.close(),
+      foreignWallet?.close(),
     ])
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)

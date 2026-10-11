@@ -45,7 +45,7 @@ describe("Merchant navigation shell", () => {
       'label: "Products"',
       'label: "Events"',
       'label: "Orders"',
-      'label: "Payments"',
+      'label: "Wallets"',
       'label: "Shipping"',
       'label: "Messages"',
     ])
@@ -136,7 +136,7 @@ describe("Merchant navigation shell", () => {
     expect(publicAbout).not.toContain("Open merchant workspace")
     expectInOrder(readiness, [
       'label="Profile"',
-      'label="Payments"',
+      'label="Wallets"',
       'label="Shipping"',
       'label="Network"',
     ])

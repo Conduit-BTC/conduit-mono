@@ -596,6 +596,33 @@ describe("BuyerNwcSession", () => {
     expect(clients.length).toBe(2)
   })
 
+  it("warms a receiving-only grant without requesting spending permissions", async () => {
+    let payCalls = 0
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["make_invoice", "lookup_invoice"] }),
+        payInvoice: async () => {
+          payCalls++
+          return { preimage: "must-not-pay" }
+        },
+      })
+    )
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+    expect((await session.warm()).status).toBe("reachable")
+    expect(
+      (
+        await session.payInvoice({
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          timeoutMs: 100,
+          appId: "market",
+        })
+      ).status
+    ).toBe("pre_publish_failed")
+    expect(payCalls).toBe(0)
+  })
+
   it("does not publish payment when fresh wallet info says pay_invoice is unsupported", async () => {
     let payCalls = 0
 
