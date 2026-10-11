@@ -156,7 +156,7 @@ describe("shopper price preference storage", () => {
     ).toEqual({ currency: "EUR", bitcoinUnit: "sats" })
   })
 
-  it("keeps wallet setters device-local and synchronizes only after a saved preset", async () => {
+  it("keeps display setters device-local and synchronizes only after a saved preset", async () => {
     const [pricePreference, pricing, wallet, preferences, presets] =
       await Promise.all([
         Bun.file("apps/market/src/hooks/useShopperPricePreference.ts").text(),
@@ -175,14 +175,19 @@ describe("shopper price preference storage", () => {
     expect(pricing).toContain(
       "updateExistingDevicePriceOverrideAfterPresetSave"
     )
-    expect(wallet).toContain("PriceDisplaySettings")
-    expect(wallet).toContain("shopperPricing.setCurrency")
-    expect(wallet).toContain("shopperPricing.setSatsStandard")
+    expect(wallet).not.toContain("PriceDisplaySettings")
+    expect(preferences).toContain("PriceDisplaySettings")
+    expect(preferences).toContain("shopperPricing.setCurrency")
+    expect(preferences).toContain("shopperPricing.setSatsStandard")
     expect(preferences).toContain('id="preset-display-currency"')
     expect(preferences).toContain("presets.save(value, password, policy)")
     expect(preferences).toContain("useShopperPricing")
-    expect(preferences).not.toContain("setCurrency(")
-    expect(preferences).not.toContain("setSatsStandard(")
+    const save = preferences.slice(
+      preferences.indexOf("async function save()"),
+      preferences.indexOf("async function clear()")
+    )
+    expect(save).not.toContain("setCurrency(")
+    expect(save).not.toContain("setSatsStandard(")
     const saveIndex = preferences.indexOf("const synced = await presets.save")
     const identityFenceIndex = preferences.indexOf(
       "if (currentIdentityRef.current !== identity) return",
