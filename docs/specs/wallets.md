@@ -33,7 +33,10 @@ boundary does not authorize account-key import or generation.
 A Portable Wallet seed is a separate wallet credential. It may be created or
 restored by a client-side provider adapter only when:
 
-- seed handling remains on the user's device;
+- wallet generation and provider operations remain on the user's device;
+  signer-backed recovery explicitly passes recovery plaintext to the connected
+  account signer's NIP-44 encrypt/decrypt interface, which may run off-device for
+  NIP-46;
 - no seed, mnemonic, derived key, NWC URI, invoice, address, balance, or payment
   content enters logs or telemetry;
 - the user receives a documented portable recovery path that does not depend on
@@ -66,6 +69,14 @@ verifies a signer encrypt/decrypt round trip and transactional read-back, retain
 the old encrypted envelope and its password fallback. Unsupported or denied
 encryption never falls back to plaintext. The Spark seed remains independent of
 the Nostr key, which never enters app code.
+
+Signer-backed recovery trusts the connected account signer with the wallet
+recovery plaintext. A compromised signer, or possession of the Nostr account key
+together with the encrypted recovery records, can recover the Spark wallet.
+Independent seed generation prevents deriving a wallet from the Nostr key alone;
+it does not provide compromise isolation once signer-encrypted recovery exists.
+The portable phrase, Spark account number and network remain an independent
+recovery path. Conduit-operated services do not receive the recovery plaintext.
 
 The portable recovery bundle is the BIP39 mnemonic, explicit Spark account
 number, and network. The bundle can restore the same Spark account independently
