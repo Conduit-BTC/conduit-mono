@@ -320,205 +320,306 @@ test("empty profile uses the first created address only after recovery acknowled
   }
 })
 
-test("legacy migration keeps its old encrypted copy and fresh sign-in reopens without a wallet password @market", async ({
-  page,
-}) => {
-  await prepareControlledWallet(page)
-  const identity = createRuntimeSignerIdentity()
-  await installRealTestSigner(
+for (const failure of ["none", "sdk-open", "post-open"] as const) {
+  test(`legacy migration after ${failure} keeps its old encrypted copy and fresh sign-in reopens without a wallet password @market`, async ({
     page,
-    identity,
-    `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
-  )
-  try {
-    await page.goto(`${market}/products`)
-    await expect(page.getByLabel("Open account menu")).toBeVisible()
-    await installControlledWallet(page)
-    await page.evaluate(async () => {
-      const {
-        getMarketWalletRegistry,
-        getMarketWalletStore,
-        registerSparkWalletAtomically,
-      } = await import("/src/lib/wallet-storage.ts")
-      const { encryptSparkMnemonic } =
-        await import("/src/lib/spark-recovery.ts")
-      const probe = (window as any).__walletProbe
-      probe.legacyPassword = crypto.randomUUID()
-      const binding = {
-        walletId: crypto.randomUUID(),
-        providerId: "spark" as const,
-        network: "mainnet" as const,
-        accountNumber: 7,
-      }
-      const store = getMarketWalletStore()
-      const registry = getMarketWalletRegistry()
-      const recovery = {
-        ...binding,
-        type: "password" as const,
-        recovery: await encryptSparkMnemonic(
-          probe.importMnemonic,
-          probe.legacyPassword,
-          binding
-        ),
-      }
-      const wallet = await registerSparkWalletAtomically({
-        store,
-        recovery,
-        register: () =>
-          registry.add({
-            id: binding.walletId,
-            kind: "portable",
-            providerId: "spark",
-            label: "Legacy wallet",
-            network: "mainnet",
-            capabilities: ["pay_invoice", "receive", "balance"],
-          }),
-      })
-      await registry.setDefault(wallet.id, "pay_invoice")
-    })
-    await enterWallets(page)
-    await page.getByRole("button", { name: "Open wallet", exact: true }).click()
-    await expect(
-      page.getByLabel("Wallet password", { exact: true })
-    ).toBeVisible()
-    await page.evaluate(() => {
-      const input = document.getElementById(
-        "unlock-password"
-      ) as HTMLInputElement
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value"
-      )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
-      input.dispatchEvent(new Event("input", { bubbles: true }))
-    })
-    await page
-      .getByLabel(
-        "Use Nostr sign-in from now on. Keep the existing encrypted recovery copy."
-      )
-      .click()
-    await page
-      .getByRole("button", { name: "Open and use Nostr sign-in" })
-      .click()
-    await expect(page.getByText("Ready", { exact: true })).toBeVisible()
-    expect(
-      await page.evaluate(async (moduleUrl) => {
-        const { db } = await import(moduleUrl)
-        const payload = JSON.parse(
-          (await db.walletCredentials.toArray())[0].credential
-        )
-        return {
-          signer: payload.type === "signer",
-          legacy: payload.legacyRecovery?.type === "password",
-          plaintextAbsent: !JSON.stringify(payload).includes(
-            (window as any).__walletProbe.savedMnemonic
-          ),
-          account: payload.accountNumber,
-        }
-      }, core)
-    ).toEqual({ signer: true, legacy: true, plaintextAbsent: true, account: 7 })
-    await page.getByLabel("Manage Legacy wallet").click()
-    await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
-    await page.getByRole("button", { name: "Open wallet", exact: true }).click()
-    await expect(page.getByRole("dialog")).toHaveCount(0)
-    await expect(page.getByText("Ready", { exact: true })).toBeVisible()
-    await page.getByLabel("Manage Legacy wallet").click()
-    await page
-      .getByRole("menuitem", { name: "Use previous password", exact: true })
-      .click()
-    await expect(
-      page.getByLabel("Use the previous wallet password")
-    ).toBeVisible()
-    await expect(
-      page.getByLabel("Wallet password", { exact: true })
-    ).toBeVisible()
-    await page.evaluate(() => {
-      const input = document.getElementById(
-        "unlock-password"
-      ) as HTMLInputElement
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value"
-      )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
-      input.dispatchEvent(new Event("input", { bubbles: true }))
-    })
-    await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Unlock", exact: true })
-      .click()
-    await expect(page.getByText("Ready", { exact: true })).toBeVisible()
-    const legacyPassword = await page.evaluate(
-      () => (window as any).__walletProbe.legacyPassword as string
+  }) => {
+    await prepareControlledWallet(page)
+    const identity = createRuntimeSignerIdentity()
+    await installRealTestSigner(
+      page,
+      identity,
+      `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
     )
-    // A new document gets a fresh account session and the same encrypted local
-    // wallet. The fixture controls the network layer before initialization.
-    await page.goto(`${market}/products`)
-    await expect(page.getByLabel("Open account menu")).toBeVisible()
-    await installControlledWallet(page)
-    await enterWallets(page)
-    await expect(page.getByText("Ready", { exact: true })).toBeVisible()
-    expect(
-      await page.evaluate(
-        async (moduleUrl) => ({
-          wallets: await (await import(moduleUrl)).db.wallets.count(),
-          opens: (window as any).__walletProbe.opens,
-          account: (window as any).__walletProbe.lastAccount,
-          registrations: (window as any).__walletProbe.registrations,
-        }),
-        core
-      )
-    ).toEqual({ wallets: 1, opens: 1, account: 7, registrations: 0 })
-    await page
-      .getByRole("button", { name: "Create wallet", exact: true })
-      .click()
-    await saveRecovery(page, false)
-    await page.getByLabel("Manage Legacy wallet").click()
-    await page
-      .getByRole("menuitem", { name: "Recovery details", exact: true })
-      .click()
-    let recoveryDialog = page.getByRole("dialog")
-    await recoveryDialog.getByLabel("Use the previous wallet password").check()
-    await page.evaluate((password) => {
-      const input = document.getElementById(
-        "recovery-password"
-      ) as HTMLInputElement
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value"
-      )!.set!.call(input, password)
-      input.dispatchEvent(new Event("input", { bubbles: true }))
-    }, legacyPassword)
-    await recoveryDialog
-      .getByRole("button", { name: "Show recovery phrase", exact: true })
-      .click()
-    await recoveryDialog
-      .getByRole("button", { name: "Done", exact: true })
-      .click()
-    await expect(page.getByLabel("Manage Legacy wallet")).toBeFocused()
-    await page.getByLabel("Manage Conduit Wallet").click()
-    await page
-      .getByRole("menuitem", { name: "Recovery details", exact: true })
-      .click()
-    recoveryDialog = page.getByRole("dialog")
-    await expect(
-      recoveryDialog.getByLabel("Wallet password", { exact: true })
-    ).toHaveCount(0)
-    await expect(
-      recoveryDialog.getByRole("button", {
-        name: "Show recovery phrase",
-        exact: true,
+    try {
+      await page.goto(`${market}/products`)
+      await expect(page.getByLabel("Open account menu")).toBeVisible()
+      await installControlledWallet(page)
+      await page.evaluate(async () => {
+        const {
+          getMarketWalletRegistry,
+          getMarketWalletStore,
+          registerSparkWalletAtomically,
+        } = await import("/src/lib/wallet-storage.ts")
+        const { encryptSparkMnemonic } =
+          await import("/src/lib/spark-recovery.ts")
+        const probe = (window as any).__walletProbe
+        probe.legacyPassword = crypto.randomUUID()
+        const binding = {
+          walletId: crypto.randomUUID(),
+          providerId: "spark" as const,
+          network: "mainnet" as const,
+          accountNumber: 7,
+        }
+        const store = getMarketWalletStore()
+        const registry = getMarketWalletRegistry()
+        const recovery = {
+          ...binding,
+          type: "password" as const,
+          recovery: await encryptSparkMnemonic(
+            probe.importMnemonic,
+            probe.legacyPassword,
+            binding
+          ),
+        }
+        const wallet = await registerSparkWalletAtomically({
+          store,
+          recovery,
+          register: () =>
+            registry.add({
+              id: binding.walletId,
+              kind: "portable",
+              providerId: "spark",
+              label: "Legacy wallet",
+              network: "mainnet",
+              capabilities: ["pay_invoice", "receive", "balance"],
+            }),
+        })
+        await registry.setDefault(wallet.id, "pay_invoice")
       })
-    ).toBeEnabled()
-    await recoveryDialog
-      .getByRole("button", { name: "Show recovery phrase", exact: true })
-      .click()
-    await recoveryDialog
-      .getByRole("button", { name: "Done", exact: true })
-      .click()
-    await expect(page.getByLabel("Manage Conduit Wallet")).toBeFocused()
-  } finally {
-    disposeRuntimeSignerIdentity(identity)
-  }
-})
+      await page.evaluate(
+        async ({ moduleUrl, failure }) => {
+          const { getMarketWalletStore } = await import(moduleUrl)
+          const store = getMarketWalletStore()
+          const probe = (window as any).__walletProbe
+          probe.legacyWalletId = (await store.listVisible(null))[0].id
+          probe.legacyCredential = await store.getSparkRecovery(
+            probe.legacyWalletId
+          )
+          probe.migrationWrites = 0
+          const put = store.putSparkRecovery.bind(store)
+          store.putSparkRecovery = async (
+            id: string,
+            recovery: { type: string }
+          ) => {
+            if (id === probe.legacyWalletId && recovery.type === "signer")
+              probe.migrationWrites++
+            return put(id, recovery)
+          }
+          probe.failOpen = failure === "sdk-open"
+          probe.failBalance = failure === "post-open"
+        },
+        {
+          moduleUrl:
+            "/@fs" +
+            path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+          failure,
+        }
+      )
+      await enterWallets(page)
+      await page
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      await expect(
+        page.getByLabel("Wallet password", { exact: true })
+      ).toBeVisible()
+      await page.evaluate(() => {
+        const input = document.getElementById(
+          "unlock-password"
+        ) as HTMLInputElement
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      await page
+        .getByLabel(
+          "Use Nostr sign-in from now on. Keep the existing encrypted recovery copy."
+        )
+        .click()
+      await page
+        .getByRole("button", { name: "Open and use Nostr sign-in" })
+        .click()
+      if (failure !== "none") {
+        await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+          failure === "sdk-open"
+            ? "Injected SDK open failure"
+            : "Injected post-open failure"
+        )
+        const retained = await page.evaluate(
+          async ({ storage, recovery }) => {
+            const { getMarketWalletStore } = await import(storage)
+            const { recoverStoredSparkMnemonic } = await import(recovery)
+            const store = getMarketWalletStore()
+            const probe = (window as any).__walletProbe
+            const stored = await store.getSparkRecovery(probe.legacyWalletId)
+            const recovered = await recoverStoredSparkMnemonic(
+              stored,
+              probe.legacyCredential,
+              probe.legacyPassword
+            )
+            return {
+              unchanged:
+                JSON.stringify(stored) ===
+                JSON.stringify(probe.legacyCredential),
+              signedOutVisible: (await store.listVisible(null)).some(
+                (wallet: { id: string }) => wallet.id === probe.legacyWalletId
+              ),
+              passwordOpens: recovered.mnemonic === probe.importMnemonic,
+              migrationWrites: probe.migrationWrites,
+            }
+          },
+          {
+            storage:
+              "/@fs" +
+              path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+            recovery:
+              "/@fs" +
+              path.resolve(
+                "packages/core/src/wallets/signer-spark-recovery.ts"
+              ),
+          }
+        )
+        expect(retained).toEqual({
+          unchanged: true,
+          signedOutVisible: true,
+          passwordOpens: true,
+          migrationWrites: 0,
+        })
+        await page.evaluate(() => {
+          const probe = (window as any).__walletProbe
+          probe.failOpen = false
+          probe.failBalance = false
+        })
+        await page
+          .getByRole("button", { name: "Open and use Nostr sign-in" })
+          .click()
+      }
+      await expect(page.getByRole("dialog")).toHaveCount(0)
+      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      expect(
+        await page.evaluate(() => (window as any).__walletProbe.migrationWrites)
+      ).toBe(1)
+      expect(
+        await page.evaluate(async (moduleUrl) => {
+          const { db } = await import(moduleUrl)
+          const payload = JSON.parse(
+            (await db.walletCredentials.toArray())[0].credential
+          )
+          return {
+            signer: payload.type === "signer",
+            legacy: payload.legacyRecovery?.type === "password",
+            plaintextAbsent: !JSON.stringify(payload).includes(
+              (window as any).__walletProbe.savedMnemonic
+            ),
+            account: payload.accountNumber,
+          }
+        }, core)
+      ).toEqual({
+        signer: true,
+        legacy: true,
+        plaintextAbsent: true,
+        account: 7,
+      })
+      await page.getByLabel("Manage Legacy wallet").click()
+      await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+      await page
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      await expect(page.getByRole("dialog")).toHaveCount(0)
+      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      await page.getByLabel("Manage Legacy wallet").click()
+      await page
+        .getByRole("menuitem", { name: "Use previous password", exact: true })
+        .click()
+      await expect(
+        page.getByLabel("Use the previous wallet password")
+      ).toBeVisible()
+      await expect(
+        page.getByLabel("Wallet password", { exact: true })
+      ).toBeVisible()
+      await page.evaluate(() => {
+        const input = document.getElementById(
+          "unlock-password"
+        ) as HTMLInputElement
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Unlock", exact: true })
+        .click()
+      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      const legacyPassword = await page.evaluate(
+        () => (window as any).__walletProbe.legacyPassword as string
+      )
+      // A new document gets a fresh account session and the same encrypted local
+      // wallet. The fixture controls the network layer before initialization.
+      await page.goto(`${market}/products`)
+      await expect(page.getByLabel("Open account menu")).toBeVisible()
+      await installControlledWallet(page)
+      await enterWallets(page)
+      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      expect(
+        await page.evaluate(
+          async (moduleUrl) => ({
+            wallets: await (await import(moduleUrl)).db.wallets.count(),
+            opens: (window as any).__walletProbe.opens,
+            account: (window as any).__walletProbe.lastAccount,
+            registrations: (window as any).__walletProbe.registrations,
+          }),
+          core
+        )
+      ).toEqual({ wallets: 1, opens: 1, account: 7, registrations: 0 })
+      await page
+        .getByRole("button", { name: "Create wallet", exact: true })
+        .click()
+      await saveRecovery(page, false)
+      await page.getByLabel("Manage Legacy wallet").click()
+      await page
+        .getByRole("menuitem", { name: "Recovery details", exact: true })
+        .click()
+      let recoveryDialog = page.getByRole("dialog")
+      await recoveryDialog
+        .getByLabel("Use the previous wallet password")
+        .check()
+      await page.evaluate((password) => {
+        const input = document.getElementById(
+          "recovery-password"
+        ) as HTMLInputElement
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(input, password)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      }, legacyPassword)
+      await recoveryDialog
+        .getByRole("button", { name: "Show recovery phrase", exact: true })
+        .click()
+      await recoveryDialog
+        .getByRole("button", { name: "Done", exact: true })
+        .click()
+      await expect(page.getByLabel("Manage Legacy wallet")).toBeFocused()
+      await page.getByLabel("Manage Conduit Wallet").click()
+      await page
+        .getByRole("menuitem", { name: "Recovery details", exact: true })
+        .click()
+      recoveryDialog = page.getByRole("dialog")
+      await expect(
+        recoveryDialog.getByLabel("Wallet password", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        recoveryDialog.getByRole("button", {
+          name: "Show recovery phrase",
+          exact: true,
+        })
+      ).toBeEnabled()
+      await recoveryDialog
+        .getByRole("button", { name: "Show recovery phrase", exact: true })
+        .click()
+      await recoveryDialog
+        .getByRole("button", { name: "Done", exact: true })
+        .click()
+      await expect(page.getByLabel("Manage Conduit Wallet")).toBeFocused()
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}
 
 test("receive keeps pending address setup visible and blocks conflicting controls @market", async ({
   page,

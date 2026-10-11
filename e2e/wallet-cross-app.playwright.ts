@@ -262,106 +262,151 @@ for (const app of ["market", "merchant"] as const) {
   })
 }
 for (const from of ["market", "merchant"] as const) {
-  test(`${from} imports a second main wallet and restores that selection across origins @market @merchant`, async ({
-    browser,
-  }) => {
-    const identity = createRuntimeSignerIdentity()
-    const context = await browser.newContext()
-    const source = await context.newPage()
-    const target = await context.newPage()
-    const to = from === "market" ? "merchant" : "market"
-    try {
-      for (const page of [source, target]) {
-        await prepareControlledWallet(page)
-        await installRealTestSigner(page, identity, relay)
-      }
-      await source.goto(apps[from] + "/wallet")
-      await installControlledWallet(source)
-      await source
-        .getByRole("button", { name: "Create wallet", exact: true })
-        .click()
-      await saved(source)
-      await expect(
-        source.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("wallet1@conduit.cash")
-      const first = (await wallets(source))[0]
-      await source
-        .getByRole("button", { name: "Import wallet", exact: true })
-        .click()
-      await source
-        .getByLabel("Recovery phrase", { exact: true })
-        .fill(
-          await source.evaluate(
-            () => (window as any).__walletProbe.importMnemonic
-          )
-        )
-      await source.getByText("Advanced settings", { exact: true }).click()
-      await source.getByLabel("Spark account number", { exact: true }).fill("7")
-      await source
-        .getByRole("dialog")
-        .getByRole("button", { name: "Import wallet", exact: true })
-        .click()
-      await saved(source)
-      await source
-        .getByRole("button", { name: "Keep the current address", exact: true })
-        .click()
-      const ids = await wallets(source)
-      expect(ids).toHaveLength(2)
-      const selected = ids.find((id) => id !== first)!
-      await expect(
-        source.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("wallet1@conduit.cash")
-      await target.goto(apps[to] + "/wallet")
-      await installControlledWallet(target, false, "support@conduit.cash")
-      await expect.poll(async () => (await wallets(target)).length).toBe(2)
-      await expect
-        .poll(() =>
-          target.evaluate(() =>
-            (window as any).__walletProbe.openedAccounts.sort()
-          )
-        )
-        .toEqual([1, 7])
-      const state = await target.evaluate(
-        async ({ core, storage, selected }) => {
-          const { getAccountSigner } = await import(core)
-          const { getMarketWalletStore } = await import(storage)
-          const descriptor = (
-            await getMarketWalletStore().listVisible(
-              getAccountSigner()?.pubkey ?? null
+  for (const recoveryMode of ["automatic", "foreground"] as const) {
+    test(`${from} imports a second main wallet and restores that selection through ${recoveryMode} recovery across origins @market @merchant`, async ({
+      browser,
+    }) => {
+      const identity = createRuntimeSignerIdentity()
+      const context = await browser.newContext()
+      const source = await context.newPage()
+      const target = await context.newPage()
+      const to = from === "market" ? "merchant" : "market"
+      let denyTargetRecovery = recoveryMode === "foreground"
+      try {
+        for (const page of [source, target]) {
+          await prepareControlledWallet(page)
+          await installRealTestSigner(page, identity, relay, {
+            beforeDecrypt: () => {
+              if (page === target && denyTargetRecovery)
+                throw new Error("Signer permission denied")
+            },
+          })
+        }
+        await source.goto(apps[from] + "/wallet")
+        await installControlledWallet(source)
+        await source
+          .getByRole("button", { name: "Create wallet", exact: true })
+          .click()
+        await saved(source)
+        await expect(
+          source.getByLabel("Lightning address", { exact: true })
+        ).toHaveValue("wallet1@conduit.cash")
+        const first = (await wallets(source))[0]
+        await source
+          .getByRole("button", { name: "Import wallet", exact: true })
+          .click()
+        await source
+          .getByLabel("Recovery phrase", { exact: true })
+          .fill(
+            await source.evaluate(
+              () => (window as any).__walletProbe.importMnemonic
             )
-          ).find((wallet: WalletDescriptor) => wallet.id === selected)!
-          return {
-            intents: descriptor.defaultIntents,
-            registrations: (window as any).__walletProbe.registrations,
-          }
-        },
-        { core, storage, selected }
-      )
-      expect(state.intents.sort()).toEqual(["pay_invoice", "receive"])
-      expect(state.registrations).toBe(0)
-      expect((await wallets(target)).sort()).toEqual(ids.sort())
-      await expect(
-        target.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("wallet1@conduit.cash")
-      await expect(
-        target.getByText("Main wallet", { exact: true })
-      ).toBeVisible()
-      await expect(
-        target.getByRole("button", { name: "Open wallet", exact: true })
-      ).toHaveCount(0)
-      await expect(target.getByRole("dialog")).toHaveCount(0)
-      await expect(target.getByText("Ready", { exact: true })).toHaveCount(2)
-      // All recovered signer-backed wallets open, independent of main selection.
-      await expect(
-        target.getByText("Receiving address: support@conduit.cash", {
-          exact: true,
-        })
-      ).toHaveCount(2)
-    } finally {
-      await context.close()
-      disposeRuntimeSignerIdentity(identity)
-    }
-  })
+          )
+        await source.getByText("Advanced settings", { exact: true }).click()
+        await source
+          .getByLabel("Spark account number", { exact: true })
+          .fill("7")
+        await source
+          .getByRole("dialog")
+          .getByRole("button", { name: "Import wallet", exact: true })
+          .click()
+        await saved(source)
+        await source
+          .getByRole("button", {
+            name: "Keep the current address",
+            exact: true,
+          })
+          .click()
+        const ids = await wallets(source)
+        expect(ids).toHaveLength(2)
+        const selected = ids.find((id) => id !== first)!
+        await expect(
+          source.getByLabel("Lightning address", { exact: true })
+        ).toHaveValue("wallet1@conduit.cash")
+        await target.goto(apps[to] + "/wallet")
+        await installControlledWallet(target, false, "support@conduit.cash")
+        if (recoveryMode === "foreground") {
+          await expect(
+            target.getByText(
+              "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+              { exact: true }
+            )
+          ).toBeVisible()
+          expect(await wallets(target)).toHaveLength(0)
+          denyTargetRecovery = false
+          await target
+            .getByRole("button", { name: "Create wallet", exact: true })
+            .click()
+          const dialog = target.getByRole("dialog")
+          await expect(
+            dialog.getByRole("heading", {
+              name: "Wallet imported",
+              exact: true,
+            })
+          ).toBeVisible()
+          await expect(
+            dialog.getByLabel("Make this my main wallet", { exact: true })
+          ).not.toBeChecked()
+          await saved(target)
+          // Background consent remains paused; explicitly open the other
+          // restored wallet instead of assuming automatic consent resumed.
+          const openWallet = target.getByRole("button", {
+            name: "Open wallet",
+            exact: true,
+          })
+          await expect(openWallet).toHaveCount(1)
+          await openWallet.click()
+        }
+        await expect.poll(async () => (await wallets(target)).length).toBe(2)
+        await expect
+          .poll(() =>
+            target.evaluate(() =>
+              (window as any).__walletProbe.openedAccounts.sort()
+            )
+          )
+          .toEqual([1, 7])
+        const state = await target.evaluate(
+          async ({ core, storage, selected }) => {
+            const { getAccountSigner } = await import(core)
+            const { getMarketWalletStore } = await import(storage)
+            const descriptor = (
+              await getMarketWalletStore().listVisible(
+                getAccountSigner()?.pubkey ?? null
+              )
+            ).find((wallet: WalletDescriptor) => wallet.id === selected)!
+            return {
+              intents: descriptor.defaultIntents,
+              registrations: (window as any).__walletProbe.registrations,
+            }
+          },
+          { core, storage, selected }
+        )
+        expect(state.intents.sort()).toEqual(["pay_invoice", "receive"])
+        expect(state.registrations).toBe(0)
+        expect((await wallets(target)).sort()).toEqual(ids.sort())
+        await expect(
+          target.getByLabel("Lightning address", { exact: true })
+        ).toHaveValue("wallet1@conduit.cash")
+        await expect(
+          target.getByText("Main wallet", { exact: true })
+        ).toBeVisible()
+        await expect(
+          target.getByRole("button", { name: "Open wallet", exact: true })
+        ).toHaveCount(0)
+        await expect(target.getByRole("dialog")).toHaveCount(0)
+        await expect(target.getByText("Ready", { exact: true })).toHaveCount(2)
+        // All recovered signer-backed wallets open, independent of main selection.
+        await expect(
+          target.getByText("Receiving address: support@conduit.cash", {
+            exact: true,
+          })
+        ).toHaveCount(2)
+      } finally {
+        await context.close()
+        disposeRuntimeSignerIdentity(identity)
+      }
+    })
+  }
 }
 for (const app of ["market", "merchant"] as const) {
   test(`${app} explicitly retries declined relay recovery without poisoning evidence or resuming background decryption @market @merchant`, async ({

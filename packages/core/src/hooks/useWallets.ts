@@ -1234,6 +1234,7 @@ export function useWallets(
               const signer =
                 recovered.signer ??
                 (migrate ? requireWalletSigner() : undefined)
+              let commitAfterOpen: (() => Promise<void>) | undefined
               if (migrate && stored.type === "password" && signer) {
                 const sealed = await sealSignerSparkRecovery(
                   mnemonic,
@@ -1241,27 +1242,29 @@ export function useWallets(
                   signer,
                   { priority: options.priority ?? "foreground" }
                 )
-                await store.transaction(async () => {
-                  assertWalletSignerCurrent(signer)
-                  const current = await store.getSparkRecovery(walletId)
-                  if (JSON.stringify(current) !== JSON.stringify(stored))
-                    throw new Error(
-                      "Wallet recovery changed. Reopen it before migrating."
+                commitAfterOpen = () =>
+                  store.transaction(async () => {
+                    assertWalletSignerCurrent(signer)
+                    const current = await store.getSparkRecovery(walletId)
+                    if (JSON.stringify(current) !== JSON.stringify(stored))
+                      throw new Error(
+                        "Wallet recovery changed. Reopen it before migrating."
+                      )
+                    const migrated = { ...sealed, legacyRecovery: stored }
+                    await store.putSparkRecovery(walletId, migrated)
+                    if (
+                      serializeStoredSparkWalletRecovery(
+                        (await store.getSparkRecovery(walletId))!
+                      ) !== serializeStoredSparkWalletRecovery(migrated)
                     )
-                  const migrated = { ...sealed, legacyRecovery: stored }
-                  await store.putSparkRecovery(walletId, migrated)
-                  if (
-                    serializeStoredSparkWalletRecovery(
-                      (await store.getSparkRecovery(walletId))!
-                    ) !== serializeStoredSparkWalletRecovery(migrated)
-                  )
-                    throw new Error("Wallet migration could not be verified.")
-                  assertWalletSignerCurrent(signer)
-                })
+                      throw new Error("Wallet migration could not be verified.")
+                    assertWalletSignerCurrent(signer)
+                  })
               }
               return {
                 mnemonic,
                 accountNumber: stored.accountNumber,
+                commitAfterOpen,
                 ...(signer
                   ? {
                       shouldContinue: () => isWalletSignerCurrent(signer),

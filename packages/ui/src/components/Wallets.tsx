@@ -1364,7 +1364,7 @@ function PortableWalletDialog({
       if (!current()) return
       setFirstWallet(first && publicDefaultAllowed)
       setCompletedWallet(wallet)
-      setMakeMain(first || mode === "restore")
+      setMakeMain(mode === "restore" || (first && !imported))
       setSaved(imported)
       setMnemonic("")
       setRecovery(bundle)

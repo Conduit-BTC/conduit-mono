@@ -18,6 +18,7 @@ export async function prepareControlledWallet(page: Page) {
           })
         const probe = fixtureWindow.__walletProbe
         probe.opens++
+        if (probe.failOpen) throw new Error("Injected SDK open failure")
         probe.openedAccounts.push(input.accountNumber)
         probe.lastAccount = input.accountNumber
         probe.savedMnemonic = input.mnemonic
@@ -51,6 +52,7 @@ export async function prepareControlledWallet(page: Page) {
             probe.disconnects++
           },
           async getInfo() {
+            if (probe.failBalance) throw new Error("Injected post-open failure")
             return { balanceSats: 0 }
           },
           async listPayments() {

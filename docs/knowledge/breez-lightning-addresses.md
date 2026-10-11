@@ -167,6 +167,15 @@ actions use foreground decryption for that operation only; automatic discovery
 remains paused after declined consent. Existing unresolved flags without cause
 information remain intact because their safety cannot be inferred from omission.
 
+Foreground Create can recover several wallets. Its completion dialog leaves the
+main-wallet choice unchecked so Done preserves the verified choice from discovery;
+selecting a recovered wallet does not itself authorize changing spending or receiving
+defaults. Password-to-signer migration stages encrypted recovery until native opening,
+balance refresh and both registration checks succeed under the wallet operation lock.
+SDK or post-open failure retains the original password-owned credential and signed-out
+visibility. The final credential write remains transactional and compares the original
+record before committing.
+
 ## One public profile address
 
 A wallet's receiving address and the single public Lightning address on a Nostr
