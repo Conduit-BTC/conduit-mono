@@ -1012,6 +1012,153 @@ test("Merchant retires the verified legacy NWC owner and Disconnect survives rel
   }
 })
 
+for (const failure of ["registration", "read-back"] as const) {
+  test(`Merchant retries legacy NWC ${failure} failure without reloading or changing accounts @merchant`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const wallet = createDeterministicNwcWallet({ relayUrl: relay })
+    try {
+      await wallet.start()
+      await observeController(page, "merchant")
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps.merchant + "/wallet")
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => (window as any).__walletLifecycle?.wallets.loading
+          )
+        )
+        .toBe(false)
+      await page.evaluate(
+        async ({ storage, failure, pubkey }) => {
+          const store = (await import(storage)).getMarketWalletStore()
+          const method =
+            failure === "registration" ? "putNwcCredential" : "getNwcCredential"
+          const original = store[method].bind(store)
+          const probe = ((window as any).__migrationRetryProbe = {
+            calls: 0,
+            retirements: 0,
+            generation: (window as any).__walletLifecycle.auth.authGeneration,
+          })
+          store[method] = async (...args: any[]) => {
+            probe.calls++
+            if (probe.calls === 1)
+              throw new Error("Injected migration storage failure")
+            return original(...args)
+          }
+          const removeItem = Storage.prototype.removeItem
+          Storage.prototype.removeItem = function (key) {
+            if (
+              this === localStorage &&
+              key === `conduit:merchant:nwc_uri:${pubkey}`
+            )
+              probe.retirements++
+            removeItem.call(this, key)
+          }
+        },
+        {
+          storage:
+            "/@fs" +
+            path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+          failure,
+          pubkey: identity.pubkey,
+        }
+      )
+      await wallet.configureMerchantConnection(async (uri) => {
+        await page.evaluate(
+          (value) => (window as any).__walletLifecycle.automation.setUri(value),
+          uri
+        )
+      })
+      const retry = page.getByRole("button", {
+        name: "Retry wallet setup",
+        exact: true,
+      })
+      await expect
+        .poll(() =>
+          page.evaluate(
+            async ({ core, pubkey }) => {
+              const { db } = await import(core)
+              const probe = (window as any).__migrationRetryProbe
+              return {
+                wallets: await db.wallets.count(),
+                credentials: await db.walletCredentials.count(),
+                legacy: !!localStorage.getItem(
+                  `conduit:merchant:nwc_uri:${pubkey}`
+                ),
+                calls: probe.calls,
+                retirements: probe.retirements,
+              }
+            },
+            { core, pubkey: identity.pubkey }
+          )
+        )
+        .toEqual({
+          wallets: 0,
+          credentials: 0,
+          legacy: true,
+          calls: 1,
+          retirements: 0,
+        })
+      await expect(retry).toBeVisible()
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.wallets.retryInitialization()
+      )
+      expect(
+        await page.evaluate(() => (window as any).__migrationRetryProbe.calls)
+      ).toBe(1)
+      await retry.click()
+      await expect(retry).toHaveCount(0)
+      await expect
+        .poll(() =>
+          page.evaluate(
+            async ({ core, pubkey }) => {
+              const { db } = await import(core)
+              const state = (window as any).__walletLifecycle
+              const probe = (window as any).__migrationRetryProbe
+              return {
+                wallets: await db.wallets.count(),
+                credentials: await db.walletCredentials.count(),
+                legacy: !!localStorage.getItem(
+                  `conduit:merchant:nwc_uri:${pubkey}`
+                ),
+                retirements: probe.retirements,
+                sameAuthority:
+                  state.auth.accountPubkey === pubkey &&
+                  state.auth.authGeneration === probe.generation,
+              }
+            },
+            { core, pubkey: identity.pubkey }
+          )
+        )
+        .toEqual({
+          wallets: 1,
+          credentials: 1,
+          legacy: false,
+          retirements: 1,
+          sameAuthority: true,
+        })
+      await wallet.configureMerchantConnection(async (uri) => {
+        expect(
+          await page.evaluate(
+            async ({ core, uri }) => {
+              const { db } = await import(core)
+              const stored = await db.walletCredentials.toArray()
+              return stored.length === 1 && stored[0].credential === uri
+            },
+            { core, uri }
+          )
+        ).toBe(true)
+      })
+    } finally {
+      await page.close()
+      await wallet.close()
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}
+
 test("Merchant compensates a new NWC migration copy after account replacement and retains legacy recovery @merchant", async ({
   page,
 }) => {

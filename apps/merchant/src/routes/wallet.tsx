@@ -36,10 +36,19 @@ function WalletsPage() {
             Keep Merchant open for checks. Changing your public address leaves
             existing invoices unchanged.
           </p>
+          {automation.migrationFailed && (
+            <p>
+              The saved external wallet could not be added to Wallets. Its
+              existing connection is retained.
+            </p>
+          )}
           {automation.run.message && <p>{automation.run.message}</p>}
-          {automation.run.status === "error" && (
+          {(automation.migrationFailed ||
+            automation.run.status === "error") && (
             <Button variant="outline" onClick={automation.retry}>
-              Retry payment checks
+              {automation.migrationFailed
+                ? "Retry wallet setup"
+                : "Retry payment checks"}
             </Button>
           )}
         </div>

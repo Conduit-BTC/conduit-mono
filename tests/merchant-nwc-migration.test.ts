@@ -8,12 +8,12 @@ import {
 } from "../packages/core/src/wallets/wallet-migration"
 import { registerNwcWalletAtomically } from "../packages/core/src/wallets/wallet-storage"
 
-const uri =
-  "nostr+walletconnect://" +
-  "a".repeat(64) +
-  "?relay=wss%3A%2F%2Fwallet.example&secret=" +
-  randomBytes(32).toString("hex")
 function fixture() {
+  const uri =
+    "nostr+walletconnect://" +
+    "a".repeat(64) +
+    "?relay=wss%3A%2F%2Fwallet.example&secret=" +
+    randomBytes(32).toString("hex")
   const wallets = new Map<string, WalletDescriptor>()
   const credentials = new Map<string, string>()
   let legacy: string | null = uri
@@ -103,6 +103,7 @@ function fixture() {
       },
     })
   return {
+    uri,
     wallets,
     credentials,
     connect,
@@ -151,7 +152,7 @@ describe("Merchant legacy NWC to shared-wallet migration", () => {
             f.credentials.delete(id)
           },
         },
-        uri,
+        uri: f.uri,
         shouldContinue: () => current,
         listWallets: async () => [...f.wallets.values()],
         register: async () => {

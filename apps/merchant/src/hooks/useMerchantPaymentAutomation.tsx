@@ -61,6 +61,7 @@ interface MerchantPaymentAutomationState {
   canLookupInvoices: boolean
   canCreateInvoices: boolean
   canVerifyPayments: boolean
+  migrationFailed: boolean
   wallets: ReturnType<typeof useWallets>
   receivingWalletId: string | null
   run: VerificationRunState
@@ -124,17 +125,22 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   })
   const signerConnected = status === "connected" && !!pubkey
   const connectionKey = merchantConnectionKey(nwc)
+  const migrationKey = `${authGeneration}:${pubkey}:${connectionKey}`
+  const [failedMigrationKey, setFailedMigrationKey] = useState<string | null>(
+    null
+  )
+  const migrationFailed = failedMigrationKey === migrationKey
 
   const migratedConnection = useRef<{ key: string; uri: string } | null>(null)
   const retireMigratedUri = nwc.retireMigratedUri
   useEffect(() => {
     if (!nwc.rawUri) migratedConnection.current = null
-    const migrationKey = `${authGeneration}:${pubkey}:${connectionKey}`
     if (
       status !== "connected" ||
       !pubkey ||
       !nwc.rawUri ||
       wallets.loading ||
+      migrationFailed ||
       (migratedConnection.current?.key === migrationKey &&
         migratedConnection.current.uri === nwc.rawUri)
     )
@@ -149,7 +155,8 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
       !!storageKey &&
       localStorage.getItem(storageKey) === uri
     if (!shouldContinue()) return
-    migratedConnection.current = { key: migrationKey, uri }
+    const attempt = { key: migrationKey, uri }
+    migratedConnection.current = attempt
     void migrateAccountNwcConnection({
       uri,
       connect: (onRegistered) =>
@@ -159,7 +166,10 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
       shouldContinue,
       retireLegacy: () => retireMigratedUri(uri),
     }).catch(() => {
-      /* Preserve the legacy connection if registration or read-back fails. */
+      if (migratedConnection.current !== attempt || !shouldContinue()) return
+      // Keep the attempt marker until explicit retry: an already queued effect
+      // can still hold the previous render's migrationFailed value.
+      setFailedMigrationKey(migrationKey)
     })
   }, [
     pubkey,
@@ -167,7 +177,8 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
     retireMigratedUri,
     wallets,
     status,
-    connectionKey,
+    migrationKey,
+    migrationFailed,
     authGeneration,
   ])
 
@@ -391,11 +402,17 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   ])
 
   const retry = useCallback(() => {
+    if (
+      failedMigrationKey === migrationKey &&
+      migratedConnection.current?.key === migrationKey
+    )
+      migratedConnection.current = null
+    setFailedMigrationKey(null)
     setRun({ status: "idle", checked: 0, verified: 0 })
     if (pubkey) clearProtectedReadAuthenticationSuppression(pubkey)
     void infoQuery.refetch()
     void conversationsQuery.refetch()
-  }, [conversationsQuery, infoQuery, pubkey])
+  }, [conversationsQuery, failedMigrationKey, infoQuery, migrationKey, pubkey])
 
   const value = useMemo<MerchantPaymentAutomationState>(
     () => ({
@@ -411,6 +428,7 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
       canLookupInvoices,
       canCreateInvoices,
       canVerifyPayments,
+      migrationFailed,
       wallets,
       receivingWalletId: receivingWallet?.id ?? null,
       run,
@@ -421,6 +439,7 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
       canLookupInvoices,
       canCreateInvoices,
       canVerifyPayments,
+      migrationFailed,
       info,
       infoQuery.error,
       infoQuery.isFetching,
