@@ -1,5 +1,8 @@
 import { getAccountSigner } from "../protocol/session-signer"
-import { type AccountSigner } from "../protocol/nostr-event-signer"
+import {
+  type AccountSigner,
+  type AccountSignerOperationOptions,
+} from "../protocol/nostr-event-signer"
 import { getProtectedReadAuthorization } from "../protocol/protected-read-authorization"
 import {
   publishWithPlanner,
@@ -135,7 +138,8 @@ export function assertWalletCreationDiscovery(
 export async function restoreAccountSparkWallets(
   signer: AccountSigner,
   discovery: SparkRecoveryDiscovery,
-  network: SparkRecoveryBundle["network"]
+  network: SparkRecoveryBundle["network"],
+  options: AccountSignerOperationOptions = {}
 ): Promise<Array<{ walletId: string } & SparkRecoveryBundle>> {
   assertWalletSignerCurrent(signer)
   const store = getMarketWalletStore()
@@ -158,7 +162,11 @@ export async function restoreAccountSparkWallets(
       )
     )
       continue
-    const bundle = await getAccountSparkRecovery(signer).restore(candidate)
+    const bundle = await getAccountSparkRecovery(signer).restore(
+      candidate,
+      undefined,
+      options
+    )
     if (!("walletId" in bundle) || bundle.network !== network) continue
     assertWalletSignerCurrent(signer)
     const recovery = await sealSignerSparkRecovery(
@@ -169,7 +177,8 @@ export async function restoreAccountSparkWallets(
         network: bundle.network,
         accountNumber: bundle.accountNumber,
       },
-      signer
+      signer,
+      options
     )
     const registration = await registerSparkWalletAtomically({
       store,
@@ -215,7 +224,7 @@ export async function backUpAccountSparkWallet(
   signer: AccountSigner,
   walletId: string,
   bundle: SparkRecoveryBundle,
-  lineage?: { rootBackupEventId?: string }
+  options: AccountSignerOperationOptions & { rootBackupEventId?: string } = {}
 ): Promise<boolean> {
   const service = getAccountSparkRecovery(signer)
   const store = new DexieSparkRecoveryStore()
@@ -230,16 +239,16 @@ export async function backUpAccountSparkWallet(
       candidate = { walletId, eventId: record.event.id, source: "conduit_v1" }
   }
   if (!candidate) {
-    const discovery = await service.discover(false, bundle.network)
+    const discovery = await service.discover(false, bundle.network, options)
     candidate = await service.prepare(
       bundle,
       walletId,
-      lineage
-        ? lineage.rootBackupEventId
-        : (discovery.lineageRootEventId ?? discovery.primary?.eventId)
+      options.rootBackupEventId ??
+        discovery.lineageRootEventId ??
+        discovery.primary?.eventId
     )
   }
-  const discovery = await service.discover(false, bundle.network)
+  const discovery = await service.discover(false, bundle.network, options)
   let pointer = discovery.primaryPointerEventId
   if (!pointer) pointer = await service.preparePrimary(candidate)
   const backup = await service.deliver(candidate.eventId)

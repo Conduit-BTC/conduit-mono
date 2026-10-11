@@ -312,6 +312,62 @@ describe("privacy-safe Playwright smoke reporter", () => {
 })
 
 describe("bounded smoke failure diagnostics", () => {
+  it("retains only fixed Commerce phases, timings and side-effect counts on timeout", () => {
+    const annotations = [
+      {
+        type: "smoke:commerce-journey",
+        description: JSON.stringify({
+          phase: "merchant_order",
+          elapsedSeconds: 180,
+          phaseSeconds: 100,
+          slowestPhase: "publish_product",
+          slowestSeconds: 20,
+          cleanupStarted: true,
+          cleanupComplete: false,
+          makeInvoice: 0,
+          payInvoice: 0,
+          lookupInvoice: 0,
+          foreignMakeInvoice: 0,
+          orderId: "private-value",
+          invoice: "private-value",
+          balance: 99,
+        }),
+      },
+    ]
+    const [safe] = safeSmokeDiagnostics(
+      "e2e/commerce.playwright.ts",
+      annotations
+    )
+    expect(safe).toEqual({
+      kind: "commerce-journey",
+      phase: "merchant_order",
+      elapsedSeconds: 180,
+      phaseSeconds: 100,
+      slowestPhase: "publish_product",
+      slowestSeconds: 20,
+      cleanupStarted: true,
+      cleanupComplete: false,
+      makeInvoice: 0,
+      payInvoice: 0,
+      lookupInvoice: 0,
+      foreignMakeInvoice: 0,
+    })
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-lifecycle.playwright.ts", annotations)
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+        {
+          type: "smoke:commerce-journey",
+          description: JSON.stringify({
+            phase: "private-value",
+            slowestPhase: "private-value",
+            elapsedSeconds: 32769,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
   it("exports only allowlisted scalar observations from the matching fixture", () => {
     const annotation = {
       type: "smoke:footer-layout",

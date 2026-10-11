@@ -319,7 +319,9 @@ export async function proveSparkRecoveryCapability(
     signed.content !== content
   )
     throw new NostrSignerError("invalid_response")
-  const decrypted = await signer.decryptNip44(scope.owner, signed.content)
+  const decrypted = await signer.decryptNip44(scope.owner, signed.content, {
+    priority: "foreground",
+  })
   scope.assertCurrent()
   if (decrypted !== plaintext) throw new NostrSignerError("invalid_response")
   return { ownerPubkey: scope.owner, revision: scope.revision }

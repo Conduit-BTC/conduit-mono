@@ -4,9 +4,10 @@ import { v2 } from "nostr-tools/nip44"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { ConduitDB } from "../packages/core/src/db"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
-import type {
-  AccountSigner,
-  NostrKeySigner,
+import {
+  NostrSignerError,
+  type AccountSigner,
+  type NostrKeySigner,
 } from "../packages/core/src/protocol/nostr-event-signer"
 import { DexieSparkRecoveryStore } from "../packages/core/src/wallets/spark-recovery-store"
 import {
@@ -54,6 +55,7 @@ function fixture(
   let encryptCalls = 0,
     signCalls = 0,
     decryptCalls = 0
+  let decryptFailure: Error | undefined
   const provider: NostrKeySigner = {
     pubkey: owner,
     getPublicKey: async () => owner,
@@ -69,6 +71,7 @@ function fixture(
       }),
     decryptNip44: async (_peer, ciphertext) => {
       decryptCalls++
+      if (decryptFailure) throw decryptFailure
       return v2.decrypt(ciphertext, conversation)
     },
     decryptLegacy: async () => {
@@ -161,6 +164,9 @@ function fixture(
     unavailable,
     frames,
     ...local,
+    setDecryptFailure: (error?: Error) => {
+      decryptFailure = error
+    },
     setAfterRead: (fn: () => void) => {
       afterRead = fn
     },
@@ -183,6 +189,113 @@ function bundle() {
 }
 
 describe("signer-backed Spark recovery composed foundations", () => {
+  for (const method of ["nip07", "nip46"] as const) {
+    it(`${method} foreground recovery retries after denial without poisoning the journal or resuming background work`, async () => {
+      const f = fixture({ method })
+      const service = f.service()
+      const original = bundle()
+      const candidate = await service.prepare(original)
+      const pointer = await service.preparePrimary(candidate)
+      await service.deliver(candidate.eventId)
+      await service.deliver(pointer)
+      const before = await f.store.load(f.owner)
+      const fresh = storage()
+      const recovery = f.service(fresh.store)
+      f.setDecryptFailure(new NostrSignerError("authorization_denied"))
+      await expect(recovery.discover(false, "mainnet")).rejects.toThrow(
+        "authorization_denied"
+      )
+      // Authentic positive evidence must survive even the first interrupted read.
+      expect((await fresh.store.load(f.owner)).records.length).toBeGreaterThan(
+        0
+      )
+      f.setDecryptFailure()
+      await expect(recovery.discover(false, "mainnet")).rejects.toThrow(
+        "paused"
+      )
+      expect((await fresh.store.load(f.owner)).unresolvedObserved).toBe(false)
+      const recovered = await recovery.discover(false, "mainnet", {
+        priority: "foreground",
+      })
+      expect(recovered.candidates).toHaveLength(1)
+      expect(() => assertWalletCreationDiscovery(recovered)).not.toThrow()
+      expect(
+        (
+          await recovery.restore(recovered.candidates[0], undefined, {
+            priority: "foreground",
+          })
+        ).mnemonic
+      ).toBe(original.mnemonic)
+      await recovery.preparePrimary(recovered.candidates[0])
+      await recovery.prepareMain(recovered.candidates[0])
+      await expect(recovery.discover(false, "mainnet")).rejects.toThrow(
+        "paused"
+      )
+      expect(
+        JSON.stringify((await f.store.load(f.owner)).records) ===
+          JSON.stringify(before.records)
+      ).toBe(true)
+    })
+  }
+  for (const code of ["unavailable", "invalid_response"] as const) {
+    it(`does not turn a transient ${code} decryption failure into permanent evidence`, async () => {
+      const f = fixture()
+      const candidate = await f.service().prepare(bundle())
+      await f.service().preparePrimary(candidate)
+      const before = await f.store.load(f.owner)
+      f.setDecryptFailure(new NostrSignerError(code))
+      const interrupted = await f.service().discover(false, "mainnet")
+      expect(() => assertWalletCreationDiscovery(interrupted)).toThrow()
+      const retained = await f.store.load(f.owner)
+      expect(retained.unresolvedObserved).toBe(false)
+      expect(
+        JSON.stringify(retained.records) === JSON.stringify(before.records)
+      ).toBe(true)
+      f.setDecryptFailure()
+      const recovered = await f.service().discover(false, "mainnet")
+      expect(recovered.candidates).toHaveLength(1)
+      expect(() => assertWalletCreationDiscovery(recovered)).not.toThrow()
+    })
+  }
+  for (const invalidSource of ["forged", "wrong_author"] as const) {
+    it(`does not persist ${invalidSource} relay input as owner recovery evidence`, async () => {
+      const f = fixture()
+      const owner = invalidSource === "wrong_author" ? fixture() : f
+      const signed = owner.sign({
+        kind: 30078,
+        created_at: 100,
+        tags: [["d", "conduit:spark:primary:v1:mainnet"]],
+        content: owner.encrypt("{}"),
+      })
+      const event =
+        invalidSource === "forged"
+          ? { ...signed, sig: "0".repeat(128) }
+          : signed
+      f.relays.set(
+        SPARK_RECOVERY_RENDEZVOUS[0].url,
+        new Map([[event.id, event]])
+      )
+      const service = f.service()
+      const first = await service.discover(false, "mainnet")
+      expect(() => assertWalletCreationDiscovery(first)).toThrow()
+      expect((await f.store.load(f.owner)).records).toHaveLength(0)
+      expect((await f.store.load(f.owner)).unresolvedObserved).toBe(false)
+      f.relays.clear()
+      const later = await service.discover(false, "mainnet")
+      expect(later.creationEligible).toBe(true)
+      expect(() => assertWalletCreationDiscovery(later)).not.toThrow()
+    })
+  }
+  it("does not clear a legacy unresolved flag whose original cause is unknown", async () => {
+    const f = fixture()
+    await f.store.retain(f.owner, [], true)
+    const discovery = await f
+      .service()
+      .discover(false, "mainnet", { priority: "foreground" })
+    expect(discovery.unresolvedObserved).toBe(true)
+    expect(() => assertWalletCreationDiscovery(discovery)).toThrow()
+    expect((await f.store.load(f.owner)).unresolvedObserved).toBe(true)
+  })
   it("keeps foreign recovery evidence while deciding creation only for the active network", async () => {
     const f = fixture()
     const foreign = await f

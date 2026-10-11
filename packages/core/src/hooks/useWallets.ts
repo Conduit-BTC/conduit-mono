@@ -1,3 +1,4 @@
+import type { AccountSignerOperationOptions } from "../protocol/nostr-event-signer"
 import { DexieSparkRecoveryStore } from "../wallets/spark-recovery-store"
 import { recoveryReadiness } from "../wallets/spark-recovery-service"
 import {
@@ -776,7 +777,8 @@ export function useWallets(
       const recovery = await sealSignerSparkRecovery(
         input.mnemonic,
         binding,
-        signer
+        signer,
+        { priority: "foreground" }
       )
       assertWalletSignerCurrent(signer)
       const wallet = await registerSparkWallet({
@@ -837,16 +839,23 @@ export function useWallets(
   )
 
   const synchronizeRecovery = useCallback(
-    async (signer: AccountSigner, publishExisting = false) => {
+    async (
+      signer: AccountSigner,
+      options: AccountSignerOperationOptions & {
+        publishExisting?: boolean
+      } = {}
+    ) => {
+      const { publishExisting = false } = options
       assertWalletSignerCurrent(signer)
       setRecoverySync("checking")
       const service = getAccountSparkRecovery(signer)
       const network = getSparkWalletNetwork()
-      const discovery = await service.discover(false, network)
+      const discovery = await service.discover(false, network, options)
       const restored = await restoreAccountSparkWallets(
         signer,
         discovery,
-        network
+        network,
+        options
       )
       assertWalletSignerCurrent(signer)
       const visible = await store.listVisible(signer.pubkey)
@@ -909,13 +918,20 @@ export function useWallets(
         }
         const recovered = await recoverStoredSparkMnemonic(
           credential,
-          getSparkRecoveryBinding(wallet, credential)
+          getSparkRecoveryBinding(wallet, credential),
+          "",
+          options
         )
-        const ready = await backUpAccountSparkWallet(signer, wallet.id, {
-          mnemonic: recovered.mnemonic,
-          network: wallet.network,
-          accountNumber: credential.accountNumber,
-        })
+        const ready = await backUpAccountSparkWallet(
+          signer,
+          wallet.id,
+          {
+            mnemonic: recovered.mnemonic,
+            network: wallet.network,
+            accountNumber: credential.accountNumber,
+          },
+          options
+        )
         pending ||= !ready
       }
       const mainEventId = service.getVerifiedMainChoiceEventId(
@@ -951,7 +967,10 @@ export function useWallets(
     const signer = requireWalletSigner()
     try {
       await runAccountWalletSetup(signer, () =>
-        synchronizeRecovery(signer, true)
+        synchronizeRecovery(signer, {
+          publishExisting: true,
+          priority: "foreground",
+        })
       )
     } catch (error) {
       if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
@@ -964,7 +983,9 @@ export function useWallets(
       requireSparkManager()
       const signer = requireWalletSigner()
       return runAccountWalletSetup(signer, async () => {
-        const { discovery, restored } = await synchronizeRecovery(signer)
+        const { discovery, restored } = await synchronizeRecovery(signer, {
+          priority: "foreground",
+        })
         if (restored.length) {
           const bundle = restored[0]
           const wallet = await setupSparkWallet({
@@ -994,6 +1015,7 @@ export function useWallets(
             wallet.id,
             { mnemonic, network, accountNumber },
             {
+              priority: "foreground",
               rootBackupEventId:
                 discovery.lineageRootEventId ?? discovery.primary?.eventId,
             }
@@ -1009,7 +1031,8 @@ export function useWallets(
         try {
           const afterSetup = await getAccountSparkRecovery(signer).discover(
             false,
-            network
+            network,
+            { priority: "foreground" }
           )
           publicDefaultAllowed =
             afterSetup.coverage === "complete" &&
@@ -1041,7 +1064,9 @@ export function useWallets(
       requireSparkManager()
       const signer = requireWalletSigner()
       return runAccountWalletSetup(signer, async () => {
-        const { discovery } = await synchronizeRecovery(signer)
+        const { discovery } = await synchronizeRecovery(signer, {
+          priority: "foreground",
+        })
         const network = getSparkWalletNetwork()
         const resolvedAddyEventIds: string[] = []
         for (const candidate of discovery.candidates) {
@@ -1051,7 +1076,8 @@ export function useWallets(
             {
               network,
               accountNumber: input.accountNumber,
-            }
+            },
+            { priority: "foreground" }
           )
           if (bundle.mnemonic === normalizeSparkMnemonic(input.mnemonic))
             resolvedAddyEventIds.push(candidate.eventId)
@@ -1060,8 +1086,11 @@ export function useWallets(
         let walletId: string | undefined
         for (const candidate of discovery.candidates) {
           if (candidate.source !== "conduit_v1") continue
-          const bundle =
-            await getAccountSparkRecovery(signer).restore(candidate)
+          const bundle = await getAccountSparkRecovery(signer).restore(
+            candidate,
+            undefined,
+            { priority: "foreground" }
+          )
           if (
             "walletId" in bundle &&
             bundle.network === network &&
@@ -1092,6 +1121,7 @@ export function useWallets(
               accountNumber: input.accountNumber,
             },
             {
+              priority: "foreground",
               rootBackupEventId:
                 discovery.lineageRootEventId ?? discovery.primary?.eventId,
             }
@@ -1208,7 +1238,8 @@ export function useWallets(
                 const sealed = await sealSignerSparkRecovery(
                   mnemonic,
                   binding,
-                  signer
+                  signer,
+                  { priority: options.priority ?? "foreground" }
                 )
                 await store.transaction(async () => {
                   assertWalletSignerCurrent(signer)
@@ -1616,7 +1647,11 @@ export function useWallets(
       const signer = requireWalletSigner()
       await runAccountWalletSetup(signer, async () => {
         const service = getAccountSparkRecovery(signer)
-        const discovery = await service.discover(false, getSparkWalletNetwork())
+        const discovery = await service.discover(
+          false,
+          getSparkWalletNetwork(),
+          { priority: "foreground" }
+        )
         if (
           discovery.state === "conflict" ||
           discovery.invalidCount ||

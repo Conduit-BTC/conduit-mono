@@ -1,9 +1,14 @@
 import {
   NostrSignerError,
   type AccountSigner,
+  type AccountSignerOperationOptions,
   type SignedNostrEvent,
 } from "../protocol/nostr-event-signer"
-import { getAccountSigner } from "../protocol/session-signer"
+import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
+import {
+  SessionSignerError,
+  getAccountSigner,
+} from "../protocol/session-signer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { generateId } from "../utils"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
@@ -393,12 +398,16 @@ export class SparkRecoveryService {
       return false
     }
   }
-  private async decrypt(event: SignedNostrEvent): Promise<string> {
+  private async decrypt(
+    event: SignedNostrEvent,
+    options: AccountSignerOperationOptions = {}
+  ): Promise<string> {
     const verified = validateSparkRecoveryEvent(event, this.scope.owner)
     this.scope.assertCurrent()
     const plaintext = await this.input.signer.decryptNip44(
       this.scope.owner,
-      verified.content
+      verified.content,
+      options
     )
     this.scope.assertCurrent()
     return plaintext
@@ -453,7 +462,9 @@ export class SparkRecoveryService {
     })
     this.scope.assertCurrent()
     const verified = validateSparkRecoveryEvent(event, this.scope.owner)
-    if ((await this.decrypt(verified)) !== plaintext)
+    if (
+      (await this.decrypt(verified, { priority: "foreground" })) !== plaintext
+    )
       throw new SparkRecoveryError("invalid_record")
     return verified
   }
@@ -501,7 +512,9 @@ export class SparkRecoveryService {
     const record = state.records.find((r) => r.event.id === candidate.eventId)
     if (!record || candidate.source !== "conduit_v1")
       throw new SparkRecoveryError("invalid_record")
-    const envelope = await this.restore(candidate)
+    const envelope = await this.restore(candidate, undefined, {
+      priority: "foreground",
+    })
     if (!("walletId" in envelope))
       throw new SparkRecoveryError("invalid_record")
     const createdAt = Math.max(
@@ -543,7 +556,9 @@ export class SparkRecoveryService {
     commit?: (retain: () => Promise<void>) => Promise<void>
   ): Promise<string> {
     const state = await this.load()
-    const envelope = await this.restore(candidate)
+    const envelope = await this.restore(candidate, undefined, {
+      priority: "foreground",
+    })
     if (!("walletId" in envelope))
       throw new SparkRecoveryError("invalid_record")
     const createdAt = Math.max(
@@ -586,12 +601,13 @@ export class SparkRecoveryService {
 
   async restore(
     candidate: SparkRecoveryCandidate,
-    addySource?: Pick<SparkRecoveryBundle, "network" | "accountNumber">
+    addySource?: Pick<SparkRecoveryBundle, "network" | "accountNumber">,
+    options: AccountSignerOperationOptions = {}
   ): Promise<SparkRecoveryEnvelope | SparkRecoveryBundle> {
     const state = await this.load()
     const record = state.records.find((r) => r.event.id === candidate.eventId)
     if (!record) throw new SparkRecoveryError("invalid_record")
-    const plaintext = await this.decrypt(record.event)
+    const plaintext = await this.decrypt(record.event, options)
     const d = record.event.tags.find((t) => t[0] === "d")?.[1]
     if (!d) throw new SparkRecoveryError("invalid_record")
     if (d.startsWith("spark-wallet-backup")) {
@@ -608,12 +624,62 @@ export class SparkRecoveryService {
 
   async discover(
     hasLocalWallet = false,
-    network?: SparkRecoveryBundle["network"]
+    network?: SparkRecoveryBundle["network"],
+    options: AccountSignerOperationOptions = {}
   ): Promise<SparkRecoveryDiscovery> {
     const saved = await this.load()
     const records = new Map(saved.records.map((r) => [r.event.id, r]))
     const sources: SparkRecoveryDiscovery["sources"] = []
     let invalidCount = 0
+    let unresolvedObserved = saved.unresolvedObserved
+    const admit = (results: SparkRecoveryRead[]) => {
+      for (const input of results.flatMap((read) =>
+        read.events.slice(0, MAX_RECORDS)
+      )) {
+        // NIP-01 has exact #d matching, no namespace prefix filter.
+        if (
+          !input.tags?.some(
+            (t) =>
+              t[0] === "d" &&
+              (isSparkRecoveryAddress(t[1]) ||
+                t[1]?.startsWith("conduit:spark:"))
+          )
+        )
+          continue
+        try {
+          const event = validateSparkRecoveryEvent(input, this.scope.owner)
+          if (!records.has(event.id)) records.set(event.id, this.record(event))
+        } catch {
+          invalidCount++
+          // Only authenticated owner recovery evidence can outlive this read.
+          // Malformed plaintext is never retained, but its signed existence
+          // still blocks duplicate creation after a relay omits it.
+          if (
+            input.pubkey === this.scope.owner &&
+            input.kind === SPARK_RECOVERY_KIND &&
+            isValidSignedPublicNostrEvent(input)
+          )
+            unresolvedObserved = true
+        }
+      }
+    }
+    const retainObserved = async () => {
+      let retained: SparkRecoveryRecord[]
+      try {
+        retained = validateSparkRecoveryState(
+          {
+            ownerPubkey: this.scope.owner,
+            records: [...records.values()],
+            unresolvedObserved,
+          },
+          this.scope.owner
+        ).records
+      } catch {
+        throw new SparkRecoveryError("conflict")
+      }
+      await this.retain(retained, unresolvedObserved)
+      return retained
+    }
     // Primary coordinates cannot be crowded out by unrelated NIP-78 records.
     // Broad coverage still governs creation; exact positive evidence only restores.
     const readAt = async (
@@ -665,30 +731,13 @@ export class SparkRecoveryService {
       })
     )
     const references = new Set<string>()
-    const pointerEvidence = new Map(
-      saved.records.map((r) => [r.event.id, r.event])
-    )
-    for (const { results } of reads) {
-      for (const event of results.flatMap((read) =>
-        read.events.slice(0, MAX_RECORDS)
-      )) {
-        if (
-          event.tags?.some(
-            (tag) => tag[0] === "d" && !!parseSparkRecoveryChoiceAddress(tag[1])
-          )
-        ) {
-          try {
-            const verified = validateSparkRecoveryEvent(event, this.scope.owner)
-            pointerEvidence.set(verified.id, verified)
-          } catch {
-            invalidCount++
-          }
-        }
-      }
-    }
+    for (const { results } of reads) admit(results)
+    // Retain positive evidence before asking the signer. Denial, pause, or a
+    // provider outage must neither erase it nor become a permanent data verdict.
+    await retainObserved()
     // Serialize signer decryption. Signed references survive omissions and are
     // followed across the whole bounded plan, not only their source relay.
-    for (const input of pointerEvidence.values()) {
+    for (const { event: input } of records.values()) {
       if (
         !input.tags.some(
           (tag) => tag[0] === "d" && !!parseSparkRecoveryChoiceAddress(tag[1])
@@ -697,7 +746,7 @@ export class SparkRecoveryService {
         continue
       try {
         const event = validateSparkRecoveryEvent(input, this.scope.owner)
-        const plaintext = await this.decrypt(event)
+        const plaintext = await this.decrypt(event, options)
         const pointer = event.tags.some(
           (t) =>
             t[0] === "d" &&
@@ -709,9 +758,10 @@ export class SparkRecoveryService {
       } catch (error) {
         this.scope.assertCurrent()
         if (
-          error instanceof NostrSignerError &&
-          error.code !== "invalid_response" &&
-          error.code !== "unavailable"
+          error instanceof SessionSignerError ||
+          (error instanceof NostrSignerError &&
+            error.code !== "invalid_response" &&
+            error.code !== "unavailable")
         )
           throw error
         invalidCount++
@@ -720,11 +770,11 @@ export class SparkRecoveryService {
     if (references.size > MAX_RECORDS) throw new SparkRecoveryError("conflict")
     await Promise.all(
       reads.map(async ({ target, results }) => {
-        results.push(
-          ...(await Promise.all(
-            [...references].map((eventId) => readAt(target.url, eventId))
-          ))
+        const referenced = await Promise.all(
+          [...references].map((eventId) => readAt(target.url, eventId))
         )
+        admit(referenced)
+        results.push(...referenced)
       })
     )
     for (const { target, results } of reads) {
@@ -737,43 +787,10 @@ export class SparkRecoveryService {
           ? "unavailable"
           : "partial"
       sources.push({ url: target.url, status })
-      for (const input of results.flatMap((read) =>
-        read.events.slice(0, MAX_RECORDS)
-      )) {
-        // NIP-01 has exact #d matching, no namespace prefix filter. Never decrypt unrelated app records.
-        if (
-          !input.tags?.some(
-            (t) =>
-              t[0] === "d" &&
-              (isSparkRecoveryAddress(t[1]) ||
-                t[1]?.startsWith("conduit:spark:"))
-          )
-        )
-          continue
-        try {
-          const event = validateSparkRecoveryEvent(input, this.scope.owner)
-          if (!records.has(event.id)) records.set(event.id, this.record(event))
-        } catch {
-          invalidCount++
-        }
-      }
     }
-    let retainedRecords: SparkRecoveryRecord[]
-    try {
-      retainedRecords = validateSparkRecoveryState(
-        {
-          ownerPubkey: this.scope.owner,
-          records: [...records.values()],
-          unresolvedObserved: invalidCount > 0,
-        },
-        this.scope.owner
-      ).records
-    } catch {
-      throw new SparkRecoveryError("conflict")
-    }
+    const retainedRecords = await retainObserved()
     records.clear()
     for (const record of retainedRecords) records.set(record.event.id, record)
-    await this.retain(retainedRecords, invalidCount > 0)
     const candidates: SparkRecoveryCandidate[] = []
     const envelopes = new Map<string, SparkRecoveryEnvelope>()
     const addyPhrases = new Map<string, string>()
@@ -796,7 +813,7 @@ export class SparkRecoveryService {
         continue
       }
       try {
-        const plaintext = await this.decrypt(event)
+        const plaintext = await this.decrypt(event, options)
         // Validate the legacy phrase/address now. Actual source parameters remain required at restore.
         if (d.startsWith("spark-wallet-backup")) {
           addyPhrases.set(event.id, validateAddySparkMnemonic(plaintext, event))
@@ -831,9 +848,10 @@ export class SparkRecoveryService {
         this.scope.assertCurrent()
         // Denial/timeout/unsupported remain actionable signer failures, not malformed data.
         if (
-          error instanceof NostrSignerError &&
-          error.code !== "invalid_response" &&
-          error.code !== "unavailable"
+          error instanceof SessionSignerError ||
+          (error instanceof NostrSignerError &&
+            error.code !== "invalid_response" &&
+            error.code !== "unavailable")
         )
           throw error
         invalidCount++
@@ -941,7 +959,7 @@ export class SparkRecoveryService {
           !scopedPointers.length &&
           !mainInScope
         : records.size === 0) &&
-      !saved.unresolvedObserved &&
+      !unresolvedObserved &&
       invalidCount === 0 &&
       !hasLocalWallet
     const primaryPointerEventId =
@@ -976,7 +994,7 @@ export class SparkRecoveryService {
       main: conflict ? undefined : main,
       invalidCount,
       sources,
-      unresolvedObserved: saved.unresolvedObserved,
+      unresolvedObserved,
       creationEligible,
     }
   }

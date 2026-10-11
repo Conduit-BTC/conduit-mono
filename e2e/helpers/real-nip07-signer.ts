@@ -382,7 +382,8 @@ export async function replaceRealTestSigner(
 export async function installRealTestSigner(
   page: Page,
   identity: RuntimeSignerIdentity,
-  relayUrl: string
+  relayUrl: string,
+  options: { beforeDecrypt?: () => void } = {}
 ): Promise<void> {
   requireIdentitySecret(identity)
   pageSignerIdentities.set(page, identity)
@@ -401,8 +402,10 @@ export async function installRealTestSigner(
   )
   await page.exposeFunction(
     decryptBinding,
-    (peerPubkey: string, ciphertext: string) =>
-      decryptRuntimeTestPayload(activeIdentity(), peerPubkey, ciphertext)
+    (peerPubkey: string, ciphertext: string) => {
+      options.beforeDecrypt?.()
+      return decryptRuntimeTestPayload(activeIdentity(), peerPubkey, ciphertext)
+    }
   )
 
   await page.addInitScript(

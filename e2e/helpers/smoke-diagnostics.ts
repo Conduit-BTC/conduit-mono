@@ -1,8 +1,79 @@
 import type { TestInfo } from "@playwright/test"
 
+export const commerceJourneyPhases = [
+  "seed_profiles",
+  "start_wallets",
+  "create_contexts",
+  "install_signers",
+  "buyer_inbox",
+  "merchant_inbox",
+  "wallet_route",
+  "foreign_wallet",
+  "foreign_open_dialog",
+  "foreign_connection_form",
+  "foreign_connection_submit",
+  "foreign_connected",
+  "foreign_registry_order",
+  "foreign_manage",
+  "foreign_select_default",
+  "foreign_default_committed",
+  "receiving_wallet",
+  "receiving_open_dialog",
+  "receiving_connection_form",
+  "receiving_connection_submit",
+  "receiving_connected",
+  "receiving_manage",
+  "receiving_select_default",
+  "receiving_default_committed",
+  "publish_product",
+  "verify_product",
+  "store_discovery",
+  "filtered_store",
+  "store_catalog",
+  "store_presence",
+  "legacy_redirect",
+  "store_ready",
+  "empty_search",
+  "product_search",
+  "cart_add",
+  "checkout",
+  "send_order",
+  "merchant_delivery",
+  "merchant_order",
+  "accept_order",
+  "buyer_status",
+  "generate_invoice",
+  "invoice_delivery",
+  "pay_invoice",
+  "payment_proof",
+  "merchant_settlement",
+  "merchant_paid",
+  "buyer_paid",
+  "reload",
+  "exactly_once",
+  "complete",
+] as const
+export type CommerceJourneyPhase = (typeof commerceJourneyPhases)[number]
+
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "commerce-journey": {
+      file: "e2e/commerce.playwright.ts",
+      fields: {
+        phase: commerceJourneyPhases,
+        elapsedSeconds: "number",
+        phaseSeconds: "number",
+        slowestPhase: commerceJourneyPhases,
+        slowestSeconds: "number",
+        cleanupStarted: "boolean",
+        cleanupComplete: "boolean",
+        makeInvoice: "number",
+        payInvoice: "number",
+        lookupInvoice: "number",
+        foreignMakeInvoice: "number",
+      },
+    },
     "price-interaction": {
       file: "e2e/shared-ui-visual-contract.playwright.ts",
       fields: {
@@ -282,6 +353,7 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "commerce-journey"
     | "price-interaction"
     | "fallback-upload"
     | "surface-audit"

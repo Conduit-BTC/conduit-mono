@@ -49,7 +49,8 @@ export function assertWalletSignerCurrent(signer: AccountSigner): void {
 export async function sealSignerSparkRecovery(
   mnemonic: string,
   binding: SparkRecoveryBinding,
-  signer = requireWalletSigner()
+  signer = requireWalletSigner(),
+  options: { priority?: "foreground" | "background" } = {}
 ): Promise<SignerSparkRecovery> {
   if (
     !binding.walletId ||
@@ -88,7 +89,10 @@ export async function sealSignerSparkRecovery(
     ciphertext,
   }
   // Prove real permission and round-trip recovery before committing credentials.
-  if ((await openSignerSparkRecovery(recovery, binding, signer)) !== mnemonic)
+  if (
+    (await openSignerSparkRecovery(recovery, binding, signer, options)) !==
+    mnemonic
+  )
     throw new Error("Wallet encryption verification failed.")
   return recovery
 }

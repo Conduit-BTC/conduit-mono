@@ -157,6 +157,16 @@ selection is per configured network, while all backups retain the common lineage
 Spending-only and receiving-only overrides remain local. Wallet balances use sats
 in both apps; account-wide currency preference sync is separate follow-up work.
 
+Recovery admission distinguishes authenticated evidence from the ability to
+process it. Forged signatures and other authors never create a durable owner
+warning. Authentic backups and choices are retained before signer decryption;
+owner-signed malformed recovery that cannot be retained still blocks later
+creation. Provider outages, invalid provider responses and background pauses do
+not become permanent integrity verdicts. Explicit Sync, Create, Import and Main
+actions use foreground decryption for that operation only; automatic discovery
+remains paused after declined consent. Existing unresolved flags without cause
+information remain intact because their safety cannot be inferred from omission.
+
 ## One public profile address
 
 A wallet's receiving address and the single public Lightning address on a Nostr
@@ -311,7 +321,12 @@ wallet service and asserts the Wallets document title, late account-change
 compensation and retained legacy recovery. Unsupported-network and unavailable
 coordination cases retain signed-in external and legacy wallet visibility.
 The Commerce journey confirms the committed receiving default before full-page
-navigation; the image retry case waits for a controlled NIP-07 restoration before
+navigation. Store presence assertions wait for the positive unfiltered catalog
+count: a filtered zero also appears while the catalog is loading and does not
+prove discovery readiness. A bounded Commerce annotation records the last phase, elapsed/phase
+timing, slowest completed phase, cleanup state and invoice-operation counts even
+when the journey times out. It contains no order, invoice, identity or recovery
+payload. The image retry case waits for a controlled NIP-07 restoration before
 opening the account-owned draft. The existing sensitive
 dialog dismissal smoke retains password clearing, recovery acknowledgement reset
 and focus restoration. NWC failure/read-back/account-replacement regressions use
@@ -337,7 +352,12 @@ These remain controlled local evidence.
 Recovery traces, screenshots and video are disabled; retained visual artifacts
 show only empty/finished states.
 `e2e/wallet-cross-app.playwright.ts` exercises both origins with real
-NIP-44/signatures and an isolated NIP-42 relay, including concurrent setup.
+NIP-44/signatures and an isolated NIP-42 relay, including concurrent setup and
+both-app explicit recovery after declined automatic decryption. The retry
+restores the original wallet, keeps the journal clear of a false integrity flag
+and leaves background consent paused. Service/store regressions cover temporary
+provider failures, forged/wrong-author input, authentic malformed evidence and
+preservation of legacy warnings with unknown cause.
 `tests/signer-spark-relay-recovery.test.ts` uses real cryptography and first-party
 identity derivation for fresh-store restore, partial discovery, immutable
 retries, revocation and conflicts. Exact Merchant settlement and immutable

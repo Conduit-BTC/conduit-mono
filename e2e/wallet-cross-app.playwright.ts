@@ -363,6 +363,95 @@ for (const from of ["market", "merchant"] as const) {
     }
   })
 }
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} explicitly retries declined relay recovery without poisoning evidence or resuming background decryption @market @merchant`, async ({
+    browser,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const context = await browser.newContext()
+    const source = await context.newPage()
+    const target = await context.newPage()
+    const from = app === "market" ? "merchant" : "market"
+    let denied = true
+    let decryptRequests = 0
+    try {
+      for (const page of [source, target]) await prepareControlledWallet(page)
+      await installRealTestSigner(source, identity, relay)
+      await installRealTestSigner(target, identity, relay, {
+        beforeDecrypt: () => {
+          decryptRequests++
+          if (denied) throw new Error("Signer permission denied")
+        },
+      })
+      await source.goto(apps[from] + "/wallet")
+      await installControlledWallet(source)
+      await source
+        .getByRole("button", { name: "Create wallet", exact: true })
+        .click()
+      await saved(source)
+      const originalWallets = await wallets(source)
+      expect(originalWallets).toHaveLength(1)
+
+      await target.goto(apps[app] + "/wallet")
+      await installControlledWallet(target)
+      const blocked = target.getByText(
+        "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+        { exact: true }
+      )
+      await expect(blocked).toBeVisible()
+      expect(decryptRequests).toBe(1)
+      expect(await wallets(target)).toHaveLength(0)
+      const journal = () =>
+        target.evaluate(async (moduleUrl) => {
+          const { db, getAccountSigner } = await import(moduleUrl)
+          const evidence = await db.sparkRecoveryEvidence.get(
+            getAccountSigner().pubkey
+          )
+          return {
+            retained: evidence?.records.length ?? 0,
+            unresolved: evidence?.unresolvedObserved ?? false,
+          }
+        }, core)
+      expect((await journal()).retained).toBeGreaterThan(0)
+      expect((await journal()).unresolved).toBe(false)
+
+      denied = false
+      await target
+        .getByRole("button", { name: "Sync wallet recovery", exact: true })
+        .click()
+      await expect.poll(() => wallets(target)).toEqual(originalWallets)
+      await expect(blocked).toHaveCount(0)
+      expect((await journal()).unresolved).toBe(false)
+      // Explicit recovery must not silently resume consent for background reads.
+      const backgroundCode = await target.evaluate(async (moduleUrl) => {
+        const { getAccountSigner } = await import(moduleUrl)
+        try {
+          await getAccountSigner().decryptNip44(
+            getAccountSigner().pubkey,
+            "unused",
+            { priority: "background" }
+          )
+          return "unexpected_success"
+        } catch (error) {
+          return (error as { code?: string }).code
+        }
+      }, core)
+      expect(backgroundCode).toBe("background_paused")
+      await target
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      await expect(target.getByText("Ready", { exact: true })).toBeVisible()
+      expect(
+        await target.evaluate(() => (window as any).__walletProbe.opens)
+      ).toBe(1)
+      expect(await wallets(target)).toEqual(originalWallets)
+    } finally {
+      await context.close()
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}
+
 for (const size of [
   { name: "desktop", width: 1280, height: 900 },
   { name: "mobile", width: 390, height: 844 },
