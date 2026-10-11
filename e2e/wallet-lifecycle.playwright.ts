@@ -519,11 +519,47 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("menuitem", { name: "Remove from this device", exact: true })
         .click()
       const confirm = page.getByRole("alertdialog")
+      await expect(confirm).toContainText(
+        "This removes this wallet's registration and opening credential from this browser. Any encrypted recovery backups and saved removal choices stay in this browser. It does not delete the Portable Wallet or move its funds."
+      )
+      await page.evaluate(async (core) => {
+        const { db, getAccountSigner } = await import(core)
+        const owner = getAccountSigner().pubkey
+        const state = await db.sparkRecoveryEvidence.get(owner)
+        ;(window as any).__removalBefore = {
+          owner,
+          walletId: (window as any).__walletLifecycle.wallets.portableWallets[0]
+            .id,
+          records: JSON.stringify(state.records),
+        }
+      }, core)
       await confirm.getByRole("switch").check()
       await confirm
         .getByRole("button", { name: "Remove from this device", exact: true })
         .click()
       await expect(confirm).toHaveCount(0)
+      expect(
+        await page.evaluate(async (core) => {
+          const { db } = await import(core)
+          const before = (window as any).__removalBefore
+          const state = await db.sparkRecoveryEvidence.get(before.owner)
+          return {
+            registrationRemoved: !(await db.wallets.get(before.walletId)),
+            credentialRemoved: !(await db.walletCredentials.get(
+              before.walletId
+            )),
+            recoveryRetained:
+              state.records.length > 0 &&
+              JSON.stringify(state.records) === before.records,
+            removalRetained: state.removedWalletIds.includes(before.walletId),
+          }
+        }, core)
+      ).toEqual({
+        registrationRemoved: true,
+        credentialRemoved: true,
+        recoveryRetained: true,
+        removalRetained: true,
+      })
       await page.evaluate(() =>
         (window as any).__walletLifecycle.wallets.retryRecovery()
       )
@@ -1776,6 +1812,200 @@ for (const app of ["market", "merchant"] as const) {
       ).toBeVisible()
     } finally {
       disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}
+
+for (const failure of ["none", "receive", "account"] as const) {
+  test(`recovered main choice commits both defaults together after ${failure} failure @market`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const replacement = createRuntimeSignerIdentity()
+    const storage =
+      "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts")
+    try {
+      await prepareControlledWallet(page)
+      await observeController(page, "market")
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps.market + "/wallet")
+      await installControlledWallet(page)
+      await settled(page)
+      await seedBackup(page)
+      await page.evaluate(async () => {
+        const { wallets } = (window as any).__walletLifecycle
+        await wallets.retryRecovery()
+      })
+      await settled(page)
+      await page.evaluate(async () => {
+        const { wallets } = (window as any).__walletLifecycle
+        await wallets.setMainWallet(wallets.portableWallets[0].id)
+      })
+      await page.evaluate(
+        async ({ core, recovery, phrase }) => {
+          const signer = (await import(core)).getAccountSigner()
+          const service = (await import(recovery)).getAccountSparkRecovery(
+            signer
+          )
+          const discovery = await service.discover(false, "mainnet")
+          await service.prepare(
+            {
+              mnemonic: (await import(phrase)).generateSparkMnemonic(),
+              network: "mainnet",
+              accountNumber: 7,
+            },
+            undefined,
+            discovery.lineageRootEventId
+          )
+        },
+        { core, recovery, phrase }
+      )
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.wallets.retryRecovery()
+      )
+      await settled(page)
+      const result = await page.evaluate(
+        async ({ core, storage, recovery, failure, replacementPubkey }) => {
+          const api = await import(core)
+          const store = (await import(storage)).getMarketWalletStore()
+          const signer = api.getAccountSigner()
+          const owner = signer.pubkey
+          const service = (await import(recovery)).getAccountSparkRecovery(
+            signer
+          )
+          const discovery = await service.discover(false, "mainnet")
+          const visible = await store.listVisible(owner)
+          const previous = visible.find((w: any) =>
+            w.defaultIntents.includes("pay_invoice")
+          )
+          const candidate = discovery.candidates.find(
+            (c: any) => c.walletId !== previous.id
+          )
+          if (!candidate) throw new Error("Second recovery candidate missing")
+          await service.prepareMain(candidate)
+          const snapshot = async () =>
+            JSON.stringify(
+              (await store.list()).map((w: any) => ({
+                id: w.id,
+                intents: w.defaultIntentsByScope,
+              }))
+            )
+          const before = await snapshot()
+          const original = store.setDefault.bind(store)
+          let injected = false
+          let payWritten = false
+          store.setDefault = async (input: any) => {
+            if (failure === "receive" && input.intent === "receive") {
+              injected = true
+              throw new Error("Synthetic recovered choice failure")
+            }
+            await original(input)
+            if (input.intent === "pay_invoice") {
+              payWritten = true
+              if (failure === "account") {
+                const unused = async () => {
+                  throw new Error("Replacement signer must not be called")
+                }
+                api.activateAccountSigner(
+                  new api.SessionSigner(
+                    {
+                      pubkey: replacementPubkey,
+                      getPublicKey: async () => replacementPubkey,
+                      signEvent: unused,
+                      encryptNip44: unused,
+                      decryptNip44: unused,
+                      decryptLegacy: unused,
+                    },
+                    {
+                      expectedPubkey: replacementPubkey,
+                      revision: crypto.randomUUID(),
+                      authMethod: "nip07",
+                      getCapabilities: () => ({
+                        signEvent: true,
+                        nip44: false,
+                        nip04Decrypt: false,
+                      }),
+                      hasAuthority: () => true,
+                    }
+                  )
+                )
+                injected = true
+              }
+            }
+          }
+          let rejected = false
+          try {
+            await (window as any).__walletLifecycle.wallets.retryRecovery()
+          } catch {
+            rejected = true
+          } finally {
+            store.setDefault = original
+          }
+          const rows = await store.listVisible(owner)
+          ;(window as any).__recoveredChoiceTarget = candidate.walletId
+          return {
+            injected,
+            payWritten,
+            rejected,
+            unchanged: (await snapshot()) === before,
+            payRecovered:
+              rows.find((w: any) => w.defaultIntents.includes("pay_invoice"))
+                ?.id === candidate.walletId,
+            receiveRecovered:
+              rows.find((w: any) => w.defaultIntents.includes("receive"))
+                ?.id === candidate.walletId,
+          }
+        },
+        {
+          core,
+          storage,
+          recovery,
+          failure,
+          replacementPubkey: replacement.pubkey,
+        }
+      )
+      expect(result).toEqual({
+        injected: failure !== "none",
+        payWritten: true,
+        rejected: failure !== "none",
+        unchanged: failure !== "none",
+        payRecovered: failure === "none",
+        receiveRecovered: failure === "none",
+      })
+      if (failure === "account") {
+        await page.evaluate(() =>
+          (window as any).__walletLifecycle.auth.disconnect()
+        )
+        await page.evaluate(() =>
+          (window as any).__walletLifecycle.auth.connect({ method: "nip07" })
+        )
+        await settled(page)
+      } else {
+        await page.evaluate(() =>
+          (window as any).__walletLifecycle.wallets.retryRecovery()
+        )
+      }
+      expect(
+        await page.evaluate(
+          async ({ core, storage }) => {
+            const owner = (await import(core)).getAccountSigner().pubkey
+            const rows = await (
+              await import(storage)
+            )
+              .getMarketWalletStore()
+              .listVisible(owner)
+            return ["pay_invoice", "receive"].every(
+              (intent) =>
+                rows.find((w: any) => w.defaultIntents.includes(intent))?.id ===
+                (window as any).__recoveredChoiceTarget
+            )
+          },
+          { core, storage }
+        )
+      ).toBe(true)
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+      disposeRuntimeSignerIdentity(replacement)
     }
   })
 }

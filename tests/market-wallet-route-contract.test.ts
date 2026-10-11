@@ -341,7 +341,7 @@ describe("Market wallet route contracts", () => {
       "<DropdownMenuItem onSelect={() => dialog(onRemove)}>"
     )
     expect(wallet).toContain(
-      "This removes the wallet registration and encrypted recovery copy from this browser."
+      "This removes this wallet's registration and opening credential from this browser. Any encrypted recovery backups and saved removal choices stay in this browser."
     )
   })
 

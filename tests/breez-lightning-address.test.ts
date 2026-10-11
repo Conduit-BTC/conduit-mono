@@ -216,9 +216,13 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
       ["REGTEST", 0],
     ] as const) {
       const signer = new DefaultSparkSigner()
-      await signer.createSparkWalletFromSeed(mnemonicToSeedSync(mnemonic), account)
-      expect(await deriveViewerIdentityPublicKey({ network }, mnemonic, account))
-        .toBe(bytesToHex(await signer.getIdentityPublicKey()))
+      await signer.createSparkWalletFromSeed(
+        mnemonicToSeedSync(mnemonic),
+        account
+      )
+      expect(
+        await deriveViewerIdentityPublicKey({ network }, mnemonic, account)
+      ).toBe(bytesToHex(await signer.getIdentityPublicKey()))
     }
   })
   it("uses Breez's independently defined canonical register message", () => {

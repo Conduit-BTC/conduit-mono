@@ -881,11 +881,14 @@ export function useWallets(
             w.id === selected.walletId && w.network === getSparkWalletNetwork()
         )
       ) {
-        await registry.setDefault(selected.walletId, "pay_invoice")
-        assertWalletSignerCurrent(signer)
-        if (discovery.main)
-          await registry.setDefault(selected.walletId, "receive")
-        assertWalletSignerCurrent(signer)
+        const walletId = selected.walletId
+        await store.transaction(async () => {
+          assertWalletSignerCurrent(signer)
+          await registry.setDefault(walletId, "pay_invoice")
+          assertWalletSignerCurrent(signer)
+          if (discovery.main) await registry.setDefault(walletId, "receive")
+          assertWalletSignerCurrent(signer)
+        })
       }
       await refreshAfterCommittedWalletMutation()
       let pending = false

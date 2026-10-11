@@ -408,13 +408,14 @@ initialization and actual first-party derivation/signatures. It rejects an
 initialized identity mismatch and refuses address operations after cleanup.
 Neither test opens a network wallet or moves funds.
 
-The offline SDK comparison was executed with first-party Spark SDK 0.12.1 and
-Breez SDK 0.26.1 using the public BIP39 test mnemonic, for mainnet account 1,
-mainnet account 7 and regtest account 0. All three identities match; signatures
-from both SDKs verify under that same identity. No network wallets are opened.
-The fixture identities are retained in the unit test. To repeat the independent
-comparison, install `@breeztech/breez-sdk-spark@0.26.1` in a temporary directory
-and run:
+The offline SDK comparison uses first-party Spark SDK 0.12.1 and Breez SDK
+0.26.1 with fresh CSPRNG-generated recovery material for each run and account:
+mainnet account 1, mainnet account 7 and regtest account 0. It compares identities
+and verifies signatures from both SDKs without opening network wallets. It
+prints only the case count and verification result; recovery material is never
+retained. Unit fixtures also generate fresh recovery material and compare the
+first-party signing and viewer identities. To repeat the independent comparison,
+install `@breeztech/breez-sdk-spark@0.26.1` in a temporary directory and run:
 
 ```bash
 bun scripts/smoke/breez_spark_identity.ts /absolute/path/to/temporary/node_modules/@breeztech/breez-sdk-spark/nodejs/breez_sdk_spark_wasm.js

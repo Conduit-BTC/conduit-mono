@@ -3107,7 +3107,7 @@ function RemoveWalletDialog({
           </AlertDialogTitle>
           <AlertDialogDescription>
             {portable
-              ? "This removes the wallet registration and encrypted recovery copy from this browser. It does not delete the Portable Wallet or move its funds."
+              ? "This removes this wallet's registration and opening credential from this browser. Any encrypted recovery backups and saved removal choices stay in this browser. It does not delete the Portable Wallet or move its funds."
               : "This removes the private NWC authorization from this browser. The external wallet and its funds are unchanged."}
           </AlertDialogDescription>
         </AlertDialogHeader>
