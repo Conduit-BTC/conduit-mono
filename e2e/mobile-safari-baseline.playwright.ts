@@ -1014,6 +1014,12 @@ test.describe("CND-162 mobile browser baseline", () => {
     const secretKey = generateSecretKey()
     const buyerPubkey = getPublicKey(secretKey)
 
+    await page.addInitScript(() => {
+      document.addEventListener("scrollend", (event) => {
+        if (event.target === document)
+          (window as any).__orderViewportScrollFinished = true
+      })
+    })
     await page.setViewportSize({ width: 320, height: 700 })
     await seedTestRelayIdentity(secretKey)
     await installTestSigner(page, buyerPubkey, { secretKey })
@@ -1039,6 +1045,16 @@ test.describe("CND-162 mobile browser baseline", () => {
       exact: true,
     })
 
+    await expect(messagesTrigger).toBeVisible()
+    // Wait for the selected-order viewport scroll to finish before arranging
+    // the visible initial state. Its smooth animation can outlive the request.
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as any).__orderViewportScrollFinished)
+      )
+      .toBe(true)
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))
+    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
     await expectVisibleDisjointControls(
       page,
       messagesTrigger,
