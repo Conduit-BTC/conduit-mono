@@ -101,7 +101,8 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
     shouldContinue: () => authGenerationRef.current === authGeneration,
   })
   const nwc = useNwcConnection()
-  const wallets = useWallets({ enabled: status === "connected" })
+  // Device wallets remain usable without account payment authority.
+  const wallets = useWallets()
   const receivingWallet =
     wallets.wallets.find(
       (wallet) =>
@@ -187,11 +188,12 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   const canCreateInvoices = info?.methods.includes("make_invoice") ?? false
   const canLookupInvoices = info?.methods.includes("lookup_invoice") ?? false
   const canVerifyPayments =
-    canLookupInvoices ||
-    availableSparkWallets.length > 0 ||
-    Object.values(wallets.nwcSnapshots).some((snapshot) =>
-      snapshot.info?.methods.includes("lookup_invoice")
-    )
+    signerConnected &&
+    (canLookupInvoices ||
+      availableSparkWallets.length > 0 ||
+      Object.values(wallets.nwcSnapshots).some((snapshot) =>
+        snapshot.info?.methods.includes("lookup_invoice")
+      ))
 
   const conversationsQuery = useQuery({
     queryKey: ["merchant-payment-verification", pubkey ?? "none"],

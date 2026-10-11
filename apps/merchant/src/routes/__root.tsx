@@ -126,6 +126,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
+  const deviceWalletRoute = pathname === "/wallet" || pathname === "/wallet/"
   const signerConnected = status === "connected" && !!pubkey
   const signerRecoveryRequired = !!remoteSignerRecovery && !!pubkey
   const signerWorkspaceAvailable = signerConnected || signerRecoveryRequired
@@ -207,11 +208,17 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   useEffect(() => {
     const title = isNotFound
       ? "Not Found"
-      : signerWorkspaceAvailable || signerRestoring
+      : signerWorkspaceAvailable || signerRestoring || deviceWalletRoute
         ? getPageTitle(pathname)
         : "Connect"
     document.title = `${title} | Conduit Merchant`
-  }, [isNotFound, pathname, signerRestoring, signerWorkspaceAvailable])
+  }, [
+    deviceWalletRoute,
+    isNotFound,
+    pathname,
+    signerRestoring,
+    signerWorkspaceAvailable,
+  ])
 
   useEffect(() => {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
@@ -227,7 +234,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (shouldDelayAuthFallback) {
+  if (shouldDelayAuthFallback && !deviceWalletRoute) {
     return (
       <>
         <AuthGateGrace />
@@ -238,7 +245,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (signerRestoring) {
+  if (signerRestoring && !deviceWalletRoute) {
     return (
       <RootShell>
         <AuthRestoring method={method} />
@@ -249,7 +256,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (!signerWorkspaceAvailable) {
+  if (!signerWorkspaceAvailable && !deviceWalletRoute) {
     return <ConnectGate />
   }
 

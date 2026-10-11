@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import {
@@ -137,9 +138,9 @@ async function importKnownPhrase(page: Page, addy = false) {
   await expect(dialog).toHaveCount(0)
 }
 
-async function seedLegacyPasswordWallet(page: Page) {
+async function seedLegacyPasswordWallet(page: Page, password?: string) {
   await page.evaluate(
-    async ({ core }) => {
+    async ({ core, phrase, password }) => {
       const { db } = await import(core)
       const random = (length: number) =>
         btoa(
@@ -147,6 +148,28 @@ async function seedLegacyPasswordWallet(page: Page) {
         )
       const id = crypto.randomUUID()
       const timestamp = Date.now()
+      const binding = {
+        walletId: id,
+        providerId: "spark" as const,
+        network: "mainnet" as const,
+        accountNumber: 1,
+      }
+      const recoveryApi = await import(phrase)
+      const encrypted = password
+        ? await recoveryApi.encryptSparkMnemonic(
+            recoveryApi.generateSparkMnemonic(),
+            password,
+            binding
+          )
+        : {
+            version: 2,
+            kdf: "PBKDF2-SHA-256",
+            cipher: "AES-GCM",
+            iterations: 100_000,
+            salt: random(16),
+            iv: random(12),
+            ciphertext: random(48),
+          }
       await db.transaction(
         "rw",
         [db.wallets, db.walletCredentials],
@@ -172,15 +195,7 @@ async function seedLegacyPasswordWallet(page: Page) {
               providerId: "spark",
               network: "mainnet",
               accountNumber: 1,
-              recovery: {
-                version: 2,
-                kdf: "PBKDF2-SHA-256",
-                cipher: "AES-GCM",
-                iterations: 100_000,
-                salt: random(16),
-                iv: random(12),
-                ciphertext: random(48),
-              },
+              recovery: encrypted,
             }),
             createdAt: timestamp,
             updatedAt: timestamp,
@@ -188,8 +203,123 @@ async function seedLegacyPasswordWallet(page: Page) {
         }
       )
     },
-    { core }
+    { core, phrase, password }
   )
+}
+
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} signed-out device wallet unlock preserves signer and order gates @market`, async ({
+    page,
+    context,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    const password = randomUUID()
+    const signedOutPage = await context.newPage()
+    try {
+      await prepareControlledWallet(page)
+      await observeController(page, app)
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps[app] + "/wallet")
+      await installControlledWallet(page)
+      await settled(page)
+      await seedBackup(page)
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.wallets.retryRecovery()
+      )
+      await seedLegacyPasswordWallet(page, password)
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as any).__walletLifecycle.wallets.portableWallets.length
+          )
+        )
+        .toBe(2)
+      await page.evaluate(() =>
+        (window as any).__walletLifecycle.auth.disconnect()
+      )
+
+      // A new page has no injected signer or remembered-login initializer.
+      await prepareControlledWallet(signedOutPage)
+      await observeController(signedOutPage, app)
+      await signedOutPage.goto(apps[app] + "/wallet")
+      await installControlledWallet(signedOutPage)
+      await expect
+        .poll(() =>
+          signedOutPage.evaluate(() => {
+            const state = (window as any).__walletLifecycle
+            return {
+              signedOut: state?.auth.accountPubkey === null,
+              loading: state?.wallets.loading,
+              visible: state?.wallets.portableWallets.length,
+              label: state?.wallets.portableWallets[0]?.label,
+            }
+          })
+        )
+        .toEqual({
+          signedOut: true,
+          loading: false,
+          visible: 1,
+          label: "Legacy fence",
+        })
+      await expect(signedOutPage).toHaveTitle(/Wallets/)
+      for (const name of ["Create wallet", "Import wallet"]) {
+        await expect(
+          signedOutPage.getByRole("button", { name, exact: true })
+        ).toBeDisabled()
+      }
+      await signedOutPage
+        .getByRole("button", { name: "Open wallet", exact: true })
+        .click()
+      const dialog = signedOutPage.getByRole("dialog", {
+        name: "Unlock Legacy fence",
+        exact: true,
+      })
+      await expect(dialog.getByLabel("Wallet password")).toBeVisible()
+      await dialog.getByLabel("Wallet password").evaluate((input, value) => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(input, value)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      }, password)
+      await dialog.getByRole("button", { name: "Unlock", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      await expect
+        .poll(() =>
+          signedOutPage.evaluate(() => {
+            const state = (window as any).__walletLifecycle
+            const wallet = state.wallets.portableWallets[0]
+            return {
+              signedOut: state.auth.accountPubkey === null,
+              status: state.wallets.runtime[wallet.id]?.status,
+              opens: (window as any).__walletProbe.opens,
+              checking: state.automation?.run.status === "checking",
+              canVerifyPayments: state.automation?.canVerifyPayments ?? false,
+            }
+          })
+        )
+        .toEqual({
+          signedOut: true,
+          status: "ready",
+          opens: 1,
+          checking: false,
+          canVerifyPayments: false,
+        })
+      if (app === "merchant") {
+        await signedOutPage.goto(apps.merchant + "/orders")
+        await expect(
+          signedOutPage.getByRole("heading", {
+            name: "Sign in to Conduit",
+            exact: true,
+          })
+        ).toBeVisible()
+      }
+    } finally {
+      await signedOutPage.close()
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
 }
 
 test("legacy device dialogs allow signed-out recovery but retire a pending lookup on account change @market", async ({

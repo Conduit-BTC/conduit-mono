@@ -28,9 +28,11 @@ function WalletsPage() {
           role="status"
         >
           <p>
-            {automation.canVerifyPayments
-              ? "Payments are checked automatically against the original invoice in its receiving wallet."
-              : "Open or reconnect the original receiving wallet to check order payments automatically."}{" "}
+            {auth.signerReadiness !== "ready"
+              ? "Connect your Nostr signer to check order payments automatically."
+              : automation.canVerifyPayments
+                ? "Payments are checked automatically against the original invoice in its receiving wallet."
+                : "Open or reconnect the original receiving wallet to check order payments automatically."}{" "}
             Keep Merchant open for checks. Changing your public address leaves
             existing invoices unchanged.
           </p>
