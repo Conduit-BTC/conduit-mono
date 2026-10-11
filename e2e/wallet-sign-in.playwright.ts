@@ -1,3 +1,4 @@
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   prepareControlledWallet,
   installControlledWallet,
@@ -324,6 +325,18 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
   test(`legacy migration after ${failure} keeps its old encrypted copy and fresh sign-in reopens without a wallet password @market`, async ({
     page,
   }) => {
+    const started = performance.now()
+    let passwordPresent = false
+    let showEnabled = false
+    const phase = (value: string) =>
+      recordSmokeDiagnostic(test.info(), "wallet-migration", {
+        passwordPresent,
+        showEnabled,
+        scenario: failure,
+        phase: value,
+        elapsedSeconds: (performance.now() - started) / 1000,
+      })
+    phase("seed")
     await prepareControlledWallet(page)
     const identity = createRuntimeSignerIdentity()
     await installRealTestSigner(
@@ -406,6 +419,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
           failure,
         }
       )
+      phase("open_dialog")
       await enterWallets(page)
       await page
         .getByRole("button", { name: "Open wallet", exact: true })
@@ -413,6 +427,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       await expect(
         page.getByLabel("Wallet password", { exact: true })
       ).toBeVisible()
+      phase("password")
       await page.evaluate(() => {
         const input = document.getElementById(
           "unlock-password"
@@ -428,10 +443,12 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
           "Use Nostr sign-in from now on. Keep the existing encrypted recovery copy."
         )
         .click()
+      phase("migrate")
       await page
         .getByRole("button", { name: "Open and use Nostr sign-in" })
         .click()
       if (failure !== "none") {
+        phase("failed_open")
         await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
           failure === "sdk-open"
             ? "Injected SDK open failure"
@@ -482,10 +499,12 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
           probe.failOpen = false
           probe.failBalance = false
         })
+        phase("retry")
         await page
           .getByRole("button", { name: "Open and use Nostr sign-in" })
           .click()
       }
+      phase("credential")
       await expect(page.getByRole("dialog")).toHaveCount(0)
       await expect(page.getByText("Ready", { exact: true })).toBeVisible()
       expect(
@@ -512,6 +531,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         plaintextAbsent: true,
         account: 7,
       })
+      phase("lock_reopen")
       await page.getByLabel("Manage Legacy wallet").click()
       await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
       await page
@@ -519,6 +539,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         .click()
       await expect(page.getByRole("dialog")).toHaveCount(0)
       await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      phase("previous_password")
       await page.getByLabel("Manage Legacy wallet").click()
       await page
         .getByRole("menuitem", { name: "Use previous password", exact: true })
@@ -547,6 +568,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       const legacyPassword = await page.evaluate(
         () => (window as any).__walletProbe.legacyPassword as string
       )
+      phase("fresh_signin")
       // A new document gets a fresh account session and the same encrypted local
       // wallet. The fixture controls the network layer before initialization.
       await page.goto(`${market}/products`)
@@ -565,18 +587,28 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
           core
         )
       ).toEqual({ wallets: 1, opens: 1, account: 7, registrations: 0 })
+      phase("second_wallet")
       await page
         .getByRole("button", { name: "Create wallet", exact: true })
         .click()
       await saveRecovery(page, false)
+      // Dialog removal precedes its queued focus restoration. Finish that
+      // handoff before opening a menu that outside focus would dismiss.
+      await expect(
+        page.getByRole("button", { name: "Create wallet", exact: true })
+      ).toBeFocused()
+      phase("legacy_recovery")
       await page.getByLabel("Manage Legacy wallet").click()
+      phase("legacy_menu")
       await page
         .getByRole("menuitem", { name: "Recovery details", exact: true })
         .click()
+      phase("legacy_dialog")
       let recoveryDialog = page.getByRole("dialog")
       await recoveryDialog
         .getByLabel("Use the previous wallet password")
         .check()
+      phase("legacy_password")
       await page.evaluate((password) => {
         const input = document.getElementById(
           "recovery-password"
@@ -587,13 +619,23 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         )!.set!.call(input, password)
         input.dispatchEvent(new Event("input", { bubbles: true }))
       }, legacyPassword)
+      passwordPresent = await recoveryDialog
+        .getByLabel("Wallet password", { exact: true })
+        .evaluate((input: HTMLInputElement) => input.value.length > 0)
+      showEnabled = await recoveryDialog
+        .getByRole("button", { name: "Show recovery phrase", exact: true })
+        .isEnabled()
+      phase("legacy_reveal")
       await recoveryDialog
         .getByRole("button", { name: "Show recovery phrase", exact: true })
         .click()
+      phase("legacy_close")
       await recoveryDialog
         .getByRole("button", { name: "Done", exact: true })
         .click()
+      phase("legacy_focus")
       await expect(page.getByLabel("Manage Legacy wallet")).toBeFocused()
+      phase("signer_recovery")
       await page.getByLabel("Manage Conduit Wallet").click()
       await page
         .getByRole("menuitem", { name: "Recovery details", exact: true })
@@ -615,6 +657,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         .getByRole("button", { name: "Done", exact: true })
         .click()
       await expect(page.getByLabel("Manage Conduit Wallet")).toBeFocused()
+      phase("complete")
     } finally {
       disposeRuntimeSignerIdentity(identity)
     }

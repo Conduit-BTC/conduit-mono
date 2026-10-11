@@ -58,6 +58,37 @@ export type CommerceJourneyPhase = (typeof commerceJourneyPhases)[number]
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "wallet-migration": {
+      file: "e2e/wallet-sign-in.playwright.ts",
+      fields: {
+        passwordPresent: "boolean",
+        showEnabled: "boolean",
+        scenario: ["none", "sdk-open", "post-open"],
+        phase: [
+          "seed",
+          "open_dialog",
+          "password",
+          "migrate",
+          "failed_open",
+          "retry",
+          "credential",
+          "lock_reopen",
+          "previous_password",
+          "fresh_signin",
+          "second_wallet",
+          "legacy_recovery",
+          "legacy_menu",
+          "legacy_dialog",
+          "legacy_password",
+          "legacy_reveal",
+          "legacy_close",
+          "legacy_focus",
+          "signer_recovery",
+          "complete",
+        ],
+        elapsedSeconds: "number",
+      },
+    },
     "commerce-journey": {
       file: "e2e/commerce.playwright.ts",
       fields: {
@@ -354,6 +385,7 @@ export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
     | "commerce-journey"
+    | "wallet-migration"
     | "price-interaction"
     | "fallback-upload"
     | "surface-audit"

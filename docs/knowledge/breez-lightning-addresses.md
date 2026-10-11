@@ -335,7 +335,11 @@ count: a filtered zero also appears while the catalog is loading and does not
 prove discovery readiness. A bounded Commerce annotation records the last phase, elapsed/phase
 timing, slowest completed phase, cleanup state and invoice-operation counts even
 when the journey times out. It contains no order, invoice, identity or recovery
-payload. The image retry case waits for a controlled NIP-07 restoration before
+payload. Migration journeys similarly record only a fixed scenario, fixed phase,
+elapsed time and input-readiness booleans, preserving the last checkpoint
+without exposing credentials. They wait for creation-dialog focus restoration
+before opening the recovery menu; dialog removal alone precedes that handoff.
+The image retry case waits for a controlled NIP-07 restoration before
 opening the account-owned draft. The existing sensitive
 dialog dismissal smoke retains password clearing, recovery acknowledgement reset
 and focus restoration. NWC failure/read-back/account-replacement regressions use

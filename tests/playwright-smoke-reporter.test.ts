@@ -312,6 +312,48 @@ describe("privacy-safe Playwright smoke reporter", () => {
 })
 
 describe("bounded smoke failure diagnostics", () => {
+  it("limits migration diagnostics to fixed phases and scenario names", () => {
+    const privateValue = crypto.randomUUID()
+    const annotation = {
+      type: "smoke:wallet-migration",
+      description: JSON.stringify({
+        scenario: "sdk-open",
+        phase: "retry",
+        elapsedSeconds: 12,
+        passwordPresent: true,
+        showEnabled: false,
+        mnemonic: privateValue,
+        password: privateValue,
+        walletId: privateValue,
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-sign-in.playwright.ts", [annotation])
+    ).toEqual([
+      {
+        kind: "wallet-migration",
+        scenario: "sdk-open",
+        phase: "retry",
+        elapsedSeconds: 12,
+        passwordPresent: true,
+        showEnabled: false,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-sign-in.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            scenario: privateValue,
+            phase: privateValue,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
   it("retains only fixed Commerce phases, timings and side-effect counts on timeout", () => {
     const annotations = [
       {
