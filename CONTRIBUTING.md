@@ -302,6 +302,12 @@ The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. The existing 20-minute limit and strict execution evidence still apply.
 
+Playwright 1.64 includes the [upstream Linux WebKit network-process crash fix](https://github.com/microsoft/playwright/issues/42803)
+for the bundled libsoup 3.6.5 use-after-free. Internal navigation errors can come
+from that browser dependency even when route assertions pass on another host.
+Check the pinned browser build before changing route readiness or accepting a
+retry; keep the first-attempt gate and application assertions intact.
+
 A retry-dependent pass still fails the smoke gate. The privacy-safe reporter
 retains allowlisted footer geometry and product-submit readiness categories for
 the corresponding fixtures, including the failed first attempt. It drops raw
