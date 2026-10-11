@@ -55,6 +55,35 @@ export const commerceJourneyPhases = [
 ] as const
 export type CommerceJourneyPhase = (typeof commerceJourneyPhases)[number]
 
+export const populatedAuditPhases = [
+  "setup",
+  "start_wallet",
+  "seed_profiles",
+  "install_signer",
+  "profile_navigate",
+  "profile_ready",
+  "profile_edit",
+  "payments_navigate",
+  "wallet_configure",
+  "wallet_reload",
+  "wallet_ready",
+  "wallet_contrast",
+  "network_navigate",
+  "network_ready",
+  "catalog_navigate",
+  "catalog_ready",
+  "editor_open",
+  "editor_ready",
+  "storefront_navigate",
+  "storefront_ready",
+  "product_navigate",
+  "product_ready",
+  "legal_navigate",
+  "legal_contrast",
+  "complete",
+] as const
+export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
+
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
@@ -149,6 +178,14 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         submitEnabled: "boolean",
       },
     },
+    "populated-audit": {
+      file: "e2e/shared-ui-populated-audit.playwright.ts",
+      fields: {
+        phase: populatedAuditPhases,
+        elapsedSeconds: "number",
+        pageCrashed: "boolean",
+      },
+    },
     "surface-audit": {
       file: "e2e/shared-ui-surface-audit.playwright.ts",
       fields: {
@@ -162,6 +199,8 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
           "complete",
         ],
         routeIndex: "number",
+        pageCrashed: "boolean",
+        failedDocuments: "number",
         pendingDocuments: "number",
         pendingImages: "number",
         pendingFonts: "number",
@@ -394,6 +433,7 @@ export function recordSmokeDiagnostic(
     | "price-interaction"
     | "fallback-upload"
     | "surface-audit"
+    | "populated-audit"
     | "cart-stale-action"
     | "footer-follow"
     | "footer-layout"

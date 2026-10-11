@@ -267,6 +267,13 @@ export class PrivacySafeSmokeReporter implements Reporter {
   private topLevelErrorCount = 0
   private startedAt = 0
   private completedAttempts = 0
+  private readonly browserSignals = {
+    launched: 0,
+    networkProcessCrashed: 0,
+    segmentationFault: 0,
+    aborted: 0,
+    heapCorruption: 0,
+  }
 
   constructor(options: ReporterOptions) {
     this.outputFile = options.outputFile
@@ -299,6 +306,30 @@ export class PrivacySafeSmokeReporter implements Reporter {
     this.progress(
       `start elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s retry=${result.retry} project=${safeProject(test)} ${file}:${test.location.line} ${title}`
     )
+  }
+
+  onStdErr(chunk: string | Buffer): void {
+    // DEBUG=pw:browser reaches this boundary through the runner. Do not forward
+    // or retain the chunk: it can include process arguments and private data.
+    const text = chunk.toString()
+    if (!text.includes("pw:browser")) return
+    const signals = {
+      launched: /<launched>/.test(text),
+      networkProcessCrashed: /Network process crashed/i.test(text),
+      segmentationFault: /SIGSEGV|segmentation fault/i.test(text),
+      aborted: /SIGABRT/.test(text),
+      heapCorruption:
+        /double free|corrupted double-linked list|malloc\(\):.*corrupt/i.test(
+          text
+        ),
+    }
+    for (const key of Object.keys(signals) as (keyof typeof signals)[]) {
+      if (!signals[key]) continue
+      this.browserSignals[key] = Math.min(32768, this.browserSignals[key] + 1)
+      this.progress(
+        `browser-signal elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s category=${key}`
+      )
+    }
   }
 
   onError(_error: TestError): void {
@@ -363,6 +394,8 @@ export class PrivacySafeSmokeReporter implements Reporter {
     this.progress(
       `finished completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s`
     )
+    if (Object.values(this.browserSignals).some(Boolean))
+      this.progress(`browser-signals ${JSON.stringify(this.browserSignals)}`)
     const specs = [...this.specs.values()]
     const outcomes = specs.map((spec) => spec.tests[0]!.status)
     const report = {

@@ -221,6 +221,9 @@ jobs:
       - name: Run ${{ matrix.job.id }} Playwright smoke tests
         if: matrix.job.area != 'none'
         env:
+          # The privacy-safe reporter classifies browser stderr in memory. Raw
+          # output remains suppressed; do not set PW_RUNNER_DEBUG (bypasses it).
+          DEBUG: pw:browser
           PLAYWRIGHT_SMOKE_AREA: ${{ matrix.job.area }}
           PLAYWRIGHT_SMOKE_SHARD: ${{ matrix.job.shard }}
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

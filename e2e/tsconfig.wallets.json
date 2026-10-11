@@ -26,6 +26,8 @@
     "wallet-lifecycle.playwright.ts",
     "shared-ui-composition.playwright.ts",
     "shared-ui-populated-audit.playwright.ts",
+    "shared-ui-surface-audit.playwright.ts",
+    "merchant-invoice-source.playwright.ts",
     "commerce.playwright.ts",
     "merchant-product-image-preview.playwright.ts"
   ]

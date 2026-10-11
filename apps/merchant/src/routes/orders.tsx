@@ -660,8 +660,8 @@ function OrdersWorkspace() {
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [invoice, setInvoice] = useState("")
-  const [invoiceSource, setInvoiceSource] =
-    useState<MerchantInvoiceActionSource>("profile_lud16")
+  const [invoiceSourceOverride, setInvoiceSourceOverride] =
+    useState<MerchantInvoiceActionSource | null>(null)
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
@@ -751,6 +751,9 @@ function OrdersWorkspace() {
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
+  const invoiceSource: MerchantInvoiceActionSource =
+    invoiceSourceOverride ??
+    (nwc.receivingWalletId ? "wallet" : "profile_lud16")
   const profileLud16 =
     getProfilePaymentAddress(merchantProfileQuery.profileContext) ?? ""
   const profileInvoiceAvailable = isValidLud16Address(profileLud16)
@@ -1268,7 +1271,7 @@ function OrdersWorkspace() {
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
     setInvoice("")
-    setInvoiceSource(nwc.receivingWalletId ? "wallet" : "profile_lud16")
+    setInvoiceSourceOverride(null)
     setInvoiceAmount("")
     setInvoiceCurrency("USD")
     setInvoiceNote("")
@@ -1285,7 +1288,7 @@ function OrdersWorkspace() {
     setInvoiceCurrency(
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
-  }, [pubkey, selected, selectedStockDecisionId, nwc.receivingWalletId])
+  }, [pubkey, selected, selectedStockDecisionId])
 
   const orderSummary = useMemo(
     () => (selected ? getMerchantOrderSummary(selected) : null),
@@ -3301,8 +3304,15 @@ function OrdersWorkspace() {
                                           </Label>
                                           <Select
                                             value={invoiceSource}
+                                            onOpenChange={(open) => {
+                                              // Preserve intent even when the current option is selected again.
+                                              if (open)
+                                                setInvoiceSourceOverride(
+                                                  invoiceSource
+                                                )
+                                            }}
                                             onValueChange={(value) =>
-                                              setInvoiceSource(
+                                              setInvoiceSourceOverride(
                                                 value as MerchantInvoiceActionSource
                                               )
                                             }

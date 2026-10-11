@@ -311,6 +311,54 @@ describe("privacy-safe Playwright smoke reporter", () => {
   })
 })
 
+describe("browser process diagnostics", () => {
+  it("emits fixed categories while discarding arbitrary stderr and process details", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-browser-signals-"))
+    try {
+      const outputFile = join(directory, "report.json")
+      const progressFile = join(directory, "progress.log")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [] } as unknown as Suite
+      )
+      const privateValue = crypto.randomUUID()
+      reporter.onStdErr(`unrelated Network process crashed ${privateValue}`)
+      reporter.onStdErr(`pw:browser <launched> pid=1234 ${privateValue}`)
+      reporter.onStdErr(
+        Buffer.from(
+          `pw:browser [pid=1234][err] Network process crashed ${privateValue}`
+        )
+      )
+      reporter.onStdErr(
+        `pw:browser <process did exit: signal=SIGSEGV> ${privateValue}`
+      )
+      reporter.onStdErr(
+        `pw:browser [err] malloc(): corrupted double-linked list ${privateValue}`
+      )
+      reporter.onStdErr(
+        `pw:browser <process did exit: signal=SIGABRT> ${privateValue}`
+      )
+      reporter.onStdErr(`pw:browser arbitrary output ${privateValue}`)
+      reporter.onEnd({ status: "failed" } as FullResult)
+      const progress = readFileSync(progressFile, "utf8")
+      const report = readFileSync(outputFile, "utf8")
+      expect(progress).toContain(
+        'browser-signals {"launched":1,"networkProcessCrashed":1,"segmentationFault":1,"aborted":1,"heapCorruption":1}'
+      )
+      expect(progress + report).not.toContain(privateValue)
+      expect(progress + report).not.toContain("pid=1234")
+      expect(progress + report).not.toContain("arbitrary output")
+      expect(progress + report).not.toContain("malloc()")
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("bounded smoke failure diagnostics", () => {
   it("limits migration diagnostics to fixed phases and scenario names", () => {
     const privateValue = crypto.randomUUID()
@@ -516,6 +564,8 @@ describe("bounded smoke failure diagnostics", () => {
         phase: "navigate",
         routeIndex: 4,
         pendingImages: 2,
+        failedDocuments: 1,
+        pageCrashed: true,
         navigationError: "aborted",
         url: "private-value",
         pubkey: "private-value",
@@ -531,6 +581,8 @@ describe("bounded smoke failure diagnostics", () => {
         kind: "surface-audit",
         phase: "navigate",
         routeIndex: 4,
+        pageCrashed: true,
+        failedDocuments: 1,
         pendingImages: 2,
         navigationError: "aborted",
       },
@@ -545,6 +597,48 @@ describe("bounded smoke failure diagnostics", () => {
           description: JSON.stringify({
             phase: "private-value",
             url: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it("bounds populated-audit phases and crash observations to that fixture", () => {
+    const annotation = {
+      type: "smoke:populated-audit",
+      description: JSON.stringify({
+        phase: "wallet_ready",
+        elapsedSeconds: 25.18,
+        pageCrashed: true,
+        url: "private-value",
+        invoice: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-populated-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "populated-audit",
+        phase: "wallet_ready",
+        elapsedSeconds: 25.2,
+        pageCrashed: true,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-populated-audit.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            phase: "private-value",
+            elapsedSeconds: 40000,
+            pageCrashed: "private-value",
           }),
         },
       ])

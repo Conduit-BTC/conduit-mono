@@ -62,12 +62,16 @@ for (const area of ["market", "merchant"] as const) {
       let phase = "setup"
       let routeIndex = -1
       let navigationError = "none"
+      let pageCrashed = false
+      let failedDocuments = 0
       const pending = new Set<Request>()
       const record = () =>
         recordSmokeDiagnostic(info, "surface-audit", {
           phase,
           routeIndex,
           navigationError,
+          pageCrashed,
+          failedDocuments,
           pendingDocuments: [...pending].filter(
             (r) => r.resourceType() === "document"
           ).length,
@@ -93,7 +97,14 @@ for (const area of ["market", "merchant"] as const) {
         record()
       }
       page.on("requestfinished", finish)
-      page.on("requestfailed", finish)
+      page.on("requestfailed", (request) => {
+        if (request.resourceType() === "document") failedDocuments += 1
+        finish(request)
+      })
+      page.on("crash", () => {
+        pageCrashed = true
+        record()
+      })
       record()
       // A nonessential image must not become the readiness gate for route UI.
       let releaseImage!: () => void

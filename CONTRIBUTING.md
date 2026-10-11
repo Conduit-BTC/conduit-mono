@@ -307,6 +307,12 @@ retains allowlisted footer geometry and product-submit readiness categories for
 the corresponding fixtures, including the failed first attempt. It drops raw
 annotations, form values, identities, message content, and error text. Extend
 these diagnostics only with bounded fields and matching privacy regression tests.
+Surface audits also retain fixed phase, page-crash and failed-document counters.
+CI enables `DEBUG=pw:browser`; the reporter classifies only fixed browser-process
+signals in memory and emits content-free counters to the progress log. Raw stderr
+stays suppressed. Do not enable `PW_RUNNER_DEBUG`, which bypasses the reporter.
+A matching signal is diagnostic evidence, not proof that every timeout shares
+the same cause; absence of a signal does not exclude a browser failure.
 
 ## Code Conventions
 
