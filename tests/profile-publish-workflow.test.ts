@@ -18,6 +18,7 @@ import {
   config,
   createInMemoryOwnerRelayListEvidenceRepository,
   getProfiles,
+  getProfileLightningAddress,
   loadSelectedProfileContext,
   publishProfileContext,
   ProfilePublishSupersededError,
@@ -666,5 +667,87 @@ describe("reviewed Lightning address normalization", () => {
       })
     ).rejects.toThrow("address changed")
     expect(published.length).toBe(0)
+  })
+})
+
+describe("reviewed Lightning address field precedence", () => {
+  for (const next of ["new@wallet.example", ""] as const) {
+    it(`uses the observed legacy address under blank lud16 for ${next ? "replacement" : "deletion"}`, async () => {
+      const original = {
+        lud16: " \t ",
+        lud06: "  https://wallet.example/LNURL/Token  ",
+        extension: { keep: [1, "two"] },
+      }
+      events = [profileEvent(JSON.stringify(original))]
+      const reviewed = await getProfiles({
+        pubkeys: [PUBKEY],
+        authenticatedPubkey: PUBKEY,
+        requireCompleteEvidence: true,
+        evidenceScope: "profile_edit",
+      })
+      const context = reviewed.profileContexts[PUBKEY]!
+      const expected = getProfileLightningAddress(
+        JSON.parse(context.frontier!.rawContent)
+      )
+      expect(expected).toBe("https://wallet.example/LNURL/Token")
+      events = [
+        profileEvent(
+          JSON.stringify({ ...original, name: "Ordinary edit" }),
+          NOW + 31
+        ),
+      ]
+      await publishProfileContext({ lud16: next }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: expected,
+      })
+      expect(published).toHaveLength(1)
+      expect(JSON.parse(published[0]!.content)).toEqual({
+        name: "Ordinary edit",
+        extension: original.extension,
+        ...(next ? { lud16: next } : {}),
+      })
+    })
+  }
+
+  it("keeps a nonempty lud16 authoritative over legacy receiving metadata", async () => {
+    const original = {
+      lud16: "  Current@wallet.example  ",
+      lud06: "https://wallet.example/LNURL/Token",
+      extension: { keep: true },
+    }
+    events = [profileEvent(JSON.stringify(original))]
+    const expected = getProfileLightningAddress(original)
+    expect(expected).toBe("Current@wallet.example")
+    await publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+      authenticatedPubkey: PUBKEY,
+      expectedLightningAddress: expected,
+    })
+    expect(JSON.parse(published[0]!.content)).toEqual({
+      lud16: "new@wallet.example",
+      extension: original.extension,
+    })
+  })
+
+  it("still rejects a changed legacy destination under blank lud16", async () => {
+    const reviewed = {
+      lud16: "   ",
+      lud06: "https://wallet.example/LNURL/Token",
+    }
+    const expected = getProfileLightningAddress(reviewed)
+    events = [
+      profileEvent(
+        JSON.stringify({
+          ...reviewed,
+          lud06: "https://wallet.example/LNURL/Other",
+        })
+      ),
+    ]
+    await expect(
+      publishProfileContext({ lud16: "new@wallet.example" }, "market", {
+        authenticatedPubkey: PUBKEY,
+        expectedLightningAddress: expected,
+      })
+    ).rejects.toThrow("address changed")
+    expect(published).toHaveLength(0)
   })
 })

@@ -493,6 +493,9 @@ describe("bounded smoke failure diagnostics", () => {
           triggerEnabled: true,
           fontsAtClick: "loading",
           triggerX: 212.345,
+          ...(kind === "product-dialog-open"
+            ? { triggerStartY: 321.123, triggerDownY: 100, triggerUpY: 12 }
+            : {}),
           triggerWidth: Infinity,
           triggerHeight: "private-value",
           pubkey: "private-value",
@@ -512,6 +515,9 @@ describe("bounded smoke failure diagnostics", () => {
           triggerEnabled: true,
           fontsAtClick: "loading",
           triggerX: 212.3,
+          ...(kind === "product-dialog-open"
+            ? { triggerStartY: 321.1, triggerDownY: 100, triggerUpY: 12 }
+            : {}),
         },
       ])
       expect(
@@ -537,7 +543,7 @@ describe("bounded smoke failure diagnostics", () => {
       {
         file: "e2e/merchant-order-inbox.playwright.ts",
         kind: "order-reply",
-        phase: "buyer_checkout",
+        phase: "merchant_navigate",
       },
       {
         file: "e2e/merchant-product-image-preview.playwright.ts",

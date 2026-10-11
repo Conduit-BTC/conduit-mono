@@ -28,6 +28,7 @@ import {
   type RuntimeSignerIdentity,
 } from "./helpers/real-nip07-signer"
 import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
+import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const marketUrl = `http://127.0.0.1:${
@@ -349,11 +350,10 @@ async function publishProduct(
   title: string,
   testInfo: TestInfo
 ): Promise<void> {
-  await page.goto(`${merchantUrl}/products`)
-  await expect(
-    page.getByRole("heading", { name: "Products", exact: true })
-  ).toBeVisible()
-  const trigger = page.getByRole("button", { name: "Add product" }).first()
+  const trigger = await prepareEmptyMerchantCatalog(
+    page,
+    `${merchantUrl}/products`
+  )
   // Record event delivery and mount state, never fixture/account contents.
   const diagnosticHandle = await trigger.evaluateHandle((element) => {
     const observations = {
@@ -363,14 +363,22 @@ async function publishProduct(
       dialogMounted: false,
       dialogRemoved: false,
       fontsAtClick: "unknown",
+      triggerStartY: element.getBoundingClientRect().y,
+      triggerDownY: 0,
+      triggerUpY: 0,
     }
     const listeners = ["pointerdown", "pointerup", "click"].map((type) => {
       const listener = (event: Event) => {
         const onTrigger =
           event.target instanceof Node && element.contains(event.target)
-        if (type === "pointerdown")
+        if (type === "pointerdown") {
           observations.pointerDownOnTrigger = onTrigger
-        if (type === "pointerup") observations.pointerUpOnTrigger = onTrigger
+          observations.triggerDownY = element.getBoundingClientRect().y
+        }
+        if (type === "pointerup") {
+          observations.pointerUpOnTrigger = onTrigger
+          observations.triggerUpY = element.getBoundingClientRect().y
+        }
         if (type === "click") {
           observations.clickOnTrigger = onTrigger
           observations.fontsAtClick = document.fonts.status

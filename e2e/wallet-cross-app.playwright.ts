@@ -669,60 +669,95 @@ for (const app of ["market", "merchant"] as const) {
 }
 
 for (const app of ["market", "merchant"] as const) {
-  test(`${app} replaces and clears legacy public addresses while retaining metadata @market @merchant`, async ({
-    page,
-  }) => {
-    const identity = createRuntimeSignerIdentity()
-    try {
-      const metadata = { name: "Address fixture", custom: { keep: [1, "two"] } }
-      await publishTestRelayEvents([
-        signRuntimeTestEvent(identity, {
-          kind: 0,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [],
-          content: JSON.stringify({ ...metadata, lud06: "  lnurl-legacy  " }),
-        }),
-      ])
-      await prepareControlledWallet(page)
-      await installRealTestSigner(page, identity, relay)
-      await page.goto(apps[app] + "/wallet")
-      await installControlledWallet(page)
-      const address = page.getByLabel("Lightning address", { exact: true })
-      await expect(address).toHaveValue("  lnurl-legacy  ")
-      const retained = () =>
-        page.evaluate(async (core) => {
-          const { fetchProfileContext, getAccountSigner } = await import(core)
-          const owner = getAccountSigner().pubkey
-          const context = await fetchProfileContext(owner, {
-            authenticatedPubkey: owner,
-            accountPubkey: owner,
-            skipCache: true,
-            requireCompleteEvidence: true,
-            evidenceScope: "profile_edit",
-          })
-          return JSON.parse(context.frontier.rawContent)
-        }, core)
-      await address.fill("new@wallet.example")
-      await page
-        .getByRole("button", { name: "Save public address", exact: true })
-        .click()
-      await expect
-        .poll(retained)
-        .toEqual({ ...metadata, lud16: "new@wallet.example" })
-      await expect(address).toHaveValue("new@wallet.example")
-      await address.fill("")
-      await page
-        .getByRole("button", { name: "Save public address", exact: true })
-        .click()
-      await expect.poll(retained).toEqual(metadata)
-      await page.reload()
-      await expect(address).toHaveValue("")
-      await expect(
-        page.getByText("Current address: None", { exact: true })
-      ).toBeVisible()
-      expect(await retained()).toEqual(metadata)
-    } finally {
-      disposeRuntimeSignerIdentity(identity)
+  for (const blankLud16 of [false, true]) {
+    for (const operation of ["replace", "clear"] as const) {
+      test(`${app} ${operation}s a legacy public address with ${blankLud16 ? "blank" : "absent"} lud16 while retaining metadata @market @merchant`, async ({
+        page,
+      }) => {
+        const identity = createRuntimeSignerIdentity()
+        try {
+          const metadata = {
+            name: "Address fixture",
+            custom: { keep: [1, "two"] },
+          }
+          await publishTestRelayEvents([
+            signRuntimeTestEvent(identity, {
+              kind: 0,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [],
+              content: JSON.stringify({
+                ...metadata,
+                ...(blankLud16 ? { lud16: " \t " } : {}),
+                lud06: "  https://wallet.example/LNURL/Token  ",
+              }),
+            }),
+          ])
+          await prepareControlledWallet(page)
+          await installRealTestSigner(page, identity, relay)
+          await page.goto(apps[app] + "/wallet")
+          await installControlledWallet(page)
+          const address = page.getByLabel("Lightning address", { exact: true })
+          await expect(address).toHaveValue(
+            "https://wallet.example/LNURL/Token"
+          )
+          const retained = () =>
+            page.evaluate(async (core) => {
+              const { fetchProfileContext, getAccountSigner } = await import(
+                core
+              )
+              const owner = getAccountSigner().pubkey
+              const context = await fetchProfileContext(owner, {
+                authenticatedPubkey: owner,
+                accountPubkey: owner,
+                skipCache: true,
+                requireCompleteEvidence: true,
+                evidenceScope: "profile_edit",
+              })
+              return JSON.parse(context.frontier.rawContent)
+            }, core)
+          // An ordinary edit after review must survive the address-only save.
+          await page.evaluate(
+            async ({ core, app }) => {
+              const { publishProfileContext } = await import(core)
+              await publishProfileContext({ about: "Ordinary edit" }, app)
+            },
+            { core, app }
+          )
+          const completeMetadata = { ...metadata, about: "Ordinary edit" }
+          if (operation === "replace") {
+            await address.fill("new@wallet.example")
+            await page
+              .getByRole("button", {
+                name: "Save public address",
+                exact: true,
+              })
+              .click()
+            await expect.poll(retained).toEqual({
+              ...completeMetadata,
+              lud16: "new@wallet.example",
+            })
+            await expect(address).toHaveValue("new@wallet.example")
+          }
+          await address.fill("")
+          await page
+            .getByRole("button", {
+              name: "Save public address",
+              exact: true,
+            })
+            .click()
+          await expect.poll(retained).toEqual(completeMetadata)
+          await page.reload()
+          await expect(address).toHaveValue("")
+          await expect(
+            page.getByText("Current address: None", {
+              exact: true,
+            })
+          ).toBeVisible()
+          expect(await retained()).toEqual(completeMetadata)
+        } finally {
+          disposeRuntimeSignerIdentity(identity)
+        }
+      })
     }
-  })
+  }
 }

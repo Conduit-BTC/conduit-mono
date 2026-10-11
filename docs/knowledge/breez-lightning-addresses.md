@@ -323,7 +323,10 @@ password to a signer-only wallet, retaining phrase access and focus restoration.
 Padded public-address baselines use the same trim/case comparison before and
 after signer consent. Genuine destination changes remain rejected; case-sensitive
 legacy URL paths and competing ordinary metadata remain preserved. Both app
-editors replace a padded legacy value and clear it through the real publisher.
+editors use the same trimmed `lud16`-then-`lud06` selection as the publisher,
+including a whitespace-only `lud16` above a legacy address. Composed replacement
+and direct deletion retain unknown metadata and competing ordinary edits through
+reload. A different receiving destination still fails the save fence.
 `tests/spark-recovery-journal-compaction.test.ts` composes real signer crypto,
 Dexie, addressable relay replacement, delivery/read-back and fresh-journal
 restore. It covers a full choice journal, all 128 backups, other networks,

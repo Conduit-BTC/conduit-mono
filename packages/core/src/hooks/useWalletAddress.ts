@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useAuth, useProfile, useUpdateProfile } from "@conduit/core"
 import { isValidLud16Address } from "../protocol/lightning"
+import { getProfileLightningAddress } from "../protocol/profiles"
 
 export interface WalletAddressSuggestion {
   address: string
@@ -34,11 +35,10 @@ export function useWalletAddress({
     shouldContinue: current,
   })
   const raw = profile.profileContext?.frontier?.rawContent
-  let existing = profile.evidenceData?.lud16 ?? ""
+  let existing = getProfileLightningAddress(profile.evidenceData)
   try {
     if (!existing && raw) {
-      const value = JSON.parse(raw)
-      if (typeof value.lud06 === "string") existing = value.lud06
+      existing = getProfileLightningAddress(JSON.parse(raw))
     }
   } catch {
     /* Malformed evidence cannot authorize an address update. */

@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test"
 import { nip19 } from "nostr-tools"
+import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-store"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
+import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   createRuntimeSignerIdentity,
@@ -80,18 +82,20 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     await installRealTestSigner(buyerPage, buyer, TEST_RELAY_URL)
     await installRealTestSigner(merchantPage, merchant, TEST_RELAY_URL)
 
-    phase("merchant_catalog")
-    await merchantPage.goto(`${merchantUrl}/products`)
-    await expect(
-      merchantPage.getByRole("heading", { name: "Products" })
-    ).toBeVisible()
-    await merchantPage
-      .getByRole("button", { name: "Add product" })
-      .first()
-      .click()
+    const addProduct = await prepareEmptyMerchantCatalog(
+      merchantPage,
+      `${merchantUrl}/products`,
+      (step) =>
+        phase(step === "navigate" ? "merchant_navigate" : "merchant_catalog")
+    )
+    phase("merchant_open_dialog")
+    await addProduct.click()
     const productDialog = merchantPage.getByRole("dialog", {
       name: "Add product",
     })
+    phase("merchant_dialog")
+    await expect(productDialog).toBeVisible()
+    phase("merchant_form")
     await productDialog.getByLabel("Title").fill(title)
     await productDialog
       .getByLabel("Summary")
@@ -203,7 +207,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
           const records = await db.commerceInboxRecords.toArray()
           return {
             matches: projections.filter(
-              ({ projection }) =>
+              ({ projection }: { projection: InboxProjection }) =>
                 projection.kind === "order" &&
                 projection.message.type === "message" &&
                 projection.message.senderPubkey === principal &&

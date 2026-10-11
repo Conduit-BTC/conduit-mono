@@ -14,6 +14,7 @@ import {
   seedTestRelayIdentity,
 } from "./helpers/auth"
 import { interceptBlossom } from "./helpers/blossom"
+import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl =
@@ -134,16 +135,11 @@ async function openProductDialogWithSigner(
       ),
     ])
   }
-  options.onPhase?.("navigate")
-  await page.goto(`${merchantUrl}/products`)
-  options.onPhase?.("catalog")
-  // Each fixture owns a fresh empty catalog. Let its initial reads settle
-  // before opening the dialog so mobile layout changes cannot race the click.
-  await expect(page.getByText("No listings yet", { exact: true })).toBeVisible({
-    timeout: 20_000,
-  })
-  const addProduct = page.getByRole("button", { name: "Add product" }).first()
-  await expect(addProduct).toBeEnabled({ timeout: 20_000 })
+  const addProduct = await prepareEmptyMerchantCatalog(
+    page,
+    `${merchantUrl}/products`,
+    options.onPhase
+  )
   options.onPhase?.("open_dialog")
   await addProduct.click()
   const dialog = page.getByRole("dialog", { name: "Add product" })

@@ -94,7 +94,11 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
       fields: {
         phase: [
           "setup",
+          "merchant_navigate",
           "merchant_catalog",
+          "merchant_open_dialog",
+          "merchant_dialog",
+          "merchant_form",
           "publish_product",
           "buyer_checkout",
           "send_order",
@@ -178,6 +182,9 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         fontsAtClick: ["loading", "loaded", "unknown"],
         triggerX: "number",
         triggerY: "number",
+        triggerStartY: "number",
+        triggerDownY: "number",
+        triggerUpY: "number",
         triggerWidth: "number",
         triggerHeight: "number",
       },

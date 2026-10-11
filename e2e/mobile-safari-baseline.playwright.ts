@@ -964,7 +964,9 @@ test.describe("CND-162 mobile browser baseline", () => {
       })
       phase = "hidden"
       recordSmokeDiagnostic(test.info(), "footer-follow", { phase })
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+      // Stay inside the page: a changing page-end bound can clamp scrollY
+      // upward, which correctly makes the scroll-driven footer return.
+      await page.evaluate(() => window.scrollTo(0, innerHeight))
       await expect(footer).toHaveAttribute("aria-hidden", "true")
       await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
       phase = "returned"

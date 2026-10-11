@@ -213,6 +213,15 @@ export class ProfileAddressChangedError extends Error {
   }
 }
 
+/** Select the reviewed receiving field without treating whitespace as an address. */
+export function getProfileLightningAddress(
+  profile: { lud16?: unknown; lud06?: unknown } | null | undefined
+): string {
+  const lud16 = typeof profile?.lud16 === "string" ? profile.lud16.trim() : ""
+  if (lud16) return lud16
+  return typeof profile?.lud06 === "string" ? profile.lud06.trim() : ""
+}
+
 function normalizeProfileAddressChoice(value: string): string {
   const trimmed = value.trim()
   // Lightning addresses and bech32 LNURLs are case-insensitive. Legacy URLs
@@ -227,12 +236,7 @@ export function assertProfileAddressChoice(
   const current: Record<string, unknown> | null = content
     ? parseProfilePublishContent(content).content
     : {}
-  const address =
-    typeof current?.lud16 === "string" && current.lud16.trim()
-      ? current.lud16.trim()
-      : typeof current?.lud06 === "string"
-        ? current.lud06.trim()
-        : ""
+  const address = getProfileLightningAddress(current)
   if (
     normalizeProfileAddressChoice(address) !==
     normalizeProfileAddressChoice(expected)
