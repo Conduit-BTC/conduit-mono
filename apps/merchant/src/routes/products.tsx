@@ -18,7 +18,6 @@ import {
   evaluateListingAvailability,
   getCachedMerchantStorefront,
   getListingAvailabilityDisplay,
-  getMerchantStorefront,
   getProductImageCandidates,
   getProductCardPriceDisplay,
   getAccountSigner,
@@ -30,7 +29,6 @@ import {
   readEventMarketRoster,
   waitForVisibleDocument,
   type CommerceResult,
-  type ListingAvailabilityEvaluation,
   type PreparedProductFamily,
   type ProductSchema,
   type ProductDeletionDeliveryJob,
@@ -101,6 +99,10 @@ import {
   type ProductVariationAuthoringTarget,
 } from "../lib/productDraft"
 import {
+  fetchMerchantProducts,
+  type MerchantProduct,
+} from "../lib/merchant-products"
+import {
   clearProductDraftReturnIntent,
   consumeProductDraftResumeRequest,
   loadProductDraftReturnIntent,
@@ -114,6 +116,7 @@ import {
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
   prepareProductImages,
+  reconcileProductFormFulfillmentResolution,
   reconcileProductFormShippingPreset,
   validateProductPublishForm,
   type MerchantProductFormValues,
@@ -215,16 +218,6 @@ export const Route = createFileRoute("/products")({
   },
   component: ProductsPage,
 })
-
-type MerchantProduct = {
-  eventId: string
-  addressId: string
-  dTag: string | null
-  eventCreatedAt: number
-  sourceRelayUrls: string[]
-  product: ProductSchema
-  availability: ListingAvailabilityEvaluation
-}
 
 type MerchantProductFamily = MerchantProduct & {
   variations: MerchantProduct[]
@@ -694,38 +687,6 @@ function ListingAvailabilitySummary({
       )}
     </article>
   )
-}
-
-async function fetchMerchantProducts(
-  merchantPubkey: string,
-  accountPubkey: string,
-  authenticatedPubkey: string | null,
-  shouldContinue?: () => boolean
-): Promise<CommerceResult<MerchantProduct[]>> {
-  const result = await getMerchantStorefront({
-    merchantPubkey,
-    accountPubkey,
-    authenticatedPubkey,
-    shouldContinue,
-    sort: "updated_at_desc",
-    includeMarketHidden: true,
-  })
-  return {
-    data: result.data.map((record) => {
-      const product = record.product
-      return {
-        eventId: record.eventId,
-        addressId: record.addressId,
-        dTag: record.dTag,
-        eventCreatedAt: record.eventCreatedAt,
-        sourceRelayUrls: record.sourceRelayUrls ?? [],
-        product,
-        availability:
-          record.availability ?? evaluateListingAvailability(product),
-      }
-    }),
-    meta: result.meta,
-  }
 }
 
 async function fetchCachedMerchantProducts(
@@ -1265,12 +1226,13 @@ function ProductsPage() {
     queryKey: ["merchant-products-live", accountPubkey ?? "none"],
     enabled: !!accountPubkey,
     queryFn: ({ signal }) =>
-      fetchMerchantProducts(
-        accountPubkey!,
-        accountPubkey!,
+      fetchMerchantProducts(accountPubkey!, {
+        accountPubkey,
         authenticatedPubkey,
-        () => !signal.aborted && authGenerationRef.current === authGeneration
-      ),
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+        signal,
+      }),
     refetchInterval: 15_000,
   })
   const cachedProductsQuery = useQuery({
@@ -1950,6 +1912,53 @@ function ProductsPage() {
       signedPolicyQuery.data,
     ]
   )
+  useEffect(() => {
+    if (!editing || editing.product.pubkey !== accountPubkey) return
+    const prepared = merchantProducts.find(
+      (family) =>
+        family.addressId === editing.addressId &&
+        family.eventId === editing.eventId
+    )
+    if (
+      !prepared ||
+      !prepared.variationForm.supported ||
+      (prepared.product === editing.product &&
+        prepared.variations === editing.variations)
+    )
+      return
+    const revisions = new Map(
+      editing.variations.map((record) => [record.addressId, record.eventId])
+    )
+    // New listing revisions need an explicit reopen. Only shipping evidence for
+    // the editor's existing signed family may refresh underneath an unsaved draft.
+    if (
+      prepared.variations.length !== revisions.size ||
+      prepared.variations.some(
+        (record) => revisions.get(record.addressId) !== record.eventId
+      )
+    )
+      return
+    const next = {
+      ...editing,
+      product: prepared.product,
+      variations: prepared.variations,
+      variationForm: {
+        ...editing.variationForm,
+        state: reconcileProductVariationDraftResolution(
+          prepared.variationForm,
+          editing.variationForm.state
+        ),
+      },
+    }
+    setForm((current) =>
+      reconcileProductFormFulfillmentResolution(
+        current,
+        productToForm(editing, hasPresetShippingZone),
+        productToForm(next, hasPresetShippingZone)
+      )
+    )
+    setEditing(next)
+  }, [accountPubkey, editing, hasPresetShippingZone, merchantProducts])
   const hasProductChanges = useMemo(
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
     [form, savedProductForm]

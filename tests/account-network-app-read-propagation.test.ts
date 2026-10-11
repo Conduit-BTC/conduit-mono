@@ -301,6 +301,7 @@ describe("app account-network read propagation", () => {
       merchantMessages,
       merchantDashboard,
       merchantProducts,
+      merchantProductPreparation,
       participation,
       marketCart,
       merchantIdentities,
@@ -318,6 +319,7 @@ describe("app account-network read propagation", () => {
       source("apps/merchant/src/routes/messages.tsx"),
       source("apps/merchant/src/routes/index.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
+      source("apps/merchant/src/lib/merchant-products.ts"),
       source(
         "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
       ),
@@ -356,15 +358,13 @@ describe("app account-network read propagation", () => {
     expect(merchantDashboard).toMatch(
       /fetchDashboardStats\([\s\S]{0,180}!signal\.aborted && authGenerationRef\.current === authGeneration/
     )
-    const merchantCatalogRead = merchantProducts.slice(
-      merchantProducts.indexOf("async function fetchMerchantProducts("),
-      merchantProducts.indexOf("async function fetchCachedMerchantProducts(")
+    expect(merchantProductPreparation).toMatch(
+      /getMerchantStorefront\(\{\s*merchantPubkey,\s*accountPubkey,\s*authenticatedPubkey,\s*shouldContinue: isActive,/
     )
-    expect(merchantCatalogRead).toMatch(
-      /getMerchantStorefront\(\{\s*merchantPubkey,\s*accountPubkey,\s*authenticatedPubkey,\s*shouldContinue,/
+    expect(merchantProducts).toContain(
+      "fetchMerchantProducts(accountPubkey!, {"
     )
-    expect(merchantCatalogRead).not.toContain("getShippingOptionsByCoordinates")
-    expect(merchantCatalogRead).not.toContain("resolveProductFulfillment")
+    expect(merchantProducts).not.toContain("resolveProductFulfillment")
     expect(participation).toContain("authenticatedPubkey: string | null")
     expect(participation).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(participation).toContain(
@@ -452,6 +452,7 @@ describe("app account-network read propagation", () => {
       shipping,
       checkout,
       merchantProducts,
+      merchantProductPreparation,
       merchantShipping,
       merchantReadiness,
       lightning,
@@ -465,6 +466,7 @@ describe("app account-network read propagation", () => {
       source("packages/core/src/protocol/shipping.ts"),
       source("apps/market/src/routes/checkout.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
+      source("apps/merchant/src/lib/merchant-products.ts"),
       source("apps/merchant/src/routes/shipping.tsx"),
       source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
       source("packages/core/src/protocol/lightning.ts"),
@@ -479,15 +481,16 @@ describe("app account-network read propagation", () => {
     expect(shipping).toContain("accountNetworkLocalStateRepository")
     expect(checkout).toContain("accountPubkey: signedBuyerPubkey")
     expect(checkout).toContain("authenticatedPubkey: signedBuyerPubkey")
-    const merchantCatalogRead = merchantProducts.slice(
-      merchantProducts.indexOf("async function fetchMerchantProducts("),
-      merchantProducts.indexOf("async function fetchCachedMerchantProducts(")
+    expect(merchantProductPreparation).toMatch(
+      /getMerchantStorefront\(\{\s*merchantPubkey,\s*accountPubkey,\s*authenticatedPubkey,\s*shouldContinue: isActive,/
     )
-    expect(merchantCatalogRead).toMatch(
-      /getMerchantStorefront\(\{\s*merchantPubkey,\s*accountPubkey,\s*authenticatedPubkey,\s*shouldContinue,/
+    expect(merchantProductPreparation).toContain(
+      "{ ...options, shouldContinue: isActive }"
     )
-    expect(merchantCatalogRead).not.toContain("getShippingOptionsByCoordinates")
-    expect(merchantCatalogRead).not.toContain("resolveProductFulfillment")
+    expect(merchantProductPreparation).toContain(
+      "!signal?.aborted && shouldContinue?.() !== false"
+    )
+    expect(merchantProducts).not.toContain("resolveProductFulfillment")
     expect(merchantProducts).toContain(
       'authStatus === "connected" ? pubkey : null'
     )

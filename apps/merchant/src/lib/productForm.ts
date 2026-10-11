@@ -24,6 +24,7 @@ import { getProductShippingMeasurements } from "./shippingPolicyForm"
 import { getProductStockInputError } from "./productStock"
 import {
   getProductVariationFormError,
+  reconcileProductVariationDraftResolution,
   type ProductVariationFormState,
 } from "./productVariations"
 
@@ -71,6 +72,41 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   eventGuestContactOptional?: boolean
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
+}
+
+/** Refresh evidence for the same signed revisions without replacing authored edits. */
+export function reconcileProductFormFulfillmentResolution(
+  current: MerchantProductFormValues,
+  previous: MerchantProductFormValues,
+  prepared: MerchantProductFormValues
+): MerchantProductFormValues {
+  const fields = [
+    "format",
+    "shippingPricingMode",
+    "shippingCost",
+    "usePresetShippingZone",
+    "customShippingConfig",
+  ] as const
+  const untouched = fields.every(
+    (field) =>
+      JSON.stringify(current[field]) === JSON.stringify(previous[field])
+  )
+  return {
+    ...current,
+    ...(untouched || current.fulfillment === "preserve"
+      ? {
+          format: prepared.format,
+          shippingPricingMode: prepared.shippingPricingMode,
+          shippingCost: prepared.shippingCost,
+          usePresetShippingZone: prepared.usePresetShippingZone,
+          customShippingConfig: prepared.customShippingConfig,
+        }
+      : {}),
+    variations: reconcileProductVariationDraftResolution(
+      { supported: true, state: prepared.variations },
+      current.variations
+    ),
+  }
 }
 
 export function isProductUsingPresetShippingZone(
