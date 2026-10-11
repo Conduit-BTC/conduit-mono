@@ -3777,6 +3777,9 @@ test("direct event pickup verifies changed authority before adding and increment
         "buyer",
         { event: eventCoordinate(market) }
       )
+      await expect(
+        page.getByRole("button", { name: "Open account menu", exact: true })
+      ).toBeVisible()
       const add = page.getByRole("button", { name: /^Add (1 to cart|more)/ })
       await expect(add).toBeEnabled()
       // Seed new signed evidence after render. No subscription or manual refresh
@@ -3897,6 +3900,20 @@ test("direct event pickup verifies changed authority before adding and increment
         await expect(
           page.getByRole("button", { name: /^Cart, [1-9]\d* items?/ })
         ).toHaveCount(0)
+        if (change === "revoked" || change === "closed") {
+          await expect(
+            page.getByRole("heading", {
+              name: "Listing not available",
+              exact: true,
+            })
+          ).toBeVisible()
+          await expect(
+            page.getByRole("alert").filter({
+              hasText:
+                "This product is not currently available for event pickup.",
+            })
+          ).toBeVisible()
+        }
       }
     })
   }

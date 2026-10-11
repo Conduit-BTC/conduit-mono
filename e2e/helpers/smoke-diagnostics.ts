@@ -156,6 +156,23 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         triggerHeight: "number",
       },
     },
+    "variation-dialog-open": {
+      file: "e2e/merchant-variation-shipping.playwright.ts",
+      fields: {
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        dialogPresent: "boolean",
+        triggerEnabled: "boolean",
+        fontsAtClick: ["loading", "loaded", "unknown"],
+        triggerX: "number",
+        triggerY: "number",
+        triggerWidth: "number",
+        triggerHeight: "number",
+      },
+    },
     "product-submit": {
       file: "e2e/merchant-shipping-tables.playwright.ts",
       fields: {
@@ -239,6 +256,7 @@ export function recordSmokeDiagnostic(
     | "footer-layout"
     | "product-submit"
     | "product-dialog-open"
+    | "variation-dialog-open"
     | "order-reply"
     | "fallback-recovery",
   values: Record<string, unknown>
