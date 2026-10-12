@@ -20,6 +20,7 @@ import {
 } from "./commerce-message-codec"
 import {
   CommerceInboxStore,
+  isInboxTransportDeliveryRow,
   INBOX_DECODE_RULES_VERSION,
   projectDirectOrFileRumor,
   readRetainedInboxProjections,
@@ -442,8 +443,9 @@ export class CommerceInbox {
         clientSealMetadataAccepted: wrappers.filter(
           (row) => row.clientSealMetadata
         ).length,
-        outgoingPending: deliveries.filter((row) => row.state !== "accepted")
-          .length,
+        outgoingPending: deliveries.filter(
+          (row) => isInboxTransportDeliveryRow(row) && row.state !== "accepted"
+        ).length,
         historyUnresolved: ranges.filter((r) => r.status !== "source_eose")
           .length,
       },

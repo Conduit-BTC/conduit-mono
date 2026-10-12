@@ -105,12 +105,14 @@ describe("merchant NWC payment verification", () => {
       "lnbc1000n",
       "02".repeat(32)
     )
-    ;(original.payload as any).receivingWallet = {
-      walletId: "original",
-      providerId: "spark",
-      network: "mainnet",
-      requestId: "original",
-    }
+    Object.assign(original.payload, {
+      receivingWallet: {
+        walletId: "original",
+        providerId: "spark",
+        network: "mainnet",
+        requestId: "original",
+      },
+    })
     input.messages = [input.messages![0]!, original, input.messages![1]!]
     let confirmations = 0
     const result = await verifyMerchantPaymentCandidates({
@@ -137,17 +139,21 @@ describe("merchant NWC payment verification", () => {
     const later = invoiceOnlyConversation("earlier-invoice").messages![1]!
     if (original.type !== "payment_request" || later.type !== "payment_request")
       throw new Error("Missing request")
-    ;(original.payload as any).receivingWallet = {
-      walletId: "original",
-      providerId: "spark",
-      network: "mainnet",
-    }
+    Object.assign(original.payload, {
+      receivingWallet: {
+        walletId: "original",
+        providerId: "spark",
+        network: "mainnet",
+      },
+    })
     later.payload.invoice = minimalBolt11Invoice("lnbc1000n", "02".repeat(32))
-    ;(later.payload as any).receivingWallet = {
-      walletId: "later",
-      providerId: "spark",
-      network: "mainnet",
-    }
+    Object.assign(later.payload, {
+      receivingWallet: {
+        walletId: "later",
+        providerId: "spark",
+        network: "mainnet",
+      },
+    })
     input.messages = [input.messages![0]!, original, later, input.messages![1]!]
     const candidate = getMerchantPaymentVerificationCandidates([input])[0]!
     expect(candidate.invoice).toBe(invoice)
@@ -191,7 +197,7 @@ describe("merchant NWC payment verification", () => {
       (message) => message.type === "payment_request"
     )!
     if (request.type !== "payment_request") throw new Error("Missing invoice")
-    ;(request.payload as any).receivingWallet = original
+    Object.assign(request.payload, { receivingWallet: original })
     const candidate = getMerchantPaymentVerificationCandidates([input])[0]!
     expect(candidate).not.toHaveProperty("receivingWallet")
     let confirmations = 0
@@ -312,6 +318,81 @@ describe("merchant NWC payment verification", () => {
         publishConfirmation,
       })
     ).toEqual({ checked: 1, verified: 1, lookupFailures: 0 })
+  })
+
+  it("does not publish another confirmation when the same invoice gains buyer proof", async () => {
+    const invoiceOnly = invoiceOnlyConversation("same-invoice")
+    const withProof = conversation("same-invoice")
+    withProof.messages = [...invoiceOnly.messages!, withProof.messages![1]!]
+    const initial = getMerchantPaymentVerificationCandidates([invoiceOnly])[0]!
+    const later = getMerchantPaymentVerificationCandidates([withProof])[0]!
+    expect(later.evidenceMessageId).not.toBe(initial.evidenceMessageId)
+    expect(later.invoice).toBe(initial.invoice)
+    const confirmedEvidence = new Set<string>()
+    let confirmations = 0
+    const dependencies = {
+      confirmedEvidence,
+      lookupInvoice: async () => ({
+        type: "incoming" as const,
+        state: "settled" as const,
+        invoice,
+        paymentHash,
+        amountMsats: 100_000,
+        settledAt: 1_700_000_010,
+      }),
+      publishConfirmation: async () => {
+        confirmations += 1
+      },
+    }
+    expect(
+      await verifyMerchantPaymentCandidates({
+        ...dependencies,
+        candidates: [initial],
+      })
+    ).toEqual({ checked: 1, verified: 1, lookupFailures: 0 })
+    expect(
+      await verifyMerchantPaymentCandidates({
+        ...dependencies,
+        candidates: [later],
+      })
+    ).toEqual({ checked: 0, verified: 0, lookupFailures: 0 })
+    expect(confirmations).toBe(1)
+  })
+
+  it("keeps confirmation suppression specific to the exact invoice", async () => {
+    const initial = getMerchantPaymentVerificationCandidates([
+      invoiceOnlyConversation("same-order"),
+    ])[0]!
+    const replacement = invoiceOnlyConversation("same-order")
+    const request = replacement.messages![1]!
+    if (request.type !== "payment_request") throw new Error("Missing request")
+    request.payload.invoice = minimalBolt11Invoice("lnbc1000n", "02".repeat(32))
+    const later = getMerchantPaymentVerificationCandidates([replacement])[0]!
+    expect(later.orderId).toBe(initial.orderId)
+    expect(later.invoice).not.toBe(initial.invoice)
+    const confirmedEvidence = new Set<string>()
+    let confirmations = 0
+    const verified = []
+    for (const candidate of [initial, later, initial]) {
+      const result = await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice: async (supplied) => ({
+          type: "incoming",
+          state: "settled",
+          invoice: supplied.invoice,
+          paymentHash: supplied.paymentHash!,
+          amountMsats: supplied.expectedAmountMsats,
+          settledAt: 1_700_000_010,
+        }),
+        publishConfirmation: async () => {
+          confirmations += 1
+        },
+      })
+      verified.push(result.verified)
+    }
+    expect(verified).toEqual([1, 1, 0])
+    expect(confirmations).toBe(2)
   })
 
   it("requires exact order invoices and rejects replay across orders", () => {

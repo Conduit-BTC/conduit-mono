@@ -146,13 +146,43 @@ export interface InboxRangeRow {
   observedCount: number
   pageCount?: number
 }
-export interface InboxDeliveryRow {
+export interface InboxTransportDeliveryRow {
   id: string
   accountPubkey: string
   value: InboxCipher
+  /** Older transport rows predate the explicit checkpoint discriminator. */
+  kind?: "transport"
   state: "queued" | "partial" | "accepted" | "failed"
   updatedAt: number
   claim?: { owner: string; expiresAt: number }
+}
+
+/** Encrypted domain replay metadata, never a relay job or payment observation. */
+export interface InboxDeliveryCheckpointRow {
+  id: string
+  accountPubkey: string
+  value: InboxCipher
+  kind: "merchant_paid_confirmation"
+  updatedAt: number
+  /** Absent on checkpoints; keeps Dexie's non-distributive write type explicit. */
+  state?: never
+  claim?: never
+}
+
+export type InboxDeliveryRow =
+  InboxTransportDeliveryRow | InboxDeliveryCheckpointRow
+
+export function isInboxTransportDeliveryRow(
+  row: InboxDeliveryRow
+): row is InboxTransportDeliveryRow {
+  return row.kind === undefined || row.kind === "transport"
+}
+
+export function assertInboxTransportDeliveryRow(
+  row: InboxDeliveryRow | undefined
+): asserts row is InboxTransportDeliveryRow | undefined {
+  if (row && !isInboxTransportDeliveryRow(row))
+    throw new Error("Saved private delivery is not a transport job")
 }
 
 function projectionIdentity(projection: InboxProjection) {

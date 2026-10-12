@@ -32,7 +32,14 @@ export type MerchantPaymentVerificationResult = {
 function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
-  return `${candidate.orderId}:${candidate.evidenceMessageId}`
+  // A later buyer proof is new evidence for the same invoice, not a new
+  // settlement. Keep confirmation suppression scoped to that exact intent.
+  return JSON.stringify([
+    candidate.orderId,
+    candidate.buyerPubkey,
+    candidate.invoice.trim().toLowerCase(),
+    candidate.expectedAmountMsats,
+  ])
 }
 
 export async function verifyMerchantPaymentCandidates({
