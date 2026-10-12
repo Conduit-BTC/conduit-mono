@@ -22,8 +22,8 @@ jobs:
       CI: "true"
       DEBUG: pw:browser
       PLAYWRIGHT_SMOKE_AREA: merchant
-      PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/navigation-results.json
-      PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/navigation-progress.log
+      PLAYWRIGHT_SMOKE_RESULT_FILE: /tmp/navigation-results.json
+      PLAYWRIGHT_SMOKE_PROGRESS_FILE: /tmp/navigation-progress.log
       ISOLATION: ${{ matrix.isolation }}
     steps:
       - uses: actions/checkout@v7.0.1
