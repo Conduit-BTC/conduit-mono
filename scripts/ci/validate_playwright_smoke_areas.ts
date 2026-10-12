@@ -6,6 +6,7 @@ import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
 import {
   safePlaywrightSmokeId,
   safePlaywrightSmokeTitle,
+  safePlaywrightFailure,
 } from "./playwright_smoke_reporter"
 
 type PlaywrightJsonSpec = {
@@ -26,6 +27,7 @@ type PlaywrightJsonSpec = {
 }
 
 type PlaywrightJsonResult = {
+  failure?: unknown
   duration?: number
   error?: PlaywrightJsonError
   errors?: PlaywrightJsonError[]
@@ -95,7 +97,17 @@ function formatSpec(spec: PlaywrightJsonSpec): string {
   const location = spec.file
     ? `${manifestFile(spec.file)}${spec.line ? `:${spec.line}` : ""}`
     : "unknown location"
-  return `${location} (${spec.title ?? "untitled test"})`
+  const id =
+    spec.smokeId && /^[0-9a-f]{64}$/.test(spec.smokeId)
+      ? spec.smokeId
+      : safePlaywrightSmokeId(spec.id)
+  const project = spec.project ?? spec.tests?.[0]?.projectName
+  const safeProject = ["chromium", "mobile-chromium", "mobile-webkit"].includes(
+    project ?? ""
+  )
+    ? project
+    : "unknown"
+  return `${location} (${spec.title ?? "untitled test"}) case=${id} project=${safeProject}`
 }
 
 function assignedAreasForSpec(spec: PlaywrightJsonSpec): SmokeArea[] {
@@ -149,7 +161,8 @@ function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
       ? `${file}${location?.line ? `:${location.line}` : ""}${location?.column ? `:${location.column}` : ""}`
       : "unavailable"
 
-  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.`
+  const failure = safePlaywrightFailure(result?.failure)
+  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.${failure ? ` Boundary: ${JSON.stringify(failure)}.` : ""}`
 }
 
 export function buildPlaywrightSmokeManifest(

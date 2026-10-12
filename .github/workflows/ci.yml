@@ -229,6 +229,7 @@ jobs:
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-results.json
           PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-progress.log
+          PLAYWRIGHT_SMOKE_EVIDENCE_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json
           PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
         run: |
@@ -265,6 +266,16 @@ jobs:
             --source-head-sha "$SOURCE_HEAD_SHA" \
             --base-sha "$BASE_SHA" \
             --tested-sha "$checkout_sha"
+      # Upload only the reporter's allowlisted, scanned, title-free summary.
+      # A failed validation remains failed; this artifact never substitutes for it.
+      - name: Retain sanitized smoke evidence
+        if: always() && matrix.job.area != 'none'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-evidence-${{ matrix.job.id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Remove raw Playwright output
         if: always() && matrix.job.area != 'none'
         env:

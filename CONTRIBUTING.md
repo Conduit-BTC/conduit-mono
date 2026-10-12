@@ -302,7 +302,41 @@ The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. The existing 20-minute limit and strict execution evidence still apply.
 
-A retry-dependent pass still fails the smoke gate. The privacy-safe reporter
+A retry-dependent pass still fails the smoke gate. Required CI runs use zero
+automatic retries; a separate diagnostic rerun cannot turn a failed first
+attempt into readiness evidence. Concurrent shards and selected coverage are
+unchanged.
+
+Every progress and failure entry includes an opaque case ID derived from
+Playwright's test identity. Parameterized cases at the same source line retain
+distinct IDs even when their titles are redacted. Compare IDs on the same
+tested commit; renaming or moving a test can change its identity.
+
+Each shard retains a seven-day `smoke-evidence-<shard>-<attempt>` artifact. Its
+title-free JSON includes source/base/tested SHAs, project and area, case IDs,
+first-attempt outcomes and durations, fixed failure categories, repository
+locations, and allowlisted diagnostics. It is constructed from approved fields
+and scanned before writing. Raw reports, browser output, screenshots, traces,
+step titles, and attachments are never uploaded. An artifact records observed
+execution; the separate manifest/SHA/first-attempt verifier remains the gate.
+
+`reporterSetupMs` measures reporter construction through the first test start;
+it includes subsequent discovery and server startup, not job queueing, container
+setup or dependency installation. `executionMs` measures first test start
+through reporter completion, including teardown. A startup failure has zero
+execution time. Use Actions job/step timestamps for the complete critical path
+and combined runner-minutes; do not add overlapping wall-clock intervals.
+
+Failures retain the first failed step category/location and last completed
+boundary before failure. Categories identify observations such as assertion,
+timeout, fixture or browser operation, not a proven root cause. Unknown remains
+unknown. Reproduction commands target the source group and browser with one
+worker and no retries; a parameterized source line can run several cases.
+Check out the recorded tested SHA, match the CI browser image, use fresh app
+servers, and match the case ID to distinguish those cases. Local results do not
+replace hosted Linux/WebKit or physical-device evidence.
+
+The privacy-safe reporter
 retains allowlisted footer geometry and product-submit readiness categories for
 the corresponding fixtures, including the failed first attempt. It drops raw
 annotations, form values, identities, message content, and error text. Extend
