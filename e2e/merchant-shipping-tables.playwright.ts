@@ -12,6 +12,7 @@ import {
   TEST_RELAY_URL,
 } from "./helpers/auth"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -305,9 +306,8 @@ test("digital drafts publish after their unused shipping table is withdrawn @mer
   )
   await publishTestRelayEvents([event])
   await installTestSigner(page, pubkey, { secretKey })
-  await page.goto(`${merchantUrl}/products`)
+  const add = await prepareEmptyMerchantCatalog(page, `${merchantUrl}/products`)
   await expect(page.locator('aside a[href="/shipping"]')).toHaveText("Shipping")
-  const add = page.getByRole("button", { name: "Add product" }).first()
   if (testInfo.project.use.hasTouch) await add.tap()
   else await add.click()
   const dialog = page.getByRole("dialog", { name: "Add product" })
