@@ -339,11 +339,19 @@ Failures retain the first step error that reaches the final test result and
 the last completed boundary before that error. Recovered polls and caught
 errors do not replace the actual failure boundary. Categories identify observations such as assertion,
 timeout, fixture or browser operation, not a proven root cause. Unknown remains
-unknown. Reproduction commands target the source group and browser with one
+unknown. Surface audits also record a boolean when WebKit reports a network-process
+crash through a WebSocket error; page-crash events and browser stderr may miss
+that failure. The socket error text is never retained. Reproduction commands target the source group and browser with one
 worker and no retries; a parameterized source line can run several cases.
 Check out the recorded tested SHA, match the CI browser image, use fresh app
 servers, and match the case ID to distinguish those cases. Local results do not
 replace hosted Linux/WebKit or physical-device evidence.
+
+The direct-route surface audit uses a fresh browser context for each route,
+with the same project/device options, signer and theme setup, and assertions.
+This isolates route shells from WebKit network-process failures observed during
+repeated document replacement. Navigation/history and cross-route state tests
+retain their own shared-context behavior. No failed navigation is retried.
 
 The privacy-safe reporter
 retains allowlisted footer geometry and product-submit readiness categories for

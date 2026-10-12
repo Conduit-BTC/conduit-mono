@@ -57,12 +57,16 @@ for (const area of ["market", "merchant"] as const) {
   for (const theme of ["day-market", "night-market"]) {
     test(`${area} surface audit in ${theme} @${area}`, async ({
       page,
+      browser,
     }, info) => {
       test.setTimeout(120000)
+      const viewport = page.viewportSize()
+      let routeContext = page.context()
       let phase = "setup"
       let routeIndex = -1
       let navigationError = "none"
       let pageCrashed = false
+      let networkProcessCrashed = false
       let failedDocuments = 0
       const pending = new Set<Request>()
       const record = () =>
@@ -71,6 +75,7 @@ for (const area of ["market", "merchant"] as const) {
           routeIndex,
           navigationError,
           pageCrashed,
+          networkProcessCrashed,
           failedDocuments,
           pendingDocuments: [...pending].filter(
             (r) => r.resourceType() === "document"
@@ -88,23 +93,35 @@ for (const area of ["market", "merchant"] as const) {
         phase = value
         record()
       }
-      page.on("request", (request) => {
-        pending.add(request)
-        record()
-      })
-      const finish = (request: Request) => {
-        pending.delete(request)
-        record()
+      const observePage = () => {
+        page.on("request", (request) => {
+          pending.add(request)
+          record()
+        })
+        const finish = (request: Request) => {
+          pending.delete(request)
+          record()
+        }
+        page.on("requestfinished", finish)
+        page.on("requestfailed", (request) => {
+          if (request.resourceType() === "document") failedDocuments += 1
+          finish(request)
+        })
+        // WebKit reports network-process crashes on sockets, not page crashes
+        // or necessarily browser stderr. Retain only this fixed observation.
+        page.on("websocket", (socket) => {
+          socket.on("socketerror", (error) => {
+            if (!/Network process crashed/i.test(error)) return
+            networkProcessCrashed = true
+            record()
+          })
+        })
+        page.on("crash", () => {
+          pageCrashed = true
+          record()
+        })
       }
-      page.on("requestfinished", finish)
-      page.on("requestfailed", (request) => {
-        if (request.resourceType() === "document") failedDocuments += 1
-        finish(request)
-      })
-      page.on("crash", () => {
-        pageCrashed = true
-        record()
-      })
+      observePage()
       record()
       // A nonessential image must not become the readiness gate for route UI.
       let releaseImage!: () => void
@@ -151,16 +168,33 @@ for (const area of ["market", "merchant"] as const) {
             })
           )
         )
-        await installRealTestSigner(page, identity, TEST_RELAY_URL)
-        await page.addInitScript(
-          ({ key, theme }) => localStorage.setItem(key, theme),
-          { key: THEME_STORAGE_KEY, theme }
-        )
+        const preparePage = async () => {
+          await installRealTestSigner(page, identity, TEST_RELAY_URL)
+          await page.addInitScript(
+            ({ key, theme }) => localStorage.setItem(key, theme),
+            { key: THEME_STORAGE_KEY, theme }
+          )
+        }
+        await preparePage()
         const directory = process.env.PLAYWRIGHT_UI_SURFACE_SCREENSHOT_DIR
         if (directory) await mkdir(directory, { recursive: true })
         const evidence = []
         for (const [index, route] of routes[area].entries()) {
           routeIndex = index
+          mark("setup")
+          // These are independent direct-route shells. Reusing a context across
+          // document replacements can crash WebKit's network process; keep each
+          // route's network and storage lifetime isolated without retrying it.
+          if (index > 0) {
+            await routeContext.close()
+            // Playwright inherits the configured project/device options.
+            routeContext = await browser.newContext()
+            page = await routeContext.newPage()
+            expect(page.viewportSize()).toEqual(viewport)
+            pending.clear()
+            observePage()
+            await preparePage()
+          }
           mark("navigate")
           try {
             await page.goto(
@@ -326,7 +360,11 @@ for (const area of ["market", "merchant"] as const) {
         })
       } finally {
         releaseImage()
-        disposeRuntimeSignerIdentity(identity)
+        try {
+          await routeContext.close()
+        } finally {
+          disposeRuntimeSignerIdentity(identity)
+        }
       }
     })
   }

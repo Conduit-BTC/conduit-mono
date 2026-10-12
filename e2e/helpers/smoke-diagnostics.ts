@@ -207,6 +207,7 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         ],
         routeIndex: "number",
         pageCrashed: "boolean",
+        networkProcessCrashed: "boolean",
         failedDocuments: "number",
         pendingDocuments: "number",
         pendingImages: "number",

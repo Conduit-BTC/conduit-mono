@@ -40,9 +40,13 @@ describe("composed smoke evidence", () => {
         join(directory, "e2e/commerce.playwright.ts"),
         [
           `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
-          `for (const mode of ["pass", "assertion", "timeout", "throw"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
+          `for (const mode of ["pass", "assertion", "timeout", "throw", "poll", "caught"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
           "  test.setTimeout(500);",
           '  test.info().annotations.push({ type: "smoke:commerce-journey", description: JSON.stringify({ phase: "checkout", elapsedSeconds: 12.345, phaseSeconds: 2.345, slowestSeconds: 5.678 }) });',
+          '  if (mode === "poll") { let attempt = 0; await expect.poll(() => ++attempt, { intervals: [1] }).toBe(2); }',
+          '  if (mode === "caught") { try { await test.step("caught-' +
+            sentinel +
+            '", async () => { expect(1).toBe(2); }); } catch {} }',
           '  await test.step("completed-' + sentinel + '", async () => {});',
           '  if (mode === "throw") throw new Error("' + sentinel + '");',
           '  if (mode === "assertion") expect("' +
@@ -51,6 +55,13 @@ describe("composed smoke evidence", () => {
           '  if (mode === "timeout") await test.step("waiting-' +
             sentinel +
             '", () => new Promise(() => {}));',
+          '  if (mode === "poll" || mode === "caught") {',
+          '    await test.step("ready-' + sentinel + '", async () => {});',
+          '    try { expect("' + sentinel + '").toBe("terminal"); }',
+          '    finally { await test.step("cleanup-' +
+            sentinel +
+            '", async () => {}); }',
+          "  }",
           "});",
         ].join("\n")
       )
@@ -88,7 +99,7 @@ describe("composed smoke evidence", () => {
         ["market"],
         evidence
       )
-      expect(manifest.selectedTestCount).toBe(4)
+      expect(manifest.selectedTestCount).toBe(6)
       expect(run([]).status).toBe(1)
       const report = JSON.parse(
         readFileSync(output, "utf8")
@@ -104,7 +115,7 @@ describe("composed smoke evidence", () => {
       expect(typeof summary.timing.reporterSetupBucket).toBe("string")
       expect(typeof summary.timing.executionBucket).toBe("string")
       expect(serialized).not.toMatch(/"(?:[^"\n]*(?:Ms|Seconds)|duration)":/)
-      expect(summary.timing.completedAttempts).toBe(4)
+      expect(summary.timing.completedAttempts).toBe(6)
       expect(
         summary.tests.every((spec: { title?: string }) => !("title" in spec))
       ).toBe(true)
@@ -116,7 +127,7 @@ describe("composed smoke evidence", () => {
           }>
         }) => spec.tests.flatMap((test) => test.results)
       )
-      expect(retainedResults).toHaveLength(4)
+      expect(retainedResults).toHaveLength(6)
       expect(summary.schemaVersion).toBe(2)
       for (const result of retainedResults) {
         expect(result.durationBucket).toBeTypeOf("string")
@@ -133,7 +144,7 @@ describe("composed smoke evidence", () => {
       expect(specs[0]!.tests![0]!.results![0]!.duration).toBeTypeOf("number")
       expect(readFileSync(output, "utf8")).toContain('"elapsedSeconds":12.3')
       const ids = specs.map((spec) => spec.smokeId)
-      expect(new Set(ids).size).toBe(4)
+      expect(new Set(ids).size).toBe(6)
       expect([...ids].sort()).toEqual(
         manifest.tests.map((test) => test.id).sort()
       )
@@ -144,7 +155,19 @@ describe("composed smoke evidence", () => {
         failures
           .map((result) => safePlaywrightFailure(result.failure)?.category)
           .sort()
-      ).toEqual(["assertion", "timeout", "unknown"])
+      ).toEqual(["assertion", "assertion", "assertion", "timeout", "unknown"])
+      // The recovered poll and caught error must not obscure the terminal
+      // assertion or let its cleanup replace the preceding successful boundary.
+      const boundaries = specs
+        .slice(4)
+        .flatMap((spec) => spec.tests!.flatMap((test) => test.results!))
+      expect(boundaries).toHaveLength(2)
+      for (const result of boundaries) {
+        const failure = safePlaywrightFailure(result.failure)
+        expect(failure?.failedStep?.location?.line).toBe(13)
+        expect(failure?.lastCompletedStep?.location?.line).toBe(12)
+        expect(failure?.category).toBe("assertion")
+      }
       const unstepped = failures
         .map((result) => safePlaywrightFailure(result.failure))
         .find((failure) => failure?.category === "unknown")
@@ -217,76 +240,6 @@ describe("composed smoke evidence", () => {
           evidence
         )
       ).toThrow()
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  }, 30000)
-
-  it("attributes terminal failures after recovered poll and caught errors", () => {
-    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-boundary-"))
-    const sentinel = "private-" + crypto.randomUUID()
-    try {
-      mkdirSync(join(directory, "e2e"))
-      const source = [
-        `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
-        `for (const mode of ["poll", "caught"]) test(\`boundary \${mode} ${sentinel} @market\`, async () => {`,
-        '  if (mode === "poll") {',
-        "    let attempt = 0;",
-        "    await expect.poll(() => ++attempt, { intervals: [1] }).toBe(2);",
-        "  } else {",
-        '    try { await test.step("caught-' +
-          sentinel +
-          '", async () => { expect(1).toBe(2); }); } catch {}',
-        "  }",
-        '  await test.step("ready-' + sentinel + '", async () => {});',
-        '  try { expect("' + sentinel + '").toBe("terminal"); }',
-        '  finally { await test.step("cleanup-' +
-          sentinel +
-          '", async () => {}); }',
-        "});",
-      ]
-      writeFileSync(
-        join(directory, "e2e/commerce.playwright.ts"),
-        source.join("\n")
-      )
-      const output = join(directory, "results.json")
-      const artifact = join(directory, "evidence.json")
-      const config = join(directory, "playwright.config.ts")
-      writeFileSync(
-        config,
-        `export default {
-        testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1,
-        reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)} }]],
-        projects: [{ name: "chromium" }],
-      }`
-      )
-      const run = spawnSync(
-        process.execPath,
-        [playwrightCli, "test", "-c", config],
-        {
-          cwd: directory,
-          encoding: "utf8",
-          timeout: 15000,
-          env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
-        }
-      )
-      expect(run.status).toBe(1)
-      const serialized =
-        readFileSync(output, "utf8") + readFileSync(artifact, "utf8")
-      expect(serialized).not.toContain(sentinel)
-      const report = JSON.parse(
-        readFileSync(output, "utf8")
-      ) as PlaywrightJsonReport
-      const results = report.suites![0]!.specs!.flatMap((spec) =>
-        spec.tests!.flatMap((test) => test.results!)
-      )
-      expect(results).toHaveLength(2)
-      for (const result of results) {
-        const failure = safePlaywrightFailure(result.failure)
-        expect(failure?.failedStep?.location?.line).toBe(10)
-        expect(failure?.lastCompletedStep?.location?.line).toBe(9)
-        expect(failure?.category).toBe("assertion")
-      }
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
