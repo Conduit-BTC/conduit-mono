@@ -222,6 +222,76 @@ describe("composed smoke evidence", () => {
     }
   }, 30000)
 
+  it("attributes terminal failures after recovered poll and caught errors", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-boundary-"))
+    const sentinel = "private-" + crypto.randomUUID()
+    try {
+      mkdirSync(join(directory, "e2e"))
+      const source = [
+        `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
+        `for (const mode of ["poll", "caught"]) test(\`boundary \${mode} ${sentinel} @market\`, async () => {`,
+        '  if (mode === "poll") {',
+        "    let attempt = 0;",
+        "    await expect.poll(() => ++attempt, { intervals: [1] }).toBe(2);",
+        "  } else {",
+        '    try { await test.step("caught-' +
+          sentinel +
+          '", async () => { expect(1).toBe(2); }); } catch {}',
+        "  }",
+        '  await test.step("ready-' + sentinel + '", async () => {});',
+        '  try { expect("' + sentinel + '").toBe("terminal"); }',
+        '  finally { await test.step("cleanup-' +
+          sentinel +
+          '", async () => {}); }',
+        "});",
+      ]
+      writeFileSync(
+        join(directory, "e2e/commerce.playwright.ts"),
+        source.join("\n")
+      )
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      const config = join(directory, "playwright.config.ts")
+      writeFileSync(
+        config,
+        `export default {
+        testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1,
+        reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)} }]],
+        projects: [{ name: "chromium" }],
+      }`
+      )
+      const run = spawnSync(
+        process.execPath,
+        [playwrightCli, "test", "-c", config],
+        {
+          cwd: directory,
+          encoding: "utf8",
+          timeout: 15000,
+          env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+        }
+      )
+      expect(run.status).toBe(1)
+      const serialized =
+        readFileSync(output, "utf8") + readFileSync(artifact, "utf8")
+      expect(serialized).not.toContain(sentinel)
+      const report = JSON.parse(
+        readFileSync(output, "utf8")
+      ) as PlaywrightJsonReport
+      const results = report.suites![0]!.specs!.flatMap((spec) =>
+        spec.tests!.flatMap((test) => test.results!)
+      )
+      expect(results).toHaveLength(2)
+      for (const result of results) {
+        const failure = safePlaywrightFailure(result.failure)
+        expect(failure?.failedStep?.location?.line).toBe(10)
+        expect(failure?.lastCompletedStep?.location?.line).toBe(9)
+        expect(failure?.category).toBe("assertion")
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30000)
+
   it("scans artifact strings and revalidates untrusted failure boundaries", () => {
     for (const value of [
       "nsec1" + "q".repeat(60),

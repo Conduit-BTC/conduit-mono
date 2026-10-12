@@ -448,7 +448,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
     TestResult,
     {
       active?: { step: TestStep; value: SafeStep }
-      failed?: SafeStep
+      failures?: Array<{ step: TestStep; completed?: SafeStep }>
       completed?: SafeStep
       teardown?: boolean
     }
@@ -509,9 +509,10 @@ export class PrivacySafeSmokeReporter implements Reporter {
 
   onStepEnd(_test: TestCase, result: TestResult, step: TestStep): void {
     const state = this.steps.get(result) ?? {}
-    if (step.error) state.failed ??= safeStep(step)
-    // Keep the last successful boundary before the first failure, not cleanup.
-    else if (!state.failed && !state.teardown) state.completed = safeStep(step)
+    if (step.error) {
+      state.failures ??= []
+      state.failures.push({ step, completed: state.completed })
+    } else if (!state.teardown) state.completed = safeStep(step)
     if (state.active?.step === step) delete state.active
     this.steps.set(result, state)
   }
@@ -582,7 +583,21 @@ export class PrivacySafeSmokeReporter implements Reporter {
     }
     if (result.status !== "passed" && result.status !== "skipped") {
       const state = this.steps.get(result)
-      const failedStep = state?.failed ?? state?.active?.value
+      // Polls and caught operations can emit failed steps without failing the
+      // test. Attribute only an error that reached the result, preserving the
+      // boundary captured before that error rather than subsequent cleanup.
+      // Error contents are compared in memory only and never serialized.
+      const failed = state?.failures?.find(({ step }) =>
+        result.errors.some(
+          (error) =>
+            step.error === error ||
+            (step.error?.message !== undefined &&
+              step.error.message === error.message &&
+              step.error.stack === error.stack)
+        )
+      )
+      const failedStep = failed ? safeStep(failed.step) : state?.active?.value
+      const completed = failed ? failed.completed : state?.completed
       safeResult.failure = {
         category:
           result.status === "timedOut"
@@ -593,7 +608,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
                 ? "assertion"
                 : "unknown",
         ...(failedStep ? { failedStep } : {}),
-        ...(state?.completed ? { lastCompletedStep: state.completed } : {}),
+        ...(completed ? { lastCompletedStep: completed } : {}),
       }
       this.progress(
         `failure case=${safePlaywrightSmokeId(test.id)} ${JSON.stringify(safeResult.failure)}`
