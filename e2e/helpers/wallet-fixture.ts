@@ -32,10 +32,9 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
     exact: true,
   })
   if (await chooser.count()) await chooser.click()
-  if (!makeMain)
-    await dialog
-      .getByLabel("Make this my main wallet", { exact: true })
-      .uncheck()
+  await dialog
+    .getByLabel("Make this my main wallet", { exact: true })
+    .setChecked(makeMain)
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
   await expect(dialog).toHaveCount(0)
 }

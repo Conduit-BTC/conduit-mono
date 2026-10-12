@@ -15,6 +15,10 @@ import {
 } from "../wallets/spark-recovery-service"
 import { sparkWalletRegistryDTag } from "../wallets/spark-recovery-address"
 import {
+  notifySparkRecoveryReady,
+  type SparkRecoveryReady,
+} from "../wallets/spark-recovery-ready"
+import {
   getAccountSparkRecovery,
   runAccountWalletSetup,
   assertWalletCreationDiscovery,
@@ -146,6 +150,13 @@ export type WalletRuntimeState =
 
 export type WalletSetupPhase =
   "checking" | "creating" | "opening" | "encrypting" | "syncing" | "address"
+
+export type { SparkRecoveryReady } from "../wallets/spark-recovery-ready"
+
+export interface SparkRecoveryReadyOptions {
+  onRecoveryReady?(recovery: SparkRecoveryReady): void
+}
+
 export interface UseWalletsReturn {
   wallets: WalletDescriptor[]
   portableWallets: WalletDescriptor[]
@@ -175,7 +186,9 @@ export interface UseWalletsReturn {
   ): Promise<WalletDescriptor>
   createSpark(
     label?: string,
-    options?: { onProgress?(phase: WalletSetupPhase): void }
+    options?: SparkRecoveryReadyOptions & {
+      onProgress?(phase: WalletSetupPhase): void
+    }
   ): Promise<{
     wallet: WalletDescriptor
     mnemonic: string
@@ -183,11 +196,14 @@ export interface UseWalletsReturn {
     recovered?: boolean
     publicDefaultAllowed?: boolean
   }>
-  importSpark(input: {
-    label: string
-    mnemonic: string
-    accountNumber: number
-  }): Promise<WalletDescriptor>
+  importSpark(
+    input: {
+      label: string
+      mnemonic: string
+      accountNumber: number
+    },
+    options?: SparkRecoveryReadyOptions
+  ): Promise<WalletDescriptor>
   unlockSpark(
     walletId: string,
     password?: string,
@@ -1094,7 +1110,9 @@ export function useWallets(
   const createSpark = useCallback(
     async (
       label = "",
-      options?: { onProgress?(phase: WalletSetupPhase): void }
+      options?: SparkRecoveryReadyOptions & {
+        onProgress?(phase: WalletSetupPhase): void
+      }
     ) => {
       options?.onProgress?.("checking")
       requireSparkManager()
@@ -1114,6 +1132,17 @@ export function useWallets(
             label,
             restored: true,
             onProgress: options?.onProgress,
+          })
+          await notifySparkRecoveryReady({
+            wallet,
+            mnemonic: bundle.mnemonic,
+            accountNumber: bundle.accountNumber,
+            recovered: true,
+            ownerPubkey: signer.pubkey,
+            getStoredRecovery: (walletId) => store.getSparkRecovery(walletId),
+            isNativeOpen: (walletId) => requireSparkManager().isOpen(walletId),
+            assertAuthority: () => assertWalletSignerCurrent(signer),
+            onRecoveryReady: options?.onRecoveryReady,
           })
           return {
             wallet,
@@ -1178,6 +1207,18 @@ export function useWallets(
           },
           onProgress: options?.onProgress,
         })
+        await notifySparkRecoveryReady({
+          wallet,
+          mnemonic,
+          accountNumber,
+          recovered: false,
+          ownerPubkey: signer.pubkey,
+          getStoredRecovery: (walletId) => store.getSparkRecovery(walletId),
+          isNativeOpen: (walletId) => requireSparkManager().isOpen(walletId),
+          assertAuthority: () => assertWalletSignerCurrent(signer),
+          onRecoveryReady: options?.onRecoveryReady,
+        })
+        assertWalletSignerCurrent(signer)
         options?.onProgress?.("syncing")
         try {
           const ready = await backUpAccountSparkWallet(
@@ -1227,11 +1268,14 @@ export function useWallets(
   )
 
   const importSpark = useCallback(
-    async (input: {
-      label: string
-      mnemonic: string
-      accountNumber: number
-    }) => {
+    async (
+      input: {
+        label: string
+        mnemonic: string
+        accountNumber: number
+      },
+      options?: SparkRecoveryReadyOptions
+    ) => {
       if (
         !isValidSparkMnemonic(input.mnemonic) ||
         !isValidSparkAccountNumber(input.accountNumber)
@@ -1287,6 +1331,18 @@ export function useWallets(
           wallet.id,
           false
         )
+        await notifySparkRecoveryReady({
+          wallet,
+          mnemonic: normalizeSparkMnemonic(input.mnemonic),
+          accountNumber: input.accountNumber,
+          recovered: !!walletId,
+          ownerPubkey: signer.pubkey,
+          getStoredRecovery: (walletId) => store.getSparkRecovery(walletId),
+          isNativeOpen: (walletId) => requireSparkManager().isOpen(walletId),
+          assertAuthority: () => assertWalletSignerCurrent(signer),
+          onRecoveryReady: options?.onRecoveryReady,
+        })
+        assertWalletSignerCurrent(signer)
         try {
           const ready = await backUpAccountSparkWallet(
             signer,
@@ -1312,7 +1368,12 @@ export function useWallets(
         return wallet
       })
     },
-    [setupSparkWallet, synchronizeRecovery, refreshAfterCommittedWalletMutation]
+    [
+      setupSparkWallet,
+      synchronizeRecovery,
+      refreshAfterCommittedWalletMutation,
+      store,
+    ]
   )
 
   useEffect(() => {

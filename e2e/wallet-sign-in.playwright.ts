@@ -238,6 +238,99 @@ test("cached signer wallet stays isolated across two identities and returns unch
   }
 })
 
+test("locally saved recovery can finish while relay sync remains pending @market", async ({
+  page,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  await prepareControlledWallet(page)
+  await installRealTestSigner(
+    page,
+    identity,
+    `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
+  )
+  try {
+    await page.goto(`${market}/wallet`)
+    await installControlledWallet(page)
+    await page.evaluate(
+      async ({ core, recoveryModule }) => {
+        const { getAccountSigner } = await import(core)
+        const { getAccountSparkRecovery } = await import(recoveryModule)
+        const service = getAccountSparkRecovery(getAccountSigner())
+        const deliver = service.deliver.bind(service)
+        let first = true
+        service.deliver = async (...args: unknown[]) => {
+          if (first) {
+            first = false
+            await new Promise<void>((resolve) => {
+              ;(window as any).__releaseOptionalRecoverySync = resolve
+            })
+          }
+          return deliver(...args)
+        }
+      },
+      {
+        core,
+        recoveryModule:
+          "/@fs" +
+          path.resolve("packages/core/src/wallets/account-spark-recovery.ts"),
+      }
+    )
+    await openWalletSetup(page, "Create wallet")
+    const dialog = page.getByRole("dialog")
+    await expect(
+      dialog.getByRole("heading", { name: "Save your recovery details" })
+    ).toBeVisible()
+    await expect(dialog.getByText(/Sync pending/)).toBeVisible()
+    const mainChoice = dialog.getByLabel("Make this my main wallet", {
+      exact: true,
+    })
+    await expect(mainChoice).not.toBeChecked()
+    await expect(mainChoice).toBeDisabled()
+    await dialog
+      .getByLabel(
+        "I saved the phrase, Spark account number and network somewhere private"
+      )
+      .check()
+    await dialog.getByRole("button", { name: "Done", exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await page
+      .getByRole("button", { name: "Add a wallet", exact: true })
+      .click()
+    await expect(
+      dialog.getByRole("status").filter({ hasText: "still syncing" })
+    ).toBeVisible()
+    await expect(dialog.locator("#recovery-saved")).toHaveCount(0)
+    expect(await page.evaluate(() => (window as any).__walletProbe.opens)).toBe(
+      1
+    )
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            typeof (window as any).__releaseOptionalRecoverySync === "function"
+        )
+      )
+      .toBe(true)
+    await page.evaluate(() => (window as any).__releaseOptionalRecoverySync())
+    await expect(dialog.getByRole("status")).toContainText(
+      "Wallet setup finished"
+    )
+    await dialog.getByRole("button", { name: "Done", exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: "Copy address", exact: true })
+    ).toBeVisible()
+    expect(
+      await page.evaluate(() => ({
+        opens: (window as any).__walletProbe.opens,
+        registrations: (window as any).__walletProbe.registrations,
+      }))
+    ).toEqual({ opens: 1, registrations: 1 })
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
 for (const size of [
   { name: "desktop", width: 1280, height: 1000 },
   { name: "mobile", width: 320, height: 844 },

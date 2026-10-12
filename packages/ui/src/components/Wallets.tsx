@@ -1378,22 +1378,47 @@ function PortableWalletDialog({
   const [address, setAddress] = useState<BreezAddressState | null>(null)
   const [recoveredFromRelay, setRecoveredFromRelay] = useState(false)
   const [firstWallet, setFirstWallet] = useState(false)
+  const [setupSettled, setSetupSettled] = useState(false)
+  const [setupReady, setSetupReady] = useState(false)
+  const [dismissedDuringSetup, setDismissedDuringSetup] = useState(false)
+  const dismissedDuringSetupRef = useRef(false)
   const started = useRef(false)
   const runScope = useRef(0)
+  const dismissDuringSetup = () => {
+    dismissedDuringSetupRef.current = true
+    setDismissedDuringSetup(true)
+    setRecovery(null)
+    setMnemonic("")
+    setSaved(false)
+    setCompletedWallet(null)
+    setAddress(null)
+    setError(null)
+    onOpenChange(false)
+  }
   const close = () => {
     runScope.current++
     started.current = false
+    dismissedDuringSetupRef.current = false
+    setDismissedDuringSetup(false)
     setMnemonic("")
     setAccountNumber(String(defaultAccount))
     setRecovery(null)
     setCompletedWallet(null)
     setAddress(null)
+    setSetupSettled(false)
+    setSetupReady(false)
     setSaved(false)
     setError(null)
     onOpenChange(false)
   }
   const finish = async () => {
     if (!completedWallet) return
+    if (pending && recovery && saved && !makeMain) {
+      // Local recovery is durable at this point; relay sync continues in the
+      // wallet hook and the user has not opted into changing the main wallet.
+      dismissDuringSetup()
+      return
+    }
     const scope = runScope.current
     setPending(true)
     setError(null)
@@ -1440,6 +1465,22 @@ function PortableWalletDialog({
       let publicDefaultAllowed = false
       if (mode === "create") {
         const result = await wallets.createSpark("", {
+          onRecoveryReady: ({
+            wallet: readyWallet,
+            mnemonic: readyMnemonic,
+            accountNumber: readyAccountNumber,
+            recovered,
+          }) => {
+            if (!current()) return
+            setRecovery({
+              mnemonic: readyMnemonic,
+              accountNumber: readyAccountNumber,
+              network: readyWallet.network,
+            })
+            setCompletedWallet(readyWallet)
+            setRecoveredFromRelay(recovered)
+            setSaved(recovered)
+          },
           onProgress: (value) => {
             if (current()) setPhase(value)
           },
@@ -1458,27 +1499,51 @@ function PortableWalletDialog({
           accountNumber,
           defaultAccount
         )
-        wallet = await wallets.importSpark({
-          label: "",
-          mnemonic,
-          accountNumber: number,
-        })
+        wallet = await wallets.importSpark(
+          {
+            label: "",
+            mnemonic,
+            accountNumber: number,
+          },
+          {
+            onRecoveryReady: ({
+              wallet: readyWallet,
+              mnemonic: readyMnemonic,
+              accountNumber: readyAccountNumber,
+            }) => {
+              if (!current()) return
+              setRecovery({
+                mnemonic: readyMnemonic,
+                accountNumber: readyAccountNumber,
+                network: readyWallet.network,
+              })
+              setCompletedWallet(readyWallet)
+              setSaved(true)
+            },
+          }
+        )
         bundle = { mnemonic, accountNumber: number, network: wallet.network }
       }
       if (!current()) return
-      setFirstWallet(first && publicDefaultAllowed)
-      setCompletedWallet(wallet)
-      setMakeMain(mode === "restore" || (first && !imported))
-      setSaved(imported)
-      setMnemonic("")
-      setRecovery(bundle)
-      setPhase("address")
+      if (!dismissedDuringSetupRef.current) {
+        setFirstWallet(first && publicDefaultAllowed)
+        setCompletedWallet(wallet)
+        setMakeMain(mode === "restore" || (first && !imported))
+        setSaved((acknowledged) => acknowledged || imported)
+        setMnemonic("")
+        setRecovery(bundle)
+        setPhase("address")
+      }
       const value = await wallets.getSparkLightningAddress(wallet.id)
-      if (current()) setAddress(value)
+      if (current() && !dismissedDuringSetupRef.current) {
+        setAddress(value)
+        setSetupReady(true)
+      }
     } catch (caught) {
       if (current())
         setError(getErrorMessage(caught, "Could not set up wallet."))
     } finally {
+      if (current()) setSetupSettled(true)
       setPending(false)
     }
   }, [
@@ -1501,6 +1566,14 @@ function PortableWalletDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        if (!next && dismissedDuringSetup) {
+          onOpenChange(false)
+          return
+        }
+        if (!next && pending && recovery && saved && !makeMain) {
+          dismissDuringSetup()
+          return
+        }
         if (!next && !pending && (!recovery || saved)) close()
       }}
     >
@@ -1526,7 +1599,22 @@ function PortableWalletDialog({
               : "Your Nostr signer opens this wallet."}
           </DialogDescription>
         </DialogHeader>
-        {recovery ? (
+        {dismissedDuringSetup ? (
+          <div className="grid gap-4">
+            <p role="status" className="text-sm">
+              {pending
+                ? "Wallet setup is still syncing in the background. The saved recovery phrase was cleared from this dialog."
+                : error
+                  ? `Wallet setup needs attention: ${error}`
+                  : "Wallet setup finished. Check your wallet list for its current status."}
+            </p>
+            <DialogFooter>
+              <Button disabled={pending} onClick={close}>
+                Done
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : recovery ? (
           <>
             {mode === "restore" || recoveredFromRelay ? (
               <p className="text-sm">
@@ -1541,7 +1629,9 @@ function PortableWalletDialog({
               {completedWallet &&
               wallets.recoverySyncByWallet[completedWallet.id] === "ready"
                 ? "Synced to recovery relays."
-                : "Sync pending. Keep your recovery details before switching apps."}
+                : pending
+                  ? "Sync pending. You can close this dialog; wallet setup will keep syncing in the background. Keep your recovery details before switching apps."
+                  : "Sync pending. Keep your recovery details before switching apps."}
             </p>
             {error && (
               <p role="alert" className="text-sm">
@@ -1554,7 +1644,7 @@ function PortableWalletDialog({
                 <Switch
                   id="wallet-main"
                   checked={makeMain}
-                  disabled={pending}
+                  disabled={pending || !setupReady}
                   onCheckedChange={setMakeMain}
                 />
                 <p className="text-pretty text-xs">
@@ -1598,7 +1688,9 @@ function PortableWalletDialog({
             )}
             <DialogFooter>
               <Button
-                disabled={!saved || pending}
+                disabled={
+                  !saved || (pending && makeMain) || (!setupSettled && makeMain)
+                }
                 onClick={() => void finish()}
               >
                 Done
