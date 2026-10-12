@@ -349,9 +349,59 @@ export function safePlaywrightFailure(
   }
 }
 
+const durationBuckets = [
+  "under-1s",
+  "1-5s",
+  "5-15s",
+  "15-30s",
+  "30-60s",
+  "1-5m",
+  "5-15m",
+  "15m-plus",
+  "unknown",
+] as const
+
+/** Lower bounds are inclusive; upper bounds are exclusive. */
+export function smokeDurationBucket(
+  milliseconds: number
+): (typeof durationBuckets)[number] {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "unknown"
+  const thresholds = [1000, 5000, 15000, 30000, 60000, 300000, 900000]
+  const index = thresholds.findIndex((threshold) => milliseconds < threshold)
+  return durationBuckets[index < 0 ? 7 : index]!
+}
+
+function retainedDiagnostic(
+  diagnostic: Record<string, string | number | boolean>
+) {
+  const durationFields: Record<string, string> = {
+    elapsedSeconds: "elapsedBucket",
+    phaseSeconds: "phaseBucket",
+    slowestSeconds: "slowestBucket",
+  }
+  return Object.fromEntries(
+    Object.entries(diagnostic).map(([key, value]) => {
+      const bucketKey = durationFields[key]
+      return bucketKey
+        ? [
+            bucketKey,
+            smokeDurationBucket(typeof value === "number" ? value * 1000 : NaN),
+          ]
+        : [key, value]
+    })
+  )
+}
+
 export function serializeSmokeEvidence(evidence: unknown): string {
   // Only opaque case hashes and commit identities may contain long hex values.
   const scanned = JSON.stringify(evidence, (key, value) => {
+    if (
+      key === "duration" ||
+      /(?:Ms|Seconds)$/.test(key) ||
+      (key.endsWith("Bucket") && !durationBuckets.includes(value))
+    ) {
+      throw new Error("Smoke evidence contains an unapproved duration field.")
+    }
     if (
       ["baseSha", "sourceHeadSha", "testedSha"].includes(key) &&
       typeof value === "string" &&
@@ -615,7 +665,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
       // Construct an allowlisted, title-free artifact. Never copy raw reports,
       // annotations, error messages, or attachments into an upload directory.
       const evidence = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         evidence: safeSmokeEvidence(this.metadata),
         status: ["passed", "failed", "timedout", "interrupted"].includes(
           result.status
@@ -623,9 +673,12 @@ export class PrivacySafeSmokeReporter implements Reporter {
           ? result.status
           : "unknown",
         timing: {
-          reporterSetupMs: (this.firstTestAt ?? endedAt) - this.createdAt,
-          executionMs:
-            this.firstTestAt !== undefined ? endedAt - this.firstTestAt : 0,
+          reporterSetupBucket: smokeDurationBucket(
+            (this.firstTestAt ?? endedAt) - this.createdAt
+          ),
+          executionBucket: smokeDurationBucket(
+            this.firstTestAt !== undefined ? endedAt - this.firstTestAt : 0
+          ),
           completedAttempts: this.completedAttempts,
         },
         errors: this.runnerErrors,
@@ -637,7 +690,22 @@ export class PrivacySafeSmokeReporter implements Reporter {
           project: spec.project,
           tags: spec.tags,
           ok: spec.ok,
-          tests: spec.tests,
+          tests: spec.tests.map((test) => ({
+            expectedStatus: test.expectedStatus,
+            status: test.status,
+            results: test.results.map((attempt) => ({
+              durationBucket: smokeDurationBucket(attempt.duration),
+              retry: attempt.retry,
+              status: attempt.status,
+              ...(attempt.error ? { error: attempt.error } : {}),
+              ...(attempt.failure ? { failure: attempt.failure } : {}),
+              ...(attempt.diagnostics
+                ? {
+                    diagnostics: attempt.diagnostics.map(retainedDiagnostic),
+                  }
+                : {}),
+            })),
+          })),
         })),
       }
       writeFileSync(this.evidenceFile, serializeSmokeEvidence(evidence), {

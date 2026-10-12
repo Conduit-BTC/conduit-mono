@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process"
 
 import {
   safePlaywrightFailure,
+  smokeDurationBucket,
   serializeSmokeEvidence,
 } from "../scripts/ci/playwright_smoke_reporter"
 import {
@@ -36,11 +37,12 @@ describe("composed smoke evidence", () => {
     try {
       mkdirSync(join(directory, "e2e"))
       writeFileSync(
-        join(directory, "e2e/probe.playwright.ts"),
+        join(directory, "e2e/commerce.playwright.ts"),
         [
           `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
           `for (const mode of ["pass", "assertion", "timeout", "throw"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
           "  test.setTimeout(500);",
+          '  test.info().annotations.push({ type: "smoke:commerce-journey", description: JSON.stringify({ phase: "checkout", elapsedSeconds: 12.345, phaseSeconds: 2.345, slowestSeconds: 5.678 }) });',
           '  await test.step("completed-' + sentinel + '", async () => {});',
           '  if (mode === "throw") throw new Error("' + sentinel + '");',
           '  if (mode === "assertion") expect("' +
@@ -99,13 +101,37 @@ describe("composed smoke evidence", () => {
       )
       expect(summary.evidence).toEqual(evidence)
       expect(summary.status).toBe("failed")
-      expect(summary.timing.reporterSetupMs).toBeGreaterThanOrEqual(0)
-      expect(summary.timing.executionMs).toBeGreaterThan(0)
+      expect(typeof summary.timing.reporterSetupBucket).toBe("string")
+      expect(typeof summary.timing.executionBucket).toBe("string")
+      expect(serialized).not.toMatch(/"(?:[^"\n]*(?:Ms|Seconds)|duration)":/)
       expect(summary.timing.completedAttempts).toBe(4)
       expect(
         summary.tests.every((spec: { title?: string }) => !("title" in spec))
       ).toBe(true)
       const specs = report.suites![0]!.specs!
+      const retainedResults = summary.tests.flatMap(
+        (spec: {
+          tests: Array<{
+            results: Array<{ durationBucket: string; diagnostics: unknown[] }>
+          }>
+        }) => spec.tests.flatMap((test) => test.results)
+      )
+      expect(retainedResults).toHaveLength(4)
+      expect(summary.schemaVersion).toBe(2)
+      for (const result of retainedResults) {
+        expect(result.durationBucket).toBeTypeOf("string")
+        expect(result.diagnostics).toEqual([
+          {
+            kind: "commerce-journey",
+            phase: "checkout",
+            elapsedBucket: "5-15s",
+            phaseBucket: "1-5s",
+            slowestBucket: "5-15s",
+          },
+        ])
+      }
+      expect(specs[0]!.tests![0]!.results![0]!.duration).toBeTypeOf("number")
+      expect(readFileSync(output, "utf8")).toContain('"elapsedSeconds":12.3')
       const ids = specs.map((spec) => spec.smokeId)
       expect(new Set(ids).size).toBe(4)
       expect([...ids].sort()).toEqual(
@@ -177,6 +203,7 @@ describe("composed smoke evidence", () => {
       expect(run([]).status).toBe(1)
       const startup = JSON.parse(readFileSync(artifact, "utf8"))
       expect(startup.status).toBe("failed")
+      expect(startup.timing.executionBucket).toBe("under-1s")
       expect(startup.evidence).toEqual(evidence)
       expect(startup.errors).toContainEqual({
         phase: "startup",
@@ -231,5 +258,68 @@ describe("composed smoke evidence", () => {
         location: { file: "e2e/probe.playwright.ts", column: 3 },
       },
     })
+  })
+
+  it("uses fixed duration buckets and rejects exact retained timings", () => {
+    expect(
+      [
+        0,
+        999,
+        1000,
+        4999,
+        5000,
+        14999,
+        15000,
+        29999,
+        30000,
+        59999,
+        60000,
+        299999,
+        300000,
+        899999,
+        900000,
+        Number.MAX_SAFE_INTEGER,
+        -1,
+        NaN,
+        Infinity,
+      ].map(smokeDurationBucket)
+    ).toEqual([
+      "under-1s",
+      "under-1s",
+      "1-5s",
+      "1-5s",
+      "5-15s",
+      "5-15s",
+      "15-30s",
+      "15-30s",
+      "30-60s",
+      "30-60s",
+      "1-5m",
+      "1-5m",
+      "5-15m",
+      "5-15m",
+      "15m-plus",
+      "15m-plus",
+      "unknown",
+      "unknown",
+      "unknown",
+    ])
+    for (const key of [
+      "reporterSetupMs",
+      "executionMs",
+      "duration",
+      "elapsedSeconds",
+      "phaseSeconds",
+      "slowestSeconds",
+    ]) {
+      expect(() =>
+        serializeSmokeEvidence({ nested: [{ [key]: 1234 }] })
+      ).toThrow("duration")
+    }
+    for (const value of [1234, "1234ms", "private-value"]) {
+      expect(() => serializeSmokeEvidence({ durationBucket: value })).toThrow(
+        "duration"
+      )
+    }
   })
 })

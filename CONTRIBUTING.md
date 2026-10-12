@@ -314,17 +314,25 @@ tested commit; renaming or moving a test can change its identity.
 
 Each shard retains a seven-day `smoke-evidence-<shard>-<attempt>` artifact. Its
 title-free JSON includes source/base/tested SHAs, project and area, case IDs,
-first-attempt outcomes and durations, fixed failure categories, repository
+first-attempt outcomes and duration buckets, fixed failure categories, repository
 locations, and allowlisted diagnostics. It is constructed from approved fields
 and scanned before writing. Raw reports, browser output, screenshots, traces,
 step titles, and attachments are never uploaded. An artifact records observed
 execution; the separate manifest/SHA/first-attempt verifier remains the gate.
 
-`reporterSetupMs` measures reporter construction through the first test start;
+Schema version 2 retains timing only as fixed duration buckets: `under-1s`,
+`1-5s`, `5-15s`, `15-30s`, `30-60s`, `1-5m`, `5-15m`, and `15m-plus`.
+Lower bounds are inclusive and upper bounds exclusive; invalid durations use
+`unknown`. This applies to setup, execution, each attempt, and diagnostic
+elapsed/phase/slowest times. The artifact serializer rejects exact duration
+fields. Exact durations remain in the transient verifier report and existing
+progress output, which are not uploaded as artifacts.
+
+`reporterSetupBucket` measures reporter construction through the first test start;
 it includes subsequent discovery and server startup, not job queueing, container
-setup or dependency installation. `executionMs` measures first test start
+setup or dependency installation. `executionBucket` measures first test start
 through reporter completion, including teardown. A startup failure has zero
-execution time. Use Actions job/step timestamps for the complete critical path
+execution time, represented as `under-1s`. Use Actions job/step timestamps for the complete critical path
 and combined runner-minutes; do not add overlapping wall-clock intervals.
 
 Failures retain the first failed step category/location and last completed
