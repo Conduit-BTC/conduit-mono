@@ -67,6 +67,7 @@ const responsiveCoverageFiles = [
   "**/merchant-order-inbox.playwright.ts",
   "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",
+  "**/external-payment-preparation.playwright.ts",
 ]
 
 if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {

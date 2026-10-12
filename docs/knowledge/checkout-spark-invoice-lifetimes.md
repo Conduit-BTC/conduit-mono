@@ -60,6 +60,13 @@ an external wallet or copying an invoice is not settlement evidence. Exact late
 credit still belongs to the original checkout, and no disclosure action creates
 a replacement invoice or records a merchant payment proof.
 
+Cash App and Lightning choices prepare the reserved invoice without launching a
+wallet from the asynchronous preparation callback. The ready native links open
+on a fresh explicit click, with the current invoice/session guards checked again.
+Preparation reports invoice readiness, not wallet launch or payment success.
+Copy and QR keep using the same reserved invoice; exact funding checks continue
+independently of whether the buyer opens a wallet.
+
 ## Outgoing payouts
 
 `checkoutSparkProviderSendWindowEndsAt` returns the signed BOLT11 expiration:

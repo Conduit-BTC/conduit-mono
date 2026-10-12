@@ -6,7 +6,10 @@ import {
   applyCheckoutSparkFundingChoice,
   resolveCheckoutSparkFundingSelection,
 } from "../apps/market/src/components/checkout-spark-funding-selection"
-import { performExternalInvoicePaymentAction } from "../apps/market/src/components/invoice-payment-action"
+import {
+  performExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentActionResult,
+} from "../apps/market/src/components/invoice-payment-action"
 import type { CheckoutSparkExternalFundingInvoice } from "../apps/market/src/lib/checkout-spark-settled-funding"
 import { makeSignedBolt11Fixture } from "./support/signed-bolt11-fixture"
 
@@ -36,13 +39,7 @@ function renderFunding({
   enabled?: boolean
   now?: () => number
   onBeforeInvoiceUse?: () => boolean
-  actionResult?:
-    | "qr_ready"
-    | "copied"
-    | "copy_failed"
-    | "wallet_requested"
-    | "wallet_request_failed"
-    | "unavailable"
+  actionResult?: ExternalInvoicePaymentActionResult
   preparation?: {
     amountSats: number
     cashAppAvailable: boolean
@@ -153,9 +150,6 @@ describe("checkout Spark external funding presentation", () => {
           now: () => NOW,
           onBeforeInvoiceUse: () => false,
           browser: {
-            open: () => {
-              browserCalls += 1
-            },
             copy: async () => {
               browserCalls += 1
             },
@@ -183,9 +177,6 @@ describe("checkout Spark external funding presentation", () => {
           now: () => NOW,
           onBeforeInvoiceUse: () => true,
           browser: {
-            open: () => {
-              browserCalls += 1
-            },
             copy: async () => {
               browserCalls += 1
             },
@@ -205,9 +196,6 @@ describe("checkout Spark external funding presentation", () => {
       now: () => NOW,
       onBeforeInvoiceUse: () => true,
       browser: {
-        open: () => {
-          throw new Error("Unexpected open")
-        },
         copy: async (value: string) => {
           copied = value
         },
@@ -226,12 +214,14 @@ describe("checkout Spark external funding presentation", () => {
         },
       })
     ).toBe("copy_failed")
-    const markup = renderFunding({ actionResult: "wallet_requested" })
-    expect(markup).toContain("If the wallet didn’t open, use the link above.")
+    const markup = renderFunding({ actionResult: "wallet_ready" })
+    expect(markup).toContain(
+      "Invoice ready. Choose a wallet link above to pay."
+    )
     expect(markup).not.toContain("Payment confirmed")
   })
 
-  it("hands the approved exact invoice to Cash App only after the current-use guard", async () => {
+  it("checks current authority before preparing the exact Cash App link", async () => {
     const calls: string[] = []
     const result = await performExternalInvoicePaymentAction({
       action: "cash_app",
@@ -243,19 +233,37 @@ describe("checkout Spark external funding presentation", () => {
         return true
       },
       browser: {
-        open: (url, target) => {
-          calls.push("open")
-          expect(url).toContain("https://cash.app/")
-          expect(target).toBe("_blank")
-        },
         copy: async () => {
           throw new Error("Unexpected copy")
         },
       },
     })
-    expect(calls).toEqual(["guard", "open"])
-    expect(result).toBe("wallet_requested")
+    expect(calls).toEqual(["guard"])
+    expect(result).toBe("wallet_ready")
   })
+
+  it.each(["cash_app", "lightning"] as const)(
+    "prepares %s for a fresh link click without launching after asynchronous approval",
+    async (action) => {
+      let browserCalls = 0
+      // Invoice preparation may finish after the initiating click's gesture.
+      await Promise.resolve()
+      const result = await performExternalInvoicePaymentAction({
+        action,
+        invoice: INVOICE,
+        expectedAmountSats: RESERVED.amountSats,
+        now: () => NOW,
+        onBeforeInvoiceUse: () => true,
+        browser: {
+          copy: async () => {
+            browserCalls += 1
+          },
+        },
+      })
+      expect(result).toBe("wallet_ready")
+      expect(browserCalls).toBe(0)
+    }
+  )
 
   it("offers named external choices before disclosure without exposing an invoice or approving on mount", () => {
     let approvals = 0
@@ -303,7 +311,7 @@ describe("checkout Spark external funding presentation", () => {
     expect(markup).not.toContain(INVOICE)
   })
 
-  it("keeps the reserved links available after a blocked wallet handoff and treats a throwing authority guard as unavailable", async () => {
+  it("keeps reserved wallet links ready and treats a throwing authority guard as unavailable", async () => {
     const input = {
       action: "cash_app" as const,
       invoice: INVOICE,
@@ -311,20 +319,19 @@ describe("checkout Spark external funding presentation", () => {
       now: () => NOW,
       onBeforeInvoiceUse: () => true,
       browser: {
-        open: () => {
-          throw new Error("Browser refused")
-        },
         copy: async () => {
           throw new Error("Unexpected copy")
         },
       },
     }
     expect(await performExternalInvoicePaymentAction(input)).toBe(
-      "wallet_request_failed"
+      "wallet_ready"
     )
-    const markup = renderFunding({ actionResult: "wallet_request_failed" })
+    const markup = renderFunding({ actionResult: "wallet_ready" })
     expect(markup).toContain("Pay with Cash App")
-    expect(markup).toContain("If the wallet didn’t open, use the link above.")
+    expect(markup).toContain(
+      "Invoice ready. Choose a wallet link above to pay."
+    )
     expect(markup).toContain(`href="lightning:${INVOICE}"`)
     expect(
       await performExternalInvoicePaymentAction({

@@ -8,14 +8,9 @@ import { getCashAppLightningUrl } from "../lib/cash-app-lightning"
 export type ExternalInvoicePaymentAction =
   "cash_app" | "lightning" | "copy" | "qr"
 export type ExternalInvoicePaymentActionResult =
-  | "wallet_requested"
-  | "wallet_request_failed"
-  | "copied"
-  | "copy_failed"
-  | "qr_ready"
-  | "unavailable"
+  "wallet_ready" | "copied" | "copy_failed" | "qr_ready" | "unavailable"
 
-/** Browser handoff only: never requests an invoice or confirms a payment. */
+/** Finish invoice preparation; wallet launch requires a fresh native link click. */
 export async function performExternalInvoicePaymentAction(input: {
   action: ExternalInvoicePaymentAction
   invoice: string
@@ -23,7 +18,6 @@ export async function performExternalInvoicePaymentAction(input: {
   onBeforeInvoiceUse: () => boolean
   now?: () => number
   browser?: {
-    open: (url: string, target: "_blank" | "_self") => void
     copy: (invoice: string) => Promise<void>
   }
 }): Promise<ExternalInvoicePaymentActionResult> {
@@ -49,13 +43,6 @@ export async function performExternalInvoicePaymentAction(input: {
 
   const invoice = normalizeLightningInvoice(input.invoice)
   const browser = input.browser ?? {
-    open: (url: string, target: "_blank" | "_self") => {
-      window.open(
-        url,
-        target,
-        target === "_blank" ? "noopener,noreferrer" : undefined
-      )
-    },
     copy: (value: string) => navigator.clipboard.writeText(value),
   }
   if (input.action === "qr") return "qr_ready"
@@ -76,10 +63,7 @@ export async function performExternalInvoicePaymentAction(input: {
         )
       : `lightning:${invoice}`
   if (!url) return "unavailable"
-  try {
-    browser.open(url, input.action === "cash_app" ? "_blank" : "_self")
-    return "wallet_requested"
-  } catch {
-    return "wallet_request_failed"
-  }
+  // Async reservation can outlast transient activation. InvoicePayment owns
+  // the guarded native links; preparation never claims that a wallet opened.
+  return "wallet_ready"
 }

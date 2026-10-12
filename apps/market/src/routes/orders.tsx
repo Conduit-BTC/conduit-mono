@@ -1433,11 +1433,12 @@ function OrderDetail({
             return
           }
           // Observation polls may return the same reservation again. A named
-          // browser handoff belongs to this explicit click exactly once.
+          // preparation belongs to this explicit approval exactly once.
           if (externalActionHandled) return
           externalActionHandled = true
-          // Keep the already-reserved links available even if a clipboard
-          // permission prompt stalls or an asynchronous wallet popup is blocked.
+          // Expose the reserved links first. Wallet launch happens on a fresh
+          // link click; async preparation must not consume the old gesture.
+          // Copy/QR requests retain their existing preparation behavior.
           setExternalFundingInvoice({ ...invoice, authGeneration })
           void performExternalInvoicePaymentAction({
             action: confirmation.externalAction,

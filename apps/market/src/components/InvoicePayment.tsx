@@ -48,9 +48,8 @@ export function InvoicePayment({
       ? "Invoice copied."
       : actionResult === "copy_failed"
         ? "Could not copy. Select the invoice in Payment details and copy it manually."
-        : actionResult === "wallet_requested" ||
-            actionResult === "wallet_request_failed"
-          ? "If the wallet didn’t open, use the link above."
+        : actionResult === "wallet_ready"
+          ? "Invoice ready. Choose a wallet link above to pay."
           : null
   const displayedStatus = copyStatus ?? actionFeedback
   const [qrChoice, setQrChoice] = useState<boolean | null>(null)
@@ -216,7 +215,7 @@ export function InvoicePayment({
         {displayedStatus && (
           <p
             role="status"
-            className="text-pretty text-xs text-[var(--text-secondary)]"
+            className="text-pretty text-sm text-[var(--text-secondary)]"
           >
             {displayedStatus}
           </p>
