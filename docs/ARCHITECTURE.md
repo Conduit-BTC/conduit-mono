@@ -89,6 +89,7 @@ anchors so navigation re-enters that boot boundary.
 | `14`    | Private direct message       | NIP-17                            |
 | `16`    | Order message payload        | Conduit payload wrapped in NIP-17 |
 | `1059`  | Gift wrap                    | NIP-17                            |
+| `3841`  | Event merchant authorization | Experimental Open Markets profile |
 | `9734`  | Zap request                  | NIP-57                            |
 | `9735`  | Zap receipt                  | NIP-57                            |
 | `10002` | Relay list                   | NIP-65                            |
@@ -96,8 +97,10 @@ anchors so navigation re-enters that boot boundary.
 | `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
 | `30405` | Product collection           | Open Markets / Gamma market-spec  |
 | `30406` | Shipping or pickup option    | Open Markets / Gamma market-spec  |
+| `30409` | Event Market                 | Experimental Open Markets profile |
 | `31922` | Date-based calendar event    | NIP-52                            |
 | `31923` | Time-based calendar event    | NIP-52                            |
+| `31924` | Calendar                     | NIP-52; finite market schedule    |
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
@@ -156,18 +159,15 @@ eligibility, checkout, and order persistence. See
 
 ### Event Markets And Pickup
 
-Organizer-authored event catalogs compose a NIP-52 `31922`/`31923` calendar
-event, an organizer-owned `30405` collection, and an optional organizer-authored
-Open Markets `30406` pickup standing offer. Products remain merchant-authored
-`30402` events and may instead select merchant-authored booth pickup. The
-organizer collection is authoritative for catalog membership; a product
-reference to the collection is only a discoverability claim or request. Pickup
-authorship plus the exact two-sided graph determines whether the merchant or
-organizer performs handoff; there is no booth registry event.
-
-Shared parsing, publishing, evidence resolution, coordinate/`naddr` handling,
-and deletion semantics belong in `@conduit/core`. Market and Merchant routes
-compose those prepared states. See `docs/specs/event-markets.md`.
+Current Event Markets use an experimental Open Markets profile: organizer-signed
+kind `30409` markets and kind `3841` merchant authorization, with merchant-owned
+kind `30402` products. Shared parsing, publishing, evidence resolution,
+coordinate/`naddr` handling, and deletion semantics belong in `@conduit/core`;
+Market and Merchant routes compose those prepared states. See
+[Open Markets implementation guidance](OPEN_MARKETS.md#experimental-event-markets)
+and the [Event Market contract](specs/event-markets.md) for schedule membership,
+authorization ancestry, checkout evidence, and retirement of collection-based
+event commerce.
 
 The buyer's encrypted order remains buyer-to-merchant. Organizer handoff uses a
 separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
