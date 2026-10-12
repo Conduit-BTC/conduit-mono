@@ -1,15 +1,15 @@
 {
   "status": "available",
   "methodology": "merged-pr-activity-v1",
-  "generatedAt": "2026-10-05T08:46:16.420Z",
-  "sourceRevision": "6a370e648c3481d723b303de211bb70b401b9597",
+  "generatedAt": "2026-10-12T08:51:01.867Z",
+  "sourceRevision": "5169f9cbb6cb7d0892ff1c1cd530bdf0d2a28150",
   "contributors": [
     {
       "login": "ericfj2140",
       "avatarUrl": "https://avatars.githubusercontent.com/u/25217030?u=f1bf95458b7164d3cab7be98a5a6bf1d3773529c&v=4",
       "profileUrl": "https://github.com/ericfj2140",
-      "mergedPullRequests": 202,
-      "commits": 786
+      "mergedPullRequests": 218,
+      "commits": 901
     },
     {
       "login": "dylangolow",
