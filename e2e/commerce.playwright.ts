@@ -561,9 +561,11 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
   let cleanupStarted = false
   let cleanupComplete = false
   let buyerPaidObservation: Record<string, number | boolean> = {}
+  let foreignMenuObservation: Record<string, number | boolean> = {}
   const recordJourney = () =>
     recordSmokeDiagnostic(testInfo, "commerce-journey", {
       ...buyerPaidObservation,
+      ...foreignMenuObservation,
       phase: currentPhase,
       elapsedSeconds: (performance.now() - started) / 1000,
       phaseSeconds: (performance.now() - phaseStarted) / 1000,
@@ -683,15 +685,21 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     // Retain a valid older device registry with the foreign wallet first;
     // random opaque IDs must not decide whether this regression passes.
     phase("foreign_registry_order")
-    await merchantPage.evaluate(
+    const oldForeignTrigger = await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
+      .elementHandle()
+    if (!oldForeignTrigger) {
+      throw new Error("Foreign wallet manage control is missing.")
+    }
+    const foreignRegistryState = await merchantPage.evaluate(
       async (moduleUrl) => {
         const { db } = await import(moduleUrl)
-        await db.transaction(
+        return db.transaction(
           "rw",
           [db.wallets, db.walletCredentials],
           async () => {
             const descriptor = (await db.wallets.toArray()).find(
-              (w: any) => w.label === "Foreign NWC"
+              (wallet: { label: string }) => wallet.label === "Foreign NWC"
             )
             const credential = await db.walletCredentials.get(descriptor.id)
             await db.wallets.delete(descriptor.id)
@@ -705,19 +713,51 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
               ...credential,
               walletId: "0000-foreign-network",
             })
+            return {
+              receiveCapable: descriptor.capabilities.includes("receive"),
+              alreadyReceiving: descriptor.defaultIntents.includes("receive"),
+            }
           }
         )
       },
       "/@fs" + process.cwd() + "/packages/core/src/index.ts"
     )
+    foreignMenuObservation = {
+      foreignReceiveCapable: foreignRegistryState.receiveCapable,
+      foreignAlreadyReceiving: foreignRegistryState.alreadyReceiving,
+    }
+    phase("foreign_registry_refresh")
+    await expect
+      .poll(() => oldForeignTrigger.evaluate((element) => element.isConnected))
+      .toBe(false)
+    foreignMenuObservation.foreignRegistryRefreshObserved = true
     phase("foreign_manage")
     await merchantPage
       .getByRole("button", { name: "Manage Foreign NWC", exact: true })
       .click()
     phase("foreign_select_default")
-    await merchantPage
-      .getByRole("menuitem", { name: "Use for new invoices", exact: true })
-      .click()
+    const foreignMenuItem = merchantPage.getByRole("menuitem", {
+      name: "Use for new invoices",
+      exact: true,
+    })
+    foreignMenuObservation.foreignMenuVisibleBeforeClick =
+      await foreignMenuItem.isVisible()
+    recordJourney()
+    await expect(foreignMenuItem).toBeVisible()
+    foreignMenuObservation.foreignMenuVisibleBeforeClick = true
+    foreignMenuObservation.foreignMenuEnabledBeforeClick =
+      await foreignMenuItem.isEnabled()
+    foreignMenuObservation.foreignMenuHitTargetBeforeClick =
+      await foreignMenuItem.evaluate((element) => {
+        const bounds = element.getBoundingClientRect()
+        const target = document.elementFromPoint(
+          bounds.left + bounds.width / 2,
+          bounds.top + bounds.height / 2
+        )
+        return target !== null && element.contains(target)
+      })
+    recordJourney()
+    await foreignMenuItem.click()
     phase("foreign_default_committed")
     await expect(
       merchantPage

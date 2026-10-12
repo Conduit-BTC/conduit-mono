@@ -402,7 +402,7 @@ describe("bounded smoke failure diagnostics", () => {
       ])
     ).toEqual([])
   })
-  it("retains only fixed Commerce phases, timings and side-effect counts on timeout", () => {
+  it("retains only fixed Commerce phase, side-effect and menu-state observations", () => {
     const annotations = [
       {
         type: "smoke:commerce-journey",
@@ -423,6 +423,13 @@ describe("bounded smoke failure diagnostics", () => {
           payInvoice: 0,
           lookupInvoice: 0,
           foreignMakeInvoice: 0,
+          foreignReceiveCapable: true,
+          foreignAlreadyReceiving: false,
+          foreignRegistryRefreshObserved: true,
+          foreignMenuVisibleBeforeClick: true,
+          foreignMenuEnabledBeforeClick: true,
+          foreignMenuHitTargetBeforeClick: false,
+          foreignWalletId: "private-value",
           orderId: "private-value",
           invoice: "private-value",
           balance: 99,
@@ -451,6 +458,12 @@ describe("bounded smoke failure diagnostics", () => {
       payInvoice: 0,
       lookupInvoice: 0,
       foreignMakeInvoice: 0,
+      foreignReceiveCapable: true,
+      foreignAlreadyReceiving: false,
+      foreignRegistryRefreshObserved: true,
+      foreignMenuVisibleBeforeClick: true,
+      foreignMenuEnabledBeforeClick: true,
+      foreignMenuHitTargetBeforeClick: false,
     })
     expect(
       safeSmokeDiagnostics("e2e/wallet-lifecycle.playwright.ts", annotations)

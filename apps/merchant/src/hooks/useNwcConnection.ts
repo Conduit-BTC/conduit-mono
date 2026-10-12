@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
 } from "react"
 import { useAuth } from "@conduit/core"
+import type { LegacyNwcRetirement } from "@conduit/core/wallets/wallet-migration"
 import {
   NWC_URI_STORAGE_KEY,
   MERCHANT_READINESS_STORAGE_EVENT,
@@ -16,6 +17,7 @@ import {
   parseStoredNwcConnection,
   type StoredNwcConnection,
 } from "../lib/readiness"
+import { retireAccountNwcUri } from "../lib/nwc-retirement"
 
 interface UseNwcConnectionResult {
   connection: StoredNwcConnection | null
@@ -23,7 +25,7 @@ interface UseNwcConnectionResult {
   error: string | null
   setUri: (uri: string) => void
   disconnect: () => void
-  retireMigratedUri: (expectedUri: string) => boolean
+  retireMigratedUri: (expectedUri: string) => LegacyNwcRetirement
 }
 
 function readStoredUri(storageKey: string | null): string {
@@ -103,18 +105,15 @@ export function useNwcConnection(): UseNwcConnectionResult {
 
   const retireMigratedUri = useCallback(
     (expectedUri: string) => {
-      if (
-        !storageKey ||
-        currentKey.current !== storageKey ||
-        readStoredUri(storageKey) !== expectedUri
-      )
-        return false
-      localStorage.removeItem(storageKey)
-      if (localStorage.getItem(NWC_URI_STORAGE_KEY) === expectedUri)
-        localStorage.removeItem(NWC_URI_STORAGE_KEY)
-      setError(null)
-      notifyMerchantReadinessStorageChange()
-      return true
+      const retirement = retireAccountNwcUri({
+        storage: localStorage,
+        accountStorageKey: storageKey,
+        currentAccountStorageKey: () => currentKey.current,
+        expectedUri,
+        notifyChange: notifyMerchantReadinessStorageChange,
+      })
+      if (retirement.status !== "unchanged") setError(null)
+      return retirement
     },
     [storageKey]
   )

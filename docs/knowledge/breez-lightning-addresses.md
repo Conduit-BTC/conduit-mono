@@ -121,11 +121,13 @@ or unavailable session coordination leave external and legacy wallets usable.
 
 Merchant's legacy account-scoped NWC connection is retired only after shared
 descriptor and credential read-back verifies the same parsed connection. Account
-or credential replacement fences the migration; failure preserves the legacy path.
-A late fence compensates only the new shared descriptor/credential registered by
-that attempt and closes its native session. A pre-existing shared connection is
-never removed. Once legacy retirement occurs, a later verification-transaction
-failure retains the durable shared copy instead of deleting the last credential.
+or credential replacement fences the migration. The optional matching unscoped
+legacy key is cleared before the account-scoped key; a preflight failure leaves
+the account-scoped connection in place. A late fence compensates only the new
+shared descriptor/credential registered by that attempt and closes its native
+session. A pre-existing shared connection is never removed. Once account-scoped
+retirement starts, an uncertain storage failure or later verification-transaction
+failure retains the verified shared copy instead of risking the last credential.
 Mounted legacy consumers observe the existing Merchant storage signal and retire
 together. Shared Disconnect therefore stays disconnected after reload.
 
@@ -329,8 +331,14 @@ publication without opening the foreign wallet. Merchant migration/disconnect us
 wallet service and asserts the Wallets document title, late account-change
 compensation and retained legacy recovery. Unsupported-network and unavailable
 coordination cases retain signed-in external and legacy wallet visibility.
-The Commerce journey confirms the committed receiving default before full-page
-navigation. Store presence assertions wait for the positive unfiltered catalog
+The Commerce journey waits for the old wallet-card trigger to detach after its
+fixture rewrites a registry ID, then opens the replacement card's menu. A storage
+commit alone does not prove that the UI has observed the new keyed card. A
+controlled delayed reload reproduces menu disappearance when the old card's
+menu opens first. This does not establish every historical WebKit timeout's
+cause. Diagnostics retain only receiving eligibility/default, refresh and menu
+visibility/enabled/hit-target booleans. The journey confirms the committed
+receiving default before full-page navigation. Store presence assertions wait for the positive unfiltered catalog
 count: a filtered zero also appears while the catalog is loading and does not
 prove discovery readiness. A bounded Commerce annotation records the last phase, elapsed/phase
 timing, slowest completed phase, cleanup state and invoice-operation counts even

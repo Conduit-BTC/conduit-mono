@@ -50,6 +50,12 @@ export interface NwcWalletRegistration {
   created: boolean
 }
 
+/** Whether the account-owned legacy credential can still be relied on. */
+export type LegacyNwcRetirement =
+  | { status: "unchanged"; error?: "storage" }
+  | { status: "completed" }
+  | { status: "uncertain" }
+
 /** Retire the legacy owner after read-back; compensate only this migration's new copy. */
 export async function migrateAccountNwcConnection(input: {
   uri: string
@@ -59,11 +65,11 @@ export async function migrateAccountNwcConnection(input: {
   credentialStore: NwcCredentialStore
   registry: Pick<WalletRegistry, "list" | "remove">
   shouldContinue(): boolean
-  retireLegacy(): boolean
+  retireLegacy(): LegacyNwcRetirement
 }): Promise<boolean> {
   if (!input.shouldContinue()) return false
   let registration: NwcWalletRegistration | undefined
-  let retired = false
+  let retirement: LegacyNwcRetirement["status"] = "unchanged"
   try {
     const wallet = await input.connect((result) => {
       registration = result
@@ -83,11 +89,19 @@ export async function migrateAccountNwcConnection(input: {
       )
         throw new Error("Connected Wallet migration verification failed.")
       if (!input.shouldContinue()) return false
-      retired = input.retireLegacy()
-      return retired
+      // A thrown retirement may already have removed the legacy credential.
+      // Only an explicit unchanged result proves compensation is safe.
+      retirement = "uncertain"
+      const result = input.retireLegacy()
+      retirement = result.status
+      if (retirement === "uncertain")
+        throw new Error("Connected Wallet legacy retirement is uncertain.")
+      if (result.status === "unchanged" && result.error === "storage")
+        throw new Error("Connected Wallet legacy storage is unavailable.")
+      return retirement === "completed"
     })
   } finally {
-    if (!retired && registration?.created) {
+    if (retirement === "unchanged" && registration?.created) {
       const walletId = registration.wallet.id
       const removed = await input.credentialStore.transaction(async () => {
         const registered = (await input.registry.list()).find(
