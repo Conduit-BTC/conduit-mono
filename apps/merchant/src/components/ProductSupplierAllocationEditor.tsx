@@ -130,7 +130,7 @@ export function ProductSupplierAllocationEditor({
         <div className="grid min-w-0 grid-cols-1 gap-4">
           {!merchantPercentage || blockedSavedHints ? (
             <div className="grid justify-items-start gap-2">
-              <p className="text-xs text-error">
+              <p className="text-xs text-[var(--error-text)]">
                 The saved split needs repair before publishing.
               </p>
               <Button
@@ -245,7 +245,10 @@ export function ProductSupplierAllocationEditor({
                     {readinessMessage(supplierResults[index], checking)}
                   </p>
                   {supplier.percentageError ? (
-                    <p id={inputErrorId} className="text-xs text-error">
+                    <p
+                      id={inputErrorId}
+                      className="text-xs text-[var(--error-text)]"
+                    >
                       {supplier.percentageError}
                     </p>
                   ) : null}
@@ -291,7 +294,11 @@ export function ProductSupplierAllocationEditor({
         </div>
       ) : null}
       {validation.error ? (
-        <p id={errorId} role="alert" className="text-xs text-error">
+        <p
+          id={errorId}
+          role="alert"
+          className="text-xs text-[var(--error-text)]"
+        >
           {validation.error}
         </p>
       ) : null}

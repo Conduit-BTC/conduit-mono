@@ -3679,7 +3679,7 @@ function OrdersWorkspace() {
 
                           {merchantOrderState.checkoutSparkRouted &&
                             !merchantPaid && (
-                              <p className="rounded-md border border-info/30 bg-info/10 p-3 text-sm leading-6 text-info">
+                              <p className="rounded-md border border-info/30 bg-info/10 p-3 text-sm leading-6 text-[var(--info-text)]">
                                 This checkout is routed privately. Do not send
                                 another invoice; verify settlement before
                                 confirming payment or fulfilling the order.
