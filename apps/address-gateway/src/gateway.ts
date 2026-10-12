@@ -52,7 +52,12 @@ export function validateApprovedNames(names: ApprovedName[]): void {
       !/^[a-f0-9]{64}$/.test(n.ownerPubkey) ||
       typeof n.registration !== "boolean" ||
       (n.replaces !== undefined && !validName(n.replaces)) ||
-      (n.transferFrom !== undefined && !validSparkIdentity(n.transferFrom))
+      (n.transferFrom !== undefined && !validSparkIdentity(n.transferFrom)) ||
+      (n.deleteUntil !== undefined &&
+        (!Number.isSafeInteger(n.deleteUntil) || n.deleteUntil <= 0)) ||
+      (n.transferUntil !== undefined &&
+        (!Number.isSafeInteger(n.transferUntil) || n.transferUntil <= 0)) ||
+      (n.transferFrom === undefined) !== (n.transferUntil === undefined)
     )
       throw new Error("Invalid approved-name registry.")
     used.add(n.name)
@@ -272,6 +277,17 @@ function fresh(timestamp: unknown, now: number): timestamp is number {
     Math.abs(now - (timestamp as number)) <= 600
   )
 }
+// A reviewed PR/deployment window is not the provider's signed-message window.
+// Keep exceptional destructive authority bounded without requiring a deploy
+// within one minute of an absolute expiration timestamp.
+function approvalWindow(until: number | undefined, now: number): boolean {
+  return (
+    until !== undefined &&
+    Number.isSafeInteger(until) &&
+    until >= now &&
+    until - now <= 86400
+  )
+}
 async function recoveryRateLimit(
   request: Request,
   env: AddressGatewayEnv,
@@ -406,8 +422,7 @@ async function management(
     if (
       !approval ||
       approval.transferFrom !== from ||
-      !fresh(approval.transferUntil, now) ||
-      (approval.transferUntil ?? 0) < now ||
+      !approvalWindow(approval.transferUntil, now) ||
       from === identity
     )
       return response("name not approved", 403)
@@ -463,9 +478,7 @@ async function management(
       return response("name not approved", 403)
     if (
       operation === "unregister" &&
-      (!approval ||
-        !fresh(approval.deleteUntil, now) ||
-        (approval.deleteUntil ?? 0) < now)
+      (!approval || !approvalWindow(approval.deleteUntil, now))
     )
       return response("deletion not approved", 403)
     if (operation === "register") {

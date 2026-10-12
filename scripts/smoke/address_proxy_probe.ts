@@ -16,6 +16,10 @@ export async function proveProxyAdmission(input: {
     operation: ProbeOperation,
     admission: "valid" | "missing" | "wrong"
   ): Promise<Response>
+  readback(
+    operation: ProbeOperation,
+    admission: "valid" | "missing" | "wrong"
+  ): Promise<boolean>
   cleanup(): Promise<boolean>
 }): Promise<ProxyProof> {
   const proof: ProxyProof = {
@@ -48,10 +52,12 @@ export async function proveProxyAdmission(input: {
           return proof
         }
         if (response.status !== 403) return proof
+        if (!(await input.readback(operation, admission))) return proof
       }
       // The same mutation must actually work with the proxy admission. This
       // rules out invalid signatures, nonexistent wallets and disabled routes.
       if (!(await input.request(operation, "valid")).ok) return proof
+      if (!(await input.readback(operation, "valid"))) return proof
       proof.completed.push(operation)
     }
     delete proof.failedOperation
@@ -65,5 +71,7 @@ export async function proveProxyAdmission(input: {
     } catch {
       proof.cleanupSucceeded = false
     }
+    if (!proof.cleanupSucceeded && proof.verdict === "bypass_rejected")
+      proof.verdict = "inconclusive"
   }
 }

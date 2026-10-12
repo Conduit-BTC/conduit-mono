@@ -23,6 +23,7 @@ test("public admission entrypoint stays inconclusive even when credential variab
 test("unapproved registration accepted by the deployed gateway proves a bypass and still cleans up", async () => {
   let upstreamRequests = 0
   const proof = await proveProxyAdmission({
+    readback: async () => true,
     checkGateway: async () => "bypass",
     request: async () => {
       upstreamRequests++
@@ -37,6 +38,7 @@ test("unapproved registration accepted by the deployed gateway proves a bypass a
 
 test("live oracle requires successful controls for every protected mutation", async () => {
   const proof = await proveProxyAdmission({
+    readback: async () => true,
     request: async (_, admission) =>
       new Response(null, { status: admission === "valid" ? 200 : 403 }),
     cleanup: async () => true,
@@ -50,6 +52,7 @@ test("live oracle requires successful controls for every protected mutation", as
 test("an upstream accepting a direct mutation is a bypass, even if later probes would deny", async () => {
   let attempts = 0
   const proof = await proveProxyAdmission({
+    readback: async () => true,
     request: async () => {
       attempts++
       return new Response(null, { status: 200 })
@@ -63,6 +66,7 @@ test("an upstream accepting a direct mutation is a bypass, even if later probes 
 })
 test("403 from every request proves nothing when the valid control also fails", async () => {
   const proof = await proveProxyAdmission({
+    readback: async () => true,
     request: async () => new Response(null, { status: 403 }),
     cleanup: async () => true,
   })
@@ -72,12 +76,14 @@ test("403 from every request proves nothing when the valid control also fails", 
 test("timeouts, redirects and provider errors never count as bypass rejection", async () => {
   for (const status of [301, 400, 401, 404, 429, 500]) {
     const proof = await proveProxyAdmission({
+      readback: async () => true,
       request: async () => new Response(null, { status }),
       cleanup: async () => true,
     })
     expect(proof.verdict).toBe("inconclusive")
   }
   const proof = await proveProxyAdmission({
+    readback: async () => true,
     request: async () => {
       throw new Error("network unavailable")
     },
@@ -89,4 +95,16 @@ test("timeouts, redirects and provider errors never count as bypass rejection", 
     failedOperation: "register",
     cleanupSucceeded: false,
   })
+})
+
+test("failed exact readback or cleanup cannot qualify the provider", async () => {
+  for (const failure of ["readback", "cleanup"]) {
+    const proof = await proveProxyAdmission({
+      request: async (_, admission) =>
+        new Response(null, { status: admission === "valid" ? 200 : 403 }),
+      readback: async () => failure !== "readback",
+      cleanup: async () => failure !== "cleanup",
+    })
+    expect(proof.verdict).toBe("inconclusive")
+  }
 })

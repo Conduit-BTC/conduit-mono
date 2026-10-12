@@ -15,6 +15,11 @@ import {
   type ApprovedName,
 } from "../apps/address-gateway/src/gateway"
 import { breezAddressMessage } from "../packages/core/src/wallets/breez-lightning-address"
+import {
+  proposeApprovedName,
+  reviewNameRequest,
+  type StoredNameRequest,
+} from "../apps/address-gateway/src/request-review"
 import { BreezLightningAddressClient } from "../packages/core/src/wallets/breez-lightning-address"
 import {
   ADDRESS_REQUEST_PATH,
@@ -245,6 +250,68 @@ function fixture() {
   }
 }
 describe("approved-name gateway", () => {
+  test("operator proposes only the original verified binding and preserves legacy records", async () => {
+    const f = fixture()
+    await f.handle(f.nameRequest(), [])
+    const row = f.db
+      .query("SELECT * FROM name_requests")
+      .get() as StoredNameRequest
+    const proposal = proposeApprovedName({ version: 1, names: [] }, row)
+    expect(proposal.names).toEqual([f.approved])
+    expect(proposeApprovedName(proposal, row)).toEqual(proposal)
+    expect(() =>
+      proposeApprovedName(
+        {
+          version: 1,
+          names: [
+            { ...f.approved, ownerPubkey: getPublicKey(generateSecretKey()) },
+          ],
+        },
+        row
+      )
+    ).toThrow()
+    for (const change of [
+      { status: "declined" },
+      { created_at: row.created_at + 120 },
+      { owner_pubkey: getPublicKey(generateSecretKey()) },
+      { wallet_proof: "00" },
+      { note: "changed" },
+      { request_hash: "00" },
+      {
+        signed_payload: JSON.stringify({
+          ...JSON.parse(row.signed_payload),
+          desiredName: "changed",
+        }),
+      },
+      { account_proof: "{}" },
+    ])
+      expect(() =>
+        reviewNameRequest({ ...row, ...change } as StoredNameRequest)
+      ).toThrow("Request evidence is not eligible for approval.")
+    f.db.exec(
+      readFileSync(
+        new URL(
+          "../apps/address-gateway/migrations/0002_immutable_request_evidence.sql",
+          import.meta.url
+        ),
+        "utf8"
+      )
+    )
+    expect(
+      reviewNameRequest(
+        f.db.query("SELECT * FROM name_requests").get() as StoredNameRequest
+      )
+    ).toEqual(f.approved)
+    expect(() =>
+      f.db.exec("UPDATE name_requests SET note = 'changed'")
+    ).toThrow("request evidence is immutable")
+    f.db.exec("UPDATE name_requests SET status = 'declined'")
+    expect(() =>
+      reviewNameRequest(
+        f.db.query("SELECT * FROM name_requests").get() as StoredNameRequest
+      )
+    ).toThrow()
+  })
   test("signed record absence is distinct from a missing status route", async () => {
     const f = fixture()
     const absent = await f.handle(
@@ -676,7 +743,7 @@ describe("approved-name gateway", () => {
   })
   test("deletion requires an unexpired manual approval and its own valid signature", async () => {
     const f = fixture()
-    const approved = [{ ...f.approved, deleteUntil: f.now + 60 }]
+    const approved = [{ ...f.approved, deleteUntil: f.now + 3600 }]
     expect((await f.handle(f.management("unregister"))).status).toBe(403)
     expect(
       (
@@ -699,14 +766,38 @@ describe("approved-name gateway", () => {
             method: "DELETE",
             body: JSON.stringify(body),
           }),
-          [{ ...f.approved, deleteUntil: f.now + 60 }]
+          [{ ...f.approved, deleteUntil: f.now + 3600 }]
         )
       ).status
     ).toBe(401)
   })
+  test("expired or unbounded destructive approval never reaches the provider", async () => {
+    for (const until of [0, -1, NaN, Infinity]) {
+      const f = fixture()
+      expect(
+        (
+          await f.handle(f.management("unregister"), [
+            { ...f.approved, deleteUntil: until },
+          ])
+        ).status
+      ).toBe(503)
+      expect(f.calls).toHaveLength(0)
+    }
+    for (const delta of [-1, 86401]) {
+      const f = fixture()
+      expect(
+        (
+          await f.handle(f.management("unregister"), [
+            { ...f.approved, deleteUntil: f.now + delta },
+          ])
+        ).status
+      ).toBe(403)
+      expect(f.calls).toHaveLength(0)
+    }
+  })
   test("unsigned extra fields cannot replay an approved deletion", async () => {
     const f = fixture(),
-      approved = [{ ...f.approved, deleteUntil: f.now + 60 }]
+      approved = [{ ...f.approved, deleteUntil: f.now + 3600 }]
     expect((await f.handle(f.management("unregister"), approved)).status).toBe(
       200
     )
@@ -779,7 +870,7 @@ describe("approved-name gateway", () => {
         accountSecret
       )
     const approved = [
-      { ...f.approved, transferFrom: from, transferUntil: f.now + 60 },
+      { ...f.approved, transferFrom: from, transferUntil: f.now + 3600 },
     ]
     expect((await f.handle(make())).status).toBe(403)
     expect(
