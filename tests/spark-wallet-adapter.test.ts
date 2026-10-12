@@ -11,7 +11,7 @@ import {
 import {
   MemorySparkDirectTransferSafetyStore,
   type SparkDirectTransferSafetyStore,
-} from "../apps/market/src/lib/spark-direct-transfer-safety"
+} from "@conduit/core/wallets/spark-direct-transfer-safety"
 import { bytesToBolt11Words, makeBolt11Fixture } from "./support/bolt11-fixture"
 
 describe("SparkWalletManager", () => {

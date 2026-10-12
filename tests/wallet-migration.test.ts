@@ -13,7 +13,7 @@ import {
   migrateLegacyNwcWallet,
   reconcileNwcWalletRegistration,
   type NwcCredentialStore,
-} from "../apps/market/src/lib/wallet-migration"
+} from "@conduit/core/wallets/wallet-migration"
 
 const VALID_NWC_URI =
   "nostr+walletconnect://" +

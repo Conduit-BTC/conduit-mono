@@ -13,7 +13,7 @@ import {
   openSignerSparkRecovery,
   sealSignerSparkRecovery,
   isWalletSignerCurrent,
-} from "../apps/market/src/lib/signer-spark-recovery"
+} from "@conduit/core/wallets/signer-spark-recovery"
 import {
   parseStoredSparkWalletRecovery,
   serializeStoredSparkWalletRecovery,
@@ -208,7 +208,7 @@ it("retains a verified legacy encrypted copy as a same-account migration fallbac
   const { encryptSparkMnemonic } =
     await import("../apps/market/src/lib/spark-recovery")
   const { recoverStoredSparkMnemonic } =
-    await import("../apps/market/src/lib/signer-spark-recovery")
+    await import("@conduit/core/wallets/signer-spark-recovery")
   const { signer, provider } = install()
   const mnemonic = generateSparkMnemonic()
   const password = crypto.randomUUID()

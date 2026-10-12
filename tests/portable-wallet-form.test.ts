@@ -4,7 +4,7 @@ import {
   getPortableWalletFormError,
   getPortableWalletLabel,
   resolvePortableWalletAccountNumber,
-} from "../apps/market/src/lib/portable-wallet-form"
+} from "@conduit/core/wallets/portable-wallet-form"
 
 describe("Portable Wallet form validation", () => {
   it("requires the phrase and validates a supplied account override", () => {

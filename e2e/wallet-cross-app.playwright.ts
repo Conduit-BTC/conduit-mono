@@ -4,6 +4,7 @@ import type { WalletDescriptor } from "@conduit/core"
 import {
   prepareControlledWallet,
   installControlledWallet,
+  saveWalletRecovery as saved,
 } from "./helpers/wallet-fixture"
 import {
   createRuntimeSignerIdentity,
@@ -36,44 +37,6 @@ async function wallets(page: Page) {
     }
     return ids
   }, core)
-}
-async function saved(page: Page, makeMain = true) {
-  const dialog = page.getByRole("dialog")
-  await expect(
-    dialog.getByRole("heading", {
-      name: /^(Wallet imported|Save your recovery details)$/,
-    })
-  ).toBeVisible()
-  await expect(
-    dialog.getByText("Checking for your Lightning address…", { exact: true })
-  ).toHaveCount(0)
-  if (
-    await dialog
-      .getByRole("heading", { name: "Wallet imported", exact: true })
-      .count()
-  ) {
-    await expect(dialog.locator("#recovery-saved")).toHaveCount(0)
-  } else {
-    await expect(
-      dialog.getByRole("heading", { name: "Save your recovery details" })
-    ).toBeVisible()
-    await dialog
-      .getByLabel(
-        "I saved the phrase, Spark account number and network somewhere private"
-      )
-      .check()
-  }
-  const chooser = dialog.getByRole("button", {
-    name: "Get conduit.cash address",
-    exact: true,
-  })
-  if (await chooser.count()) await chooser.click()
-  if (!makeMain)
-    await dialog
-      .getByLabel("Make this my main wallet", { exact: true })
-      .uncheck()
-  await dialog.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(dialog).toHaveCount(0)
 }
 
 async function gateWalletSigner(page: Page) {

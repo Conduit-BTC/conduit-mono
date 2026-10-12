@@ -1993,9 +1993,7 @@ export function getSparkNetwork(): SparkNetwork {
   return getWalletNetworkFromLightningConfig(config.lightningNetwork)
 }
 
-export function getDefaultSparkAccountNumber(network: SparkNetwork): number {
-  return network === "regtest" ? 0 : 1
-}
+export { getDefaultSparkAccountNumber } from "./portable-wallet-form"
 
 export type SparkConfiguration =
   | {
