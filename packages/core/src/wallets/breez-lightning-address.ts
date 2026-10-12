@@ -142,6 +142,11 @@ export class BreezLightningAddressClient {
     scope: string,
     operation: () => Promise<T>
   ) => Promise<T>
+  readonly #signAccountProof?: (request: {
+    url: string
+    method: "POST"
+    body: string
+  }) => Promise<string>
 
   constructor(input: {
     domain: string
@@ -150,6 +155,11 @@ export class BreezLightningAddressClient {
     store: BreezAddressStore
     runExclusive: <T>(scope: string, operation: () => Promise<T>) => Promise<T>
     fetch?: BreezAddressFetch
+    signAccountProof?: (request: {
+      url: string
+      method: "POST"
+      body: string
+    }) => Promise<string>
     now?: () => number
     generateUsername?: (scope: string, attempt: number) => string
   }) {
@@ -159,6 +169,7 @@ export class BreezLightningAddressClient {
     this.#store = input.store
     this.#runExclusive = input.runExclusive
     this.#fetch = input.fetch ?? globalThis.fetch.bind(globalThis)
+    this.#signAccountProof = input.signAccountProof
     this.#now = input.now ?? Date.now
     this.#generate = input.generateUsername ?? generateBreezUsername
   }
@@ -418,6 +429,27 @@ export class BreezLightningAddressClient {
       }
       this.#assertActive()
       const url = `https://${this.#domain}/lnurlpay/${identity}${operation === "register" ? "" : `/${operation}`}`
+      const requestBody = JSON.stringify({
+        ...fields,
+        signature: bytesToHex(signature),
+        timestamp,
+      })
+      let accountProof: string | undefined
+      if (this.#domain === "conduit.cash" && operation === "register") {
+        if (!this.#signAccountProof) throw new AddressError("identity_mismatch")
+        try {
+          accountProof = await this.#signAccountProof({
+            url,
+            method: "POST",
+            body: requestBody,
+          })
+        } catch {
+          throw new AddressError("identity_mismatch")
+        }
+        this.#assertActive()
+        if (!accountProof?.startsWith("Nostr "))
+          throw new AddressError("identity_mismatch")
+      }
       const request: RequestInit = {
         method: "POST",
         headers: {
@@ -425,14 +457,12 @@ export class BreezLightningAddressClient {
           // comes from the signed Spark identity request, not secrecy of this key.
           ...(this.#domain === "breez.tips"
             ? { Authorization: `Bearer ${this.#apiKey}` }
-            : {}),
+            : accountProof
+              ? { Authorization: accountProof }
+              : {}),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          ...fields,
-          signature: bytesToHex(signature),
-          timestamp,
-        }),
+        body: requestBody,
         signal: AbortSignal.timeout(10_000),
         redirect: "error",
         credentials: "omit",

@@ -8,7 +8,7 @@ import {
   type SignedAddressNameRequest,
 } from "@conduit/core/wallets/address-name-request"
 import { breezAddressMessage } from "@conduit/core/wallets/breez-lightning-address"
-import type { Event } from "nostr-tools/pure"
+import { verifyEvent, type Event } from "nostr-tools/pure"
 
 export interface ApprovedName {
   name: string
@@ -112,6 +112,36 @@ function decodeAccountProof(request: Request): Event | null {
     return JSON.parse(atob(header.slice(6))) as Event
   } catch {
     return null
+  }
+}
+function validManagementAccountProof(
+  request: Request,
+  raw: string,
+  ownerPubkey: string,
+  now: number
+): boolean {
+  try {
+    const event = decodeAccountProof(request)
+    if (
+      !event ||
+      event.pubkey !== ownerPubkey ||
+      event.kind !== 27235 ||
+      event.content !== "" ||
+      !Number.isSafeInteger(event.created_at) ||
+      Math.abs(now - event.created_at) > 60 ||
+      !verifyEvent(event)
+    )
+      return false
+    return (
+      JSON.stringify(event.tags) ===
+      JSON.stringify([
+        ["u", request.url],
+        ["method", request.method],
+        ["payload", addressRequestHash(raw)],
+      ])
+    )
+  } catch {
+    return false
   }
 }
 async function nameRequest(
@@ -455,6 +485,12 @@ async function management(
         return response("recover wallet before registration", 409)
     }
   }
+  if (
+    !["recover", "available"].includes(operation) &&
+    (!approval ||
+      !validManagementAccountProof(request, raw, approval.ownerPubkey, now))
+  )
+    return response("invalid account proof", 401)
   if (operation === "recover") {
     const limited = await recoveryRateLimit(request, env, identity)
     if (limited) return limited

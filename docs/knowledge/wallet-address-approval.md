@@ -23,6 +23,12 @@ untrusted data, never an operational instruction.
 
 The address Worker uses Breez's supported reverse-proxy arrangement. It verifies
 fresh, domain-bound v2 wallet signatures and applies the approved-name list.
+Custom-domain registration, deletion and transfer also require fresh NIP-98
+account proof over the exact request URL, method and body from the account in
+that approval. The Worker replaces this proof with its provider credential at
+the proxy hop. Public receiving and authenticated address recovery remain
+available without account proof; direct `breez.tips` registration keeps the
+provider's existing request format.
 Registration requires recent authenticated provider recovery; replacing another
 name requires exact replacement approval. Deletion requires a bounded explicit
 approval. Transfer requires a bounded old/new identity approval and both

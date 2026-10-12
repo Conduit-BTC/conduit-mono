@@ -1,8 +1,10 @@
 import {
+  addressRequestHash,
   addressNameRequestMessage,
   type AddressNameRequest,
   type SignedAddressNameRequest,
 } from "./address-name-request"
+import { getAccountSigner } from "../protocol/session-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -71,6 +73,24 @@ export function createSparkBreezAddressAccess(input: {
       ...configuration,
       domain,
       signer: input.signer,
+      signAccountProof: async ({ url, method, body }) => {
+        const signer = getAccountSigner()
+        if (!signer) throw new Error("Connect the approved Nostr account.")
+        const event = await signer.signEvent({
+          kind: 27235,
+          pubkey: signer.pubkey,
+          created_at: Math.floor(Date.now() / 1000),
+          content: "",
+          tags: [
+            ["u", url],
+            ["method", method],
+            ["payload", addressRequestHash(body)],
+          ],
+        })
+        if (getAccountSigner() !== signer || event.pubkey !== signer.pubkey)
+          throw new Error("The approved Nostr account changed.")
+        return `Nostr ${btoa(JSON.stringify(event))}`
+      },
       runExclusive: (scope, operation) =>
         navigator.locks.request(`conduit:breez-address:v1:${scope}`, operation),
       store: {

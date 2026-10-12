@@ -15,6 +15,7 @@ import {
   type ApprovedName,
 } from "../apps/address-gateway/src/gateway"
 import { breezAddressMessage } from "../packages/core/src/wallets/breez-lightning-address"
+import { BreezLightningAddressClient } from "../packages/core/src/wallets/breez-lightning-address"
 import {
   ADDRESS_REQUEST_PATH,
   addressNameRequestMessage,
@@ -107,13 +108,45 @@ function fixture() {
             lnurl: `lnurlp://conduit.cash/lnurlp/${providerName}`,
           })
         : Response.json("user not found", { status: 404 })
+    if (url.pathname.endsWith("/available"))
+      return Response.json({ available: true })
     if (init?.method === "POST" && !url.pathname.endsWith("/available"))
       providerName = JSON.parse(String(init?.body)).username
     return Response.json({ ok: true })
   }) as typeof fetch
+  const managementRequest = (
+    url: string,
+    method: "POST" | "DELETE",
+    body: Record<string, unknown>,
+    accountSecret = secret
+  ) => {
+    const raw = JSON.stringify(body)
+    const event = finalizeEvent(
+      {
+        kind: 27235,
+        content: "",
+        created_at: now,
+        tags: [
+          ["u", url],
+          ["method", method],
+          ["payload", addressRequestHash(raw)],
+        ],
+      },
+      accountSecret
+    )
+    return new Request(url, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Nostr ${btoa(JSON.stringify(event))}`,
+      },
+      body: raw,
+    })
+  }
   const management = (
     operation: "register" | "recover" | "available" | "unregister",
-    extra: Record<string, unknown> = {}
+    extra: Record<string, unknown> = {},
+    accountSecret = secret
   ) => {
     const fields = {
       username: "alice",
@@ -136,13 +169,11 @@ function fixture() {
             identity,
             ...fields,
           })
-    return new Request(
+    return managementRequest(
       `https://conduit.cash/lnurlpay/${identity}${["recover", "available"].includes(operation) ? "/" + operation : ""}`,
-      {
-        method: operation === "unregister" ? "DELETE" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...fields, signature: signatures(message) }),
-      }
+      operation === "unregister" ? "DELETE" : "POST",
+      { ...fields, signature: signatures(message) },
+      accountSecret
     )
   }
   const requestId = crypto.randomUUID()
@@ -200,7 +231,9 @@ function fixture() {
     calls,
     signatures,
     walletSecret,
+    accountSecret: secret,
     management,
+    managementRequest,
     nameRequest,
     setProviderName(value: string | null) {
       providerName = value
@@ -211,6 +244,57 @@ function fixture() {
   }
 }
 describe("approved-name gateway", () => {
+  test("shared address client registers with both approved account and Spark proofs", async () => {
+    const f = fixture()
+    const client = new BreezLightningAddressClient({
+      domain: "conduit.cash",
+      apiKey: "test-client-key",
+      signer: {
+        getIdentityPublicKey: async () => f.identity,
+        signDigest: async (digest) =>
+          secp256k1.sign(digest, f.walletSecret, {
+            prehash: false,
+            format: "der",
+          }),
+        assertActive() {},
+      },
+      signAccountProof: async ({ url, method, body }) => {
+        const event = finalizeEvent(
+          {
+            kind: 27235,
+            content: "",
+            created_at: f.now,
+            tags: [
+              ["u", url],
+              ["method", method],
+              ["payload", addressRequestHash(body)],
+            ],
+          },
+          f.accountSecret
+        )
+        return `Nostr ${btoa(JSON.stringify(event))}`
+      },
+      store: {
+        read: async () => null,
+        write: async () => {},
+      },
+      runExclusive: async (_scope, run) => run(),
+      now: () => f.now * 1000,
+      fetch: async (input, init) => f.handle(new Request(input, init)),
+    })
+    expect(
+      await client.ensure("alice", { activateApprovedName: true })
+    ).toMatchObject({
+      status: "registered",
+      username: "alice",
+    })
+    const registration = f.calls.find(
+      (call) => call.path === `/lnurlpay/${f.identity}`
+    )
+    expect(registration?.headers.get("Authorization")).toBe(
+      `Bearer ${f.env.BREEZ_DOMAIN_API_KEY}`
+    )
+  })
   test("submission stores both proofs but never approves; approval requires a matching reviewed identity", async () => {
     const f = fixture()
     expect(await (await f.handle(f.nameRequest(), [])).json()).toEqual({
@@ -391,8 +475,28 @@ describe("approved-name gateway", () => {
     expect((await f.handle(f.management("register"))).status).toBe(409)
     expect((await f.handle(f.management("recover"))).status).toBe(404)
     expect((await f.handle(f.management("register"), [])).status).toBe(403)
+    expect(
+      (await f.handle(f.management("register", {}, generateSecretKey()))).status
+    ).toBe(401)
+    expect(f.calls).toHaveLength(1)
     expect((await f.handle(f.management("register"))).status).toBe(200)
     expect((await f.handle(f.management("register"))).status).toBe(409)
+  })
+  test("custom-domain mutation proof binds the exact body and cannot be omitted", async () => {
+    const f = fixture()
+    await f.handle(f.management("recover"))
+    const missing = f.management("register")
+    missing.headers.delete("Authorization")
+    expect((await f.handle(missing)).status).toBe(401)
+    const signed = f.management("register", { extra: "original" })
+    const body = { ...(await signed.json()), extra: "changed" }
+    const altered = new Request(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: JSON.stringify(body),
+    })
+    expect((await f.handle(altered)).status).toBe(401)
+    expect(f.calls).toHaveLength(1)
   })
   test("new signed identities share a bounded source budget before provider and storage", async () => {
     const f = fixture()
@@ -509,11 +613,11 @@ describe("approved-name gateway", () => {
     await f.handle(f.management("register"))
     const request = f.management("register"),
       entries = Object.entries(await request.json()).reverse()
-    const reordered = new Request(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(Object.fromEntries(entries)),
-    })
+    const reordered = f.managementRequest(
+      request.url,
+      "POST",
+      Object.fromEntries(entries)
+    )
     expect((await f.handle(reordered)).status).toBe(409)
   })
   test("a registered address cannot be renamed without exact replacement approval", async () => {
@@ -531,14 +635,20 @@ describe("approved-name gateway", () => {
   })
   test("deletion requires an unexpired manual approval and its own valid signature", async () => {
     const f = fixture()
+    const approved = [{ ...f.approved, deleteUntil: f.now + 60 }]
     expect((await f.handle(f.management("unregister"))).status).toBe(403)
     expect(
       (
-        await f.handle(f.management("unregister"), [
-          { ...f.approved, deleteUntil: f.now + 60 },
-        ])
+        await f.handle(
+          f.management("unregister", {}, generateSecretKey()),
+          approved
+        )
       ).status
-    ).toBe(200)
+    ).toBe(401)
+    expect(f.calls).toHaveLength(0)
+    expect((await f.handle(f.management("unregister"), approved)).status).toBe(
+      200
+    )
     const request = f.management("register")
     const body = await request.json()
     expect(
@@ -620,11 +730,13 @@ describe("approved-name gateway", () => {
         ].join("\n")
       ),
     }
-    const make = (value = body) =>
-      new Request(`https://conduit.cash/lnurlpay/${f.identity}/transfer`, {
-        method: "POST",
-        body: JSON.stringify(value),
-      })
+    const make = (value = body, accountSecret?: Uint8Array) =>
+      f.managementRequest(
+        `https://conduit.cash/lnurlpay/${f.identity}/transfer`,
+        "POST",
+        value,
+        accountSecret
+      )
     const approved = [
       { ...f.approved, transferFrom: from, transferUntil: f.now + 60 },
     ]
@@ -637,6 +749,10 @@ describe("approved-name gateway", () => {
         )
       ).status
     ).toBe(401)
+    expect(
+      (await f.handle(make(body, generateSecretKey()), approved)).status
+    ).toBe(401)
+    expect(f.calls).toHaveLength(0)
     expect((await f.handle(make(), approved)).status).toBe(200)
   })
   test("ordinary receiving is public while credentials remain on the proxy hop", async () => {

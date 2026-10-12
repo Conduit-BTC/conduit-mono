@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import { secp256k1 } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { sha256 } from "../packages/core/node_modules/@noble/hashes/sha2.js"
 import {
@@ -68,6 +69,7 @@ async function fixture(domain = "conduit.cash") {
   const native = new DefaultSparkSigner()
   await native.createSparkWalletFromSeed(mnemonicToSeedSync(mnemonic), 1)
   const identity = bytesToHex(await native.getIdentityPublicKey())
+  const accountSecret = generateSecretKey()
   let active = true
   let registered: string | null = null
   let generatorCalls = 0
@@ -112,6 +114,10 @@ async function fixture(domain = "conduit.cash") {
     }
     expect(url.hostname).toBe(domain)
     expect(url.pathname).toContain(identity)
+    if (operation === "register")
+      expect(new Headers(init?.headers).get("Authorization")).toMatch(
+        domain === "conduit.cash" ? /^Nostr / : /^Bearer /
+      )
     const body = JSON.parse(String(init?.body))
     const message = breezAddressMessage({
       operation: operation as "register" | "recover" | "available",
@@ -164,6 +170,22 @@ async function fixture(domain = "conduit.cash") {
       domain,
       apiKey: "test-client-key",
       signer,
+      signAccountProof: async ({ url, method, body }) => {
+        const event = finalizeEvent(
+          {
+            kind: 27235,
+            content: "",
+            created_at: Math.floor(FIXED_TIME / 1000),
+            tags: [
+              ["u", url],
+              ["method", method],
+              ["payload", bytesToHex(sha256(new TextEncoder().encode(body)))],
+            ],
+          },
+          accountSecret
+        )
+        return `Nostr ${btoa(JSON.stringify(event))}`
+      },
       store,
       fetch: fetcher,
       now: () => FIXED_TIME,
