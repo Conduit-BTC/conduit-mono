@@ -611,7 +611,10 @@ test("supplier percentages and readiness gate publish exact signed terms consume
       .getByRole("listitem")
       .filter({ hasText: productTitle })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    const add = product.getByRole("button", { name: "Add", exact: true })
+    const add = product.getByRole("button", {
+      name: `Add ${productTitle} to cart`,
+      exact: true,
+    })
     await expect(add).toBeEnabled({ timeout: 30_000 })
     await add.click()
     const cart = buyerPage.getByRole("region", {
