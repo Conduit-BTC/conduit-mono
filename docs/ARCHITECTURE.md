@@ -159,43 +159,15 @@ eligibility, checkout, and order persistence. See
 
 ### Event Markets And Pickup
 
-Current Event Markets use an experimental Open Markets profile. The organizer
-signs a dedicated kind `30409` market that links one same-author NIP-52
-`31922`/`31923` calendar event or one same-author finite `31924` schedule. The
-signed schedule lists the concrete occurrences used for a multi-date market;
-an occurrence's reference to a calendar does not establish membership. The
-market record controls open/closed commerce state and the merchant roster,
-including merchant-present pickup or organizer handoff and public assignments.
-
-New commerce requires both a current roster row and a validated active kind
-`3841` merchant authorization grant. These organizer-signed, immutable
-transitions retain causal grant/revoke ancestry. Enrollment requests and product
-tags alone do not grant admission. Missing ancestry, known revocations,
-unresolved deletion evidence, or conflicting authorization cannot authorize a
-purchase; stale or partial relay responses do not erase stronger known evidence.
-
-Products remain merchant-authored kind `30402` events. The current product-tag
-model associates them with the market's full `30409` coordinate. Shared readers
-resolve the current signed product, market tag, merchant grant, visibility,
-terms, and applicable deletion evidence before admitting a product. Checkout
-rechecks market, grant, calendar, product, and payee terms; a recurring purchase
-also requires an explicitly selected occurrence with verified schedule
-membership. Created orders retain their accepted signed evidence, so later
-roster, schedule, product, or payee changes do not reinterpret them.
-
-Shared parsing, publishing, evidence resolution, coordinate/`naddr` handling,
-and deletion semantics belong in `@conduit/core`. Market and Merchant routes
-compose those prepared states. See the [Event Market contract](specs/event-markets.md)
-and [lifecycle guidance](knowledge/event-market-lifecycle.md). The profile remains
-experimental; this implementation description does not establish normative
-Open Markets adoption, live-relay convergence, or physical handoff validation.
-
-Collection-based Event Market readers, writers, checkout, and handoff
-compatibility are removed. Old event links ask the organizer to repost using
-the current structure; there is no automatic conversion or old-model fallback.
-Ordinary kind `30405` product collections and kind `30406` shipping remain
-supported, and accepted order history retains its evidence. See the
-[retired extension notice](knowledge/event-market-collection-extension.md).
+Current Event Markets use an experimental Open Markets profile: organizer-signed
+kind `30409` markets and kind `3841` merchant authorization, with merchant-owned
+kind `30402` products. Shared parsing, publishing, evidence resolution,
+coordinate/`naddr` handling, and deletion semantics belong in `@conduit/core`;
+Market and Merchant routes compose those prepared states. See
+[Open Markets implementation guidance](OPEN_MARKETS.md#experimental-event-markets)
+and the [Event Market contract](specs/event-markets.md) for schedule membership,
+authorization ancestry, checkout evidence, and retirement of collection-based
+event commerce.
 
 The buyer's encrypted order remains buyer-to-merchant. Organizer handoff uses a
 separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
