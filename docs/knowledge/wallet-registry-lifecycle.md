@@ -29,7 +29,11 @@ durability keeps its separate two-operator or acknowledged-export rule. A pendin
 backup sync does not disable a usable locally owned wallet.
 
 Account removal waits for verified registry read-back before committing the
-local removal. Partial reads, unresolved backups or conflicting heads do not
+local removal. A locally retained removal remains pending after reload until
+its exact signed event reaches every frozen target. Explicit recovery retry
+delivers that event before signing a successor. Previously confirmed removals
+remain effective while newer delivery is pending or sources are unavailable.
+Partial reads, unresolved backups or conflicting heads do not
 authorize replacing account state.
 
 ## Legacy registry bootstrap

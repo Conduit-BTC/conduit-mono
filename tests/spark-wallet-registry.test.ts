@@ -13,6 +13,7 @@ import {
   retireAccountSigner,
   SessionSigner,
 } from "../packages/core/src/protocol/session-signer"
+import { NostrSignerError } from "../packages/core/src/protocol/nostr-event-signer"
 import type {
   NostrKeySigner,
   SignedNostrEvent,
@@ -292,6 +293,7 @@ function fixture() {
   return {
     owner,
     signer,
+    provider,
     relays,
     relayUrls,
     unavailableRelays,
@@ -585,6 +587,145 @@ test("account removal survives a fresh store while independent old backups remai
   await expect(
     first.prepareRegistry("mainnet", { type: "add", walletId })
   ).rejects.toThrow("conflict")
+})
+
+test("a retained removal stays locally usable until its exact registry event reaches every relay", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const database = new ConduitDB(
+      `wallet-registry-removal-retry-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(database)
+    const store = new MarketWalletStore(database)
+    const journal = new DexieSparkRecoveryStore(database)
+    const service = f.service(journal)
+    const walletId = crypto.randomUUID()
+    const mnemonic = generateSparkMnemonic()
+    const backup = await service.prepare(
+      { mnemonic, network: "mainnet", accountNumber: 1 },
+      walletId
+    )
+    expect((await service.deliver(backup.eventId)).ready).toBe(true)
+    const added = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId,
+    })
+    expect((await service.deliver(added)).ready).toBe(true)
+    await new WalletRegistry(store).add({
+      id: walletId,
+      kind: "portable",
+      providerId: "spark",
+      network: "mainnet",
+      label: "Wallet awaiting removal",
+      capabilities: ["pay_invoice", "receive"],
+    })
+    await store.putSparkRecovery(
+      walletId,
+      await sealSignerSparkRecovery(
+        mnemonic,
+        { walletId, providerId: "spark", network: "mainnet", accountNumber: 1 },
+        f.signer
+      )
+    )
+    const previouslyRemovedId = crypto.randomUUID()
+    const previousMnemonic = generateSparkMnemonic()
+    const previousBackup = await service.prepare(
+      { mnemonic: previousMnemonic, network: "mainnet", accountNumber: 1 },
+      previouslyRemovedId,
+      backup.eventId
+    )
+    expect((await service.deliver(previousBackup.eventId)).ready).toBe(true)
+    const previousAdd = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId: previouslyRemovedId,
+    })
+    expect((await service.deliver(previousAdd)).ready).toBe(true)
+    await new WalletRegistry(store).add({
+      id: previouslyRemovedId,
+      kind: "portable",
+      providerId: "spark",
+      network: "mainnet",
+      label: "Previously removed wallet",
+      capabilities: ["pay_invoice", "receive"],
+    })
+    await store.putSparkRecovery(
+      previouslyRemovedId,
+      await sealSignerSparkRecovery(
+        previousMnemonic,
+        {
+          walletId: previouslyRemovedId,
+          providerId: "spark",
+          network: "mainnet",
+          accountNumber: 1,
+        },
+        f.signer
+      )
+    )
+    const previousRemoval = await service.prepareRegistry("mainnet", {
+      type: "remove",
+      walletId: previouslyRemovedId,
+    })
+    expect((await service.deliver(previousRemoval)).ready).toBe(true)
+
+    const removal = await service.prepareRegistry("mainnet", {
+      type: "remove",
+      walletId,
+    })
+    f.unavailableRelays.add(f.relayUrls[0])
+    await expect(service.deliver(removal)).rejects.toThrow("conflict")
+    const partial = await service.discover(false, "mainnet")
+    expect(partial.coverage).toBe("partial")
+    expect(partial.confirmedRemovedWalletIds).toEqual([previouslyRemovedId])
+    await reconcileAccountWalletRegistryMembership({
+      signer: f.signer,
+      discovery: partial,
+      network: "mainnet",
+      store,
+      journal,
+    })
+    expect(
+      (await store.listVisible(f.owner)).map((wallet) => wallet.id)
+    ).toEqual([walletId])
+    f.unavailableRelays.clear()
+    const pending = await service.discover(false, "mainnet")
+    expect(pending.registryMembershipReady).toBe(false)
+    expect(isCompleteAccountRegistryDiscovery(pending)).toBe(false)
+    await reconcileAccountWalletRegistryMembership({
+      signer: f.signer,
+      discovery: pending,
+      network: "mainnet",
+      store,
+      journal,
+    })
+    expect(
+      (await store.listVisible(f.owner)).map((wallet) => wallet.id)
+    ).toEqual([walletId])
+    expect((await journal.load(f.owner)).removedWalletIds).toEqual([
+      previouslyRemovedId,
+    ])
+    expect(
+      await service.prepareRegistry("mainnet", { type: "remove", walletId })
+    ).toBe(removal)
+
+    expect((await service.deliver(removal)).ready).toBe(true)
+    const committed = await service.discover(false, "mainnet")
+    expect(committed.registryMembershipReady).toBe(true)
+    await reconcileAccountWalletRegistryMembership({
+      signer: f.signer,
+      discovery: committed,
+      network: "mainnet",
+      store,
+      journal,
+    })
+    expect(await store.listVisible(f.owner)).toEqual([])
+    expect(new Set((await journal.load(f.owner)).removedWalletIds)).toEqual(
+      new Set([previouslyRemovedId, walletId])
+    )
+  } finally {
+    retireAccountSigner(f.signer)
+  }
 })
 
 test("first registry snapshot carries a validated legacy local tombstone to a fresh app", async () => {
@@ -1133,4 +1274,33 @@ test("latest defaults survive and a divergent relay head blocks stale writes", a
   expect(
     (await f.service().discover(false, "mainnet")).registry?.payInvoiceWalletId
   ).toBe(secondId)
+})
+
+test("explicit registry verification succeeds after denial without resuming background consent", async () => {
+  const f = fixture()
+  const service = f.service()
+  const walletId = crypto.randomUUID()
+  await backedUp(service, walletId)
+  const decrypt = f.provider.decryptNip44!
+  f.provider.decryptNip44 = async () => {
+    throw new NostrSignerError("authorization_denied")
+  }
+  await expect(f.signer.decryptNip44(f.owner, "unused")).rejects.toMatchObject({
+    code: "authorization_denied",
+  })
+  f.provider.decryptNip44 = decrypt
+  const registry = await service.prepareRegistry("mainnet", {
+    type: "add",
+    walletId,
+  })
+  expect(
+    (await service.deliver(registry, { priority: "foreground" })).ready
+  ).toBe(true)
+  expect(
+    (await service.discover(false, "mainnet", { priority: "foreground" }))
+      .registry?.activeWalletIds
+  ).toEqual([walletId])
+  await expect(
+    f.signer.decryptNip44(f.owner, "unused", { priority: "background" })
+  ).rejects.toMatchObject({ code: "background_paused" })
 })

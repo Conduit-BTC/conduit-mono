@@ -274,7 +274,7 @@ for (const from of ["market", "merchant"] as const) {
           .getByRole("dialog")
           .getByRole("button", { name: "Import wallet", exact: true })
           .click()
-        await saved(source)
+        await saved(source, false)
         await source
           .getByRole("button", {
             name: "Keep the current address",
@@ -284,6 +284,46 @@ for (const from of ["market", "merchant"] as const) {
         const ids = await wallets(source)
         expect(ids).toHaveLength(2)
         const selected = ids.find((id) => id !== first)!
+        const selectedLabel = await source.evaluate(
+          async ({ storage, core, selected }) => {
+            const { getMarketWalletStore } = await import(storage)
+            const { getWalletDisplayLabels, getAccountSigner } = await import(
+              core
+            )
+            const visible = await getMarketWalletStore().listVisible(
+              getAccountSigner().pubkey
+            )
+            return getWalletDisplayLabels(visible).get(selected)!
+          },
+          { storage, core, selected }
+        )
+        await source
+          .getByRole("button", { name: `Manage ${selectedLabel}`, exact: true })
+          .click()
+        await source
+          .getByRole("menuitem", {
+            name: "Make main wallet across apps",
+            exact: true,
+          })
+          .click()
+        await expect
+          .poll(() =>
+            source.evaluate(
+              async ({ storage, core, selected }) => {
+                const { getMarketWalletStore } = await import(storage)
+                const { getAccountSigner } = await import(core)
+                return (
+                  await getMarketWalletStore().listVisible(
+                    getAccountSigner().pubkey
+                  )
+                )
+                  .find((wallet: WalletDescriptor) => wallet.id === selected)
+                  ?.defaultIntents.sort()
+              },
+              { storage, core, selected }
+            )
+          )
+          .toEqual(["pay_invoice", "receive"])
         await expect(
           source.getByLabel("Lightning address", { exact: true })
         ).toHaveValue("wallet1@breez.tips")
@@ -309,7 +349,7 @@ for (const from of ["market", "merchant"] as const) {
           await expect(
             dialog.getByLabel("Make this my main wallet", { exact: true })
           ).not.toBeChecked()
-          await saved(target)
+          await saved(target, false)
           // Background consent remains paused; explicitly open the other
           // restored wallet instead of assuming automatic consent resumed.
           const openWallet = target.getByRole("button", {
@@ -682,7 +722,10 @@ test("simultaneous setup across origins retains conflicts and never creates anot
       )
     )
     await Promise.all(pages.map((page) => saved(page, false)))
-    for (const page of pages) {
+    const originalWallets = await Promise.all(pages.map(wallets))
+    for (const ids of originalWallets) expect(ids).toHaveLength(1)
+    expect(new Set(originalWallets.flat()).size).toBe(2)
+    for (const [index, page] of pages.entries()) {
       await page
         .getByRole("button", { name: "Sync wallet recovery", exact: true })
         .click()
@@ -692,7 +735,28 @@ test("simultaneous setup across origins retains conflicts and never creates anot
           { exact: true }
         )
       ).toBeVisible()
-      await expect.poll(async () => (await wallets(page)).length).toBe(2)
+      // Conflicting discovery retains both backups without restoring an
+      // ambiguous wallet into either device's usable wallet list.
+      expect(await wallets(page)).toEqual(originalWallets[index])
+      const retainedBackups = await page.evaluate(async (moduleUrl) => {
+        const { db, getAccountSigner } = await import(moduleUrl)
+        const evidence = await db.sparkRecoveryEvidence.get(
+          getAccountSigner().pubkey
+        )
+        return evidence.records.flatMap((record: any) =>
+          record.event.tags
+            .filter(
+              (tag: string[]) =>
+                tag[0] === "d" && tag[1].startsWith("conduit:spark:wallet:v1:")
+            )
+            .map((tag: string[]) =>
+              tag[1].slice("conduit:spark:wallet:v1:".length)
+            )
+        )
+      }, core)
+      expect([...new Set(retainedBackups)].sort()).toEqual(
+        originalWallets.flat().sort()
+      )
       const before = (await wallets(page)).sort()
       await openWalletSetup(page, "Create wallet")
       await expect(

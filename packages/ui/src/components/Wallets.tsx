@@ -195,15 +195,19 @@ export function Wallets({
   const openWallet: WalletDialogAction = async (wallet, trigger) => {
     const scope = authScopeRef.current
     const method = await wallets.getSparkRecoveryType(wallet.id)
+    const hasPasswordFallback =
+      method === "signer" &&
+      (await wallets.hasLegacyPasswordRecovery(wallet.id))
     // Legacy device recovery is available while signed out. The connected-only
     // signer fence still governs signer actions; every dialog uses a live scope.
     if (authScopeRef.current !== scope) return
     if (
       method !== "password" &&
+      !hasPasswordFallback &&
       !auth.isAuthGenerationCurrent(scope.generation)
     )
       return
-    if (method === "password") {
+    if (method === "password" || hasPasswordFallback) {
       openWalletDialog(setUnlockWallet, wallet, trigger)
     } else {
       await wallets.unlockSpark(wallet.id)
@@ -336,6 +340,7 @@ export function Wallets({
                   formatSats={formatSats}
                   onDefault={wallets.setDefaultPaymentWallet}
                   onReceiving={wallets.setReceivingWallet}
+                  onMain={signerReady ? wallets.setMainWallet : undefined}
                   onRefresh={wallets.refreshBalance}
                   onUnlock={openWallet}
                   onRecovery={(wallet, trigger) =>
@@ -645,6 +650,7 @@ function WalletSection({
   formatSats,
   onDefault,
   onReceiving,
+  onMain,
   onRefresh,
   onUnlock,
   onRecovery,
@@ -674,6 +680,7 @@ function WalletSection({
   formatSats: (sats: number) => string
   onDefault: (walletId: string) => Promise<void>
   onReceiving: (walletId: string) => Promise<void>
+  onMain?: (walletId: string) => Promise<void>
   onRefresh: (walletId: string) => Promise<void>
   onUnlock: WalletDialogAction
   onRecovery: WalletDialogAction
@@ -730,6 +737,7 @@ function WalletSection({
                 onRename={onRename}
                 onDefault={onDefault}
                 onReceiving={onReceiving}
+                onMain={onMain}
                 onRefresh={onRefresh}
                 onUnlock={onUnlock}
                 onRecovery={onRecovery}
@@ -777,6 +785,7 @@ function WalletRow({
   formatSats,
   onDefault,
   onReceiving,
+  onMain,
   onRefresh,
   onUnlock,
   onRecovery,
@@ -802,6 +811,7 @@ function WalletRow({
   formatSats: (sats: number) => string
   onDefault: (walletId: string) => Promise<void>
   onReceiving: (walletId: string) => Promise<void>
+  onMain?: (walletId: string) => Promise<void>
   onRefresh: (walletId: string) => Promise<void>
   onUnlock: WalletDialogAction
   onRecovery: WalletDialogAction
@@ -913,6 +923,16 @@ function WalletRow({
                 Make default for merchant invoices
               </DropdownMenuItem>
             )}
+            {isSpark &&
+              onMain &&
+              recoveryState.status === "ready" &&
+              recoveryState.method === "signer" && (
+                <DropdownMenuItem
+                  onSelect={() => void run(() => onMain(wallet.id))}
+                >
+                  Make main wallet across apps
+                </DropdownMenuItem>
+              )}
             {isSpark && (
               <DropdownMenuItem onSelect={() => dialog(onRecovery)}>
                 Recovery details

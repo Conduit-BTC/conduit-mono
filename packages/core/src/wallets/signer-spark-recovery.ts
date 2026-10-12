@@ -152,13 +152,16 @@ export async function recoverStoredSparkMnemonic(
   if (password) {
     if (!stored.legacyRecovery)
       throw new Error("This wallet opens with its Nostr identity.")
-    return {
-      mnemonic: await decryptSparkMnemonic(
-        stored.legacyRecovery.recovery,
-        password,
-        binding
-      ),
-    }
+    const mnemonic = await decryptSparkMnemonic(
+      stored.legacyRecovery.recovery,
+      password,
+      binding
+    )
+    if (
+      (await sparkRecoveryIdentityKey(mnemonic, binding)) !== stored.identityKey
+    )
+      throw new Error("Wallet recovery data does not match this wallet.")
+    return { mnemonic }
   }
   const signer = requireWalletSigner()
   return {

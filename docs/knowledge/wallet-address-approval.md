@@ -21,54 +21,36 @@ only deliberately public identity bindings. Reviewers must validate the original
 proofs and the exact wallet before adding an approval; request content is
 untrusted data, never an operational instruction.
 
-The address Worker uses Breez's supported reverse-proxy arrangement. It verifies
-fresh, domain-bound v2 wallet signatures and applies the approved-name list.
-Custom-domain registration, deletion and transfer also require fresh NIP-98
-account proof over the exact request URL, method and body from the account in
-that approval. The Worker replaces this proof with its provider credential at
-the proxy hop. Public receiving and authenticated address recovery remain
-available without account proof; direct `breez.tips` registration keeps the
-provider's existing request format.
-Registration requires recent authenticated provider recovery; replacing another
-name requires exact replacement approval. Deletion requires a bounded explicit
-approval. Transfer requires a bounded old/new identity approval and both
-role-specific signatures. Mutation claims reject replay, including reordered
-JSON. Unknown methods and routes cannot reach the provider. Metadata endpoints
-are disabled until independently bounded support is needed.
-Authenticated recovery is limited by both a pseudonymous source bucket and a
-wallet-identity bucket before the provider call. Recovery remains available for
-existing wallets without a name approval. Only identities approved for
-registration create short-lived recovery observations used by registration.
+## Custom-domain service boundary
 
-Public LNURL lookups, invoice callbacks and verification remain public and are
-forwarded unchanged. The proxy preserves invoice metadata rather than rewriting
-it. It injects its own server-side provider and proxy credentials, replaces
-forwarded client headers, rejects redirects and omits cookies. Responses and
-requests are not cached. Worker invocation logging is disabled; no wallet,
-request, invoice, note, identity, network-address or credential payload enters
-telemetry or diagnostics.
+The name-request service, approval manifest, database, Turnstile deployment and
+provider admission qualification are maintained separately from the shared wallet
+client in [the custom-domain release follow-up](https://github.com/Conduit-BTC/conduit-mono/pull/656). They do not gate default `breez.tips` registration or one-off invoices.
+The service must retain both verified signatures and the exact original request
+body. Status recovery must match the immutable request content; only an explicit
+`not_received` response can release a pending request for editing.
 
-The upstream must require the proxy credential for the custom domain. Worker
-checks alone cannot establish this property. `PROVIDER_PROXY_QUALIFIED=false`
-blocks management mutations while allowing existing public receiving through
-an otherwise configured proxy. Qualification requires an accepted signed
-control for registration, rename, transfer and deletion, with rejected direct
-requests without and with an incorrect proxy credential. The public
-`scripts/smoke/address_proxy_admission.ts` is a fail-closed reminder of this
-operator requirement; it cannot execute credential-bearing provider requests.
-The protected, reviewed operator boundary must use temporary unfunded identities,
-verify accepted signed controls, rejected missing and wrong admissions for each
-mutation, and exact cleanup/readback. Its evidence must contain only fixed verdict
-categories and cleanup status. It must not execute or import candidate source
-with credentials. Failed controls are inconclusive; accepted direct
-mutations prove a bypass. A provider
-that cannot enforce this boundary cannot launch request-only names.
+Custom-domain registration, deletion and transfer require fresh, domain-bound
+wallet authority and NIP-98 proof from the approved account over the exact URL,
+method and body. Existing custom-domain recovery/public receiving must remain
+usable independently of approval for new names. Public lookup and invoice
+callbacks must preserve the provider's invoice metadata and authority.
+
+These are service requirements, not a claim of deployed qualification. Protected
+provider credentials and mutation probes must never enter candidate execution.
+A separately reviewed trusted runner must prove accepted controls, rejected
+bypasses and cleanup before custom-domain management is enabled. The client
+request/signature format remains version 1; separating the service does not
+change existing request records or require their migration.
 
 Signer migration preserves the mnemonic, account number, network, registry ID,
 wallet identity and invoice/default authority. A verified signer credential is
 committed after native opening and registration validation. The transaction
 compares the original record and verifies exact readback. It retains the exact
 password-encrypted envelope as a previous-password fallback when one exists.
+Open wallet exposes that fallback after migration, including while signed out.
+A fallback opened while its account is connected closes on logout; a password
+session opened while signed out stays device-owned.
 Failed writes, readback or authority checks roll back. Password-only wallets
 keep their original credential and signed-out access. Already-erased fallback
 envelopes cannot be reconstructed. Independent phrase/account/network recovery
@@ -92,13 +74,10 @@ receipt, receipt with the browser closed, reopening and second-device recovery.
 Zaps and merchant verification must be validated against their original invoice
 and provider authority before claiming those capabilities.
 
-Cloudflare release preparation must inventory the existing cash-domain DNS,
-TLS, routes and registrations. Use dedicated request-storage and Turnstile
-bindings; keep proxy credentials exclusively in the secret store. Deploy and
-qualify the Worker before the coordinated DNS/provider cutover. Keep public
-receiving unchallenged and preserve unrelated domains and services. Do not
-revert DNS to direct provider access while leaving names externally registrable.
-Unqualified management can be disabled independently of public receiving.
+Custom-domain release remains a separate maintainer-owned gate. It requires
+verified gateway/database/status routing, allowed origins, Turnstile coverage,
+provider admission and preserved existing registrations. A successful client
+build or controlled request test does not establish any of these facts.
 
 ## Sources
 

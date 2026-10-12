@@ -162,3 +162,85 @@ test("account removal stays removed in a fresh app while its encrypted backup re
     disposeRuntimeSignerIdentity(identity)
   }
 })
+
+test("failed removal survives reload and retries the retained event before exclusion @market @merchant", async ({
+  browser,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  try {
+    await prepareControlledWallet(page)
+    await observeWalletController(page)
+    await installRealTestSigner(page, identity, relay)
+    await page.goto(market + "/wallet")
+    await installControlledWallet(page)
+    await openWalletSetup(page, "Create wallet")
+    await saveWalletRecovery(page, false)
+    const [walletId] = await localSparkWalletIds(page)
+    // Fail only the transport publication boundary. Real signing, journal,
+    // readback, hook, storage and account lifecycle remain composed.
+    await page.evaluate(
+      async ({ core, accountRecovery }) => {
+        const { getAccountSigner } = await import(core)
+        const { getAccountSparkRecovery } = await import(accountRecovery)
+        const service = getAccountSparkRecovery(getAccountSigner())
+        service.input.transport.publish = async () => "rejected"
+      },
+      { core, accountRecovery }
+    )
+    await page
+      .getByRole("button", { name: /^Manage / })
+      .first()
+      .click()
+    await page
+      .getByRole("menuitem", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+      .click()
+    const confirmation = page.getByRole("alertdialog")
+    await confirmation.locator("#remove-recovery").check()
+    await confirmation
+      .getByRole("button", { name: "Remove wallet from account", exact: true })
+      .click()
+    await expect(
+      confirmation.getByText(
+        "Wallet removal has not reached recovery relays. Retry when recovery is available.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    const retainedId = await page.evaluate(
+      async ({ core, accountRecovery }) => {
+        const { getAccountSigner } = await import(core)
+        const { getAccountSparkRecovery } = await import(accountRecovery)
+        return (
+          await getAccountSparkRecovery(getAccountSigner()).discover(
+            false,
+            "mainnet",
+            { priority: "foreground" }
+          )
+        ).registryEventId
+      },
+      { core, accountRecovery }
+    )
+    expect(retainedId).toBeTruthy()
+    await page.reload()
+    await installControlledWallet(page)
+    await expect(page.getByRole("button", { name: /^Manage / })).toHaveCount(1)
+    expect(await localSparkWalletIds(page)).toEqual([walletId])
+    await page
+      .getByRole("button", { name: "Sync wallet recovery", exact: true })
+      .click()
+    await expect(page.getByRole("button", { name: /^Manage / })).toHaveCount(0)
+    const registryEvents = await readTestRelayEvents({
+      authors: [identity.pubkey],
+      kinds: [30_078],
+      "#d": ["conduit:spark:registry:v1:mainnet"],
+    })
+    expect(registryEvents.map((event) => event.id)).toEqual([retainedId])
+  } finally {
+    await context.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
+})

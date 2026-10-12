@@ -144,6 +144,10 @@ export interface SparkRecoveryDiscovery {
   creationEligible: boolean
   registry?: SparkWalletRegistrySnapshot
   registryEventId?: string
+  /** The selected snapshot was read back from every frozen registry target. */
+  registryMembershipReady?: boolean
+  /** Removals in snapshots whose delivery was confirmed, including older heads. */
+  confirmedRemovedWalletIds?: string[]
 }
 const MAX_RECORDS = 128
 // Backups and networkless legacy evidence have separate bounded budgets.
@@ -702,6 +706,10 @@ export class SparkRecoveryService {
         return discovery.registryEventId
       }
     }
+    // A retained snapshot is not a committed head. Repair its exact signed
+    // bytes before signing a successor, even if the current relay reads agree.
+    if (previous && !discovery.registryMembershipReady)
+      throw new SparkRecoveryError("conflict")
     const dTag = sparkWalletRegistryDTag(network)
     // A local lock does not serialize another app or device. Require every
     // planned relay to agree with the frozen head before signing a mutation.
@@ -804,7 +812,10 @@ export class SparkRecoveryService {
     )
       throw new SparkRecoveryError("conflict")
     const event = await this.sign(dTag, snapshot, createdAt)
-    parseSparkWalletRegistrySnapshot(await this.decrypt(event), event)
+    parseSparkWalletRegistrySnapshot(
+      await this.decrypt(event, { priority: "foreground" }),
+      event
+    )
     const retain = () => this.retain([this.record(event)])
     if (commit) await commit(retain)
     else await retain()
@@ -948,7 +959,11 @@ export class SparkRecoveryService {
               ),
             ]
           : []
-        return { target, results: [broad, ...choices, ...registryRead] }
+        return {
+          target,
+          results: [broad, ...choices, ...registryRead],
+          registryRead: registryRead[0],
+        }
       })
     )
     const references = new Set<string>()
@@ -1096,6 +1111,44 @@ export class SparkRecoveryService {
           )
         )
       : undefined
+    const hasExactRegistryReadback = (eventId: string): boolean =>
+      !!network &&
+      reads.every(({ registryRead: exact }) => {
+        return (
+          exact?.status === "complete" &&
+          exact.events.length === 1 &&
+          exact.events[0]?.id === eventId &&
+          isValidSignedPublicNostrEvent(exact.events[0])
+        )
+      })
+    const hasHistoricalRegistryReadback = (eventId: string): boolean => {
+      const record = records.get(eventId)
+      return (
+        !!record?.targets.length &&
+        record.targets.every((target) => {
+          const evidence = record.delivery.find(
+            (item) => item.url === target.url
+          )
+          return evidence?.accepted === true && evidence.readBack === true
+        })
+      )
+    }
+    const registryMembershipReady = registryObserved
+      ? hasHistoricalRegistryReadback(registryObserved.eventId) ||
+        hasExactRegistryReadback(registryObserved.eventId)
+      : false
+    const confirmedRemovedWalletIds = [
+      ...new Set(
+        registryChoices
+          .filter(({ snapshot }) => !network || snapshot.network === network)
+          .filter(
+            ({ event }) =>
+              hasHistoricalRegistryReadback(event.id) ||
+              hasExactRegistryReadback(event.id)
+          )
+          .flatMap(({ snapshot }) => snapshot.removedWalletIds)
+      ),
+    ]
     const coverage = sources.every((s) => s.status === "complete")
       ? "complete"
       : sources.every((s) => s.status === "unavailable")
@@ -1292,12 +1345,15 @@ export class SparkRecoveryService {
       creationEligible,
       registry: registryObserved?.snapshot,
       registryEventId: registryObserved?.eventId,
+      registryMembershipReady,
+      confirmedRemovedWalletIds,
     }
   }
 
   /** Repair uses stored bytes and targets. It never encrypts, signs, widens, or creates. */
   async deliver(
-    eventId: string
+    eventId: string,
+    options: AccountSignerOperationOptions = {}
   ): Promise<{ ready: boolean; independentCopies: number }> {
     const saved = await this.load()
     const record = saved.records.find((r) => r.event.id === eventId)
@@ -1305,7 +1361,7 @@ export class SparkRecoveryService {
     const address = record.event.tags.find((tag) => tag[0] === "d")?.[1]
     if (address && isSparkWalletRegistryDTag(address)) {
       const snapshot = parseSparkWalletRegistrySnapshot(
-        await this.decrypt(record.event),
+        await this.decrypt(record.event, options),
         record.event
       )
       // Recheck all relay heads before a retry can replace another writer's
