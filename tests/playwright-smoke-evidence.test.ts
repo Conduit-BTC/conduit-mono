@@ -39,9 +39,10 @@ describe("composed smoke evidence", () => {
         join(directory, "e2e/probe.playwright.ts"),
         [
           `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
-          `for (const mode of ["pass", "assertion", "timeout"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
+          `for (const mode of ["pass", "assertion", "timeout", "throw"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
           "  test.setTimeout(500);",
           '  await test.step("completed-' + sentinel + '", async () => {});',
+          '  if (mode === "throw") throw new Error("' + sentinel + '");',
           '  if (mode === "assertion") expect("' +
             sentinel +
             '").toBe("different");',
@@ -85,7 +86,7 @@ describe("composed smoke evidence", () => {
         ["market"],
         evidence
       )
-      expect(manifest.selectedTestCount).toBe(3)
+      expect(manifest.selectedTestCount).toBe(4)
       expect(run([]).status).toBe(1)
       const report = JSON.parse(
         readFileSync(output, "utf8")
@@ -100,13 +101,13 @@ describe("composed smoke evidence", () => {
       expect(summary.status).toBe("failed")
       expect(summary.timing.reporterSetupMs).toBeGreaterThanOrEqual(0)
       expect(summary.timing.executionMs).toBeGreaterThan(0)
-      expect(summary.timing.completedAttempts).toBe(3)
+      expect(summary.timing.completedAttempts).toBe(4)
       expect(
         summary.tests.every((spec: { title?: string }) => !("title" in spec))
       ).toBe(true)
       const specs = report.suites![0]!.specs!
       const ids = specs.map((spec) => spec.smokeId)
-      expect(new Set(ids).size).toBe(3)
+      expect(new Set(ids).size).toBe(4)
       expect([...ids].sort()).toEqual(
         manifest.tests.map((test) => test.id).sort()
       )
@@ -117,7 +118,12 @@ describe("composed smoke evidence", () => {
         failures
           .map((result) => safePlaywrightFailure(result.failure)?.category)
           .sort()
-      ).toEqual(["assertion", "timeout"])
+      ).toEqual(["assertion", "timeout", "unknown"])
+      const unstepped = failures
+        .map((result) => safePlaywrightFailure(result.failure))
+        .find((failure) => failure?.category === "unknown")
+      expect(unstepped?.failedStep).toBeUndefined()
+      expect(unstepped?.lastCompletedStep?.category).toBe("test")
       expect(
         failures.every(
           (result) => safePlaywrightFailure(result.failure)?.lastCompletedStep

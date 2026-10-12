@@ -396,7 +396,12 @@ export class PrivacySafeSmokeReporter implements Reporter {
   }> = []
   private readonly steps = new WeakMap<
     TestResult,
-    { active?: SafeStep; failed?: SafeStep; completed?: SafeStep }
+    {
+      active?: { step: TestStep; value: SafeStep }
+      failed?: SafeStep
+      completed?: SafeStep
+      teardown?: boolean
+    }
   >()
   private completedAttempts = 0
   private readonly browserSignals = {
@@ -446,7 +451,9 @@ export class PrivacySafeSmokeReporter implements Reporter {
 
   onStepBegin(_test: TestCase, result: TestResult, step: TestStep): void {
     const state = this.steps.get(result) ?? {}
-    state.active = safeStep(step)
+    const value = safeStep(step)
+    if (value.category === "teardown") state.teardown = true
+    state.active = { step, value }
     this.steps.set(result, state)
   }
 
@@ -454,7 +461,8 @@ export class PrivacySafeSmokeReporter implements Reporter {
     const state = this.steps.get(result) ?? {}
     if (step.error) state.failed ??= safeStep(step)
     // Keep the last successful boundary before the first failure, not cleanup.
-    else if (!state.failed) state.completed = safeStep(step)
+    else if (!state.failed && !state.teardown) state.completed = safeStep(step)
+    if (state.active?.step === step) delete state.active
     this.steps.set(result, state)
   }
 
@@ -524,7 +532,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
     }
     if (result.status !== "passed" && result.status !== "skipped") {
       const state = this.steps.get(result)
-      const failedStep = state?.failed ?? state?.active
+      const failedStep = state?.failed ?? state?.active?.value
       safeResult.failure = {
         category:
           result.status === "timedOut"
