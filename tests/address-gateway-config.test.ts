@@ -2,9 +2,13 @@ import { expect, test } from "bun:test"
 import source from "../apps/address-gateway/wrangler.json"
 import { validateGatewayDeployment } from "../apps/address-gateway/src/deployment-config"
 
-test("source placeholders block either environment before deployment", () => {
+test("placeholder bindings block either environment before deployment", () => {
+  const config = structuredClone(source)
+  config.d1_databases[0]!.database_id = "00000000-0000-0000-0000-000000000000"
+  config.env.preview.d1_databases[0]!.database_id =
+    "00000000-0000-0000-0000-000000000000"
   for (const env of ["preview", "production"] as const)
-    expect(() => validateGatewayDeployment(source, env)).toThrow(
+    expect(() => validateGatewayDeployment(config, env)).toThrow(
       "dedicated request database"
     )
 })

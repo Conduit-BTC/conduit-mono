@@ -7,15 +7,15 @@
   "preview_urls": false,
   "routes": [{ "pattern": "conduit.cash/*", "zone_name": "conduit.cash" }],
   "vars": {
-    "ALLOWED_ORIGINS": "https://shop.conduit.market,https://sell.conduit.market",
-    "TURNSTILE_HOSTNAMES": "shop.conduit.market,sell.conduit.market",
+    "ALLOWED_ORIGINS": "https://shop.conduit.market,https://sell.conduit.market,https://feat-conduit-cash-release.conduit-market-coo.pages.dev",
+    "TURNSTILE_HOSTNAMES": "shop.conduit.market,sell.conduit.market,feat-conduit-cash-release.conduit-market-coo.pages.dev",
     "PROVIDER_PROXY_QUALIFIED": "false"
   },
   "d1_databases": [
     {
       "binding": "ADDRESS_REQUESTS",
       "database_name": "conduit-address-requests",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "449296aa-4ab8-448f-95ea-1694cfe81f87",
       "migrations_dir": "migrations"
     }
   ],

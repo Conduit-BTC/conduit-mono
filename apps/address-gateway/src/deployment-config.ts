@@ -68,8 +68,9 @@ export function validateGatewayDeployment(
           { pattern: "conduit.cash/*", zone_name: "conduit.cash" },
         ]) ||
       vars.ALLOWED_ORIGINS !==
-        "https://shop.conduit.market,https://sell.conduit.market" ||
-      vars.TURNSTILE_HOSTNAMES !== "shop.conduit.market,sell.conduit.market"
+        "https://shop.conduit.market,https://sell.conduit.market,https://feat-conduit-cash-release.conduit-market-coo.pages.dev" ||
+      vars.TURNSTILE_HOSTNAMES !==
+        "shop.conduit.market,sell.conduit.market,feat-conduit-cash-release.conduit-market-coo.pages.dev"
     )
       throw new Error(
         "Production requires the reviewed domain route and exact app origins."
