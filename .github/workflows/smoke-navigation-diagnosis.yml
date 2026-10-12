@@ -7,11 +7,11 @@ permissions:
 jobs:
   navigation:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        isolation: [existing-page, fresh-page]
+        sample: [1, 2]
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
       options: --init --shm-size=1g
@@ -24,7 +24,9 @@ jobs:
       PLAYWRIGHT_SMOKE_AREA: merchant
       PLAYWRIGHT_SMOKE_RESULT_FILE: /tmp/navigation-results.json
       PLAYWRIGHT_SMOKE_PROGRESS_FILE: /tmp/navigation-progress.log
-      ISOLATION: ${{ matrix.isolation }}
+      PLAYWRIGHT_SMOKE_BASE_SHA: 709a973d7cf7c331f7be11ee24c59d001a8f71a6
+      PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: 3349cf269d6f13ba91b9673e684ed6867eddddd9
+      PLAYWRIGHT_SMOKE_TESTED_SHA: 3349cf269d6f13ba91b9673e684ed6867eddddd9
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -33,43 +35,62 @@ jobs:
       - name: Prepare pinned runtime
         run: |
           npm install --global bun@1.3.5
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           bun install --frozen-lockfile
-      - name: Apply isolated-page experiment
-        if: matrix.isolation == 'fresh-page'
+      - name: Validate exact Merchant-2 manifest
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("e2e/shared-ui-surface-audit.playwright.ts")
-          s = p.read_text()
-          before = """        for (const [index, route] of routes[area].entries()) {
-                    routeIndex = index"""
-          after = """        for (const [index, route] of routes[area].entries()) {
-                    if (index > 0) {
-                      const previous = page
-                      page = await previous.context().newPage()
-                      await installRealTestSigner(page, identity, TEST_RELAY_URL)
-                      await page.addInitScript(
-                        ({ key, theme }) => localStorage.setItem(key, theme),
-                        { key: THEME_STORAGE_KEY, theme }
-                      )
-                      await previous.close()
-                    }
-                    routeIndex = index"""
-          # Literal indentation is normalized because this script is embedded in YAML.
-          before = before.replace("\n                    ", "\n          ")
-          after = after.replace("\n                    ", "\n          ")
-          if s.count(before) != 1:
-              raise SystemExit("Expected exactly one route tour")
-          p.write_text(s.replace(before, after))
+          bun run test:e2e:areas --area merchant --shard 2/2 --manifest-output /tmp/navigation-manifest.json --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" --tested-sha "$PLAYWRIGHT_SMOKE_TESTED_SHA"
+      - name: Run full Merchant-2 with content-free process observations
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > /tmp/navigation-monitor.py <<'PY'
+          import glob, json, os, time
+          started = time.monotonic()
+          previous = set()
+          born = gone = 0
+          last = -10
+          while True:
+              current = set()
+              rss = 0
+              for path in glob.glob("/proc/[0-9]*/comm"):
+                  try:
+                      comm = open(path).read().strip()
+                      if not comm.startswith("WebKitNetwork"):
+                          continue
+                      parent = os.path.dirname(path)
+                      stat = open(parent + "/stat").read().rsplit(")", 1)[1].split()
+                      current.add((parent, stat[19]))
+                      rss += int(stat[21]) * os.sysconf("SC_PAGE_SIZE")
+                  except (OSError, ValueError, IndexError):
+                      continue
+              born += len(current - previous)
+              gone += len(previous - current)
+              elapsed = int(time.monotonic() - started)
+              if current != previous or elapsed - last >= 10:
+                  memory = -1
+                  try:
+                      memory = int(open("/sys/fs/cgroup/memory.current").read()) // 1048576
+                  except (OSError, ValueError):
+                      pass
+                  print("[DEBUG-nav654] " + json.dumps({"elapsed": elapsed, "networkProcesses": len(current), "born": born, "gone": gone, "networkRssMiB": rss // 1048576, "containerMiB": memory}), flush=True)
+                  last = elapsed
+              previous = current
+              time.sleep(0.25)
           PY
-      - name: Run bounded zero-retry navigation sample
-        run: |
-          bunx playwright test e2e/shared-ui-surface-audit.playwright.ts:58 --project=mobile-webkit --grep "merchant surface audit" --repeat-each=4 --workers=1 --retries=0 > "$RUNNER_TEMP/navigation-raw.log" 2>&1
-      - name: Emit only sanitized progress
+          : > "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          tail -n +1 -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" &
+          progress_pid=$!
+          python3 /tmp/navigation-monitor.py &
+          monitor_pid=$!
+          trap 'sleep 1; kill "$progress_pid" "$monitor_pid" 2>/dev/null || true' EXIT
+          bunx playwright test --shard=2/2 --workers=1 --retries=0 >/dev/null 2>&1
+      - name: Verify exact first-attempt execution
         if: always()
         run: |
-          if [[ -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" ]]; then
-            cat "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
-          fi
-          rm -f "$RUNNER_TEMP/navigation-raw.log" "$PLAYWRIGHT_SMOKE_RESULT_FILE" "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          bun run test:e2e:areas --area merchant --expected-manifest /tmp/navigation-manifest.json --execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE" --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" --tested-sha "$PLAYWRIGHT_SMOKE_TESTED_SHA"
+      - name: Remove transient output
+        if: always()
+        run: |
+          rm -f /tmp/navigation-monitor.py /tmp/navigation-manifest.json "$PLAYWRIGHT_SMOKE_RESULT_FILE" "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
           rm -rf playwright-report test-results
