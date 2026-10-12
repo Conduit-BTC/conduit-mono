@@ -31,8 +31,10 @@ import {
   normalizeRelayUrl,
 } from "./relay-settings"
 import { serializeSignerOperation } from "./interactive-signer"
-import { parseSparkRecoveryChoiceAddress } from "../wallets/spark-recovery-address"
-import { isSparkWalletRegistryDTag } from "../wallets/spark-wallet-registry"
+import {
+  isSparkWalletRegistryDTag,
+  parseSparkRecoveryChoiceAddress,
+} from "../wallets/spark-recovery-address"
 
 export interface PlainNostrFilter {
   ids?: string[]

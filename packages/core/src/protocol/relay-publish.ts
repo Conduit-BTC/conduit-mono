@@ -47,8 +47,10 @@ import {
 } from "./relay-authority"
 import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
-import { parseSparkRecoveryChoiceAddress } from "../wallets/spark-recovery-address"
-import { isSparkWalletRegistryDTag } from "../wallets/spark-wallet-registry"
+import {
+  isSparkWalletRegistryDTag,
+  parseSparkRecoveryChoiceAddress,
+} from "../wallets/spark-recovery-address"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000

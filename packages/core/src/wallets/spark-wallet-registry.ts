@@ -1,8 +1,14 @@
 import { z } from "zod"
 import type { SignedNostrEvent } from "../protocol/nostr-event-signer"
-import type { WalletNetwork } from "./index"
 import { SparkRecoveryError } from "./spark-recovery-contract"
-import { sparkRecoveryNetworkSchema } from "./spark-recovery-address"
+import {
+  sparkRecoveryNetworkSchema,
+  sparkWalletRegistryDTag,
+} from "./spark-recovery-address"
+export {
+  isSparkWalletRegistryDTag,
+  sparkWalletRegistryDTag,
+} from "./spark-recovery-address"
 
 const id = z.uuid()
 const eventId = z.string().regex(/^[0-9a-f]{64}$/)
@@ -36,17 +42,6 @@ const snapshotSchema = z
   )
 
 export type SparkWalletRegistrySnapshot = z.infer<typeof snapshotSchema>
-export function sparkWalletRegistryDTag(network: WalletNetwork): string {
-  return `conduit:spark:registry:v1:${network}`
-}
-export function isSparkWalletRegistryDTag(value: string): boolean {
-  return (
-    value === sparkWalletRegistryDTag("mainnet") ||
-    value === sparkWalletRegistryDTag("testnet") ||
-    value === sparkWalletRegistryDTag("signet") ||
-    value === sparkWalletRegistryDTag("regtest")
-  )
-}
 export function parseSparkWalletRegistrySnapshot(
   plaintext: string,
   event: SignedNostrEvent

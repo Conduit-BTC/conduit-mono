@@ -10,6 +10,7 @@ import {
   RelayPublishDiagnosticsError,
 } from "../protocol/relay-publish"
 import {
+  accountRegistryReadiness,
   SparkRecoveryService,
   type SparkRecoveryDiscovery,
   type SparkRecoveryCandidate,
@@ -363,7 +364,17 @@ export async function backUpAccountSparkWallet(
   if (!pointer) pointer = await service.preparePrimary(candidate)
   const backup = await service.deliver(candidate.eventId)
   const primary = await service.deliver(pointer)
-  if (!backup.ready || !primary.ready) return false
+  // Account membership can advance only after every planned relay confirms
+  // both encrypted recovery references. Backup durability remains a separate
+  // two-operator (or explicit export) readiness decision.
+  const delivered = (await store.load(signer.pubkey)).records
+  if (
+    ![candidate.eventId, pointer].every((eventId) => {
+      const record = delivered.find((item) => item.event.id === eventId)
+      return record && accountRegistryReadiness(record).ready
+    })
+  )
+    return false
   const latest = await service.discover(false, bundle.network, options)
   if (
     latest.coverage === "complete" &&
@@ -372,11 +383,17 @@ export async function backUpAccountSparkWallet(
     latest.registry?.activeWalletIds.includes(walletId)
   )
     return latest.registryEventId
-      ? (await service.deliver(latest.registryEventId)).ready
+      ? (await service.deliver(latest.registryEventId)).ready &&
+          backup.ready &&
+          primary.ready
       : false
   const registryEventId = await service.prepareRegistry(bundle.network, {
     type: "add",
     walletId,
   })
-  return (await service.deliver(registryEventId)).ready
+  return (
+    (await service.deliver(registryEventId)).ready &&
+    backup.ready &&
+    primary.ready
+  )
 }
