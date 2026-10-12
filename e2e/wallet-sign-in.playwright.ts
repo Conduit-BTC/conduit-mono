@@ -1169,7 +1169,13 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         page.getByRole("button", { name: "Add a wallet", exact: true })
       ).toBeFocused()
       phase("legacy_recovery")
-      await page.getByLabel("Manage Legacy wallet").click()
+      const legacyMenu = page.getByLabel("Manage Legacy wallet")
+      // Focus restoration starts a smooth scroll after the focus assertion.
+      // Position the trigger before pressing it so release cannot hit a moving menu.
+      await legacyMenu.evaluate((element) =>
+        element.scrollIntoView({ behavior: "instant", block: "center" })
+      )
+      await legacyMenu.click()
       phase("legacy_menu")
       await page
         .getByRole("menuitem", { name: "Recovery details", exact: true })
