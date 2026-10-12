@@ -1,0 +1,522 @@
+import {
+  ADDRESS_REQUEST_ACTION,
+  ADDRESS_REQUEST_PATH,
+  addressRequestHash,
+  validSparkIdentity,
+  verifyAddressRequestAuthority,
+  verifyAddressWalletSignature,
+  type SignedAddressNameRequest,
+} from "@conduit/core/wallets/address-name-request"
+import { breezAddressMessage } from "@conduit/core/wallets/breez-lightning-address"
+import type { Event } from "nostr-tools/pure"
+
+export interface ApprovedName {
+  name: string
+  ownerPubkey: string
+  sparkIdentity: string
+  registration: boolean
+  replaces?: string
+  deleteUntil?: number
+  transferFrom?: string
+  transferUntil?: number
+}
+export interface Statement {
+  bind(...values: unknown[]): Statement
+  first<T>(): Promise<T | null>
+  run(): Promise<{ success: boolean; meta: { changes: number } }>
+}
+export interface AddressGatewayEnv {
+  ADDRESS_REQUESTS: { prepare(sql: string): Statement }
+  REQUEST_RATE_LIMITER: {
+    limit(input: { key: string }): Promise<{ success: boolean }>
+  }
+  ALLOWED_ORIGINS: string
+  TURNSTILE_HOSTNAMES: string
+  TURNSTILE_SECRET_KEY: string
+  BREEZ_PROXY_SHARED_SECRET: string
+  BREEZ_DOMAIN_API_KEY: string
+  PROVIDER_PROXY_QUALIFIED: string
+}
+export type GatewayFetch = typeof fetch
+const NAME = /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/
+function validName(value: string): boolean {
+  return typeof value === "string" && value.length <= 64 && NAME.test(value)
+}
+export function validateApprovedNames(names: ApprovedName[]): void {
+  const used = new Set<string>()
+  for (const n of names) {
+    if (
+      !validName(n.name) ||
+      used.has(n.name) ||
+      !validSparkIdentity(n.sparkIdentity) ||
+      !/^[a-f0-9]{64}$/.test(n.ownerPubkey) ||
+      typeof n.registration !== "boolean" ||
+      (n.replaces !== undefined && !validName(n.replaces)) ||
+      (n.transferFrom !== undefined && !validSparkIdentity(n.transferFrom))
+    )
+      throw new Error("Invalid approved-name registry.")
+    used.add(n.name)
+  }
+  const registrations = names
+    .filter((n) => n.registration)
+    .map((n) => n.sparkIdentity)
+  if (new Set(registrations).size !== registrations.length)
+    throw new Error("Conflicting wallet approvals.")
+}
+async function boundedText(
+  body: ReadableStream<Uint8Array> | null,
+  max: number
+): Promise<string> {
+  if (!body) throw new Error("missing_body")
+  const reader = body.getReader()
+  const parts: Uint8Array[] = []
+  let size = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > max) {
+        await reader.cancel()
+        throw new Error("body_limit")
+      }
+      parts.push(value)
+    }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const part of parts) {
+      bytes.set(part, offset)
+      offset += part.length
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } finally {
+    reader.releaseLock()
+  }
+}
+function response(value: unknown, status = 200): Response {
+  return Response.json(value, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+    },
+  })
+}
+function decodeAccountProof(request: Request): Event | null {
+  const header = request.headers.get("Authorization") ?? ""
+  if (!header.startsWith("Nostr ") || header.length > 4096) return null
+  try {
+    return JSON.parse(atob(header.slice(6))) as Event
+  } catch {
+    return null
+  }
+}
+async function nameRequest(
+  request: Request,
+  env: AddressGatewayEnv,
+  names: ApprovedName[],
+  fetcher: GatewayFetch,
+  now: number
+): Promise<Response> {
+  const path = new URL(request.url).pathname
+  const value = JSON.parse(
+    await boundedText(request.body, 8192)
+  ) as SignedAddressNameRequest
+  const event = decodeAccountProof(request)
+  if (
+    !event ||
+    !verifyAddressRequestAuthority(
+      value,
+      event,
+      path,
+      now,
+      new URL(request.url).origin
+    )
+  )
+    return response({ status: "invalid" }, 401)
+  const hash = addressRequestHash(
+    JSON.stringify([
+      value.ownerPubkey,
+      value.sparkIdentity,
+      value.desiredName,
+      value.note,
+    ])
+  )
+  const previous = await env.ADDRESS_REQUESTS.prepare(
+    "SELECT owner_pubkey, spark_identity, desired_name, request_hash, status FROM name_requests WHERE request_id = ?"
+  )
+    .bind(value.requestId)
+    .first<{
+      owner_pubkey: string
+      spark_identity: string
+      desired_name: string
+      request_hash: string
+      status: string
+    }>()
+  if (
+    previous &&
+    (previous.owner_pubkey !== value.ownerPubkey ||
+      previous.spark_identity !== value.sparkIdentity ||
+      previous.desired_name !== value.desiredName ||
+      (!path.endsWith("/status") && previous.request_hash !== hash))
+  )
+    return response({ status: "invalid" }, 409)
+  if (path.endsWith("/status") || previous) {
+    if (!previous) return response({ status: "pending" }, 404)
+    const approved = names.find(
+      (n) =>
+        n.name === value.desiredName &&
+        n.sparkIdentity === value.sparkIdentity &&
+        n.ownerPubkey === value.ownerPubkey &&
+        n.registration
+    )
+    return response({ status: approved ? "approved" : previous.status })
+  }
+  if (!env.TURNSTILE_SECRET_KEY || !env.REQUEST_RATE_LIMITER)
+    return response({ status: "unavailable" }, 503)
+  if (
+    !(await env.REQUEST_RATE_LIMITER.limit({ key: value.ownerPubkey })).success
+  )
+    return response({ status: "rate_limited" }, 429)
+  const token = request.headers.get("X-Turnstile-Token")
+  if (!token || token.length > 2048)
+    return response({ status: "challenge_failed" }, 400)
+  const verified = await fetcher(
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        secret: env.TURNSTILE_SECRET_KEY,
+        response: token,
+        idempotency_key: value.requestId,
+      }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000),
+    }
+  )
+  if (!verified.ok) return response({ status: "unavailable" }, 503)
+  const challenge = JSON.parse(await boundedText(verified.body, 4096)) as {
+    success?: boolean
+    hostname?: string
+    action?: string
+  }
+  if (
+    !challenge.success ||
+    challenge.action !== ADDRESS_REQUEST_ACTION ||
+    !env.TURNSTILE_HOSTNAMES.split(",").includes(challenge.hostname ?? "")
+  )
+    return response({ status: "challenge_failed" }, 400)
+  const result = await env.ADDRESS_REQUESTS.prepare(
+    "INSERT OR IGNORE INTO name_requests (request_id, owner_pubkey, spark_identity, desired_name, note, request_hash, account_proof, wallet_proof, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(
+      value.requestId,
+      value.ownerPubkey,
+      value.sparkIdentity,
+      value.desiredName,
+      value.note,
+      hash,
+      JSON.stringify(event),
+      value.walletSignature,
+      now
+    )
+    .run()
+  if (!result.success) return response({ status: "unavailable" }, 503)
+  const saved = await env.ADDRESS_REQUESTS.prepare(
+    "SELECT request_hash FROM name_requests WHERE request_id = ?"
+  )
+    .bind(value.requestId)
+    .first<{ request_hash: string }>()
+  return saved?.request_hash === hash
+    ? response({ status: "received" })
+    : response({ status: "invalid" }, 409)
+}
+function fresh(timestamp: unknown, now: number): timestamp is number {
+  return (
+    Number.isSafeInteger(timestamp) &&
+    Math.abs(now - (timestamp as number)) <= 600
+  )
+}
+async function proxy(
+  request: Request,
+  env: AddressGatewayEnv,
+  body: string | undefined,
+  fetcher: GatewayFetch
+): Promise<Response> {
+  if (!env.BREEZ_PROXY_SHARED_SECRET || !env.BREEZ_DOMAIN_API_KEY)
+    return response("domain unavailable", 503)
+  const source = new URL(request.url)
+  const upstream = new URL(
+    source.pathname + source.search,
+    "https://breez.tips"
+  )
+  const headers = new Headers({
+    Host: "conduit.cash",
+    "X-Breez-Reverse-Proxy-Shared-Secret": env.BREEZ_PROXY_SHARED_SECRET,
+    "X-Forwarded-For": request.headers.get("CF-Connecting-IP") ?? "",
+  })
+  // No client-supplied proxy headers, cookies or bearer credentials reach Breez.
+  headers.set("Authorization", `Bearer ${env.BREEZ_DOMAIN_API_KEY}`)
+  if (body !== undefined) headers.set("Content-Type", "application/json")
+  for (const name of ["x-breez-signature", "x-breez-timestamp"]) {
+    const value = request.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  const result = await fetcher(upstream, {
+    method: request.method,
+    headers,
+    body,
+    redirect: "manual",
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (result.status >= 300 && result.status < 400)
+    return response("upstream redirect rejected", 502)
+  const text = result.body ? await boundedText(result.body, 65536) : ""
+  if (
+    text.includes(env.BREEZ_PROXY_SHARED_SECRET) ||
+    text.includes(env.BREEZ_DOMAIN_API_KEY)
+  )
+    return response("upstream response rejected", 502)
+  return new Response(text, {
+    status: result.status,
+    headers: {
+      "Content-Type": result.headers.get("Content-Type") ?? "application/json",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+    },
+  })
+}
+async function management(
+  request: Request,
+  env: AddressGatewayEnv,
+  names: ApprovedName[],
+  fetcher: GatewayFetch,
+  now: number
+): Promise<Response> {
+  const url = new URL(request.url)
+  const match =
+    /^\/lnurlpay\/((?:02|03)[a-f0-9]{64})(?:\/(recover|available|transfer|metadata))?$/.exec(
+      url.pathname
+    )
+  if (!match || !validSparkIdentity(match[1]!))
+    return response("invalid route", 404)
+  const identity = match[1]!,
+    operation =
+      match[2] ?? (request.method === "DELETE" ? "unregister" : "register")
+  if (operation === "metadata") return response("metadata unavailable", 403)
+  if (
+    (operation === "unregister"
+      ? request.method !== "DELETE"
+      : request.method !== "POST") ||
+    url.search
+  )
+    return response("invalid route", 405)
+  const raw = await boundedText(request.body, 8192)
+  const body = JSON.parse(raw) as Record<string, unknown>
+  if (!fresh(body.timestamp, now)) return response("invalid timestamp", 401)
+  const timestamp = body.timestamp
+  const name = typeof body.username === "string" ? body.username : ""
+  const description =
+    typeof body.description === "string" ? body.description : ""
+  if (
+    description.length > 1024 ||
+    (operation !== "recover" && !validName(name))
+  )
+    return response("invalid request", 400)
+  const approval = names.find(
+    (n) => n.name === name && n.sparkIdentity === identity
+  )
+  let verifiedStatements: string[]
+  if (operation === "transfer") {
+    const from = String(body.from_pubkey ?? "")
+    if (
+      !approval ||
+      approval.transferFrom !== from ||
+      !fresh(approval.transferUntil, now) ||
+      (approval.transferUntil ?? 0) < now ||
+      from === identity
+    )
+      return response("name not approved", 403)
+    const base = [
+      "breez-lnurl:v2",
+      "transfer-from",
+      "conduit.cash",
+      name,
+      from,
+      identity,
+      String(timestamp),
+    ].join("\n")
+    const target = [
+      "breez-lnurl:v2",
+      "transfer-to",
+      "conduit.cash",
+      name,
+      from,
+      identity,
+      addressRequestHash(description),
+      String(timestamp),
+    ].join("\n")
+    if (
+      !verifyAddressWalletSignature(base, String(body.from_signature), from) ||
+      !verifyAddressWalletSignature(target, String(body.to_signature), identity)
+    )
+      return response("invalid signature", 401)
+    verifiedStatements = [base, target]
+  } else {
+    const message =
+      operation === "unregister"
+        ? [
+            "breez-lnurl:v2",
+            "unregister",
+            "conduit.cash",
+            name,
+            String(timestamp),
+          ].join("\n")
+        : breezAddressMessage({
+            operation: operation as "register" | "recover" | "available",
+            domain: "conduit.cash",
+            identity,
+            timestamp,
+            username: name,
+            description,
+          })
+    if (
+      !verifyAddressWalletSignature(message, String(body.signature), identity)
+    )
+      return response("invalid signature", 401)
+    verifiedStatements = [message]
+    if (operation === "available" && !approval?.registration)
+      return response("name not approved", 403)
+    if (
+      operation === "unregister" &&
+      (!approval ||
+        !fresh(approval.deleteUntil, now) ||
+        (approval.deleteUntil ?? 0) < now)
+    )
+      return response("deletion not approved", 403)
+    if (operation === "register") {
+      if (!approval?.registration) return response("name not approved", 403)
+      const observed = await env.ADDRESS_REQUESTS.prepare(
+        "SELECT name, observed_at FROM address_observations WHERE identity = ?"
+      )
+        .bind(identity)
+        .first<{ name: string | null; observed_at: number }>()
+      if (
+        !observed ||
+        now - observed.observed_at > 60 ||
+        (observed.name !== null &&
+          observed.name !== name &&
+          observed.name !== approval.replaces)
+      )
+        return response("recover wallet before registration", 409)
+    }
+  }
+  if (!["recover", "available"].includes(operation)) {
+    if (env.PROVIDER_PROXY_QUALIFIED !== "true")
+      return response("domain management unavailable", 503)
+    const statement = addressRequestHash(
+      JSON.stringify([identity, ...verifiedStatements])
+    )
+    const claim = await env.ADDRESS_REQUESTS.prepare(
+      "INSERT OR IGNORE INTO mutation_claims (statement_hash, identity, expires_at) VALUES (?, ?, ?)"
+    )
+      .bind(statement, identity, timestamp + 600)
+      .run()
+    if (!claim.success || claim.meta.changes !== 1)
+      return response("registration pending", 409)
+  }
+  const result = await proxy(request, env, raw, fetcher)
+  if (operation === "recover") {
+    let observed: string | null | undefined
+    const data: unknown = await result.clone().json()
+    if (result.status === 404 && data === "user not found") observed = null
+    if (result.ok && data && typeof data === "object") {
+      const value = data as Record<string, unknown>
+      if (
+        typeof value.username === "string" &&
+        validName(value.username) &&
+        value.lightning_address === `${value.username}@conduit.cash` &&
+        value.lnurl === `lnurlp://conduit.cash/lnurlp/${value.username}`
+      )
+        observed = value.username
+    }
+    if (observed !== undefined)
+      await env.ADDRESS_REQUESTS.prepare(
+        "INSERT INTO address_observations (identity, name, observed_at) VALUES (?, ?, ?) ON CONFLICT(identity) DO UPDATE SET name = excluded.name, observed_at = excluded.observed_at WHERE excluded.observed_at >= observed_at"
+      )
+        .bind(identity, observed, now)
+        .run()
+  }
+  return result
+}
+export async function handleAddressGateway(
+  request: Request,
+  env: AddressGatewayEnv,
+  names: ApprovedName[],
+  fetcher: GatewayFetch = fetch,
+  now = Math.floor(Date.now() / 1000)
+): Promise<Response> {
+  const origin = request.headers.get("Origin")
+  const publicReceiving =
+    ["GET", "OPTIONS"].includes(request.method) &&
+    (/^\/\.well-known\/lnurlp\/[a-z0-9_.-]+$/.test(
+      new URL(request.url).pathname
+    ) ||
+      /^\/lnurlp\/[a-z0-9_.-]+(?:\/(?:invoice|verify)(?:\/[a-f0-9]+)?)?$/.test(
+        new URL(request.url).pathname
+      ))
+  const allowed =
+    publicReceiving ||
+    !origin ||
+    env.ALLOWED_ORIGINS.split(",").includes(origin)
+  const url = new URL(request.url)
+  let result: Response
+  try {
+    validateApprovedNames(names)
+    if (origin && !allowed) result = response("origin unavailable", 403)
+    else if (request.method === "OPTIONS")
+      result = new Response(null, { status: 204 })
+    else if (
+      [ADDRESS_REQUEST_PATH, `${ADDRESS_REQUEST_PATH}/status`].includes(
+        url.pathname
+      )
+    ) {
+      result =
+        request.method === "POST" && !!origin && allowed && !url.search
+          ? await nameRequest(request, env, names, fetcher, now)
+          : response({ status: "invalid" }, 405)
+    } else if (url.pathname.startsWith("/lnurlpay/"))
+      result = await management(request, env, names, fetcher, now)
+    else if (
+      request.method === "GET" &&
+      (/^\/\.well-known\/lnurlp\/[a-z0-9_.-]+$/.test(url.pathname) ||
+        /^\/lnurlp\/[a-z0-9_.-]+(?:\/(?:invoice|verify)(?:\/[a-f0-9]+)?)?$/.test(
+          url.pathname
+        ))
+    )
+      result = await proxy(request, env, undefined, fetcher)
+    else result = response("not found", 404)
+  } catch {
+    result = response("request unavailable", 503)
+  }
+  result.headers.set("X-Conduit-Address-Gateway", "approved-names-v1")
+  if (origin && allowed) {
+    result.headers.set(
+      "Access-Control-Allow-Origin",
+      publicReceiving ? "*" : origin
+    )
+    result.headers.set("Vary", "Origin")
+    result.headers.set(
+      "Access-Control-Allow-Methods",
+      "GET, POST, DELETE, OPTIONS"
+    )
+    result.headers.set(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, X-Turnstile-Token"
+    )
+  }
+  return result
+}

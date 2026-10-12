@@ -140,7 +140,7 @@ describe("deployment profiles", () => {
           VITE_BREEZ_SPARK_API_KEY: "public-test-key",
           VITE_BREEZ_LNURL_DOMAIN: "conduit.cash",
         }).publicFeatures.breezLightningAddressEnabled
-      ).toBe(false)
+      ).toBe(name !== "staging")
     expect(
       resolveDeploymentProfile({}).publicFeatures.breezLightningAddressEnabled
     ).toBe(false)
@@ -180,7 +180,7 @@ describe("deployment profiles", () => {
       buildTime: "2026-10-09T00:00:00.000Z",
       sourceUrl: "https://github.com/Conduit-BTC/conduit-mono",
     })
-    expect(manifest.publicFeatures.breezLightningAddressEnabled).toBe(false)
+    expect(manifest.publicFeatures.breezLightningAddressEnabled).toBe(true)
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
   })
 

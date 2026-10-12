@@ -204,7 +204,7 @@ describe("wallet signer authority", () => {
   })
 })
 
-it("retains a verified legacy encrypted copy as a same-account migration fallback", async () => {
+it("reads old signer records but refuses their retired password path", async () => {
   const { encryptSparkMnemonic } =
     await import("../apps/market/src/lib/spark-recovery")
   const { recoverStoredSparkMnemonic } =
@@ -227,10 +227,13 @@ it("retains a verified legacy encrypted copy as a same-account migration fallbac
     serializeStoredSparkWalletRecovery(migrated)
   )!
   expect(saved).toEqual(migrated)
-  install("nip07", provider, false)
-  expect(
-    (await recoverStoredSparkMnemonic(saved, binding, password)).mnemonic
-  ).toBe(mnemonic)
+  install("nip07", provider)
+  expect((await recoverStoredSparkMnemonic(saved, binding)).mnemonic).toBe(
+    mnemonic
+  )
+  await expect(
+    recoverStoredSparkMnemonic(saved, binding, password)
+  ).rejects.toThrow("Nostr identity")
   install()
   await expect(
     recoverStoredSparkMnemonic(saved, binding, password)

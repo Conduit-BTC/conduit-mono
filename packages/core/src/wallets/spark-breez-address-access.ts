@@ -1,4 +1,11 @@
 import {
+  addressNameRequestMessage,
+  type AddressNameRequest,
+  type SignedAddressNameRequest,
+} from "./address-name-request"
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
+import {
   BreezLightningAddressClient,
   type BreezAddressCheckpoint,
   type BreezAddressSigner,
@@ -11,7 +18,11 @@ export function getBreezAddressConfiguration(input: {
   domain?: string
   network: string
 }):
-  | { status: "configured"; apiKey: string; domain: "conduit.cash" }
+  | {
+      status: "configured"
+      apiKey: string
+      domain: "conduit.cash" | "breez.tips"
+    }
   | {
       status: "unavailable"
       reason: "unconfigured" | "unsupported_network" | "invalid_configuration"
@@ -21,12 +32,12 @@ export function getBreezAddressConfiguration(input: {
     return { status: "unavailable", reason: "unsupported_network" }
   if (!input.apiKey?.trim())
     return { status: "unavailable", reason: "unconfigured" }
-  if (input.domain !== "conduit.cash")
+  if (!["conduit.cash", "breez.tips"].includes(input.domain ?? ""))
     return { status: "unavailable", reason: "invalid_configuration" }
   return {
     status: "configured",
     apiKey: input.apiKey.trim(),
-    domain: "conduit.cash",
+    domain: input.domain as "conduit.cash" | "breez.tips",
   }
 }
 
@@ -39,12 +50,13 @@ export function createSparkBreezAddressAccess(input: {
     enabled: import.meta.env?.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED === "true",
     // Intentionally browser-visible public-client credential, not a wallet secret.
     apiKey: import.meta.env?.VITE_BREEZ_SPARK_API_KEY,
-    domain: import.meta.env?.VITE_BREEZ_LNURL_DOMAIN,
+    domain: "breez.tips",
   })
-  let client: BreezLightningAddressClient | null = null
+  const clients = new Map<string, BreezLightningAddressClient>()
   const run = async (
     register: boolean,
-    username?: string
+    username?: string,
+    domain = "breez.tips"
   ): Promise<BreezAddressState> => {
     if (configuration.status === "unavailable")
       return { status: "unavailable", reason: configuration.reason }
@@ -52,8 +64,12 @@ export function createSparkBreezAddressAccess(input: {
       return { status: "unavailable", reason: "identity_mismatch" }
     if (typeof navigator === "undefined" || !navigator.locks)
       return { status: "unavailable", reason: "coordination_unavailable" }
+    if (!["conduit.cash", "breez.tips"].includes(domain))
+      return { status: "unavailable", reason: "invalid_configuration" }
+    let client = clients.get(domain)
     client ??= new BreezLightningAddressClient({
       ...configuration,
+      domain,
       signer: input.signer,
       runExclusive: (scope, operation) =>
         navigator.locks.request(`conduit:breez-address:v1:${scope}`, operation),
@@ -69,10 +85,33 @@ export function createSparkBreezAddressAccess(input: {
         },
       },
     })
-    return register ? client.ensure(username) : client.lookup()
+    clients.set(domain, client)
+    return register
+      ? client.ensure(username, {
+          activateApprovedName:
+            domain === "conduit.cash" && username !== undefined,
+        })
+      : client.lookup()
   }
   return {
-    lookupBreezAddress: () => run(false),
-    ensureBreezAddress: (username?: string) => run(true, username),
+    lookupBreezAddress: (domain?: string) => run(false, undefined, domain),
+    ensureBreezAddress: (username?: string, domain?: string) =>
+      run(true, username, domain),
+    async signAddressNameRequest(
+      value: Omit<AddressNameRequest, "sparkIdentity">
+    ): Promise<SignedAddressNameRequest> {
+      if (!input.signer || input.network !== "mainnet")
+        throw new Error("Open your mainnet wallet first.")
+      input.signer.assertActive()
+      const request = {
+        ...value,
+        sparkIdentity: await input.signer.getIdentityPublicKey(),
+      }
+      const signature = await input.signer.signDigest(
+        sha256(new TextEncoder().encode(addressNameRequestMessage(request)))
+      )
+      input.signer.assertActive()
+      return { ...request, walletSignature: bytesToHex(signature) }
+    },
   }
 }

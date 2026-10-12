@@ -1,3 +1,7 @@
+import {
+  openWalletSetup,
+  closeDefaultWalletSession,
+} from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import type { WalletDescriptor } from "@conduit/core"
@@ -65,7 +69,7 @@ async function gateWalletSigner(page: Page) {
 }
 
 for (const app of ["market", "merchant"] as const) {
-  test(`${app} chooses a name and applies its card address to latest complete metadata @market @merchant`, async ({
+  test(`${app} gets a generated address and applies its card address to latest complete metadata @market @merchant`, async ({
     page,
   }) => {
     const identity = createRuntimeSignerIdentity()
@@ -87,12 +91,9 @@ for (const app of ["market", "merchant"] as const) {
       await installRealTestSigner(page, identity, relay)
       await page.goto(apps[app] + "/wallet")
       await installControlledWallet(page)
-      await page
-        .getByRole("button", { name: "Create wallet", exact: true })
-        .click()
+      await openWalletSetup(page, "Create wallet")
       const dialog = page.getByRole("dialog")
-      await expect(dialog.getByLabel("Conduit address name")).toBeVisible()
-      await dialog.getByLabel("Conduit address name").fill("shop-main")
+      await expect(dialog.getByLabel("Conduit address name")).toHaveCount(0)
       await saved(page)
       await expect(
         page.getByLabel("Lightning address", { exact: true })
@@ -115,11 +116,11 @@ for (const app of ["market", "merchant"] as const) {
         { core, app }
       )
       await page
-        .getByRole("button", { name: "Use the Conduit address", exact: true })
+        .getByRole("button", { name: "Use this wallet’s address", exact: true })
         .click()
       await expect(
         page.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("shop-main@conduit.cash")
+      ).toHaveValue("wallet1@breez.tips")
       const metadata = await page.evaluate(async (core) => {
         const { fetchProfileContext, getAccountSigner } = await import(core)
         const owner = getAccountSigner().pubkey
@@ -140,7 +141,7 @@ for (const app of ["market", "merchant"] as const) {
       })
       await expect(page.getByText("Main wallet", { exact: true })).toBeVisible()
       await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
-      await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+      await closeDefaultWalletSession(page)
       await expect(
         page.getByRole("button", { name: "Open wallet", exact: true })
       ).toBeVisible()
@@ -183,7 +184,7 @@ for (const app of ["market", "merchant"] as const) {
         await page.evaluate(() => (window as any).__walletProbe.opens)
       ).toBe(2)
       await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
-      await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+      await closeDefaultWalletSession(page)
       await page
         .getByRole("button", { name: "Open wallet", exact: true })
         .click()
@@ -247,17 +248,13 @@ for (const from of ["market", "merchant"] as const) {
         }
         await source.goto(apps[from] + "/wallet")
         await installControlledWallet(source)
-        await source
-          .getByRole("button", { name: "Create wallet", exact: true })
-          .click()
+        await openWalletSetup(source, "Create wallet")
         await saved(source)
         await expect(
           source.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@conduit.cash")
+        ).toHaveValue("wallet1@breez.tips")
         const first = (await wallets(source))[0]
-        await source
-          .getByRole("button", { name: "Import wallet", exact: true })
-          .click()
+        await openWalletSetup(source, "Import wallet")
         await source
           .getByLabel("Recovery phrase", { exact: true })
           .fill(
@@ -285,7 +282,7 @@ for (const from of ["market", "merchant"] as const) {
         const selected = ids.find((id) => id !== first)!
         await expect(
           source.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@conduit.cash")
+        ).toHaveValue("wallet1@breez.tips")
         await target.goto(apps[to] + "/wallet")
         await installControlledWallet(target, false, "support@conduit.cash")
         if (recoveryMode === "foreground") {
@@ -297,9 +294,7 @@ for (const from of ["market", "merchant"] as const) {
           ).toBeVisible()
           expect(await wallets(target)).toHaveLength(0)
           denyTargetRecovery = false
-          await target
-            .getByRole("button", { name: "Create wallet", exact: true })
-            .click()
+          await openWalletSetup(target, "Create wallet")
           const dialog = target.getByRole("dialog")
           await expect(
             dialog.getByRole("heading", {
@@ -349,7 +344,7 @@ for (const from of ["market", "merchant"] as const) {
         expect((await wallets(target)).sort()).toEqual(ids.sort())
         await expect(
           target.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@conduit.cash")
+        ).toHaveValue("wallet1@breez.tips")
         await expect(
           target.getByText("Main wallet", { exact: true })
         ).toBeVisible()
@@ -393,9 +388,7 @@ for (const app of ["market", "merchant"] as const) {
       })
       await source.goto(apps[from] + "/wallet")
       await installControlledWallet(source)
-      await source
-        .getByRole("button", { name: "Create wallet", exact: true })
-        .click()
+      await openWalletSetup(source, "Create wallet")
       await saved(source)
       const originalWallets = await wallets(source)
       expect(originalWallets).toHaveLength(1)
@@ -495,15 +488,16 @@ for (const size of [
           expect(
             await source.evaluate(() => (window as any).__walletProbe.opens)
           ).toBe(0)
-          await source
-            .getByRole("button", { name: "Create wallet", exact: true })
-            .click()
+          await openWalletSetup(source, "Create wallet")
           await saved(source)
           const sourceIds = await wallets(source)
           expect(sourceIds).toHaveLength(1)
 
           await target.goto(apps[to] + "/wallet")
 
+          await target
+            .getByText("External wallet management", { exact: true })
+            .click()
           await expect(
             target.getByRole("heading", {
               name: "External wallets",
@@ -511,7 +505,7 @@ for (const size of [
             })
           ).toBeVisible()
 
-          await installControlledWallet(target, false, "wallet1@conduit.cash")
+          await installControlledWallet(target, false, "wallet1@breez.tips")
           await expect.poll(async () => (await wallets(target)).length).toBe(1)
 
           expect(await wallets(target)).toEqual(sourceIds)
@@ -575,9 +569,7 @@ for (const size of [
             source.getByRole("heading", { name: "My wallets", exact: true })
           ).toBeVisible()
           await installControlledWallet(source)
-          await source
-            .getByRole("button", { name: "Import wallet", exact: true })
-            .click()
+          await openWalletSetup(source, "Import wallet")
           const phrase = await source.evaluate(
             () => (window as any).__walletProbe.importMnemonic
           )
@@ -597,6 +589,9 @@ for (const size of [
 
           await target.goto(apps[to] + "/wallet")
 
+          await target
+            .getByText("External wallet management", { exact: true })
+            .click()
           await expect(
             target.getByRole("heading", {
               name: "External wallets",
@@ -689,9 +684,7 @@ test("simultaneous setup across origins retains conflicts and never creates anot
       ).toBeVisible()
       await expect.poll(async () => (await wallets(page)).length).toBe(2)
       const before = (await wallets(page)).sort()
-      await page
-        .getByRole("button", { name: "Create wallet", exact: true })
-        .click()
+      await openWalletSetup(page, "Create wallet")
       await expect(
         page
           .getByRole("dialog")
@@ -737,9 +730,7 @@ for (const app of ["market", "merchant"] as const) {
         expect(
           await page.evaluate(() => (window as any).__walletProbe.opens)
         ).toBe(0)
-        await page
-          .getByRole("button", { name: "Create wallet", exact: true })
-          .click()
+        await openWalletSetup(page, "Create wallet")
         await saved(page)
         await expect(
           page.getByText(
@@ -869,9 +860,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
     await installRealTestSigner(page, identity, relay)
     await page.goto(apps.market + "/wallet")
     await installControlledWallet(page)
-    await page
-      .getByRole("button", { name: "Create wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Create wallet")
     await saved(page)
     await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
     await page.evaluate(
@@ -913,7 +902,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
       .getByRole("button", { name: /^Manage / })
       .first()
       .click()
-    await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+    await closeDefaultWalletSession(page)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
     await page.evaluate(() => (window as any).__walletProbe.releaseReload())
     await expect(
@@ -936,16 +925,14 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
     await installRealTestSigner(page, identity, relay)
     await page.goto(apps.market + "/wallet")
     await installControlledWallet(page)
-    await page
-      .getByRole("button", { name: "Create wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Create wallet")
     await saved(page)
     await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
     await page
       .getByRole("button", { name: /^Manage / })
       .first()
       .click()
-    await page.getByRole("menuitem", { name: "Lock", exact: true }).click()
+    await closeDefaultWalletSession(page)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
     await page.evaluate(
       async ({ core, storage }) => {

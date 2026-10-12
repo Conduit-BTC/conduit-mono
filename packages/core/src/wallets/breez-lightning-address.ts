@@ -167,16 +167,20 @@ export class BreezLightningAddressClient {
   lookup(): Promise<BreezAddressState> {
     return this.#run(false)
   }
-  ensure(username?: string): Promise<BreezAddressState> {
-    return this.#run(true, username)
+  ensure(
+    username?: string,
+    options?: { activateApprovedName?: boolean }
+  ): Promise<BreezAddressState> {
+    return this.#run(true, username, options?.activateApprovedName === true)
   }
 
   async #run(
     register: boolean,
-    requestedUsername?: string
+    requestedUsername?: string,
+    activateApprovedName = false
   ): Promise<BreezAddressState> {
     try {
-      if (this.#domain !== "conduit.cash")
+      if (!["conduit.cash", "breez.tips"].includes(this.#domain))
         throw new AddressError("invalid_configuration")
       if (!this.#apiKey.trim()) throw new AddressError("unconfigured")
       this.#assertActive()
@@ -189,17 +193,35 @@ export class BreezLightningAddressClient {
       )
       return await this.#runExclusive(scope, async () => {
         const existing = await this.#recover(identity)
-        if (existing) return this.#present(existing)
+        const explicitCustomName =
+          activateApprovedName &&
+          register &&
+          this.#domain === "conduit.cash" &&
+          requestedUsername !== undefined
+        if (
+          existing &&
+          (!explicitCustomName ||
+            existing.username === requestedUsername?.trim().toLowerCase())
+        )
+          return this.#present(existing)
         if (!register) return { status: "absent" }
+        // The Worker owns custom-name approval, including names reserved from
+        // ordinary selection. This flag grants no authority at the provider.
+        const normalizeSelection = explicitCustomName
+          ? (value: string) => {
+              const name = value.trim().toLowerCase()
+              return name.length >= 3 && isBreezUsername(name) ? name : null
+            }
+          : normalizeBreezUsername
         const selected =
           requestedUsername === undefined
             ? undefined
-            : normalizeBreezUsername(requestedUsername)
+            : normalizeSelection(requestedUsername)
         if (selected === null) throw new AddressError("invalid_username")
         let checkpoint = await this.#read(scope)
         if (
           checkpoint &&
-          (!normalizeBreezUsername(checkpoint.username) ||
+          (!normalizeSelection(checkpoint.username) ||
             !Number.isInteger(checkpoint.attempts) ||
             checkpoint.attempts < 1 ||
             checkpoint.attempts > MAX_ATTEMPTS ||
@@ -219,7 +241,7 @@ export class BreezLightningAddressClient {
         ) {
           const username =
             checkpoint?.username ?? this.#generate(scope, attempt)
-          if (normalizeBreezUsername(username) !== username)
+          if (normalizeSelection(username) !== username)
             throw new AddressError("invalid_configuration")
           const pending: BreezAddressCheckpoint = {
             username,
@@ -234,7 +256,11 @@ export class BreezLightningAddressClient {
             throw new AddressError("invalid_response")
           if (!available.available) {
             const recovered = await this.#recover(identity)
-            if (recovered) return this.#present(recovered)
+            if (
+              recovered &&
+              (!explicitCustomName || recovered.username === selected)
+            )
+              return this.#present(recovered)
             // An earlier request may still be in flight. Never advance its name.
             if (pending.phase === "registering")
               throw new AddressError("registration_pending")
@@ -251,7 +277,8 @@ export class BreezLightningAddressClient {
           }
           // Another device may have registered while availability was checked.
           const raced = await this.#recover(identity)
-          if (raced) return this.#present(raced)
+          if (raced && (!explicitCustomName || raced.username === selected))
+            return this.#present(raced)
           await this.#save(scope, { ...pending, phase: "registering" })
           try {
             await this.#request(identity, "register", {
@@ -270,7 +297,11 @@ export class BreezLightningAddressClient {
             // A conflict may be a collision, replay, or another device's success.
             // Resolve identity ownership before making any decision to change name.
             const recovered = await this.#recover(identity)
-            if (recovered) return this.#present(recovered)
+            if (
+              recovered &&
+              (!explicitCustomName || recovered.username === selected)
+            )
+              return this.#present(recovered)
             if (
               error instanceof AddressError &&
               error.reason === "names_exhausted"
@@ -291,7 +322,11 @@ export class BreezLightningAddressClient {
             throw error
           }
           const confirmed = await this.#recover(identity)
-          if (!confirmed) throw new AddressError("registration_pending")
+          if (
+            !confirmed ||
+            (explicitCustomName && confirmed.username !== selected)
+          )
+            throw new AddressError("registration_pending")
           return this.#present(confirmed)
         }
         throw new AddressError("names_exhausted")
@@ -388,7 +423,9 @@ export class BreezLightningAddressClient {
         headers: {
           // Intentionally public client integration credential; wallet authority
           // comes from the signed Spark identity request, not secrecy of this key.
-          Authorization: `Bearer ${this.#apiKey}`,
+          ...(this.#domain === "breez.tips"
+            ? { Authorization: `Bearer ${this.#apiKey}` }
+            : {}),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -459,7 +496,8 @@ export class BreezLightningAddressClient {
   }): Promise<BreezAddressState> {
     const publicEvidence = await verifyBreezPublicLookup(
       value.username,
-      this.#fetch
+      this.#fetch,
+      this.#domain
     )
     this.#assertActive()
     return {
@@ -475,12 +513,13 @@ export class BreezLightningAddressClient {
 
 export async function verifyBreezPublicLookup(
   username: string,
-  fetcher: BreezAddressFetch = fetch
+  fetcher: BreezAddressFetch = fetch,
+  domain: string = "conduit.cash"
 ): Promise<{ status: "verified" | "unavailable"; zapAdvertised: boolean }> {
   try {
     if (!isBreezUsername(username)) throw new Error()
     const response = await fetcher(
-      `https://conduit.cash/.well-known/lnurlp/${username}`,
+      `https://${domain}/.well-known/lnurlp/${username}`,
       {
         signal: AbortSignal.timeout(10_000),
         redirect: "error",
@@ -495,7 +534,7 @@ export async function verifyBreezPublicLookup(
     const metadata: unknown = JSON.parse(data.metadata)
     if (
       data.tag !== "payRequest" ||
-      callback.origin !== "https://conduit.cash" ||
+      callback.origin !== `https://${domain}` ||
       callback.pathname !== `/lnurlp/${username}/invoice` ||
       callback.search ||
       callback.hash ||
@@ -510,7 +549,7 @@ export async function verifyBreezPublicLookup(
         (entry: unknown) =>
           Array.isArray(entry) &&
           entry[0] === "text/identifier" &&
-          entry[1] === `${username}@conduit.cash`
+          entry[1] === `${username}@${domain}`
       )
     )
       throw new Error()

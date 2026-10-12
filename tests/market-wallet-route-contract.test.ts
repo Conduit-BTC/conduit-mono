@@ -378,7 +378,10 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toContain("recoveryHeadingRef.current?.focus()")
     expect(wallet).toContain("restoreDialogFocus")
     expect(wallet).toContain("dialogTriggerRef.current = event.currentTarget")
-    expect(wallet).toContain("Refresh balance")
+    expect(wallet.includes("Retry balance")).toBe(true)
+    expect(wallet.includes("Use previous password")).toBe(false)
+    expect(wallet.includes("Use for new invoices")).toBe(false)
+    expect(wallet.includes("Remove from this device")).toBe(true)
     expect(wallet).toContain("Payment request copied.")
     expect(wallet).toContain("Copy was blocked. Copy the request manually.")
     expect(recoveryBundleDetails).toContain(
@@ -391,7 +394,8 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toMatch(
       /Copying\s+a\s+recovery\s+phrase\s+puts\s+it\s+on\s+your\s+system\s+clipboard/
     )
-    expect(wallet).toContain("await wallets.createSpark()")
+    expect(wallet.includes("await wallets.createSpark(")).toBe(true)
+    expect(wallet.includes("onProgress:")).toBe(true)
     expect(wallet).toContain('setMnemonic("")')
     expect(wallet).toContain("error ? (")
   })

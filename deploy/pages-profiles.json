@@ -27,7 +27,7 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
         "livePresenceEnabled": true,
-        "breezLightningAddressEnabled": false
+        "breezLightningAddressEnabled": true
       }
     },
     "production": {
@@ -36,7 +36,7 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": false,
         "livePresenceEnabled": true,
-        "breezLightningAddressEnabled": false
+        "breezLightningAddressEnabled": true
       }
     },
     "staging": {

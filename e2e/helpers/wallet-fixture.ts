@@ -68,18 +68,28 @@ export async function prepareControlledWallet(page: Page) {
         let registered = imported || recovered
         let registrationPending = false
         let selectedName: string | undefined
-        const lookup = async () =>
+        const lookup = async (domain = "breez.tips") =>
           probe.addressUnavailableReason
             ? { status: "unavailable", reason: probe.addressUnavailableReason }
-            : registered
+            : (
+                  domain === "breez.tips"
+                    ? registered
+                    : imported ||
+                      (recovered &&
+                        probe.restoredAddress.endsWith("@conduit.cash"))
+                )
               ? {
                   status: "registered",
-                  address: recovered
-                    ? probe.restoredAddress
-                    : imported
-                      ? "support@conduit.cash"
-                      : `${selectedName ?? `wallet${probe.registrations}`}@conduit.cash`,
-                  lnurl: "https://conduit.cash/lnurlp/test",
+                  address:
+                    domain === "conduit.cash"
+                      ? imported
+                        ? "support@conduit.cash"
+                        : probe.restoredAddress
+                      : recovered &&
+                          probe.restoredAddress.endsWith("@breez.tips")
+                        ? probe.restoredAddress
+                        : `${selectedName ?? `wallet${probe.registrations}`}@breez.tips`,
+                  lnurl: `https://${domain}/lnurlp/test`,
                   publicLookup: "verified",
                   zap: { status: "unsupported" },
                 }
@@ -97,11 +107,12 @@ export async function prepareControlledWallet(page: Page) {
           async listPayments() {
             return { payments: [] }
           },
-          async lookupBreezAddress() {
-            return lookup()
+          async lookupBreezAddress(domain?: string) {
+            return lookup(domain)
           },
-          async ensureBreezAddress(username?: string) {
-            if (registered) return lookup()
+          async ensureBreezAddress(username?: string, domain = "breez.tips") {
+            if (domain === "conduit.cash") return lookup(domain)
+            if (registered) return lookup(domain)
             if (probe.delayRegistration)
               await new Promise<void>((resolve) => {
                 probe.releaseRegistration = resolve
@@ -180,6 +191,54 @@ export async function installControlledWallet(
       restoredAddress,
       failRegistration,
       modulePath: path.resolve("packages/core/src/wallets/spark-recovery.ts"),
+    }
+  )
+}
+
+/** Use the actual secondary management controls in the simplified Wallets UI. */
+export async function openWalletSetup(
+  page: Page,
+  name: "Create wallet" | "Import wallet" | "Connect wallet"
+) {
+  const button = page.getByRole("button", { name, exact: true })
+  if (!(await button.isVisible()))
+    await page
+      .getByText(
+        name === "Connect wallet"
+          ? "External wallet management"
+          : "Add a wallet",
+        { exact: true }
+      )
+      .click()
+  await button.click()
+}
+
+/** Internal close remains a lifecycle seam; the user-facing Lock control is gone. */
+export async function closeDefaultWalletSession(page: Page) {
+  await page.keyboard.press("Escape")
+  await page.evaluate(
+    async ({ storage, managerUrl, core }) => {
+      const { getMarketWalletStore } = await import(storage)
+      const { getSparkWalletManager } = await import(managerUrl)
+      const { getAccountSigner } = await import(core)
+      const wallets = (
+        await getMarketWalletStore().listVisible(
+          getAccountSigner()?.pubkey ?? null
+        )
+      ).filter((w: { providerId: string }) => w.providerId === "spark")
+      const wallet =
+        wallets.find((w: { defaultIntents: string[] }) =>
+          w.defaultIntents.includes("pay_invoice")
+        ) ?? wallets[0]
+      if (!wallet) throw new Error("No wallet session to close.")
+      await getSparkWalletManager().close(wallet.id)
+    },
+    {
+      storage:
+        "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+      managerUrl:
+        "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
+      core: "/@fs" + path.resolve("packages/core/src/index.ts"),
     }
   )
 }

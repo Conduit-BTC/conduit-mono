@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
@@ -95,7 +96,7 @@ async function seedBackup(
   )
 }
 async function importKnownPhrase(page: Page, addy = false) {
-  await page.getByRole("button", { name: "Import wallet", exact: true }).click()
+  await openWalletSetup(page, "Import wallet")
   await page.evaluate(
     async ({ core, recovery, addy }) => {
       const signer = (await import(core)).getAccountSigner()
@@ -756,9 +757,7 @@ test("foreign-network evidence allows active-network creation and survives subse
     await settled(page)
     await seedBackup(page, "regtest")
     for (let index = 0; index < 2; index++) {
-      await page
-        .getByRole("button", { name: "Create wallet", exact: true })
-        .click()
+      await openWalletSetup(page, "Create wallet")
       const dialog = page.getByRole("dialog")
       await expect(
         dialog.getByRole("heading", { name: "Save your recovery details" })
@@ -867,9 +866,7 @@ test("valid Addy recovery blocks Create and imports only the supplied original a
       },
       { core, journal, phrase, relay }
     )
-    await page
-      .getByRole("button", { name: "Create wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Create wallet")
     await expect(
       page.getByText(/An Addy recovery backup needs its original network/)
     ).toBeVisible()
@@ -1312,9 +1309,7 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
       await page.goto(apps.market + "/wallet")
       await installControlledWallet(page)
       await settled(page)
-      await page
-        .getByRole("button", { name: "Create wallet", exact: true })
-        .click()
+      await openWalletSetup(page, "Create wallet")
       const dialog = page.getByRole("dialog")
       await expect(
         dialog.getByRole("heading", {
@@ -1355,9 +1350,7 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
         },
         { core, journal }
       )
-      await page
-        .getByRole("button", { name: "Import wallet", exact: true })
-        .click()
+      await openWalletSetup(page, "Import wallet")
       await dialog
         .getByLabel("Recovery phrase", { exact: true })
         .fill(

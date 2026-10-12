@@ -49,7 +49,21 @@ const PUBLIC = (username = USERNAME) => ({
 const response = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status })
 
-async function fixture() {
+it("explicit custom-name activation replaces only the requested domain while ordinary recovery preserves it", async () => {
+  const f = await fixture()
+  f.setRegistered("existing-name")
+  expect((await f.client().lookup()).status).toBe("registered")
+  expect(f.calls.includes("register")).toBe(false)
+  const result = await f
+    .client()
+    .ensure("approved-name", { activateApprovedName: true })
+  expect(
+    result.status === "registered" && result.username === "approved-name"
+  ).toBe(true)
+  expect(f.calls.filter((call) => call === "register")).toHaveLength(1)
+})
+
+async function fixture(domain = "conduit.cash") {
   const mnemonic = generateMnemonic(wordlist)
   const native = new DefaultSparkSigner()
   await native.createSparkWalletFromSeed(mnemonicToSeedSync(mnemonic), 1)
@@ -84,14 +98,24 @@ async function fixture() {
     calls.push(operation)
     if (operation === "public") {
       const custom = await override?.(operation, {})
-      return custom ?? response(PUBLIC(registered!))
+      return (
+        custom ??
+        response(
+          JSON.parse(
+            JSON.stringify(PUBLIC(registered!)).replaceAll(
+              "conduit.cash",
+              domain
+            )
+          )
+        )
+      )
     }
-    expect(url.hostname).toBe("conduit.cash")
+    expect(url.hostname).toBe(domain)
     expect(url.pathname).toContain(identity)
     const body = JSON.parse(String(init?.body))
     const message = breezAddressMessage({
       operation: operation as "register" | "recover" | "available",
-      domain: "conduit.cash",
+      domain,
       identity,
       timestamp: body.timestamp,
       username: body.username,
@@ -110,13 +134,20 @@ async function fixture() {
     if (custom) return custom
     if (operation === "recover")
       return registered
-        ? response(RECOVERED(registered))
+        ? response(
+            JSON.parse(
+              JSON.stringify(RECOVERED(registered)).replaceAll(
+                "conduit.cash",
+                domain
+              )
+            )
+          )
         : response("user not found", 404)
     if (operation === "available") return response({ available: true })
     registered = body.username
     return response({
-      lightning_address: `${registered}@conduit.cash`,
-      lnurl: `lnurlp://conduit.cash/lnurlp/${registered}`,
+      lightning_address: `${registered}@${domain}`,
+      lnurl: `lnurlp://${domain}/lnurlp/${registered}`,
     })
   }
   const store = {
@@ -130,7 +161,7 @@ async function fixture() {
   }
   const client = () =>
     new BreezLightningAddressClient({
-      domain: "conduit.cash",
+      domain,
       apiKey: "test-client-key",
       signer,
       store,
@@ -675,4 +706,24 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
       })
     ).toEqual({ status: "unavailable", reason: "invalid_configuration" })
   })
+})
+
+it("default Breez registration and recovery preserve the original native Spark identity", async () => {
+  const f = await fixture("breez.tips")
+  const before = bytesToHex(await f.native.getIdentityPublicKey())
+  const first = await f.client().ensure()
+  expect(
+    first.status === "registered" && first.address.endsWith("@breez.tips")
+  ).toBe(true)
+  const calls = f.calls.filter((c) => c === "register").length
+  const recovered = await f.client().ensure()
+  expect(
+    recovered.status === "registered" &&
+      first.status === "registered" &&
+      recovered.address === first.address
+  ).toBe(true)
+  expect(f.calls.filter((c) => c === "register").length).toBe(calls)
+  expect(bytesToHex(await f.native.getIdentityPublicKey()) === before).toBe(
+    true
+  )
 })
