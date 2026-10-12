@@ -7,11 +7,11 @@ permissions:
 jobs:
   diagnosis:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        sample: [wallet, variation]
+        sample: [merchant-2, shipping-predecessors]
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
       options: --init --shm-size=1g
@@ -138,10 +138,10 @@ jobs:
           tail -n +1 -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" "$PROBE_FILE" &
           progress_pid=$!
           trap 'sleep 1; kill "$progress_pid" 2>/dev/null || true' EXIT
-          if [[ "$SAMPLE_KIND" == "wallet" ]]; then
-            PLAYWRIGHT_SMOKE_AREA=market bunx playwright test e2e/wallet-sign-in.playwright.ts --grep "legacy migration after" --project=chromium --repeat-each=6 --workers=1 --retries=0 >/dev/null 2>&1
+          if [[ "$SAMPLE_KIND" == "merchant-2" ]]; then
+            PLAYWRIGHT_SMOKE_AREA=merchant bunx playwright test --shard=2/2 --workers=1 --retries=0 >/dev/null 2>&1
           else
-            PLAYWRIGHT_SMOKE_AREA=merchant bunx playwright test e2e/merchant-variation-shipping.playwright.ts --grep "variation measurements require" --project=mobile-webkit --repeat-each=12 --workers=1 --retries=0 >/dev/null 2>&1
+            PLAYWRIGHT_SMOKE_AREA=merchant bunx playwright test e2e/merchant-shipping-tables.playwright.ts e2e/merchant-variation-shipping.playwright.ts --project=mobile-webkit --repeat-each=3 --workers=1 --retries=0 >/dev/null 2>&1
           fi
       - name: Remove transient output
         if: always()
