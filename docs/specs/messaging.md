@@ -1,9 +1,10 @@
 # Messaging Specification
 
-Secure buyer/merchant marketplace messaging (CND-57). Defines the shared
-private-message boundary, the separation between general direct messages and
-order-linked conversations, and the degraded/retry contract that keeps
-undecryptable messages from silently disappearing.
+Secure buyer/merchant marketplace messaging. Defines the shared CommerceInbox
+boundary, encrypted local history, conversation and order authority, and the
+delivery/recovery contract that keeps incomplete reads and failed messages
+visible. The implemented behavior and remaining interoperability acceptance
+gates are detailed in [Commerce inbox and recovery](../knowledge/commerce-inbox-recovery.md).
 
 References:
 
@@ -16,42 +17,54 @@ References:
 - Protected-read contract and rollout:
   `docs/knowledge/nip42-protected-read-rollout.md`
 
-Non-goals (per CND-57): public social inbox, comments, follows, reactions,
-notifications, discovery feeds, NIP-29 groups, NIP-04 sending, message-content
-telemetry, full Phase 2B durability/read-frontier work, and defaulting to
-NIP-44 v3 before signer/library/ecosystem support exists.
+Non-goals: public social inbox, comments, follows, reactions, unrelated
+notifications, discovery feeds, group sending, NIP-29 groups, NIP-04 sending,
+message-content telemetry, and defaulting to NIP-44 v3 before public protocol
+and explicit capability support exists. Durable encrypted history and the
+authorized order-message companion are part of the shared inbox.
 
 ## Secure conversation types
 
 Buyer-merchant communication is NIP-17 gift-wrapped (seal kind `13`, gift wrap
-kind `1059`) in both cases. The inner rumor kind decides the conversation type:
+kind `1059`). The inner rumor and its validated payload determine its handling:
 
 - **General direct message — kind `14`.** An order-independent support
   conversation between two pubkeys. Threaded by **counterparty pubkey**, not by
   order. Free-text content.
+- **Private file message — kind `15`.** An encrypted attachment in the selected
+  counterparty's conversation. Download requires explicit user action, bounded
+  fetching, encrypted-file hash verification and authenticated decryption.
 - **Order-linked message — kind `16`.** A Conduit order message threaded by
   `["order", <order_id>]` with a `["type", ...]` tag (`order`, `payment_request`,
   `payment_proof`, `status_update`, `shipping_update`, `receipt`, `message`).
   Owned by the order lifecycle (`docs/specs/order-lifecycle.md`); rendered in the
   Orders surfaces, not the general inbox.
 
-The two must stay distinct in product state and UI. A general-DM thread may link
+General conversations and order actions must stay distinct in product state and UI. A general-DM thread may link
 back to the counterparty's orders, and an order conversation may show a compact
 order-linked preview, but a kind-14 thread is never folded into an order and a
 kind-16 order message never appears as a general DM. Thread identity is also
 transport-qualified: NIP-17 and legacy NIP-04 messages between the same pubkeys
 are separate threads and must not be merged into one chronology.
 
-### Kind-16 payload shape (CND-128)
+Sending remains two-party. Additional authenticated participant tags on an
+incoming message are retained metadata; they do not authorize group fanout.
 
-Current Conduit writers and readers use the legacy kind-16 order rumor: JSON in
-`content` plus explicit `p`, named `type`, and `order` tags. They do not write or
-expect a GammaMarkets kind-17 payment-proof rumor or the proposed OMF kind `1327`.
+### Commerce payloads and authority
 
-This differs from the GammaMarkets wire format, whose kind-16 messages use
-numeric `type` values and human-readable `content`, and whose payment proof uses
-kind `17`. Conduit must not claim wire compatibility with that format merely
-because both use kind `16` inside NIP-17.
+Normal Conduit order writers retain the deployed kind-16 rumor: JSON in
+`content` plus explicit `p`, named `type`, and `order` tags. Shared codecs also
+read Open Markets numeric-tag kind-16 messages and kind-17 receipts. Compatible
+reads do not activate a numeric or kind-1327 writer or establish full cross-client
+wire conformance.
+
+Authenticated external commerce records may be inspected, searched and associated
+locally. Replies require one unambiguous authenticated counterparty. Neither
+association nor a declared amount grants order
+adoption, payment, inventory or fulfillment authority. Only validated Conduit
+order messages enter the existing order-action boundary. The bounded `conduit`
+version-1 extension is read only when its identity matches its surrounding
+message; unknown versions remain inspectable evidence.
 
 Kind-16 classification must be collision-safe. A reader accepts the Conduit
 order-message shape only when its required Conduit payload and explicit `p`,
@@ -59,14 +72,14 @@ order-message shape only when its required Conduit payload and explicit `p`,
 `16`, are ignored by the order-message lane rather than rendered as orders or
 failures.
 
-### Order-message migration gate (CND-191)
+### Order-message migration gate
 
 The OMF order-message proposal remains unaccepted. Until it is accepted, Conduit
 preserves legacy kind-16 writes and must not enable a new-kind writer or
 dual-write. Acceptance gates the migration sequence:
 
-1. Add the accepted codec.
-2. Add strict dual-read with semantic deduplication across legacy and accepted
+1. Reconcile codecs with the accepted contract while preserving current reads.
+2. Validate strict dual-read with semantic deduplication across legacy and accepted
    representations.
 3. Enable the accepted writer only for peers with explicit capability evidence.
 4. Retire legacy writes after compatibility evidence is sufficient, while
@@ -74,27 +87,20 @@ dual-write. Acceptance gates the migration sequence:
 
 ## Shared core boundary
 
-All private-message construction, wrapping, unwrapping, classification, and
-capability decisions live behind `@conduit/core` (`protocol/messaging.ts`).
-Market and Merchant routes must not hand-roll NDK gift-wrap/unwrap logic.
+Private messaging belongs to shared `@conduit/core` owners. Market and Merchant
+consume shared inbox state and workflows; routes must not duplicate wrapping,
+relay loops or decoding. Order and payment coordinators retain domain authority.
+
+Delivery must durably stage exact signed bytes and authorized targets after domain
+persistence checkpoints succeed and before network I/O. Recovery must reuse saved
+bytes under applicable current authority. Recipient acceptance must survive optional
+self-copy or local-history failure; it does not establish reading, payment or
+fulfillment. The [delivery implementation and recovery rules](../knowledge/commerce-inbox-recovery.md#interoperability-and-domain-authority)
+define the module boundaries, saved-plan and legacy replay paths, and self-copy
+ordering.
 
 The boundary provides:
 
-- **Wrap + publish.** A single primitive builds the rumor (kind 14 or 16),
-  gift-wraps it to the recipient and a sender self-copy, publishes via the shared
-  secure-message relay planner, and writes the local cache. The recipient wrap is
-  published to the recipient's authoritative declared kind-10050 relays, except
-  for the gated validated-kind-16 compatibility lane below. The sender self-copy
-  remains declaration-only. Kind-14 general DMs never use compatibility writes.
-  Order sends and general-DM sends use the same primitive with a different rumor
-  kind.
-- **Unwrap + classify.** Each inbound gift wrap resolves to one of:
-  - `ok` with the decrypted rumor and a `category` of `order` (kind 16) or
-    `direct` (kind 14);
-  - `decrypt_failed` with the wrap event id and a coarse reason
-    (`nip44_failed`, `nip04_failed`, `timeout`, `malformed`).
-    Non-order, non-direct kinds are ignored. Decrypt failures are **retained and
-    surfaced**, never collapsed to silence.
 - **NIP-44 capability seam.** NIP-44 v2 is the default wire version.
   Signer capability is probed (`window.nostr.nip44`, optional `nip44v3`) so v3
   can be negotiated later, but v3 is **source-gated OFF** as a send default until
@@ -203,8 +209,9 @@ The boundary provides:
   never prompt a signer, but queried relays still see request filters and
   ordinary connection metadata. Authentication challenge/OK/retry state and
   per-relay failures are preserved as typed observations without putting
-  challenge or account identifiers in logs or telemetry. NDK remains only at
-  the existing signer and gift-unwrap edges.
+  challenge or account identifiers in logs or telemetry. Shared account/session
+  signer boundaries and plain-event primitives own signing and unwrapping;
+  routes do not need an NDK messaging edge.
 - **Authenticated recipient writes.** A foreground signed-in NIP-07 or NIP-46
   order send may answer a recipient inbox relay's NIP-42 challenge only when
   the active account, authenticated session, event author, and auth signer all
@@ -247,18 +254,17 @@ failures must retain a retryable degraded state and provide actionable feedback
 to the person accessing the affected conversation. Diagnostics remain
 content-free and must not expose plaintext, ciphertext, or participant pubkeys.
 
-## Conversation model and cache
+## Conversation model and encrypted history
 
-- General DMs are cached in the Dexie `messages` table
-  (`id, senderPubkey, recipientPubkey, kind, content, createdAt, read`) and read
-  cache-first so the inbox is usable under relay slowness.
-- A single inbound gift-wrap read classifies once and routes kind-16 rumors to the
-  order-message cache and kind-14 rumors to the general-DM cache, so the relay
-  inbox is not read or unwrapped twice.
-- General conversation summaries are keyed by transport and counterparty pubkey
-  and expose the latest message preview, unread state, and the query
-  source/staleness meta.
-  Buyer↔merchant is symmetric; the same list model serves both apps.
+Inbox records and delivery jobs must be encrypted locally and isolated by account.
+Retain encrypted wrappers before signer work and authenticate envelopes before
+classification. Disconnect or account replacement must fence pending writes and
+local decryptions; retained history grants no signing, protected-read or cache-write authority.
+Preserve recoverable records and distinguish incomplete history from a complete
+bounded observation. The [persistence and recovery contract](../knowledge/commerce-inbox-recovery.md#persistence-and-recovery)
+specifies encryption, migration, paging, suppression and retained-account access;
+[conversation identity](../knowledge/commerce-inbox-recovery.md#interoperability-and-domain-authority)
+uses transport plus counterparty.
 
 ## Degraded and retry behavior
 
@@ -268,8 +274,8 @@ retry or repair path. Detailed relay and decrypt diagnostics may live in
 Network, recovery, or diagnostic surfaces:
 
 - **Loading** while the first read is in flight.
-- **Stale / degraded** when data is served from cache or a non-primary source
-  (surfaced from the query `meta`, not inferred).
+- **Stale / degraded** from the shared snapshot's coverage and freshness evidence,
+  including retained views when the signer or relay sources are unavailable.
 - **Not ready / relay unavailable** when the required principal or recipient
   kind-10050 declaration is absent or its declared relays are unusable. Do not
   hide this state behind NIP-65 or an unnamed configured-relay fallback. A
@@ -285,15 +291,20 @@ Network, recovery, or diagnostic surfaces:
   never appears as current membership or authorizes writes. Only complete shared-empty
   discovery exposes explicit redistribution of an
   unchanged declaration.
-- **Decrypt failed** when one or more gift wraps could not be unwrapped: retain
-  the failed wrap ids and give the affected person a retry path without implying
-  the conversation is complete. Retry re-attempts only the failed wrap ids;
-  transient signer/timeout failures should recover without a full refetch.
+- **Waiting / failed / unsupported** distinguish signer unavailability or refusal,
+  provider timeout, invalid envelopes, decryption failure and recognized commerce
+  that cannot yet be decoded. Retain wrappers and retry eligible records without
+  requiring a full refetch. Permission refusal pauses recovery; queue waiting is
+  separate from provider execution time. Unresolved provider work retains its
+  signer slot, and late results cannot write into a replacement account/session.
+  Changed decoder rules can recover retained records without network refetch.
 - **Empty** as a distinct terminal state from loading and error.
 
-An inbox is empty only when every required relay attempt in its bounded read
-plan reaches successful EOSE with no unresolved auth, connection, or protocol
-failure. One success plus one auth or transport failure is degraded/partial;
+An empty result describes only the bounded read and history actually attempted.
+Every required relay attempt must reach successful EOSE with no unresolved auth,
+connection, protocol or decoding failure; attempted partial or capped history
+cannot imply completeness. EOSE is not proof of global historical absence.
+One success plus one auth or transport failure is degraded/partial;
 all failures are unavailable. Cached conversations remain visible as
 stale/degraded in either case. An auth rejection, missing challenge, signer
 failure, `restricted:` close, or reconnect failure must never render "No
@@ -304,11 +315,13 @@ the primary UX. Prepared conversation state is rendered instead.
 
 ## Privacy
 
-Diagnostics, logs, telemetry, and analytics must never include message content,
-ciphertext, plaintext, order contents, invoices, shipping/contact data, NWC URIs,
-signer secrets, or pubkeys beyond local UI need. Decrypt-failure reporting is
-limited to wrap event ids, coarse reason categories, and retry state. This
-follows `docs/specs/privacy-observability.md`.
+Exported diagnostics, logs, telemetry and analytics must exclude message content,
+ciphertext, plaintext, order contents, invoices, payment hashes, shipping/contact
+data, NWC URIs, signer secrets, pubkeys, event/order identifiers and account-relay
+mappings. Account-local UI may use identifiers needed to inspect or retry a
+record; that does not authorize exporting them. Diagnostic summaries contain
+only coarse categories, counts and retry state. This follows
+`docs/specs/privacy-observability.md` and the commerce inbox recovery note.
 
 Protected-read diagnostics additionally exclude NIP-42 challenges, auth events,
 signatures, full filters, authenticated socket material, and stable
@@ -324,9 +337,16 @@ material, wallet credentials or recovery material, or wallet balances.
 
 ## Validation / testing
 
-- Classify kind-14 general vs kind-16 order-linked from unwrapped rumors.
-- Map decrypt/unwrap failure into a retained degraded state; retry targets only
-  failed wrap ids.
+- Classify direct, file, Conduit and numeric Open Markets commerce, unsupported,
+  malformed, machine and unrelated records without granting domain authority.
+- Keep signer waiting/refusal, timeout, invalid-envelope and decode outcomes
+  distinct; recover eligible retained wrappers without a full refetch.
+- Persist encrypted projections, resumable legacy migration, read state and
+  per-relay history across restart. Account changes fence late results; partial
+  and capped history remains incomplete while valid messages stay visible.
+- Stage exact bytes after domain persistence and before network delivery.
+  Recipient ACK survives self-copy or projection failure. Generic resume skips
+  acknowledged targets; explicit receipt replay requires fresh delivery evidence.
 - Resolve NIP-17 writes exclusively through the recipient kind-10050
   declaration; only validated kind-16 order sends with a completed
   `not_observed` lookup and no retained signed frontier may use the flagged
@@ -358,8 +378,9 @@ material, wallet credentials or recovery material, or wallet balances.
 - Send helper emits the correct rumor kind and tags for each conversation type.
 - Legacy kind-4 events are read-only, never published, and remain in
   transport-qualified threads separate from NIP-17.
-- Kind-16 parsing accepts the validated Conduit shape, rejects NIP-18 generic
-  repost collisions, and does not claim GammaMarkets wire compatibility.
+- Kind-16 parsing preserves validated Conduit reads and compatible numeric
+  Open Markets reads, rejects NIP-18 generic repost collisions, and keeps new
+  writers gated. Kind-17 receipts do not authorize payment or order adoption.
 - General conversations group by transport and counterparty pubkey.
 - No message text or encrypted payload reaches any telemetry/log path.
 - Slow/missing relay readback still leaves cached conversations understandable.
@@ -378,3 +399,8 @@ material, wallet credentials or recovery material, or wallet balances.
   wrap. Tests reject cross-account authority, changed challenges, invalid auth
   events, background prompts, stale relay admission, overlapping signer
   requests, fallback widening, and replacement-wrap retries.
+
+Deterministic tests do not establish real signer/client interoperability,
+physical-device recovery, relay delivery or payment acceptance. Those remain
+separate maintainer-owned gates in the commerce inbox recovery note; updating
+this specification does not activate a compatibility exception or new writer.
