@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test"
 
-import { rollbackFailedWalletSetup } from "../apps/market/src/lib/wallet-setup-rollback"
+import { rollbackFailedWalletSetup } from "@conduit/core/wallets/wallet-setup-rollback"
 
 describe("failed wallet setup rollback", () => {
   it("closes the wallet session before deleting the recovery registration", async () => {

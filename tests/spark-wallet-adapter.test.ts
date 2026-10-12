@@ -11,7 +11,7 @@ import {
 import {
   MemorySparkDirectTransferSafetyStore,
   type SparkDirectTransferSafetyStore,
-} from "../apps/market/src/lib/spark-direct-transfer-safety"
+} from "@conduit/core/wallets/spark-direct-transfer-safety"
 import { bytesToBolt11Words, makeBolt11Fixture } from "./support/bolt11-fixture"
 
 describe("SparkWalletManager", () => {
@@ -1742,6 +1742,8 @@ describe("SparkWalletManager", () => {
       accountNumber: 0,
     })
     expect(lifecycleCalls).toEqual(["add-listener"])
+    expect(invalidatedWallets).toEqual(["wallet-personal"])
+    invalidatedWallets.length = 0
 
     onEvent?.()
     onEvent?.()
@@ -1755,9 +1757,10 @@ describe("SparkWalletManager", () => {
       "disconnect",
     ])
 
+    expect(invalidatedWallets).toEqual(["wallet-personal", "wallet-personal"])
     onEvent?.()
     await Promise.resolve()
-    expect(invalidatedWallets).toEqual(["wallet-personal"])
+    expect(invalidatedWallets).toEqual(["wallet-personal", "wallet-personal"])
 
     unsubscribe()
   })

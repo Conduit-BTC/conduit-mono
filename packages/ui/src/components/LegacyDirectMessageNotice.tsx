@@ -15,7 +15,7 @@ export function LegacyDirectMessageNotice({
         className
       )}
     >
-      <LockKeyhole className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
+      <LockKeyhole className="mt-0.5 size-4 shrink-0 text-[var(--warning-text)]" />
       <span>
         Legacy NIP-04 conversation. This history is read-only. Start a current
         NIP-17 conversation to reply.

@@ -106,8 +106,8 @@ jobs:
         with:
           bun-version: "1.3.5"
       - run: bun install --frozen-lockfile
-      - name: Enforce no hardcoded colors outside theme.css
-        run: bun test tests/no-hardcoded-colors.test.ts
+      - name: Enforce shared UI owners, controls and presentation policy
+        run: bun run ui:check
 
   telemetry-policy:
     runs-on: ubuntu-latest
@@ -221,6 +221,9 @@ jobs:
       - name: Run ${{ matrix.job.id }} Playwright smoke tests
         if: matrix.job.area != 'none'
         env:
+          # The privacy-safe reporter classifies browser stderr in memory. Raw
+          # output remains suppressed; do not set PW_RUNNER_DEBUG (bypasses it).
+          DEBUG: pw:browser
           PLAYWRIGHT_SMOKE_AREA: ${{ matrix.job.area }}
           PLAYWRIGHT_SMOKE_SHARD: ${{ matrix.job.shard }}
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -541,8 +544,16 @@ jobs:
               `${process.env.GITHUB_WORKSPACE}/deploy/pages-profiles.json`, "utf8"
             ));
             const expectedRouterEnabled = profiles.profiles.preview.publicFeatures.quantumRouterEnabled;
+            const expectedRouterExecutionEnabled = profiles.profiles.preview.publicFeatures.quantumRouterExecutionEnabled;
             if (typeof expectedRouterEnabled !== "boolean") {
               throw new Error("The preview router capability is not explicit.");
+            }
+            if (typeof expectedRouterExecutionEnabled !== "boolean") {
+              throw new Error("The preview router execution capability is not explicit.");
+            }
+            const expectedBreezAddressEnabled = profiles.profiles.preview.publicFeatures.breezLightningAddressEnabled;
+            if (typeof expectedBreezAddressEnabled !== "boolean") {
+              throw new Error("The preview address capability is not explicit.");
             }
             if (!expectedConfigDigest) {
               throw new Error("The validated build did not expose a public config digest.");
@@ -604,6 +615,12 @@ jobs:
                     }
                     if (manifest.publicFeatures?.quantumRouterEnabled !== expectedRouterEnabled) {
                       failures.push("quantumRouterEnabled");
+                    }
+                    if (manifest.publicFeatures?.quantumRouterExecutionEnabled !== expectedRouterExecutionEnabled) {
+                      failures.push("quantumRouterExecutionEnabled");
+                    }
+                    if (manifest.publicFeatures?.breezLightningAddressEnabled !== expectedBreezAddressEnabled) {
+                      failures.push("breezLightningAddressEnabled");
                     }
                     if (failures.length === 0) {
                       return manifestUrl.toString();

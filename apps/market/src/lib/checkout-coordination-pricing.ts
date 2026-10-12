@@ -2,6 +2,7 @@ import {
   calculateCheckoutSparkBuyerPrice,
   isQuantumRouterEnabled,
   isSupportedCommercePriceCurrency,
+  getShopperCardPriceDisplay,
   getShopperPriceDisplay,
   getShopperSatsDisplay,
   type BtcUsdRateQuote,
@@ -149,5 +150,46 @@ export function getFeeInclusiveListingPriceDisplay(
     }
   } catch {
     return { ...base, feeEstimateIncluded: false }
+  }
+}
+
+/** Catalog-only labels; the exact display and listing amount stay unchanged. */
+export function getFeeInclusiveListingCardPriceDisplay(
+  price: RouterListingPrice,
+  preference: ShopperPricePreference | undefined,
+  quote: BtcUsdRateQuote | null,
+  enabled: boolean,
+  options: ShopperPriceDisplayOptions = {}
+) {
+  const displayOptions = { ...options, nowMs: options.nowMs ?? Date.now() }
+  const full = getFeeInclusiveListingPriceDisplay(
+    price,
+    preference,
+    quote,
+    enabled,
+    displayOptions
+  )
+  if (!full.feeEstimateIncluded || full.sats === null) {
+    return {
+      ...getShopperCardPriceDisplay(price, preference, quote, displayOptions),
+      feeEstimateIncluded: false,
+    }
+  }
+  const compact = getShopperCardPriceDisplay(
+    { price: full.sats, currency: "SATS", priceSats: full.sats },
+    preference,
+    quote,
+    displayOptions
+  )
+  return {
+    ...compact,
+    primary: {
+      text: compact.primary.text.startsWith("~ ")
+        ? compact.primary.text
+        : `~ ${compact.primary.text}`,
+      fullText: full.primary,
+    },
+    approximate: true,
+    feeEstimateIncluded: true,
   }
 }

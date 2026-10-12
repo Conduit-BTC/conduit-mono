@@ -13,6 +13,7 @@ export interface ConduitBuildInfo {
     livePresenceEnabled: boolean
     quantumRouterEnabled: boolean
     quantumRouterExecutionEnabled: boolean
+    breezLightningAddressEnabled: boolean
   }
 }
 
@@ -64,6 +65,8 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
     clean(import.meta.env.VITE_DEPLOYMENT_PROFILE) ?? "unknown",
   publicConfigDigest: clean(import.meta.env.VITE_PUBLIC_CONFIG_DIGEST),
   publicFeatures: Object.freeze({
+    breezLightningAddressEnabled:
+      import.meta.env?.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED === "true",
     dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "").trim().toLowerCase()
     ),

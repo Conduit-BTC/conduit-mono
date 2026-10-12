@@ -566,7 +566,7 @@ function CheckoutEntry() {
   if (handoff.state.status === "idle") return <CheckoutPage />
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-2xl items-center justify-center px-4">
-      <section className="w-full rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
+      <section className="w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
         <h1 className="text-3xl font-semibold text-[var(--text-primary)]">
           {handoff.state.status === "loading"
             ? "Opening linked checkout"
@@ -652,7 +652,7 @@ function CheckoutWalletReadiness({
             : "Not checked yet"
 
   return (
-    <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+    <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       <div className="grid gap-3 text-xs sm:grid-cols-2">
         <div>
           <div className="font-medium text-[var(--text-muted)]">
@@ -684,11 +684,11 @@ function CheckoutWalletReadiness({
         )}
       </div>
       {constraint && (
-        <div className="mt-4 rounded-xl border border-[color-mix(in_srgb,var(--warning)_55%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
+        <div className="mt-4 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--warning)_55%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
           <div className="flex items-start gap-2">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning)]" />
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning-text)]" />
             <div>
-              <div className="font-medium text-[var(--warning)]">
+              <div className="font-medium text-[var(--warning-text)]">
                 Automatic wallet payment will be skipped
               </div>
               <div className="mt-1">
@@ -740,6 +740,7 @@ function CheckoutBreadcrumb({
         <>
           <span>/</span>
           {current === "send-order" && onShippingClick ? (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               type="button"
               onClick={onShippingClick}
@@ -825,7 +826,7 @@ function CheckoutMerchantIdentityLink({
       to="/$identityRef"
       params={{ identityRef: merchantStoreRef }}
       className={[
-        "flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]",
+        "flex min-w-0 items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]",
         className,
       ].join(" ")}
       aria-label={`Visit ${merchantName} merchant page`}
@@ -964,7 +965,7 @@ function OrderSummary({
 
   return (
     <aside
-      className={`min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 ${className}`}
+      className={`min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 ${className}`}
     >
       <div className="border-b border-[var(--border)] pb-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1017,7 +1018,7 @@ function OrderSummary({
                 unavailable ? "opacity-80" : ""
               }`}
             >
-              <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
+              <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)]">
                 <img
                   src={imageUrl ?? "/images/placeholders/product.png"}
                   alt={item.title}
@@ -1068,7 +1069,7 @@ function OrderSummary({
         })}
       </div>
 
-      <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+      <div className="mt-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
         {routerPrice ? (
           <>
             <CheckoutCoordinationSummary
@@ -4502,7 +4503,7 @@ function CheckoutPage() {
     routerContinuedOrder ? (
       <section
         aria-label="Saved checkout recovery"
-        className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"
+        className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4"
       >
         <h2 className="font-semibold text-[var(--text-primary)]">
           Continue the original checkout
@@ -4562,7 +4563,7 @@ function CheckoutPage() {
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
         {pendingPreparationPanel}
-        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
+        <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-balance text-4xl font-semibold text-[var(--text-primary)]">
             Choose a purchase before ordering
           </h1>
@@ -4635,7 +4636,7 @@ function CheckoutPage() {
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
         {pendingPreparationPanel}
-        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
+        <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Cart is empty
           </h1>
@@ -4692,7 +4693,7 @@ function CheckoutPage() {
         <div
           role="status"
           aria-live="polite"
-          className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-primary)]"
+          className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-primary)]"
         >
           <SpinnerIcon className="h-5 w-5 animate-spin" />
           {step === "signing"
@@ -4714,11 +4715,11 @@ function CheckoutPage() {
       {hasUnavailableCheckoutItems ? (
         <div
           role="alert"
-          className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="flex items-start gap-3">
             <AlertTriangle
-              className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+              className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning-text)]"
               aria-hidden="true"
             />
             <div>
@@ -4745,10 +4746,10 @@ function CheckoutPage() {
       {mixedFulfillmentMessage ? (
         <div
           role="alert"
-          className="flex flex-col gap-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning)]" />
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning-text)]" />
             <div>
               <div className="font-medium text-[var(--text-primary)]">
                 Separate fulfillment required
@@ -4793,7 +4794,7 @@ function CheckoutPage() {
           {/* ── Shipping step ─────────────────────────────────────────────── */}
           {requiresCheckoutDetailsStep && (
             <>
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+              <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
                   {isShippingCheckout ? "Delivery details" : "Contact"}
                 </h2>
@@ -4830,7 +4831,7 @@ function CheckoutPage() {
                 ) : null}
                 <div className="mt-5 grid gap-4">
                   {shippingAttempted && shippingErrors.length > 0 && (
-                    <div className="rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+                    <div className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 px-4 py-3 text-sm text-[var(--error-text)]">
                       {shippingErrors.length === 1
                         ? shippingErrors[0]!.message
                         : `${shippingErrors.length} fields need attention: ${shippingErrors.map((e) => shippingFieldLabel(e.field)).join(", ")}`}
@@ -4840,9 +4841,10 @@ function CheckoutPage() {
                   {isShippingCheckout && (
                     <>
                       {/* Country */}
-                      <div className="grid gap-1.5">
+                      <div className="grid gap-1 [&>p]:mt-1">
                         <Label htmlFor="ship-country">
-                          Country <span className="text-error">*</span>
+                          Country{" "}
+                          <span className="text-[var(--error-text)]">*</span>
                         </Label>
                         <Combobox
                           id="ship-country"
@@ -4856,11 +4858,11 @@ function CheckoutPage() {
                           placeholder="Search countries..."
                           searchPlaceholder="Search countries..."
                           emptyText="No supported countries found."
-                          triggerClassName="h-10 rounded-xl bg-[var(--surface-elevated)]"
-                          contentClassName="rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+                          triggerClassName="h-10 rounded-[var(--radius-md)] bg-[var(--surface-elevated)]"
+                          contentClassName="rounded-[var(--radius-md)] border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
                         />
                         {fieldInvalid("country") && (
-                          <p className="text-xs text-error">
+                          <p className="text-xs text-[var(--error-text)]">
                             {fieldError("country")}
                           </p>
                         )}
@@ -4868,9 +4870,10 @@ function CheckoutPage() {
 
                       {/* Name */}
                       <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-first-name">
-                            First name <span className="text-error">*</span>
+                            First name{" "}
+                            <span className="text-[var(--error-text)]">*</span>
                           </Label>
                           <Input
                             id="ship-first-name"
@@ -4885,14 +4888,15 @@ function CheckoutPage() {
                             className={fieldClassName("firstName")}
                           />
                           {fieldInvalid("firstName") && (
-                            <p className="text-xs text-error">
+                            <p className="text-xs text-[var(--error-text)]">
                               {fieldError("firstName")}
                             </p>
                           )}
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-last-name">
-                            Last name <span className="text-error">*</span>
+                            Last name{" "}
+                            <span className="text-[var(--error-text)]">*</span>
                           </Label>
                           <Input
                             id="ship-last-name"
@@ -4907,7 +4911,7 @@ function CheckoutPage() {
                             className={fieldClassName("lastName")}
                           />
                           {fieldInvalid("lastName") && (
-                            <p className="text-xs text-error">
+                            <p className="text-xs text-[var(--error-text)]">
                               {fieldError("lastName")}
                             </p>
                           )}
@@ -4915,9 +4919,10 @@ function CheckoutPage() {
                       </div>
 
                       {/* Street */}
-                      <div className="grid gap-1.5">
+                      <div className="grid gap-1 [&>p]:mt-1">
                         <Label htmlFor="ship-street">
-                          Street address <span className="text-error">*</span>
+                          Street address{" "}
+                          <span className="text-[var(--error-text)]">*</span>
                         </Label>
                         <Input
                           id="ship-street"
@@ -4932,14 +4937,14 @@ function CheckoutPage() {
                           className={fieldClassName("street")}
                         />
                         {fieldInvalid("street") && (
-                          <p className="text-xs text-error">
+                          <p className="text-xs text-[var(--error-text)]">
                             {fieldError("street")}
                           </p>
                         )}
                       </div>
 
                       {/* Line 2 */}
-                      <div className="grid gap-1.5">
+                      <div className="grid gap-1">
                         <Label htmlFor="ship-line2">
                           Apt, suite, etc. (optional)
                         </Label>
@@ -4956,10 +4961,10 @@ function CheckoutPage() {
 
                       {/* Postal / City / State */}
                       <div className="grid gap-4 sm:grid-cols-3">
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-postal">
                             Postal/ZIP code{" "}
-                            <span className="text-error">*</span>
+                            <span className="text-[var(--error-text)]">*</span>
                           </Label>
                           <Input
                             id="ship-postal"
@@ -4976,14 +4981,15 @@ function CheckoutPage() {
                             className={fieldClassName("postalCode")}
                           />
                           {fieldInvalid("postalCode") && (
-                            <p className="text-xs text-error">
+                            <p className="text-xs text-[var(--error-text)]">
                               {fieldError("postalCode")}
                             </p>
                           )}
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-city">
-                            City <span className="text-error">*</span>
+                            City{" "}
+                            <span className="text-[var(--error-text)]">*</span>
                           </Label>
                           <Input
                             id="ship-city"
@@ -4998,18 +5004,20 @@ function CheckoutPage() {
                             className={fieldClassName("city")}
                           />
                           {fieldInvalid("city") && (
-                            <p className="text-xs text-error">
+                            <p className="text-xs text-[var(--error-text)]">
                               {fieldError("city")}
                             </p>
                           )}
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-state">
                             {shippingRegionRequirement.label}
                             {shippingRegionRequirement.required && (
                               <>
                                 {" "}
-                                <span className="text-error">*</span>
+                                <span className="text-[var(--error-text)]">
+                                  *
+                                </span>
                               </>
                             )}
                           </Label>
@@ -5026,7 +5034,7 @@ function CheckoutPage() {
                             className={fieldClassName("state")}
                           />
                           {fieldInvalid("state") && (
-                            <p className="text-xs text-error">
+                            <p className="text-xs text-[var(--error-text)]">
                               {fieldError("state")}
                             </p>
                           )}
@@ -5052,13 +5060,15 @@ function CheckoutPage() {
                       <div
                         className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
                       >
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-phone">
                             Phone
                             {requiresBothContactMethods && (
                               <>
                                 {" "}
-                                <span className="text-error">*</span>
+                                <span className="text-[var(--error-text)]">
+                                  *
+                                </span>
                               </>
                             )}
                           </Label>
@@ -5086,19 +5096,21 @@ function CheckoutPage() {
                           {fieldInvalid("phone") && (
                             <p
                               id={SHIPPING_PHONE_ERROR_ID}
-                              className="text-xs text-error"
+                              className="text-xs text-[var(--error-text)]"
                             >
                               {fieldError("phone")}
                             </p>
                           )}
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="grid gap-1 [&>p]:mt-1">
                           <Label htmlFor="ship-email">
                             Email
                             {requiresBothContactMethods && (
                               <>
                                 {" "}
-                                <span className="text-error">*</span>
+                                <span className="text-[var(--error-text)]">
+                                  *
+                                </span>
                               </>
                             )}
                           </Label>
@@ -5125,7 +5137,7 @@ function CheckoutPage() {
                           {fieldInvalid("email") && (
                             <p
                               id={SHIPPING_EMAIL_ERROR_ID}
-                              className="text-xs text-error"
+                              className="text-xs text-[var(--error-text)]"
                             >
                               {fieldError("email")}
                             </p>
@@ -5143,7 +5155,7 @@ function CheckoutPage() {
                     )) ? (
                     <div
                       className={[
-                        "rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]",
+                        "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]",
                         shippingCheckoutState === "loading"
                           ? "animate-pulse"
                           : "",
@@ -5152,11 +5164,11 @@ function CheckoutPage() {
                       <div className="grid gap-2">
                         <div className="flex items-start gap-2">
                           {!currentAddressValidity.canSubmitOrder ? (
-                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-error" />
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--error-text)]" />
                           ) : currentAddressValidity.warnings.length > 0 ? (
-                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning-text)]" />
                           ) : (
-                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--success-text)]" />
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">
@@ -5171,9 +5183,9 @@ function CheckoutPage() {
                           ) : (shippingCheckoutState === "not_required" ||
                               shippingCheckoutState === "allowed") &&
                             currentAddressValidity.canDirectPay ? (
-                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--success-text)]" />
                           ) : (
-                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning-text)]" />
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">
@@ -5194,7 +5206,7 @@ function CheckoutPage() {
           {
             <>
               {!routerBranchTargetCheckout && !isGuestCheckout && (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div className="min-w-0 flex-1">
                       <Label htmlFor="checkout-wallet">Pay with</Label>
@@ -5212,7 +5224,7 @@ function CheckoutPage() {
                       >
                         <SelectTrigger
                           id="checkout-wallet"
-                          className={`mt-2 h-11 rounded-xl ${PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}`}
+                          className={`mt-2 h-11 rounded-[var(--radius-md)] ${PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}`}
                         >
                           {wallets.loading ? (
                             <span className="flex items-center gap-2 text-[var(--text-muted)]">
@@ -5260,7 +5272,7 @@ function CheckoutPage() {
                       {wallets.initializationError && (
                         <div
                           role="alert"
-                          className="mt-3 rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
+                          className="mt-3 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
                         >
                           <div className="flex items-start gap-2">
                             <AlertCircle
@@ -5300,7 +5312,7 @@ function CheckoutPage() {
                       {selectedPaymentTargetIsStale && (
                         <div
                           role="alert"
-                          className="mt-3 flex items-start gap-2 rounded-xl border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
+                          className="mt-3 flex items-start gap-2 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
                         >
                           <AlertTriangle
                             aria-hidden="true"
@@ -5330,11 +5342,11 @@ function CheckoutPage() {
                 </div>
               )}
 
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+              <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {routerBranchTargetCheckout ? (
                   <div
                     role="status"
-                    className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm"
+                    className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm"
                   >
                     <div className="font-medium text-[var(--text-primary)]">
                       Payment
@@ -5356,7 +5368,7 @@ function CheckoutPage() {
                   !isGuestCheckout &&
                   !lnurlProbing &&
                   showFastCheckoutSurface && (
-                    <div className="rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
+                    <div className="rounded-[var(--radius-md)] border border-secondary-500/30 bg-secondary-500/8 p-5">
                       <div className="flex items-center gap-2">
                         {pricingOnlyFastCheckoutBlocker ? (
                           <SpinnerIcon className="h-4 w-4 animate-spin text-secondary-400" />
@@ -5395,11 +5407,12 @@ function CheckoutPage() {
                   !lnurlProbing &&
                   directCheckoutEligible &&
                   !hasShippingPolicyQuote && (
-                    <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
+                    <div className="mt-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Zap visibility
                       </div>
                       <div className="mt-4 grid gap-2 lg:grid-cols-3">
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           aria-pressed={zapMode === "anonymous_public_zap"}
@@ -5410,7 +5423,7 @@ function CheckoutPage() {
                           }
                           onClick={() => selectZapMode("anonymous_public_zap")}
                           className={[
-                            "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                            "rounded-[var(--radius-md)] border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                             zapMode === "anonymous_public_zap"
                               ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                               : !anonZapSignerAvailable ||
@@ -5427,6 +5440,7 @@ function CheckoutPage() {
                             {anonZapModeDescription}
                           </span>
                         </button>
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           aria-pressed={zapMode === "public_zap_as_shopper"}
@@ -5436,7 +5450,7 @@ function CheckoutPage() {
                           }
                           onClick={() => selectZapMode("public_zap_as_shopper")}
                           className={[
-                            "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                            "rounded-[var(--radius-md)] border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                             zapMode === "public_zap_as_shopper"
                               ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                               : !lnurlAllowsNostr ||
@@ -5452,12 +5466,13 @@ function CheckoutPage() {
                             {publicZapModeDescription}
                           </span>
                         </button>
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
                           aria-pressed={zapMode === "private_checkout"}
                           onClick={() => selectZapMode("private_checkout")}
                           className={[
-                            "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                            "rounded-[var(--radius-md)] border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                             zapMode === "private_checkout"
                               ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                               : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -5488,7 +5503,7 @@ function CheckoutPage() {
                                 }}
                                 rows={1}
                                 maxLength={280}
-                                className="min-h-[2.75rem] rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
+                                className="min-h-[2.75rem] rounded-[var(--radius-md)] bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                               />
                               <p className="text-xs leading-6 text-[var(--text-muted)]">
                                 Public zap receipts can expose this comment.
@@ -5502,7 +5517,7 @@ function CheckoutPage() {
                               <span className="text-sm font-medium text-[var(--text-primary)]">
                                 Public zap message
                               </span>
-                              <p className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)]">
+                              <p className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)]">
                                 {zapContent}
                               </p>
                               <p className="text-xs leading-6 text-[var(--text-muted)]">
@@ -5518,7 +5533,7 @@ function CheckoutPage() {
                   )}
 
                 {/* Order note */}
-                <div className="mt-6 grid gap-1.5">
+                <div className="mt-6 grid gap-1">
                   <Label htmlFor="order-note">Order note (optional)</Label>
                   <Textarea
                     id="order-note"
@@ -5526,14 +5541,14 @@ function CheckoutPage() {
                     onChange={(e) => setNote(e.target.value)}
                     placeholder="Anything the merchant should know before they confirm the order?"
                     rows={2}
-                    className="min-h-[4.5rem] rounded-xl bg-[var(--surface-elevated)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
+                    className="min-h-[4.5rem] rounded-[var(--radius-md)] bg-[var(--surface-elevated)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                   />
                 </div>
 
                 {(error || checkoutRecoveryBlockingMessage) && (
                   <div
                     role="alert"
-                    className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-[var(--text-primary)]"
+                    className="mt-5 rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-3 text-sm text-[var(--text-primary)]"
                   >
                     {error || checkoutRecoveryBlockingMessage}
                   </div>
@@ -5541,7 +5556,7 @@ function CheckoutPage() {
                 {!error && signerBlockedMessage && (
                   <div
                     role="alert"
-                    className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-[var(--text-primary)]"
+                    className="mt-5 rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-3 text-sm text-[var(--text-primary)]"
                   >
                     {signerBlockedMessage}
                   </div>
@@ -5550,7 +5565,7 @@ function CheckoutPage() {
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-4 sm:border-0 sm:pt-0">
                   {routerBranchTargetCheckout && (
-                    <div className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                    <div className="w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
                       <Button
                         type="button"
                         className="h-11 w-full px-5 text-sm sm:w-auto"

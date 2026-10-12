@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   calculateCheckoutSparkBuyerPrice,
+  getShopperCardPriceDisplay,
   getShopperPriceDisplay,
   type BtcUsdRateQuote,
 } from "@conduit/core"
@@ -9,6 +10,7 @@ import {
   canEstimateCheckoutCoordinationListing,
   getCheckoutCoordinationPriceEstimate,
   getFeeInclusiveListingPriceDisplay,
+  getFeeInclusiveListingCardPriceDisplay,
 } from "../apps/market/src/lib/checkout-coordination-pricing"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
@@ -259,6 +261,154 @@ describe("fee-inclusive listing estimates", () => {
     expect(display.primary).toBe("Free")
     expect(display.sats).toBe(0)
     expect(display.feeEstimateIncluded).toBe(false)
+  })
+})
+
+describe("fee-inclusive catalog labels", () => {
+  it("compacts a fee-inclusive total and retains its exact estimate for accessibility", () => {
+    const product = Object.freeze({
+      price: 123_456_789,
+      currency: "SATS",
+      priceSats: 123_456_789,
+      format: "digital",
+    })
+    const full = getFeeInclusiveListingPriceDisplay(
+      product,
+      preference,
+      null,
+      true
+    )
+    const card = getFeeInclusiveListingCardPriceDisplay(
+      product,
+      preference,
+      null,
+      true
+    )
+    expect(card.primary).toEqual({
+      text: "~ 1.262 BTC",
+      fullText: full.primary,
+    })
+    expect(card.sats).toBe(full.sats)
+    expect(card.feeEstimateIncluded).toBe(true)
+    expect(card.approximate).toBe(true)
+    expect(product.priceSats).toBe(123_456_789)
+    expect(getShopperPriceDisplay(product, preference).sats).toBe(123_456_789)
+  })
+
+  it.each([
+    ["BTC", 0.00001],
+    ["XBT", 0.00001],
+    ["MSAT", 1_000_000],
+    ["MSATS", 1_000_000],
+  ])(
+    "preserves deterministic retained %s authority without requiring fiat",
+    (currency, amount) => {
+      const sourcePrice = Object.freeze({
+        amount,
+        currency,
+        normalizedCurrency: currency,
+      })
+      const product = Object.freeze({
+        price: 1_000,
+        priceSats: 1_000,
+        currency: "SATS",
+        sourcePrice,
+        format: "digital",
+      })
+      const card = getFeeInclusiveListingCardPriceDisplay(
+        product,
+        preference,
+        null,
+        true
+      )
+      expect(card.primary).toEqual({
+        text: "~ 1,113 sats",
+        fullText: "~ 1,113 sats",
+      })
+      expect(card.sats).toBe(1_113)
+      expect(card.feeEstimateIncluded).toBe(true)
+      expect(product.sourcePrice).toBe(sourcePrice)
+      expect(product.price).toBe(1_000)
+    }
+  )
+
+  it("compacts fiat estimates using the same freshness instant as their exact labels", () => {
+    const nowMs = 1_800_000_000_000
+    const quote: BtcUsdRateQuote = {
+      rate: 100_000,
+      fetchedAt: nowMs,
+      source: "env",
+    }
+    const product = Object.freeze({
+      price: 100_000,
+      currency: "USD",
+      format: "digital",
+    })
+    const fiatPreference = { currency: "USD", bitcoinUnit: "sats" } as const
+    const full = getFeeInclusiveListingPriceDisplay(
+      product,
+      fiatPreference,
+      quote,
+      true,
+      { nowMs }
+    )
+    const card = getFeeInclusiveListingCardPriceDisplay(
+      product,
+      fiatPreference,
+      quote,
+      true,
+      { nowMs }
+    )
+    expect(card.primary.text).toBe("~ $102.3k")
+    expect(card.primary.fullText).toBe(full.primary)
+    expect(card.secondary?.text).toBe("1.023 BTC")
+    expect(card.secondary?.fullText).toBe(full.secondary)
+    expect(card.sats).toBe(full.sats)
+    expect(card.feeEstimateIncluded).toBe(true)
+    expect(product.price).toBe(100_000)
+  })
+
+  it.each(["BGN", "XYZ"])(
+    "does not add estimated fees for unsupported retained %s prices",
+    (currency) => {
+      const product = {
+        price: 1_000,
+        priceSats: 1_000,
+        currency: "SATS",
+        sourcePrice: { amount: 1, currency, normalizedCurrency: currency },
+        format: "digital",
+      }
+      const card = getFeeInclusiveListingCardPriceDisplay(
+        product,
+        preference,
+        null,
+        true
+      )
+      expect(card).toEqual({
+        ...getShopperCardPriceDisplay(product, preference),
+        feeEstimateIncluded: false,
+      })
+    }
+  )
+
+  it("keeps missing-rate, physical shipping, and disabled-route displays on their existing path", () => {
+    for (const [product, enabled] of [
+      [{ price: 1, currency: "USD", format: "digital" }, true],
+      [{ price: 100_000_000, currency: "SATS", format: "physical" }, true],
+      [{ price: 100_000_000, currency: "SATS", format: "digital" }, false],
+    ] as const) {
+      expect(
+        getFeeInclusiveListingCardPriceDisplay(
+          product,
+          preference,
+          null,
+          enabled
+        )
+      ).toEqual({
+        ...getShopperCardPriceDisplay(product, preference),
+        feeEstimateIncluded: false,
+      })
+    }
   })
 })
 

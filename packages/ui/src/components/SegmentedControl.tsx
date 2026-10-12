@@ -17,7 +17,7 @@ const SegmentedControl = forwardRef<HTMLDivElement, SegmentedControlProps>(
       <Comp
         ref={ref}
         className={cn(
-          "inline-flex w-fit max-w-full flex-wrap rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1",
+          "inline-flex w-fit max-w-full flex-wrap overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)]",
           className
         )}
         {...props}
@@ -43,10 +43,10 @@ const SegmentedControlItem = forwardRef<
       type={asChild ? undefined : "button"}
       disabled={asChild ? undefined : disabled}
       className={cn(
-        "inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+        "inline-flex h-11 items-center gap-2 whitespace-nowrap px-3 sm:h-9 [@media(pointer:coarse)]:h-11 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
         selected
-          ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
-          : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
+          ? "bg-[var(--text-primary)] text-[var(--background)]"
+          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
         disabled && "pointer-events-none opacity-45",
         className
       )}

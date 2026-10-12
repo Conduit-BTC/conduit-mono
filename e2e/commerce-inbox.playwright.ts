@@ -13,6 +13,7 @@ import {
   readAuthenticatedGiftWraps,
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
+import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
@@ -182,6 +183,8 @@ test("buyer and seller retain conversations and files through self-copy failure,
     await expect(
       buyerPage.getByText("synthetic seller reply", { exact: true }).last()
     ).toBeVisible()
+    await inspectCommerceUi(buyerPage, testInfo, "buyer-populated-inbox")
+    await inspectCommerceUi(sellerPage, testInfo, "merchant-populated-inbox")
     const buyerComposer = buyerPage.getByRole("textbox", { name: "Message" })
     await buyerComposer.fill("synthetic buyer response")
     await buyerPage

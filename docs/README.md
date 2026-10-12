@@ -8,6 +8,8 @@ This directory contains public implementation context for the `conduit-mono` cli
 - `docs/OPEN_MARKETS.md`: commerce implementation map, compatibility differences, examples, and experimental proposal status
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
+- [UI workbench and authoring guide](../packages/ui/workbench/README.md): executable shared-component review reference
+- [Shared UI baseline](knowledge/shared-ui-baseline.md): Conduit/Ditto/shadcn inventory, shared recipes and review gaps
 - `docs/specs/*`: durable feature, protocol, and product contracts where the repository maintains one
 - `docs/nips/*`: compact Nostr implementation notes linked to canonical public NIPs
 - `docs/knowledge/*`: public-safe implementation notes, research, interoperability references, and reusable agent context
@@ -87,6 +89,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
   acceptance/evidence IDs, candidate-head test mapping, and live-validation gaps
 - `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and
   physical-device matrix for Market, Merchant, Wallet, and booth flows
+
+- `docs/knowledge/breez-lightning-addresses.md`: same-identity hosted address integration, configuration, retry and live enablement evidence.
 
 ### Active Compatibility Exceptions
 

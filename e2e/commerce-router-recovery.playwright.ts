@@ -663,30 +663,27 @@ async function rehearseRouter(
             merchantNetwork.isAbandonedCompletedRequest,
         }
       )
-      setStage("Merchant setup checks a supported receiver before signing")
-      await merchantPage.goto(`${merchantUrl}/payments`)
+      // The shared Wallets editor saves the account's public address; receiver
+      // eligibility is independently checked at checkout admission, not by
+      // restricting ordinary profile address updates.
+      setStage("Merchant setup reads back its genuine signed receiving profile")
+      await merchantPage.goto(`${merchantUrl}/wallet`)
       await expect(
-        merchantPage.getByRole("heading", { name: "Payments", exact: true })
+        merchantPage.getByRole("heading", { name: "Wallets", exact: true })
       ).toBeVisible()
       await merchantPage
-        .getByRole("button", { name: "Add", exact: true })
-        .click()
-      await merchantPage
-        .getByLabel("Lightning Address", { exact: true })
+        .getByLabel("Lightning address", { exact: true })
         .fill(merchantAddress)
       const save = merchantPage.getByRole("button", {
-        name: "Save changes",
+        name: "Save public address",
         exact: true,
       })
       await expect(save).toBeEnabled()
       await save.click()
       await expect(
-        merchantPage.getByText("Lightning Address signed and saved.", {
+        merchantPage.getByText(`Current address: ${merchantAddress}`, {
           exact: true,
         })
-      ).toBeVisible({ timeout: 30_000 })
-      await expect(
-        merchantPage.getByText("Checkout routing ready", { exact: true })
       ).toBeVisible({ timeout: 30_000 })
       setStage("Merchant setup reads back its genuine signed receiving profile")
       await expect
@@ -707,7 +704,9 @@ async function rehearseRouter(
         .toBe(true)
       await persistence.reload()
       await expect(
-        merchantPage.getByText("Checkout routing ready", { exact: true })
+        merchantPage.getByText(`Current address: ${merchantAddress}`, {
+          exact: true,
+        })
       ).toBeVisible({ timeout: 30_000 })
       expect(walletInitializations).toBe(0)
       expect(identity === undefined && grossFundingSats === undefined).toBe(

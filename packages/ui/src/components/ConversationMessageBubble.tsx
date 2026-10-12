@@ -83,7 +83,7 @@ export function ConversationMessageBubble({
         data-delivery-state={deliveryState}
         aria-busy={deliveryState === "pending" || undefined}
         className={cn(
-          "max-w-[80%] rounded-2xl px-3.5 py-2 text-sm break-words whitespace-pre-wrap",
+          "max-w-[80%] rounded-[var(--radius-md)] px-3.5 py-2 text-sm break-words whitespace-pre-wrap",
           mine
             ? "rounded-br-sm bg-primary-500 text-white"
             : "rounded-bl-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]",

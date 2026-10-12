@@ -368,6 +368,7 @@ function MerchantIdentity({
           ) : null}
         </Link>
         {!nip05 ? (
+          // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
           <button
             type="button"
             className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md text-left font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
@@ -381,7 +382,7 @@ function MerchantIdentity({
           >
             <span className="truncate">{formatNpub(merchantPubkey, 10)}</span>
             {copied ? (
-              <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+              <Check className="h-3.5 w-3.5 shrink-0 text-[var(--success-text)]" />
             ) : (
               <Copy className="h-3.5 w-3.5 shrink-0" />
             )}
@@ -465,7 +466,7 @@ function RelatedProductRow({
 
   return (
     <div
-      className={`grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 ${
+      className={`grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 ${
         soldOut ? "opacity-75" : ""
       }`}
     >
@@ -473,7 +474,7 @@ function RelatedProductRow({
         to="/products/$productId"
         params={{ productId: selectedProduct.id }}
         search={{}}
-        className="shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]"
+        className="shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)]"
       >
         <img
           src={imageUrl}
@@ -623,7 +624,7 @@ function CartLineItem({
         soldOut ? "opacity-80" : ""
       }`}
     >
-      <div className="size-[88px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)] sm:size-28">
+      <div className="size-[88px] overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] sm:size-28">
         {imageUrl && (
           <img
             src={imageUrl}
@@ -652,7 +653,7 @@ function CartLineItem({
         {soldOut || insufficientStock ? (
           <div
             role="alert"
-            className="mt-2 flex items-start gap-2 text-sm text-warning"
+            className="mt-2 flex items-start gap-2 text-sm text-[var(--warning-text)]"
           >
             <AlertTriangle
               className="mt-0.5 h-4 w-4 shrink-0"
@@ -682,6 +683,7 @@ function CartLineItem({
         ) : null}
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
+          {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
           <button
             type="button"
             className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
@@ -692,6 +694,7 @@ function CartLineItem({
           </button>
 
           <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
+            {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
             <button
               type="button"
               className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
@@ -703,6 +706,7 @@ function CartLineItem({
             <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium tabular-nums text-[var(--text-primary)]">
               {item.quantity}
             </div>
+            {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
             <button
               type="button"
               disabled={incrementDisabled}
@@ -827,7 +831,7 @@ function MerchantCartCard({
         : "Digital delivery"
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+    <section className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
       <div className="p-5 sm:p-6">
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3">
           <MerchantIdentity
@@ -930,9 +934,9 @@ function MerchantCartCard({
         {mixedFulfillmentMessage ? (
           <div
             role="alert"
-            className="mt-5 flex items-start gap-2 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
+            className="mt-5 flex items-start gap-2 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
           >
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning-text)]" />
             {mixedFulfillmentMessage}
           </div>
         ) : null}
@@ -1284,9 +1288,9 @@ function CartPage() {
           <span className="text-[var(--text-primary)]">Cart</span>
         </div>
 
-        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
+        <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <div className="max-w-xl space-y-4">
-            <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
               <CartIcon className="h-6 w-6" />
             </div>
             <h1 className="text-4xl font-semibold text-[var(--text-primary)]">
@@ -1349,7 +1353,7 @@ function CartPage() {
               item.format !== "digital" &&
               item.fulfillment?.type !== "event_market_pickup"
           ) && (
-            <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
               <Button
                 variant="ghost"
                 className="w-full justify-between px-0"
@@ -1364,7 +1368,7 @@ function CartPage() {
                   id="cart-shipping-estimate"
                   className="mt-3 grid gap-3 sm:grid-cols-3"
                 >
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="estimate-country">Country</Label>
                     <Combobox
                       id="estimate-country"
@@ -1380,7 +1384,7 @@ function CartPage() {
                       }
                     />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="estimate-state">State / region</Label>
                     <Input
                       id="estimate-state"
@@ -1392,7 +1396,7 @@ function CartPage() {
                       autoComplete="address-level1"
                     />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="grid gap-1">
                     <Label htmlFor="estimate-postal">Postal / ZIP code</Label>
                     <Input
                       id="estimate-postal"
@@ -1413,9 +1417,9 @@ function CartPage() {
             </section>
           )}
           {merchantCount < purchaseGroups.length ? (
-            <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+            <div className="flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
               <AlertTriangle
-                className="h-4 w-4 shrink-0 text-warning"
+                className="h-4 w-4 shrink-0 text-[var(--warning-text)]"
                 aria-hidden="true"
               />
               <span className="font-medium text-[var(--text-primary)]">
@@ -1427,7 +1431,7 @@ function CartPage() {
           {cart.persistenceMode === "memory" ? (
             <div
               role="status"
-              className="rounded-2xl border border-warning/40 bg-warning/10 p-4 text-pretty text-sm text-[var(--text-secondary)]"
+              className="rounded-[var(--radius-md)] border border-warning/40 bg-warning/10 p-4 text-pretty text-sm text-[var(--text-secondary)]"
             >
               Cart storage is unavailable. Changes work in this tab only and may
               not survive a reload or appear in another tab.
@@ -1437,11 +1441,11 @@ function CartPage() {
           {cartReadiness.hasUnavailableItems ? (
             <div
               role="alert"
-              className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
+              className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex items-start gap-3">
                 <AlertTriangle
-                  className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+                  className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning-text)]"
                   aria-hidden="true"
                 />
                 <div>
@@ -1479,12 +1483,12 @@ function CartPage() {
             <div className="flex items-start gap-3 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
               {presetShippingEligibility.eligible === true ? (
                 <Check
-                  className="mt-0.5 size-4 shrink-0 text-[var(--success)]"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--success-text)]"
                   aria-hidden="true"
                 />
               ) : (
                 <AlertTriangle
-                  className="mt-0.5 size-4 shrink-0 text-warning"
+                  className="mt-0.5 size-4 shrink-0 text-[var(--warning-text)]"
                   aria-hidden="true"
                 />
               )}
@@ -1499,7 +1503,7 @@ function CartPage() {
           )}
 
           {(search.purchase || search.merchant) && !expandedGroup && (
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
               {matchingMerchantGroups.length > 1 && !search.purchase
                 ? "This merchant has multiple compatible purchases. Choose the delivery or pickup purchase you want to review."
                 : "That purchase is not in your cart anymore."}
@@ -1555,7 +1559,7 @@ function CartPage() {
         </section>
 
         <aside className="space-y-4">
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
             <div className="text-sm font-medium text-[var(--text-primary)]">
               All carts
             </div>
@@ -1587,7 +1591,7 @@ function CartPage() {
             </Button>
           </div>
 
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-semibold text-[var(--text-primary)]">
@@ -1609,7 +1613,7 @@ function CartPage() {
             </div>
             <div className="mt-4 space-y-3">
               {isRelatedProductsInitialLoading && (
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
                   Checking cached suggestions and nearby relay results.
                 </div>
               )}
@@ -1631,7 +1635,7 @@ function CartPage() {
 
               {!isRelatedProductsInitialLoading &&
                 relatedProducts.length === 0 && (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                  <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
                     No additional products to suggest yet.
                   </div>
                 )}

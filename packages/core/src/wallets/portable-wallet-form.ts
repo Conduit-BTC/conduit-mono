@@ -1,4 +1,5 @@
 import { isValidSparkAccountNumber } from "./spark-recovery"
+import type { WalletNetwork } from "./index"
 
 export type PortableWalletMode = "create" | "restore"
 
@@ -50,4 +51,8 @@ export function resolvePortableWalletAccountNumber(
 function isValidSparkAccountNumberInput(value: string): boolean {
   const accountNumber = Number(value)
   return isValidSparkAccountNumber(accountNumber)
+}
+
+export function getDefaultSparkAccountNumber(network: WalletNetwork): number {
+  return network === "regtest" ? 0 : 1
 }

@@ -39,7 +39,7 @@ export function ProtectedInboxNotice({
       className={cn(
         "flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm",
         presentation.unavailable
-          ? "border-error/30 bg-error/10 text-error"
+          ? "border-error/30 bg-error/10 text-[var(--error-text)]"
           : "border-[var(--warning)]/40 bg-[var(--warning)]/10 text-[var(--text-primary)]",
         className
       )}

@@ -184,9 +184,9 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
                 <DecorativeImage
                   src={sheet.bannerUrl}
                   alt=""
-                  className="event-sign-event-banner-mini aspect-[3/1] w-44 shrink-0 rounded-lg bg-neutral-950 object-cover"
+                  className="event-sign-event-banner-mini aspect-[3/1] w-44 shrink-0 rounded-[var(--radius-md)] bg-neutral-950 object-cover"
                   fallback={getEventSignImageFallback(sheet.eventTitle)}
-                  fallbackClassName="event-sign-event-banner-mini flex aspect-[3/1] w-44 shrink-0 items-center justify-center rounded-lg bg-primary-50 font-display text-2xl font-semibold text-primary-700"
+                  fallbackClassName="event-sign-event-banner-mini flex aspect-[3/1] w-44 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary-50 font-display text-2xl font-semibold text-primary-700"
                 />
                 <h1 className="event-sign-event-title line-clamp-2 min-w-0 text-balance break-words font-display text-2xl font-semibold leading-tight text-neutral-950">
                   {sheet.eventTitle}
@@ -237,7 +237,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
                 className="event-sign-section-divider mt-6 mb-5 w-full max-w-2xl border-t-2 border-primary-200"
                 aria-hidden="true"
               />
-              <div className="event-sign-merchant-lockup w-full max-w-2xl overflow-hidden rounded-2xl bg-white text-left ring-1 ring-neutral-200">
+              <div className="event-sign-merchant-lockup w-full max-w-2xl overflow-hidden rounded-[var(--radius-md)] bg-white text-left ring-1 ring-neutral-200">
                 <DecorativeImage
                   src={merchant.bannerUrl}
                   alt=""
@@ -267,7 +267,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
               merchant ? "mt-4" : "mt-16"
             )}
           >
-            <div className="event-sign-qr-frame size-[18.75rem] shrink-0 rounded-2xl border-2 border-neutral-950 bg-white p-5">
+            <div className="event-sign-qr-frame size-[18.75rem] shrink-0 rounded-[var(--radius-md)] border-2 border-neutral-950 bg-white p-5">
               <PrintableQrCode
                 value={sheet.qrValue}
                 label={
@@ -374,12 +374,12 @@ export function EventQrPrintPreview({
 
           {evidenceNotice ? (
             <div
-              className="flex gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-[var(--text-primary)]"
+              className="flex gap-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-[var(--text-primary)]"
               role="status"
               data-testid="event-sign-evidence-notice"
             >
               <AlertTriangle
-                className="mt-0.5 size-5 shrink-0 text-[var(--warning)]"
+                className="mt-0.5 size-5 shrink-0 text-[var(--warning-text)]"
                 aria-hidden="true"
               />
               <div>

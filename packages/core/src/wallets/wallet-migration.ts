@@ -1,6 +1,6 @@
 import {
+  getNwcUriFingerprint,
   getWalletDefaultReplacement,
-  getWalletDefaultUpdates,
   isWalletNetwork,
   parseNwcUri,
   type NwcGetInfoResult,
@@ -11,6 +11,8 @@ import {
   type WalletRegistryStore,
 } from "@conduit/core"
 import { registerNwcWalletAtomically } from "./wallet-storage"
+import { closeBuyerNwcSession } from "./buyer-nwc-session"
+import { notifyWalletChangeFallback } from "./wallet-change-fallback"
 
 const LEGACY_NWC_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const LEGACY_NWC_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
@@ -31,8 +33,9 @@ export interface LegacyWalletStorage {
 
 export interface NwcWalletRegistrationStore extends Pick<
   WalletRegistryStore,
-  "list" | "put"
+  "list" | "put" | "setDefault"
 > {
+  listVisible(ownerPubkey: string | null): Promise<WalletDescriptor[]>
   transaction<T>(operation: () => Promise<T>): Promise<T>
 }
 
@@ -41,6 +44,91 @@ export type LegacyNwcMigrationResult =
   | { status: "invalid" }
   | { status: "already_migrated"; wallet: WalletDescriptor }
   | { status: "migrated"; wallet: WalletDescriptor }
+
+export interface NwcWalletRegistration {
+  wallet: WalletDescriptor
+  created: boolean
+}
+
+/** Whether the account-owned legacy credential can still be relied on. */
+export type LegacyNwcRetirement =
+  | { status: "unchanged"; error?: "storage" }
+  | { status: "completed" }
+  | { status: "uncertain" }
+
+/** Retire the legacy owner after read-back; compensate only this migration's new copy. */
+export async function migrateAccountNwcConnection(input: {
+  uri: string
+  connect(
+    onRegistered: (registration: NwcWalletRegistration) => void
+  ): Promise<WalletDescriptor>
+  credentialStore: NwcCredentialStore
+  registry: Pick<WalletRegistry, "list" | "remove">
+  shouldContinue(): boolean
+  retireLegacy(): LegacyNwcRetirement
+}): Promise<boolean> {
+  if (!input.shouldContinue()) return false
+  let registration: NwcWalletRegistration | undefined
+  let retirement: LegacyNwcRetirement["status"] = "unchanged"
+  try {
+    const wallet = await input.connect((result) => {
+      registration = result
+    })
+    return await input.credentialStore.transaction(async () => {
+      if (!input.shouldContinue()) return false
+      const credential = await input.credentialStore.getNwcCredential(wallet.id)
+      const registered = (await input.registry.list()).find(
+        (candidate) => candidate.id === wallet.id
+      )
+      if (
+        !credential ||
+        !registered ||
+        registered.providerId !== "nwc" ||
+        registered.kind !== "connected" ||
+        getNwcUriFingerprint(credential) !== getNwcUriFingerprint(input.uri)
+      )
+        throw new Error("Connected Wallet migration verification failed.")
+      if (!input.shouldContinue()) return false
+      // A thrown retirement may already have removed the legacy credential.
+      // Only an explicit unchanged result proves compensation is safe.
+      retirement = "uncertain"
+      const result = input.retireLegacy()
+      retirement = result.status
+      if (retirement === "uncertain")
+        throw new Error("Connected Wallet legacy retirement is uncertain.")
+      if (result.status === "unchanged" && result.error === "storage")
+        throw new Error("Connected Wallet legacy storage is unavailable.")
+      return retirement === "completed"
+    })
+  } finally {
+    if (retirement === "unchanged" && registration?.created) {
+      const walletId = registration.wallet.id
+      const removed = await input.credentialStore.transaction(async () => {
+        const registered = (await input.registry.list()).find(
+          (candidate) => candidate.id === walletId
+        )
+        const credential =
+          await input.credentialStore.getNwcCredential(walletId)
+        if (
+          (registered &&
+            (registered.providerId !== "nwc" ||
+              registered.kind !== "connected")) ||
+          (credential &&
+            getNwcUriFingerprint(credential) !==
+              getNwcUriFingerprint(input.uri))
+        )
+          return false
+        await input.credentialStore.deleteNwcCredential(walletId)
+        await input.registry.remove(walletId)
+        return true
+      })
+      if (removed) {
+        closeBuyerNwcSession(walletId)
+        notifyWalletChangeFallback()
+      }
+    }
+  }
+}
 
 export async function migrateLegacyNwcWallet(input: {
   legacyStorage: LegacyWalletStorage
@@ -144,6 +232,9 @@ export function getNwcWalletCapabilities(
   if (methods.includes("make_invoice")) {
     capabilities.push("receive")
   }
+  if (methods.includes("lookup_invoice")) {
+    capabilities.push("verify_invoice")
+  }
   if (methods.includes("get_balance")) {
     capabilities.push("balance")
   }
@@ -171,16 +262,24 @@ export function getNwcWalletRegistrationDetails(
 
 export async function reconcileNwcWalletRegistration(input: {
   walletId: string
+  ownerPubkey: string | null
   info: NwcGetInfoResult | null
   store: NwcWalletRegistrationStore
+  shouldContinue?: () => boolean
   now?: () => number
 }): Promise<boolean> {
   if (!input.info) {
     return false
   }
 
+  const assertCurrent = () => {
+    if (input.shouldContinue?.() === false)
+      throw new Error("Wallet sign-in changed.")
+  }
   return input.store.transaction(async () => {
-    let wallets = await input.store.list()
+    assertCurrent()
+    const wallets = await input.store.list()
+    assertCurrent()
     const current = wallets.find(
       (wallet) =>
         wallet.id === input.walletId &&
@@ -196,10 +295,10 @@ export async function reconcileNwcWalletRegistration(input: {
       current.network
     )
     const movedNetworks = registration.network !== current.network
-    const defaultIntents =
-      movedNetworks || !registration.capabilities.includes("pay_invoice")
-        ? current.defaultIntents.filter((intent) => intent !== "pay_invoice")
-        : current.defaultIntents
+    const liveCapabilities = new Set(registration.capabilities)
+    const defaultIntents = current.defaultIntents.filter(
+      (intent) => !movedNetworks && liveCapabilities.has(intent)
+    )
     const descriptorChanged =
       movedNetworks ||
       !arraysEqual(current.capabilities, registration.capabilities) ||
@@ -216,34 +315,28 @@ export async function reconcileNwcWalletRegistration(input: {
         updatedAt,
       }
       await input.store.put(updated)
-      wallets = wallets.map((wallet) =>
-        wallet.id === updated.id ? updated : wallet
-      )
+      assertCurrent()
     }
 
+    let visible = await input.store.listVisible(input.ownerPubkey)
+    assertCurrent()
     for (const network of new Set([current.network, registration.network])) {
-      const replacement = getWalletDefaultReplacement(wallets, {
+      const replacement = getWalletDefaultReplacement(visible, {
         network,
         intent: "pay_invoice",
       })
       if (!replacement) {
         continue
       }
-      const updates = getWalletDefaultUpdates(wallets, {
+      await input.store.setDefault({
         walletId: replacement.id,
         intent: "pay_invoice",
         updatedAt,
       })
-      for (const update of updates) {
-        await input.store.put(update)
-      }
-      if (updates.length > 0) {
-        changed = true
-        const updatesById = new Map(
-          updates.map((wallet) => [wallet.id, wallet])
-        )
-        wallets = wallets.map((wallet) => updatesById.get(wallet.id) ?? wallet)
-      }
+      assertCurrent()
+      changed = true
+      visible = await input.store.listVisible(input.ownerPubkey)
+      assertCurrent()
     }
 
     return changed

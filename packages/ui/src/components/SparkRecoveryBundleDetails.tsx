@@ -1,12 +1,12 @@
 import { Copy } from "lucide-react"
 import { useState } from "react"
-import { Button } from "@conduit/ui"
+import { Button } from "../index"
 
 import {
   formatSparkRecoveryBundleForClipboard,
   type SparkRecoveryBundle,
-} from "../lib/spark-recovery-bundle"
-import { getWalletNetworkLabel } from "../lib/wallet-provider-label"
+} from "@conduit/core/wallets/spark-recovery-bundle"
+import { getWalletNetworkLabel } from "@conduit/core/wallets/wallet-provider-label"
 
 export function SparkRecoveryBundleDetails({
   mnemonic,
@@ -43,7 +43,7 @@ export function SparkRecoveryBundleDetails({
 
   return (
     <>
-      <div className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4">
+      <div className="rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4">
         <p className="select-all font-mono text-sm leading-7 text-[var(--text-primary)]">
           {mnemonic}
         </p>

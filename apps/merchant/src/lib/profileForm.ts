@@ -1,5 +1,5 @@
 import {
-  buildProfileUpdatePayload,
+  buildProfileDetailsUpdatePayload,
   type Profile,
   type ProfileFormValues,
 } from "@conduit/core"
@@ -36,5 +36,5 @@ export function profileFormToUpdatePayload(
   form: ProfileFormValues,
   latestProfile?: Profile | null
 ): Omit<Profile, "pubkey"> {
-  return buildProfileUpdatePayload(form, latestProfile)
+  return buildProfileDetailsUpdatePayload(form, latestProfile)
 }

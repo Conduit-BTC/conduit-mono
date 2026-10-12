@@ -29,8 +29,10 @@ import {
   type SparkNativeModule,
   type SparkNativeWallet,
 } from "../apps/market/src/lib/spark-sdk"
-import { MemorySparkDirectTransferSafetyStore } from "../apps/market/src/lib/spark-direct-transfer-safety"
+import { MemorySparkDirectTransferSafetyStore } from "@conduit/core/wallets/spark-direct-transfer-safety"
 import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
+import { SparkWalletManager as SharedSparkWalletManager } from "@conduit/core/wallets/spark-wallet"
+import { FirstPartySparkSdkFactory as SharedSparkSdkFactory } from "@conduit/core/wallets/spark-sdk"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -120,6 +122,49 @@ function testReceiveQuote(
 }
 
 describe("first-party Spark SDK adapter", () => {
+  it("keeps checkout and reusable wallets on the single shared Core runtime", () => {
+    expect(SparkWalletManager).toBe(SharedSparkWalletManager)
+    expect(FirstPartySparkSdkFactory).toBe(SharedSparkSdkFactory)
+  })
+
+  it("unconfigured branded addresses preserve the same open wallet and invoice receive", async () => {
+    let opens = 0
+    const wallet = createNativeWallet()
+    const factory = createFactory(wallet, {
+      async initialize() {
+        opens++
+        return { wallet }
+      },
+    })
+    const manager = new SparkWalletManager(factory, async () => ({
+      async release() {},
+    }))
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: MNEMONIC,
+      accountNumber: 1,
+    })
+    expect(await manager.getLightningAddress("wallet-personal", true)).toEqual({
+      status: "unavailable",
+      reason: "unconfigured",
+    })
+    expect(
+      (
+        await manager.receiveLightning("wallet-personal", {
+          description: "Receive",
+        })
+      ).paymentRequest
+    ).toMatch(/^lnbc/)
+    expect(opens).toBe(1)
+    expect(manager.isOpen("wallet-personal")).toBe(true)
+    await manager.close("wallet-personal")
+    expect(await manager.getLightningAddress("wallet-personal", true)).toEqual({
+      status: "unavailable",
+      reason: "locked",
+    })
+    expect(opens).toBe(1)
+  })
+
   it("keeps exact returned-attempt inspection unavailable when native closure reads are unsupported", async () => {
     const client = await openClient(createFactory(createNativeWallet()))
     expect(
@@ -5068,3 +5113,57 @@ function makeInvalidAmountReceiveInvoice(
     ],
   })
 }
+
+describe("exact receiving invoice confirmation", () => {
+  it("requires the original invoice, amount, hash, settled transfer and valid preimage", async () => {
+    const invoice = makeLightningInvoice(ZERO_PREIMAGE_PAYMENT_HASH, 1000)
+    let native = {
+      ...createLightningReceiveResult(invoice),
+      status: "TRANSFER_COMPLETED",
+      paymentPreimage: ZERO_PREIMAGE,
+      updatedAt: new Date(1800000010000).toISOString(),
+    }
+    const wallet = createNativeWallet({
+      async createLightningInvoice() {
+        return native
+      },
+      async getLightningReceiveRequest() {
+        return native
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+    const issued = await client.createReceivingInvoice!({ amountSats: 1000 })
+    expect(issued.invoice).toBe(invoice)
+    expect(issued.receivingWallet.requestId).toBe(native.id)
+    expect(
+      (await client.lookupReceivingInvoice!(invoice, native.id)).state
+    ).toBe("settled")
+    native = { ...native, paymentPreimage: "01".repeat(32) }
+    expect(
+      (await client.lookupReceivingInvoice!(invoice, native.id)).state
+    ).toBe("pending")
+    native = {
+      ...native,
+      paymentPreimage: ZERO_PREIMAGE,
+      status: "LIGHTNING_PAYMENT_RECEIVED",
+    }
+    expect(
+      (await client.lookupReceivingInvoice!(invoice, native.id)).state
+    ).toBe("pending")
+    native = {
+      ...native,
+      status: "TRANSFER_COMPLETED",
+      invoice: { ...native.invoice, paymentHash: "11".repeat(32) },
+    }
+    await expect(
+      client.lookupReceivingInvoice!(invoice, native.id)
+    ).rejects.toThrow("Conflicting")
+    await expect(
+      client.lookupReceivingInvoice!(
+        makeReceiveInvoice({ amountSats: 2000 }),
+        native.id
+      )
+    ).rejects.toThrow("original")
+    await client.disconnect()
+  })
+})

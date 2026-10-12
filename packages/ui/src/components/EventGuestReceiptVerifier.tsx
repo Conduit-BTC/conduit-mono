@@ -30,7 +30,7 @@ export function EventGuestReceiptVerifier({
   }
   if (!order.contactFreePickup) return null
   return (
-    <section className="space-y-3 rounded-xl border border-[var(--border)] p-4">
+    <section className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
       <h3 className="font-semibold">Contact-free event order</h3>
       <p className="text-sm">Handoff name: {order.contactFreePickup.label}</p>
       <p className="text-xs text-[var(--text-muted)]">

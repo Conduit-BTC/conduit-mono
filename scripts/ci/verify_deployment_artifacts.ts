@@ -61,6 +61,14 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
   ) {
     throw new Error(`${manifestPath} has mismatched compiled execution flag.`)
   }
+  if (
+    manifest.publicFeatures.breezLightningAddressEnabled !==
+    resolvedProfile.publicFeatures.breezLightningAddressEnabled
+  ) {
+    throw new Error(
+      `${manifestPath} has mismatched compiled address enablement.`
+    )
+  }
   if (expectedCommit && manifest.commitSha !== expectedCommit) {
     throw new Error(`${manifestPath} has the wrong source commit.`)
   }

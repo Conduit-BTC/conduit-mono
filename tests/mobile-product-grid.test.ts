@@ -3,39 +3,24 @@ import { readFile } from "node:fs/promises"
 
 describe("Market product grid layout", () => {
   it("keeps browse grids dense on mobile while stretching each catalog row", async () => {
-    const expectedGridClasses = new Map([
-      [
-        "apps/market/src/routes/products/index.tsx",
-        "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4",
-      ],
-      [
-        "apps/market/src/routes/$identityRef.tsx",
-        "grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4",
-      ],
-      [
-        "apps/market/src/routes/products/$productId.tsx",
-        "grid list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4",
-      ],
-    ])
-
-    for (const [file, expectedGridClass] of expectedGridClasses) {
+    const files = [
+      "apps/market/src/routes/products/index.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
+      "apps/market/src/routes/products/$productId.tsx",
+    ]
+    for (const file of files) {
       const content = await readFile(file, "utf8")
-      if (file.endsWith("routes/products/index.tsx")) {
-        const cardSource = await readFile(
-          "apps/market/src/components/ProductGridCard.tsx",
-          "utf8"
-        )
-        expect(content).toContain("PRODUCT_GRID_CLASS_NAME")
-        expect(cardSource).toContain(expectedGridClass)
-      } else {
-        expect(content).toContain(expectedGridClass)
-      }
+      expect(content).toContain("PRODUCT_GRID_CLASS_NAME")
       expect(content).not.toContain("auto-rows-fr")
-      expect(content).not.toContain("auto-fit")
-      expect(content).not.toContain(
-        "grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2"
-      )
     }
+    const card = await readFile(
+      "apps/market/src/components/ProductGridCard.tsx",
+      "utf8"
+    )
+    expect(card).toContain(
+      "grid-cols-[repeat(auto-fit,minmax(min(100%,8.5rem),1fr))]"
+    )
+    expect(card).toContain("gap-2 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4")
   })
 
   it("stretches catalog cards while allowing natural event-card height", async () => {

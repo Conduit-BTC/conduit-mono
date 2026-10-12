@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import { AlertTriangle, KeyRound } from "lucide-react"
 import { Button } from "./Button"
+import { ActionRow } from "./Layout"
 
 export interface SignerRecoveryNoticeProps {
   description: ReactNode
@@ -33,35 +34,35 @@ export function SignerRecoveryNotice({
       role={busy ? "status" : "alert"}
       aria-live={busy ? "polite" : "assertive"}
       aria-busy={busy}
-      className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-[var(--text-primary)]"
+      className="rounded-[var(--radius-md)] border border-warning/40 bg-warning/10 p-4 text-[var(--text-primary)]"
     >
       <div className="flex items-start gap-3">
         <AlertTriangle
-          className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+          className="mt-0.5 h-5 w-5 shrink-0 text-[var(--warning-text)]"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">
+          <p className="text-base font-semibold">
             {reconnecting
               ? "Reconnecting signer"
               : changingSigner
                 ? "Opening signer options"
                 : "Signer reconnect needed"}
           </p>
-          <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+          <div className="mt-1 text-base leading-6 text-[var(--text-secondary)]">
             {description}
           </div>
           {restoreFailed && restoreFailureDescription ? (
-            <div className="mt-2 text-sm leading-6 text-error">
+            <div className="mt-2 text-base leading-6 text-[var(--error-text)]">
               {restoreFailureDescription}
             </div>
           ) : null}
           {changeSignerError ? (
-            <p className="mt-2 text-sm leading-6 text-error">
+            <p className="mt-2 text-base leading-6 text-[var(--error-text)]">
               {changeSignerError}
             </p>
           ) : null}
-          <div className="mt-3 flex flex-wrap gap-2">
+          <ActionRow className="mt-3">
             <Button
               type="button"
               size="sm"
@@ -90,7 +91,7 @@ export function SignerRecoveryNotice({
                   : "Use a different signer"}
               </Button>
             ) : null}
-          </div>
+          </ActionRow>
         </div>
       </div>
     </div>

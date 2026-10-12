@@ -19,6 +19,7 @@ export interface PublicDeploymentFeatures {
   livePresenceEnabled: boolean
   quantumRouterEnabled: boolean
   quantumRouterExecutionEnabled: boolean
+  breezLightningAddressEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -145,6 +146,11 @@ function assertProfile(
   ) {
     throw new Error(
       `Deployment profile ${name} must explicitly set dmCompatibilityOrderRoutingEnabled.`
+    )
+  }
+  if (typeof value.publicFeatures.breezLightningAddressEnabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set breezLightningAddressEnabled.`
     )
   }
   if (typeof value.publicFeatures.livePresenceEnabled !== "boolean") {
@@ -346,6 +352,9 @@ export function resolveDeploymentProfile(
       releaseChannel: "local",
       lightningNetwork: env.VITE_LIGHTNING_NETWORK?.trim() || "mainnet",
       publicFeatures: {
+        breezLightningAddressEnabled: ["1", "true", "on"].includes(
+          env.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED?.trim().toLowerCase() ?? ""
+        ),
         dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
           env.VITE_DM_BOOTSTRAP_WRITES?.trim().toLowerCase() ?? ""
         ),

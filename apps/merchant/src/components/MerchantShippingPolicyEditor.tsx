@@ -267,8 +267,8 @@ export function MerchantShippingPolicyEditor() {
         (query.data &&
           query.data.state !== "found" &&
           query.data.state !== "not_found")) && (
-        <div className="space-y-2 rounded-xl border border-warning/40 p-3">
-          <p className="text-pretty text-sm text-warning">
+        <div className="space-y-2 rounded-[var(--radius-md)] border border-warning/40 p-3">
+          <p className="text-pretty text-sm text-[var(--warning-text)]">
             {query.data?.state === "withdrawn"
               ? "These rates were withdrawn. Publish new rates when you are ready to ship."
               : hasConflict
@@ -313,9 +313,9 @@ export function MerchantShippingPolicyEditor() {
       {dirty && revisionChanged && !needsReplacement && (
         <div
           role="alert"
-          className="space-y-2 rounded-xl border border-warning/40 p-3"
+          className="space-y-2 rounded-[var(--radius-md)] border border-warning/40 p-3"
         >
-          <p className="text-pretty text-sm text-warning">
+          <p className="text-pretty text-sm text-[var(--warning-text)]">
             Shipping changed while you were editing. Load the latest rates
             before publishing. This replaces your unpublished edits.
           </p>
@@ -333,7 +333,7 @@ export function MerchantShippingPolicyEditor() {
       <form onSubmit={publish} className="space-y-5">
         <fieldset disabled={busy} className="space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div className="col-span-2 space-y-1.5 sm:col-span-1">
+            <div className="col-span-2 space-y-1 sm:col-span-1">
               <Label htmlFor="policy-origin">Origin country</Label>
               <Combobox
                 id="policy-origin"
@@ -346,7 +346,7 @@ export function MerchantShippingPolicyEditor() {
                 }
               />
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <Label htmlFor="policy-currency">Shipping currency</Label>
               <Select
                 value={draft.currency}
@@ -364,7 +364,7 @@ export function MerchantShippingPolicyEditor() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <Label htmlFor="policy-weight-unit">Weight unit</Label>
               <Select
                 value={weightUnit}
@@ -408,7 +408,7 @@ export function MerchantShippingPolicyEditor() {
           {remote?.policy.version === 1 &&
             (remote.policy.weightAllowanceGrams > 0 ||
               remote.policy.handlingMinor > 0) && (
-              <p className="text-pretty text-sm text-warning">
+              <p className="text-pretty text-sm text-[var(--warning-text)]">
                 Move shared packing buffers to products before updating these
                 rates.
               </p>
@@ -419,7 +419,7 @@ export function MerchantShippingPolicyEditor() {
           <p
             id="shipping-policy-error"
             role="alert"
-            className="text-pretty text-sm text-error"
+            className="text-pretty text-sm text-[var(--error-text)]"
           >
             {validationError}
           </p>
@@ -497,7 +497,10 @@ export function MerchantShippingPolicyEditor() {
             </Button>
           </AlertDialogFooter>
           {status.state === "error" && (
-            <p role="alert" className="text-pretty text-sm text-error">
+            <p
+              role="alert"
+              className="text-pretty text-sm text-[var(--error-text)]"
+            >
               {status.message}
             </p>
           )}

@@ -494,7 +494,7 @@ export function ProductImageUrlCollectionField({
           return (
             <div
               key={`${id}-${index}`}
-              className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
+              className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3"
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
@@ -536,7 +536,7 @@ export function ProductImageUrlCollectionField({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="size-11 text-error"
+                    className="size-11 text-[var(--error-text)]"
                     aria-label={
                       rows.length === 1
                         ? "Clear primary image"
@@ -564,7 +564,7 @@ export function ProductImageUrlCollectionField({
               {error ? (
                 <p
                   id={errorId}
-                  className="text-xs leading-5 text-error"
+                  className="text-xs leading-5 text-[var(--error-text)]"
                   role="alert"
                 >
                   {error}
@@ -584,18 +584,18 @@ export function ProductImageUrlCollectionField({
           return (
             <div
               key={item.id}
-              className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 sm:grid-cols-[6rem_1fr_auto] sm:items-center"
+              className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 sm:grid-cols-[6rem_1fr_auto] sm:items-center"
               aria-busy={active}
             >
               {item.previewUrl ? (
                 <img
                   src={item.previewUrl}
                   alt=""
-                  className="aspect-[4/3] w-24 rounded-lg bg-[var(--surface-elevated)] object-cover"
+                  className="aspect-[4/3] w-24 rounded-[var(--radius-md)] bg-[var(--surface-elevated)] object-cover"
                 />
               ) : (
                 <div
-                  className="flex aspect-[4/3] w-24 items-center justify-center rounded-lg bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+                  className="flex aspect-[4/3] w-24 items-center justify-center rounded-[var(--radius-md)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
                   aria-hidden="true"
                 >
                   {active ? (
@@ -618,7 +618,10 @@ export function ProductImageUrlCollectionField({
                   />
                 ) : null}
                 {item.error ? (
-                  <p className="mt-2 text-xs leading-5 text-error" role="alert">
+                  <p
+                    className="mt-2 text-xs leading-5 text-[var(--error-text)]"
+                    role="alert"
+                  >
                     {item.error}
                   </p>
                 ) : null}
@@ -658,7 +661,7 @@ export function ProductImageUrlCollectionField({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-11 text-error"
+                      className="size-11 text-[var(--error-text)]"
                       aria-label={`Remove unfinished image ${itemNumber}`}
                       onClick={() => removeUploadItem(item.id)}
                     >
@@ -675,7 +678,7 @@ export function ProductImageUrlCollectionField({
           <p
             ref={requiredErrorRef}
             id={requiredErrorId}
-            className="text-xs leading-5 text-error"
+            className="text-xs leading-5 text-[var(--error-text)]"
             role="alert"
             tabIndex={-1}
           >
@@ -769,7 +772,7 @@ export function ProductImageUrlCollectionField({
         <div className="text-xs font-medium text-[var(--text-primary)]">
           Conduit Market card preview
         </div>
-        <div className="max-w-sm overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+        <div className="max-w-sm overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
           <ProductImageFrame image={previewImage} title={previewTitle} />
         </div>
         <p className="text-pretty text-xs leading-5 text-[var(--text-muted)]">
@@ -780,7 +783,7 @@ export function ProductImageUrlCollectionField({
       </div>
 
       {upload?.target.kind === "fallback" ? (
-        <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
           <p>
             No media server is configured, so this file uses{" "}
             <a
@@ -831,13 +834,13 @@ export function ProductImageUrlCollectionField({
       ) : null}
 
       {showRequiredError && rows.length === 0 && uploadItems.length === 0 ? (
-        <p className="text-xs leading-5 text-error" role="alert">
+        <p className="text-xs leading-5 text-[var(--error-text)]" role="alert">
           Add at least one product image.
         </p>
       ) : null}
 
       {occupiedSlots > MAX_PRODUCT_IMAGE_CANDIDATES ? (
-        <p className="text-xs leading-5 text-error" role="alert">
+        <p className="text-xs leading-5 text-[var(--error-text)]" role="alert">
           Use {MAX_PRODUCT_IMAGE_CANDIDATES} images or fewer.
         </p>
       ) : null}

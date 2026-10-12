@@ -31,7 +31,7 @@ export function SharedVariationMeasurementsToggle({
       ? "The parent measurements will replace each physical variation's measurements. Use the heaviest and largest variation for a conservative estimate. Packing and handling remain separate."
       : "Enter each physical variation's weight below. Dimensions are optional; enter all three if supplied. Every variation can use the same rate table."
   return (
-    <div className="space-y-2 rounded-xl border border-[var(--border)] p-3">
+    <div className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
       <label className="flex items-start gap-2 text-sm">
         <Checkbox
           checked={shared}

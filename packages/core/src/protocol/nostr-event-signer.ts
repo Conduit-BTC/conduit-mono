@@ -53,11 +53,20 @@ export interface NostrKeySigner extends NostrEventSigner {
   decryptLegacy(senderPubkey: string, ciphertext: string): Promise<string>
 }
 
+export interface AccountSignerOperationOptions {
+  priority?: "foreground" | "background"
+}
+
 /** Established account authority. Guest order keys never implement this grant. */
 export interface AccountSigner extends NostrKeySigner {
   readonly revision: string
   readonly authMethod: AuthMethod
   readonly capabilities: AccountSignerCapabilities
+  decryptNip44(
+    senderPubkey: string,
+    ciphertext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
 }
 
 export function classifyNostrSignerError(error: unknown): NostrSignerError {

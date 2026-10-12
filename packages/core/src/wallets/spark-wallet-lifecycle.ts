@@ -16,6 +16,8 @@ export interface SparkWalletLifecycleManager {
     walletId: string
     mnemonic: string
     accountNumber: number
+    shouldContinue?: () => boolean
+    subscribeRevocation?: (onRevoked: () => void) => () => void
   }): Promise<void>
   close(walletId: string): Promise<void>
 }
@@ -40,6 +42,9 @@ export async function openRegisteredSparkWallet(
     resolveOpenInput(registration: WalletDescriptor): Promise<{
       mnemonic: string
       accountNumber: number
+      commitAfterOpen?(): Promise<void>
+      shouldContinue?: () => boolean
+      subscribeRevocation?: (onRevoked: () => void) => () => void
     }>
     afterOpen?(): Promise<void>
   }
@@ -59,7 +64,8 @@ export async function openRegisteredSparkWallet(
       )
     }
 
-    const openInput = await input.resolveOpenInput(registration)
+    const { commitAfterOpen, ...openInput } =
+      await input.resolveOpenInput(registration)
     await input.manager.openWithMnemonic({
       walletId: input.walletId,
       ...openInput,
@@ -68,6 +74,9 @@ export async function openRegisteredSparkWallet(
     await validateOpenRegistration(input, registration)
     await input.afterOpen?.()
     await validateOpenRegistration(input, registration)
+    // Recovery ownership changes only after the native open and both
+    // registration checks succeed, while removal is still excluded.
+    await commitAfterOpen?.()
   })
 }
 

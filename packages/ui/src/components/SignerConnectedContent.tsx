@@ -27,7 +27,7 @@ export function SignerConnectedContent({
   return (
     <>
       <div className="mx-auto mt-6 max-w-md space-y-4">
-        <div className="rounded-[1.25rem] border border-secondary-500/25 bg-secondary-500/10 p-4">
+        <div className="rounded-[var(--radius-md)] border border-secondary-500/25 bg-secondary-500/10 p-4">
           <div className="flex flex-wrap items-center gap-2">
             <Badge
               variant="secondary"
@@ -51,7 +51,7 @@ export function SignerConnectedContent({
         </div>
 
         {authUrl && (
-          <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+          <div className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
             Your remote signer needs approval. Open the authorization page, then
             return here.
             <Button asChild variant="outline" size="sm" className="mt-3 w-full">
@@ -64,7 +64,7 @@ export function SignerConnectedContent({
         )}
 
         {error && (
-          <div className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error">
+          <div className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-[var(--error-text)]">
             {error}
           </div>
         )}

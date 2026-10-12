@@ -44,7 +44,7 @@ function ChartCard({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
           {title}
@@ -77,7 +77,7 @@ function ChartCard({
 
 function EmptyNote({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-8 text-center text-sm text-[var(--text-secondary)]">
+    <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-8 text-center text-sm text-[var(--text-secondary)]">
       {children}
     </div>
   )
