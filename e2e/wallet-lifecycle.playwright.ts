@@ -545,6 +545,38 @@ test("parallel consumers share one native open and observe ready, lock and retry
       .poll(() => page.evaluate(() => (window as any).__walletProbe.opens))
       .toBe(1)
     await page.evaluate(
+      async ({ storage, sdk }) => {
+        const { getMarketWalletStore } = await import(storage)
+        const { getSparkWalletManager } = await import(sdk)
+        const fixture = window as any
+        const store = getMarketWalletStore()
+        const manager = getSparkWalletManager()!
+        const original = store.listVisible.bind(store)
+        const walletId = fixture.__walletLifecycle.wallets.portableWallets[0].id
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        let openReads = 0
+        fixture.__releasePostOpenValidation = release
+        store.listVisible = async (owner: string | null) => {
+          const wallets = await original(owner)
+          // Hold the last validation after Ready, before the shared open
+          // promise settles. Lock must not make explicit Open join that stale run.
+          if (manager.isOpen(walletId) && ++openReads === 2) {
+            fixture.__postOpenValidationHeld = true
+            await gate
+          }
+          return wallets
+        }
+      },
+      {
+        storage:
+          "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+        sdk: "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
+      }
+    )
+    await page.evaluate(
       async ({ core }) => {
         const fixture = window as any
         fixture.__walletMutationEvents = 0
@@ -578,6 +610,11 @@ test("parallel consumers share one native open and observe ready, lock and retry
         ].map((state: any) => state?.status)
       })
     await expect.poll(statuses).toEqual(["ready", "ready"])
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as any).__postOpenValidationHeld === true)
+      )
+      .toBe(true)
     expect(
       await page.evaluate(() => ({
         opens: (window as any).__walletProbe.opens,
@@ -594,13 +631,18 @@ test("parallel consumers share one native open and observe ready, lock and retry
       )
     })
     await expect.poll(statuses).toEqual(["locked", "locked"])
-    await page.evaluate(async () => {
+    await page.evaluate(() => {
       const fixture = window as any
       delete fixture.__walletSetupBarrier
-      await fixture.__walletLifecycle.wallets.unlockSpark(
-        fixture.__walletLifecycle.wallets.portableWallets[0].id
-      )
+      const { wallets, otherWallets } = fixture.__walletLifecycle
+      const walletId = wallets.portableWallets[0].id
+      fixture.__manualUnlock = Promise.all([
+        wallets.unlockSpark(walletId),
+        otherWallets.unlockSpark(walletId),
+      ])
     })
+    await page.evaluate(() => (window as any).__releasePostOpenValidation())
+    await page.evaluate(() => (window as any).__manualUnlock)
     await expect.poll(statuses).toEqual(["ready", "ready"])
     expect(await page.evaluate(() => (window as any).__walletProbe.opens)).toBe(
       2

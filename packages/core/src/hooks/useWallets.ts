@@ -1458,12 +1458,20 @@ export function useWallets(
     ) => {
       const manager = requireSparkManager()
       const signer = !password && !migrate ? getAccountSigner() : undefined
-      const previous = signer && signerWalletOpens.get(signer)?.get(walletId)
-      if (signer && previous) {
+      let previous = signer && signerWalletOpens.get(signer)?.get(walletId)
+      while (signer && previous) {
+        const joined = previous
         try {
-          await previous
+          await joined
           assertWalletSignerCurrent(signer)
-          await refreshSparkBalance(walletId, manager, setRuntime)
+          if (manager.isOpen(walletId) || options.priority === "background") {
+            await refreshSparkBalance(walletId, manager, setRuntime)
+            return
+          }
+          // Lock can finish while a shared open is still validating. An
+          // explicit reopen must start again, or join a newer caller's open.
+          previous = signerWalletOpens.get(signer)?.get(walletId)
+          if (previous === joined) break
         } catch (error) {
           if (isWalletSignerCurrent(signer))
             setRuntime((current) => ({
@@ -1479,7 +1487,6 @@ export function useWallets(
             }))
           throw error
         }
-        return
       }
       if (signer && manager.isOpen(walletId)) {
         const stored = await store.getSparkRecovery(walletId)
