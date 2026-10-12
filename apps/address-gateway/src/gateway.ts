@@ -88,7 +88,9 @@ async function boundedText(
       bytes.set(part, offset)
       offset += part.length
     }
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes
+    )
   } finally {
     reader.releaseLock()
   }
@@ -120,9 +122,8 @@ async function nameRequest(
   now: number
 ): Promise<Response> {
   const path = new URL(request.url).pathname
-  const value = JSON.parse(
-    await boundedText(request.body, 8192)
-  ) as SignedAddressNameRequest
+  const raw = await boundedText(request.body, 8192)
+  const value = JSON.parse(raw) as SignedAddressNameRequest
   const event = decodeAccountProof(request)
   if (
     !event ||
@@ -131,7 +132,8 @@ async function nameRequest(
       event,
       path,
       now,
-      new URL(request.url).origin
+      new URL(request.url).origin,
+      raw
     )
   )
     return response({ status: "invalid" }, 401)
@@ -209,7 +211,7 @@ async function nameRequest(
   )
     return response({ status: "challenge_failed" }, 400)
   const result = await env.ADDRESS_REQUESTS.prepare(
-    "INSERT OR IGNORE INTO name_requests (request_id, owner_pubkey, spark_identity, desired_name, note, request_hash, account_proof, wallet_proof, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT OR IGNORE INTO name_requests (request_id, owner_pubkey, spark_identity, desired_name, note, request_hash, signed_payload, account_proof, wallet_proof, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   )
     .bind(
       value.requestId,
@@ -218,6 +220,7 @@ async function nameRequest(
       value.desiredName,
       value.note,
       hash,
+      raw,
       JSON.stringify(event),
       value.walletSignature,
       now

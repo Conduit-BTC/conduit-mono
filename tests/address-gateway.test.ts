@@ -20,6 +20,7 @@ import {
   addressNameRequestMessage,
   addressNameRequestPayload,
   addressRequestHash,
+  verifyAddressRequestAuthority,
 } from "../packages/core/src/wallets/address-name-request"
 
 function fixture() {
@@ -232,6 +233,25 @@ describe("approved-name gateway", () => {
       status: "received",
     })
     expect(f.calls).toHaveLength(0)
+    const stored = f.db
+      .query(
+        "SELECT signed_payload, account_proof, created_at FROM name_requests"
+      )
+      .get() as {
+      signed_payload: string
+      account_proof: string
+      created_at: number
+    }
+    expect(
+      verifyAddressRequestAuthority(
+        JSON.parse(stored.signed_payload),
+        JSON.parse(stored.account_proof),
+        ADDRESS_REQUEST_PATH,
+        stored.created_at,
+        "https://conduit.cash",
+        stored.signed_payload
+      )
+    ).toBe(true)
   })
   test("changing a request under the same id never overwrites review evidence", async () => {
     const f = fixture()
@@ -247,6 +267,22 @@ describe("approved-name gateway", () => {
     expect(f.db.query("SELECT desired_name FROM name_requests").get()).toEqual({
       desired_name: "alice",
     })
+  })
+  test("NIP-98 rejects reordered HTTP bytes even when their decoded fields are identical", async () => {
+    const f = fixture(),
+      original = f.nameRequest()
+    const body = JSON.stringify(
+      Object.fromEntries(Object.entries(await original.json()).reverse())
+    )
+    const reordered = new Request(original.url, {
+      method: "POST",
+      headers: original.headers,
+      body,
+    })
+    expect((await f.handle(reordered, [])).status).toBe(401)
+    expect(f.db.query("SELECT COUNT(*) AS n FROM name_requests").get()).toEqual(
+      { n: 0 }
+    )
   })
   test("tampered account and wallet bindings, notes and payloads fail before storage", async () => {
     for (const field of [

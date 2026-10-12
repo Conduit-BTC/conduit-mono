@@ -661,6 +661,9 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       merchantPage.getByRole("heading", { name: "My wallets", exact: true })
     ).toBeVisible()
     // Retain an older mainnet default while this app creates testnet invoices.
+    await merchantPage
+      .getByText("External wallet management", { exact: true })
+      .click()
     phase("foreign_wallet")
     await foreignWallet.configureMerchantConnection(
       async (connectionString) => {

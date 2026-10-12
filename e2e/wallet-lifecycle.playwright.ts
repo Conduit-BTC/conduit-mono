@@ -264,6 +264,7 @@ for (const app of ["market", "merchant"] as const) {
           label: "Legacy fence",
         })
       await expect(signedOutPage).toHaveTitle(/Wallets/)
+      await signedOutPage.getByText("Add a wallet", { exact: true }).click()
       for (const name of ["Create wallet", "Import wallet"]) {
         await expect(
           signedOutPage.getByRole("button", { name, exact: true })
@@ -497,6 +498,9 @@ for (const unavailable of ["signet", "coordination"] as const) {
           spark: "unavailable",
           externalStatus: "ready",
         })
+      await page
+        .getByText("External wallet management", { exact: true })
+        .click()
       await expect(
         page.getByText("External capability", { exact: true })
       ).toBeVisible()
@@ -970,6 +974,7 @@ test("Merchant retires the verified legacy NWC owner and Disconnect survives rel
         legacyConnection: false,
         legacyTip: false,
       })
+    await page.getByText("External wallet management", { exact: true }).click()
     await expect(
       page.getByRole("heading", { name: "External wallets", exact: true })
     ).toBeVisible()

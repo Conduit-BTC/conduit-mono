@@ -13,7 +13,8 @@ adapts the landing community-request workflow, with bounded fields, Turnstile,
 immutable request IDs and explicit receipt status. A NIP-98 account signature
 binds the HTTP endpoint, method and exact body. A separate Spark identity
 signature binds the desired name, account, wallet, network, note hash, timestamp
-and request ID. The private request database retains both proofs for manual
+and request ID. The private request database retains both proofs and the exact
+signed HTTP body for later verification at its recorded receipt time and manual
 review. Submission creates no approval and performs no provider registration.
 The approved-name list is deployed separately from request data and contains
 only deliberately public identity bindings. Reviewers must validate the original

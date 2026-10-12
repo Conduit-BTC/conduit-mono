@@ -5,6 +5,7 @@ CREATE TABLE name_requests (
   desired_name TEXT NOT NULL,
   note TEXT NOT NULL,
   request_hash TEXT NOT NULL,
+  signed_payload TEXT NOT NULL,
   account_proof TEXT NOT NULL,
   wallet_proof TEXT NOT NULL,
   created_at INTEGER NOT NULL,

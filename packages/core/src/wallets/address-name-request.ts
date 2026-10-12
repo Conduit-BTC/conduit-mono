@@ -108,7 +108,8 @@ export function verifyAddressRequestAuthority(
   event: Event,
   path = ADDRESS_REQUEST_PATH,
   now = Math.floor(Date.now() / 1000),
-  origin = ADDRESS_REQUEST_ORIGIN
+  origin = ADDRESS_REQUEST_ORIGIN,
+  payload?: string
 ): boolean {
   try {
     if (
@@ -125,7 +126,10 @@ export function verifyAddressRequestAuthority(
     const expected = [
       ["u", `${origin}${path}`],
       ["method", "POST"],
-      ["payload", addressRequestHash(addressNameRequestPayload(input))],
+      [
+        "payload",
+        addressRequestHash(payload ?? addressNameRequestPayload(input)),
+      ],
     ]
     return (
       JSON.stringify(event.tags) === JSON.stringify(expected) &&
