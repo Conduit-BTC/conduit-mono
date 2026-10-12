@@ -19,6 +19,7 @@ const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
 const smokeProgressFile = process.env.PLAYWRIGHT_SMOKE_PROGRESS_FILE
+const smokeEvidenceFile = process.env.PLAYWRIGHT_SMOKE_EVIDENCE_FILE
 const smokeEvidenceValues = {
   baseSha: process.env.PLAYWRIGHT_SMOKE_BASE_SHA ?? "",
   sourceHeadSha: process.env.PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA ?? "",
@@ -42,7 +43,12 @@ const ciReporters: ReporterDescription[] = smokeResultFile
   ? [
       [
         "./scripts/ci/playwright_smoke_reporter.ts",
-        { outputFile: smokeResultFile, progressFile: smokeProgressFile },
+        {
+          outputFile: smokeResultFile,
+          progressFile: smokeProgressFile,
+          evidenceFile: smokeEvidenceFile,
+          evidence: smokeEvidence,
+        },
       ],
     ]
   : [["null"]]
@@ -115,7 +121,8 @@ export default defineConfig({
   testMatch: "**/*.playwright.ts",
   fullyParallel: true,
   forbidOnly: CI,
-  retries: CI ? 1 : 0,
+  // Required evidence accepts only a clean first attempt.
+  retries: 0,
   // Area shards share one isolated relay. Keep each selected area single-worker
   // so the commerce lane can make exact replay and side-effect assertions.
   workers: smokeArea === "all" ? (CI ? 2 : undefined) : 1,
