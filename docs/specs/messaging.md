@@ -87,40 +87,20 @@ dual-write. Acceptance gates the migration sequence:
 
 ## Shared core boundary
 
-Private messaging lives behind `@conduit/core`. `CommerceInbox` and
-`commerce-inbox-store.ts` own ingestion, encrypted projections and history;
-`commerce-message-codec.ts` owns classification. `private-message-delivery.ts`
-owns outbound delivery, while `private-message-primitives.ts` constructs and
-parses envelopes without publishing. `messaging.ts` preserves the public facade
-and `inbox-send.ts` prepares conversation payloads. Market and Merchant consume
-`useCommerceInbox`; routes must not duplicate wrapping, relay loops or decoding.
+Private messaging belongs to shared `@conduit/core` owners. Market and Merchant
+consume shared inbox state and workflows; routes must not duplicate wrapping,
+relay loops or decoding. Order and payment coordinators retain domain authority.
+
+Delivery must durably stage exact signed bytes and authorized targets after domain
+persistence checkpoints succeed and before network I/O. Recovery must reuse saved
+bytes under applicable current authority. Recipient acceptance must survive optional
+self-copy or local-history failure; it does not establish reading, payment or
+fulfillment. The [delivery implementation and recovery rules](../knowledge/commerce-inbox-recovery.md#interoperability-and-domain-authority)
+define the module boundaries, saved-plan and legacy replay paths, and self-copy
+ordering.
 
 The boundary provides:
 
-- **Durable delivery.** The shared owner stages exact signed bytes and the
-  authorized relay plan after caller-owned persistence checkpoints succeed and
-  before delivery I/O. Rejected checkpoints cannot leave a generic job that
-  bypasses domain authority. Recipient delivery precedes optional self-copy work
-  for orders, replies and files. A failed self-copy or sender projection cannot
-  reverse recipient acceptance; local history and cross-device sync are reported
-  separately. Sender projections retain the initiating account owner across
-  asynchronous delivery. Enrollment and handoff require a self-wrap before their
-  domain checkpoint; its optional relay publication still follows recipient
-  delivery. Self-copy writes remain declaration-only, and general DMs never use
-  the validated-order compatibility lane below.
-- **Exact recovery.** Resume preserves saved bytes and targets, skips acknowledged
-  targets and respects stronger current refusal evidence. Legacy records that
-  predate saved relay plans use the current declared inbox; account-owned replay
-  retains that first plan before publication. Explicit domain receipt
-  replay can resend selected saved wraps with a fresh ACK while preserving prior
-  ACK history. Relay acceptance does not prove reading, payment or fulfillment.
-- **Unwrap + classify.** Persist the encrypted wrapper before scheduling signer
-  work. Validate the envelope, recipient and seal/rumor author binding before
-  classifying direct, file, commerce, machine or unrelated records. Unsupported
-  or malformed recognized commerce remains inspectable evidence, distinct from
-  cryptographic failure. Recovery credentials reach their dedicated consumer
-  before generic rendering and are excluded from general search. Retained
-  wrappers carry decode state and a rules version for later recovery.
 - **NIP-44 capability seam.** NIP-44 v2 is the default wire version.
   Signer capability is probed (`window.nostr.nip44`, optional `nip44v3`) so v3
   can be negotiated later, but v3 is **source-gated OFF** as a send default until
@@ -276,24 +256,15 @@ content-free and must not expose plaintext, ciphertext, or participant pubkeys.
 
 ## Conversation model and encrypted history
 
-- A device-local, nonextractable AES-GCM key encrypts normalized inbox records
-  and exact delivery jobs in IndexedDB. It grants no Nostr signing authority.
-  Legacy plaintext message/order caches migrate in resumable transactions,
-  preserving read markers and existing order recovery.
-- Messages, Orders and Network consume one account-fenced inbox snapshot.
-  Disconnect or account replacement fences pending writes and local decryptions.
-  A retained account may read existing encrypted projections without its signer;
-  that stale view grants no signing, protected-read or cache-write authority.
-- Conversation summaries and read state use transport plus counterparty pubkey.
-  Buyer and Merchant share the model, including previews and explicit coverage
-  and freshness evidence.
-- Recent reads and older pages retain wrappers and per-relay overlapping range
-  evidence. Partial, capped or admission-rejected ranges remain incomplete;
-  cursor repair never discards prior positive observations. The detailed paging,
-  suppression and recovery contract lives in the commerce inbox recovery note.
-- Expiration and authenticated deletion suppress projections without destroying
-  retained originals. Re-decoding honors suppression. Clearing this device is
-  not proof of relay deletion, and no automatic relay backup is performed.
+Inbox records and delivery jobs must be encrypted locally and isolated by account.
+Retain encrypted wrappers before signer work and authenticate envelopes before
+classification. Disconnect or account replacement must fence pending writes and
+local decryptions; retained history grants no signing, protected-read or cache-write authority.
+Preserve recoverable records and distinguish incomplete history from a complete
+bounded observation. The [persistence and recovery contract](../knowledge/commerce-inbox-recovery.md#persistence-and-recovery)
+specifies encryption, migration, paging, suppression and retained-account access;
+[conversation identity](../knowledge/commerce-inbox-recovery.md#interoperability-and-domain-authority)
+uses transport plus counterparty.
 
 ## Degraded and retry behavior
 
