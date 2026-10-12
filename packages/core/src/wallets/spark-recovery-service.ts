@@ -184,23 +184,32 @@ export function planSparkRecoveryRelays(
 function clone<T>(value: T): T {
   return structuredClone(value)
 }
-function validatePlan(targets: SparkRecoveryRelay[]): SparkRecoveryRelay[] {
+function validatePlan(
+  targets: SparkRecoveryRelay[],
+  positiveUrls: Set<string>
+): SparkRecoveryRelay[] {
+  if (!Array.isArray(targets)) throw new SparkRecoveryError("invalid_record")
+  const count = targets.length
+  if (count < 1 || count > 8) throw new SparkRecoveryError("invalid_record")
+  const urls: string[] = []
+  for (let index = 0; index < count; index++) urls.push(targets[index].url)
   if (
-    !targets.length ||
-    targets.length > 8 ||
-    new Set(targets.map((t) => t.url)).size !== targets.length ||
-    targets.some(
-      (t) =>
-        t.url !== getConfiguredIsolatedE2eRelayUrl() &&
-        !normalizePublicWebSocketUrl(t.url)
-    )
+    new Set(urls).size !== count ||
+    urls.some((url) => {
+      if (typeof url !== "string") return true
+      if (url === getConfiguredIsolatedE2eRelayUrl()) return false
+      if (positiveUrls.has(url)) return false
+      if (!normalizePublicWebSocketUrl(url)) return true
+      positiveUrls.add(url)
+      return false
+    })
   )
     throw new SparkRecoveryError("invalid_record")
   // Caller-supplied labels cannot manufacture independently operated backups.
-  return targets.map((t) => ({
-    url: t.url,
+  return urls.map((url) => ({
+    url,
     operator:
-      SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === t.url)?.operator ?? null,
+      SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === url)?.operator ?? null,
   }))
 }
 export function validateSparkRecoveryState(
@@ -222,9 +231,12 @@ export function validateSparkRecoveryState(
           )))
     )
       throw new SparkRecoveryError("invalid_record")
+    // Reuse only pure lexical URL checks within this synchronous snapshot.
+    // Every record, operator binding and later read-back remains validated.
+    const positiveUrls = new Set<string>()
     const records = input.records.map((r) => {
       const event = validateSparkRecoveryEvent(r.event, owner)
-      const targets = validatePlan(r.targets)
+      const targets = validatePlan(r.targets, positiveUrls)
       if (
         typeof r.exported !== "boolean" ||
         r.delivery.length !== targets.length ||

@@ -31,8 +31,7 @@ function newStore() {
   databases.push(database)
   return { database, store: new DexieSparkRecoveryStore(database) }
 }
-function signedRecord() {
-  const secret = generateSecretKey()
+function signedRecord(secret = generateSecretKey()) {
   const owner = getPublicKey(secret)
   const signed = finalizeEvent(
     {
@@ -81,6 +80,82 @@ function gate() {
 }
 
 describe("Spark recovery store public trust boundary", () => {
+  it("rejects a non-string relay target instead of treating disabled isolation as an exception", async () => {
+    const { store } = newStore()
+    const { owner, record } = signedRecord()
+    record.targets[0].url = null as unknown as string
+    record.delivery[0].url = record.targets[0].url
+    await expect(store.retain(owner, [record])).rejects.toMatchObject({
+      code: "invalid_record",
+    })
+    expect((await store.load(owner)).records.length).toBe(0)
+  })
+
+  it("rejects duplicate relay targets even after the URL was validated", async () => {
+    const { store } = newStore()
+    const { owner, record } = signedRecord()
+    await store.retain(owner, [record])
+    const before = await store.load(owner)
+    const duplicate = structuredClone(record)
+    duplicate.targets[1].url = duplicate.targets[0].url
+    duplicate.delivery[1].url = duplicate.targets[0].url
+    await expect(store.retain(owner, [duplicate])).rejects.toMatchObject({
+      code: "invalid_record",
+    })
+    expect(
+      JSON.stringify(await store.load(owner)) === JSON.stringify(before)
+    ).toBe(true)
+  })
+
+  it("preserves distinct raw relay spellings and their curated operator bindings", async () => {
+    const { store } = newStore()
+    const { owner, record } = signedRecord()
+    const raw = record.targets[0].url + "/"
+    record.targets[1].url = raw
+    record.targets[1].operator = record.targets[0].operator
+    record.delivery[1].url = raw
+    await store.retain(owner, [record])
+    const saved = await store.load(owner)
+    expect(saved.records[0].targets[0].url === record.targets[0].url).toBe(true)
+    expect(saved.records[0].targets[1].url === raw).toBe(true)
+    expect(
+      saved.records[0].targets[0].operator === record.targets[0].operator
+    ).toBe(true)
+    expect(saved.records[0].targets[1].operator).toBeNull()
+  })
+
+  it("checks every record sharing relay targets and normalizes operator labels", async () => {
+    const { store } = newStore()
+    const secret = generateSecretKey()
+    const first = signedRecord(secret)
+    const second = signedRecord(secret)
+    await store.retain(first.owner, [first.record])
+    const before = await store.load(first.owner)
+    for (const target of second.record.targets) target.operator = "untrusted"
+    second.record.delivery[0].checkedAt = -1
+    await expect(
+      store.retain(first.owner, [first.record, second.record])
+    ).rejects.toMatchObject({ code: "invalid_record" })
+    expect(
+      JSON.stringify(await store.load(first.owner)) === JSON.stringify(before)
+    ).toBe(true)
+
+    second.record.delivery[0].checkedAt = 0
+    await store.retain(first.owner, [first.record, second.record])
+    const saved = await store.load(first.owner)
+    expect(saved.records.length).toBe(2)
+    expect(
+      saved.records.every((record) =>
+        record.targets.every(
+          (target) =>
+            target.operator ===
+            SPARK_RECOVERY_RENDEZVOUS.find((known) => known.url === target.url)
+              ?.operator
+        )
+      )
+    ).toBe(true)
+  })
+
   it("rejects an otherwise valid foreign-owner row before any write", async () => {
     const { database, store } = newStore()
     const requested = signedRecord()
