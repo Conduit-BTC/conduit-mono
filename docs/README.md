@@ -83,6 +83,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and
   physical-device matrix for Market, Merchant, Wallet, and booth flows
 
+- `docs/knowledge/breez-lightning-addresses.md`: same-identity hosted address integration, configuration, retry and live enablement evidence.
+
 ### Active Compatibility Exceptions
 
 - `docs/knowledge/commerce-inbox-recovery.md`: bounded authenticated client-seal

@@ -14,6 +14,7 @@ import {
   seedTestRelayIdentity,
 } from "./helpers/auth"
 import { interceptBlossom } from "./helpers/blossom"
+import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl =
@@ -134,16 +135,11 @@ async function openProductDialogWithSigner(
       ),
     ])
   }
-  options.onPhase?.("navigate")
-  await page.goto(`${merchantUrl}/products`)
-  options.onPhase?.("catalog")
-  // Each fixture owns a fresh empty catalog. Let its initial reads settle
-  // before opening the dialog so mobile layout changes cannot race the click.
-  await expect(page.getByText("No listings yet", { exact: true })).toBeVisible({
-    timeout: 20_000,
-  })
-  const addProduct = page.getByRole("button", { name: "Add product" }).first()
-  await expect(addProduct).toBeEnabled({ timeout: 20_000 })
+  const addProduct = await prepareEmptyMerchantCatalog(
+    page,
+    `${merchantUrl}/products`,
+    options.onPhase
+  )
   options.onPhase?.("open_dialog")
   await addProduct.click()
   const dialog = page.getByRole("dialog", { name: "Add product" })
@@ -976,15 +972,20 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
 test("ambiguous fallback retries only the same prepared hash after reload @merchant", async ({
   page,
 }) => {
+  const mark = (phase: string) =>
+    recordSmokeDiagnostic(test.info(), "fallback-upload", { phase })
+  mark("setup")
   test.setTimeout(90_000)
   const state = await interceptBlossom(page, fallbackServer, {
     abortFirstOnce: true,
   })
+  mark("open_draft")
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.getByLabel("Title").fill("Ambiguous fallback draft")
+  mark("valid_file")
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(
     dialog.getByText("The upload did not finish. Retry this image.", {
@@ -995,7 +996,42 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
 
   await dialog.locator("form").getByRole("button", { name: "Close" }).click()
   await expect(dialog).toBeHidden()
+  // Hold the real NIP-07 restore to exercise the ownership boundary on reload.
+  await page.addInitScript(() => {
+    const fixture = window as unknown as {
+      nostr: { getPublicKey(): Promise<string> }
+      __productDraftRestorePending?: boolean
+      __releaseProductDraftRestore?: () => void
+    }
+    const getPublicKey = fixture.nostr.getPublicKey.bind(fixture.nostr)
+    let held = false
+    fixture.nostr.getPublicKey = async () => {
+      if (!held) {
+        held = true
+        await new Promise<void>((resolve) => {
+          fixture.__productDraftRestorePending = true
+          fixture.__releaseProductDraftRestore = resolve
+        })
+      }
+      return getPublicKey()
+    }
+  })
+  mark("navigate")
   await page.reload()
+  await expect
+    .poll(() =>
+      page.evaluate(() => Boolean((window as any).__productDraftRestorePending))
+    )
+    .toBe(true)
+  const accountMenu = page.getByRole("button", {
+    name: "Open merchant account menu",
+    exact: true,
+  })
+  await expect(accountMenu).not.toBeVisible()
+  mark("restore_draft")
+  await page.evaluate(() => (window as any).__releaseProductDraftRestore())
+  await expect(accountMenu).toBeVisible()
+  mark("open_dialog")
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
   await expect(
@@ -1005,6 +1041,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
+  mark("invalid_file")
   await resumed.locator("#product-image-file").setInputFiles(image512)
   await expect(
     resumed.getByText("Choose the same image you previously tried to upload.", {
@@ -1019,6 +1056,7 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
     resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()
 
+  mark("fresh_file")
   await resumed.locator("#product-image-file").setInputFiles(image192)
   await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//

@@ -345,17 +345,24 @@ authentication follows the signer boundary above; a Portable Wallet provider may
 create or restore a wallet seed only inside its isolated client-side storage.
 Non-secret registry metadata lives in Dexie. See `docs/specs/wallets.md`.
 
-Wallet ownership is device-local rather than Nostr-account-scoped. Market keeps
-`/wallet` available while signed out so a user can create, restore, unlock,
-receive with, or remove a device-owned Portable Wallet without connecting an
-identity signer. A shared browser profile therefore shares its local wallet
-registry; signing out does not delete or switch those wallets.
+Market and Merchant share the Wallets surface, with My wallets and External
+wallets. Generated Conduit Wallet names describe the product experience, not
+custody: Spark remains the single wallet provider and signer runtime.
 
-Each Spark wallet uses a user-chosen local password to encrypt its BIP39
-mnemonic in the device-local credential store. The password is an unlock
-credential for that browser profile, not portable recovery material. The BIP39
-mnemonic, explicit Spark account number, and network form the portable
-cross-application recovery bundle.
+New Spark wallets are scoped to the Nostr account and use verified signer-backed
+NIP-44 recovery encryption without a separate wallet password. The independently
+generated Spark seed is never derived from a Nostr key; apps never receive nsec.
+Logout or account replacement closes and hides signer-owned sessions without
+removing encrypted recovery or funds. Discovered signer-owned wallets on the
+configured network open through the signer on Wallets without a Conduit unlock
+dialog. External signer consent may still be required; a deliberate lock or
+denied opening retains a direct Open action.
+
+Legacy password-encrypted device wallets retain signed-out access and explicit
+migration. Migration verifies signer encryption/read-back and keeps the old
+encrypted envelope as a password fallback. The BIP39 phrase, actual Spark account
+number and network remain the independent recovery bundle. See
+`docs/knowledge/breez-lightning-addresses.md` for shared recovery and address flows.
 
 Current payment model:
 

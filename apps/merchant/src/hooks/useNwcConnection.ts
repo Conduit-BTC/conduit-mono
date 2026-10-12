@@ -1,12 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import { useAuth } from "@conduit/core"
+import type { LegacyNwcRetirement } from "@conduit/core/wallets/wallet-migration"
 import {
   NWC_URI_STORAGE_KEY,
+  MERCHANT_READINESS_STORAGE_EVENT,
   getNwcUriStorageKey,
   notifyMerchantReadinessStorageChange,
   parseStoredNwcConnection,
   type StoredNwcConnection,
 } from "../lib/readiness"
+import { retireAccountNwcUri } from "../lib/nwc-retirement"
 
 interface UseNwcConnectionResult {
   connection: StoredNwcConnection | null
@@ -14,6 +25,7 @@ interface UseNwcConnectionResult {
   error: string | null
   setUri: (uri: string) => void
   disconnect: () => void
+  retireMigratedUri: (expectedUri: string) => LegacyNwcRetirement
 }
 
 function readStoredUri(storageKey: string | null): string {
@@ -29,18 +41,32 @@ function readStoredUri(storageKey: string | null): string {
 export function useNwcConnection(): UseNwcConnectionResult {
   const { pubkey } = useAuth()
   const storageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
-  const [rawUri, setRawUri] = useState(() => readStoredUri(storageKey))
-  const [connection, setConnection] = useState<StoredNwcConnection | null>(() =>
-    parseStoredNwcConnection(readStoredUri(storageKey))
+  const currentKey = useRef(storageKey)
+  useLayoutEffect(() => {
+    currentKey.current = storageKey
+  }, [storageKey])
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const onStorage = (event: StorageEvent) => {
+        if (!event.key || event.key === storageKey) onChange()
+      }
+      window.addEventListener("storage", onStorage)
+      window.addEventListener(MERCHANT_READINESS_STORAGE_EVENT, onChange)
+      return () => {
+        window.removeEventListener("storage", onStorage)
+        window.removeEventListener(MERCHANT_READINESS_STORAGE_EVENT, onChange)
+      }
+    },
+    [storageKey]
   )
+  const getSnapshot = useCallback(() => readStoredUri(storageKey), [storageKey])
+  const rawUri = useSyncExternalStore(subscribe, getSnapshot, () => "")
+  const connection = useMemo(() => parseStoredNwcConnection(rawUri), [rawUri])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const storedUri = readStoredUri(storageKey)
-    setRawUri(storedUri)
-    setConnection(parseStoredNwcConnection(storedUri))
     setError(null)
-  }, [storageKey])
+  }, [storageKey, rawUri])
 
   const setUri = useCallback(
     (uri: string) => {
@@ -53,8 +79,6 @@ export function useNwcConnection(): UseNwcConnectionResult {
 
         if (!trimmed) {
           localStorage.removeItem(storageKey)
-          setRawUri("")
-          setConnection(null)
           notifyMerchantReadinessStorageChange()
           return
         }
@@ -64,8 +88,6 @@ export function useNwcConnection(): UseNwcConnectionResult {
 
         localStorage.setItem(storageKey, trimmed)
         localStorage.removeItem(NWC_URI_STORAGE_KEY)
-        setRawUri(trimmed)
-        setConnection(parsed)
         notifyMerchantReadinessStorageChange()
       } catch (err) {
         setError(err instanceof Error ? err.message : "Invalid NWC URI")
@@ -77,11 +99,24 @@ export function useNwcConnection(): UseNwcConnectionResult {
   const disconnect = useCallback(() => {
     if (storageKey) localStorage.removeItem(storageKey)
     localStorage.removeItem(NWC_URI_STORAGE_KEY)
-    setRawUri("")
-    setConnection(null)
     setError(null)
     notifyMerchantReadinessStorageChange()
   }, [storageKey])
 
-  return { connection, rawUri, error, setUri, disconnect }
+  const retireMigratedUri = useCallback(
+    (expectedUri: string) => {
+      const retirement = retireAccountNwcUri({
+        storage: localStorage,
+        accountStorageKey: storageKey,
+        currentAccountStorageKey: () => currentKey.current,
+        expectedUri,
+        notifyChange: notifyMerchantReadinessStorageChange,
+      })
+      if (retirement.status !== "unchanged") setError(null)
+      return retirement
+    },
+    [storageKey]
+  )
+
+  return { connection, rawUri, error, setUri, disconnect, retireMigratedUri }
 }

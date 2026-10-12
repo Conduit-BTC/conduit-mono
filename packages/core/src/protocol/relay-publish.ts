@@ -47,6 +47,8 @@ import {
 } from "./relay-authority"
 import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
+import { parseSparkRecoveryChoiceAddress } from "../wallets/spark-recovery-address"
+
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
 const CRITICAL_RETRY_PUBLISH_TIMEOUT_MS = 15_000
@@ -293,8 +295,20 @@ function assertRelayAuthenticationConfiguration(
   const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
   const accountPubkey = input.accountPubkey?.trim().toLowerCase()
   if (
-    event.kind !== EVENT_KINDS.GIFT_WRAP ||
-    input.intent !== "recipient_event" ||
+    !(
+      (event.kind === EVENT_KINDS.GIFT_WRAP &&
+        input.intent === "recipient_event") ||
+      (event.kind === 30078 &&
+        input.intent === "author_event" &&
+        event.pubkey === expectedPubkey &&
+        event.tags.filter((tag) => tag[0] === "d").length === 1 &&
+        event.tags.some(
+          (tag) =>
+            tag[0] === "d" &&
+            (tag[1]?.startsWith("conduit:spark:wallet:v1:") ||
+              !!parseSparkRecoveryChoiceAddress(tag[1]))
+        ))
+    ) ||
     !input.exclusiveRelayUrls ||
     input.deliveryMode !== "critical" ||
     !/^[0-9a-f]{64}$/.test(expectedPubkey) ||
@@ -583,6 +597,8 @@ export async function publishSignedEventPlan(input: {
     attempted: boolean
   ) => void
   shouldAuthenticate?: () => boolean
+  intent?: RelayWriteIntent
+  authorPubkey?: string
   relayUrls: readonly string[]
   relayTargets?: readonly RelayTarget[]
   /** Bound attempts after live account source-policy filtering. */
@@ -629,7 +645,10 @@ export async function publishSignedEventPlan(input: {
   thrown: unknown
 }> {
   const event = snapshotSignedEvent(input.event)
-  assertValidSignedPublicPublish(event, { intent: "recipient_event" })
+  assertValidSignedPublicPublish(event, {
+    intent: input.intent ?? "recipient_event",
+    authorPubkey: input.authorPubkey,
+  })
   input = {
     ...input,
     event,
@@ -645,7 +664,7 @@ export async function publishSignedEventPlan(input: {
     ],
   }
   assertRelayAuthenticationConfiguration(event, {
-    intent: "recipient_event",
+    intent: input.intent ?? "recipient_event",
     deliveryMode: "critical",
     exclusiveRelayUrls: input.relayUrls,
     authorPubkey: input.relayAuthentication?.expectedPubkey,
@@ -1050,6 +1069,8 @@ export async function publishWithPlannerProgressive(
     }
     await publishSignedEventPlan({
       ...targetInput,
+      intent: input.intent,
+      authorPubkey: input.authorPubkey,
       event,
       relayUrls,
       timeoutMs,
@@ -1576,6 +1597,8 @@ export async function publishWithPlanner(
     if (fallbackRelayUrls.length > 0) {
       assertShouldContinue()
       const fallback = await publishSignedEventPlan({
+        intent: input.intent,
+        authorPubkey: input.authorPubkey,
         event,
         relayUrls: fallbackRelayUrls,
         relayTargets: fallbackWriteTargets(fallbackRelayUrls, event.kind),
@@ -1646,6 +1669,8 @@ export async function publishWithPlanner(
       : STANDARD_PUBLISH_TIMEOUT_MS
   assertShouldContinue()
   const primary = await publishSignedEventPlan({
+    intent: input.intent,
+    authorPubkey: input.authorPubkey,
     event,
     relayUrls: plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls,
     relayTargets: plan.primaryRelayTargets,
@@ -1696,6 +1721,8 @@ export async function publishWithPlanner(
     ) {
       assertShouldContinue()
       retry = await publishSignedEventPlan({
+        intent: input.intent,
+        authorPubkey: input.authorPubkey,
         event,
         relayUrls: retryRelayUrls,
         relayTargets: plan.primaryRelayTargets.filter((target) =>
@@ -1779,6 +1806,8 @@ export async function publishWithPlanner(
         criticalRecipientFallbackRelayUrls,
       ])
       const fallback = await publishSignedEventPlan({
+        intent: input.intent,
+        authorPubkey: input.authorPubkey,
         event,
         relayUrls: fallbackAttemptRelayUrls,
         relayTargets: fallbackWriteTargets(
@@ -1879,6 +1908,8 @@ export async function publishWithPlanner(
   let broadcast: Awaited<ReturnType<typeof publishSignedEventPlan>>
   try {
     broadcast = await publishSignedEventPlan({
+      intent: input.intent,
+      authorPubkey: input.authorPubkey,
       event,
       relayUrls: broadcastRelayUrls,
       relayTargets: plan.broadcastRelayTargets,

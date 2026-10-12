@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
-  buildProfileUpdatePayload,
+  buildProfileDetailsUpdatePayload,
   formatNpub,
   isCommerceReadIncomplete,
   pubkeyToNpub,
@@ -268,7 +268,7 @@ function ProfilePage() {
     const saveGeneration = authGeneration
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
-      buildProfileUpdatePayload(reconciledProfileForm, selectedProfile),
+      buildProfileDetailsUpdatePayload(reconciledProfileForm, selectedProfile),
       {
         onSuccess: () => {
           if (
@@ -467,6 +467,9 @@ function ProfilePage() {
                     />
                   </div>
 
+                  <a className="text-sm underline" href="/wallet">
+                    Manage in Wallets
+                  </a>
                   <div className="grid gap-4 md:grid-cols-2">
                     {profileQuery.data?.lud16 ? (
                       <Field
@@ -595,19 +598,13 @@ function ProfilePage() {
                   </div>
 
                   <div className="grid gap-1">
-                    <Label htmlFor="profile-lud16">Lightning address</Label>
-                    <Input
-                      id="profile-lud16"
-                      value={form.lud16}
-                      onChange={(event) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          lud16: event.target.value,
-                        }))
-                      }
-                      placeholder="name@wallet-provider.com"
-                      maxLength={100}
-                    />
+                    <Label>Lightning address</Label>
+                    <p className="break-all text-sm">
+                      {profileQuery.data?.lud16 || "No Lightning address yet"}
+                    </p>
+                    <a className="text-sm underline" href={"/wallet"}>
+                      Manage in Wallets
+                    </a>
                   </div>
 
                   <div className="grid gap-1 md:col-span-2">

@@ -18,6 +18,11 @@ import {
 } from "./helpers/real-nip07-signer"
 
 import { measureTextContrast } from "./helpers/rendered-contrast"
+import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
+import {
+  recordSmokeDiagnostic,
+  type PopulatedAuditPhase,
+} from "./helpers/smoke-diagnostics"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -36,7 +41,7 @@ async function inspect(page: Page, info: TestInfo, name: string) {
     path: join(directory, `${info.project.name}-${name}.png`),
     fullPage: true,
     mask: [
-      page.locator("input,textarea,.font-mono"),
+      page.locator("input,textarea,.font-mono,.tabular-nums"),
       page.getByRole("button", { name: /Open.*account menu/ }),
     ],
   })
@@ -57,13 +62,35 @@ for (const theme of ["day-market", "night-market"]) {
   test(`populated profile, payment readiness, catalog and editor surfaces in ${theme} @merchant`, async ({
     page,
   }, info) => {
+    const startedAt = Date.now()
+    let phase: PopulatedAuditPhase = "setup"
+    let pageCrashed = false
+    const record = () =>
+      recordSmokeDiagnostic(info, "populated-audit", {
+        phase,
+        elapsedSeconds: (Date.now() - startedAt) / 1000,
+        pageCrashed,
+      })
+    const mark = (value: PopulatedAuditPhase) => {
+      phase = value
+      record()
+    }
+    page.on("crash", () => {
+      pageCrashed = true
+      record()
+    })
+    record()
     const identity = createRuntimeSignerIdentity()
     const { pubkey } = identity
+    const wallet = createDeterministicNwcWallet({ relayUrl: TEST_RELAY_URL })
     try {
+      mark("start_wallet")
+      await wallet.start()
       const title =
         "Colombia coffee gift set with an exceptionally long catalog name"
       const createdAt = Math.floor(Date.now() / 1000)
       const coordinate = `30402:${pubkey}:visual-coffee`
+      mark("seed_profiles")
       await publishTestRelayEvents([
         signRuntimeTestEvent(identity, {
           kind: 0,
@@ -126,6 +153,7 @@ for (const theme of ["day-market", "night-market"]) {
               body: '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="200"><rect width="600" height="200" fill="white"/><text x="30" y="100" font-size="32">Sample roastery</text></svg>',
             })
       )
+      mark("install_signer")
       await installRealTestSigner(page, identity, TEST_RELAY_URL)
       await page.addInitScript(
         ({ key, theme }) => localStorage.setItem(key, theme),
@@ -135,7 +163,9 @@ for (const theme of ["day-market", "night-market"]) {
       // Resizing an emulated touch phone into a desktop is not desktop evidence.
       for (const width of [info.project.use.isMobile ? 375 : 1280]) {
         await page.setViewportSize({ width, height: 900 })
+        mark("profile_navigate")
         await page.goto(`${merchantUrl}/profile`)
+        mark("profile_ready")
         await expect(
           page.getByText(
             "Fictional coffee and accessories for the shared surface review.",
@@ -148,6 +178,7 @@ for (const theme of ["day-market", "night-market"]) {
           "profile-identity-contrast"
         )
         await inspect(page, info, `profile-${theme}-${width}`)
+        mark("profile_edit")
         await page
           .getByRole("button", { name: "Edit profile", exact: true })
           .first()
@@ -155,12 +186,24 @@ for (const theme of ["day-market", "night-market"]) {
         await expect(page.getByLabel("Display name")).toBeVisible()
         await inspect(page, info, `profile-edit-${theme}-${width}`)
         await page.getByRole("button", { name: "Cancel", exact: true }).click()
+        mark("payments_navigate")
         await page.goto(`${merchantUrl}/payments`)
-        await expect(
-          page.getByText("Zap support detected", { exact: true })
-        ).toBeVisible()
+        await expect(page).toHaveURL(`${merchantUrl}/wallet`)
+        mark("wallet_configure")
+        await wallet.configureMerchantConnection(async (uri) => {
+          await page.evaluate(
+            ({ pubkey, uri }) =>
+              localStorage.setItem(`conduit:merchant:nwc_uri:${pubkey}`, uri),
+            { pubkey, uri }
+          )
+        })
+        mark("wallet_reload")
+        await page.reload()
+        mark("wallet_ready")
+        await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+        mark("wallet_contrast")
         const success = page
-          .getByText("Zap support detected", { exact: true })
+          .getByText("Ready", { exact: true })
           .locator("..")
           .locator("svg")
         const color = await success.evaluate((el) => getComputedStyle(el).color)
@@ -168,46 +211,58 @@ for (const theme of ["day-market", "night-market"]) {
           await page.locator("h1").evaluate((el) => getComputedStyle(el).color)
         )
         await expectReadable(
-          page.getByText("PAYMENT METHOD", { exact: true }),
+          page.getByRole("heading", { name: "My wallets", exact: true }),
           info,
-          "payment-method-contrast"
+          "wallets-owned-contrast"
         )
         await expectReadable(
-          page.getByText("AUTOMATIC PAYMENT VERIFICATION", { exact: true }),
+          page.getByRole("heading", { name: "External wallets", exact: true }),
           info,
-          "payment-verification-contrast"
+          "wallets-external-contrast"
         )
-        await inspect(page, info, `payments-ready-${theme}-${width}`)
+        await inspect(page, info, `wallets-ready-${theme}-${width}`)
+        mark("network_navigate")
         await page.goto(`${merchantUrl}/network`)
+        mark("network_ready")
         await expectReadable(
           page.getByRole("button", { name: /^Disable Read for / }).first(),
           info,
           "enabled-relay-role-contrast"
         )
+        mark("catalog_navigate")
         await page.goto(`${merchantUrl}/products`)
+        mark("catalog_ready")
         await expect(
           page.getByRole("heading", { name: title, exact: true })
         ).toBeVisible()
         await inspect(page, info, `merchant-catalog-${theme}-${width}`)
+        mark("editor_open")
         await page.getByRole("button", { name: "Edit", exact: true }).click()
+        mark("editor_ready")
         await expect(
           page.getByRole("dialog", { name: "Edit listing", exact: true })
         ).toBeVisible()
         await inspect(page, info, `product-editor-${theme}-${width}`)
         await page.keyboard.press("Escape")
+        mark("storefront_navigate")
         await page.goto(`${marketUrl}/${nip19.npubEncode(pubkey)}`)
+        mark("storefront_ready")
         await expect(
           page.getByRole("heading", { name: title, exact: true })
         ).toBeVisible()
         await inspect(page, info, `storefront-${theme}-${width}`)
+        mark("product_navigate")
         await page.goto(
           `${marketUrl}/products/${encodeURIComponent(coordinate)}`
         )
+        mark("product_ready")
         await expect(
           page.getByRole("heading", { name: title, exact: true })
         ).toBeVisible()
         await inspect(page, info, `product-detail-${theme}-${width}`)
+        mark("legal_navigate")
         await page.goto(`${marketUrl}/terms-of-service`)
+        mark("legal_contrast")
         const legalLink = page.getByRole("link", {
           name: "Conduit Product Privacy Policy",
           exact: true,
@@ -216,7 +271,10 @@ for (const theme of ["day-market", "night-market"]) {
         await legalLink.hover()
         await expectReadable(legalLink, info, "legal-link-hover-contrast")
       }
+      mark("complete")
     } finally {
+      record()
+      await wallet.close()
       disposeRuntimeSignerIdentity(identity)
     }
   })

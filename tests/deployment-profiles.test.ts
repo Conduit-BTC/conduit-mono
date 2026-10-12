@@ -131,6 +131,59 @@ describe("deployment profiles", () => {
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
   })
 
+  it("keeps deployed Breez address enablement independent of dashboard values", () => {
+    for (const name of ["preview", "production", "staging"])
+      expect(
+        resolveDeploymentProfile({
+          CONDUIT_DEPLOYMENT_PROFILE: name,
+          VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED: "true",
+          VITE_BREEZ_SPARK_API_KEY: "public-test-key",
+          VITE_BREEZ_LNURL_DOMAIN: "conduit.cash",
+        }).publicFeatures.breezLightningAddressEnabled
+      ).toBe(false)
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.breezLightningAddressEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({ VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED: "true" })
+        .publicFeatures.breezLightningAddressEnabled
+    ).toBe(true)
+  })
+
+  it("requires explicit Breez address flags and includes reviewed enablement in manifests", () => {
+    const profiles = loadPagesProfiles()
+    for (const name of ["preview", "production", "staging"] as const) {
+      const missing = structuredClone(profiles)
+      delete (
+        missing.profiles[name].publicFeatures as Partial<
+          (typeof missing.profiles)[typeof name]["publicFeatures"]
+        >
+      ).breezLightningAddressEnabled
+      expect(() => parsePagesProfiles(missing)).toThrow(
+        "must explicitly set breezLightningAddressEnabled"
+      )
+      const enabled = structuredClone(profiles)
+      enabled.profiles[name].publicFeatures.breezLightningAddressEnabled = true
+      expect(
+        parsePagesProfiles(enabled).profiles[name].publicFeatures
+          .breezLightningAddressEnabled
+      ).toBe(true)
+    }
+    const profile = resolveDeploymentProfile({
+      CONDUIT_DEPLOYMENT_PROFILE: "preview",
+    })
+    const manifest = createPublicDeploymentManifest({
+      app: "market",
+      profile,
+      commitSha: "abc123",
+      branch: "feat/address-gate",
+      buildTime: "2026-10-09T00:00:00.000Z",
+      sourceUrl: "https://github.com/Conduit-BTC/conduit-mono",
+    })
+    expect(manifest.publicFeatures.breezLightningAddressEnabled).toBe(false)
+    expect(manifest.publicConfigDigest).toBe(profile.configDigest)
+  })
+
   it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
     expect(
       selectDeploymentProfileName({
@@ -271,6 +324,9 @@ describe("deployment profiles", () => {
     )
     expect(workflow).toContain(
       "manifest.publicFeatures?.livePresenceEnabled !== true"
+    )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.breezLightningAddressEnabled !== expectedBreezAddressEnabled"
     )
     expect(workflow).toContain("throw new Error(")
   })

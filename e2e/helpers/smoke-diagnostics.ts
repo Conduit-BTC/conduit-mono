@@ -1,8 +1,151 @@
 import type { TestInfo } from "@playwright/test"
 
+export const commerceJourneyPhases = [
+  "seed_profiles",
+  "start_wallets",
+  "create_contexts",
+  "install_signers",
+  "buyer_inbox",
+  "merchant_inbox",
+  "wallet_route",
+  "foreign_wallet",
+  "foreign_open_dialog",
+  "foreign_connection_form",
+  "foreign_connection_submit",
+  "foreign_connected",
+  "foreign_registry_order",
+  "foreign_registry_refresh",
+  "foreign_manage",
+  "foreign_select_default",
+  "foreign_default_committed",
+  "receiving_wallet",
+  "receiving_open_dialog",
+  "receiving_connection_form",
+  "receiving_connection_submit",
+  "receiving_connected",
+  "receiving_manage",
+  "receiving_select_default",
+  "receiving_default_committed",
+  "publish_product",
+  "verify_product",
+  "store_discovery",
+  "filtered_store",
+  "store_catalog",
+  "store_presence",
+  "legacy_redirect",
+  "store_ready",
+  "empty_search",
+  "product_search",
+  "cart_add",
+  "checkout",
+  "send_order",
+  "merchant_delivery",
+  "merchant_order",
+  "accept_order",
+  "buyer_status",
+  "generate_invoice",
+  "invoice_delivery",
+  "pay_invoice",
+  "payment_proof",
+  "merchant_settlement",
+  "merchant_paid",
+  "buyer_paid",
+  "reload",
+  "exactly_once",
+  "complete",
+] as const
+export type CommerceJourneyPhase = (typeof commerceJourneyPhases)[number]
+
+export const populatedAuditPhases = [
+  "setup",
+  "start_wallet",
+  "seed_profiles",
+  "install_signer",
+  "profile_navigate",
+  "profile_ready",
+  "profile_edit",
+  "payments_navigate",
+  "wallet_configure",
+  "wallet_reload",
+  "wallet_ready",
+  "wallet_contrast",
+  "network_navigate",
+  "network_ready",
+  "catalog_navigate",
+  "catalog_ready",
+  "editor_open",
+  "editor_ready",
+  "storefront_navigate",
+  "storefront_ready",
+  "product_navigate",
+  "product_ready",
+  "legal_navigate",
+  "legal_contrast",
+  "complete",
+] as const
+export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
+
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "wallet-migration": {
+      file: "e2e/wallet-sign-in.playwright.ts",
+      fields: {
+        passwordPresent: "boolean",
+        showEnabled: "boolean",
+        scenario: ["none", "sdk-open", "post-open"],
+        phase: [
+          "seed",
+          "open_dialog",
+          "password",
+          "migrate",
+          "failed_open",
+          "retry",
+          "credential",
+          "lock_reopen",
+          "previous_password",
+          "fresh_signin",
+          "second_wallet",
+          "legacy_recovery",
+          "legacy_menu",
+          "legacy_dialog",
+          "legacy_password",
+          "legacy_reveal",
+          "legacy_close",
+          "legacy_focus",
+          "signer_recovery",
+          "complete",
+        ],
+        elapsedSeconds: "number",
+      },
+    },
+    "commerce-journey": {
+      file: "e2e/commerce.playwright.ts",
+      fields: {
+        buyerObservationAvailable: "boolean",
+        buyerLifecyclePaid: "boolean",
+        buyerProofSent: "boolean",
+        buyerPaidMessages: "number",
+        buyerMessageDialogVisible: "boolean",
+        phase: commerceJourneyPhases,
+        elapsedSeconds: "number",
+        phaseSeconds: "number",
+        slowestPhase: commerceJourneyPhases,
+        slowestSeconds: "number",
+        cleanupStarted: "boolean",
+        cleanupComplete: "boolean",
+        makeInvoice: "number",
+        payInvoice: "number",
+        lookupInvoice: "number",
+        foreignMakeInvoice: "number",
+        foreignReceiveCapable: "boolean",
+        foreignAlreadyReceiving: "boolean",
+        foreignRegistryRefreshObserved: "boolean",
+        foreignMenuVisibleBeforeClick: "boolean",
+        foreignMenuEnabledBeforeClick: "boolean",
+        foreignMenuHitTargetBeforeClick: "boolean",
+      },
+    },
     "price-interaction": {
       file: "e2e/shared-ui-visual-contract.playwright.ts",
       fields: {
@@ -42,6 +185,14 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         submitEnabled: "boolean",
       },
     },
+    "populated-audit": {
+      file: "e2e/shared-ui-populated-audit.playwright.ts",
+      fields: {
+        phase: populatedAuditPhases,
+        elapsedSeconds: "number",
+        pageCrashed: "boolean",
+      },
+    },
     "surface-audit": {
       file: "e2e/shared-ui-surface-audit.playwright.ts",
       fields: {
@@ -55,11 +206,22 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
           "complete",
         ],
         routeIndex: "number",
+        pageCrashed: "boolean",
+        failedDocuments: "number",
         pendingDocuments: "number",
         pendingImages: "number",
         pendingFonts: "number",
         pendingScripts: "number",
-        navigationError: ["none", "aborted", "interrupted", "timeout", "other"],
+        navigationError: [
+          "none",
+          "aborted",
+          "interrupted",
+          "timeout",
+          "closed",
+          "crashed",
+          "internal",
+          "other",
+        ],
       },
     },
     "cart-stale-action": {
@@ -85,7 +247,11 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
       fields: {
         phase: [
           "setup",
+          "merchant_navigate",
           "merchant_catalog",
+          "merchant_open_dialog",
+          "merchant_dialog",
+          "merchant_form",
           "publish_product",
           "buyer_checkout",
           "send_order",
@@ -116,6 +282,23 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         ],
       },
     },
+    "footer-follow": {
+      file: "e2e/mobile-safari-baseline.playwright.ts",
+      fields: {
+        phase: ["initial", "hidden", "returned"],
+        footerTop: "number",
+        cartBottom: "number",
+        scrollY: "number",
+        viewportHeight: "number",
+        footerHidden: "boolean",
+        scrollEvents: "number",
+        lastScrollY: "number",
+        lastDelta: "number",
+        mainHeight: "number",
+        maxScrollY: "number",
+        mobileQueryMatches: "boolean",
+      },
+    },
     "footer-layout": {
       file: "e2e/mobile-safari-baseline.playwright.ts",
       fields: {
@@ -134,10 +317,33 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         scrollY: "number",
         measuredFooterHeight: "number",
         footerHidden: "boolean",
+        triggerMarginBottom: "number",
+        triggerTransformY: "number",
+        footerTransformY: "number",
       },
     },
     "product-dialog-open": {
       file: "e2e/commerce.playwright.ts",
+      fields: {
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        dialogPresent: "boolean",
+        triggerEnabled: "boolean",
+        fontsAtClick: ["loading", "loaded", "unknown"],
+        triggerX: "number",
+        triggerY: "number",
+        triggerStartY: "number",
+        triggerDownY: "number",
+        triggerUpY: "number",
+        triggerWidth: "number",
+        triggerHeight: "number",
+      },
+    },
+    "variation-dialog-open": {
+      file: "e2e/merchant-variation-shipping.playwright.ts",
       fields: {
         pointerDownOnTrigger: "boolean",
         pointerUpOnTrigger: "boolean",
@@ -229,13 +435,18 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "commerce-journey"
+    | "wallet-migration"
     | "price-interaction"
     | "fallback-upload"
     | "surface-audit"
+    | "populated-audit"
     | "cart-stale-action"
+    | "footer-follow"
     | "footer-layout"
     | "product-submit"
     | "product-dialog-open"
+    | "variation-dialog-open"
     | "order-reply"
     | "fallback-recovery",
   values: Record<string, unknown>

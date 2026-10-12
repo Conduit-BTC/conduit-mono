@@ -303,6 +303,7 @@ const INVOICE_ACTION_ERROR_MESSAGES: Record<
   MerchantInvoiceActionSource,
   string
 > = {
+  wallet: "Open the selected receiving wallet in Wallets and try again.",
   profile_lud16:
     "Could not create an invoice from the profile Lightning address. Try again or choose another source.",
   webln:
@@ -659,8 +660,8 @@ function OrdersWorkspace() {
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [invoice, setInvoice] = useState("")
-  const [invoiceSource, setInvoiceSource] =
-    useState<MerchantInvoiceActionSource>("profile_lud16")
+  const [invoiceSourceOverride, setInvoiceSourceOverride] =
+    useState<MerchantInvoiceActionSource | null>(null)
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
@@ -750,19 +751,24 @@ function OrdersWorkspace() {
   }, [])
 
   const nwc = useMerchantPaymentAutomation()
+  const invoiceSource: MerchantInvoiceActionSource =
+    invoiceSourceOverride ??
+    (nwc.receivingWalletId ? "wallet" : "profile_lud16")
   const profileLud16 =
     getProfilePaymentAddress(merchantProfileQuery.profileContext) ?? ""
   const profileInvoiceAvailable = isValidLud16Address(profileLud16)
   const nwcInvoiceAvailable =
     !!nwc.connection && nwc.canCreateInvoices && nwc.addressStatus === "match"
   const selectedInvoiceSourceAvailable =
-    invoiceSource === "profile_lud16"
-      ? profileInvoiceAvailable
-      : invoiceSource === "webln"
-        ? weblnAvailable
-        : invoiceSource === "nwc"
-          ? nwcInvoiceAvailable
-          : true
+    invoiceSource === "wallet"
+      ? !!nwc.receivingWalletId
+      : invoiceSource === "profile_lud16"
+        ? profileInvoiceAvailable
+        : invoiceSource === "webln"
+          ? weblnAvailable
+          : invoiceSource === "nwc"
+            ? nwcInvoiceAvailable
+            : true
 
   // Orders reads stay permissive without a NIP-17 declaration (CND-208);
   // this banner only reports readiness and links to Network for repair.
@@ -1265,7 +1271,7 @@ function OrdersWorkspace() {
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
     setInvoice("")
-    setInvoiceSource("profile_lud16")
+    setInvoiceSourceOverride(null)
     setInvoiceAmount("")
     setInvoiceCurrency("USD")
     setInvoiceNote("")
@@ -1989,6 +1995,10 @@ function OrdersWorkspace() {
     source: MerchantInvoiceActionSource
   ): MerchantInvoiceSelection {
     switch (source) {
+      case "wallet":
+        if (!nwc.receivingWalletId)
+          throw new Error("Choose a receiving wallet in Wallets.")
+        return { type: "wallet", walletId: nwc.receivingWalletId }
       case "profile_lud16":
         if (!profileInvoiceAvailable) {
           throw new Error("A valid profile Lightning address is required.")
@@ -3294,8 +3304,15 @@ function OrdersWorkspace() {
                                           </Label>
                                           <Select
                                             value={invoiceSource}
+                                            onOpenChange={(open) => {
+                                              // Preserve intent even when the current option is selected again.
+                                              if (open)
+                                                setInvoiceSourceOverride(
+                                                  invoiceSource
+                                                )
+                                            }}
                                             onValueChange={(value) =>
-                                              setInvoiceSource(
+                                              setInvoiceSourceOverride(
                                                 value as MerchantInvoiceActionSource
                                               )
                                             }
@@ -3304,6 +3321,14 @@ function OrdersWorkspace() {
                                               <SelectValue placeholder="Choose invoice source" />
                                             </SelectTrigger>
                                             <SelectContent>
+                                              <SelectItem
+                                                value="wallet"
+                                                disabled={
+                                                  !nwc.receivingWalletId
+                                                }
+                                              >
+                                                My receiving wallet
+                                              </SelectItem>
                                               <SelectItem
                                                 value="profile_lud16"
                                                 disabled={
@@ -3331,11 +3356,19 @@ function OrdersWorkspace() {
                                           </Select>
                                         </div>
 
+                                        <p className="text-xs text-[var(--text-secondary)]">
+                                          Payments are checked automatically
+                                          when the original receiving wallet
+                                          supports invoice lookup. Keep this app
+                                          open and the wallet connected.
+                                          Changing your public address does not
+                                          change existing invoices.
+                                        </p>
                                         {invoiceSource === "profile_lud16" && (
                                           <p className="text-xs text-[var(--text-secondary)]">
                                             {profileInvoiceAvailable
                                               ? "Uses the Lightning address in your signed merchant profile."
-                                              : "Add a valid Lightning address to your merchant profile, or choose another source."}
+                                              : "Manage your public address in Wallets, or choose another source."}
                                           </p>
                                         )}
                                         {invoiceSource === "nwc" &&

@@ -1,3 +1,5 @@
+import type { ReceivingWalletBinding } from "../wallets/receiving"
+import type { SparkRecoveryState } from "../wallets/spark-recovery-service"
 import Dexie, {
   liveQuery,
   type DexieOptions,
@@ -736,7 +738,8 @@ export interface StoredMerchantPendingInvoice {
   amountMsats: number
   note?: string
   delivery: "buyer_and_self" | "self_only"
-  source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock"
+  source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock" | "wallet"
+  receivingWallet?: ReceivingWalletBinding
   invoiceExpiresAt: number
   deliveryState: "pending" | "sent"
   /** A semantic publish began; absent positive evidence, only exact-wrap recovery is safe. */
@@ -1101,6 +1104,7 @@ export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTo
 }
 
 export class ConduitDB extends Dexie {
+  sparkRecoveryEvidence!: EntityTable<SparkRecoveryState, "ownerPubkey">
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   commerceInboxDeletions!: EntityTable<InboxDeletionRow, "id">

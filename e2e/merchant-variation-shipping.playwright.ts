@@ -10,6 +10,7 @@ import {
   readTestRelayEvents,
   seedTestRelayIdentity,
 } from "./helpers/auth"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -241,9 +242,89 @@ test("variation measurements require explicit sharing and preserve independent a
   await publishTestRelayEvents([policy])
   await installTestSigner(page, pubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
-  await activate(page.getByRole("button", { name: "Add product" }).first())
+  await expect(
+    page.getByRole("button", {
+      name: "Open merchant account menu",
+      exact: true,
+    })
+  ).toBeVisible()
+  await page.evaluate(() => document.fonts.ready)
+  const trigger = page.getByRole("button", { name: "Add product" }).first()
+  await expect(trigger).toBeEnabled()
+  // Preserve one activation and capture only delivery, mount and geometry state.
+  const diagnosticHandle = await trigger.evaluateHandle((element) => {
+    const observations = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      dialogMounted: false,
+      dialogRemoved: false,
+      fontsAtClick: "unknown",
+    }
+    const listeners = ["pointerdown", "pointerup", "click"].map((type) => {
+      const listener = (event: Event) => {
+        const onTrigger =
+          event.target instanceof Node && element.contains(event.target)
+        if (type === "pointerdown")
+          observations.pointerDownOnTrigger = onTrigger
+        if (type === "pointerup") observations.pointerUpOnTrigger = onTrigger
+        if (type === "click") {
+          observations.clickOnTrigger = onTrigger
+          observations.fontsAtClick = document.fonts.status
+        }
+      }
+      document.addEventListener(type, listener, true)
+      return { type, listener }
+    })
+    const containsDialog = (node: Node) =>
+      node instanceof Element &&
+      (node.matches('[role="dialog"]') ||
+        !!node.querySelector('[role="dialog"]'))
+    const observer = new MutationObserver((changes) => {
+      for (const change of changes) {
+        if ([...change.addedNodes].some(containsDialog))
+          observations.dialogMounted = true
+        if ([...change.removedNodes].some(containsDialog))
+          observations.dialogRemoved = true
+      }
+    })
+    observer.observe(document, { childList: true, subtree: true })
+    return {
+      read() {
+        const rect = element.getBoundingClientRect()
+        return {
+          ...observations,
+          dialogPresent: !!document.querySelector('[role="dialog"]'),
+          triggerEnabled:
+            element.isConnected && !element.hasAttribute("disabled"),
+          triggerX: rect.x,
+          triggerY: rect.y,
+          triggerWidth: rect.width,
+          triggerHeight: rect.height,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        for (const { type, listener } of listeners)
+          document.removeEventListener(type, listener, true)
+      },
+    }
+  })
   const dialog = page.getByRole("dialog", { name: "Add product" })
-  await expect(dialog).toBeVisible()
+  try {
+    await activate(trigger)
+    await expect(dialog).toBeVisible()
+  } catch (error) {
+    recordSmokeDiagnostic(
+      testInfo,
+      "variation-dialog-open",
+      await diagnosticHandle.evaluate((probe) => probe.read())
+    )
+    throw error
+  } finally {
+    await diagnosticHandle.evaluate((probe) => probe.dispose())
+    await diagnosticHandle.dispose()
+  }
   await dialog
     .getByLabel("Title", { exact: true })
     .fill("Variation shipping test")

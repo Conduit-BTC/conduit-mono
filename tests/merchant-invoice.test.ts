@@ -3,6 +3,7 @@ import { RelayPublishDiagnosticsError } from "@conduit/core"
 
 import {
   createMerchantInvoiceModule,
+  loadMerchantInvoiceReceivingAuthority,
   DexieMerchantPendingInvoiceStore,
   type MerchantInvoiceDependencies,
   type MerchantPendingInvoice,
@@ -855,4 +856,67 @@ describe("merchant invoice validation and durability", () => {
     expect(fetchLnurlInvoice).toHaveBeenCalledTimes(1)
     expect(publishedInvoices).toEqual([INVOICE])
   })
+})
+
+it("retains original wallet binding and invoice when the public address changes before retry", async () => {
+  const store = new MemoryPendingInvoiceStore()
+  const binding = {
+    walletId: "same-wallet",
+    providerId: "spark" as const,
+    network: "mainnet" as const,
+    requestId: "receive-1",
+  }
+  let address = "old@wallet.example"
+  let fail = true
+  const published: any[] = []
+  const dependencies = createDependencies(store, {
+    getProfileLud16: async () => address,
+    makeWalletInvoice: mock(async () => ({
+      invoice: INVOICE,
+      receivingWallet: binding,
+    })),
+    publish: async (input) => {
+      published.push(input)
+      if (fail) throw new Error("offline")
+    },
+  })
+  const module = createMerchantInvoiceModule(dependencies)
+  await expect(
+    module.createAndDeliver({
+      ...createInput(),
+      source: { type: "wallet", walletId: binding.walletId },
+    })
+  ).rejects.toThrow()
+  address = "new@conduit.cash"
+  fail = false
+  await module.retryDelivery(createInput())
+  expect(dependencies.makeWalletInvoice).toHaveBeenCalledTimes(1)
+  expect(published[0].payload.invoice).toBe(INVOICE)
+  expect(published[1].payload.invoice).toBe(INVOICE)
+  for (const input of published) {
+    expect(input.payload).not.toHaveProperty("receivingWallet")
+    expect(JSON.stringify(input.payload)).not.toContain(binding.walletId)
+    expect(JSON.stringify(input.payload)).not.toContain(binding.requestId)
+  }
+  const target = {
+    ...createInput(),
+    invoice: INVOICE,
+    amountMsats: createInput().amountSats * 1_000,
+  }
+  expect(await loadMerchantInvoiceReceivingAuthority(target, store)).toEqual(
+    binding
+  )
+  for (const changed of [
+    { invoice: "unrelated-invoice" },
+    { amountMsats: target.amountMsats + 1 },
+    { buyerPubkey: "02".repeat(32) },
+    { orderId: "unrelated-order" },
+  ])
+    expect(
+      await loadMerchantInvoiceReceivingAuthority(
+        { ...target, ...changed },
+        store
+      )
+    ).toBeNull()
+  expect(address).toBe("new@conduit.cash")
 })

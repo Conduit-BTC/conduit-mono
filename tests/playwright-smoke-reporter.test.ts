@@ -311,7 +311,176 @@ describe("privacy-safe Playwright smoke reporter", () => {
   })
 })
 
+describe("browser process diagnostics", () => {
+  it("emits fixed categories while discarding arbitrary stderr and process details", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-browser-signals-"))
+    try {
+      const outputFile = join(directory, "report.json")
+      const progressFile = join(directory, "progress.log")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [] } as unknown as Suite
+      )
+      const privateValue = crypto.randomUUID()
+      reporter.onStdErr(`unrelated Network process crashed ${privateValue}`)
+      reporter.onStdErr(`pw:browser <launched> pid=1234 ${privateValue}`)
+      reporter.onStdErr(
+        Buffer.from(
+          `pw:browser [pid=1234][err] Network process crashed ${privateValue}`
+        )
+      )
+      reporter.onStdErr(
+        `pw:browser <process did exit: signal=SIGSEGV> ${privateValue}`
+      )
+      reporter.onStdErr(
+        `pw:browser [err] malloc(): corrupted double-linked list ${privateValue}`
+      )
+      reporter.onStdErr(
+        `pw:browser <process did exit: signal=SIGABRT> ${privateValue}`
+      )
+      reporter.onStdErr(`pw:browser arbitrary output ${privateValue}`)
+      reporter.onEnd({ status: "failed" } as FullResult)
+      const progress = readFileSync(progressFile, "utf8")
+      const report = readFileSync(outputFile, "utf8")
+      expect(progress).toContain(
+        'browser-signals {"launched":1,"networkProcessCrashed":1,"segmentationFault":1,"aborted":1,"heapCorruption":1}'
+      )
+      expect(progress + report).not.toContain(privateValue)
+      expect(progress + report).not.toContain("pid=1234")
+      expect(progress + report).not.toContain("arbitrary output")
+      expect(progress + report).not.toContain("malloc()")
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("bounded smoke failure diagnostics", () => {
+  it("limits migration diagnostics to fixed phases and scenario names", () => {
+    const privateValue = crypto.randomUUID()
+    const annotation = {
+      type: "smoke:wallet-migration",
+      description: JSON.stringify({
+        scenario: "sdk-open",
+        phase: "retry",
+        elapsedSeconds: 12,
+        passwordPresent: true,
+        showEnabled: false,
+        mnemonic: privateValue,
+        password: privateValue,
+        walletId: privateValue,
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-sign-in.playwright.ts", [annotation])
+    ).toEqual([
+      {
+        kind: "wallet-migration",
+        scenario: "sdk-open",
+        phase: "retry",
+        elapsedSeconds: 12,
+        passwordPresent: true,
+        showEnabled: false,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-sign-in.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            scenario: privateValue,
+            phase: privateValue,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+  it("retains only fixed Commerce phase, side-effect and menu-state observations", () => {
+    const annotations = [
+      {
+        type: "smoke:commerce-journey",
+        description: JSON.stringify({
+          buyerObservationAvailable: true,
+          buyerLifecyclePaid: true,
+          buyerProofSent: true,
+          buyerPaidMessages: 0,
+          buyerMessageDialogVisible: true,
+          phase: "merchant_order",
+          elapsedSeconds: 180,
+          phaseSeconds: 100,
+          slowestPhase: "publish_product",
+          slowestSeconds: 20,
+          cleanupStarted: true,
+          cleanupComplete: false,
+          makeInvoice: 0,
+          payInvoice: 0,
+          lookupInvoice: 0,
+          foreignMakeInvoice: 0,
+          foreignReceiveCapable: true,
+          foreignAlreadyReceiving: false,
+          foreignRegistryRefreshObserved: true,
+          foreignMenuVisibleBeforeClick: true,
+          foreignMenuEnabledBeforeClick: true,
+          foreignMenuHitTargetBeforeClick: false,
+          foreignWalletId: "private-value",
+          orderId: "private-value",
+          invoice: "private-value",
+          balance: 99,
+        }),
+      },
+    ]
+    const [safe] = safeSmokeDiagnostics(
+      "e2e/commerce.playwright.ts",
+      annotations
+    )
+    expect(safe).toEqual({
+      kind: "commerce-journey",
+      buyerObservationAvailable: true,
+      buyerLifecyclePaid: true,
+      buyerProofSent: true,
+      buyerPaidMessages: 0,
+      buyerMessageDialogVisible: true,
+      phase: "merchant_order",
+      elapsedSeconds: 180,
+      phaseSeconds: 100,
+      slowestPhase: "publish_product",
+      slowestSeconds: 20,
+      cleanupStarted: true,
+      cleanupComplete: false,
+      makeInvoice: 0,
+      payInvoice: 0,
+      lookupInvoice: 0,
+      foreignMakeInvoice: 0,
+      foreignReceiveCapable: true,
+      foreignAlreadyReceiving: false,
+      foreignRegistryRefreshObserved: true,
+      foreignMenuVisibleBeforeClick: true,
+      foreignMenuEnabledBeforeClick: true,
+      foreignMenuHitTargetBeforeClick: false,
+    })
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-lifecycle.playwright.ts", annotations)
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+        {
+          type: "smoke:commerce-journey",
+          description: JSON.stringify({
+            phase: "private-value",
+            slowestPhase: "private-value",
+            elapsedSeconds: 32769,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
   it("exports only allowlisted scalar observations from the matching fixture", () => {
     const annotation = {
       type: "smoke:footer-layout",
@@ -368,6 +537,17 @@ describe("bounded smoke failure diagnostics", () => {
         { kind: "price-interaction", click: false, quantity: 1 },
       ],
       [
+        "footer-follow",
+        "e2e/mobile-safari-baseline.playwright.ts",
+        { phase: "hidden", footerTop: 700, footerHidden: false },
+        {
+          kind: "footer-follow",
+          phase: "hidden",
+          footerTop: 700,
+          footerHidden: false,
+        },
+      ],
+      [
         "fallback-upload",
         "e2e/merchant-product-image-preview.playwright.ts",
         { phase: "publish", inboxPrompt: true },
@@ -397,6 +577,8 @@ describe("bounded smoke failure diagnostics", () => {
         phase: "navigate",
         routeIndex: 4,
         pendingImages: 2,
+        failedDocuments: 1,
+        pageCrashed: true,
         navigationError: "aborted",
         url: "private-value",
         pubkey: "private-value",
@@ -412,6 +594,8 @@ describe("bounded smoke failure diagnostics", () => {
         kind: "surface-audit",
         phase: "navigate",
         routeIndex: 4,
+        pageCrashed: true,
+        failedDocuments: 1,
         pendingImages: 2,
         navigationError: "aborted",
       },
@@ -426,6 +610,48 @@ describe("bounded smoke failure diagnostics", () => {
           description: JSON.stringify({
             phase: "private-value",
             url: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it("bounds populated-audit phases and crash observations to that fixture", () => {
+    const annotation = {
+      type: "smoke:populated-audit",
+      description: JSON.stringify({
+        phase: "wallet_ready",
+        elapsedSeconds: 25.18,
+        pageCrashed: true,
+        url: "private-value",
+        invoice: "private-value",
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-populated-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "populated-audit",
+        phase: "wallet_ready",
+        elapsedSeconds: 25.2,
+        pageCrashed: true,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-surface-audit.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-populated-audit.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            phase: "private-value",
+            elapsedSeconds: 40000,
+            pageCrashed: "private-value",
           }),
         },
       ])
@@ -457,56 +683,74 @@ describe("bounded smoke failure diagnostics", () => {
     ).toEqual([])
   })
 
-  it("allows only content-free product-dialog observations from commerce", () => {
-    const annotation = {
-      type: "smoke:product-dialog-open",
-      description: JSON.stringify({
-        pointerDownOnTrigger: true,
-        pointerUpOnTrigger: false,
-        clickOnTrigger: false,
-        dialogMounted: false,
-        dialogRemoved: false,
-        dialogPresent: false,
-        triggerEnabled: true,
-        fontsAtClick: "loading",
-        triggerX: 212.345,
-        triggerWidth: Infinity,
-        triggerHeight: "private-value",
-        pubkey: "private-value",
-        connectionString: "private-value",
-        message: "private-value",
-      }),
-    }
-    expect(
-      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
-    ).toEqual([
-      {
-        kind: "product-dialog-open",
-        pointerDownOnTrigger: true,
-        pointerUpOnTrigger: false,
-        clickOnTrigger: false,
-        dialogMounted: false,
-        dialogRemoved: false,
-        dialogPresent: false,
-        triggerEnabled: true,
-        fontsAtClick: "loading",
-        triggerX: 212.3,
-      },
-    ])
-    expect(
-      safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
-        annotation,
-      ])
-    ).toEqual([])
-    expect(
-      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+  it("keeps content-free dialog observations bound to each owning fixture", () => {
+    for (const [kind, file, otherOwner] of [
+      [
+        "product-dialog-open",
+        "e2e/commerce.playwright.ts",
+        "e2e/merchant-variation-shipping.playwright.ts",
+      ],
+      [
+        "variation-dialog-open",
+        "e2e/merchant-variation-shipping.playwright.ts",
+        "e2e/commerce.playwright.ts",
+      ],
+    ] as const) {
+      const annotation = {
+        type: `smoke:${kind}`,
+        description: JSON.stringify({
+          pointerDownOnTrigger: true,
+          pointerUpOnTrigger: false,
+          clickOnTrigger: false,
+          dialogMounted: false,
+          dialogRemoved: false,
+          dialogPresent: false,
+          triggerEnabled: true,
+          fontsAtClick: "loading",
+          triggerX: 212.345,
+          ...(kind === "product-dialog-open"
+            ? { triggerStartY: 321.123, triggerDownY: 100, triggerUpY: 12 }
+            : {}),
+          triggerWidth: Infinity,
+          triggerHeight: "private-value",
+          pubkey: "private-value",
+          connectionString: "private-value",
+          message: "private-value",
+        }),
+      }
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([
         {
-          ...annotation,
-          description:
-            '{"fontsAtClick":"private-value","clickOnTrigger":"private-value"}',
+          kind,
+          pointerDownOnTrigger: true,
+          pointerUpOnTrigger: false,
+          clickOnTrigger: false,
+          dialogMounted: false,
+          dialogRemoved: false,
+          dialogPresent: false,
+          triggerEnabled: true,
+          fontsAtClick: "loading",
+          triggerX: 212.3,
+          ...(kind === "product-dialog-open"
+            ? { triggerStartY: 321.1, triggerDownY: 100, triggerUpY: 12 }
+            : {}),
         },
       ])
-    ).toEqual([])
+      expect(
+        safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
+          annotation,
+        ])
+      ).toEqual([])
+      expect(
+        safeSmokeDiagnostics(file, [
+          {
+            ...annotation,
+            description:
+              '{"fontsAtClick":"private-value","clickOnTrigger":"private-value"}',
+          },
+        ])
+      ).toEqual([])
+      expect(safeSmokeDiagnostics(otherOwner, [annotation])).toEqual([])
+    }
   })
 
   it("keeps stalled-journey phases file-bound and strips unapproved values", () => {
@@ -514,7 +758,7 @@ describe("bounded smoke failure diagnostics", () => {
       {
         file: "e2e/merchant-order-inbox.playwright.ts",
         kind: "order-reply",
-        phase: "buyer_checkout",
+        phase: "merchant_navigate",
       },
       {
         file: "e2e/merchant-product-image-preview.playwright.ts",
