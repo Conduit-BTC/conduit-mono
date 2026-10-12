@@ -144,6 +144,7 @@ export function isCompleteAccountRegistryDiscovery(
 ): boolean {
   return (
     !!discovery.registry &&
+    discovery.registryMembershipReady === true &&
     discovery.coverage === "complete" &&
     !discovery.invalidCount &&
     !discovery.unresolvedObserved &&
@@ -215,7 +216,7 @@ export async function bootstrapLegacyAccountWalletRegistry(input: {
   }
   assertWalletSignerCurrent(signer)
   const eventId = await service.prepareRegistry(network, { type: "bootstrap" })
-  if (!(await service.deliver(eventId)).ready)
+  if (!(await service.deliver(eventId, options)).ready)
     return { discovery, attempted: true, ready: false }
   const current = await service.discover(false, network, options)
   return {
@@ -237,8 +238,10 @@ export async function reconcileAccountWalletRegistryMembership(input: {
   >
 }): Promise<void> {
   const { signer, discovery, network, store, journal } = input
-  if (!isCompleteAccountRegistryDiscovery(discovery)) return
-  const removed = new Set(discovery.registry!.removedWalletIds)
+  // A local signed snapshot can precede relay delivery. Only confirmed
+  // removals may hide a registered wallet; older confirmations remain sticky.
+  const removed = new Set(discovery.confirmedRemovedWalletIds ?? [])
+  if (!removed.size && !discovery.registryMembershipReady) return
   const scoped: string[] = []
   const excluded: string[] = []
   for (const wallet of await store.list()) {
@@ -251,7 +254,7 @@ export async function reconcileAccountWalletRegistryMembership(input: {
   }
   assertWalletSignerCurrent(signer)
   await journal.setRegistryExcluded(signer.pubkey, scoped, excluded)
-  for (const walletId of discovery.registry!.removedWalletIds) {
+  for (const walletId of removed) {
     assertWalletSignerCurrent(signer)
     await journal.setDeviceRemoved(signer.pubkey, walletId, true)
   }
@@ -457,8 +460,8 @@ export async function backUpAccountSparkWallet(
   const discovery = await service.discover(false, bundle.network, options)
   let pointer = discovery.primaryPointerEventId
   if (!pointer) pointer = await service.preparePrimary(candidate)
-  const backup = await service.deliver(candidate.eventId)
-  const primary = await service.deliver(pointer)
+  const backup = await service.deliver(candidate.eventId, options)
+  const primary = await service.deliver(pointer, options)
   // Account membership can advance only after every planned relay confirms
   // both encrypted recovery references. Backup durability remains a separate
   // two-operator (or explicit export) readiness decision.
@@ -478,7 +481,7 @@ export async function backUpAccountSparkWallet(
     latest.registry?.activeWalletIds.includes(walletId)
   )
     return latest.registryEventId
-      ? (await service.deliver(latest.registryEventId)).ready &&
+      ? (await service.deliver(latest.registryEventId, options)).ready &&
           backup.ready &&
           primary.ready
       : false
@@ -487,7 +490,7 @@ export async function backUpAccountSparkWallet(
     walletId,
   })
   return (
-    (await service.deliver(registryEventId)).ready &&
+    (await service.deliver(registryEventId, options)).ready &&
     backup.ready &&
     primary.ready
   )

@@ -970,6 +970,32 @@ export function useWallets(
         store,
         journal: new DexieSparkRecoveryStore(),
       })
+      // A retained registry write is intent, not confirmed account membership.
+      // Explicit recovery retry delivers those exact bytes before applying its membership
+      // or preparing a successor snapshot.
+      if (discovery.registryEventId && !discovery.registryMembershipReady) {
+        if (publishExisting) {
+          const delivered = await service.deliver(
+            discovery.registryEventId,
+            options
+          )
+          if (delivered.ready) {
+            discovery = await service.discover(false, network, options)
+            await reconcileAccountWalletRegistryMembership({
+              signer,
+              discovery,
+              network,
+              store,
+              journal: new DexieSparkRecoveryStore(),
+            })
+          }
+        }
+        if (!discovery.registryMembershipReady) {
+          await refreshAfterCommittedWalletMutation()
+          setRecoverySync("pending")
+          return { discovery, restored: [] }
+        }
+      }
       const restored = await restoreAccountSparkWallets(
         signer,
         discovery,
@@ -1002,7 +1028,8 @@ export function useWallets(
           credential?.type === "signer" &&
           (credential.ownerPubkey !== signer.pubkey ||
             journal.removedWalletIds?.includes(wallet.id) ||
-            discovery.registry?.removedWalletIds.includes(wallet.id))
+            (discovery.registryMembershipReady &&
+              discovery.registry?.removedWalletIds.includes(wallet.id)))
         )
           continue
         if (
@@ -1066,7 +1093,7 @@ export function useWallets(
         (record) => record.event.id === mainEventId
       )
       if (mainRecord && publishExisting)
-        await service.deliver(mainRecord.event.id)
+        await service.deliver(mainRecord.event.id, options)
       assertWalletSignerCurrent(signer)
       await refreshAfterCommittedWalletMutation()
       setRecoverySync(
@@ -1483,9 +1510,16 @@ export function useWallets(
                 { priority: options.priority ?? "foreground" }
               )
               const mnemonic = recovered.mnemonic
+              const connectedOwner = getAccountSigner()
               const signer =
                 recovered.signer ??
-                (migrate ? requireWalletSigner() : undefined)
+                (migrate ? requireWalletSigner() : undefined) ??
+                (stored.type === "signer" &&
+                connectedOwner?.pubkey === stored.ownerPubkey
+                  ? connectedOwner
+                  : undefined)
+              // A password fallback can open independently while signed out.
+              // When its owner is connected, logout still closes this session.
               let commitAfterOpen: (() => Promise<void>) | undefined
               if (signer && migrate && stored.type === "password") {
                 const sealed = await sealSignerSparkRecovery(
@@ -1896,7 +1930,9 @@ export function useWallets(
             walletId: wallet.id,
             replacementPayWalletId,
           })
-          if (!(await service.deliver(eventId)).ready)
+          if (
+            !(await service.deliver(eventId, { priority: "foreground" })).ready
+          )
             throw new Error(
               "Wallet removal has not reached recovery relays. Retry when recovery is available."
             )
@@ -2083,9 +2119,13 @@ export function useWallets(
         assertWalletSignerCurrent(signer)
         let ready = false
         try {
-          const registryResult = await service.deliver(registryEventId)
+          const registryResult = await service.deliver(registryEventId, {
+            priority: "foreground",
+          })
           assertWalletSignerCurrent(signer)
-          const mainResult = await service.deliver(mainEventId)
+          const mainResult = await service.deliver(mainEventId, {
+            priority: "foreground",
+          })
           ready = registryResult.ready && mainResult.ready
         } finally {
           assertWalletSignerCurrent(signer)

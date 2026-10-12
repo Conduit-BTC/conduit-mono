@@ -1,4 +1,8 @@
-import { openWalletSetup } from "./helpers/wallet-fixture"
+import {
+  openWalletSetup,
+  observeWalletController,
+  closeDefaultWalletSession,
+} from "./helpers/wallet-fixture"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   prepareControlledWallet,
@@ -902,6 +906,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       })
     phase("seed")
     await prepareControlledWallet(page)
+    await observeWalletController(page)
     const identity = createRuntimeSignerIdentity()
     await installRealTestSigner(
       page,
@@ -1141,6 +1146,83 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       await fallbackDialog
         .getByRole("button", { name: "Done", exact: true })
         .click()
+      if (failure === "none") {
+        // Exercise the actual Open control, first after signer refusal and then
+        // signed out. Keep passwords and recovery material inside the page.
+        const openWithPassword = async () => {
+          await page
+            .getByRole("button", { name: "Open wallet", exact: true })
+            .click()
+          const unlock = page.getByRole("dialog", {
+            name: "Unlock Legacy wallet",
+            exact: true,
+          })
+          await unlock
+            .getByRole("button", {
+              name: "Use previous wallet password",
+              exact: true,
+            })
+            .click()
+          await unlock.getByLabel("Wallet password").evaluate((input) => {
+            Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype,
+              "value"
+            )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
+            input.dispatchEvent(new Event("input", { bubbles: true }))
+          })
+          await unlock
+            .getByRole("button", { name: "Unlock", exact: true })
+            .click()
+          await expect(unlock).toHaveCount(0)
+          await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+          expect(
+            await page.evaluate(() => (window as any).__walletProbe.lastAccount)
+          ).toBe(7)
+        }
+        phase("fallback_after_refusal")
+        await closeDefaultWalletSession(page)
+        await page.evaluate(() => {
+          const fixture = window as any
+          fixture.__restoreWalletDecrypt = fixture.nostr.nip44.decrypt
+          fixture.nostr.nip44.decrypt = async () => {
+            throw new Error("Signer permission denied")
+          }
+        })
+        await page
+          .getByRole("button", { name: "Open wallet", exact: true })
+          .click()
+        const unlock = page.getByRole("dialog", {
+          name: "Unlock Legacy wallet",
+          exact: true,
+        })
+        await unlock
+          .getByRole("button", { name: "Open with Nostr", exact: true })
+          .click()
+        await expect(unlock.getByRole("alert")).toBeVisible()
+        await unlock
+          .getByRole("button", { name: "Cancel", exact: true })
+          .click()
+        await openWithPassword()
+        phase("fallback_signed_out")
+        await page.getByLabel("Open account menu").click()
+        await page
+          .getByRole("menuitem", { name: "Disconnect", exact: true })
+          .click()
+        await expect(page.getByLabel("Open account menu")).toHaveCount(0)
+        await openWithPassword()
+        await page.evaluate(() => {
+          const fixture = window as any
+          fixture.nostr.nip44.decrypt = fixture.__restoreWalletDecrypt
+        })
+        await page
+          .getByRole("button", { name: /^Connect$/ })
+          .first()
+          .click()
+        await page
+          .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
+          .click()
+        await expect(page.getByLabel("Open account menu")).toBeVisible()
+      }
       phase("fresh_signin")
       // A new document gets a fresh account session and the same encrypted local
       // wallet. The fixture controls the network layer before initialization.
