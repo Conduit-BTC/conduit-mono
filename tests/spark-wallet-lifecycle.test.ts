@@ -9,7 +9,7 @@ import {
   openRegisteredSparkWallet,
   runSparkWalletRemoval,
   type SparkWalletOperationRunner,
-} from "../apps/market/src/lib/spark-wallet-lifecycle"
+} from "@conduit/core/wallets/spark-wallet-lifecycle"
 import {
   SparkWalletManager,
   type SparkSdkClient,
@@ -19,7 +19,7 @@ import {
   assertSparkWalletRegistrationSessionAvailable,
   SparkWalletSessionLeaseUnavailableError,
   type SparkWalletSessionLockManager,
-} from "../apps/market/src/lib/spark-wallet-lease"
+} from "@conduit/core/wallets/spark-wallet-lease"
 
 const WALLET: WalletDescriptor = {
   id: "wallet-personal",

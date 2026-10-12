@@ -15,7 +15,7 @@ import {
   type SparkNativeModule,
   type SparkNativeWallet,
 } from "../apps/market/src/lib/spark-sdk"
-import { MemorySparkDirectTransferSafetyStore } from "../apps/market/src/lib/spark-direct-transfer-safety"
+import { MemorySparkDirectTransferSafetyStore } from "@conduit/core/wallets/spark-direct-transfer-safety"
 import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
 import { bytesToBolt11Words, makeBolt11Fixture } from "./support/bolt11-fixture"
 

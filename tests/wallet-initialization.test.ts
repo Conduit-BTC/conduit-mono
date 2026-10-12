@@ -9,7 +9,7 @@ import {
   WALLET_STORAGE_SYNCHRONIZATION_ERROR,
   WalletDescriptorSubscriptionCoordinator,
   WalletInitializationCoordinator,
-} from "../apps/market/src/lib/wallet-initialization"
+} from "@conduit/core/wallets/wallet-initialization"
 
 describe("WalletInitializationCoordinator", () => {
   it("deduplicates concurrent initialization across hook consumers", async () => {

@@ -2,6 +2,7 @@ import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   prepareControlledWallet,
   installControlledWallet,
+  saveWalletRecovery as saveRecovery,
 } from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
@@ -23,44 +24,6 @@ async function enterWallets(page: Page) {
   await expect(
     page.getByRole("heading", { name: "My wallets", exact: true })
   ).toBeVisible()
-}
-async function saveRecovery(page: Page, makeMain = true) {
-  const dialog = page.getByRole("dialog")
-  await expect(
-    dialog.getByRole("heading", {
-      name: /^(Wallet imported|Save your recovery details)$/,
-    })
-  ).toBeVisible()
-  await expect(
-    dialog.getByText("Checking for your Lightning address…", { exact: true })
-  ).toHaveCount(0)
-  if (
-    await dialog
-      .getByRole("heading", { name: "Wallet imported", exact: true })
-      .count()
-  ) {
-    await expect(dialog.locator("#recovery-saved")).toHaveCount(0)
-  } else {
-    await expect(
-      dialog.getByRole("heading", { name: "Save your recovery details" })
-    ).toBeVisible()
-    await dialog
-      .getByLabel(
-        "I saved the phrase, Spark account number and network somewhere private"
-      )
-      .check()
-  }
-  const chooser = dialog.getByRole("button", {
-    name: "Get conduit.cash address",
-    exact: true,
-  })
-  if (await chooser.count()) await chooser.click()
-  if (!makeMain)
-    await dialog
-      .getByLabel("Make this my main wallet", { exact: true })
-      .uncheck()
-  await dialog.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(dialog).toHaveCount(0)
 }
 async function existingProfile(page: Page) {
   await page.evaluate(async (moduleUrl) => {

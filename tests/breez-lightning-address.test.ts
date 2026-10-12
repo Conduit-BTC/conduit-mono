@@ -15,7 +15,7 @@ import {
   type BreezAddressFetch,
   type BreezAddressSigner,
 } from "../packages/core/src/wallets/breez-lightning-address"
-import { getBreezAddressConfiguration } from "../apps/market/src/lib/breez-lightning-address"
+import { getBreezAddressConfiguration } from "@conduit/core/wallets/spark-breez-address-access"
 import {
   DefaultSparkSigner,
   deriveViewerIdentityPublicKey,
