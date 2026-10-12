@@ -279,7 +279,7 @@ function fresh(timestamp: unknown, now: number): timestamp is number {
 }
 // A reviewed PR/deployment window is not the provider's signed-message window.
 // Keep exceptional destructive authority bounded without requiring a deploy
-// within one minute of an absolute expiration timestamp.
+// within ten minutes of an absolute expiration timestamp.
 function approvalWindow(until: number | undefined, now: number): boolean {
   return (
     until !== undefined &&

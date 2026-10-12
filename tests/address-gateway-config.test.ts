@@ -1,0 +1,54 @@
+import { expect, test } from "bun:test"
+import source from "../apps/address-gateway/wrangler.json"
+import { validateGatewayDeployment } from "../apps/address-gateway/src/deployment-config"
+
+test("source placeholders block either environment before deployment", () => {
+  for (const env of ["preview", "production"] as const)
+    expect(() => validateGatewayDeployment(source, env)).toThrow(
+      "dedicated request database"
+    )
+})
+function configured() {
+  const config = structuredClone(source)
+  config.d1_databases[0]!.database_id = crypto.randomUUID()
+  config.env.preview.d1_databases[0]!.database_id = crypto.randomUUID()
+  return config
+}
+test("dedicated bindings permit offline config validation without credentials", () => {
+  for (const env of ["preview", "production"] as const)
+    expect(() => validateGatewayDeployment(configured(), env)).not.toThrow()
+})
+test("production rejects missing binding, changed origins, exposed credentials and logging", () => {
+  for (const mutate of [
+    (c: ReturnType<typeof configured>) => {
+      c.d1_databases = []
+    },
+    (c: ReturnType<typeof configured>) => {
+      c.vars.ALLOWED_ORIGINS = "*"
+    },
+    (c: ReturnType<typeof configured>) => {
+      c.routes = []
+    },
+    (c: ReturnType<typeof configured>) => {
+      c.workers_dev = true
+    },
+    (c: ReturnType<typeof configured>) => {
+      c.observability.enabled = true
+    },
+    (c: ReturnType<typeof configured>) => {
+      c.ratelimits = []
+    },
+    (c: ReturnType<typeof configured>) => {
+      Object.assign(c.vars, { BREEZ_DOMAIN_API_KEY: crypto.randomUUID() })
+    },
+  ]) {
+    const config = configured()
+    mutate(config)
+    expect(() => validateGatewayDeployment(config, "production")).toThrow()
+  }
+})
+test("preview cannot enable provider mutations or bind the cash domain", () => {
+  const config = configured()
+  config.env.preview.vars.PROVIDER_PROXY_QUALIFIED = "true"
+  expect(() => validateGatewayDeployment(config, "preview")).toThrow()
+})
