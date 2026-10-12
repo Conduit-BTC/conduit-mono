@@ -8,14 +8,20 @@ import {
 } from "../wallets/address-name-request"
 import type { AccountSignerOperationOptions } from "../protocol/nostr-event-signer"
 import { DexieSparkRecoveryStore } from "../wallets/spark-recovery-store"
-import { recoveryReadiness } from "../wallets/spark-recovery-service"
+import {
+  accountRegistryReadiness,
+  recoveryReadiness,
+} from "../wallets/spark-recovery-service"
+import { sparkWalletRegistryDTag } from "../wallets/spark-recovery-address"
 import {
   getAccountSparkRecovery,
   runAccountWalletSetup,
   assertWalletCreationDiscovery,
   restoreAccountSparkWallets,
   backUpAccountSparkWallet,
+  bootstrapLegacyAccountWalletRegistry,
   reconcileAccountWalletRegistryMembership,
+  listAutomaticSignerSparkWallets,
   isCompleteAccountRegistryDiscovery,
   applyAccountWalletRegistryDefaults,
 } from "../wallets/account-spark-recovery"
@@ -276,6 +282,10 @@ export function useWallets(
   const [hasPasswordWallets, setHasPasswordWallets] = useState(false)
   const [recoverySync, setRecoverySync] =
     useState<UseWalletsReturn["recoverySync"]>("idle")
+  const [recoverySyncAttempt, setRecoverySyncAttempt] = useState<{
+    signer: AccountSigner
+    authGeneration: typeof auth.authGeneration
+  } | null>(null)
   const [loading, setLoading] = useState(enabled)
   const [initializationError, setInitializationError] = useState<string | null>(
     null
@@ -364,6 +374,23 @@ export function useWallets(
           const main = journal?.records.find(
             (record) => record.event.id === mainEventId
           )
+          const registryRecord =
+            configuration.status === "ready"
+              ? journal?.records
+                  .filter((record) =>
+                    record.event.tags.some(
+                      (tag) =>
+                        tag[0] === "d" &&
+                        tag[1] ===
+                          sparkWalletRegistryDTag(configuration.network)
+                    )
+                  )
+                  .sort(
+                    (left, right) =>
+                      right.event.created_at - left.event.created_at ||
+                      left.event.id.localeCompare(right.event.id)
+                  )[0]
+              : undefined
           for (const wallet of nextWallets.filter(
             (w) => w.providerId === "spark"
           )) {
@@ -389,7 +416,9 @@ export function useWallets(
             ownerPubkey,
             sync,
             mainSync: main
-              ? recoveryReadiness(main).ready
+              ? recoveryReadiness(main).ready &&
+                (!registryRecord ||
+                  accountRegistryReadiness(registryRecord).ready)
                 ? ("ready" as const)
                 : ("pending" as const)
               : null,
@@ -902,7 +931,21 @@ export function useWallets(
       setRecoverySync("checking")
       const service = getAccountSparkRecovery(signer)
       const network = getSparkWalletNetwork()
-      const discovery = await service.discover(false, network, options)
+      let discovery = await service.discover(false, network, options)
+      const bootstrap = await bootstrapLegacyAccountWalletRegistry({
+        signer,
+        discovery,
+        network,
+        service,
+        store,
+        journal: new DexieSparkRecoveryStore(),
+        options,
+      })
+      if (bootstrap.attempted && !bootstrap.ready) {
+        setRecoverySync("pending")
+        return { discovery, restored: [] }
+      }
+      discovery = bootstrap.discovery
       await reconcileAccountWalletRegistryMembership({
         signer,
         discovery,
@@ -917,7 +960,6 @@ export function useWallets(
         options
       )
       assertWalletSignerCurrent(signer)
-      const visible = await store.listVisible(signer.pubkey)
       if (isCompleteAccountRegistryDiscovery(discovery)) {
         await applyAccountWalletRegistryDefaults({
           signer,
@@ -926,39 +968,6 @@ export function useWallets(
           store,
           registry,
         })
-      } else if (
-        discovery.state === "recoverable" &&
-        !discovery.invalidCount &&
-        discovery.coverage === "complete" &&
-        !discovery.unresolvedObserved
-      ) {
-        const selected = [
-          {
-            walletId: (
-              discovery.main ??
-              (!visible.some((w) => w.defaultIntents.includes("pay_invoice"))
-                ? discovery.primary
-                : undefined)
-            )?.walletId,
-            intent: "pay_invoice" as const,
-          },
-          { walletId: discovery.main?.walletId, intent: "receive" as const },
-        ]
-        await store.transaction(async () => {
-          for (const choice of selected) {
-            if (
-              !choice.walletId ||
-              !visible.some(
-                (wallet) =>
-                  wallet.id === choice.walletId && wallet.network === network
-              )
-            )
-              continue
-            assertWalletSignerCurrent(signer)
-            await registry.setDefault(choice.walletId, choice.intent)
-          }
-          assertWalletSignerCurrent(signer)
-        })
       }
       await refreshAfterCommittedWalletMutation()
       let pending = false
@@ -966,10 +975,26 @@ export function useWallets(
       const primaryRecord = journal.records.find(
         (record) => record.event.id === discovery.primaryPointerEventId
       )
-      for (const wallet of await store.listVisible(signer.pubkey)) {
+      // A locally usable signer wallet may be awaiting its first registry add.
+      // Visibility filters cannot be the source for retrying that publication.
+      for (const wallet of await store.list()) {
         if (wallet.providerId !== "spark" || wallet.network !== network)
           continue
         const credential = await store.getSparkRecovery(wallet.id)
+        if (
+          credential?.type === "signer" &&
+          (credential.ownerPubkey !== signer.pubkey ||
+            journal.removedWalletIds?.includes(wallet.id) ||
+            discovery.registry?.removedWalletIds.includes(wallet.id))
+        )
+          continue
+        if (
+          credential?.type === "password" &&
+          !(await store.listVisible(signer.pubkey)).some(
+            (visibleWallet) => visibleWallet.id === wallet.id
+          )
+        )
+          continue
         if (credential?.type !== "signer") {
           pending ||= credential?.type === "password"
           continue
@@ -977,6 +1002,7 @@ export function useWallets(
         const known = discovery.candidates.some(
           (candidate) => candidate.walletId === wallet.id
         )
+        const active = discovery.registry?.activeWalletIds.includes(wallet.id)
         if (!publishExisting) {
           const record = journal.records.find((record) =>
             record.event.tags.some(
@@ -987,6 +1013,7 @@ export function useWallets(
           )
           pending ||=
             !known ||
+            (discovery.registry !== undefined && !active) ||
             !record ||
             !recoveryReadiness(record).ready ||
             !primaryRecord ||
@@ -1031,6 +1058,10 @@ export function useWallets(
           discovery.candidates.some(
             (candidate) => candidate.source === "addy" && !candidate.resolved
           ) ||
+          (!discovery.registry &&
+            discovery.candidates.some(
+              (candidate) => candidate.source === "conduit_v1"
+            )) ||
           discovery.invalidCount ||
           discovery.unresolvedObserved
           ? "blocked"
@@ -1285,6 +1316,7 @@ export function useWallets(
 
   useEffect(() => {
     setRecoverySync("idle")
+    setRecoverySyncAttempt(null)
     const signer = getAccountSigner()
     if (
       !enabled ||
@@ -1294,9 +1326,22 @@ export function useWallets(
     )
       return
     // Sign-in discovers and restores; it never publishes device-only secrets.
-    void runAccountWalletSetup(signer, () => synchronizeRecovery(signer)).catch(
+    void runAccountWalletSetup(signer, () => synchronizeRecovery(signer)).then(
       () => {
-        if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
+        if (isWalletSignerCurrent(signer))
+          setRecoverySyncAttempt({
+            signer,
+            authGeneration: auth.authGeneration,
+          })
+      },
+      () => {
+        if (isWalletSignerCurrent(signer)) {
+          setRecoverySync("blocked")
+          setRecoverySyncAttempt({
+            signer,
+            authGeneration: auth.authGeneration,
+          })
+        }
       }
     )
   }, [
@@ -1361,7 +1406,8 @@ export function useWallets(
             walletId,
             manager,
             expectedNetwork: getSparkWalletNetwork(),
-            listWallets: () => registry.list(),
+            listWallets: () =>
+              signer ? store.listVisible(signer.pubkey) : registry.list(),
             resolveOpenInput: async (registration) => {
               const stored = await store.getSparkRecovery(walletId)
               if (!stored) {
@@ -1703,37 +1749,14 @@ export function useWallets(
   const setDefaultPaymentWallet = useCallback(
     async (walletId: string) => {
       const owner = ownerRef.current
-      const wallet = (await store.listVisible(owner)).find(
-        (candidate) => candidate.id === walletId
-      )
-      const recovery =
-        wallet?.providerId === "spark"
-          ? await store.getSparkRecovery(walletId)
-          : null
-      const signer = recovery?.type === "signer" ? requireWalletSigner() : null
-      if (signer && wallet && recovery?.type === "signer") {
-        if (recovery.ownerPubkey !== signer.pubkey)
-          throw new Error("Wallet sign-in changed.")
-        await runAccountWalletSetup(signer, async () => {
-          const service = getAccountSparkRecovery(signer)
-          const eventId = await service.prepareRegistry(wallet.network, {
-            type: "default",
-            intent: "pay_invoice",
-            walletId,
-          })
-          if (!(await service.deliver(eventId)).ready)
-            throw new Error(
-              "Wallet choice has not reached recovery relays. Retry when recovery is available."
-            )
-          assertWalletSignerCurrent(signer)
-        })
-      }
+      const signer = getAccountSigner()
       if (ownerRef.current !== owner) throw new Error("Wallet sign-in changed.")
-      if (signer) assertWalletSignerCurrent(signer)
+      if (getAccountSigner() !== signer)
+        throw new Error("Wallet sign-in changed.")
       await registry.setDefault(walletId, "pay_invoice")
       await refreshAfterCommittedWalletMutation()
     },
-    [refreshAfterCommittedWalletMutation, registry, store]
+    [refreshAfterCommittedWalletMutation, registry]
   )
 
   const removeWallet = useCallback(
@@ -1880,20 +1903,24 @@ export function useWallets(
         !getSparkWalletManager() ||
         !signer?.capabilities.nip44 ||
         auth.signerReadiness !== "ready" ||
-        recoverySync !== "ready"
+        recoverySyncAttempt?.signer !== signer ||
+        recoverySyncAttempt.authGeneration !== auth.authGeneration
       )
         return
-      const candidates = walletsRef.current.filter(
-        (wallet) =>
-          wallet.providerId === "spark" &&
-          wallet.network === getSparkWalletNetwork() &&
-          !deliberatelyLockedWallets.get(signer)?.has(wallet.id)
-      )
+      const candidates = await listAutomaticSignerSparkWallets({
+        signer,
+        network: getSparkWalletNetwork(),
+        recoverySync,
+        store,
+        deliberatelyLockedIds: deliberatelyLockedWallets.get(signer),
+      })
       for (const wallet of candidates) {
         if (!active || !isWalletSignerCurrent(signer)) return
-        const stored = await store.getSparkRecovery(wallet.id)
-        if (!active || !isWalletSignerCurrent(signer)) return
-        if (stored?.type === "signer" && stored.ownerPubkey === signer.pubkey) {
+        if (
+          (await store.listVisible(signer.pubkey)).some(
+            (visible) => visible.id === wallet.id
+          )
+        ) {
           if (getSparkWalletManager()?.isOpen(wallet.id)) continue
           const attempted =
             automaticWalletOpens.get(signer) ?? new Set<string>()
@@ -1923,6 +1950,7 @@ export function useWallets(
     auth.authGeneration,
     auth.signerReadiness,
     recoverySync,
+    recoverySyncAttempt,
     wallets,
     store,
     unlockSpark,
@@ -1931,6 +1959,7 @@ export function useWallets(
   const setReceivingWallet = useCallback(
     async (walletId: string) => {
       const owner = ownerRef.current
+      const signer = getAccountSigner()
       if (
         !owner ||
         !(await store.listVisible(owner)).some(
@@ -1941,34 +1970,8 @@ export function useWallets(
         throw new Error("Choose an available receiving wallet.")
       if (ownerRef.current !== owner)
         throw new Error("Your Nostr sign-in changed.")
-      const wallet = (await store.listVisible(owner)).find(
-        (candidate) => candidate.id === walletId
-      )
-      const recovery =
-        wallet?.providerId === "spark"
-          ? await store.getSparkRecovery(walletId)
-          : null
-      const signer = recovery?.type === "signer" ? requireWalletSigner() : null
-      if (signer && wallet && recovery?.type === "signer") {
-        if (recovery.ownerPubkey !== signer.pubkey)
-          throw new Error("Wallet sign-in changed.")
-        await runAccountWalletSetup(signer, async () => {
-          const service = getAccountSparkRecovery(signer)
-          const eventId = await service.prepareRegistry(wallet.network, {
-            type: "default",
-            intent: "receive",
-            walletId,
-          })
-          if (!(await service.deliver(eventId)).ready)
-            throw new Error(
-              "Wallet choice has not reached recovery relays. Retry when recovery is available."
-            )
-          assertWalletSignerCurrent(signer)
-        })
-      }
-      if (ownerRef.current !== owner)
+      if (getAccountSigner() !== signer)
         throw new Error("Your Nostr sign-in changed.")
-      if (signer) assertWalletSignerCurrent(signer)
       await registry.setDefault(walletId, "receive")
       await refreshAfterCommittedWalletMutation()
     },
@@ -2008,32 +2011,40 @@ export function useWallets(
           throw new Error(
             "Sync this wallet's recovery before making it your main wallet."
           )
-        const registryEventId = await service.prepareRegistry(wallet.network, {
-          type: "main",
-          walletId,
-        })
-        if (!(await service.deliver(registryEventId)).ready)
-          throw new Error(
-            "Main wallet choice has not reached recovery relays. Retry when recovery is available."
-          )
-        // Sign outside storage, then activate the relay choice and both local
-        // intents together. Failed writes leave nothing for recovery to retry.
-        const eventId = await service.prepareMain(candidate, (retain) =>
-          store.transaction(async () => {
-            assertWalletSignerCurrent(signer)
-            await registry.setDefault(walletId, "pay_invoice")
-            assertWalletSignerCurrent(signer)
-            await registry.setDefault(walletId, "receive")
-            assertWalletSignerCurrent(signer)
-            await retain()
-            assertWalletSignerCurrent(signer)
-          })
+        // Both events are signed before the one local transaction. Neither is
+        // retained or sent if either default write fails.
+        let mainEventId: string | undefined
+        const registryEventId = await service.prepareRegistry(
+          wallet.network,
+          { type: "main", walletId },
+          async (retainRegistry) => {
+            mainEventId = await service.prepareMain(candidate, (retainMain) =>
+              store.transaction(async () => {
+                assertWalletSignerCurrent(signer)
+                await registry.setDefault(walletId, "pay_invoice")
+                assertWalletSignerCurrent(signer)
+                await registry.setDefault(walletId, "receive")
+                assertWalletSignerCurrent(signer)
+                await retainRegistry()
+                await retainMain()
+                assertWalletSignerCurrent(signer)
+              })
+            )
+          }
         )
+        if (!mainEventId) throw new Error("Main wallet choice is incomplete.")
         assertWalletSignerCurrent(signer)
-        const result = await service.deliver(eventId)
-        assertWalletSignerCurrent(signer)
-        setMainWalletSync(result.ready ? "ready" : "pending")
-        await refreshAfterCommittedWalletMutation()
+        let ready = false
+        try {
+          const registryResult = await service.deliver(registryEventId)
+          assertWalletSignerCurrent(signer)
+          const mainResult = await service.deliver(mainEventId)
+          ready = registryResult.ready && mainResult.ready
+        } finally {
+          assertWalletSignerCurrent(signer)
+          setMainWalletSync(ready ? "ready" : "pending")
+          await refreshAfterCommittedWalletMutation()
+        }
       })
     },
     [registry, store, refreshAfterCommittedWalletMutation]

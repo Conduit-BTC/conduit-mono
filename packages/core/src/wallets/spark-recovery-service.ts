@@ -135,6 +135,8 @@ export interface SparkRecoveryDiscovery {
   primaryPointerEventId?: string
   primary?: SparkRecoveryCandidate
   main?: SparkRecoveryCandidate
+  /** Verified explicit main-wallet choice, separate from registry defaults. */
+  mainChoiceWalletId?: string
   invalidCount: number
   sources: { url: string; status: SparkRecoveryRead["status"] }[]
   /** Only a bounded prerequisite for a later explicit lifecycle; never global absence. */
@@ -638,14 +640,15 @@ export class SparkRecoveryService {
   async prepareRegistry(
     network: SparkRecoveryBundle["network"],
     change:
+      | { type: "bootstrap" }
       | { type: "add"; walletId: string }
       | {
           type: "remove"
           walletId: string
           replacementPayWalletId?: string
         }
-      | { type: "default"; intent: "pay_invoice" | "receive"; walletId: string }
-      | { type: "main"; walletId: string }
+      | { type: "main"; walletId: string },
+    commit?: (retain: () => Promise<void>) => Promise<void>
   ): Promise<string> {
     const discovery = await this.discover(false, network, {
       priority: "foreground",
@@ -676,6 +679,8 @@ export class SparkRecoveryService {
       validatedWalletIds.has(walletId)
     )
     const previous = discovery.registry
+    if (change.type === "bootstrap" && previous)
+      throw new SparkRecoveryError("conflict")
     if (previous && discovery.registryEventId) {
       const applied =
         change.type === "remove"
@@ -683,19 +688,19 @@ export class SparkRecoveryService {
             !previous.activeWalletIds.includes(change.walletId)
           : change.type === "add"
             ? previous.activeWalletIds.includes(change.walletId)
-            : change.type === "main"
-              ? previous.payInvoiceWalletId === change.walletId &&
+            : change.type === "bootstrap"
+              ? false
+              : previous.payInvoiceWalletId === change.walletId &&
                 previous.receiveWalletId === change.walletId
-              : change.intent === "pay_invoice"
-                ? previous.payInvoiceWalletId === change.walletId
-                : previous.receiveWalletId === change.walletId
       if (
         applied &&
         localRemoved.every((walletId) =>
           previous.removedWalletIds.includes(walletId)
         )
-      )
+      ) {
+        if (commit) await commit(async () => undefined)
         return discovery.registryEventId
+      }
     }
     const dTag = sparkWalletRegistryDTag(network)
     // A local lock does not serialize another app or device. Require every
@@ -744,7 +749,7 @@ export class SparkRecoveryService {
       )
       if (!knownBackup) throw new SparkRecoveryError("incomplete_discovery")
       active.add(change.walletId)
-    } else if (!active.has(change.walletId)) {
+    } else if (change.type !== "bootstrap" && !active.has(change.walletId)) {
       throw new SparkRecoveryError("conflict")
     }
     const createdAt = Math.max(
@@ -774,7 +779,6 @@ export class SparkRecoveryService {
       activeWalletIds: [...active].sort(),
       removedWalletIds: [...removed].sort(),
       payInvoiceWalletId:
-        (change.type === "default" && change.intent === "pay_invoice") ||
         change.type === "main"
           ? change.walletId
           : active.has(payFallback ?? "")
@@ -785,7 +789,6 @@ export class SparkRecoveryService {
                   : undefined) ?? deterministicReplacement)
               : null,
       receiveWalletId:
-        (change.type === "default" && change.intent === "receive") ||
         change.type === "main"
           ? change.walletId
           : active.has(receiveFallback ?? "")
@@ -802,7 +805,9 @@ export class SparkRecoveryService {
       throw new SparkRecoveryError("conflict")
     const event = await this.sign(dTag, snapshot, createdAt)
     parseSparkWalletRegistrySnapshot(await this.decrypt(event), event)
-    await this.retain([this.record(event)])
+    const retain = () => this.retain([this.record(event)])
+    if (commit) await commit(retain)
+    else await retain()
     return event.id
   }
 
@@ -1271,6 +1276,16 @@ export class SparkRecoveryService {
             )
           : primary,
       main: conflict ? undefined : main,
+      mainChoiceWalletId:
+        !conflict &&
+        latestMainChoice &&
+        latestMainTarget?.walletId &&
+        (!registryObserved ||
+          registryObserved.snapshot.activeWalletIds.includes(
+            latestMainTarget.walletId
+          ))
+          ? latestMainTarget.walletId
+          : undefined,
       invalidCount,
       sources,
       unresolvedObserved,

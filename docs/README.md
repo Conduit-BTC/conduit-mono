@@ -87,6 +87,10 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Active Compatibility Exceptions
 
+- `docs/knowledge/wallet-registry-lifecycle.md`: bounded, identity-verified legacy
+  wallet-registry bootstrap, removal-history preservation and per-account exit
+  gates
+
 - `docs/knowledge/commerce-inbox-recovery.md`: bounded authenticated client-seal
   metadata read compatibility, accounting and maintainer activation/removal gates
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order

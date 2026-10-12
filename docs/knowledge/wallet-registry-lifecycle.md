@@ -4,35 +4,58 @@ Spark recovery material remains owned by the wallet recovery lifecycle. The
 account wallet list is a separate encrypted application record, using NIP-78
 kind `30078` and `d=conduit:spark:registry:v1:<network>`.
 
-The latest signed record carries active wallet IDs, spending and receiving
-choices, retained removal IDs, a revision and the previous event ID. It contains
-no mnemonic. A recovery backup is evidence that a wallet can be recovered; it
-does not independently authorize adding that wallet to the current account list.
+The latest signed record carries active wallet IDs, retained removal IDs,
+an explicit main-wallet choice, a revision and the previous event ID. It
+contains no mnemonic. Recovery remains independent of account membership.
 
-Shared core discovery applies account membership in Market and Merchant. A
-complete registry read excludes removed wallets from automatic restore and from
-an already populated device cache, without erasing independently held recovery.
-Removing every wallet leaves an empty account list on subsequent sign-in.
-Explicit creation remains an action, not a consequence of an empty list.
+Shared discovery applies this record in Market and Merchant. A complete registry
+read excludes explicitly removed wallets from automatic restore and the device
+cache without erasing independently held recovery. Removing every wallet leaves
+an empty account list on subsequent sign-in. Explicit creation remains an action,
+not a consequence of an empty list. Locally owned wallets awaiting a membership
+addition remain usable and eligible for retry with the same wallet ID.
 
-Legacy backups without a registry remain available for explicit recovery.
-Automatic restoration does not treat their presence as current membership.
-The first verified registry preserves the existing primary/receiving choices.
+Spending and receiving defaults remain device-local and work during relay
+outages. Automatic sync never overwrites an existing local choice. Only the
+explicit main-wallet synchronization action seeds choices on a fresh device.
+Existing invoices and receiving addresses retain their original wallet authority.
+NWC authorizations and their credentials remain device-local.
 
 Writes require complete bounded discovery, agreeing planned relay heads and
 current signer authority. Signed encrypted bytes are retained before network
-delivery and retried unchanged. Account removal waits for verified relay
-read-back before committing the local removal. Partial reads, unresolved backups
-or conflicting heads do not authorize replacing account state.
+delivery and retried unchanged. Registry delivery requires fresh accepted exact
+read-back from every planned target; exported recovery never bypasses it. Backup
+durability keeps its separate two-operator or acknowledged-export rule. A pending
+backup sync does not disable a usable locally owned wallet.
+
+Account removal waits for verified registry read-back before committing the
+local removal. Partial reads, unresolved backups or conflicting heads do not
+authorize replacing account state.
+
+## Legacy registry bootstrap
+
+This bounded migration lane preserves automatic recovery for valid pre-registry
+Conduit backups. It requires complete agreeing discovery, validated signatures,
+matching account/network/native wallet identity, no prior observed registry,
+and validated local removal history. It publishes and verifies one encrypted
+account snapshot before attaching recovered wallets. Unresolved Addy backups
+still require their original network and account number.
+
+Once a registry exists, it is authoritative for remote restoration. Old backups
+do not add removed wallets back. Known removal history survives bootstrap and
+later snapshots; an empty current registry stays empty.
+
+The shared wallet maintainers own this preview migration lane. Review it before
+production rollout. The per-account exit condition is positive registry evidence;
+removing the lane globally requires maintainer verification that the supported
+legacy cohort has migrated or been explicitly retired. Controlled evidence counts
+attempted/ready bootstrap outcomes without publishing account identifiers or
+recovery contents. No new telemetry is introduced.
 
 This is not global relay consensus or cross-device compare-and-swap. A partition
-or simultaneous write can require reconciliation; observed removal history is
-retained when snapshots diverge. No client can infer history that every source
-has lost. Missing registry evidence therefore does not reactivate old backups.
-
-NWC authorizations remain device-local. Account membership does not publish or
-restore their credentials. Existing invoices and registered receiving addresses
-remain bound to their original wallets when list membership or defaults change.
+or simultaneous write can require reconciliation. No fresh device can infer
+removal history that every source has lost or that was never published or carried
+from another device. Complete reads describe coverage of the bounded plan.
 
 ## Opening and recovery
 

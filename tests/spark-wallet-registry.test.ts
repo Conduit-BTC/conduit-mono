@@ -29,7 +29,9 @@ import { MarketWalletStore } from "../packages/core/src/wallets/wallet-storage"
 import { sealSignerSparkRecovery } from "../packages/core/src/wallets/signer-spark-recovery"
 import {
   applyAccountWalletRegistryDefaults,
+  bootstrapLegacyAccountWalletRegistry,
   isCompleteAccountRegistryDiscovery,
+  listAutomaticSignerSparkWallets,
   reconcileAccountWalletRegistryMembership,
   restoreAccountSparkWallets,
 } from "../packages/core/src/wallets/account-spark-recovery"
@@ -39,13 +41,15 @@ afterEach(async () => {
   for (const database of databases.splice(0)) await database.delete()
 })
 
-test("ordinary account sync seeds Spark but preserves a locally selected NWC default", async () => {
+test("explicit main choice seeds a fresh device but leaves later local NWC choices intact", async () => {
   const f = fixture()
   activateAccountSigner(f.signer)
   try {
     const service = f.service()
     const walletId = crypto.randomUUID()
-    await backedUp(service, walletId)
+    const backup = await backedUp(service, walletId)
+    const main = await service.prepareMain(backup)
+    expect((await service.deliver(main)).ready).toBe(true)
     const added = await service.prepareRegistry("mainnet", {
       type: "add",
       walletId,
@@ -116,6 +120,82 @@ test("ordinary account sync seeds Spark but preserves a locally selected NWC def
     expect(
       visible.find((wallet) => wallet.defaultIntents.includes("receive"))?.id
     ).toBe(nwc.id)
+    f.unavailableRelays.add(f.relayUrls[0])
+    const partial = await service.discover(false, "mainnet")
+    expect(partial.coverage).toBe("partial")
+    await applyAccountWalletRegistryDefaults({
+      signer: f.signer,
+      discovery: partial,
+      network: "mainnet",
+      store,
+      registry,
+    })
+    const afterPartial = await store.listVisible(f.owner)
+    expect(
+      afterPartial.find((wallet) =>
+        wallet.defaultIntents.includes("pay_invoice")
+      )?.id
+    ).toBe(nwc.id)
+    expect(
+      afterPartial.find((wallet) => wallet.defaultIntents.includes("receive"))
+        ?.id
+    ).toBe(nwc.id)
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("an implicit registry preference does not become a fresh device default", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const service = f.service()
+    const walletId = crypto.randomUUID()
+    await backedUp(service, walletId)
+    const registryEventId = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId,
+    })
+    expect((await service.deliver(registryEventId)).ready).toBe(true)
+    const discovery = await f.service().discover(false, "mainnet")
+    expect(discovery.registry?.payInvoiceWalletId).toBe(walletId)
+    expect(discovery.mainChoiceWalletId).toBeUndefined()
+    const device = new ConduitDB(
+      `wallet-registry-implicit-default-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(device)
+    const store = new MarketWalletStore(device)
+    const local = new WalletRegistry(store)
+    const wallet = await local.add({
+      id: walletId,
+      kind: "portable",
+      providerId: "spark",
+      network: "mainnet",
+      label: "Account wallet",
+      capabilities: ["pay_invoice", "receive"],
+    })
+    await store.putSparkRecovery(
+      wallet.id,
+      await sealSignerSparkRecovery(
+        generateSparkMnemonic(),
+        {
+          walletId,
+          providerId: "spark",
+          network: "mainnet",
+          accountNumber: 1,
+        },
+        f.signer
+      )
+    )
+    await applyAccountWalletRegistryDefaults({
+      signer: f.signer,
+      discovery,
+      network: "mainnet",
+      store,
+      registry: local,
+    })
+    expect((await store.listVisible(f.owner))[0]?.defaultIntents).toEqual([])
   } finally {
     retireAccountSigner(f.signer)
   }
@@ -325,6 +405,143 @@ test("registry delivery needs every planned readback even with two operators or 
   ).toBe(false)
 })
 
+test("complete legacy recovery bootstraps one registry before a fresh app selects wallets", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const journal = f.newStore()
+    const service = f.service(journal)
+    const firstId = crypto.randomUUID()
+    const secondId = crypto.randomUUID()
+    const first = await backedUp(service, firstId)
+    const second = await backedUp(service, secondId, first.eventId)
+    const main = await service.prepareMain(second)
+    expect((await service.deliver(main)).ready).toBe(true)
+    const device = new ConduitDB(
+      `wallet-registry-legacy-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(device)
+    f.unavailableRelays.add(f.relayUrls[0])
+    const partial = await service.discover(false, "mainnet")
+    expect(partial.coverage).toBe("partial")
+    const deferred = await bootstrapLegacyAccountWalletRegistry({
+      signer: f.signer,
+      discovery: partial,
+      network: "mainnet",
+      service,
+      store: new MarketWalletStore(device),
+      journal,
+    })
+    expect(deferred.attempted).toBe(false)
+    expect(deferred.discovery.registry).toBeUndefined()
+    f.unavailableRelays.delete(f.relayUrls[0])
+    const discovery = await service.discover(false, "mainnet")
+    expect(discovery.registry).toBeUndefined()
+    const bootstrap = await bootstrapLegacyAccountWalletRegistry({
+      signer: f.signer,
+      discovery,
+      network: "mainnet",
+      service,
+      store: new MarketWalletStore(device),
+      journal,
+    })
+    expect(bootstrap).toMatchObject({ attempted: true, ready: true })
+    expect(bootstrap.discovery.registry?.activeWalletIds).toEqual(
+      [firstId, secondId].sort()
+    )
+    expect(bootstrap.discovery.main?.walletId).toBe(secondId)
+    expect(
+      (
+        await bootstrapLegacyAccountWalletRegistry({
+          signer: f.signer,
+          discovery,
+          network: "mainnet",
+          service,
+          store: new MarketWalletStore(device),
+          journal,
+        })
+      ).attempted
+    ).toBe(false)
+    const fresh = await f.service(f.newStore()).discover(false, "mainnet")
+    expect(fresh.registry?.activeWalletIds).toEqual([firstId, secondId].sort())
+    expect(fresh.registry?.receiveWalletId).toBe(secondId)
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("legacy bootstrap carries known removal history and never selects that old backup", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const journal = f.newStore()
+    const service = f.service(journal)
+    const oldId = crypto.randomUUID()
+    const currentId = crypto.randomUUID()
+    const root = await backedUp(service, oldId)
+    await backedUp(service, currentId, root.eventId)
+    await journal.setDeviceRemoved(f.owner, oldId, true)
+    const device = new ConduitDB(
+      `wallet-registry-legacy-removed-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(device)
+    const bootstrap = await bootstrapLegacyAccountWalletRegistry({
+      signer: f.signer,
+      discovery: await service.discover(false, "mainnet"),
+      network: "mainnet",
+      service,
+      store: new MarketWalletStore(device),
+      journal,
+    })
+    expect(bootstrap).toMatchObject({ attempted: true, ready: true })
+    expect(bootstrap.discovery.registry?.activeWalletIds).toEqual([currentId])
+    expect(bootstrap.discovery.registry?.removedWalletIds).toContain(oldId)
+    const freshService = f.service(f.newStore())
+    const fresh = await freshService.discover(false, "mainnet")
+    expect(fresh.candidates.map((candidate) => candidate.walletId)).toEqual([
+      currentId,
+    ])
+    expect((await freshService.restore(root)).walletId).toBe(oldId)
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("legacy bootstrap keeps a locally deleted-all account empty on fresh sign-in", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const journal = f.newStore()
+    const service = f.service(journal)
+    const walletId = crypto.randomUUID()
+    await backedUp(service, walletId)
+    await journal.setDeviceRemoved(f.owner, walletId, true)
+    const device = new ConduitDB(
+      `wallet-registry-legacy-empty-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(device)
+    const bootstrap = await bootstrapLegacyAccountWalletRegistry({
+      signer: f.signer,
+      discovery: await service.discover(false, "mainnet"),
+      network: "mainnet",
+      service,
+      store: new MarketWalletStore(device),
+      journal,
+    })
+    expect(bootstrap).toMatchObject({ attempted: true, ready: true })
+    expect(bootstrap.discovery.registry?.activeWalletIds).toEqual([])
+    expect(bootstrap.discovery.registry?.removedWalletIds).toEqual([walletId])
+    const fresh = await f.service(f.newStore()).discover(false, "mainnet")
+    expect(fresh.candidates).toEqual([])
+    expect(fresh.state).toBe("absent_within_scope")
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
 test("account removal survives a fresh store while independent old backups remain intact", async () => {
   const f = fixture()
   const first = f.service()
@@ -416,8 +633,7 @@ test("existing registry absorbs a local tombstone for an inactive validated back
   await backedUp(service, oldWalletId, currentBackup.eventId)
   await local.setDeviceRemoved(f.owner, oldWalletId, true)
   const updated = await service.prepareRegistry("mainnet", {
-    type: "default",
-    intent: "pay_invoice",
+    type: "main",
     walletId: currentWalletId,
   })
   expect(updated).not.toBe(initial)
@@ -590,12 +806,20 @@ test("fresh account registry hides a cached wallet removed on another app withou
     expect(await store.listVisible(f.owner)).toEqual([])
     expect((await store.list()).map((item) => item.id)).toEqual([walletId])
     expect(await store.getSparkRecovery(walletId)).not.toBeNull()
+    expect(
+      await listAutomaticSignerSparkWallets({
+        signer: f.signer,
+        network: "mainnet",
+        recoverySync: "pending",
+        store,
+      })
+    ).toEqual([])
   } finally {
     retireAccountSigner(f.signer)
   }
 })
 
-test("a pending account add is hidden until confirmed, then becomes visible without losing local recovery", async () => {
+test("a failed account add remains locally usable and retries with the same wallet ID", async () => {
   const f = fixture()
   activateAccountSigner(f.signer)
   try {
@@ -619,6 +843,7 @@ test("a pending account add is hidden until confirmed, then becomes visible with
     const store = new MarketWalletStore(device)
     const journal = new DexieSparkRecoveryStore(device)
     const walletId = crypto.randomUUID()
+    const mnemonic = generateSparkMnemonic()
     const wallet = await new WalletRegistry(store).add({
       id: walletId,
       kind: "portable",
@@ -630,7 +855,7 @@ test("a pending account add is hidden until confirmed, then becomes visible with
     await store.putSparkRecovery(
       wallet.id,
       await sealSignerSparkRecovery(
-        generateSparkMnemonic(),
+        mnemonic,
         {
           walletId,
           providerId: "spark",
@@ -640,6 +865,19 @@ test("a pending account add is hidden until confirmed, then becomes visible with
         f.signer
       )
     )
+    const pendingBackup = await service.prepare(
+      { mnemonic, network: "mainnet", accountNumber: 1 },
+      walletId,
+      first.eventId
+    )
+    expect((await service.deliver(pendingBackup.eventId)).ready).toBe(true)
+    const secondRegistry = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId,
+    })
+    f.unavailableRelays.add(f.relayUrls[0])
+    await expect(service.deliver(secondRegistry)).rejects.toThrow("conflict")
+    f.unavailableRelays.delete(f.relayUrls[0])
     const firstDiscovery = await f.service(journal).discover(false, "mainnet")
     await reconcileAccountWalletRegistryMembership({
       signer: f.signer,
@@ -648,14 +886,30 @@ test("a pending account add is hidden until confirmed, then becomes visible with
       store,
       journal,
     })
-    expect(await store.listVisible(f.owner)).toEqual([])
-    expect((await journal.load(f.owner)).removedWalletIds).toBeUndefined()
-
-    await backedUp(service, walletId, first.eventId)
-    const secondRegistry = await service.prepareRegistry("mainnet", {
-      type: "add",
+    expect((await store.listVisible(f.owner)).map((item) => item.id)).toEqual([
       walletId,
-    })
+    ])
+    expect((await journal.load(f.owner)).removedWalletIds).toBeUndefined()
+    expect((await journal.load(f.owner)).registryExcludedWalletIds).toEqual([])
+    expect(
+      (
+        await listAutomaticSignerSparkWallets({
+          signer: f.signer,
+          network: "mainnet",
+          recoverySync: "pending",
+          store,
+        })
+      ).map((candidate) => candidate.id)
+    ).toEqual([walletId])
+    expect(
+      await listAutomaticSignerSparkWallets({
+        signer: f.signer,
+        network: "mainnet",
+        recoverySync: "checking",
+        store,
+      })
+    ).toEqual([])
+
     expect((await service.deliver(secondRegistry)).ready).toBe(true)
     const secondDiscovery = await f.service(journal).discover(false, "mainnet")
     await reconcileAccountWalletRegistryMembership({
@@ -670,6 +924,158 @@ test("a pending account add is hidden until confirmed, then becomes visible with
     ])
     expect((await journal.load(f.owner)).registryExcludedWalletIds).toEqual([])
     expect(await store.getSparkRecovery(walletId)).not.toBeNull()
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("a failed local main choice leaves neither signed choice retained nor published", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const database = new ConduitDB(
+      `wallet-main-transaction-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(database)
+    const journal = new DexieSparkRecoveryStore(database)
+    const service = f.service(journal)
+    const store = new MarketWalletStore(database)
+    const registry = new WalletRegistry(store)
+    const firstId = crypto.randomUUID()
+    const secondId = crypto.randomUUID()
+    await backedUp(service, firstId)
+    const firstRegistry = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId: firstId,
+    })
+    expect((await service.deliver(firstRegistry)).ready).toBe(true)
+    const second = await backedUp(service, secondId)
+    const secondRegistry = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId: secondId,
+    })
+    expect((await service.deliver(secondRegistry)).ready).toBe(true)
+    for (const id of [firstId, secondId])
+      await registry.add({
+        id,
+        kind: "portable",
+        providerId: "spark",
+        network: "mainnet",
+        label: "Account wallet",
+        capabilities: ["pay_invoice", "receive"],
+      })
+    await registry.setDefault(firstId, "pay_invoice")
+    await registry.setDefault(firstId, "receive")
+    const beforeJournal = (await journal.load(f.owner)).records.map(
+      (record) => record.event.id
+    )
+    const beforeRelay = f.relayUrls.map((url) => [...f.relays.get(url)!.keys()])
+
+    await expect(
+      service.prepareRegistry(
+        "mainnet",
+        { type: "main", walletId: secondId },
+        async (retainRegistry) => {
+          await service.prepareMain(second, (retainMain) =>
+            store.transaction(async () => {
+              await registry.setDefault(secondId, "pay_invoice")
+              await retainRegistry()
+              await retainMain()
+              throw new Error("Local main choice write failed")
+            })
+          )
+        }
+      )
+    ).rejects.toThrow("Local main choice write failed")
+    const visible = await store.listVisible(f.owner)
+    for (const intent of ["pay_invoice", "receive"] as const)
+      expect(
+        visible.find((wallet) => wallet.defaultIntents.includes(intent))?.id
+      ).toBe(firstId)
+    expect(
+      (await journal.load(f.owner)).records.map((record) => record.event.id)
+    ).toEqual(beforeJournal)
+    expect(f.relayUrls.map((url) => [...f.relays.get(url)!.keys()])).toEqual(
+      beforeRelay
+    )
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("an idempotent registry main choice still commits local defaults and its signed main event", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const database = new ConduitDB(
+      `wallet-main-idempotent-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(database)
+    const journal = new DexieSparkRecoveryStore(database)
+    const service = f.service(journal)
+    const store = new MarketWalletStore(database)
+    const registry = new WalletRegistry(store)
+    const firstId = crypto.randomUUID()
+    const secondId = crypto.randomUUID()
+    await backedUp(service, firstId)
+    const firstRegistry = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId: firstId,
+    })
+    expect((await service.deliver(firstRegistry)).ready).toBe(true)
+    const second = await backedUp(service, secondId)
+    const secondRegistry = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId: secondId,
+    })
+    expect((await service.deliver(secondRegistry)).ready).toBe(true)
+    const selected = await service.prepareRegistry("mainnet", {
+      type: "main",
+      walletId: secondId,
+    })
+    expect((await service.deliver(selected)).ready).toBe(true)
+    for (const id of [firstId, secondId])
+      await registry.add({
+        id,
+        kind: "portable",
+        providerId: "spark",
+        network: "mainnet",
+        label: "Account wallet",
+        capabilities: ["pay_invoice", "receive"],
+      })
+    await registry.setDefault(firstId, "pay_invoice")
+    await registry.setDefault(firstId, "receive")
+    let mainEventId: string | undefined
+    const repeated = await service.prepareRegistry(
+      "mainnet",
+      { type: "main", walletId: secondId },
+      async (retainRegistry) => {
+        mainEventId = await service.prepareMain(second, (retainMain) =>
+          store.transaction(async () => {
+            await registry.setDefault(secondId, "pay_invoice")
+            await registry.setDefault(secondId, "receive")
+            await retainRegistry()
+            await retainMain()
+          })
+        )
+      }
+    )
+    expect(repeated).toBe(selected)
+    expect(mainEventId).toBeDefined()
+    expect((await service.deliver(repeated)).ready).toBe(true)
+    expect((await service.deliver(mainEventId!)).ready).toBe(true)
+    const visible = await store.listVisible(f.owner)
+    for (const intent of ["pay_invoice", "receive"] as const)
+      expect(
+        visible.find((wallet) => wallet.defaultIntents.includes(intent))?.id
+      ).toBe(secondId)
+    expect(
+      (await journal.load(f.owner)).records.some(
+        (record) => record.event.id === mainEventId
+      )
+    ).toBe(true)
   } finally {
     retireAccountSigner(f.signer)
   }
