@@ -29,6 +29,10 @@ approval. Transfer requires a bounded old/new identity approval and both
 role-specific signatures. Mutation claims reject replay, including reordered
 JSON. Unknown methods and routes cannot reach the provider. Metadata endpoints
 are disabled until independently bounded support is needed.
+Authenticated recovery is limited by both a pseudonymous source bucket and a
+wallet-identity bucket before the provider call. Recovery remains available for
+existing wallets without a name approval. Only identities approved for
+registration create short-lived recovery observations used by registration.
 
 Public LNURL lookups, invoice callbacks and verification remain public and are
 forwarded unchanged. The proxy preserves invoice metadata rather than rewriting
@@ -43,22 +47,27 @@ checks alone cannot establish this property. `PROVIDER_PROXY_QUALIFIED=false`
 blocks management mutations while allowing existing public receiving through
 an otherwise configured proxy. Qualification requires an accepted signed
 control for registration, rename, transfer and deletion, with rejected direct
-requests without and with an incorrect proxy credential. `scripts/smoke/address_proxy_admission.ts` is a bounded, explicitly
-approved live probe. It uses two temporary unfunded identities and cleans their registrations up. Its
-output contains only fixed verdict categories and cleanup status. Failed controls
-are inconclusive; accepted direct mutations prove a bypass. A provider
+requests without and with an incorrect proxy credential. The public
+`scripts/smoke/address_proxy_admission.ts` is a fail-closed reminder of this
+operator requirement; it cannot execute credential-bearing provider requests.
+The protected, reviewed operator boundary must use temporary unfunded identities,
+verify accepted signed controls, rejected missing and wrong admissions for each
+mutation, and exact cleanup/readback. Its evidence must contain only fixed verdict
+categories and cleanup status. It must not execute or import candidate source
+with credentials. Failed controls are inconclusive; accepted direct
+mutations prove a bypass. A provider
 that cannot enforce this boundary cannot launch request-only names.
 
 Signer migration preserves the mnemonic, account number, network, registry ID,
 wallet identity and invoice/default authority. A verified signer credential is
 committed after native opening and registration validation. The transaction
-compares the original record and verifies exact readback. It writes an
-allowlisted signer record without the old password envelope. Any failed write,
-readback or authority check rolls back. Already-migrated records are cleaned
-through the same verified opening and transaction. Password-only wallets keep
-their original credential and signed-out access until migration succeeds.
-Independent phrase/account/network recovery remains available. There is no
-password fallback or user-facing Lock action for signer-owned wallets.
+compares the original record and verifies exact readback. It retains the exact
+password-encrypted envelope as a previous-password fallback when one exists.
+Failed writes, readback or authority checks roll back. Password-only wallets
+keep their original credential and signed-out access. Already-erased fallback
+envelopes cannot be reconstructed. Independent phrase/account/network recovery
+remains available. The everyday UI omits Lock; account logout still closes
+signer-owned sessions and lifecycle callers retain the shared close operation.
 
 Wallet preferences are secondary and never change existing defaults on render.
 The main actions are balance, address Copy/Share, Receive, Send and History.

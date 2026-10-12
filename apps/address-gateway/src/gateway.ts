@@ -242,6 +242,44 @@ function fresh(timestamp: unknown, now: number): timestamp is number {
     Math.abs(now - (timestamp as number)) <= 600
   )
 }
+async function recoveryRateLimit(
+  request: Request,
+  env: AddressGatewayEnv,
+  identity: string
+): Promise<Response | null> {
+  if (!env.REQUEST_RATE_LIMITER || !env.BREEZ_PROXY_SHARED_SECRET)
+    return response("recovery unavailable", 503)
+  // Cloudflare supplies this header at the edge. HMAC prevents raw source IPs
+  // from entering limiter keys or diagnostics; a missing source shares a bucket.
+  const source = request.headers.get("CF-Connecting-IP") ?? "unknown"
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(env.BREEZ_PROXY_SHARED_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  )
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`address-recovery-source:${source}`)
+  )
+  const sourceKey = `recover:source:${Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0")
+  ).join("")}`
+  if (!(await env.REQUEST_RATE_LIMITER.limit({ key: sourceKey })).success)
+    return response("recovery rate limited", 429)
+  if (
+    !(
+      await env.REQUEST_RATE_LIMITER.limit({
+        key: `recover:identity:${addressRequestHash(identity)}`,
+      })
+    ).success
+  )
+    return response("recovery rate limited", 429)
+  return null
+}
 async function proxy(
   request: Request,
   env: AddressGatewayEnv,
@@ -417,6 +455,10 @@ async function management(
         return response("recover wallet before registration", 409)
     }
   }
+  if (operation === "recover") {
+    const limited = await recoveryRateLimit(request, env, identity)
+    if (limited) return limited
+  }
   if (!["recover", "available"].includes(operation)) {
     if (env.PROVIDER_PROXY_QUALIFIED !== "true")
       return response("domain management unavailable", 503)
@@ -446,12 +488,21 @@ async function management(
       )
         observed = value.username
     }
-    if (observed !== undefined)
+    if (
+      observed !== undefined &&
+      names.some((name) => name.sparkIdentity === identity && name.registration)
+    ) {
+      await env.ADDRESS_REQUESTS.prepare(
+        "DELETE FROM address_observations WHERE observed_at < ?"
+      )
+        .bind(now - 86400)
+        .run()
       await env.ADDRESS_REQUESTS.prepare(
         "INSERT INTO address_observations (identity, name, observed_at) VALUES (?, ?, ?) ON CONFLICT(identity) DO UPDATE SET name = excluded.name, observed_at = excluded.observed_at WHERE excluded.observed_at >= observed_at"
       )
         .bind(identity, observed, now)
         .run()
+    }
   }
   return result
 }

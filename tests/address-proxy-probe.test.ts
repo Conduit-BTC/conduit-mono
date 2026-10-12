@@ -1,6 +1,25 @@
 import { expect, test } from "bun:test"
 import { proveProxyAdmission } from "../scripts/smoke/address_proxy_probe"
 
+test("public admission entrypoint stays inconclusive even when credential variables are present", () => {
+  const result = Bun.spawnSync(
+    [process.execPath, "scripts/smoke/address_proxy_admission.ts"],
+    {
+      env: {
+        ADDRESS_ADMISSION_PROBE_APPROVED: "true",
+        BREEZ_DOMAIN_API_KEY: "test-only-key",
+        BREEZ_PROXY_SHARED_SECRET: "test-only-secret",
+      },
+    }
+  )
+  expect(result.exitCode).toBe(1)
+  expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    check: "address-proxy-admission",
+    verdict: "inconclusive",
+    reason: "protected_operator_proof_required",
+  })
+})
+
 test("unapproved registration accepted by the deployed gateway proves a bypass and still cleans up", async () => {
   let upstreamRequests = 0
   const proof = await proveProxyAdmission({

@@ -268,6 +268,67 @@ describe("approved-name gateway", () => {
       desired_name: "alice",
     })
   })
+  test("persisted submission survives failed readback and exact signed status recovers it", async () => {
+    const f = fixture()
+    const originalPrepare = f.env.ADDRESS_REQUESTS.prepare.bind(
+      f.env.ADDRESS_REQUESTS
+    )
+    let failReadback = true
+    f.env.ADDRESS_REQUESTS.prepare = (sql) => {
+      const statement = originalPrepare(sql)
+      if (
+        sql === "SELECT request_hash FROM name_requests WHERE request_id = ?"
+      ) {
+        const originalFirst = statement.first.bind(statement)
+        statement.first = async <T>() => {
+          if (failReadback) {
+            failReadback = false
+            throw new Error("readback unavailable after insert")
+          }
+          return originalFirst<T>()
+        }
+      }
+      return statement
+    }
+    const originalRequest = f.nameRequest()
+    const originalBody = await originalRequest.clone().text()
+    expect((await f.handle(originalRequest, [])).status).toBe(503)
+    expect(failReadback).toBe(false)
+    const saved = f.db
+      .query(
+        "SELECT request_id, desired_name, request_hash, signed_payload, account_proof, wallet_proof FROM name_requests"
+      )
+      .get()
+    expect(saved).toMatchObject({
+      request_id: JSON.parse(originalBody).requestId,
+      desired_name: "alice",
+      signed_payload: originalBody,
+    })
+    const status = await f.handle(
+      f.nameRequest(`${ADDRESS_REQUEST_PATH}/status`),
+      []
+    )
+    expect(status.status).toBe(200)
+    expect(await status.json()).toEqual({ status: "received" })
+    expect(
+      (
+        await f.handle(
+          f.nameRequest(ADDRESS_REQUEST_PATH, { desiredName: "bob" }),
+          []
+        )
+      ).status
+    ).toBe(409)
+    expect(
+      f.db
+        .query(
+          "SELECT request_id, desired_name, request_hash, signed_payload, account_proof, wallet_proof FROM name_requests"
+        )
+        .get()
+    ).toEqual(saved)
+    expect(f.db.query("SELECT COUNT(*) AS n FROM name_requests").get()).toEqual(
+      { n: 1 }
+    )
+  })
   test("NIP-98 rejects reordered HTTP bytes even when their decoded fields are identical", async () => {
     const f = fixture(),
       original = f.nameRequest()
@@ -332,6 +393,115 @@ describe("approved-name gateway", () => {
     expect((await f.handle(f.management("register"), [])).status).toBe(403)
     expect((await f.handle(f.management("register"))).status).toBe(200)
     expect((await f.handle(f.management("register"))).status).toBe(409)
+  })
+  test("new signed identities share a bounded source budget before provider and storage", async () => {
+    const f = fixture()
+    const counts = new Map<string, number>()
+    const keys: string[] = []
+    f.env.REQUEST_RATE_LIMITER = {
+      async limit({ key }) {
+        keys.push(key)
+        const count = (counts.get(key) ?? 0) + 1
+        counts.set(key, count)
+        return { success: count <= 5 }
+      },
+    }
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const secret = generateSecretKey()
+      const identity = bytesToHex(secp256k1.getPublicKey(secret))
+      const message = breezAddressMessage({
+        operation: "recover",
+        domain: "conduit.cash",
+        identity,
+        timestamp: f.now,
+      })
+      const request = new Request(
+        `https://conduit.cash/lnurlpay/${identity}/recover`,
+        {
+          method: "POST",
+          headers: { "CF-Connecting-IP": "192.0.2.10" },
+          body: JSON.stringify({
+            timestamp: f.now,
+            signature: f.signatures(message, secret),
+          }),
+        }
+      )
+      expect((await f.handle(request, [])).status).toBe(attempt < 5 ? 404 : 429)
+    }
+    expect(f.calls).toHaveLength(5)
+    expect(
+      f.db.query("SELECT COUNT(*) AS n FROM address_observations").get()
+    ).toEqual({ n: 0 })
+    expect(keys.every((key) => !key.includes("192.0.2.10"))).toBe(true)
+
+    // A different source can still recover an existing approved wallet.
+    f.setProviderName("alice")
+    const existing = f.management("recover")
+    const headers = new Headers(existing.headers)
+    headers.set("CF-Connecting-IP", "198.51.100.20")
+    expect((await f.handle(new Request(existing, { headers }))).status).toBe(
+      200
+    )
+    expect((await f.handle(f.management("register"))).status).toBe(200)
+  })
+  test("repeated recovery of one identity is bounded across sources", async () => {
+    const f = fixture()
+    const counts = new Map<string, number>()
+    f.env.REQUEST_RATE_LIMITER = {
+      async limit({ key }) {
+        const count = (counts.get(key) ?? 0) + 1
+        counts.set(key, count)
+        return { success: count <= 5 }
+      },
+    }
+    f.setProviderName("alice")
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const request = f.management("recover")
+      const headers = new Headers(request.headers)
+      headers.set("CF-Connecting-IP", `192.0.2.${attempt + 1}`)
+      expect((await f.handle(new Request(request, { headers }))).status).toBe(
+        attempt < 5 ? 200 : 429
+      )
+    }
+    expect(f.calls).toHaveLength(5)
+    expect(
+      f.db.query("SELECT COUNT(*) AS n FROM address_observations").get()
+    ).toEqual({ n: 1 })
+  })
+  test("an existing wallet recovers without approval and creates no observation", async () => {
+    const f = fixture()
+    f.setProviderName("existing-name")
+    const result = await f.handle(f.management("recover"), [])
+    expect(result.status).toBe(200)
+    expect((await result.json()).username).toBe("existing-name")
+    expect(
+      f.db.query("SELECT COUNT(*) AS n FROM address_observations").get()
+    ).toEqual({ n: 0 })
+  })
+  test("approved recovery prunes expired registration observations", async () => {
+    const f = fixture()
+    f.db
+      .query(
+        "INSERT INTO address_observations (identity, name, observed_at) VALUES (?, ?, ?)"
+      )
+      .run("expired-identity", null, f.now - 86401)
+    expect((await f.handle(f.management("recover"))).status).toBe(404)
+    expect(
+      f.db.query("SELECT COUNT(*) AS n FROM address_observations").get()
+    ).toEqual({ n: 1 })
+    expect(
+      f.db.query("SELECT identity FROM address_observations").get()
+    ).toEqual({ identity: f.identity })
+  })
+  test("recovery fails closed before provider and storage when limiter is unavailable", async () => {
+    const f = fixture()
+    f.env.REQUEST_RATE_LIMITER =
+      undefined as unknown as AddressGatewayEnv["REQUEST_RATE_LIMITER"]
+    expect((await f.handle(f.management("recover"))).status).toBe(503)
+    expect(f.calls).toHaveLength(0)
+    expect(
+      f.db.query("SELECT COUNT(*) AS n FROM address_observations").get()
+    ).toEqual({ n: 0 })
   })
   test("reordering JSON does not bypass the mutation replay claim", async () => {
     const f = fixture()
