@@ -8,6 +8,10 @@ jobs:
   navigation:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [merchant-2, predecessor]
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
       options: --init --shm-size=1g
@@ -15,56 +19,30 @@ jobs:
       run:
         shell: bash
     env:
+      SAMPLE_KIND: ${{ matrix.sample }}
       CI: "true"
       DEBUG: pw:browser
       PLAYWRIGHT_SMOKE_AREA: merchant
       PLAYWRIGHT_SMOKE_RESULT_FILE: /tmp/navigation-results.json
       PLAYWRIGHT_SMOKE_PROGRESS_FILE: /tmp/navigation-progress.log
-      PLAYWRIGHT_SMOKE_BASE_SHA: 709a973d7cf7c331f7be11ee24c59d001a8f71a6
-      PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: 3349cf269d6f13ba91b9673e684ed6867eddddd9
-      PLAYWRIGHT_SMOKE_TESTED_SHA: 3349cf269d6f13ba91b9673e684ed6867eddddd9
+      PLAYWRIGHT_SMOKE_BASE_SHA: ae5c7d2777ba7c2bcb53ac4b15614b6c91c100ca
+      PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: 35d43449522e9381e882fdb3707699fc5cc29fa8
+      PLAYWRIGHT_SMOKE_TESTED_SHA: 35d43449522e9381e882fdb3707699fc5cc29fa8
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 3349cf269d6f13ba91b9673e684ed6867eddddd9
+          ref: 35d43449522e9381e882fdb3707699fc5cc29fa8
           persist-credentials: false
       - name: Prepare pinned runtime
         run: |
           npm install --global bun@1.3.5
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           bun install --frozen-lockfile
-      - name: Apply readiness-probe cleanup and observe socket failures
+      - name: Validate exact Merchant-2 manifest
+        if: matrix.sample == 'merchant-2'
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("e2e/shared-ui-surface-audit.playwright.ts")
-          s = p.read_text()
-          s = 'import { appendFileSync } from "node:fs"\n' + s
-          needle = "      let failedDocuments = 0"
-          addition = '''
-                page.on("websocket", (socket) => {
-                  socket.on("socketerror", (error) => {
-                    appendFileSync(process.env.PLAYWRIGHT_SMOKE_PROGRESS_FILE!, "[DEBUG-nav654-socket] " + JSON.stringify({
-                      routeIndex,
-                      networkProcessCrashed: /Network process crashed/i.test(error),
-                    }) + "\\n")
-                  })
-                })'''
-          addition = addition.replace("\n                ", "\n      ")
-          assert s.count(needle) == 1
-          s = s.replace(needle, needle + addition)
-          before = "            releaseImage()"
-          after = '''            const probeFinished = page.waitForEvent("requestfinished", (request) =>
-                        new URL(request.url()).pathname === "/__surface_readiness_probe.svg"
-                      )
-                      releaseImage()
-                      await probeFinished
-                      await page.unroute("**/__surface_readiness_probe.svg")'''
-          after = after.replace("\n                      ", "\n            ")
-          assert s.count(before) == 1
-          p.write_text(s.replace(before, after))
-          PY
-      - name: Run predecessor sequence six times with zero retries
+          bun run test:e2e:areas --area merchant --shard 2/2 --manifest-output /tmp/navigation-manifest.json --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" --tested-sha "$PLAYWRIGHT_SMOKE_TESTED_SHA"
+      - name: Qualify isolated-route candidate with zero retries
         run: |
           set -euo pipefail
           umask 077
@@ -114,7 +92,15 @@ jobs:
           python3 /tmp/navigation-monitor.py &
           monitor_pid=$!
           trap 'sleep 1; kill "$progress_pid" "$monitor_pid" 2>/dev/null || true' EXIT
-          bunx playwright test e2e/mobile-safari-baseline.playwright.ts:2578 e2e/mobile-safari-baseline.playwright.ts:2613 e2e/mobile-safari-baseline.playwright.ts:2636 e2e/shared-ui-populated-audit.playwright.ts e2e/shared-ui-surface-audit.playwright.ts --project=mobile-webkit --repeat-each=6 --workers=1 --retries=0 >/dev/null 2>&1
+          if [[ "$SAMPLE_KIND" == "merchant-2" ]]; then
+            bunx playwright test --shard=2/2 --workers=1 --retries=0 >/dev/null 2>&1
+          else
+            bunx playwright test e2e/mobile-safari-baseline.playwright.ts:2578 e2e/mobile-safari-baseline.playwright.ts:2613 e2e/mobile-safari-baseline.playwright.ts:2636 e2e/shared-ui-populated-audit.playwright.ts e2e/shared-ui-surface-audit.playwright.ts --project=mobile-webkit --repeat-each=6 --workers=1 --retries=0 >/dev/null 2>&1
+          fi
+      - name: Verify exact first-attempt execution
+        if: always() && matrix.sample == 'merchant-2'
+        run: |
+          bun run test:e2e:areas --area merchant --expected-manifest /tmp/navigation-manifest.json --execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE" --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" --tested-sha "$PLAYWRIGHT_SMOKE_TESTED_SHA"
       - name: Remove transient output
         if: always()
         run: |
