@@ -122,32 +122,37 @@ for (const area of ["market", "merchant"] as const) {
         observePage()
         record()
         // A nonessential image must not become the readiness gate for route UI.
-        let releaseImage!: () => void
+        let releaseImage: (() => void) | undefined
         let imageRequested = false
-        const heldImage = new Promise<void>((resolve) => {
-          releaseImage = resolve
-        })
-        await page.route("**/__surface_readiness_probe.svg", async (route) => {
-          imageRequested = true
-          await heldImage
-          await route.fulfill({
-            contentType: "image/svg+xml",
-            body: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+        if (route === "/") {
+          const heldImage = new Promise<void>((resolve) => {
+            releaseImage = resolve
           })
-        })
-        await page.addInitScript(() => {
-          if (location.pathname !== "/") return
-          document.addEventListener(
-            "DOMContentLoaded",
-            () => {
-              const image = document.createElement("img")
-              image.src = "/__surface_readiness_probe.svg"
-              image.style.display = "none"
-              document.body.append(image)
-            },
-            { once: true }
+          await page.route(
+            "**/__surface_readiness_probe.svg",
+            async (route) => {
+              imageRequested = true
+              await heldImage
+              await route.fulfill({
+                contentType: "image/svg+xml",
+                body: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+              })
+            }
           )
-        })
+          await page.addInitScript(() => {
+            if (location.pathname !== "/") return
+            document.addEventListener(
+              "DOMContentLoaded",
+              () => {
+                const image = document.createElement("img")
+                image.src = "/__surface_readiness_probe.svg"
+                image.style.display = "none"
+                document.body.append(image)
+              },
+              { once: true }
+            )
+          })
+        }
         const identity = createRuntimeSignerIdentity()
         try {
           const createdAt = Math.floor(Date.now() / 1000)
@@ -256,7 +261,7 @@ for (const area of ["market", "merchant"] as const) {
           ).toBeGreaterThan(0)
           if (route === "/") {
             await expect.poll(() => imageRequested).toBe(true)
-            releaseImage()
+            releaseImage?.()
           }
           mark("measure")
           const metrics = await page.evaluate(() => {
@@ -337,7 +342,7 @@ for (const area of ["market", "merchant"] as const) {
             contentType: "application/json",
           })
         } finally {
-          releaseImage()
+          releaseImage?.()
           disposeRuntimeSignerIdentity(identity)
         }
       })
