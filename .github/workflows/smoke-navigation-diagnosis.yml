@@ -1,0 +1,75 @@
+name: Smoke navigation diagnosis
+on:
+  push:
+    branches: [test/smoke-navigation-diagnosis-654]
+permissions:
+  contents: read
+jobs:
+  navigation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        isolation: [existing-page, fresh-page]
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+      options: --init --shm-size=1g
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      DEBUG: pw:browser
+      PLAYWRIGHT_SMOKE_AREA: merchant
+      PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/navigation-results.json
+      PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/navigation-progress.log
+      ISOLATION: ${{ matrix.isolation }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: 3349cf269d6f13ba91b9673e684ed6867eddddd9
+          persist-credentials: false
+      - name: Prepare pinned runtime
+        run: |
+          npm install --global bun@1.3.5
+          bun install --frozen-lockfile
+      - name: Apply isolated-page experiment
+        if: matrix.isolation == 'fresh-page'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("e2e/shared-ui-surface-audit.playwright.ts")
+          s = p.read_text()
+          before = """        for (const [index, route] of routes[area].entries()) {
+                    routeIndex = index"""
+          after = """        for (const [index, route] of routes[area].entries()) {
+                    if (index > 0) {
+                      const previous = page
+                      page = await previous.context().newPage()
+                      await installRealTestSigner(page, identity, TEST_RELAY_URL)
+                      await page.addInitScript(
+                        ({ key, theme }) => localStorage.setItem(key, theme),
+                        { key: THEME_STORAGE_KEY, theme }
+                      )
+                      await previous.close()
+                    }
+                    routeIndex = index"""
+          # Literal indentation is normalized because this script is embedded in YAML.
+          before = before.replace("\n                    ", "\n          ")
+          after = after.replace("\n                    ", "\n          ")
+          if s.count(before) != 1:
+              raise SystemExit("Expected exactly one route tour")
+          p.write_text(s.replace(before, after))
+          PY
+      - name: Run bounded zero-retry navigation sample
+        run: |
+          bunx playwright test e2e/shared-ui-surface-audit.playwright.ts:58 --project=mobile-webkit --grep "merchant surface audit" --repeat-each=4 --workers=1 --retries=0 > "$RUNNER_TEMP/navigation-raw.log" 2>&1
+      - name: Emit only sanitized progress
+        if: always()
+        run: |
+          if [[ -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" ]]; then
+            cat "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          fi
+          rm -f "$RUNNER_TEMP/navigation-raw.log" "$PLAYWRIGHT_SMOKE_RESULT_FILE" "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          rm -rf playwright-report test-results
