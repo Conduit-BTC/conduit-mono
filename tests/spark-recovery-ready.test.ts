@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import type { WalletDescriptor } from "@conduit/core"
-import { notifySparkRecoveryReady } from "../packages/core/src/wallets/spark-recovery-ready"
+import {
+  notifySparkRecoveryReady,
+  type SparkRecoveryReady,
+} from "../packages/core/src/wallets/spark-recovery-ready"
 import type { SignerSparkRecovery } from "../packages/core/src/wallets/signer-spark-recovery"
 import { generateSparkMnemonic } from "../packages/core/src/wallets/spark-recovery"
 
@@ -8,7 +11,7 @@ const recoveryMaterial = generateSparkMnemonic()
 
 const wallet: WalletDescriptor = {
   id: "wallet-1",
-  kind: "spark",
+  kind: "portable",
   providerId: "spark",
   label: "Wallet",
   network: "mainnet",
@@ -54,13 +57,19 @@ describe("locally verified Spark recovery handoff", () => {
     await notifySparkRecoveryReady(
       input({ onRecoveryReady: (recovery) => (delivered = recovery) })
     )
-    expect(delivered).toEqual({
-      wallet,
-      mnemonic: recoveryMaterial,
-      accountNumber: 1,
-      recovered: false,
+    const handoff = delivered as SparkRecoveryReady | null
+    expect({
+      sameWallet: handoff?.wallet === wallet,
+      sameRecovery: handoff?.mnemonic === recoveryMaterial,
+      sameAccount: handoff?.accountNumber === 1,
+      newlyCreated: handoff?.recovered === false,
+    }).toEqual({
+      sameWallet: true,
+      sameRecovery: true,
+      sameAccount: true,
+      newlyCreated: true,
     })
-    expect(delivered).not.toHaveProperty("publicDefaultAllowed")
+    expect(Object.hasOwn(handoff ?? {}, "publicDefaultAllowed")).toBe(false)
   })
 
   test("does not reveal another owner's or unopened wallet's recovery", async () => {
