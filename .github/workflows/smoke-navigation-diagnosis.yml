@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sample: [merchant-2, shipping-predecessors]
+        sample: [original, ready]
     container:
       image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
       options: --init --shm-size=1g
@@ -21,13 +21,14 @@ jobs:
     env:
       SAMPLE_KIND: ${{ matrix.sample }}
       CI: "true"
-      PLAYWRIGHT_SMOKE_RESULT_FILE: /tmp/two-results.json
-      PLAYWRIGHT_SMOKE_PROGRESS_FILE: /tmp/two-progress.log
-      PROBE_FILE: /tmp/two-probes.log
+      PLAYWRIGHT_SMOKE_AREA: merchant
+      PLAYWRIGHT_SMOKE_RESULT_FILE: /tmp/dialog-results.json
+      PLAYWRIGHT_SMOKE_PROGRESS_FILE: /tmp/dialog-progress.log
+      PROBE_FILE: /tmp/dialog-probes.log
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: 35d43449522e9381e882fdb3707699fc5cc29fa8
+          ref: f1102ec9a0a1268e8c1dd239957cae86eae3fc28
           persist-credentials: false
       - name: Prepare pinned runtime
         run: |
@@ -36,98 +37,22 @@ jobs:
       - name: Add bounded diagnostic probes
         run: |
           python3 - <<'PY'
+          import os
           from pathlib import Path
-          def replace(path, old, new):
-              p=Path(path); s=p.read_text()
-              if s.count(old)!=1: raise SystemExit("Unexpected probe seam: "+path)
-              p.write_text(s.replace(old,new))
-          for name in ["wallet-sign-in", "merchant-variation-shipping"]:
-              p=Path("e2e/"+name+".playwright.ts")
-              p.write_text('import { appendFileSync } from "node:fs"\n'+p.read_text())
-          replace("e2e/wallet-sign-in.playwright.ts",
-          '''      await saveRecovery(page, false)
-                // Dialog removal''',
-          '''      await page.evaluate(() => {
-                  const trigger = document.querySelector('[aria-label="Manage Legacy wallet"]')
-                  const events: unknown[] = []
-                  const classify = (node: EventTarget | null) => {
-                    if (!(node instanceof Element)) return "other"
-                    if (node === trigger || trigger?.contains(node)) return "legacy-trigger"
-                    if (node.closest('[role="menu"]')) return "menu"
-                    if (node.closest('[role="dialog"]')) return "dialog"
-                    if (node.closest("button")?.textContent?.trim() === "Create wallet") return "create-trigger"
-                    return "other"
-                  }
-                  for (const type of ["pointerdown", "pointerup", "click", "focusin"]) {
-                    document.addEventListener(type, (event) => {
-                      if (events.length < 80) events.push({type, target:classify(event.target)})
-                    }, true)
-                  }
-                  const observer = new MutationObserver(() => {
-                    const menu = document.querySelector('[role="menu"]')
-                    const snapshot = {type:"mutation", menu:!!menu, triggerConnected:!!trigger?.isConnected,
-                      dialog:!!document.querySelector('[role="dialog"]'), focused:classify(document.activeElement)}
-                    const serialized = JSON.stringify(snapshot)
-                    if ((window as any).__lastWalletProbe !== serialized && events.length < 80) {
-                      events.push(snapshot); (window as any).__lastWalletProbe = serialized
-                    }
-                  })
-                  observer.observe(document, {childList:true,subtree:true,attributes:true,attributeFilter:["data-state"]})
-                  ;(window as any).__smokeWalletProbe = () => ({events, triggerConnected:!!trigger?.isConnected,
-                    menu:!!document.querySelector('[role="menu"]'), focused:classify(document.activeElement)})
-                })
-                await saveRecovery(page, false)
-                // Dialog removal''')
-          replace("e2e/wallet-sign-in.playwright.ts",
-          '''      await page.getByLabel("Manage Legacy wallet").click()
-                phase("legacy_menu")
-                await page
-                  .getByRole("menuitem", { name: "Recovery details", exact: true })
-                  .click()''',
-          '''      try {
-                  await page.getByLabel("Manage Legacy wallet").click()
-                  phase("legacy_menu")
-                  await page.getByRole("menuitem", { name: "Recovery details", exact: true }).click()
-                } finally {
-                  const probe = await page.evaluate(() => (window as any).__smokeWalletProbe()).catch(() => ({unavailable:true}))
-                  appendFileSync(process.env.PROBE_FILE!, "[DEBUG-two654] "+JSON.stringify({kind:"wallet", scenario:failure, ...probe})+"\\n")
-                }''')
-          replace("apps/merchant/src/routes/products.tsx",
-          '''  const productStatusMessage = !productFormValidation.canPublish''',
-          '''  ;(window as any).__smokeVariationProbe = () => ({
-              canSubmit:productCanSubmit, signerReady, pubkeyPresent:!!pubkey, isSaving,
-              imageBusy:productImageUpload.isBusy, tableFound:signedPolicyQuery.data?.state === "found",
-              imageCount:form.images.length, tagCount:productFormValidation.tags.length,
-              errorFields:Object.keys(productFormValidation.errors).filter(key =>
-                ["title","price","shippingWeight","stock","variations","images","tags","shippingCost","shippingZones","pickup"].includes(key)),
-              canPublish:productFormValidation.canPublish
-            })
-            const productStatusMessage = !productFormValidation.canPublish''')
-          replace("e2e/merchant-variation-shipping.playwright.ts",
-          '''  await large.getByLabel("Format", { exact: true }).click()
-            await page.getByRole("option", { name: "Digital", exact: true }).click()
-            await expect(publish).toBeEnabled()''',
-          '''  await page.evaluate(() => {
-              const events: unknown[] = []
-              for (const type of ["pointerdown", "pointerup", "click"]) document.addEventListener(type, event => {
-                const target = event.target instanceof Element ? event.target.closest('[role="option"]') : null
-                if (events.length < 20) events.push({type, digital:target?.textContent?.trim()==="Digital"})
-              }, true)
-              ;(window as any).__smokeVariationEvents = events
-            })
-            await large.getByLabel("Format", { exact: true }).click()
-            await page.getByRole("option", { name: "Digital", exact: true }).click()
-            try {
-              await expect(publish).toBeEnabled()
-            } finally {
-              const probe = await page.evaluate(() => ({
-                ...(window as any).__smokeVariationProbe(),
-                digitalSelected: document.querySelector("#product-variation-format-1")?.textContent?.trim() === "Digital",
-                menuPresent:!!document.querySelector('[role="listbox"]'),
-                events:(window as any).__smokeVariationEvents
-              }))
-              appendFileSync(process.env.PROBE_FILE!, "[DEBUG-two654] "+JSON.stringify({kind:"variation", ...probe})+"\\n")
-            }''')
+          p=Path("e2e/merchant-shipping-tables.playwright.ts");s=p.read_text()
+          old="  if (testInfo.project.use.hasTouch) await add.tap()\n  else await add.click()\n  const dialog = page.getByRole(\"dialog\", { name: \"Add product\" })\n  await expect(dialog).toBeVisible()"
+          new="  const probe = await add.evaluateHandle(element => {\n    const events: Record<string, unknown>[] = []\n    const listeners = [\"pointerdown\", \"pointerup\", \"click\"].map(type => {\n      const listener = (event: Event) => {\n        const box = element.getBoundingClientRect()\n        events.push({type,onTrigger:event.target instanceof Node && element.contains(event.target),enabled:!element.hasAttribute(\"disabled\"),fonts:document.fonts.status,x:box.x,y:box.y,width:box.width,height:box.height})\n      }\n      document.addEventListener(type,listener,true)\n      return {type,listener}\n    })\n    let mounted=false,removed=false\n    const containsDialog=(node:Node)=>node instanceof Element && (node.matches('[role=\"dialog\"]') || !!node.querySelector('[role=\"dialog\"]'))\n    const observer=new MutationObserver(changes=>{for(const change of changes){if([...change.addedNodes].some(containsDialog))mounted=true;if([...change.removedNodes].some(containsDialog))removed=true}})\n    observer.observe(document,{childList:true,subtree:true})\n    return {read(){return {gate:(window as any).__dialogOpenGate ?? {called:false},events,mounted,removed,present:!!document.querySelector('[role=\"dialog\"]'),fonts:document.fonts.status}},dispose(){observer.disconnect();for(const {type,listener} of listeners)document.removeEventListener(type,listener,true)}}\n  })\n  const dialog = page.getByRole(\"dialog\", { name: \"Add product\" })\n  try {\n    if (testInfo.project.use.hasTouch) await add.tap()\n    else await add.click()\n    await expect(dialog).toBeVisible()\n  } finally {\n    appendFileSync(process.env.PROBE_FILE!,JSON.stringify(await probe.evaluate(p=>p.read()))+\"\\n\")\n    await probe.evaluate(p=>p.dispose())\n    await probe.dispose()\n  }\n"
+          assert s.count(old)==1
+          s=s.replace(old,new)
+          if os.environ["SAMPLE_KIND"] == "ready":
+              seam="  const add = page.getByRole(\"button\", { name: \"Add product\" }).first()"
+              assert s.count(seam)==1
+              s=s.replace(seam,"  await expect(page.getByRole(\"button\", { name: \"Open merchant account menu\", exact: true })).toBeVisible()\n  await page.evaluate(() => document.fonts.ready)\n"+seam)
+          p.write_text("import { appendFileSync } from \"node:fs\"\n"+s)
+          p=Path("apps/merchant/src/routes/products.tsx");s=p.read_text()
+          seam="  function openCreateDialog(): void {"
+          assert s.count(seam)==1
+          p.write_text(s.replace(seam,seam+"\n    ;(window as any).__dialogOpenGate = { called:true,authConnected:authStatus===\"connected\",shippingLoading:signedShippingQuery.isLoading,policyLoading:signedPolicyQuery.isLoading }"))
           PY
       - name: Reproduce with zero retries
         run: |
@@ -138,11 +63,7 @@ jobs:
           tail -n +1 -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" "$PROBE_FILE" &
           progress_pid=$!
           trap 'sleep 1; kill "$progress_pid" 2>/dev/null || true' EXIT
-          if [[ "$SAMPLE_KIND" == "merchant-2" ]]; then
-            PLAYWRIGHT_SMOKE_AREA=merchant bunx playwright test --shard=2/2 --workers=1 --retries=0 >/dev/null 2>&1
-          else
-            PLAYWRIGHT_SMOKE_AREA=merchant bunx playwright test e2e/merchant-shipping-tables.playwright.ts e2e/merchant-variation-shipping.playwright.ts --project=mobile-webkit --repeat-each=3 --workers=1 --retries=0 >/dev/null 2>&1
-          fi
+          bunx playwright test e2e/merchant-shipping-tables.playwright.ts --grep 'digital drafts publish' --project=mobile-chromium --repeat-each=24 --workers=1 --retries=0 >/dev/null 2>&1
       - name: Remove transient output
         if: always()
         run: |
