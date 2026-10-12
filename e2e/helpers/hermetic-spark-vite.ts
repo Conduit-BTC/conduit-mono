@@ -10,6 +10,7 @@ const pureImport = "virtual:conduit-hermetic-spark-pure"
 export const HERMETIC_SPARK_SDK_VERSION = "0.13.0"
 const pureExports = [
   ["DefaultSparkSigner", "signer/signer.ts"],
+  ["deriveViewerIdentityPublicKey", "utils/viewer-key.ts"],
   ["UUID", "utils/transfer-id.ts"],
   ["SparkWalletEvent", "spark-wallet/types.ts"],
   ["SparkValidationError", "errors/types.ts"],
@@ -25,15 +26,65 @@ const pureExports = [
   ],
 ] as const
 
+// The pinned viewer-key helper uses these readonly configuration functions.
+// This does not permit other SDK services or any native wallet implementation.
+const readonlyConfigExports = new Set([
+  "normalizeNetworkType",
+  "getSspSchemaEndpoint",
+  "getLocalSigningOperators",
+  "getSspIdentityPublicKey",
+  "getElectrsUrl",
+  "getSspUrl",
+  "getLocalSigningThreshold",
+  "createLocalSigningOperators",
+])
+
+export function isHermeticSparkRuntimeModuleForbidden(
+  id: string,
+  metadata: unknown
+): boolean {
+  const path = id.replace(/\\/g, "/")
+  if (
+    !/\/spark-sdk\/src\/(?:spark-wallet\/(?!types\.ts$)|services\/|index[^/]*\.)/.test(
+      path
+    )
+  )
+    return false
+  if (
+    !path.endsWith("/spark-sdk/src/services/wallet-config.ts") ||
+    !metadata ||
+    typeof metadata !== "object" ||
+    Array.isArray(metadata)
+  )
+    return true
+  const evidence = metadata as {
+    renderedLength?: unknown
+    renderedExports?: unknown
+  }
+  return (
+    typeof evidence.renderedLength !== "number" ||
+    !Number.isSafeInteger(evidence.renderedLength) ||
+    evidence.renderedLength <= 0 ||
+    !Array.isArray(evidence.renderedExports) ||
+    evidence.renderedExports.length === 0 ||
+    new Set(evidence.renderedExports).size !==
+      evidence.renderedExports.length ||
+    !evidence.renderedExports.every(
+      (name) => typeof name === "string" && readonlyConfigExports.has(name)
+    )
+  )
+}
+
 function modulePath(path: string) {
   return `/@fs/${path.replace(/\\/g, "/")}`
 }
 
 /** Only dedicated local E2E configs install this external-SDK replacement. */
 export function createHermeticSparkVitePlugin(appDir: string) {
-  const sdkEntry = createRequire(resolve(appDir, "package.json")).resolve(
-    "@buildonspark/spark-sdk"
+  const sdkOwner = fileURLToPath(
+    new URL("../../packages/core/package.json", import.meta.url)
   )
+  const sdkEntry = createRequire(sdkOwner).resolve("@buildonspark/spark-sdk")
   const sdkDir = dirname(dirname(sdkEntry))
   const metadata = JSON.parse(
     readFileSync(resolve(sdkDir, "package.json"), "utf8")
@@ -100,10 +151,9 @@ export function createHermeticSparkVitePlugin(appDir: string) {
         )
       }
       if (
-        Object.keys(chunk.modules ?? {}).some((id) =>
-          /\/spark-sdk\/src\/(?:spark-wallet\/(?!types\.ts$)|services\/|index[^/]*\.)/.test(
-            id.replace(/\\/g, "/")
-          )
+        !chunk.modules ||
+        Object.entries(chunk.modules).some(([id, metadata]) =>
+          isHermeticSparkRuntimeModuleForbidden(id, metadata)
         )
       ) {
         throw new Error(
@@ -166,7 +216,7 @@ const sdk = createHermeticSparkSdkFacade({ pureSdk, request(command) {
       typeof binding !== "function") throw new Error("Hermetic Spark SDK transport unavailable");
   return binding(command);
 } });
-export const { SparkWallet, SparkReadonlyClient, DefaultSparkSigner, UUID,
+export const { SparkWallet, SparkReadonlyClient, DefaultSparkSigner, deriveViewerIdentityPublicKey, UUID,
   SparkWalletEvent, SparkValidationError, Network, NetworkToProto,
   parseCompressedPublicKeyHex, manifestGrossSats, manifestNetSatsFor,
   manifestFeeSats, ReceiveQuoteAmountBasis, decodeSparkAddress, encodeSparkAddress,

@@ -3,13 +3,18 @@ import { fileURLToPath } from "node:url"
 import {
   createHermeticSparkVitePlugin,
   HERMETIC_SPARK_SDK_VERSION,
+  isHermeticSparkRuntimeModuleForbidden,
 } from "../e2e/helpers/hermetic-spark-vite"
 
-it("explicitly aligns the hermetic SDK adapter with both app dependency pins", async () => {
+it("explicitly aligns the hermetic SDK adapter with the shared Core dependency pin", async () => {
+  const coreManifest = await Bun.file("packages/core/package.json").json()
+  expect(coreManifest.dependencies["@buildonspark/spark-sdk"]).toBe(
+    HERMETIC_SPARK_SDK_VERSION
+  )
   for (const app of ["market", "merchant"]) {
     const manifest = await Bun.file(`apps/${app}/package.json`).json()
     expect(manifest.dependencies["@buildonspark/spark-sdk"]).toBe(
-      HERMETIC_SPARK_SDK_VERSION
+      coreManifest.dependencies["@buildonspark/spark-sdk"]
     )
     expect(() =>
       createHermeticSparkVitePlugin(
@@ -53,6 +58,7 @@ it("links the pinned pure SDK as self-contained browser ESM without app crypto r
   expect(Object.keys(module).sort()).toEqual(
     [
       "DefaultSparkSigner",
+      "deriveViewerIdentityPublicKey",
       "UUID",
       "SparkWalletEvent",
       "SparkValidationError",
@@ -74,6 +80,14 @@ it("links the pinned pure SDK as self-contained browser ESM without app crypto r
   try {
     await signer.createSparkWalletFromSeed(seed, 0)
     expect((await signer.getIdentityPublicKey()).length).toBe(33)
+    const derived = await module.deriveViewerIdentityPublicKey(
+      { network: "REGTEST", log: false },
+      seed,
+      0
+    )
+    expect(derived).toBe(
+      Buffer.from(await signer.getIdentityPublicKey()).toString("hex")
+    )
   } finally {
     seed.fill(0)
   }
@@ -90,6 +104,73 @@ it("links the pinned pure SDK as self-contained browser ESM without app crypto r
   ).toBeUndefined()
   const facade = await plugin.load(plugin.resolveId("@buildonspark/spark-sdk")!)
   expect(facade).toContain("decodeSparkAddress, encodeSparkAddress")
+  expect(facade).toContain(
+    "DefaultSparkSigner, deriveViewerIdentityPublicKey, UUID"
+  )
+})
+
+it("permits only positively known pinned readonly configuration metadata", () => {
+  const path = "/fixture/spark-sdk/src/services/wallet-config.ts"
+  const known = {
+    renderedLength: 7_028,
+    renderedExports: [
+      "normalizeNetworkType",
+      "getSspSchemaEndpoint",
+      "getLocalSigningOperators",
+      "getSspIdentityPublicKey",
+      "getElectrsUrl",
+      "getSspUrl",
+      "getLocalSigningThreshold",
+      "createLocalSigningOperators",
+    ],
+  }
+  expect(isHermeticSparkRuntimeModuleForbidden(path, known)).toBe(false)
+  expect(
+    isHermeticSparkRuntimeModuleForbidden(path.replace(/\//g, "\\"), known)
+  ).toBe(false)
+  for (const metadata of [
+    undefined,
+    null,
+    {},
+    [],
+    { renderedLength: 7_028 },
+    { renderedExports: known.renderedExports },
+    { ...known, renderedLength: 0 },
+    { ...known, renderedLength: Number.NaN },
+    { ...known, renderedExports: [] },
+    { ...known, renderedExports: ["normalizeNetworkType", "WalletConfig"] },
+    {
+      ...known,
+      renderedExports: [...known.renderedExports, "getProviderClient"],
+    },
+    {
+      ...known,
+      renderedExports: ["normalizeNetworkType", "normalizeNetworkType"],
+    },
+  ]) {
+    expect(isHermeticSparkRuntimeModuleForbidden(path, metadata)).toBe(true)
+  }
+  for (const suffix of [
+    "services/connection-manager.ts",
+    "services/lightning.ts",
+    "services/wallet-config-extra.ts",
+    "spark-wallet/spark-wallet.ts",
+    "index.ts",
+    "index.browser.ts",
+  ]) {
+    expect(
+      isHermeticSparkRuntimeModuleForbidden(
+        `/fixture/spark-sdk/src/${suffix}`,
+        known
+      )
+    ).toBe(true)
+  }
+  expect(
+    isHermeticSparkRuntimeModuleForbidden(
+      "/fixture/spark-sdk/src/spark-wallet/types.ts",
+      {}
+    )
+  ).toBe(false)
 })
 
 it("permits only isolated loopback serve mode with both router flags", () => {
