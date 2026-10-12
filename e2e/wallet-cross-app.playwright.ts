@@ -1,6 +1,7 @@
 import {
   openWalletSetup,
   closeDefaultWalletSession,
+  observeWalletController,
 } from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
@@ -88,6 +89,7 @@ for (const app of ["market", "merchant"] as const) {
         }),
       ])
       await prepareControlledWallet(page)
+      await observeWalletController(page)
       await installRealTestSigner(page, identity, relay)
       await page.goto(apps[app] + "/wallet")
       await installControlledWallet(page)
@@ -857,6 +859,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
   const identity = createRuntimeSignerIdentity()
   try {
     await prepareControlledWallet(page)
+    await observeWalletController(page)
     await installRealTestSigner(page, identity, relay)
     await page.goto(apps.market + "/wallet")
     await installControlledWallet(page)
@@ -922,6 +925,7 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
   const identity = createRuntimeSignerIdentity()
   try {
     await prepareControlledWallet(page)
+    await observeWalletController(page)
     await installRealTestSigner(page, identity, relay)
     await page.goto(apps.market + "/wallet")
     await installControlledWallet(page)

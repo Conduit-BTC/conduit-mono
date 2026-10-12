@@ -213,14 +213,42 @@ export async function openWalletSetup(
   await button.click()
 }
 
-/** Internal close remains a lifecycle seam; the user-facing Lock control is gone. */
+/** Observe the real route controller without adding a production test API. */
+export async function observeWalletController(page: Page) {
+  await page.route("**/src/routes/wallet.tsx*", async (route) => {
+    const response = await route.fetch()
+    const body = await response.text()
+    const marker = [
+      "const wallets = useWallets();",
+      "const wallets = automation.wallets;",
+    ].find((candidate) => body.includes(candidate))
+    if (!marker || body.split(marker).length !== 2)
+      throw new Error("Wallet controller observation seam changed")
+    await route.fulfill({
+      response,
+      body: body.replace(
+        marker,
+        marker + "window.__controlledWalletController = wallets;"
+      ),
+    })
+  })
+}
+
+/** Retain deliberate-lock semantics after removal of the user-facing Lock control. */
 export async function closeDefaultWalletSession(page: Page) {
   await page.keyboard.press("Escape")
   await page.evaluate(
-    async ({ storage, managerUrl, core }) => {
+    async ({ storage, core }) => {
       const { getMarketWalletStore } = await import(storage)
-      const { getSparkWalletManager } = await import(managerUrl)
       const { getAccountSigner } = await import(core)
+      const controller = (
+        window as typeof window & {
+          __controlledWalletController?: {
+            lockSpark(walletId: string): Promise<void>
+          }
+        }
+      ).__controlledWalletController
+      if (!controller) throw new Error("Wallet controller was not observed.")
       const wallets = (
         await getMarketWalletStore().listVisible(
           getAccountSigner()?.pubkey ?? null
@@ -231,13 +259,11 @@ export async function closeDefaultWalletSession(page: Page) {
           w.defaultIntents.includes("pay_invoice")
         ) ?? wallets[0]
       if (!wallet) throw new Error("No wallet session to close.")
-      await getSparkWalletManager().close(wallet.id)
+      await controller.lockSpark(wallet.id)
     },
     {
       storage:
         "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
-      managerUrl:
-        "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
       core: "/@fs" + path.resolve("packages/core/src/index.ts"),
     }
   )
