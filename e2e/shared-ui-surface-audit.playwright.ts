@@ -55,146 +55,126 @@ const routes = {
 }
 for (const area of ["market", "merchant"] as const) {
   for (const theme of ["day-market", "night-market"]) {
-    test(`${area} surface audit in ${theme} @${area}`, async ({
-      page,
-      browser,
-    }, info) => {
-      test.setTimeout(120000)
-      const viewport = page.viewportSize()
-      let routeContext = page.context()
-      let phase = "setup"
-      let routeIndex = -1
-      let navigationError = "none"
-      let pageCrashed = false
-      let networkProcessCrashed = false
-      let failedDocuments = 0
-      const pending = new Set<Request>()
-      const record = () =>
-        recordSmokeDiagnostic(info, "surface-audit", {
-          phase,
-          routeIndex,
-          navigationError,
-          pageCrashed,
-          networkProcessCrashed,
-          failedDocuments,
-          pendingDocuments: [...pending].filter(
-            (r) => r.resourceType() === "document"
-          ).length,
-          pendingImages: [...pending].filter(
-            (r) => r.resourceType() === "image"
-          ).length,
-          pendingFonts: [...pending].filter((r) => r.resourceType() === "font")
-            .length,
-          pendingScripts: [...pending].filter(
-            (r) => r.resourceType() === "script"
-          ).length,
-        })
-      const mark = (value: string) => {
-        phase = value
-        record()
-      }
-      const observePage = () => {
-        page.on("request", (request) => {
-          pending.add(request)
-          record()
-        })
-        const finish = (request: Request) => {
-          pending.delete(request)
+    for (const [routeIndex, route] of routes[area].entries()) {
+      test(`${area} surface audit in ${theme}: ${route} @${area}`, async ({
+        page,
+      }, info) => {
+        expect(page.viewportSize()).toEqual(info.project.use.viewport)
+        let phase = "setup"
+        let navigationError = "none"
+        let pageCrashed = false
+        let networkProcessCrashed = false
+        let failedDocuments = 0
+        const pending = new Set<Request>()
+        const record = () =>
+          recordSmokeDiagnostic(info, "surface-audit", {
+            phase,
+            routeIndex,
+            navigationError,
+            pageCrashed,
+            networkProcessCrashed,
+            failedDocuments,
+            pendingDocuments: [...pending].filter(
+              (r) => r.resourceType() === "document"
+            ).length,
+            pendingImages: [...pending].filter(
+              (r) => r.resourceType() === "image"
+            ).length,
+            pendingFonts: [...pending].filter(
+              (r) => r.resourceType() === "font"
+            ).length,
+            pendingScripts: [...pending].filter(
+              (r) => r.resourceType() === "script"
+            ).length,
+          })
+        const mark = (value: string) => {
+          phase = value
           record()
         }
-        page.on("requestfinished", finish)
-        page.on("requestfailed", (request) => {
-          if (request.resourceType() === "document") failedDocuments += 1
-          finish(request)
-        })
-        // WebKit reports network-process crashes on sockets, not page crashes
-        // or necessarily browser stderr. Retain only this fixed observation.
-        page.on("websocket", (socket) => {
-          socket.on("socketerror", (error) => {
-            if (!/Network process crashed/i.test(error)) return
-            networkProcessCrashed = true
+        const observePage = () => {
+          page.on("request", (request) => {
+            pending.add(request)
             record()
           })
-        })
-        page.on("crash", () => {
-          pageCrashed = true
-          record()
-        })
-      }
-      observePage()
-      record()
-      // A nonessential image must not become the readiness gate for route UI.
-      let releaseImage!: () => void
-      let imageRequested = false
-      const heldImage = new Promise<void>((resolve) => {
-        releaseImage = resolve
-      })
-      await page.route("**/__surface_readiness_probe.svg", async (route) => {
-        imageRequested = true
-        await heldImage
-        await route.fulfill({
-          contentType: "image/svg+xml",
-          body: '<svg xmlns="http://www.w3.org/2000/svg"/>',
-        })
-      })
-      await page.addInitScript(() => {
-        if (location.pathname !== "/") return
-        document.addEventListener(
-          "DOMContentLoaded",
-          () => {
-            const image = document.createElement("img")
-            image.src = "/__surface_readiness_probe.svg"
-            image.style.display = "none"
-            document.body.append(image)
-          },
-          { once: true }
-        )
-      })
-      const identity = createRuntimeSignerIdentity()
-      try {
-        const createdAt = Math.floor(Date.now() / 1000)
-        await publishTestRelayEvents(
-          [0, 10002, 10050].map((kind) =>
-            signRuntimeTestEvent(identity, {
-              kind,
-              created_at: createdAt,
-              tags:
-                kind === 10002
-                  ? [["r", TEST_RELAY_URL]]
-                  : kind === 10050
-                    ? [["relay", TEST_RELAY_URL]]
-                    : [],
-              content: kind === 0 ? "{}" : "",
+          const finish = (request: Request) => {
+            pending.delete(request)
+            record()
+          }
+          page.on("requestfinished", finish)
+          page.on("requestfailed", (request) => {
+            if (request.resourceType() === "document") failedDocuments += 1
+            finish(request)
+          })
+          // WebKit reports network-process crashes on sockets, not page crashes
+          // or necessarily browser stderr. Retain only this fixed observation.
+          page.on("websocket", (socket) => {
+            socket.on("socketerror", (error) => {
+              if (!/Network process crashed/i.test(error)) return
+              networkProcessCrashed = true
+              record()
             })
+          })
+          page.on("crash", () => {
+            pageCrashed = true
+            record()
+          })
+        }
+        observePage()
+        record()
+        // A nonessential image must not become the readiness gate for route UI.
+        let releaseImage!: () => void
+        let imageRequested = false
+        const heldImage = new Promise<void>((resolve) => {
+          releaseImage = resolve
+        })
+        await page.route("**/__surface_readiness_probe.svg", async (route) => {
+          imageRequested = true
+          await heldImage
+          await route.fulfill({
+            contentType: "image/svg+xml",
+            body: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+          })
+        })
+        await page.addInitScript(() => {
+          if (location.pathname !== "/") return
+          document.addEventListener(
+            "DOMContentLoaded",
+            () => {
+              const image = document.createElement("img")
+              image.src = "/__surface_readiness_probe.svg"
+              image.style.display = "none"
+              document.body.append(image)
+            },
+            { once: true }
           )
-        )
-        const preparePage = async () => {
+        })
+        const identity = createRuntimeSignerIdentity()
+        try {
+          const createdAt = Math.floor(Date.now() / 1000)
+          await publishTestRelayEvents(
+            [0, 10002, 10050].map((kind) =>
+              signRuntimeTestEvent(identity, {
+                kind,
+                created_at: createdAt,
+                tags:
+                  kind === 10002
+                    ? [["r", TEST_RELAY_URL]]
+                    : kind === 10050
+                      ? [["relay", TEST_RELAY_URL]]
+                      : [],
+                content: kind === 0 ? "{}" : "",
+              })
+            )
+          )
+          // Each route gets Playwright's fresh context with the complete project
+          // device options. No storage, network process or signer state crosses cases.
           await installRealTestSigner(page, identity, TEST_RELAY_URL)
           await page.addInitScript(
             ({ key, theme }) => localStorage.setItem(key, theme),
             { key: THEME_STORAGE_KEY, theme }
           )
-        }
-        await preparePage()
-        const directory = process.env.PLAYWRIGHT_UI_SURFACE_SCREENSHOT_DIR
-        if (directory) await mkdir(directory, { recursive: true })
-        const evidence = []
-        for (const [index, route] of routes[area].entries()) {
-          routeIndex = index
-          mark("setup")
-          // These are independent direct-route shells. Reusing a context across
-          // document replacements can crash WebKit's network process; keep each
-          // route's network and storage lifetime isolated without retrying it.
-          if (index > 0) {
-            await routeContext.close()
-            // Playwright inherits the configured project/device options.
-            routeContext = await browser.newContext()
-            page = await routeContext.newPage()
-            expect(page.viewportSize()).toEqual(viewport)
-            pending.clear()
-            observePage()
-            await preparePage()
-          }
+          const directory = process.env.PLAYWRIGHT_UI_SURFACE_SCREENSHOT_DIR
+          if (directory) await mkdir(directory, { recursive: true })
           mark("navigate")
           try {
             await page.goto(
@@ -274,7 +254,7 @@ for (const area of ["market", "merchant"] as const) {
             headings.length + browseNavigation,
             `${route} has a rendered page heading or catalog navigation`
           ).toBeGreaterThan(0)
-          if (index === 0) {
+          if (route === "/") {
             await expect.poll(() => imageRequested).toBe(true)
             releaseImage()
           }
@@ -337,7 +317,6 @@ for (const area of ["market", "merchant"] as const) {
           expect
             .soft(metrics.oversizedBoxes, `${route} arbitrary panel geometry`)
             .toBe(0)
-          evidence.push({ route, headings, metrics })
           if (directory) {
             mark("capture")
             await page.screenshot({
@@ -352,21 +331,17 @@ for (const area of ["market", "merchant"] as const) {
               ],
             })
           }
-        }
-        mark("complete")
-        await info.attach("surface-audit", {
-          body: JSON.stringify(evidence, null, 2),
-          contentType: "application/json",
-        })
-      } finally {
-        releaseImage()
-        try {
-          await routeContext.close()
+          mark("complete")
+          await info.attach("surface-audit", {
+            body: JSON.stringify([{ route, headings, metrics }], null, 2),
+            contentType: "application/json",
+          })
         } finally {
+          releaseImage()
           disposeRuntimeSignerIdentity(identity)
         }
-      }
-    })
+      })
+    }
   }
 }
 
