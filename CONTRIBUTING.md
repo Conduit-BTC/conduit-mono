@@ -335,9 +335,10 @@ through reporter completion, including teardown. A startup failure has zero
 execution time, represented as `under-1s`. Use Actions job/step timestamps for the complete critical path
 and combined runner-minutes; do not add overlapping wall-clock intervals.
 
-Failures retain the first step error that reaches the final test result and
-the last completed boundary before that error. Recovered polls and caught
-errors do not replace the actual failure boundary. Categories identify observations such as assertion,
+Failures correlate the primary result error with the latest matching leaf step
+and retain the last completed boundary before that step. This avoids attributing
+equal error contents to an earlier recovered operation or a propagated parent.
+Error contents are compared only in memory and are never retained. Categories identify observations such as assertion,
 timeout, fixture or browser operation, not a proven root cause. Unknown remains
 unknown. Surface audits also record a boolean when WebKit reports a network-process
 crash through a WebSocket error; page-crash events and browser stderr may miss
