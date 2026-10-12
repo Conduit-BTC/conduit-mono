@@ -587,15 +587,22 @@ export class PrivacySafeSmokeReporter implements Reporter {
       // test. Attribute only an error that reached the result, preserving the
       // boundary captured before that error rather than subsequent cleanup.
       // Error contents are compared in memory only and never serialized.
-      const failed = state?.failures?.find(({ step }) =>
-        result.errors.some(
-          (error) =>
-            step.error === error ||
-            (step.error?.message !== undefined &&
-              step.error.message === error.message &&
-              step.error.stack === error.stack)
-        )
-      )
+      const error = result.errors?.[0]
+      const matching =
+        state?.failures?.filter(
+          ({ step }) =>
+            error &&
+            (step.error === error ||
+              (step.error?.message !== undefined &&
+                step.error.message === error.message &&
+                step.error.stack === error.stack))
+        ) ?? []
+      // IPC copies errors, so equal contents can represent distinct occurrences.
+      // Prefer the latest leaf; parent propagation must not replace its boundary.
+      const propagatedParents = new Set(matching.map(({ step }) => step.parent))
+      const failed = matching
+        .reverse()
+        .find(({ step }) => !propagatedParents.has(step))
       const failedStep = failed ? safeStep(failed.step) : state?.active?.value
       const completed = failed ? failed.completed : state?.completed
       safeResult.failure = {

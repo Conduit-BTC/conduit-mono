@@ -40,7 +40,7 @@ describe("composed smoke evidence", () => {
         join(directory, "e2e/commerce.playwright.ts"),
         [
           `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
-          `for (const mode of ["pass", "assertion", "timeout", "throw", "poll", "caught"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
+          `for (const mode of ["pass", "assertion", "timeout", "throw", "poll", "caught", "collision", "collision-nested"]) test(\`probe \${mode} ${sentinel} @market\`, async () => {`,
           "  test.setTimeout(500);",
           '  test.info().annotations.push({ type: "smoke:commerce-journey", description: JSON.stringify({ phase: "checkout", elapsedSeconds: 12.345, phaseSeconds: 2.345, slowestSeconds: 5.678 }) });',
           '  if (mode === "poll") { let attempt = 0; await expect.poll(() => ++attempt, { intervals: [1] }).toBe(2); }',
@@ -61,6 +61,19 @@ describe("composed smoke evidence", () => {
           '    finally { await test.step("cleanup-' +
             sentinel +
             '", async () => {}); }',
+          "  }",
+          '  if (mode.startsWith("collision")) {',
+          '    const fail = () => { const error = new Error("' +
+            sentinel +
+            '"); error.stack = "Error: ' +
+            sentinel +
+            '"; throw error; };',
+          '    try { await test.step("recovered", fail); } catch {}',
+          '    await test.step("collision-ready", async () => {});',
+          '    try { await test.step("terminal", async () => {',
+          '      if (mode === "collision-nested") await test.step("nested", fail, { location: { file: test.info().file, line: 21, column: 1 } });',
+          "      else fail();",
+          '    }); } finally { await test.step("collision-cleanup", async () => {}); }',
           "  }",
           "});",
         ].join("\n")
@@ -99,7 +112,7 @@ describe("composed smoke evidence", () => {
         ["market"],
         evidence
       )
-      expect(manifest.selectedTestCount).toBe(6)
+      expect(manifest.selectedTestCount).toBe(8)
       expect(run([]).status).toBe(1)
       const report = JSON.parse(
         readFileSync(output, "utf8")
@@ -115,7 +128,7 @@ describe("composed smoke evidence", () => {
       expect(typeof summary.timing.reporterSetupBucket).toBe("string")
       expect(typeof summary.timing.executionBucket).toBe("string")
       expect(serialized).not.toMatch(/"(?:[^"\n]*(?:Ms|Seconds)|duration)":/)
-      expect(summary.timing.completedAttempts).toBe(6)
+      expect(summary.timing.completedAttempts).toBe(8)
       expect(
         summary.tests.every((spec: { title?: string }) => !("title" in spec))
       ).toBe(true)
@@ -127,7 +140,7 @@ describe("composed smoke evidence", () => {
           }>
         }) => spec.tests.flatMap((test) => test.results)
       )
-      expect(retainedResults).toHaveLength(6)
+      expect(retainedResults).toHaveLength(8)
       expect(summary.schemaVersion).toBe(2)
       for (const result of retainedResults) {
         expect(result.durationBucket).toBeTypeOf("string")
@@ -144,7 +157,7 @@ describe("composed smoke evidence", () => {
       expect(specs[0]!.tests![0]!.results![0]!.duration).toBeTypeOf("number")
       expect(readFileSync(output, "utf8")).toContain('"elapsedSeconds":12.3')
       const ids = specs.map((spec) => spec.smokeId)
-      expect(new Set(ids).size).toBe(6)
+      expect(new Set(ids).size).toBe(8)
       expect([...ids].sort()).toEqual(
         manifest.tests.map((test) => test.id).sort()
       )
@@ -155,11 +168,19 @@ describe("composed smoke evidence", () => {
         failures
           .map((result) => safePlaywrightFailure(result.failure)?.category)
           .sort()
-      ).toEqual(["assertion", "assertion", "assertion", "timeout", "unknown"])
+      ).toEqual([
+        "assertion",
+        "assertion",
+        "assertion",
+        "timeout",
+        "unknown",
+        "unknown",
+        "unknown",
+      ])
       // The recovered poll and caught error must not obscure the terminal
       // assertion or let its cleanup replace the preceding successful boundary.
       const boundaries = specs
-        .slice(4)
+        .slice(4, 6)
         .flatMap((spec) => spec.tests!.flatMap((test) => test.results!))
       expect(boundaries).toHaveLength(2)
       for (const result of boundaries) {
@@ -167,6 +188,26 @@ describe("composed smoke evidence", () => {
         expect(failure?.failedStep?.location?.line).toBe(13)
         expect(failure?.lastCompletedStep?.location?.line).toBe(12)
         expect(failure?.category).toBe("assertion")
+      }
+      // Value-equal recovered errors must not win over the later terminal
+      // occurrence, including when the terminal error propagates through a parent.
+      const fixtureLines = readFileSync(
+        join(directory, "e2e/commerce.playwright.ts"),
+        "utf8"
+      ).split("\n")
+      const lineOf = (text: string) =>
+        fixtureLines.findIndex((line) => line.includes(text)) + 1
+      for (const [offset, terminal] of [
+        'test.step("terminal"',
+        'test.step("nested"',
+      ].entries()) {
+        const failure = safePlaywrightFailure(
+          specs[6 + offset]!.tests![0]!.results![0]!.failure
+        )
+        expect(failure?.failedStep?.location?.line).toBe(lineOf(terminal))
+        expect(failure?.lastCompletedStep?.location?.line).toBe(
+          lineOf('test.step("collision-ready"')
+        )
       }
       const unstepped = failures
         .map((result) => safePlaywrightFailure(result.failure))
