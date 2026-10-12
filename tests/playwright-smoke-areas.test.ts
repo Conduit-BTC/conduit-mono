@@ -374,9 +374,7 @@ describe("Playwright smoke area validation", () => {
     expect(playwrightConfig).toContain(
       '"./scripts/ci/playwright_smoke_reporter.ts"'
     )
-    expect(playwrightConfig).toContain(
-      "{ outputFile: smokeResultFile, progressFile: smokeProgressFile }"
-    )
+    expect(playwrightConfig).toContain("evidenceFile: smokeEvidenceFile")
     expect(playwrightConfig).not.toContain(
       '["json", { outputFile: smokeResultFile }]'
     )
@@ -403,9 +401,7 @@ describe("Playwright smoke area validation", () => {
     expect(playwrightConfig).toContain(
       '"./scripts/ci/playwright_smoke_reporter.ts"'
     )
-    expect(playwrightConfig).toContain(
-      "{ outputFile: smokeResultFile, progressFile: smokeProgressFile }"
-    )
+    expect(playwrightConfig).toContain("evidence: smokeEvidence")
     expect(playwrightConfig).toContain(': [["null"]]')
     expect(playwrightConfig).not.toContain('["html", { open: "never" }]')
     expect(playwrightConfig).toContain('trace: CI ? "off" : "on-first-retry"')
@@ -428,7 +424,18 @@ describe("Playwright smoke area validation", () => {
       'rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"'
     )
     expect(ciWorkflow).not.toContain("Upload Playwright artifacts")
-    expect(ciWorkflow).not.toContain("actions/upload-artifact")
+    const uploads = (
+      Bun.YAML.parse(ciWorkflow).jobs["e2e-smoke-shard"].steps as Array<{
+        uses?: string
+        with?: Record<string, string>
+      }>
+    ).filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0]?.with?.path).toBe(
+      "${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json"
+    )
+    expect(uploads[0]?.with?.["if-no-files-found"]).toBe("error")
+    expect(playwrightConfig).toContain("retries: 0")
     expect(smokeAreaValidator).not.toContain("result.stderr.trim()")
     expect(smokeAreaValidator).not.toContain("result.stdout.trim()")
     expect(smokeAreaValidator).toContain(

@@ -302,7 +302,59 @@ The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. The existing 20-minute limit and strict execution evidence still apply.
 
-A retry-dependent pass still fails the smoke gate. The privacy-safe reporter
+A retry-dependent pass still fails the smoke gate. Required CI runs use zero
+automatic retries; a separate diagnostic rerun cannot turn a failed first
+attempt into readiness evidence. Concurrent shards and selected coverage are
+unchanged.
+
+Every progress and failure entry includes an opaque case ID derived from
+Playwright's test identity. Parameterized cases at the same source line retain
+distinct IDs even when their titles are redacted. Compare IDs on the same
+tested commit; renaming or moving a test can change its identity.
+
+Each shard retains a seven-day `smoke-evidence-<shard>-<attempt>` artifact. Its
+title-free JSON includes source/base/tested SHAs, project and area, case IDs,
+first-attempt outcomes and duration buckets, fixed failure categories, repository
+locations, and allowlisted diagnostics. It is constructed from approved fields
+and scanned before writing. Raw reports, browser output, screenshots, traces,
+step titles, and attachments are never uploaded. An artifact records observed
+execution; the separate manifest/SHA/first-attempt verifier remains the gate.
+
+Schema version 2 retains timing only as fixed duration buckets: `under-1s`,
+`1-5s`, `5-15s`, `15-30s`, `30-60s`, `1-5m`, `5-15m`, and `15m-plus`.
+Lower bounds are inclusive and upper bounds exclusive; invalid durations use
+`unknown`. This applies to setup, execution, each attempt, and diagnostic
+elapsed/phase/slowest times. The artifact serializer rejects exact duration
+fields. Exact durations remain in the transient verifier report and existing
+progress output, which are not uploaded as artifacts.
+
+`reporterSetupBucket` measures reporter construction through the first test start;
+it includes subsequent discovery and server startup, not job queueing, container
+setup or dependency installation. `executionBucket` measures first test start
+through reporter completion, including teardown. A startup failure has zero
+execution time, represented as `under-1s`. Use Actions job/step timestamps for the complete critical path
+and combined runner-minutes; do not add overlapping wall-clock intervals.
+
+Failures correlate the primary result error with the latest matching leaf step
+and retain the last completed boundary before that step. This avoids attributing
+equal error contents to an earlier recovered operation or a propagated parent.
+Error contents are compared only in memory and are never retained. Categories identify observations such as assertion,
+timeout, fixture or browser operation, not a proven root cause. Unknown remains
+unknown. Surface audits also record a boolean when WebKit reports a network-process
+crash through a WebSocket error; page-crash events and browser stderr may miss
+that failure. The socket error text is never retained. Reproduction commands target the source group and browser with one
+worker and no retries; a parameterized source line can run several cases.
+Check out the recorded tested SHA, match the CI browser image, use fresh app
+servers, and match the case ID to distinguish those cases. Local results do not
+replace hosted Linux/WebKit or physical-device evidence.
+
+The direct-route surface audit uses a fresh browser context for each route,
+with the same project/device options, signer and theme setup, and assertions.
+This isolates route shells from WebKit network-process failures observed during
+repeated document replacement. Navigation/history and cross-route state tests
+retain their own shared-context behavior. No failed navigation is retried.
+
+The privacy-safe reporter
 retains allowlisted footer geometry and product-submit readiness categories for
 the corresponding fixtures, including the failed first attempt. It drops raw
 annotations, form values, identities, message content, and error text. Extend

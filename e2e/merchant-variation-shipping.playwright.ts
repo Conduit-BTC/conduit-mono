@@ -344,13 +344,18 @@ test("variation measurements require explicit sharing and preserve independent a
   await parent.getByLabel("Width", { exact: true }).fill("10")
   await parent.getByLabel("Height", { exact: true }).fill("5")
   await dialog.getByRole("button", { name: "Add by URL" }).click()
-  await dialog
-    .getByLabel("Primary image URL")
-    .fill("https://media.conduit.market/variation-shipping.png")
+  const imageUrl = dialog.getByLabel("Primary image URL")
+  // The image field receives focus on the next frame; finish that handoff
+  // before entering tags so it cannot steal their input.
+  await expect(imageUrl).toBeFocused()
+  await imageUrl.fill("https://media.conduit.market/variation-shipping.png")
   const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
   for (const tag of ["shipping", "variation", "test"]) {
     await tags.fill(tag)
     await tags.press("Enter")
+    await expect(
+      dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+    ).toBeVisible()
   }
   await dialog
     .getByRole("checkbox", { name: /This product has options/ })
@@ -386,6 +391,9 @@ test("variation measurements require explicit sharing and preserve independent a
   await expect(publish).toBeDisabled()
   await large.getByLabel("Format", { exact: true }).click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await expect(large.getByLabel("Format", { exact: true })).toHaveText(
+    "Digital"
+  )
   await expect(publish).toBeEnabled()
   const useTable = small.getByRole("checkbox", { name: "Use table" })
   const variationPrice = small.locator("#product-variation-shipping-0")
