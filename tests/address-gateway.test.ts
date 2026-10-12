@@ -21,6 +21,7 @@ import {
   addressNameRequestMessage,
   addressNameRequestPayload,
   addressRequestHash,
+  decodeAddressNameRequestResponse,
   verifyAddressRequestAuthority,
 } from "../packages/core/src/wallets/address-name-request"
 
@@ -244,6 +245,46 @@ function fixture() {
   }
 }
 describe("approved-name gateway", () => {
+  test("signed record absence is distinct from a missing status route", async () => {
+    const f = fixture()
+    const absent = await f.handle(
+      f.nameRequest(`${ADDRESS_REQUEST_PATH}/status`),
+      []
+    )
+    expect(absent.status).toBe(404)
+    expect(await decodeAddressNameRequestResponse(absent)).toBe("not_received")
+
+    const missingRoute = await f.handle(
+      f.nameRequest(`${ADDRESS_REQUEST_PATH}/missing`),
+      []
+    )
+    expect(missingRoute.status).toBe(404)
+    expect(await decodeAddressNameRequestResponse(missingRoute)).toBe("pending")
+    expect(
+      await decodeAddressNameRequestResponse(
+        new Response("<html>missing</html>", { status: 404 })
+      )
+    ).toBe("pending")
+    expect(
+      await decodeAddressNameRequestResponse(
+        Response.json({ status: "pending" }, { status: 404 })
+      )
+    ).toBe("pending")
+    expect(
+      await decodeAddressNameRequestResponse(
+        Response.json({ status: "not_received", other: true }, { status: 404 })
+      )
+    ).toBe("pending")
+    for (const status of [
+      "received",
+      "pending",
+      "approved",
+      "declined",
+    ] as const)
+      expect(
+        await decodeAddressNameRequestResponse(Response.json({ status }))
+      ).toBe(status)
+  })
   test("shared address client registers with both approved account and Spark proofs", async () => {
     const f = fixture()
     const client = new BreezLightningAddressClient({

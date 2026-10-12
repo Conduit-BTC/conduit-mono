@@ -4,6 +4,7 @@ import {
   ADDRESS_REQUEST_PATH,
   addressNameRequestPayload,
   addressRequestHash,
+  decodeAddressNameRequestResponse,
   type AddressNameRequestStatus,
 } from "../wallets/address-name-request"
 import type { AccountSignerOperationOptions } from "../protocol/nostr-event-signer"
@@ -1658,24 +1659,9 @@ export function useWallets(
           // exact original wallet-signed payload before reporting uncertainty.
           result = await send(true)
         }
-        if (!result.ok) {
-          assertWalletSignerCurrent(signer)
-          return input.check && result.status === 404
-            ? "not_received"
-            : "pending"
-        }
-        const value: unknown = await result.json()
+        const status = await decodeAddressNameRequestResponse(result)
         assertWalletSignerCurrent(signer)
-        const status =
-          value && typeof value === "object"
-            ? (value as Record<string, unknown>).status
-            : undefined
-        if (
-          typeof status === "string" &&
-          ["received", "pending", "approved", "declined"].includes(status)
-        )
-          return status as AddressNameRequestStatus
-        return "unavailable"
+        return status
       } catch {
         assertWalletSignerCurrent(signer)
         return "pending"

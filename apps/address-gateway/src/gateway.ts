@@ -195,7 +195,7 @@ async function nameRequest(
   )
     return response({ status: "invalid" }, 409)
   if (path.endsWith("/status") || previous) {
-    if (!previous) return response({ status: "pending" }, 404)
+    if (!previous) return response({ status: "not_received" }, 404)
     const approved = names.find(
       (n) =>
         n.name === value.desiredName &&

@@ -26,6 +26,37 @@ export type AddressNameRequestStatus =
   | "declined"
   | "unavailable"
 
+/** Only an explicit gateway record-absence response can release a pending request. */
+export async function decodeAddressNameRequestResponse(
+  result: Response
+): Promise<AddressNameRequestStatus> {
+  if (!result.ok && result.status !== 404) return "pending"
+  let value: unknown
+  try {
+    value = await result.json()
+  } catch {
+    return "pending"
+  }
+  if (result.status === 404)
+    return value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 1 &&
+      (value as Record<string, unknown>).status === "not_received"
+      ? "not_received"
+      : "pending"
+  const status =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>).status
+      : undefined
+  return status === "received" ||
+    status === "pending" ||
+    status === "approved" ||
+    status === "declined"
+    ? status
+    : "unavailable"
+}
+
 export function addressRequestHash(value: string): string {
   return bytesToHex(sha256(new TextEncoder().encode(value)))
 }
