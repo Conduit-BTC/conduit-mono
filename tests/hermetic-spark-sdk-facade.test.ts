@@ -400,6 +400,64 @@ it("constructs an authenticated readonly subclass synchronously and closes its l
   }
 })
 
+it("retains the initialized first-party signer without transporting its instance", async () => {
+  const { transport } = setup()
+  const initializationFields: string[][] = []
+  const sdk = createHermeticSparkSdkFacade({
+    pureSdk,
+    request: (command) => {
+      if (command.type === "wallet.open")
+        initializationFields.push(Object.keys(command.input).sort())
+      return transport.request(command)
+    },
+  })
+  const signer = new sdk.DefaultSparkSigner()
+  let wallet: InstanceType<typeof sdk.SparkWallet> | undefined
+  try {
+    wallet = (
+      await sdk.SparkWallet.initialize({
+        mnemonicOrSeed: MNEMONIC,
+        accountNumber: 0,
+        options: { network: "REGTEST", log: false },
+        signer,
+      })
+    ).wallet
+    const identity = Buffer.from(await signer.getIdentityPublicKey()).toString(
+      "hex"
+    )
+    expect(await wallet.getIdentityPublicKey()).toBe(identity)
+    expect(initializationFields).toEqual([
+      ["accountNumber", "mnemonicOrSeed", "options"],
+    ])
+    expect(await wallet.getBalance()).toMatchObject({ balance: 0n })
+    await wallet.cleanup()
+    await expect(wallet.getBalance()).rejects.toThrow()
+  } finally {
+    await wallet?.cleanup()
+    await transport.close()
+  }
+})
+
+it("retains the real pure viewer identity derivation without opening a native session", async () => {
+  const { sdk, trace, transport } = setup()
+  try {
+    expect(sdk.deriveViewerIdentityPublicKey).toBe(
+      pureSdk.deriveViewerIdentityPublicKey
+    )
+    const identity = await sdk.deriveViewerIdentityPublicKey(
+      { network: "REGTEST", log: false },
+      MNEMONIC,
+      0
+    )
+    expect(
+      typeof identity === "string" && /^[0-9a-f]{66}$/.test(identity)
+    ).toBe(true)
+    expect(trace).toEqual([])
+  } finally {
+    await transport.close()
+  }
+})
+
 it("composes the real Market default loader and Merchant recovery opener without live native I/O", async () => {
   const child = Bun.spawn(
     [

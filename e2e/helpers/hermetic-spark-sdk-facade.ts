@@ -14,6 +14,7 @@ import { OBSERVATION_METHODS } from "./hermetic-spark-transport-types"
 type PureSdk = Pick<
   typeof import("../../apps/market/node_modules/@buildonspark/spark-sdk"),
   | "DefaultSparkSigner"
+  | "deriveViewerIdentityPublicKey"
   | "UUID"
   | "SparkWalletEvent"
   | "SparkValidationError"
@@ -30,6 +31,9 @@ type PureSdk = Pick<
   | "isValidSparkAddress"
 >
 type NativeConfig = { network?: string; log?: boolean }
+type WalletInitialization = Parameters<SparkNativeModule["initialize"]>[0] & {
+  signer?: InstanceType<PureSdk["DefaultSparkSigner"]>
+}
 type ReaderSigner = Pick<
   InstanceType<PureSdk["DefaultSparkSigner"]>,
   "getIdentityPublicKey" | "signSchnorrWithIdentityKey"
@@ -121,15 +125,18 @@ export function createHermeticSparkSdkFacade(input: {
     }
     static async initialize<T extends SparkWallet>(
       this: new (options?: NativeConfig, signer?: unknown) => T,
-      request: Parameters<SparkNativeModule["initialize"]>[0]
+      request: WalletInitialization
     ): Promise<{ wallet: T }> {
-      const wallet = new this(request.options)
+      const wallet = new this(request.options, request.signer)
       await wallet.initializeNative(request)
       return { wallet }
     }
     private async initializeNative(
       request: Parameters<SparkNativeModule["initialize"]>[0]
     ) {
+      // Supplying the initialized wallet's signer is not query-only construction.
+      // Direct signer constructors retain their restricted observation behavior.
+      this.#observationSigner = undefined
       // Mirror the SDK's initialized signer so its real adapter subclass can
       // authenticate a readonly session. The runner independently verifies the
       // resulting identity challenge; no application proof is injected.
@@ -146,7 +153,16 @@ export function createHermeticSparkSdkFacade(input: {
       }
       const result = (await input.request({
         type: "wallet.open",
-        input: request,
+        // Only the canonical initialization fields cross the fixture transport.
+        // In particular, never serialize the process-local signer instance.
+        input: {
+          mnemonicOrSeed: request.mnemonicOrSeed,
+          accountNumber: request.accountNumber,
+          options: {
+            network: request.options.network,
+            log: request.options.log,
+          },
+        },
       })) as { handle: string }
       this.#handle = result.handle
       if (this.#closed) {
@@ -426,6 +442,7 @@ export function createHermeticSparkSdkFacade(input: {
     SparkWallet,
     SparkReadonlyClient,
     DefaultSparkSigner: input.pureSdk.DefaultSparkSigner,
+    deriveViewerIdentityPublicKey: input.pureSdk.deriveViewerIdentityPublicKey,
     UUID: input.pureSdk.UUID,
     SparkWalletEvent: input.pureSdk.SparkWalletEvent,
     SparkValidationError: input.pureSdk.SparkValidationError,
