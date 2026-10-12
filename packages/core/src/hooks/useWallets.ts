@@ -313,20 +313,28 @@ export function useWallets(
   const reload = useCallback(
     async (shouldApply: () => boolean = () => true) => {
       await reloadCoordinator.run(
-        async () => {
+        async (isCurrent) => {
           const ownerPubkey = ownerRef.current
           const nextWallets = await store.listVisible(ownerPubkey)
           const sparkManager = getSparkWalletManager()
           const openSparkRuntime = new Map<string, WalletRuntimeState>()
 
           if (sparkManager) {
-            await sparkManager.closeWalletsExcept(
-              new Set(
-                nextWallets
-                  .filter((wallet) => wallet.providerId === "spark")
-                  .map((wallet) => wallet.id)
-              )
+            // A superseded list can predate a newly registered/open wallet.
+            // Never let that old snapshot close the newer native session.
+            if (
+              isCurrent() &&
+              enabledRef.current &&
+              shouldApply() &&
+              ownerRef.current === ownerPubkey
             )
+              await sparkManager.closeWalletsExcept(
+                new Set(
+                  nextWallets
+                    .filter((wallet) => wallet.providerId === "spark")
+                    .map((wallet) => wallet.id)
+                )
+              )
             await Promise.all(
               nextWallets.map(async (wallet) => {
                 if (

@@ -1,4 +1,4 @@
-import { openWalletSetup } from "./helpers/wallet-fixture"
+import { openWalletSetup, saveWalletRecovery } from "./helpers/wallet-fixture"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
@@ -95,16 +95,22 @@ async function seedBackup(
     { core, recovery, phrase, network }
   )
 }
-async function importKnownPhrase(page: Page, addy = false) {
+async function importKnownPhrase(
+  page: Page,
+  addy = false,
+  backupEventId?: string
+) {
   await openWalletSetup(page, "Import wallet")
   await page.evaluate(
-    async ({ core, recovery, addy }) => {
+    async ({ core, recovery, addy, backupEventId }) => {
       const signer = (await import(core)).getAccountSigner()
       const service = (await import(recovery)).getAccountSparkRecovery(signer)
       const found = await service.discover(false, "mainnet")
-      const candidate = found.candidates.find(
-        (c: any) => c.source === (addy ? "addy" : "conduit_v1")
-      )
+      const candidate = backupEventId
+        ? { source: "conduit_v1", eventId: backupEventId }
+        : found.candidates.find(
+            (c: any) => c.source === (addy ? "addy" : "conduit_v1")
+          )
       const bundle = await service.restore(
         candidate,
         addy ? { network: "mainnet", accountNumber: 7 } : undefined
@@ -118,7 +124,7 @@ async function importKnownPhrase(page: Page, addy = false) {
       )!.set!.call(textarea, bundle.mnemonic)
       textarea.dispatchEvent(new Event("input", { bubbles: true }))
     },
-    { core, recovery, addy }
+    { core, recovery, addy, backupEventId }
   )
   const dialog = page.getByRole("dialog")
   await dialog.getByText("Advanced settings", { exact: true }).click()
@@ -630,7 +636,7 @@ test("parallel consumers share one native open and observe ready, lock and retry
 })
 
 for (const app of ["market", "merchant"] as const) {
-  test(`${app} device removal survives retry, account reconnect and reload until explicit import @market`, async ({
+  test(`${app} account removal survives retry, account reconnect and reload until explicit import @market`, async ({
     page,
   }) => {
     const identity = createRuntimeSignerIdentity()
@@ -650,13 +656,16 @@ for (const app of ["market", "merchant"] as const) {
       ).toBeEnabled()
       await page.getByRole("button", { name: /^Manage / }).click()
       await page
-        .getByRole("menuitem", { name: "Remove from this device", exact: true })
+        .getByRole("menuitem", {
+          name: "Remove wallet from account",
+          exact: true,
+        })
         .click()
       const confirm = page.getByRole("alertdialog")
       await expect(confirm).toContainText(
-        "This removes this wallet's registration and opening credential from this browser. Any encrypted recovery backups and saved removal choices stay in this browser. It does not delete the Portable Wallet or move its funds."
+        "This removes the wallet from the active account list across devices. Its encrypted recovery remains available independently. Removing it does not delete the underlying wallet or move funds."
       )
-      await page.evaluate(async (core) => {
+      const savedBackup = await page.evaluate(async (core) => {
         const { db, getAccountSigner } = await import(core)
         const owner = getAccountSigner().pubkey
         const state = await db.sparkRecoveryEvidence.get(owner)
@@ -664,12 +673,40 @@ for (const app of ["market", "merchant"] as const) {
           owner,
           walletId: (window as any).__walletLifecycle.wallets.portableWallets[0]
             .id,
-          records: JSON.stringify(state.records),
+          backups: JSON.stringify(
+            state.records
+              .filter((record: any) =>
+                record.event.tags.some(
+                  (tag: string[]) =>
+                    tag[0] === "d" &&
+                    tag[1].startsWith("conduit:spark:wallet:v1:")
+                )
+              )
+              .map((record: any) => record.event)
+          ),
+        }
+        const walletId = (window as any).__removalBefore.walletId
+        const credential = JSON.parse(
+          (await db.walletCredentials.get(walletId)).credential
+        )
+        const backup = state.records.find((record: any) =>
+          record.event.tags.some(
+            (tag: string[]) =>
+              tag[0] === "d" && tag[1] === "conduit:spark:wallet:v1:" + walletId
+          )
+        )
+        return {
+          walletId,
+          identityKey: credential.identityKey,
+          eventId: backup.event.id,
         }
       }, core)
       await confirm.getByRole("switch").check()
       await confirm
-        .getByRole("button", { name: "Remove from this device", exact: true })
+        .getByRole("button", {
+          name: "Remove wallet from account",
+          exact: true,
+        })
         .click()
       await expect(confirm).toHaveCount(0)
       expect(
@@ -684,7 +721,17 @@ for (const app of ["market", "merchant"] as const) {
             )),
             recoveryRetained:
               state.records.length > 0 &&
-              JSON.stringify(state.records) === before.records,
+              JSON.stringify(
+                state.records
+                  .filter((record: any) =>
+                    record.event.tags.some(
+                      (tag: string[]) =>
+                        tag[0] === "d" &&
+                        tag[1].startsWith("conduit:spark:wallet:v1:")
+                    )
+                  )
+                  .map((record: any) => record.event)
+              ) === before.backups,
             removalRetained: state.removedWalletIds.includes(before.walletId),
           }
         }, core)
@@ -724,23 +771,38 @@ for (const app of ["market", "merchant"] as const) {
           opens: (window as any).__walletProbe.opens,
         }))
       ).toEqual({ count: 0, opens: 0 })
-      await importKnownPhrase(page)
+      await importKnownPhrase(page, false, savedBackup.eventId)
       await expect(
         page.getByRole("button", { name: "Send", exact: true })
       ).toBeEnabled()
       expect(
         await page.evaluate(
-          async ({ core, journal }) => {
-            const signer = (await import(core)).getAccountSigner()
-            return (
-              await new (await import(journal)).DexieSparkRecoveryStore().load(
-                signer.pubkey
-              )
-            ).removedWalletIds.length
+          async ({ core, journal, savedBackup }) => {
+            const { db, getAccountSigner } = await import(core)
+            const signer = getAccountSigner()
+            const history = await new (
+              await import(journal)
+            ).DexieSparkRecoveryStore().load(signer.pubkey)
+            const wallet = (window as any).__walletLifecycle.wallets
+              .portableWallets[0]
+            const credential = JSON.parse(
+              (await db.walletCredentials.get(wallet.id)).credential
+            )
+            return {
+              oldRemovalRetained: history.removedWalletIds.includes(
+                savedBackup.walletId
+              ),
+              newRegistration: wallet.id !== savedBackup.walletId,
+              sameIdentity: credential.identityKey === savedBackup.identityKey,
+            }
           },
-          { core, journal }
+          { core, journal, savedBackup }
         )
-      ).toBe(0)
+      ).toEqual({
+        oldRemovalRetained: true,
+        newRegistration: true,
+        sameIdentity: true,
+      })
     } finally {
       disposeRuntimeSignerIdentity(identity)
     }
@@ -761,22 +823,7 @@ test("foreign-network evidence allows active-network creation and survives subse
     await seedBackup(page, "regtest")
     for (let index = 0; index < 2; index++) {
       await openWalletSetup(page, "Create wallet")
-      const dialog = page.getByRole("dialog")
-      await expect(
-        dialog.getByRole("heading", { name: "Save your recovery details" })
-      ).toBeVisible()
-      await dialog
-        .getByLabel(
-          "I saved the phrase, Spark account number and network somewhere private"
-        )
-        .check()
-      const address = dialog.getByRole("button", {
-        name: "Get conduit.cash address",
-        exact: true,
-      })
-      if (await address.count()) await address.click()
-      await dialog.getByRole("button", { name: "Done", exact: true }).click()
-      await expect(dialog).toHaveCount(0)
+      await saveWalletRecovery(page, false)
     }
     expect(
       await page.evaluate(() => ({
@@ -2098,7 +2145,7 @@ for (const app of ["market", "merchant"] as const) {
 }
 
 for (const failure of ["none", "receive", "account"] as const) {
-  test(`recovered main choice commits both defaults together after ${failure} failure @market`, async ({
+  test(`recovered main choice seeds empty local defaults atomically after ${failure} failure @market`, async ({
     page,
   }) => {
     const identity = createRuntimeSignerIdentity()
@@ -2129,7 +2176,7 @@ for (const failure of ["none", "receive", "account"] as const) {
             signer
           )
           const discovery = await service.discover(false, "mainnet")
-          await service.prepare(
+          const candidate = await service.prepare(
             {
               mnemonic: (await import(phrase)).generateSparkMnemonic(),
               network: "mainnet",
@@ -2138,6 +2185,12 @@ for (const failure of ["none", "receive", "account"] as const) {
             undefined,
             discovery.lineageRootEventId
           )
+          await service.deliver(candidate.eventId, { priority: "foreground" })
+          const membership = await service.prepareRegistry("mainnet", {
+            type: "add",
+            walletId: candidate.walletId!,
+          })
+          await service.deliver(membership, { priority: "foreground" })
         },
         { core, recovery, phrase }
       )
@@ -2164,6 +2217,15 @@ for (const failure of ["none", "receive", "account"] as const) {
           )
           if (!candidate) throw new Error("Second recovery candidate missing")
           await service.prepareMain(candidate)
+          // A recovered account choice seeds an empty device; existing local
+          // spending and receiving preferences are deliberately preserved.
+          for (const wallet of await store.list()) {
+            await store.put({
+              ...wallet,
+              defaultIntents: [],
+              defaultIntentsByScope: {},
+            })
+          }
           const snapshot = async () =>
             JSON.stringify(
               (await store.list()).map((w: any) => ({

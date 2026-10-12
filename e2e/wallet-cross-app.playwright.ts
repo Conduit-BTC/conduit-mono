@@ -759,13 +759,23 @@ test("simultaneous setup across origins retains conflicts and never creates anot
       )
       const before = (await wallets(page)).sort()
       await openWalletSetup(page, "Create wallet")
-      await expect(
-        page
-          .getByRole("dialog")
-          .getByRole("status")
-          .filter({ hasText: "recovery is incomplete" })
-      ).toBeVisible()
+      const blockedCreation = page.getByRole("dialog").getByRole("status")
+      await expect(blockedCreation).toHaveText(
+        "Existing wallet backups need explicit recovery before creating another wallet."
+      )
+      const opens = await page.evaluate(
+        () => (window as any).__walletProbe.opens
+      )
+      await page
+        .getByRole("button", { name: "Retry creation", exact: true })
+        .click()
+      await expect(blockedCreation).toHaveText(
+        "Existing wallet backups need explicit recovery before creating another wallet."
+      )
       expect((await wallets(page)).sort()).toEqual(before)
+      expect(
+        await page.evaluate(() => (window as any).__walletProbe.opens)
+      ).toBe(opens)
       await page.getByRole("button", { name: "Cancel", exact: true }).click()
     }
   } finally {
