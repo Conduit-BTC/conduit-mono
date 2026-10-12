@@ -743,7 +743,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .click()
     phase("foreign_select_default")
     const foreignMenuItem = foreignPreferences.getByRole("button", {
-      name: "Default for merchant invoices",
+      name: "Make default for merchant invoices",
       exact: true,
     })
     foreignMenuObservation.foreignMenuVisibleBeforeClick =
@@ -769,7 +769,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       merchantPage
         .getByRole("heading", { name: "Foreign NWC", exact: true })
         .locator("..")
-        .getByText("Main wallet", { exact: true })
+        .getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
     phase("receiving_wallet")
     await wallet.configureMerchantConnection(async (connectionString) => {
@@ -822,7 +822,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     phase("receiving_select_default")
     await receivingPreferences
       .getByRole("button", {
-        name: "Default for merchant invoices",
+        name: "Make default for merchant invoices",
         exact: true,
       })
       .click()
@@ -832,7 +832,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       merchantPage
         .getByRole("heading", { name: "Commerce NWC", exact: true })
         .locator("..")
-        .getByText("Main wallet", { exact: true })
+        .getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
 
     phase("publish_product")

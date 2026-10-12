@@ -48,6 +48,7 @@ import {
 import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
 import { parseSparkRecoveryChoiceAddress } from "../wallets/spark-recovery-address"
+import { isSparkWalletRegistryDTag } from "../wallets/spark-wallet-registry"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -306,7 +307,8 @@ function assertRelayAuthenticationConfiguration(
           (tag) =>
             tag[0] === "d" &&
             (tag[1]?.startsWith("conduit:spark:wallet:v1:") ||
-              !!parseSparkRecoveryChoiceAddress(tag[1]))
+              !!parseSparkRecoveryChoiceAddress(tag[1]) ||
+              isSparkWalletRegistryDTag(tag[1]))
         ))
     ) ||
     !input.exclusiveRelayUrls ||

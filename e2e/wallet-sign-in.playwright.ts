@@ -240,7 +240,7 @@ test("cached signer wallet stays isolated across two identities and returns unch
 
 for (const size of [
   { name: "desktop", width: 1280, height: 1000 },
-  { name: "mobile", width: 390, height: 844 },
+  { name: "mobile", width: 320, height: 844 },
 ]) {
   test(`${size.name} custom-name form distinguishes uncertain submission, receipt and manual approval @market`, async ({
     page,
@@ -259,20 +259,44 @@ for (const size of [
           const host = document.createElement("div")
           host.id = "address-request-ui-test"
           document.body.replaceChildren(host)
+          const challengeContainers = new Map<string, HTMLElement>()
           Object.assign(window, {
             turnstile: {
               render(_node: HTMLElement, options: any) {
+                const ui = (window as any).__addressRequestUi
+                ui.challenge = {
+                  size: options.size,
+                  appearance: options.appearance,
+                }
+                const widget = document.createElement("div")
+                widget.dataset.widgetSize = options.size
+                widget.dataset.appearance = options.appearance
+                widget.style.width =
+                  options.size === "compact" ? "150px" : "300px"
+                widget.style.height =
+                  options.size === "compact" ? "140px" : "65px"
+                _node.append(widget)
+                challengeContainers.set("controlled", _node)
                 queueMicrotask(() => options.callback("controlled-challenge"))
                 return "controlled"
               },
-              remove() {},
+              remove(id: string) {
+                challengeContainers.get(id)?.replaceChildren()
+                challengeContainers.delete(id)
+              },
             },
           })
-          const requests: string[] = []
+          const requests: Array<{
+            requestId: string
+            desiredName: string
+            note: string
+            check: boolean
+          }> = []
           let approvals = 0
           Object.assign(window, {
             __addressRequestUi: {
               requests,
+              challenge: null,
               get approvals() {
                 return approvals
               },
@@ -285,12 +309,26 @@ for (const size of [
               siteKey: "controlled-public-site-key",
               async submit(
                 _id: string,
-                value: { requestId: string; check?: boolean }
+                value: {
+                  requestId: string
+                  desiredName: string
+                  note: string
+                  check?: boolean
+                }
               ) {
-                requests.push(value.requestId)
-                return ["pending", "not_received", "received", "approved"][
-                  requests.length - 1
-                ]
+                requests.push({ ...value, check: value.check === true })
+                if (requests.length === 1)
+                  throw new Error("controlled transport failure")
+                if (value.check) {
+                  const checks = requests.filter(
+                    (request) => request.check
+                  ).length
+                  return checks < 3 ? "not_received" : "approved"
+                }
+                const submissions = requests.filter(
+                  (request) => !request.check
+                ).length
+                return submissions === 2 ? "unavailable" : "received"
               },
               async activate(name: string) {
                 approvals++
@@ -313,18 +351,53 @@ for (const size of [
         }
       )
       await page.getByLabel("Desired name", { exact: true }).fill("Review-Name")
-      await page
-        .getByLabel("Note for the review team (optional)", { exact: true })
-        .fill("Controlled optional note")
       await expect(
         page.getByLabel("Connected public identity", { exact: true })
-      ).toHaveAttribute("readonly", "")
+      ).toHaveCount(0)
+      await expect(
+        page.getByLabel("Note for the review team (optional)")
+      ).toHaveCount(0)
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const ui = (window as any).__addressRequestUi
+            const widget = document.querySelector(
+              "[data-widget-size]"
+            ) as HTMLElement | null
+            return {
+              size: widget?.dataset.widgetSize,
+              appearance: widget?.dataset.appearance,
+              width: widget?.getBoundingClientRect().width,
+              height: widget?.getBoundingClientRect().height,
+              widgetFits: widget
+                ? widget.getBoundingClientRect().right <= innerWidth
+                : false,
+              formFits: document.documentElement.scrollWidth <= innerWidth,
+              challenge: ui.challenge,
+            }
+          })
+        )
+        .toEqual({
+          size: "compact",
+          appearance: "interaction-only",
+          width: 150,
+          height: 140,
+          widgetFits: true,
+          formFits: true,
+          challenge: { size: "compact", appearance: "interaction-only" },
+        })
       await page
-        .getByRole("button", { name: "Submit name request", exact: true })
+        .getByRole("button", { name: "Request name", exact: true })
         .click()
       await expect(page.getByRole("status")).toContainText(
         "Submission is not confirmed"
       )
+      await expect(page.getByRole("alert")).toContainText(
+        "Submission status is uncertain"
+      )
+      await expect(
+        page.getByLabel("Desired name", { exact: true })
+      ).toBeDisabled()
       await expect(
         page.getByRole("button", {
           name: "Activate approved address",
@@ -337,8 +410,32 @@ for (const size of [
       await expect(page.getByRole("status")).toContainText(
         "No submission was found"
       )
+      await expect(
+        page.getByLabel("Desired name", { exact: true })
+      ).toBeEnabled()
       await page
-        .getByRole("button", { name: "Submit name request", exact: true })
+        .getByRole("button", { name: "Request name", exact: true })
+        .click()
+      await expect(page.getByRole("status")).toContainText(
+        "Requests are temporarily unavailable"
+      )
+      await expect(
+        page.getByLabel("Desired name", { exact: true })
+      ).toBeDisabled()
+      await page
+        .getByRole("button", { name: "Check request status", exact: true })
+        .click()
+      await expect(page.getByRole("status")).toContainText(
+        "No submission was found"
+      )
+      await expect(
+        page.getByLabel("Desired name", { exact: true })
+      ).toBeEnabled()
+      await page
+        .getByLabel("Desired name", { exact: true })
+        .fill("Followup-Name")
+      await page
+        .getByRole("button", { name: "Request name", exact: true })
         .click()
       await expect(page.getByRole("status")).toContainText("Request received")
       await expect(page.getByRole("status")).toContainText(
@@ -367,19 +464,44 @@ for (const size of [
       expect(
         await page.evaluate(() => {
           const ui = (window as any).__addressRequestUi
+          const requests = ui.requests
           return {
-            sameRequest: new Set(ui.requests).size === 1,
+            firstStatusCheckReusesPayload:
+              requests[0].requestId === requests[1].requestId &&
+              requests[0].desiredName === requests[1].desiredName,
+            immutableSubmissionRetryReusesPayload:
+              requests[0].requestId === requests[2].requestId &&
+              requests[0].desiredName === requests[2].desiredName &&
+              requests[2].check === false,
+            unavailableStatusCheckReusesPayload:
+              requests[2].requestId === requests[3].requestId &&
+              requests[2].desiredName === requests[3].desiredName,
+            verifiedAbsenceAllowsEditWithNewRequestId:
+              requests[4].requestId !== requests[2].requestId &&
+              requests[4].desiredName !== requests[2].desiredName,
+            approvalCheckReusesSubmission:
+              requests[4].requestId === requests[5].requestId &&
+              requests[4].desiredName === requests[5].desiredName,
+            notesRemainEmpty: requests.every(
+              (request: any) => request.note === ""
+            ),
             activations: ui.approvals,
             fits: document.documentElement.scrollWidth <= innerWidth,
           }
         })
-      ).toEqual({ sameRequest: true, activations: 1, fits: true })
+      ).toEqual({
+        firstStatusCheckReusesPayload: true,
+        immutableSubmissionRetryReusesPayload: true,
+        unavailableStatusCheckReusesPayload: true,
+        verifiedAbsenceAllowsEditWithNewRequestId: true,
+        approvalCheckReusesSubmission: true,
+        notesRemainEmpty: true,
+        activations: 1,
+        fits: true,
+      })
       await page.screenshot({
         path: `/private/tmp/wallet-name-form-${size.name}.png`,
-        mask: [
-          page.getByLabel("Connected public identity"),
-          page.getByLabel("Note for the review team (optional)"),
-        ],
+        mask: [page.getByLabel("Desired name")],
       })
     } finally {
       disposeRuntimeSignerIdentity(identity)
@@ -671,7 +793,7 @@ test("empty profile uses the first created address only after recovery acknowled
 })
 
 for (const failure of ["none", "sdk-open", "post-open"] as const) {
-  test(`legacy migration after ${failure} retires its old encrypted copy after verification and fresh sign-in reopens with the signer @market`, async ({
+  test(`legacy migration after ${failure} retains its encrypted password fallback and fresh sign-in reopens with the signer @market`, async ({
     page,
   }) => {
     const started = performance.now()
@@ -876,7 +998,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         }, core)
       ).toEqual({
         signer: true,
-        legacy: false,
+        legacy: true,
         plaintextAbsent: true,
         account: 7,
       })
@@ -892,6 +1014,40 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
         })
       ).toHaveCount(0)
       await page.keyboard.press("Escape")
+      await page.getByLabel("Manage Legacy wallet").click()
+      await page
+        .getByRole("menuitem", { name: "Recovery details", exact: true })
+        .click()
+      const fallbackDialog = page.getByRole("dialog", {
+        name: "Recovery for Legacy wallet",
+        exact: true,
+      })
+      await fallbackDialog
+        .getByRole("button", {
+          name: "Use previous wallet password",
+          exact: true,
+        })
+        .click()
+      await expect(fallbackDialog.getByLabel("Wallet password")).toBeVisible()
+      await fallbackDialog.getByLabel("Wallet password").evaluate((input) => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value"
+        )!.set!.call(input, (window as any).__walletProbe.legacyPassword)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      await fallbackDialog
+        .getByRole("button", { name: "Show recovery phrase", exact: true })
+        .click()
+      await expect(
+        fallbackDialog.getByRole("button", {
+          name: "Copy recovery details",
+          exact: true,
+        })
+      ).toBeVisible()
+      await fallbackDialog
+        .getByRole("button", { name: "Done", exact: true })
+        .click()
       phase("fresh_signin")
       // A new document gets a fresh account session and the same encrypted local
       // wallet. The fixture controls the network layer before initialization.
@@ -917,7 +1073,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       // Dialog removal precedes its queued focus restoration. Finish that
       // handoff before opening a menu that outside focus would dismiss.
       await expect(
-        page.getByRole("button", { name: "Create wallet", exact: true })
+        page.getByRole("button", { name: "Add a wallet", exact: true })
       ).toBeFocused()
       phase("legacy_recovery")
       await page.getByLabel("Manage Legacy wallet").click()

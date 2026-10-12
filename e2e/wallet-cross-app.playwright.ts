@@ -141,7 +141,9 @@ for (const app of ["market", "merchant"] as const) {
         about: "Competing ordinary edit",
         custom: { retain: true },
       })
-      await expect(page.getByText("Main wallet", { exact: true })).toBeVisible()
+      await expect(
+        page.getByText("Default for merchant invoices", { exact: true })
+      ).toBeVisible()
       await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
       await closeDefaultWalletSession(page)
       await expect(
@@ -348,7 +350,7 @@ for (const from of ["market", "merchant"] as const) {
           target.getByLabel("Lightning address", { exact: true })
         ).toHaveValue("wallet1@breez.tips")
         await expect(
-          target.getByText("Main wallet", { exact: true })
+          target.getByText("Default for merchant invoices", { exact: true })
         ).toBeVisible()
         await expect(
           target.getByRole("button", { name: "Open wallet", exact: true })
@@ -486,7 +488,7 @@ for (const size of [
               "Mainnet uses real bitcoin. Save your recovery details before receiving funds.",
               { exact: true }
             )
-          ).toBeVisible()
+          ).toHaveCount(0)
           expect(
             await source.evaluate(() => (window as any).__walletProbe.opens)
           ).toBe(0)
@@ -530,6 +532,9 @@ for (const size of [
           await target.screenshot({
             path: "/tmp/635-" + to + "-" + size.name + "-shared-wallet.png",
             mask: [
+              target.locator("input, textarea, .font-mono, .tabular-nums"),
+              target.getByText(/^Receiving address:/),
+              target.getByText(/^[\d,]+ sats$/),
               target.getByLabel(
                 to === "market"
                   ? "Open account menu"
@@ -628,6 +633,9 @@ for (const size of [
             path:
               "/tmp/635-" + to + "-" + size.name + "-import-shared-wallet.png",
             mask: [
+              target.locator("input, textarea, .font-mono, .tabular-nums"),
+              target.getByText(/^Receiving address:/),
+              target.getByText(/^[\d,]+ sats$/),
               target.getByLabel(
                 to === "market"
                   ? "Open account menu"
@@ -670,7 +678,7 @@ test("simultaneous setup across origins retains conflicts and never creates anot
     }
     await Promise.all(
       pages.map((page) =>
-        page.getByRole("button", { name: "Create wallet", exact: true }).click()
+        page.getByRole("button", { name: "Add a wallet", exact: true }).click()
       )
     )
     await Promise.all(pages.map((page) => saved(page, false)))
@@ -728,7 +736,7 @@ for (const app of ["market", "merchant"] as const) {
             "Mainnet uses real bitcoin. Save your recovery details before receiving funds.",
             { exact: true }
           )
-        ).toBeVisible()
+        ).toHaveCount(0)
         expect(
           await page.evaluate(() => (window as any).__walletProbe.opens)
         ).toBe(0)

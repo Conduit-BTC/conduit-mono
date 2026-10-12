@@ -204,7 +204,7 @@ describe("wallet signer authority", () => {
   })
 })
 
-it("reads old signer records but refuses their retired password path", async () => {
+it("reads signer records and retains their previous-password fallback", async () => {
   const { encryptSparkMnemonic } =
     await import("../apps/market/src/lib/spark-recovery")
   const { recoverStoredSparkMnemonic } =
@@ -231,11 +231,11 @@ it("reads old signer records but refuses their retired password path", async () 
   expect((await recoverStoredSparkMnemonic(saved, binding)).mnemonic).toBe(
     mnemonic
   )
-  await expect(
-    recoverStoredSparkMnemonic(saved, binding, password)
-  ).rejects.toThrow("Nostr identity")
+  expect(
+    (await recoverStoredSparkMnemonic(saved, binding, password)).mnemonic
+  ).toBe(mnemonic)
   install()
-  await expect(
-    recoverStoredSparkMnemonic(saved, binding, password)
-  ).rejects.toThrow("Nostr identity")
+  expect(
+    (await recoverStoredSparkMnemonic(saved, binding, password)).mnemonic
+  ).toBe(mnemonic)
 })

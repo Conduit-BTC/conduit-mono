@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { pubkeyToNpub, type BreezAddressState } from "@conduit/core"
+import { type BreezAddressState } from "@conduit/core"
 import {
   ADDRESS_REQUEST_ACTION,
   type AddressNameRequestStatus,
 } from "@conduit/core/wallets/address-name-request"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { Button, Input, Label, Textarea } from "../index"
+import { Button, Input } from "../index"
 
 interface ChallengeApi {
   render(node: HTMLElement, options: Record<string, unknown>): string
@@ -22,19 +22,28 @@ function loadChallenge(): Promise<ChallengeApi> {
     script.src =
       "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
     script.async = true
+    script.defer = true
+    let settled = false
     const fail = () => {
-      clearTimeout(timeout)
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
       script.remove()
       loading = undefined
       reject(new Error("Security check unavailable."))
     }
-    const timeout = setTimeout(fail, 20_000)
+    const timeout = window.setTimeout(fail, 20_000)
     script.onerror = fail
     script.onload = () => {
-      clearTimeout(timeout)
+      if (settled) return
+      window.clearTimeout(timeout)
       const api = (window as ChallengeWindow).turnstile
-      if (api) resolve(api)
-      else fail()
+      if (api) {
+        settled = true
+        resolve(api)
+      } else {
+        fail()
+      }
     }
     document.head.append(script)
   })
@@ -68,7 +77,8 @@ function AddressChallenge({
           sitekey: siteKey,
           action: ADDRESS_REQUEST_ACTION,
           theme: "auto",
-          size: "flexible",
+          size: "compact",
+          appearance: "interaction-only",
           callback: (token: string) => {
             if (current) {
               setFailed(false)
@@ -87,8 +97,8 @@ function AddressChallenge({
     }
   }, [siteKey, onToken, retry])
   return (
-    <div>
-      <div ref={container} />
+    <div className="max-w-full">
+      <div ref={container} className="w-[150px] max-w-full" />
       {failed && (
         <Button
           size="sm"
@@ -103,64 +113,32 @@ function AddressChallenge({
 }
 function AddressRequestFields({
   walletId,
-  ownerPubkey,
   name,
-  note,
   disabled,
   onName,
-  onNote,
 }: {
   walletId: string
-  ownerPubkey: string
   name: string
-  note: string
   disabled: boolean
   onName(value: string): void
-  onNote(value: string): void
 }) {
   return (
-    <>
-      {" "}
-      <div className="grid gap-1">
-        <Label htmlFor={`address-request-name-${walletId}`}>Desired name</Label>
-        <div className="flex min-w-0 items-center gap-2">
-          <Input
-            id={`address-request-name-${walletId}`}
-            value={name}
-            onChange={(event) => onName(event.target.value)}
-            autoCapitalize="none"
-            autoCorrect="off"
-            maxLength={64}
-            required
-            disabled={disabled}
-            aria-describedby={`address-request-status-${walletId}`}
-          />
-          <span className="shrink-0">@conduit.cash</span>
-        </div>
-      </div>
-      <div className="grid gap-1">
-        <Label htmlFor={`address-request-owner-${walletId}`}>
-          Connected public identity
-        </Label>
-        <Input
-          id={`address-request-owner-${walletId}`}
-          value={pubkeyToNpub(ownerPubkey)}
-          readOnly
-        />
-      </div>
-      <div className="grid gap-1">
-        <Label htmlFor={`address-request-note-${walletId}`}>
-          Note for the review team (optional)
-        </Label>
-        <Textarea
-          id={`address-request-note-${walletId}`}
-          maxLength={1000}
-          value={note}
-          disabled={disabled}
-          onChange={(event) => onNote(event.target.value)}
-        />
-      </div>
-    </>
+    <div className="flex min-w-0 flex-1 basis-72 items-center gap-2">
+      <Input
+        id={`address-request-name-${walletId}`}
+        aria-label="Desired name"
+        value={name}
+        onChange={(event) => onName(event.target.value)}
+        autoCapitalize="none"
+        autoCorrect="off"
+        maxLength={64}
+        required
+        disabled={disabled}
+        aria-describedby={`address-request-status-${walletId}`}
+        className="min-w-0 flex-1"
+      />
+      <span className="shrink-0">@conduit.cash</span>
+    </div>
   )
 }
 
@@ -179,7 +157,6 @@ export function AddressNameRequestForm({
 }) {
   const storageKey = `conduit:address-request:v1:${ownerPubkey}:${walletId}`
   const [name, setName] = useState("")
-  const [note, setNote] = useState("")
   const [status, setStatus] = useState<AddressNameRequestStatus | null>(null)
   const [error, setError] = useState("")
   const [activationStatus, setActivationStatus] = useState("")
@@ -226,6 +203,7 @@ export function AddressNameRequestForm({
     setName(desiredName)
     setPending(true)
     setError("")
+    setStatus("pending")
     try {
       sessionStorage.setItem(
         storageKey,
@@ -234,14 +212,18 @@ export function AddressNameRequestForm({
       const next = await submit(walletId, {
         requestId: requestId.current,
         desiredName,
-        note,
+        note: "",
         token,
         check,
       })
       if (current.current) setStatus(next)
     } catch {
-      if (current.current)
-        setError("Could not check the request. Retry with the same request.")
+      if (current.current) {
+        setStatus("pending")
+        setError(
+          "Submission status is uncertain. Check request status before retrying."
+        )
+      }
     } finally {
       if (current.current) {
         setPending(false)
@@ -265,44 +247,54 @@ export function AddressNameRequestForm({
   }
   return (
     <form
-      className="grid min-w-0 gap-3 rounded-lg border border-[var(--border)] p-3"
+      className="grid min-w-0 gap-2"
       aria-busy={pending}
       onSubmit={(event) => {
         event.preventDefault()
         void run(false)
       }}
     >
-      <p className="text-pretty text-sm">
-        Names are reviewed manually. Your connected identity and wallet sign the
-        request. If approved, the name and its public identity binding are
-        published.
+      <p className="text-pretty text-sm text-[var(--text-secondary)]">
+        Get your own @conduit.cash address. Names require approval.
       </p>
-      <AddressRequestFields
-        walletId={walletId}
-        ownerPubkey={ownerPubkey}
-        name={name}
-        note={note}
-        disabled={
-          pending ||
-          (status !== null &&
-            status !== "unavailable" &&
-            status !== "not_received")
-        }
-        onName={setName}
-        onNote={setNote}
-      />
-      {(!status || status === "unavailable" || status === "not_received") &&
-        siteKey && (
-          <AddressChallenge
-            key={challengeRevision}
-            siteKey={siteKey}
-            onToken={onToken}
-          />
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <AddressRequestFields
+          walletId={walletId}
+          name={name}
+          disabled={pending || (status !== null && status !== "not_received")}
+          onName={(value) => {
+            if (
+              status === "not_received" &&
+              value.trim().toLowerCase() !== name.trim().toLowerCase()
+            ) {
+              requestId.current = null
+              try {
+                sessionStorage.removeItem(storageKey)
+              } catch {
+                setError(
+                  "Saved request status is unavailable. Check your request before submitting again."
+                )
+              }
+            }
+            setName(value)
+          }}
+        />
+        {(!status || status === "not_received") && (
+          <Button
+            size="sm"
+            type="submit"
+            disabled={pending || !token || !name.trim()}
+          >
+            Request name
+          </Button>
         )}
-      {!siteKey && !status && (
-        <p role="status" className="text-sm">
-          Name requests are not enabled in this build yet.
-        </p>
+      </div>
+      {(!status || status === "not_received") && siteKey && (
+        <AddressChallenge
+          key={challengeRevision}
+          siteKey={siteKey}
+          onToken={onToken}
+        />
       )}
       <p
         role="status"
@@ -314,7 +306,11 @@ export function AddressNameRequestForm({
           ? "Checking your signed request…"
           : status
             ? messages[status]
-            : "Submitting a request does not reserve or approve a name."}
+            : !siteKey
+              ? import.meta.env?.VITE_DEPLOYMENT_PROFILE === "production"
+                ? "Name requests are temporarily unavailable."
+                : "Preview: requests open after release."
+              : "Requests do not reserve names."}
       </p>
       {activationStatus && (
         <p role="status" className="text-sm">
@@ -326,57 +322,50 @@ export function AddressNameRequestForm({
           {error}
         </p>
       )}
-      <div className="flex flex-wrap gap-2">
-        {(!status || status === "unavailable" || status === "not_received") && (
-          <Button
-            size="sm"
-            type="submit"
-            disabled={pending || !token || !name.trim()}
-          >
-            Submit name request
-          </Button>
-        )}
-        {status && (
-          <Button
-            size="sm"
-            type="button"
-            variant="outline"
-            disabled={pending}
-            onClick={() => void run(true)}
-          >
-            Check request status
-          </Button>
-        )}
-        {status === "approved" && (
-          <Button
-            size="sm"
-            type="button"
-            disabled={pending}
-            onClick={async () => {
-              setPending(true)
-              setError("")
-              try {
-                const result = await activate(name)
-                if (current.current)
-                  setActivationStatus(
-                    result.status === "registered" && result.username === name
-                      ? "Your approved address is ready."
-                      : "Your existing address is preserved. Address activation needs attention."
-                  )
-              } catch {
-                if (current.current)
-                  setError(
-                    "Address activation is pending. Retry on this wallet."
-                  )
-              } finally {
-                if (current.current) setPending(false)
-              }
-            }}
-          >
-            Activate approved address
-          </Button>
-        )}
-      </div>
+      {status && (
+        <div className="flex flex-wrap gap-2">
+          {status && (
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={() => void run(true)}
+            >
+              Check request status
+            </Button>
+          )}
+          {status === "approved" && (
+            <Button
+              size="sm"
+              type="button"
+              disabled={pending}
+              onClick={async () => {
+                setPending(true)
+                setError("")
+                try {
+                  const result = await activate(name)
+                  if (current.current)
+                    setActivationStatus(
+                      result.status === "registered" && result.username === name
+                        ? "Your approved address is ready."
+                        : "Your existing address is preserved. Address activation needs attention."
+                    )
+                } catch {
+                  if (current.current)
+                    setError(
+                      "Address activation is pending. Retry on this wallet."
+                    )
+                } finally {
+                  if (current.current) setPending(false)
+                }
+              }}
+            >
+              Activate approved address
+            </Button>
+          )}
+        </div>
+      )}
     </form>
   )
 }

@@ -264,8 +264,7 @@ for (const app of ["market", "merchant"] as const) {
           label: "Legacy fence",
         })
       await expect(signedOutPage).toHaveTitle(/Wallets/)
-      await signedOutPage.getByText("Add a wallet", { exact: true }).click()
-      for (const name of ["Create wallet", "Import wallet"]) {
+      for (const name of ["Add a wallet", "Import wallet"]) {
         await expect(
           signedOutPage.getByRole("button", { name, exact: true })
         ).toBeDisabled()
@@ -1720,7 +1719,10 @@ for (const app of ["market", "merchant"] as const) {
         .first()
         .click()
       await page
-        .getByRole("menuitem", { name: "Remove from this device", exact: true })
+        .getByRole("menuitem", {
+          name: "Remove wallet from account",
+          exact: true,
+        })
         .click()
       await page.getByRole("alertdialog").locator("#remove-recovery").check()
       await replace(second)
@@ -1730,15 +1732,19 @@ for (const app of ["market", "merchant"] as const) {
         .first()
         .click()
       await page
-        .getByRole("menuitem", { name: "Remove from this device", exact: true })
+        .getByRole("menuitem", {
+          name: "Remove wallet from account",
+          exact: true,
+        })
         .click()
       await expect(
         page.getByRole("alertdialog").locator("#remove-recovery")
       ).not.toBeChecked()
       await expect(
-        page
-          .getByRole("alertdialog")
-          .getByRole("button", { name: "Remove from this device", exact: true })
+        page.getByRole("alertdialog").getByRole("button", {
+          name: "Remove wallet from account",
+          exact: true,
+        })
       ).toBeDisabled()
       await page
         .getByRole("alertdialog")

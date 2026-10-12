@@ -25,8 +25,10 @@ import {
   getMarketWalletStore,
   getMarketWalletRegistry,
   registerSparkWalletAtomically,
+  type MarketWalletStore,
 } from "./wallet-storage"
 import type { SparkRecoveryBundle } from "./spark-recovery-contract"
+import type { WalletRegistry } from "./index"
 
 const services = new WeakMap<AccountSigner, SparkRecoveryService>()
 export function getAccountSparkRecovery(
@@ -135,12 +137,120 @@ export function assertWalletCreationDiscovery(
   }
 }
 
+export function isCompleteAccountRegistryDiscovery(
+  discovery: SparkRecoveryDiscovery
+): boolean {
+  return (
+    !!discovery.registry &&
+    discovery.coverage === "complete" &&
+    !discovery.invalidCount &&
+    !discovery.unresolvedObserved &&
+    discovery.state !== "conflict" &&
+    discovery.state !== "unresolved"
+  )
+}
+
+/** Hide cached signer wallets excluded by a verified account snapshot. */
+export async function reconcileAccountWalletRegistryMembership(input: {
+  signer: AccountSigner
+  discovery: SparkRecoveryDiscovery
+  network: SparkRecoveryBundle["network"]
+  store: Pick<MarketWalletStore, "list" | "getSparkRecovery">
+  journal: Pick<
+    DexieSparkRecoveryStore,
+    "setDeviceRemoved" | "setRegistryExcluded"
+  >
+}): Promise<void> {
+  const { signer, discovery, network, store, journal } = input
+  if (!isCompleteAccountRegistryDiscovery(discovery)) return
+  const active = new Set(discovery.registry!.activeWalletIds)
+  const scoped: string[] = []
+  const excluded: string[] = []
+  for (const wallet of await store.list()) {
+    if (wallet.providerId !== "spark" || wallet.network !== network) continue
+    const recovery = await store.getSparkRecovery(wallet.id)
+    if (recovery?.type !== "signer" || recovery.ownerPubkey !== signer.pubkey)
+      continue
+    scoped.push(wallet.id)
+    if (!active.has(wallet.id)) excluded.push(wallet.id)
+  }
+  assertWalletSignerCurrent(signer)
+  await journal.setRegistryExcluded(signer.pubkey, scoped, excluded)
+  for (const walletId of discovery.registry!.removedWalletIds) {
+    assertWalletSignerCurrent(signer)
+    await journal.setDeviceRemoved(signer.pubkey, walletId, true)
+  }
+}
+
+/** Apply account Spark choices only when a device-owned choice is not active. */
+export async function applyAccountWalletRegistryDefaults(input: {
+  signer: AccountSigner
+  discovery: SparkRecoveryDiscovery
+  network: SparkRecoveryBundle["network"]
+  store: MarketWalletStore
+  registry: WalletRegistry
+}): Promise<void> {
+  const { signer, discovery, network, store, registry } = input
+  if (
+    !isCompleteAccountRegistryDiscovery(discovery) ||
+    discovery.state !== "recoverable"
+  )
+    return
+  const visible = await store.listVisible(signer.pubkey)
+  await store.transaction(async () => {
+    for (const { walletId, intent } of [
+      {
+        walletId: discovery.registry!.payInvoiceWalletId,
+        intent: "pay_invoice" as const,
+      },
+      {
+        walletId: discovery.registry!.receiveWalletId,
+        intent: "receive" as const,
+      },
+    ]) {
+      if (!walletId) continue
+      const target = visible.find(
+        (wallet) => wallet.id === walletId && wallet.network === network
+      )
+      if (!target || target.providerId !== "spark") continue
+      const targetRecovery = await store.getSparkRecovery(target.id)
+      if (
+        targetRecovery?.type !== "signer" ||
+        targetRecovery.ownerPubkey !== signer.pubkey
+      )
+        continue
+      const current = visible.find(
+        (wallet) =>
+          wallet.network === network && wallet.defaultIntents.includes(intent)
+      )
+      if (current && current.id !== target.id) {
+        const recovery =
+          current.providerId === "spark"
+            ? await store.getSparkRecovery(current.id)
+            : null
+        if (
+          recovery?.type !== "signer" ||
+          recovery.ownerPubkey !== signer.pubkey
+        )
+          continue
+      }
+      assertWalletSignerCurrent(signer)
+      await registry.setDefault(target.id, intent)
+    }
+    assertWalletSignerCurrent(signer)
+  })
+}
+
 export async function restoreAccountSparkWallets(
   signer: AccountSigner,
   discovery: SparkRecoveryDiscovery,
   network: SparkRecoveryBundle["network"],
   options: AccountSignerOperationOptions = {}
 ): Promise<Array<{ walletId: string } & SparkRecoveryBundle>> {
+  // Old backups remain discoverable for explicit import, but without the
+  // current account registry they cannot prove the wallet was not removed.
+  if (!isCompleteAccountRegistryDiscovery(discovery)) return []
+  if (!discovery.candidates.length) return []
   assertWalletSignerCurrent(signer)
   const store = getMarketWalletStore()
   const registry = getMarketWalletRegistry()
@@ -253,5 +363,20 @@ export async function backUpAccountSparkWallet(
   if (!pointer) pointer = await service.preparePrimary(candidate)
   const backup = await service.deliver(candidate.eventId)
   const primary = await service.deliver(pointer)
-  return backup.ready && primary.ready
+  if (!backup.ready || !primary.ready) return false
+  const latest = await service.discover(false, bundle.network, options)
+  if (
+    latest.coverage === "complete" &&
+    latest.state === "recoverable" &&
+    !latest.invalidCount &&
+    latest.registry?.activeWalletIds.includes(walletId)
+  )
+    return latest.registryEventId
+      ? (await service.deliver(latest.registryEventId)).ready
+      : false
+  const registryEventId = await service.prepareRegistry(bundle.network, {
+    type: "add",
+    walletId,
+  })
+  return (await service.deliver(registryEventId)).ready
 }

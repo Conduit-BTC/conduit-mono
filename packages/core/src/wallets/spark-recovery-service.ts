@@ -38,6 +38,13 @@ import {
   type SparkRecoveryBundle,
   type SparkRecoveryEnvelope,
 } from "./spark-recovery-contract"
+import {
+  isSparkWalletRegistryDTag,
+  parseSparkWalletRegistrySnapshot,
+  resolveSparkWalletRegistry,
+  sparkWalletRegistryDTag,
+  type SparkWalletRegistrySnapshot,
+} from "./spark-wallet-registry"
 
 // Operator identities are curated facts, never inferred from hostnames or NIP-11 claims.
 // Unknown user relays participate in discovery/delivery but cannot inflate redundancy.
@@ -69,7 +76,7 @@ export interface SparkRecoveryTransport {
     owner: string,
     eventId: string | undefined,
     shouldContinue: () => boolean,
-    dTag?: SparkRecoveryChoiceDTag
+    dTag?: string
   ): Promise<SparkRecoveryRead>
   publish(
     url: string,
@@ -97,6 +104,8 @@ export interface SparkRecoveryState {
   records: SparkRecoveryRecord[]
   /** Device-local decisions; never published or merged from relay events. */
   removedWalletIds?: string[]
+  /** Derived visibility cache from the last complete account registry read. */
+  registryExcludedWalletIds?: string[]
 }
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
@@ -119,6 +128,8 @@ export interface SparkRecoveryDiscovery {
   coverage: "complete" | "partial" | "unavailable"
   state: "absent_within_scope" | "recoverable" | "conflict" | "unresolved"
   candidates: SparkRecoveryCandidate[]
+  /** Validated Conduit backups before account membership filtering. */
+  validatedBackupWalletIds?: string[]
   otherNetworkCandidates?: SparkRecoveryCandidate[]
   lineageRootEventId?: string
   primaryPointerEventId?: string
@@ -129,6 +140,8 @@ export interface SparkRecoveryDiscovery {
   /** Only a bounded prerequisite for a later explicit lifecycle; never global absence. */
   unresolvedObserved: boolean
   creationEligible: boolean
+  registry?: SparkWalletRegistrySnapshot
+  registryEventId?: string
 }
 const MAX_RECORDS = 128
 // Backups and networkless legacy evidence have separate bounded budgets.
@@ -144,6 +157,10 @@ function compactSparkRecoveryChoices(
   let legacyChoices = 0
   for (const record of records) {
     const dTag = record.event.tags.find((tag) => tag[0] === "d")?.[1]
+    if (dTag && isSparkWalletRegistryDTag(dTag)) {
+      retained.push(record)
+      continue
+    }
     const choice = parseSparkRecoveryChoiceAddress(dTag)
     if (!choice?.network) {
       // A legacy coordinate can reference different networks. Preserve that
@@ -162,7 +179,11 @@ function compactSparkRecoveryChoices(
     )
       choices.set(dTag!, record)
   }
-  if (backups > MAX_RECORDS || legacyChoices > MAX_RECORDS)
+  if (
+    backups > MAX_RECORDS ||
+    legacyChoices > MAX_RECORDS ||
+    retained.length > MAX_RECORDS * 2
+  )
     throw new SparkRecoveryError("invalid_record")
   return [...retained, ...choices.values()]
 }
@@ -218,6 +239,14 @@ export function validateSparkRecoveryState(
           new Set(input.removedWalletIds).size !==
             input.removedWalletIds.length ||
           input.removedWalletIds.some(
+            (id) => typeof id !== "string" || !id.length || id.length > 128
+          ))) ||
+      (input.registryExcludedWalletIds !== undefined &&
+        (!Array.isArray(input.registryExcludedWalletIds) ||
+          input.registryExcludedWalletIds.length > MAX_RECORDS ||
+          new Set(input.registryExcludedWalletIds).size !==
+            input.registryExcludedWalletIds.length ||
+          input.registryExcludedWalletIds.some(
             (id) => typeof id !== "string" || !id.length || id.length > 128
           )))
     )
@@ -275,6 +304,9 @@ export function validateSparkRecoveryState(
       ...(input.removedWalletIds
         ? { removedWalletIds: [...input.removedWalletIds] }
         : {}),
+      ...(input.registryExcludedWalletIds
+        ? { registryExcludedWalletIds: [...input.registryExcludedWalletIds] }
+        : {}),
     }
   } catch {
     throw new SparkRecoveryError("invalid_record")
@@ -325,6 +357,9 @@ export function mergeSparkRecoveryRecords(
       unresolvedObserved: current.unresolvedObserved || unresolvedObserved,
       ...(current.removedWalletIds
         ? { removedWalletIds: current.removedWalletIds }
+        : {}),
+      ...(current.registryExcludedWalletIds
+        ? { registryExcludedWalletIds: current.registryExcludedWalletIds }
         : {}),
     },
     current.ownerPubkey
@@ -599,6 +634,178 @@ export class SparkRecoveryService {
     return event.id
   }
 
+  /** Replace one encrypted account/network snapshot after a complete bounded read. */
+  async prepareRegistry(
+    network: SparkRecoveryBundle["network"],
+    change:
+      | { type: "add"; walletId: string }
+      | {
+          type: "remove"
+          walletId: string
+          replacementPayWalletId?: string
+        }
+      | { type: "default"; intent: "pay_invoice" | "receive"; walletId: string }
+      | { type: "main"; walletId: string }
+  ): Promise<string> {
+    const discovery = await this.discover(false, network, {
+      priority: "foreground",
+    })
+    if (
+      discovery.coverage !== "complete" ||
+      discovery.invalidCount ||
+      discovery.unresolvedObserved ||
+      discovery.state === "conflict" ||
+      discovery.state === "unresolved" ||
+      discovery.candidates.some(
+        (candidate) => candidate.source === "addy" && !candidate.resolved
+      )
+    )
+      throw new SparkRecoveryError("incomplete_discovery")
+    const local = await this.load()
+    const validatedWalletIds = new Set(
+      discovery.validatedBackupWalletIds ??
+        discovery.candidates.flatMap((candidate) =>
+          candidate.source === "conduit_v1" &&
+          candidate.network === network &&
+          candidate.walletId
+            ? [candidate.walletId]
+            : []
+        )
+    )
+    const localRemoved = (local.removedWalletIds ?? []).filter((walletId) =>
+      validatedWalletIds.has(walletId)
+    )
+    const previous = discovery.registry
+    if (previous && discovery.registryEventId) {
+      const applied =
+        change.type === "remove"
+          ? previous.removedWalletIds.includes(change.walletId) &&
+            !previous.activeWalletIds.includes(change.walletId)
+          : change.type === "add"
+            ? previous.activeWalletIds.includes(change.walletId)
+            : change.type === "main"
+              ? previous.payInvoiceWalletId === change.walletId &&
+                previous.receiveWalletId === change.walletId
+              : change.intent === "pay_invoice"
+                ? previous.payInvoiceWalletId === change.walletId
+                : previous.receiveWalletId === change.walletId
+      if (
+        applied &&
+        localRemoved.every((walletId) =>
+          previous.removedWalletIds.includes(walletId)
+        )
+      )
+        return discovery.registryEventId
+    }
+    const dTag = sparkWalletRegistryDTag(network)
+    // A local lock does not serialize another app or device. Require every
+    // planned relay to agree with the frozen head before signing a mutation.
+    for (const target of this.plan) {
+      this.scope.assertCurrent()
+      const read = await this.input.transport.read(
+        target.url,
+        this.scope.owner,
+        undefined,
+        this.continues,
+        dTag
+      )
+      this.scope.assertCurrent()
+      if (
+        read.status !== "complete" ||
+        read.events.length > 1 ||
+        (read.events[0]?.id ?? undefined) !== discovery.registryEventId
+      )
+        throw new SparkRecoveryError("conflict")
+    }
+    const active = new Set(
+      previous?.activeWalletIds ??
+        discovery.candidates.flatMap((candidate) =>
+          candidate.source === "conduit_v1" && candidate.walletId
+            ? [candidate.walletId]
+            : []
+        )
+    )
+    const removed = new Set([
+      ...(previous?.removedWalletIds ?? []),
+      ...localRemoved,
+    ])
+    for (const walletId of removed) active.delete(walletId)
+    if (removed.size > MAX_RECORDS) throw new SparkRecoveryError("conflict")
+    if (change.type === "remove") {
+      active.delete(change.walletId)
+      removed.add(change.walletId)
+    } else if (change.type === "add") {
+      if (removed.has(change.walletId)) throw new SparkRecoveryError("conflict")
+      const knownBackup = local.records.some((record) =>
+        record.event.tags.some(
+          (tag) =>
+            tag[0] === "d" && tag[1] === SPARK_RECOVERY_PREFIX + change.walletId
+        )
+      )
+      if (!knownBackup) throw new SparkRecoveryError("incomplete_discovery")
+      active.add(change.walletId)
+    } else if (!active.has(change.walletId)) {
+      throw new SparkRecoveryError("conflict")
+    }
+    const createdAt = Math.max(
+      Math.floor(Date.now() / 1000),
+      (previous?.createdAt ?? 0) + 1
+    )
+    const firstWallet = active.size === 1 ? [...active][0] : null
+    const deterministicReplacement = [...active].sort()[0] ?? null
+    if (
+      change.type === "remove" &&
+      change.replacementPayWalletId &&
+      !active.has(change.replacementPayWalletId)
+    )
+      throw new SparkRecoveryError("conflict")
+    const legacyPay = discovery.main?.walletId ?? discovery.primary?.walletId
+    const legacyReceive = discovery.main?.walletId
+    const payFallback = previous?.payInvoiceWalletId ?? legacyPay ?? firstWallet
+    const receiveFallback =
+      previous?.receiveWalletId ?? legacyReceive ?? firstWallet
+    const snapshot: SparkWalletRegistrySnapshot = {
+      format: "conduit.spark.registry",
+      version: 1,
+      ownerPubkey: this.scope.owner,
+      network,
+      revision: (previous?.revision ?? 0) + 1,
+      parentEventId: discovery.registryEventId ?? null,
+      activeWalletIds: [...active].sort(),
+      removedWalletIds: [...removed].sort(),
+      payInvoiceWalletId:
+        (change.type === "default" && change.intent === "pay_invoice") ||
+        change.type === "main"
+          ? change.walletId
+          : active.has(payFallback ?? "")
+            ? payFallback
+            : change.type === "remove" || localRemoved.length > 0
+              ? ((change.type === "remove"
+                  ? change.replacementPayWalletId
+                  : undefined) ?? deterministicReplacement)
+              : null,
+      receiveWalletId:
+        (change.type === "default" && change.intent === "receive") ||
+        change.type === "main"
+          ? change.walletId
+          : active.has(receiveFallback ?? "")
+            ? receiveFallback
+            : change.type === "remove" || localRemoved.length > 0
+              ? deterministicReplacement
+              : null,
+      createdAt,
+    }
+    if (
+      snapshot.activeWalletIds.length > MAX_RECORDS ||
+      snapshot.removedWalletIds.length > MAX_RECORDS
+    )
+      throw new SparkRecoveryError("conflict")
+    const event = await this.sign(dTag, snapshot, createdAt)
+    parseSparkWalletRegistrySnapshot(await this.decrypt(event), event)
+    await this.retain([this.record(event)])
+    return event.id
+  }
+
   async restore(
     candidate: SparkRecoveryCandidate,
     addySource?: Pick<SparkRecoveryBundle, "network" | "accountNumber">,
@@ -685,7 +892,7 @@ export class SparkRecoveryService {
     const readAt = async (
       url: string,
       eventId?: string,
-      dTag?: SparkRecoveryChoiceDTag
+      dTag?: string
     ): Promise<SparkRecoveryRead> => {
       this.scope.assertCurrent()
       try {
@@ -727,7 +934,16 @@ export class SparkRecoveryService {
           readAt(target.url),
           choiceReads,
         ])
-        return { target, results: [broad, ...choices] }
+        const registryRead = network
+          ? [
+              await readAt(
+                target.url,
+                undefined,
+                sparkWalletRegistryDTag(network)
+              ),
+            ]
+          : []
+        return { target, results: [broad, ...choices, ...registryRead] }
       })
     )
     const references = new Set<string>()
@@ -805,6 +1021,10 @@ export class SparkRecoveryService {
       selection: SparkMainWallet
       network?: SparkRecoveryBundle["network"]
     }> = []
+    const registryChoices: Array<{
+      event: SignedNostrEvent
+      snapshot: SparkWalletRegistrySnapshot
+    }> = []
     for (const record of records.values()) {
       const event = record.event
       const d = event.tags.find((t) => t[0] === "d")?.[1]
@@ -815,6 +1035,13 @@ export class SparkRecoveryService {
       try {
         const plaintext = await this.decrypt(event, options)
         // Validate the legacy phrase/address now. Actual source parameters remain required at restore.
+        if (isSparkWalletRegistryDTag(d)) {
+          registryChoices.push({
+            event,
+            snapshot: parseSparkWalletRegistrySnapshot(plaintext, event),
+          })
+          continue
+        }
         if (d.startsWith("spark-wallet-backup")) {
           addyPhrases.set(event.id, validateAddySparkMnemonic(plaintext, event))
           candidates.push({ eventId: event.id, source: "addy" })
@@ -857,6 +1084,13 @@ export class SparkRecoveryService {
         invalidCount++
       }
     }
+    const registryObserved = network
+      ? resolveSparkWalletRegistry(
+          registryChoices.filter(
+            (choice) => choice.snapshot.network === network
+          )
+        )
+      : undefined
     const coverage = sources.every((s) => s.status === "complete")
       ? "complete"
       : sources.every((s) => s.status === "unavailable")
@@ -866,7 +1100,16 @@ export class SparkRecoveryService {
     // creation for the configured network. Unknown targets and Addy stay relevant.
     const inScope = (candidate: SparkRecoveryCandidate) =>
       !network || candidate.source === "addy" || candidate.network === network
-    const scopedCandidates = candidates.filter(inScope)
+    const scopedCandidates = candidates.filter(
+      (candidate) =>
+        inScope(candidate) &&
+        (!registryObserved ||
+          candidate.source === "addy" ||
+          (!!candidate.walletId &&
+            registryObserved.snapshot.activeWalletIds.includes(
+              candidate.walletId
+            )))
+    )
     for (const candidate of scopedCandidates) {
       if (candidate.source !== "addy") continue
       candidate.resolved = [...envelopes.values()].some(
@@ -930,10 +1173,13 @@ export class SparkRecoveryService {
     const relevantCandidates = scopedCandidates.filter(
       (candidate) => candidate.source !== "addy" || !candidate.resolved
     )
-    const conflict =
+    const legacyConflict =
       roots.size > 1 ||
       pointerTargets.size > 1 ||
       (!primary && !knownRoot && relevantCandidates.length > 1)
+    const conflict = registryObserved
+      ? registryObserved.conflict
+      : legacyConflict
     // NIP-01 addressable revision order. Legacy history remains evidence,
     // not permission to create a wallet or substitute another network's choice.
     const latestMainChoice = mainChoices
@@ -951,14 +1197,22 @@ export class SparkRecoveryService {
     const latestMainTarget = latestMain ? findTarget(latestMain) : undefined
     const mainInScope =
       latestMain && (!latestMainTarget || inScope(latestMainTarget))
-    const main = mainInScope ? latestMainTarget : undefined
+    const legacyMain = mainInScope ? latestMainTarget : undefined
+    const main = registryObserved
+      ? scopedCandidates.find(
+          (candidate) =>
+            candidate.walletId === registryObserved.snapshot.receiveWalletId
+        )
+      : legacyMain
     const creationEligible =
       coverage === "complete" &&
-      (network
-        ? relevantCandidates.length === 0 &&
-          !scopedPointers.length &&
-          !mainInScope
-        : records.size === 0) &&
+      (registryObserved
+        ? registryObserved.snapshot.activeWalletIds.length === 0
+        : network
+          ? relevantCandidates.length === 0 &&
+            !scopedPointers.length &&
+            !mainInScope
+          : records.size === 0) &&
       !unresolvedObserved &&
       invalidCount === 0 &&
       !hasLocalWallet
@@ -973,29 +1227,56 @@ export class SparkRecoveryService {
         !conflict && main ? latestMainChoice?.event.id : undefined
       )
     }
+    const registryMissingBackup =
+      registryObserved?.snapshot.activeWalletIds.some(
+        (id) => !scopedCandidates.some((candidate) => candidate.walletId === id)
+      ) ?? false
     return {
       coverage,
       state: conflict
         ? "conflict"
-        : (scopedPointers.length && !primary) || (mainInScope && !main)
+        : registryMissingBackup
           ? "unresolved"
-          : relevantCandidates.length
-            ? "recoverable"
-            : creationEligible
-              ? "absent_within_scope"
-              : "unresolved",
+          : registryObserved
+            ? scopedCandidates.length
+              ? "recoverable"
+              : "absent_within_scope"
+            : (scopedPointers.length && !primary) || (mainInScope && !main)
+              ? "unresolved"
+              : relevantCandidates.length
+                ? "recoverable"
+                : creationEligible
+                  ? "absent_within_scope"
+                  : "unresolved",
       candidates: scopedCandidates,
+      validatedBackupWalletIds: candidates.flatMap((candidate) =>
+        candidate.source === "conduit_v1" &&
+        (!network || candidate.network === network) &&
+        candidate.walletId
+          ? [candidate.walletId]
+          : []
+      ),
       otherNetworkCandidates: candidates.filter(
         (candidate) => !inScope(candidate)
       ),
       lineageRootEventId: roots.size === 1 ? [...roots][0] : undefined,
       primaryPointerEventId,
-      primary: conflict ? undefined : primary,
+      primary: conflict
+        ? undefined
+        : registryObserved
+          ? scopedCandidates.find(
+              (candidate) =>
+                candidate.walletId ===
+                registryObserved.snapshot.payInvoiceWalletId
+            )
+          : primary,
       main: conflict ? undefined : main,
       invalidCount,
       sources,
       unresolvedObserved,
       creationEligible,
+      registry: registryObserved?.snapshot,
+      registryEventId: registryObserved?.eventId,
     }
   }
 
@@ -1006,6 +1287,35 @@ export class SparkRecoveryService {
     const saved = await this.load()
     const record = saved.records.find((r) => r.event.id === eventId)
     if (!record) throw new SparkRecoveryError("invalid_record")
+    const address = record.event.tags.find((tag) => tag[0] === "d")?.[1]
+    if (address && isSparkWalletRegistryDTag(address)) {
+      const snapshot = parseSparkWalletRegistrySnapshot(
+        await this.decrypt(record.event),
+        record.event
+      )
+      // Recheck all relay heads before a retry can replace another writer's
+      // newer snapshot. The signed event itself remains byte-identical.
+      for (const target of record.targets) {
+        this.scope.assertCurrent()
+        const read = await this.input.transport.read(
+          target.url,
+          this.scope.owner,
+          undefined,
+          this.continues,
+          address
+        )
+        this.scope.assertCurrent()
+        if (read.status !== "complete" || read.events.length > 1)
+          throw new SparkRecoveryError("conflict")
+        const head = read.events[0]
+        if (head) validateSparkRecoveryEvent(head, this.scope.owner)
+        if (
+          (head?.id ?? null) !== snapshot.parentEventId &&
+          head?.id !== record.event.id
+        )
+          throw new SparkRecoveryError("conflict")
+      }
+    }
     const deliveryByUrl = new Map(
       record.delivery.map((evidence) => [evidence.url, evidence])
     )
@@ -1062,7 +1372,9 @@ export class SparkRecoveryService {
       }
       await this.retain([record])
     }
-    return recoveryReadiness(record)
+    return address && isSparkWalletRegistryDTag(address)
+      ? accountRegistryReadiness(record)
+      : recoveryReadiness(record)
   }
 
   /** Call only after the user explicitly received and acknowledged the exact recovery bundle. */
@@ -1089,18 +1401,40 @@ export function recoveryReadiness(record: SparkRecoveryRecord): {
     record.targets.flatMap((t) => {
       const known = SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === t.url)
       const evidence = record.delivery.find((d) => d.url === t.url)
-      return known &&
-        evidence?.accepted &&
-        evidence.readBack &&
-        evidence.lastRead === "present" &&
-        Date.now() - evidence.checkedAt < 300_000 &&
-        evidence.checkedAt <= Date.now()
-        ? [known.operator]
-        : []
+      return known && hasFreshReadback(evidence) ? [known.operator] : []
     })
   )
   return {
     ready: operators.size >= 2 || record.exported,
     independentCopies: operators.size,
+  }
+}
+
+function hasFreshReadback(
+  evidence: SparkRecoveryDelivery | undefined
+): boolean {
+  return (
+    !!evidence?.accepted &&
+    evidence.readBack &&
+    evidence.lastRead === "present" &&
+    Date.now() - evidence.checkedAt < 300_000 &&
+    evidence.checkedAt <= Date.now()
+  )
+}
+
+/** Account snapshots require delivery across the whole frozen relay plan. */
+export function accountRegistryReadiness(record: SparkRecoveryRecord): {
+  ready: boolean
+  independentCopies: number
+} {
+  return {
+    ready:
+      record.targets.length > 0 &&
+      record.targets.every((target) =>
+        hasFreshReadback(
+          record.delivery.find((evidence) => evidence.url === target.url)
+        )
+      ),
+    independentCopies: recoveryReadiness(record).independentCopies,
   }
 }

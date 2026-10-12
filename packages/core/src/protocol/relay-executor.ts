@@ -32,6 +32,7 @@ import {
 } from "./relay-settings"
 import { serializeSignerOperation } from "./interactive-signer"
 import { parseSparkRecoveryChoiceAddress } from "../wallets/spark-recovery-address"
+import { isSparkWalletRegistryDTag } from "../wallets/spark-wallet-registry"
 
 export interface PlainNostrFilter {
   ids?: string[]
@@ -493,7 +494,8 @@ function assertRequest(
         filter.kinds[0] !== 30078 ||
         (filter["#d"] !== undefined &&
           (filter["#d"].length !== 1 ||
-            !parseSparkRecoveryChoiceAddress(filter["#d"][0]))) ||
+            (!parseSparkRecoveryChoiceAddress(filter["#d"][0]) &&
+              !isSparkWalletRegistryDTag(filter["#d"][0])))) ||
         (filter.ids !== undefined &&
           (filter.ids.length !== 1 ||
             !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||

@@ -23,6 +23,7 @@ import {
   assertWalletSignerCurrent,
 } from "../packages/core/src/wallets/signer-spark-recovery"
 import { commitVerifiedSignerRecovery } from "../packages/core/src/wallets/signer-recovery-commit"
+import { DexieSparkRecoveryStore } from "../packages/core/src/wallets/spark-recovery-store"
 import { plainTestSigner } from "./helpers/plain-signer"
 let active: SessionSigner | undefined
 let database: ConduitDB | undefined
@@ -102,23 +103,36 @@ async function fixture() {
     commit,
   }
 }
-test("successful migration removes the password envelope while retaining exact wallet and independent recovery", async () => {
+test("successful migration retains the encrypted password fallback", async () => {
   const f = await fixture()
   await f.commit()
   const saved = (await f.store.getSparkRecovery(f.wallet.id))!
   expect(
     serializeStoredSparkWalletRecovery(saved) ===
-      serializeStoredSparkWalletRecovery(f.verified)
+      serializeStoredSparkWalletRecovery({
+        ...f.verified,
+        legacyRecovery: f.original,
+      })
   ).toBe(true)
   expect(
     (await recoverStoredSparkMnemonic(saved, f.binding)).mnemonic === f.mnemonic
   ).toBe(true)
   expect((await f.store.listVisible(f.signer.pubkey))[0]!.id).toBe(f.wallet.id)
-  await expect(
-    recoverStoredSparkMnemonic(saved, f.binding, f.password)
-  ).rejects.toThrow("Nostr identity")
+  expect(
+    (await recoverStoredSparkMnemonic(saved, f.binding, f.password)).mnemonic
+  ).toBe(f.mnemonic)
+  const owner = f.signer.pubkey
+  retireAccountSigner(f.signer)
+  active = undefined
+  expect((await f.store.listVisible(null))[0]!.id).toBe(f.wallet.id)
+  await new DexieSparkRecoveryStore(database!).setDeviceRemoved(
+    owner,
+    f.wallet.id,
+    true
+  )
+  expect(await f.store.listVisible(null)).toEqual([])
 })
-test("already-migrated records lose only the legacy field after verification", async () => {
+test("already-migrated records retain the exact legacy envelope after verification", async () => {
   const f = await fixture(),
     old = { ...f.verified, legacyRecovery: f.original }
   await f.store.putSparkRecovery(f.wallet.id, old)
@@ -129,7 +143,7 @@ test("already-migrated records lose only the legacy field after verification", a
   expect(
     serializeStoredSparkWalletRecovery(
       (await f.store.getSparkRecovery(f.wallet.id))!
-    ) === serializeStoredSparkWalletRecovery(f.verified)
+    ) === serializeStoredSparkWalletRecovery(old)
   ).toBe(true)
 })
 for (const failure of [

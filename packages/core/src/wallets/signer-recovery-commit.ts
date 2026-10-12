@@ -24,8 +24,13 @@ export async function commitVerifiedSignerRecovery(input: {
         original.identityKey !== verified.identityKey))
   )
     throw new Error("Wallet recovery binding changed.")
-  // Construct an allowlisted record: old envelopes cannot survive via spreads.
-  const replacement: SignerSparkRecovery = {
+  // Keep the exact encrypted password envelope as an independent fallback.
+  // Its plaintext never enters the signer-backed record.
+  const legacyRecovery =
+    original.type === "password" ? original : original.legacyRecovery
+  const replacement: SignerSparkRecovery & {
+    legacyRecovery?: typeof legacyRecovery
+  } = {
     type: "signer",
     version: 1,
     walletId,
@@ -35,6 +40,7 @@ export async function commitVerifiedSignerRecovery(input: {
     ownerPubkey: verified.ownerPubkey,
     identityKey: verified.identityKey,
     ciphertext: verified.ciphertext,
+    ...(legacyRecovery ? { legacyRecovery } : {}),
   }
   await store.transaction(async () => {
     assertAuthority()

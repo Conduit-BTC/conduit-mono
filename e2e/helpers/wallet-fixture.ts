@@ -195,21 +195,17 @@ export async function installControlledWallet(
   )
 }
 
-/** Use the actual secondary management controls in the simplified Wallets UI. */
+/** Use the visible wallet actions and secondary external-wallet controls. */
 export async function openWalletSetup(
   page: Page,
   name: "Create wallet" | "Import wallet" | "Connect wallet"
 ) {
-  const button = page.getByRole("button", { name, exact: true })
-  if (!(await button.isVisible()))
-    await page
-      .getByText(
-        name === "Connect wallet"
-          ? "External wallet management"
-          : "Add a wallet",
-        { exact: true }
-      )
-      .click()
+  const button = page.getByRole("button", {
+    name: name === "Create wallet" ? "Add a wallet" : name,
+    exact: true,
+  })
+  if (name === "Connect wallet" && !(await button.isVisible()))
+    await page.getByText("External wallet management", { exact: true }).click()
   await button.click()
 }
 

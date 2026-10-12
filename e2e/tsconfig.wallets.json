@@ -23,6 +23,7 @@
   "include": [
     "wallet-sign-in.playwright.ts",
     "wallet-cross-app.playwright.ts",
+    "wallet-registry-removal.playwright.ts",
     "wallet-lifecycle.playwright.ts",
     "shared-ui-composition.playwright.ts",
     "shared-ui-populated-audit.playwright.ts",
