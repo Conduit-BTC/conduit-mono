@@ -473,6 +473,90 @@ test("complete legacy recovery bootstraps one registry before a fresh app select
   }
 })
 
+test("fresh device bootstraps a resolved Addy import from its matching Conduit backup", async () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const mnemonic = generateSparkMnemonic()
+    const walletId = crypto.randomUUID()
+    const addy = await f.provider.signEvent({
+      kind: 30078,
+      created_at: 100,
+      tags: [["d", "spark-wallet-backup"]],
+      content: await f.provider.encryptNip44(f.owner, mnemonic),
+    })
+    for (const url of f.relayUrls) f.relays.get(url)!.set(addy.id, addy)
+
+    const freshJournal = f.newStore()
+    const freshService = f.service(freshJournal)
+    const device = new ConduitDB(
+      `wallet-registry-resolved-addy-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    databases.push(device)
+    const unresolved = await freshService.discover(false, "mainnet")
+    expect(
+      unresolved.candidates.find((candidate) => candidate.source === "addy")
+        ?.resolved
+    ).toBe(false)
+    expect(
+      (
+        await bootstrapLegacyAccountWalletRegistry({
+          signer: f.signer,
+          discovery: unresolved,
+          network: "mainnet",
+          service: freshService,
+          store: new MarketWalletStore(device),
+          journal: freshJournal,
+        })
+      ).attempted
+    ).toBe(false)
+
+    const source = f.service()
+    const backup = await source.prepare(
+      { mnemonic, network: "mainnet", accountNumber: 7 },
+      walletId
+    )
+    expect((await source.deliver(backup.eventId)).ready).toBe(true)
+    const discovery = await freshService.discover(false, "mainnet")
+    expect(discovery.registry).toBeUndefined()
+    expect(discovery.state).toBe("recoverable")
+    expect(discovery.candidates).toHaveLength(2)
+    expect(
+      discovery.candidates.find((candidate) => candidate.source === "addy")
+        ?.resolved
+    ).toBe(true)
+    expect(
+      discovery.candidates.find(
+        (candidate) => candidate.source === "conduit_v1"
+      )?.walletId
+    ).toBe(walletId)
+
+    const bootstrap = await bootstrapLegacyAccountWalletRegistry({
+      signer: f.signer,
+      discovery,
+      network: "mainnet",
+      service: freshService,
+      store: new MarketWalletStore(device),
+      journal: freshJournal,
+    })
+    expect(bootstrap).toMatchObject({ attempted: true, ready: true })
+    expect(bootstrap.discovery.registryMembershipReady).toBe(true)
+    expect(bootstrap.discovery.registry?.activeWalletIds).toEqual([walletId])
+    for (const url of f.relayUrls)
+      expect(
+        [...f.relays.get(url)!.values()].some((event) =>
+          event.tags.some(
+            (tag) =>
+              tag[0] === "d" && tag[1] === sparkWalletRegistryDTag("mainnet")
+          )
+        )
+      ).toBe(true)
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
 test("legacy bootstrap carries known removal history and never selects that old backup", async () => {
   const f = fixture()
   activateAccountSigner(f.signer)

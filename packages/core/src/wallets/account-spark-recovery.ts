@@ -168,19 +168,21 @@ export async function bootstrapLegacyAccountWalletRegistry(input: {
   ready: boolean
 }> {
   const { signer, discovery, network, service, store, journal, options } = input
-  const candidates = discovery.candidates
+  const candidates = discovery.candidates.filter(
+    (candidate) => candidate.source === "conduit_v1"
+  )
   if (
     discovery.registry ||
     discovery.coverage !== "complete" ||
     discovery.state !== "recoverable" ||
     discovery.invalidCount ||
     discovery.unresolvedObserved ||
+    discovery.candidates.some(
+      (candidate) => candidate.source === "addy" && !candidate.resolved
+    ) ||
     !candidates.length ||
     candidates.some(
-      (candidate) =>
-        candidate.source !== "conduit_v1" ||
-        !candidate.walletId ||
-        candidate.network !== network
+      (candidate) => !candidate.walletId || candidate.network !== network
     )
   )
     return { discovery, attempted: false, ready: false }
