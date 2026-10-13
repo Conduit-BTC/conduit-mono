@@ -34,22 +34,6 @@ for (const app of ["market", "merchant"] as const) {
         identity,
         `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
       )
-      // Exercise the released invitation without contacting the name service.
-      await page.route(
-        "**/packages/ui/src/components/AddressNameRequestForm.tsx*",
-        async (route) => {
-          const response = await route.fetch()
-          const body = await response.text()
-          const marker =
-            'siteKey = import.meta.env?.VITE_ADDRESS_REQUEST_TURNSTILE_SITE_KEY ?? "",'
-          if (body.split(marker).length !== 2)
-            throw new Error("Address invitation fixture seam changed")
-          await route.fulfill({
-            response,
-            body: body.replace(marker, 'siteKey = "controlled-key",'),
-          })
-        }
-      )
       await page.goto(`http://127.0.0.1:${port}/wallet`)
       await installControlledWallet(page)
       await openWalletSetup(page, "Create wallet")
@@ -83,11 +67,12 @@ for (const app of ["market", "merchant"] as const) {
       await expect(cards.nth(1)).toBeVisible()
       expect(await defaults()).toEqual(before)
       await expect(
-        cards.nth(0).getByRole("button", {
-          name: "Get my @conduit.cash address",
-          exact: true,
-        })
+        cards.nth(0).getByLabel("Desired name", { exact: true })
       ).toBeVisible()
+      await expect(
+        cards.nth(0).getByRole("button", { name: "Request name", exact: true })
+      ).toBeVisible()
+      await expect(page.getByRole("dialog")).toHaveCount(0)
       await expect(page.locator("[data-wallet-profile-row]")).toHaveCount(2)
       await expect(
         page.getByRole("button", { name: /^Refresh .* balance$/ })

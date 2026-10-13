@@ -71,8 +71,7 @@ test("wallet names follow encrypted account recovery across apps and reloads @ma
   const market = await context.newPage()
   const merchant = await context.newPage()
   const rename = async (page: Page, name: string, waitForSync = true) => {
-    await page.getByRole("button", { name: /^Manage / }).click()
-    await page.getByRole("menuitem", { name: "Rename", exact: true }).click()
+    await page.getByRole("button", { name: /^Rename / }).click()
     const dialog = page.getByRole("dialog", { name: "Rename wallet" })
     await dialog.getByLabel("Wallet name", { exact: true }).fill(name)
     await dialog.getByRole("button", { name: "Save name", exact: true }).click()
