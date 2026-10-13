@@ -24,9 +24,9 @@ Wallets before the next route navigation @merchant` retain the same shared
 page, redirect, title and subsequent navigation assertions. Nothing moves to
 helper-only tests. Full discovery changes from 613 to 781 unique project
 cases and from 656 to 824 area executions for the route split; the overlapping
-area memberships outside this file remain unchanged. A separate wallet reload
-regression adds one Chromium Market case, bringing full discovery to 782
-unique cases and 825 area executions.
+area memberships outside this file remain unchanged. Two wallet state
+regressions add Chromium Market cases, bringing full discovery to 783
+unique cases and 826 area executions.
 
 ## Invariants and fixtures
 
@@ -78,3 +78,8 @@ The wallet reload regression holds an older reload across a native wallet open
 and a pending balance read. The UI must show Opening, then Ready when the read
 completes, rather than preserve a stale Locked state. Existing foreground
 cross-app recovery, wallet identity and default-selection assertions remain.
+
+Balance results also retain their originating native session identity. A held
+read from a closed session cannot overwrite a reopened session; current-session
+failures remain visible. Failure diagnostics retain only bounded status counts
+and a fixed availability enum.

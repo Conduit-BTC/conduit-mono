@@ -93,6 +93,12 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
       fields: {
         visibleWalletCount: "number",
         nativeOpenCount: "number",
+        runtimeLockedCount: "number",
+        runtimeConnectingCount: "number",
+        runtimeReadyCount: "number",
+        runtimeErrorCount: "number",
+        runtimeMissingCount: "number",
+        sparkAvailability: ["ready", "unavailable"],
         openButtonCount: "number",
         openingButtonCount: "number",
         readyCount: "number",
