@@ -123,7 +123,7 @@ test("market wallet descriptors converge across tabs through Dexie liveQuery @ma
     .getByRole("heading", { name: wallet.label, level: 3 })
     .locator("..")
   await expect(
-    targetHeader.getByText("Default spending", { exact: true })
+    targetHeader.getByText("Default for spending", { exact: true })
   ).toBeVisible()
   await secondPage.waitForTimeout(750)
   const beforeAbortReads = await walletStoreReads()

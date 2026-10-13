@@ -131,6 +131,75 @@ describe("settled checkout wallet retention during regular-wallet reload", () =>
     expect(open).toEqual(new Set(["registered-wallet"]))
   })
 
+  it("does not close wallets when the caller becomes stale during retained-history inspection", async () => {
+    const { open, manager } = openWallets()
+    let current = true
+    let started!: () => void
+    const reading = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let resume!: (snapshot: CheckoutSparkSettledRepositorySnapshot) => void
+    const pending = new Promise<CheckoutSparkSettledRepositorySnapshot>(
+      (resolve) => {
+        resume = resolve
+      }
+    )
+    const cleanup = closeUnusedSparkWallets(manager, ["registered-wallet"], {
+      now: NOW + 900_001,
+      listSettledPreparations: () => [saved],
+      loadSettledSnapshot: async () => {
+        started()
+        return pending
+      },
+      shouldContinue: () => current,
+    })
+    try {
+      await reading
+      current = false
+      resume(activeSnapshot(NOW + 120_000))
+      await cleanup
+      expect(open).toEqual(
+        new Set(["registered-wallet", "settled-wallet", "unrelated-wallet"])
+      )
+    } finally {
+      resume(activeSnapshot(NOW + 120_000))
+      await cleanup
+    }
+  })
+
+  it("does not close wallets when the caller becomes stale while waiting for the retention lock", async () => {
+    const { open, manager } = openWallets()
+    const release = await acquireCheckoutSparkWalletRetentionLock()
+    let current = true
+    const cleanup = closeUnusedSparkWallets(manager, ["registered-wallet"], {
+      now: NOW + 900_001,
+      listSettledPreparations: () => [],
+      shouldContinue: () => current,
+    })
+    try {
+      current = false
+      release()
+      await cleanup
+      expect(open).toEqual(
+        new Set(["registered-wallet", "settled-wallet", "unrelated-wallet"])
+      )
+    } finally {
+      release()
+      await cleanup
+    }
+  })
+
+  it("closes unused wallets after retained-history inspection while the caller remains current", async () => {
+    const { open, manager } = openWallets()
+    await closeUnusedSparkWallets(manager, ["registered-wallet"], {
+      now: NOW + 900_001,
+      listSettledPreparations: () => [saved],
+      loadSettledSnapshot: async () => activeSnapshot(NOW + 120_000),
+      shouldContinue: () => true,
+    })
+    expect(open).toEqual(new Set(["registered-wallet"]))
+  })
+
   it("preserves the original fifteen-minute funding window after new two-minute takeover without extending it on reload", async () => {
     const { open, manager } = openWallets()
     const reload = (now: number) =>

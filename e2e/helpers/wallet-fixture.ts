@@ -32,10 +32,9 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
     exact: true,
   })
   if (await chooser.count()) await chooser.click()
-  if (!makeMain)
-    await dialog
-      .getByLabel("Make this my main wallet", { exact: true })
-      .uncheck()
+  await dialog
+    .getByLabel("Make this my main wallet", { exact: true })
+    .setChecked(makeMain)
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
   await expect(dialog).toHaveCount(0)
 }
@@ -68,18 +67,28 @@ export async function prepareControlledWallet(page: Page) {
         let registered = imported || recovered
         let registrationPending = false
         let selectedName: string | undefined
-        const lookup = async () =>
+        const lookup = async (domain = "breez.tips") =>
           probe.addressUnavailableReason
             ? { status: "unavailable", reason: probe.addressUnavailableReason }
-            : registered
+            : (
+                  domain === "breez.tips"
+                    ? registered
+                    : imported ||
+                      (recovered &&
+                        probe.restoredAddress.endsWith("@conduit.cash"))
+                )
               ? {
                   status: "registered",
-                  address: recovered
-                    ? probe.restoredAddress
-                    : imported
-                      ? "support@conduit.cash"
-                      : `${selectedName ?? `wallet${probe.registrations}`}@conduit.cash`,
-                  lnurl: "https://conduit.cash/lnurlp/test",
+                  address:
+                    domain === "conduit.cash"
+                      ? imported
+                        ? "support@conduit.cash"
+                        : probe.restoredAddress
+                      : recovered &&
+                          probe.restoredAddress.endsWith("@breez.tips")
+                        ? probe.restoredAddress
+                        : `${selectedName ?? `wallet${probe.registrations}`}@breez.tips`,
+                  lnurl: `https://${domain}/lnurlp/test`,
                   publicLookup: "verified",
                   zap: { status: "unsupported" },
                 }
@@ -97,11 +106,12 @@ export async function prepareControlledWallet(page: Page) {
           async listPayments() {
             return { payments: [] }
           },
-          async lookupBreezAddress() {
-            return lookup()
+          async lookupBreezAddress(domain?: string) {
+            return lookup(domain)
           },
-          async ensureBreezAddress(username?: string) {
-            if (registered) return lookup()
+          async ensureBreezAddress(username?: string, domain = "breez.tips") {
+            if (domain === "conduit.cash") return lookup(domain)
+            if (registered) return lookup(domain)
             if (probe.delayRegistration)
               await new Promise<void>((resolve) => {
                 probe.releaseRegistration = resolve
@@ -180,6 +190,76 @@ export async function installControlledWallet(
       restoredAddress,
       failRegistration,
       modulePath: path.resolve("packages/core/src/wallets/spark-recovery.ts"),
+    }
+  )
+}
+
+/** Use the visible wallet actions and secondary external-wallet controls. */
+export async function openWalletSetup(
+  page: Page,
+  name: "Create wallet" | "Import wallet" | "Connect wallet"
+) {
+  const button = page.getByRole("button", {
+    name: name === "Create wallet" ? "Add a wallet" : name,
+    exact: true,
+  })
+  if (name === "Connect wallet" && !(await button.isVisible()))
+    await page.getByText("External wallet management", { exact: true }).click()
+  await button.click()
+}
+
+/** Observe the real route controller without adding a production test API. */
+export async function observeWalletController(page: Page) {
+  await page.route("**/src/routes/wallet.tsx*", async (route) => {
+    const response = await route.fetch()
+    const body = await response.text()
+    const marker = [
+      "const wallets = useWallets();",
+      "const wallets = automation.wallets;",
+    ].find((candidate) => body.includes(candidate))
+    if (!marker || body.split(marker).length !== 2)
+      throw new Error("Wallet controller observation seam changed")
+    await route.fulfill({
+      response,
+      body: body.replace(
+        marker,
+        marker + "window.__controlledWalletController = wallets;"
+      ),
+    })
+  })
+}
+
+/** Retain deliberate-lock semantics after removal of the user-facing Lock control. */
+export async function closeDefaultWalletSession(page: Page) {
+  await page.keyboard.press("Escape")
+  await page.evaluate(
+    async ({ storage, core }) => {
+      const { getMarketWalletStore } = await import(storage)
+      const { getAccountSigner } = await import(core)
+      const controller = (
+        window as typeof window & {
+          __controlledWalletController?: {
+            lockSpark(walletId: string): Promise<void>
+          }
+        }
+      ).__controlledWalletController
+      if (!controller) throw new Error("Wallet controller was not observed.")
+      const wallets = (
+        await getMarketWalletStore().listVisible(
+          getAccountSigner()?.pubkey ?? null
+        )
+      ).filter((w: { providerId: string }) => w.providerId === "spark")
+      const wallet =
+        wallets.find((w: { defaultIntents: string[] }) =>
+          w.defaultIntents.includes("pay_invoice")
+        ) ?? wallets[0]
+      if (!wallet) throw new Error("No wallet session to close.")
+      await controller.lockSpark(wallet.id)
+    },
+    {
+      storage:
+        "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+      core: "/@fs" + path.resolve("packages/core/src/index.ts"),
     }
   )
 }

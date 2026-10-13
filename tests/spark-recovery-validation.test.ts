@@ -56,6 +56,7 @@ function fixture() {
     unresolvedObserved: false,
     records,
     removedWalletIds: [crypto.randomUUID()],
+    registryExcludedWalletIds: [crypto.randomUUID()],
   })
   return { owner, record, state }
 }
@@ -73,6 +74,7 @@ describe("Spark recovery owned validation snapshots", () => {
     input.records[0].delivery[0].accepted = true
     input.records[0].exported = true
     input.removedWalletIds![0] = "changed"
+    input.registryExcludedWalletIds![0] = "changed"
     input.unresolvedObserved = true
     input.records.length = 0
     // Boolean comparisons keep ciphertext and generated identities out of failures.
@@ -92,6 +94,7 @@ describe("Spark recovery owned validation snapshots", () => {
     const resultBefore = JSON.stringify(result)
     current.records[0].event.tags[0][1] = "changed"
     current.removedWalletIds![0] = "changed"
+    current.registryExcludedWalletIds![0] = "changed"
     current.records[0].delivery[0].accepted = true
     incoming[0].targets[0].url = "wss://changed.invalid"
     incoming[0].delivery[0].readBack = true
@@ -201,20 +204,19 @@ describe("Spark recovery owned validation snapshots", () => {
     ).toThrow("invalid_record")
   })
 
-  it("preserves absent versus explicitly empty removal metadata", () => {
+  it("preserves absent versus explicitly empty local exclusion metadata", () => {
     const f = fixture()
-    const absent = f.state([])
-    delete absent.removedWalletIds
-    const empty = f.state([])
-    empty.removedWalletIds = []
-    expect("removedWalletIds" in mergeSparkRecoveryRecords(absent, [])).toBe(
-      false
-    )
-    expect("removedWalletIds" in mergeSparkRecoveryRecords(empty, [])).toBe(
-      true
-    )
-    expect(mergeSparkRecoveryRecords(empty, []).removedWalletIds?.length).toBe(
-      0
-    )
+    for (const field of [
+      "removedWalletIds",
+      "registryExcludedWalletIds",
+    ] as const) {
+      const absent = f.state([])
+      delete absent[field]
+      const empty = f.state([])
+      empty[field] = []
+      expect(field in mergeSparkRecoveryRecords(absent, [])).toBe(false)
+      expect(field in mergeSparkRecoveryRecords(empty, [])).toBe(true)
+      expect(mergeSparkRecoveryRecords(empty, [])[field]?.length).toBe(0)
+    }
   })
 })

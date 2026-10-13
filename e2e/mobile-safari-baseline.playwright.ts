@@ -1633,6 +1633,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await assertMobileViewport(page)
 
+    await page.getByText("External wallet management", { exact: true }).tap()
     await page.getByRole("button", { name: "Connect wallet" }).tap()
     const dialog = page.getByRole("dialog", { name: "Connect wallet" })
     const connectionString = dialog.getByPlaceholder(
@@ -1650,6 +1651,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
+    await page.getByText("External wallet management", { exact: true }).tap()
     await page.getByRole("button", { name: "Connect wallet" }).tap()
     await expect(connectionString).toBeVisible()
   })

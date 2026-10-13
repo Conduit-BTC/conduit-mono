@@ -969,9 +969,66 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
   mark("dialog_visible")
-  await expect(
-    resumed.getByRole("button", { name: "Add image", exact: true })
-  ).toBeEnabled()
+  const addImage = resumed.getByRole("button", {
+    name: "Add image",
+    exact: true,
+  })
+  try {
+    await expect(addImage).toBeEnabled()
+  } catch (error) {
+    try {
+      const [
+        authReady,
+        addImagePresent,
+        fallbackDisclosureVisible,
+        uploadPendingVisible,
+      ] = await Promise.all([
+        page
+          .locator('button[aria-label="Open merchant account menu"]')
+          .count()
+          .then((count) => count > 0),
+        addImage.count().then((count) => count > 0),
+        resumed.getByText(fallbackDisclosureText, { exact: false }).isVisible(),
+        resumed
+          .getByText("Checking your media server settings.", { exact: false })
+          .isVisible(),
+      ])
+      const addImageEnabled = addImagePresent && (await addImage.isEnabled())
+      const claimState = await page.evaluate(() => {
+        try {
+          const keys = Object.keys(localStorage).filter((key) =>
+            key.startsWith("conduit:merchant:product_image_fallback:v1")
+          )
+          if (keys.length === 0) return "absent"
+          if (keys.length !== 1) return "malformed"
+          let value: unknown
+          try {
+            value = JSON.parse(localStorage.getItem(keys[0]!) ?? "")
+          } catch {
+            return "malformed"
+          }
+          if (!value || typeof value !== "object" || !("state" in value))
+            return "malformed"
+          return value.state === "consumed" || value.state === "retry_same_hash"
+            ? value.state
+            : "malformed"
+        } catch {
+          return "unavailable"
+        }
+      })
+      recordSmokeDiagnostic(test.info(), "merchant-image-reload", {
+        authReady,
+        addImagePresent,
+        addImageEnabled,
+        fallbackDisclosureVisible,
+        uploadPendingVisible,
+        claimState,
+      })
+    } catch {
+      // Teardown may close the page; preserve the original assertion failure.
+    }
+    throw error
+  }
   mark("fresh_file")
   await resumed.locator("#product-image-file").setInputFiles(image512)
   await expect(resumed.getByLabel("Primary image URL")).toHaveValue(

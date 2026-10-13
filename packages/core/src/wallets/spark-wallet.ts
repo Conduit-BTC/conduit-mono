@@ -1,3 +1,7 @@
+import type {
+  AddressNameRequest,
+  SignedAddressNameRequest,
+} from "./address-name-request"
 import type { NwcLookupInvoiceResult } from "../protocol/nwc"
 import type { ReceivingWalletBinding } from "./receiving"
 import {
@@ -283,8 +287,14 @@ export interface SparkSdkClient {
     requestId?: string
   ): Promise<NwcLookupInvoiceResult>
 
-  lookupBreezAddress?(): Promise<BreezAddressState>
-  ensureBreezAddress?(username?: string): Promise<BreezAddressState>
+  lookupBreezAddress?(domain?: string): Promise<BreezAddressState>
+  ensureBreezAddress?(
+    username?: string,
+    domain?: string
+  ): Promise<BreezAddressState>
+  signAddressNameRequest?(
+    value: Omit<AddressNameRequest, "sparkIdentity">
+  ): Promise<SignedAddressNameRequest>
   addEventListener?(listener: () => void): Promise<string>
   removeEventListener?(listenerId: string): Promise<boolean>
   disconnect(): Promise<void>
@@ -531,7 +541,8 @@ export class SparkWalletManager {
   async getLightningAddress(
     walletId: string,
     register = false,
-    username?: string
+    username?: string,
+    domain = "breez.tips"
   ): Promise<BreezAddressState> {
     let client: SparkSdkClient
     try {
@@ -543,13 +554,31 @@ export class SparkWalletManager {
       ? client.ensureBreezAddress
       : client.lookupBreezAddress
     if (!operation) return { status: "unavailable", reason: "unconfigured" }
-    const result = await operation.call(client, username)
+    const result = register
+      ? await client.ensureBreezAddress!(username, domain)
+      : await client.lookupBreezAddress!(domain)
     // Ignore address results if the exact session was locked/replaced meanwhile.
     if (
       this.#clients.get(walletId) !== client ||
       this.#quarantinedWallets.has(walletId)
     )
       return { status: "unavailable", reason: "locked" }
+    return result
+  }
+
+  async signAddressNameRequest(
+    walletId: string,
+    value: Omit<AddressNameRequest, "sparkIdentity">
+  ): Promise<SignedAddressNameRequest> {
+    const client = this.#getClient(walletId)
+    if (!client.signAddressNameRequest)
+      throw new Error("Wallet name requests are unavailable.")
+    const result = await client.signAddressNameRequest(value)
+    if (
+      this.#clients.get(walletId) !== client ||
+      this.#quarantinedWallets.has(walletId)
+    )
+      throw new Error("Your wallet session changed.")
     return result
   }
 

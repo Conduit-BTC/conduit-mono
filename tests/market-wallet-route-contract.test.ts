@@ -57,9 +57,16 @@ describe("Market wallet route contracts", () => {
     expect(hook).toMatch(
       /requestedWallet\.providerId === "spark"[\s\S]{0,180}runSparkWalletRemoval/
     )
-    expect(hook).toMatch(
-      /await cleanupSparkWalletState\(\{[\s\S]{0,500}await store\.transaction/
+    const removal = hook.slice(
+      hook.indexOf("const removeCurrentRegistration"),
+      hook.indexOf("const remove = () =>")
     )
+    const cleanup = removal.lastIndexOf("await cleanupSparkWalletState({")
+    const publication = removal.indexOf("await service.prepareRegistry(")
+    const commit = removal.indexOf("await store.transaction(")
+    expect(cleanup).toBeGreaterThanOrEqual(0)
+    expect(publication).toBeGreaterThan(cleanup)
+    expect(commit).toBeGreaterThan(publication)
   })
 
   it("keeps the simplified wallet page composed from shared wallet controls", async () => {
@@ -73,7 +80,7 @@ describe("Market wallet route contracts", () => {
 
     expect(content).toContain('title="My wallets"')
     expect(content).toContain('title="External wallets"')
-    expect(content).toContain("Create wallet")
+    expect(content).toContain("Add a wallet")
     expect(content).toContain("Import wallet")
     expect(content).toContain("Connect wallet")
     expect(content).toContain("ProfileLightningAddressEditor")
@@ -337,11 +344,9 @@ describe("Market wallet route contracts", () => {
     expect(hook).toContain('mode === "local-only"')
     expect(hook).toContain("assertLocalSparkWalletRemovalSafe")
     expect(hook).toContain("isSparkWalletManagerInitialized")
+    expect(wallet).toContain("onSelect={() => dialog(onRemove)}")
     expect(wallet).toContain(
-      "<DropdownMenuItem onSelect={() => dialog(onRemove)}>"
-    )
-    expect(wallet).toContain(
-      "This removes this wallet's registration and opening credential from this browser. Any encrypted recovery backups and saved removal choices stay in this browser."
+      "This removes the wallet registration and password-protected recovery from this browser. It does not delete the Portable Wallet or move its funds."
     )
   })
 
@@ -378,7 +383,10 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toContain("recoveryHeadingRef.current?.focus()")
     expect(wallet).toContain("restoreDialogFocus")
     expect(wallet).toContain("dialogTriggerRef.current = event.currentTarget")
-    expect(wallet).toContain("Refresh balance")
+    expect(wallet.includes("Retry balance")).toBe(true)
+    expect(wallet.includes("Use previous password")).toBe(false)
+    expect(wallet.includes("Use for new invoices")).toBe(false)
+    expect(wallet.includes("Remove from this device")).toBe(true)
     expect(wallet).toContain("Payment request copied.")
     expect(wallet).toContain("Copy was blocked. Copy the request manually.")
     expect(recoveryBundleDetails).toContain(
@@ -391,7 +399,8 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toMatch(
       /Copying\s+a\s+recovery\s+phrase\s+puts\s+it\s+on\s+your\s+system\s+clipboard/
     )
-    expect(wallet).toContain("await wallets.createSpark()")
+    expect(wallet.includes("await wallets.createSpark(")).toBe(true)
+    expect(wallet.includes("onProgress:")).toBe(true)
     expect(wallet).toContain('setMnemonic("")')
     expect(wallet).toContain("error ? (")
   })

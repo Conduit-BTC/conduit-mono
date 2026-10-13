@@ -1,5 +1,11 @@
 # Breez-hosted Lightning addresses
 
+Current default-address, request-only name approval and password-retirement rules
+are described in [wallet address approval](./wallet-address-approval.md). Those
+rules supersede the original optional-address setup and migration fallback
+described below. Provider signatures, recovery authority and exact invoice
+settlement boundaries remain applicable.
+
 Market and Merchant's optional `conduit.cash` address management uses Breez's hosted service.
 The first-party Spark provider remains the sole wallet and session owner. It
 passes its own `DefaultSparkSigner` to the existing Spark wallet, then exposes a
@@ -51,8 +57,8 @@ requests share the same operation. Revocation closes signer-owned
 sessions even after leaving Wallets. Signing-only or denied encryption cannot
 create a wallet; the UI explains the required capability. Existing password
 wallets remain readable. An explicit one-time migration verifies signer
-round-trip and transactional read-back, retaining the old encrypted recovery
-copy and a previous-password fallback for the same account.
+round-trip and transactional read-back, retiring the old encrypted recovery
+copy atomically after opening and persisted-record verification.
 
 Recovery details include the phrase, actual Spark account number and network,
 and new creation requires acknowledgement that they were saved. Import confirms
@@ -291,8 +297,8 @@ available. The checkout-scoped ephemeral router remains independent.
 ## Merchant payment confirmation
 
 Merchant Payments redirects to Wallets; profiles only display **Manage in
-Wallets**. There is no separate verification or advertised-zap setup. **Use for
-new invoices** deliberately selects a receiving wallet independently of spending
+Wallets**. There is no separate verification or advertised-zap setup. The secondary **Default for
+merchant invoices** action deliberately selects a receiving wallet independently of spending
 defaults and the profile address. Signed payment requests and pending-invoice
 journals retain the original wallet ID/provider/network and Spark request ID.
 Address changes and delivery retries cannot replace that invoice or destination.

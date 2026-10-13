@@ -88,6 +88,67 @@ export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "wallet-foreground-open": {
+      file: "e2e/wallet-cross-app.playwright.ts",
+      fields: {
+        visibleWalletCount: "number",
+        nativeOpenCount: "number",
+        openButtonCount: "number",
+        openingButtonCount: "number",
+        readyCount: "number",
+        recoveryNotice: ["absent", "checking", "pending", "blocked"],
+        signerDecryptCalls: "number",
+        signerDecryptDenials: "number",
+        observationAvailable: "boolean",
+      },
+    },
+    "merchant-image-reload": {
+      file: "e2e/merchant-product-image-preview.playwright.ts",
+      fields: {
+        authReady: "boolean",
+        addImagePresent: "boolean",
+        addImageEnabled: "boolean",
+        fallbackDisclosureVisible: "boolean",
+        uploadPendingVisible: "boolean",
+        claimState: [
+          "absent",
+          "retry_same_hash",
+          "consumed",
+          "malformed",
+          "unavailable",
+        ],
+      },
+    },
+    "manual-checkout-stop": {
+      file: "e2e/manual-checkout-invoice.playwright.ts",
+      fields: {
+        phase: ["after_refresh", "after_reload"],
+        relayAccepted: "boolean",
+        relayDelivered: "boolean",
+        observationAvailable: "boolean",
+        wrapperState: [
+          "missing",
+          "queued",
+          "waiting_for_signer",
+          "opening",
+          "permission_declined",
+          "opened",
+          "unsupported",
+          "malformed",
+          "invalid_envelope",
+          "retryable_failure",
+          "provider_unavailable",
+          "machine",
+          "unrelated",
+          "deleted",
+          "expired",
+        ],
+        projectionStored: "boolean",
+        signerPresent: "boolean",
+        paymentViewVisible: "boolean",
+        warningVisible: "boolean",
+      },
+    },
     "wallet-migration": {
       file: "e2e/wallet-sign-in.playwright.ts",
       fields: {
@@ -445,6 +506,9 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "wallet-foreground-open"
+    | "merchant-image-reload"
+    | "manual-checkout-stop"
     | "commerce-journey"
     | "wallet-migration"
     | "price-interaction"

@@ -16,6 +16,7 @@ export async function closeUnusedSparkWallets(
   registeredWalletIds: Iterable<string>,
   options: {
     now?: number
+    shouldContinue?: () => boolean
     storage?: CheckoutSparkSettledPreparationStorage | null
     listSettledPreparations?: () => StoredCheckoutSparkSettledPreparation[]
     loadSettledSnapshot?: (
@@ -37,6 +38,7 @@ async function closeUnusedSparkWalletsUnlocked(
   registeredWalletIds: Iterable<string>,
   options: {
     now?: number
+    shouldContinue?: () => boolean
     storage?: CheckoutSparkSettledPreparationStorage | null
     listSettledPreparations?: () => StoredCheckoutSparkSettledPreparation[]
     loadSettledSnapshot?: (
@@ -95,5 +97,8 @@ async function closeUnusedSparkWalletsUnlocked(
     return
   }
   for (const walletId of settledWalletIds) keep.add(walletId)
+  // Retention locks and history reads may outlive the caller's reload/session.
+  // Recheck that lifetime at the actual cleanup dispatch, not before awaiting.
+  if (options.shouldContinue && !options.shouldContinue()) return
   await manager.closeWalletsExcept(keep)
 }

@@ -50,7 +50,7 @@
         "livePresenceEnabled": true,
         "quantumRouterEnabled": false,
         "quantumRouterExecutionEnabled": false,
-        "breezLightningAddressEnabled": false
+        "breezLightningAddressEnabled": true
       }
     },
     "production": {
@@ -61,7 +61,7 @@
         "livePresenceEnabled": true,
         "quantumRouterEnabled": false,
         "quantumRouterExecutionEnabled": false,
-        "breezLightningAddressEnabled": false
+        "breezLightningAddressEnabled": true
       }
     },
     "staging": {
