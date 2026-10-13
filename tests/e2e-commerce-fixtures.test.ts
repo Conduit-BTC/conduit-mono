@@ -692,6 +692,7 @@ describe("deterministic NWC wallet service", () => {
       expect(settlementMatches).toBe(true)
 
       expect(wallet.snapshot()).toEqual({
+        balanceReads: 0,
         counters: {
           makeInvoice: 1,
           payInvoice: 1,

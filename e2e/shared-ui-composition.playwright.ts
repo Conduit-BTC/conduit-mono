@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises"
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { join } from "node:path"
 import {
   expect,
@@ -82,11 +83,10 @@ for (const theme of ["day-market", "night-market"] as const) {
       ).toBeVisible()
       await expectContained(page)
       const trigger = page.getByRole("button", {
-        name: "Import wallet",
+        name: "Add wallet",
         exact: true,
       })
-      await expect(trigger).toBeEnabled()
-      await trigger.click()
+      await openWalletSetup(page, "Import wallet")
       const dialog = page.getByRole("dialog", {
         name: "Import wallet",
         exact: true,
@@ -115,7 +115,7 @@ for (const theme of ["day-market", "night-market"] as const) {
       await page.keyboard.press("Escape")
       await expect(dialog).not.toBeVisible()
       await expect(trigger).toBeFocused()
-      await trigger.click()
+      await openWalletSetup(page, "Import wallet")
       await expect(phrase).toHaveValue("")
       await dialog
         .locator("summary")

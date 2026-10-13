@@ -1,3 +1,4 @@
+import { type WalletNameStates } from "./wallet-name-contract"
 import {
   mergeAddressRequestRecord,
   requestEvidence,
@@ -111,6 +112,8 @@ export interface SparkRecoveryState {
   removedWalletIds?: string[]
   /** Derived visibility cache from the last complete account registry read. */
   registryExcludedWalletIds?: string[]
+  /** Local display-name intents and their separate encrypted delivery evidence. */
+  walletNameSync?: WalletNameStates
 }
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
@@ -310,6 +313,11 @@ export function validateSparkRecoveryState(
       throw new SparkRecoveryError("invalid_record")
     return {
       ownerPubkey: owner,
+      // Optional name evidence is validated only by its own boundary. A damaged
+      // name journal must not invalidate otherwise valid recovery membership.
+      ...(input.walletNameSync
+        ? { walletNameSync: structuredClone(input.walletNameSync) }
+        : {}),
       records: compactSparkRecoveryChoices(records),
       unresolvedObserved: input.unresolvedObserved,
       ...(input.removedWalletIds
@@ -364,6 +372,7 @@ export function mergeSparkRecoveryRecords(
   return validateSparkRecoveryState(
     {
       ownerPubkey: current.ownerPubkey,
+      walletNameSync: current.walletNameSync,
       records: [...records.values()],
       unresolvedObserved: current.unresolvedObserved || unresolvedObserved,
       ...(current.removedWalletIds

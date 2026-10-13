@@ -539,6 +539,15 @@ export class SparkWalletManager {
     )
   }
 
+  /** Capture an open session without exposing its client or credentials. */
+  captureSession(walletId: string): () => boolean {
+    const client = this.#clients.get(walletId)
+    return () =>
+      client !== undefined &&
+      this.#clients.get(walletId) === client &&
+      this.isOpen(walletId)
+  }
+
   subscribe(listener: (walletId: string) => void): () => void {
     this.#subscribers.add(listener)
     return () => {

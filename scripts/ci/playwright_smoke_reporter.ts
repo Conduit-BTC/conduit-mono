@@ -118,6 +118,10 @@ const unsafeTitlePatterns = [
 ] as const
 
 const allowlistedDynamicTitles: Readonly<Record<string, readonly RegExp[]>> = {
+  "e2e/shared-ui-surface-audit.playwright.ts": [
+    /^market surface audit in (?:day-market|night-market): \/(?:products|merchants|sellers|zapouts|events|cart|checkout|orders|messages|profile|preferences|wallet|network|about|terms-of-service|privacy-policy)? @market$/,
+    /^merchant surface audit in (?:day-market|night-market): \/(?:products|events(?:\/new)?|orders|messages|profile|wallet|shipping|network|about|terms-of-service|privacy-policy)? @merchant$/,
+  ],
   "e2e/about-page.playwright.ts": [
     /^(market|merchant) signed-out About renders visitor content in the public app shell @\1$/,
     /^(market|merchant) signed-out About remains usable at a mobile viewport @\1$/,

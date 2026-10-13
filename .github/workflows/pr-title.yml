@@ -3,7 +3,11 @@ name: PR Title
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
-    branches: [main]
+    branches:
+      - main
+      - test/smoke-route-scenarios
+      - feat/wallet-name-sync
+      - feat/wallet-ui-hierarchy
 
 permissions:
   contents: read

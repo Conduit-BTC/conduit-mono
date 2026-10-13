@@ -270,11 +270,15 @@ for (const app of ["market", "merchant"] as const) {
           label: "Legacy fence",
         })
       await expect(signedOutPage).toHaveTitle(/Wallets/)
-      for (const name of ["Add a wallet", "Import wallet"]) {
+      await signedOutPage
+        .getByRole("button", { name: "Add wallet", exact: true })
+        .click()
+      for (const name of ["Create a wallet", "Import an existing wallet"]) {
         await expect(
-          signedOutPage.getByRole("button", { name, exact: true })
+          signedOutPage.getByRole("menuitem", { name, exact: true })
         ).toBeDisabled()
       }
+      await signedOutPage.keyboard.press("Escape")
       await signedOutPage
         .getByRole("button", { name: "Open wallet", exact: true })
         .click()
@@ -491,6 +495,9 @@ for (const unavailable of ["signet", "coordination"] as const) {
               spark: wallets.sparkAvailability.status,
               externalStatus:
                 wallets.runtime[wallets.connectedWallets[0]?.id]?.status,
+              externalBalanceLoaded:
+                typeof wallets.runtime[wallets.connectedWallets[0]?.id]
+                  ?.balanceMsats === "number",
             }
           })
         )
@@ -502,17 +509,20 @@ for (const unavailable of ["signet", "coordination"] as const) {
           legacy: 1,
           spark: "unavailable",
           externalStatus: "ready",
+          externalBalanceLoaded: true,
         })
-      await page
-        .getByText("External wallet management", { exact: true })
-        .click()
       await expect(
-        page.getByText("External capability", { exact: true })
+        page.getByRole("article", {
+          name: "External capability wallet",
+          exact: true,
+        })
       ).toBeVisible()
       await expect(
-        page.getByText("Legacy fence", { exact: true })
+        page.getByRole("article", { name: "Legacy fence wallet", exact: true })
       ).toBeVisible()
     } finally {
+      // Stop route-owned balance updates before shutting down their provider.
+      await page.close()
       await wallet.close()
       disposeRuntimeSignerIdentity(identity)
     }
@@ -1062,9 +1072,8 @@ test("Merchant retires the verified legacy NWC owner and Disconnect survives rel
         legacyConnection: false,
         legacyTip: false,
       })
-    await page.getByText("External wallet management", { exact: true }).click()
     await expect(
-      page.getByRole("heading", { name: "External wallets", exact: true })
+      page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
     ).toBeVisible()
     await page.getByRole("button", { name: /^Manage / }).click()
     await page
@@ -2113,6 +2122,10 @@ for (const app of ["market", "merchant"] as const) {
           )
         )
         .toBe(true)
+      await page
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .getByRole("button", { name: "Edit", exact: true })
+        .click()
       await page.evaluate(() => {
         const auth = (window as any).__walletLifecycle.auth
         ;(window as any).__forcedAddressSuggestion = {
@@ -2169,17 +2182,23 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Save public address", exact: true })
         .click()
       await expect(
-        page.getByText("Current address: mixed.case@example.com", {
-          exact: true,
-        })
-      ).toBeVisible()
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("mixed.case@example.com")
+      await page
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .getByRole("button", { name: "Edit", exact: true })
+        .click()
       await page.getByLabel("Lightning address", { exact: true }).fill("")
       await page
         .getByRole("button", { name: "Save public address", exact: true })
         .click()
       await expect(
-        page.getByText("Current address: None", { exact: true })
-      ).toBeVisible()
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("No address set")
     } finally {
       disposeRuntimeSignerIdentity(identity)
     }

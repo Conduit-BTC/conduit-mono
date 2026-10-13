@@ -2663,15 +2663,25 @@ function OrdersPage() {
   })
   const inbox = useCommerceInbox(activeBuyerPubkey, signerConnected)
   const messagesQuery = inbox.buyer
+  const { syncRecent } = inbox
 
-  const refetchAll = useCallback(async () => {
-    const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
-    if (signerConnected && activeBuyerPubkey) {
-      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
-      refreshes.push(messagesQuery.refetch())
-    }
-    await Promise.all(refreshes)
-  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
+  const refetchAll = useCallback(
+    async (fresh = true) => {
+      const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
+      if (signerConnected && activeBuyerPubkey) {
+        clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+        refreshes.push(fresh ? messagesQuery.refetch() : syncRecent())
+      }
+      await Promise.all(refreshes)
+    },
+    [
+      activeBuyerPubkey,
+      lifecyclesQuery,
+      messagesQuery,
+      syncRecent,
+      signerConnected,
+    ]
+  )
 
   const reconnectSigner = useCallback(async () => {
     setSignerReconnectPending(true)
@@ -2685,7 +2695,8 @@ function OrdersPage() {
   useEffect(() => {
     const refetchAfterResume = () => {
       if (document.visibilityState === "hidden") return
-      void refetchAll()
+      // Automatic resume joins an active read; only explicit Refresh queues one.
+      void refetchAll(false)
     }
 
     window.addEventListener("focus", refetchAfterResume)

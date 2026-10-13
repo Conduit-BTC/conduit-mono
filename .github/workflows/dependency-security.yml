@@ -2,7 +2,11 @@ name: Dependency Security
 
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - test/smoke-route-scenarios
+      - feat/wallet-name-sync
+      - feat/wallet-ui-hierarchy
   merge_group:
     branches: [main]
   push:

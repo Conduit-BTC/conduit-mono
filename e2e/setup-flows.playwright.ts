@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { expect, test, type Page } from "@playwright/test"
 import {
   createRuntimeSignerIdentity,
@@ -127,7 +128,7 @@ async function enterWalletsForSetup(page: Page): Promise<void> {
   await page.getByLabel("Open account menu").click()
   await page.getByRole("menuitem", { name: "Wallets", exact: true }).click()
   await expect(
-    page.getByRole("heading", { name: "My wallets", exact: true })
+    page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
   ).toBeVisible()
 }
 
@@ -2283,7 +2284,7 @@ test("market checkout clears an identity draft after cross-tab auth replacement 
     .toBeNull()
 })
 
-test("market wallets route renders owned and external wallet groups @market", async ({
+test("market wallets route unifies owned and external wallet setup @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -2293,26 +2294,13 @@ test("market wallets route renders owned and external wallet groups @market", as
     page.getByRole("heading", { name: "Wallets", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "My wallets", exact: true })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("heading", { name: "External wallets", exact: true })
-  ).toBeHidden()
-  await page.getByText("External wallet management", { exact: true }).click()
-  await expect(
-    page.getByRole("heading", { name: "External wallets", exact: true })
-  ).toBeVisible()
-  await expect(
     page.getByText("Create or import your first wallet.", { exact: true })
   ).toBeVisible()
-  await expect(
-    page.getByText("No external wallets connected.", { exact: true })
-  ).toBeVisible()
-
   const connectWalletButton = page.getByRole("button", {
-    name: "Connect wallet",
+    name: "Add wallet",
+    exact: true,
   })
-  await connectWalletButton.click()
+  await openWalletSetup(page, "Connect wallet")
   await expect(
     page.getByRole("heading", { name: "Connect wallet", exact: true })
   ).toBeVisible()
@@ -2365,9 +2353,7 @@ test("portable wallet import keeps derivation advanced and clears form state @ma
     await installControlledWallet(page)
     await enterWalletsForSetup(page)
 
-    await page
-      .getByRole("button", { name: "Import wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Import wallet")
     const dialog = page.getByRole("dialog", { name: "Import wallet" })
     await expect(dialog).toBeVisible()
     await expect(dialog.getByLabel("Recovery phrase")).toBeVisible()
@@ -2380,9 +2366,7 @@ test("portable wallet import keeps derivation advanced and clears form state @ma
     await expect(dialog).toContainText("Your Nostr signer opens this wallet.")
 
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
-    await page
-      .getByRole("button", { name: "Import wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Import wallet")
     const reopened = page.getByRole("dialog", { name: "Import wallet" })
     await expect(reopened.getByLabel("Recovery phrase")).toHaveValue("")
     await expect(reopened.getByLabel("Spark account number")).toHaveValue("1")

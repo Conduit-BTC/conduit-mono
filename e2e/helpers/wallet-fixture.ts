@@ -1,8 +1,37 @@
 import path from "node:path"
+import type { WalletDescriptor } from "@conduit/core"
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, type Page } from "@playwright/test"
 
+export async function retryWalletRecovery(page: Page) {
+  const retry = page.getByRole("button", {
+    name: "Retry encrypted wallet sync",
+    exact: true,
+  })
+  if (!(await retry.count())) {
+    await page
+      .getByRole("button", { name: /^Manage / })
+      .first()
+      .click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+  }
+  await retry.click()
+  await expect
+    .poll(async () => !(await retry.count()) || (await retry.isEnabled()))
+    .toBe(true)
+  if (await page.getByRole("dialog", { name: /^Recovery for / }).count()) {
+    await page.keyboard.press("Escape")
+  }
+}
+
 export async function saveWalletRecovery(page: Page, makeMain = true) {
-  const dialog = page.getByRole("dialog")
+  const dialog = page.getByRole("dialog").filter({
+    has: page.getByRole("heading", {
+      name: /^(Wallet imported|Save your recovery details)$/,
+    }),
+  })
   await expect(
     dialog.getByRole("heading", {
       name: /^(Wallet imported|Save your recovery details)$/,
@@ -11,6 +40,11 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
   await expect(
     dialog.getByText("Checking for your Lightning address…", { exact: true })
   ).toHaveCount(0)
+  // The early recovery callback can render this heading before setup settles.
+  // This helper changes the main choice, so wait for that existing control to be ready.
+  await expect(
+    dialog.getByLabel("Make this my main wallet", { exact: true })
+  ).toBeEnabled()
   if (
     await dialog
       .getByRole("heading", { name: "Wallet imported", exact: true })
@@ -32,9 +66,13 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
     exact: true,
   })
   if (await chooser.count()) await chooser.click()
-  await dialog
-    .getByLabel("Make this my main wallet", { exact: true })
-    .setChecked(makeMain)
+  const mainChoice = dialog.getByLabel("Make this my main wallet", {
+    exact: true,
+  })
+  // An already-unchecked control does not wait for actionability in setChecked.
+  // Ordinary setup helpers must finish setup; early dismissal has dedicated tests.
+  await expect(mainChoice).toBeEnabled()
+  await mainChoice.setChecked(makeMain)
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
   await expect(dialog).toHaveCount(0)
 }
@@ -100,8 +138,14 @@ export async function prepareControlledWallet(page: Page) {
             probe.disconnects++
           },
           async getInfo() {
+            probe.balanceReads = (probe.balanceReads ?? 0) + 1
+            if (probe.delayBalance)
+              await new Promise<void>((resolve) => {
+                probe.releaseBalance = resolve
+              })
+            if (probe.infoBarrier) await probe.infoBarrier()
             if (probe.failBalance) throw new Error("Injected post-open failure")
-            return { balanceSats: 0 }
+            return { balanceSats: probe.balanceSats ?? 0 }
           },
           async listPayments() {
             return { payments: [] }
@@ -194,18 +238,23 @@ export async function installControlledWallet(
   )
 }
 
-/** Use the visible wallet actions and secondary external-wallet controls. */
+/** Open the shared Add wallet menu without changing setup behavior. */
 export async function openWalletSetup(
   page: Page,
   name: "Create wallet" | "Import wallet" | "Connect wallet"
 ) {
-  const button = page.getByRole("button", {
-    name: name === "Create wallet" ? "Add a wallet" : name,
-    exact: true,
-  })
-  if (name === "Connect wallet" && !(await button.isVisible()))
-    await page.getByText("External wallet management", { exact: true }).click()
-  await button.click()
+  await page.getByRole("button", { name: "Add wallet", exact: true }).click()
+  await page
+    .getByRole("menuitem", {
+      name:
+        name === "Create wallet"
+          ? "Create a wallet"
+          : name === "Import wallet"
+            ? "Import an existing wallet"
+            : "Connect an external wallet",
+      exact: true,
+    })
+    .click()
 }
 
 /** Observe the real route controller without adding a production test API. */
@@ -260,6 +309,123 @@ export async function closeDefaultWalletSession(page: Page) {
       storage:
         "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
       core: "/@fs" + path.resolve("packages/core/src/index.ts"),
+    }
+  )
+}
+
+/** Pause descriptor metadata reads after the provider sample to exercise a real reload/open interleaving. */
+export async function installWalletReloadObservationBarrier(page: Page) {
+  await page.route(
+    "**/packages/core/src/hooks/useWallets.ts*",
+    async (route) => {
+      const response = await route.fetch()
+      const body = await response.text()
+      const marker = ["const", "hasPasswordWallets", "="].join(" ")
+      if (body.split(marker).length !== 2)
+        throw new Error("Wallet reload observation seam changed")
+      await route.fulfill({
+        response,
+        body: body.replace(
+          marker,
+          "await window.__controlledWalletReloadBarrier?.(); " + marker
+        ),
+      })
+    }
+  )
+}
+
+export async function openWalletDuringDescriptorReload(page: Page) {
+  return page.evaluate(
+    async ({ storage, core, sdk }) => {
+      const { getMarketWalletStore } = await import(storage)
+      const { getAccountSigner } = await import(core)
+      const { getSparkWalletManager } = await import(sdk)
+      const fixtureWindow = window as typeof window & {
+        // The controlled probe also exercises the hook's internal background option.
+        __controlledWalletController: UseWalletsReturn & {
+          unlockSpark(
+            walletId: string,
+            password?: string,
+            migrate?: boolean,
+            options?: { priority?: "foreground" | "background" }
+          ): Promise<void>
+        }
+        __walletProbe: {
+          savedMnemonic: string
+          lastAccount: number
+          infoBarrier?: () => Promise<void>
+        }
+        __controlledWalletReloadBarrier?: () => Promise<void>
+        __releaseControlledWalletBalance?: () => void
+      }
+      const controller = fixtureWindow.__controlledWalletController
+      const signer = getAccountSigner()
+      const manager = getSparkWalletManager()
+      const wallets = await getMarketWalletStore().listVisible(signer.pubkey)
+      const wallet = wallets.find((wallet: WalletDescriptor) =>
+        manager.isOpen(wallet.id)
+      )
+      if (!wallet) throw new Error("Recovered native session was not open")
+      const recovery = {
+        mnemonic: fixtureWindow.__walletProbe.savedMnemonic,
+        accountNumber: fixtureWindow.__walletProbe.lastAccount,
+      }
+      await controller.lockSpark(wallet.id)
+      let releaseMetadata!: () => void,
+        releaseBalance!: () => void,
+        sampled!: () => void
+      const metadata = new Promise<void>((resolve) => {
+        releaseMetadata = resolve
+      })
+      const balance = new Promise<void>((resolve) => {
+        releaseBalance = resolve
+      })
+      const sample = new Promise<void>((resolve) => {
+        sampled = resolve
+      })
+      fixtureWindow.__controlledWalletReloadBarrier = async () => {
+        sampled()
+        await metadata
+      }
+      fixtureWindow.__walletProbe.infoBarrier = () => balance
+      const reload = controller.retryInitialization()
+      await sample
+      // A prior background consent denial can leave an error before another
+      // consumer completes the explicitly authorized native open.
+      let denied = false
+      try {
+        await controller.unlockSpark(wallet.id, "", false, {
+          priority: "background",
+        })
+      } catch {
+        denied = true
+      }
+      if (!denied) throw new Error("Expected paused background wallet opening")
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve())
+      )
+      await manager.openWithMnemonic({
+        walletId: wallet.id,
+        mnemonic: recovery.mnemonic,
+        accountNumber: recovery.accountNumber,
+        shouldContinue: () => getAccountSigner() === signer,
+      })
+      // Metadata completes while the manager's balance notification is still in flight.
+      delete fixtureWindow.__controlledWalletReloadBarrier
+      releaseMetadata()
+      await reload
+      fixtureWindow.__releaseControlledWalletBalance = () => {
+        releaseBalance()
+        delete fixtureWindow.__walletProbe.infoBarrier
+        delete fixtureWindow.__releaseControlledWalletBalance
+      }
+      return recovery.accountNumber
+    },
+    {
+      storage:
+        "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+      core: "/@fs" + path.resolve("packages/core/src/index.ts"),
+      sdk: "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
     }
   )
 }
