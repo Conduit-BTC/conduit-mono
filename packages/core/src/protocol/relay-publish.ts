@@ -49,6 +49,7 @@ import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-rout
 
 import {
   isSparkWalletRegistryDTag,
+  isWalletNamesDTag,
   parseSparkRecoveryChoiceAddress,
 } from "../wallets/spark-recovery-address"
 
@@ -310,7 +311,8 @@ function assertRelayAuthenticationConfiguration(
             tag[0] === "d" &&
             (tag[1]?.startsWith("conduit:spark:wallet:v1:") ||
               !!parseSparkRecoveryChoiceAddress(tag[1]) ||
-              isSparkWalletRegistryDTag(tag[1]))
+              isSparkWalletRegistryDTag(tag[1]) ||
+              isWalletNamesDTag(tag[1]))
         ))
     ) ||
     !input.exclusiveRelayUrls ||

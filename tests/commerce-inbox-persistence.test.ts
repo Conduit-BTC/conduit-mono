@@ -1031,6 +1031,179 @@ function completeRead(
   }
 }
 
+it("waits for a fresh cancellation read when manual refresh overlaps an older read", async () => {
+  const { owner, pubkey } = setup()
+  const merchantSecret = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecret)
+  const orderId = "refresh-cancellation"
+  const cancellation = wrapEvent(
+    {
+      kind: 16,
+      created_at: 1_700_000_100,
+      tags: [
+        ["p", pubkey],
+        ["type", "status_update"],
+        ["order", orderId],
+        ["status", "cancelled"],
+      ],
+      content: JSON.stringify({
+        orderId,
+        merchantPubkey,
+        buyerPubkey: pubkey,
+        status: "cancelled",
+      }),
+    },
+    merchantSecret,
+    pubkey
+  )
+  const oldReadStarted = Promise.withResolvers<void>()
+  const oldRead = Promise.withResolvers<ProtectedInboxReadResult>()
+  const freshReadStarted = Promise.withResolvers<void>()
+  const freshRead = Promise.withResolvers<ProtectedInboxReadResult>()
+  let oldReads = 0
+  let freshReads = 0
+  let refreshSettled = false
+  const options = {
+    includeLegacy: false,
+    declaration: {
+      pubkey,
+      state: "declared" as const,
+      relayUrls: ["wss://refresh.synthetic.example"],
+      stale: false,
+      fetchedAt: Date.now(),
+    },
+    read: async () => {
+      oldReads++
+      if (oldReads === 1) {
+        oldReadStarted.resolve()
+        return oldRead.promise
+      }
+      return completeRead([])
+    },
+  }
+  const background = owner.syncRecent(options)
+  await oldReadStarted.promise
+  const refreshOptions = {
+    ...options,
+    read: async () => {
+      freshReads++
+      if (freshReads === 1) {
+        freshReadStarted.resolve()
+        return freshRead.promise
+      }
+      return completeRead([cancellation])
+    },
+  }
+  const refresh = owner.refreshRecent(refreshOptions).finally(() => {
+    refreshSettled = true
+  })
+  const duplicateRefresh = owner.refreshRecent(refreshOptions)
+  expect(freshReads).toBe(0)
+  oldRead.resolve(completeRead([]))
+  await background
+  await freshReadStarted.promise
+  expect(refreshSettled).toBe(false)
+  const laterRefresh = owner.refreshRecent(refreshOptions)
+  expect(freshReads).toBe(1)
+  freshRead.resolve(completeRead([cancellation]))
+  await refresh
+  await duplicateRefresh
+  await laterRefresh
+  expect(oldReads).toBeGreaterThan(0)
+  expect(freshReads).toBe(oldReads * 2)
+  expect(
+    projectCommerceInbox(owner.getSnapshot(), pubkey).buyer.data.some(
+      (message) => message.status === "cancelled"
+    )
+  ).toBe(true)
+})
+
+it("does not start a queued manual read after its account authority is revoked", async () => {
+  const { owner, pubkey } = setup()
+  const oldReadStarted = Promise.withResolvers<void>()
+  const oldRead = Promise.withResolvers<ProtectedInboxReadResult>()
+  const declaration = {
+    pubkey,
+    state: "declared" as const,
+    relayUrls: ["wss://refresh.synthetic.example"],
+    stale: false,
+    fetchedAt: Date.now(),
+  }
+  const background = owner.syncRecent({
+    declaration,
+    includeLegacy: false,
+    read: async () => {
+      oldReadStarted.resolve()
+      return oldRead.promise
+    },
+  })
+  await oldReadStarted.promise
+  let freshReads = 0
+  const refresh = owner.refreshRecent({
+    declaration,
+    includeLegacy: false,
+    read: async () => {
+      freshReads++
+      return completeRead([])
+    },
+  })
+  const results = Promise.allSettled([background, refresh])
+  __resetProtectedReadSigner()
+  oldRead.resolve(completeRead([]))
+  const [backgroundResult, refreshResult] = await results
+  expect(backgroundResult?.status).toBe("rejected")
+  expect(refreshResult?.status).toBe("rejected")
+  expect(freshReads).toBe(0)
+})
+
+it.each(["success", "failure"] as const)(
+  "uses the fresh read result after an earlier read fails (%s)",
+  async (outcome) => {
+    const { owner, pubkey } = setup()
+    const oldReadStarted = Promise.withResolvers<void>()
+    const oldRead = Promise.withResolvers<ProtectedInboxReadResult>()
+    const declaration = {
+      pubkey,
+      state: "declared" as const,
+      relayUrls: ["wss://refresh.synthetic.example"],
+      stale: false,
+      fetchedAt: Date.now(),
+    }
+    const background = owner.syncRecent({
+      declaration,
+      includeLegacy: false,
+      read: async () => {
+        oldReadStarted.resolve()
+        return oldRead.promise
+      },
+    })
+    await oldReadStarted.promise
+    let freshReads = 0
+    const refresh = owner.refreshRecent({
+      declaration,
+      includeLegacy: false,
+      read: async () => {
+        freshReads++
+        if (outcome === "failure") throw new Error("fresh read failed")
+        return completeRead([])
+      },
+    })
+    const results = Promise.allSettled([background, refresh])
+    oldRead.reject(new Error("earlier read failed"))
+    const [backgroundResult, refreshResult] = await results
+    expect(backgroundResult?.status).toBe("rejected")
+    expect(freshReads).toBeGreaterThan(0)
+    expect(refreshResult?.status).toBe(
+      outcome === "success" ? "fulfilled" : "rejected"
+    )
+    if (refreshResult?.status === "rejected")
+      expect(refreshResult.reason).toHaveProperty(
+        "message",
+        "fresh read failed"
+      )
+  }
+)
+
 it.each([
   "permission_declined",
   "provider_unavailable",

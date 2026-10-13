@@ -345,6 +345,7 @@ export function Wallets({
             </div>
           </div>
           <div className="space-y-8 py-5 sm:p-8">
+            <WalletNameSyncNotice wallets={wallets} />
             {syncError && (
               <p role="alert" className="text-sm text-[var(--error-text)]">
                 {syncError}
@@ -608,11 +609,13 @@ export function WalletRecoveryNotice({
             ? " Encrypted relay recovery is confirmed."
             : " Relay recovery is not confirmed yet."}{" "}
           Save your phrase, account number and network to recover elsewhere.
-          Your Nostr signer can see the recovery details when encrypting or
-          opening the wallet. External wallet authorizations are stored on this
-          device. Copying a recovery phrase puts it on your system clipboard,
-          where other apps or sync services may retain it. Never include wallet
-          secrets in support reports, telemetry, screenshots, or public issues.
+          Your Nostr signer can see recovery details and account-backed wallet
+          names when encrypting or opening them. Account-backed names sync
+          across your devices; other names stay on this device. External wallet
+          authorizations are stored on this device. Copying a recovery phrase
+          puts it on your system clipboard, where other apps or sync services
+          may retain it. Never include wallet secrets in support reports,
+          telemetry, screenshots, or public issues.
         </p>
       </div>
       <a
@@ -625,6 +628,26 @@ export function WalletRecoveryNotice({
         <ExternalLink className="h-3 w-3" />
       </a>
     </div>
+  )
+}
+
+function WalletNameSyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
+  if (wallets.nameSync !== "pending" && wallets.nameSync !== "checking")
+    return null
+  return (
+    <section role="status" className="grid gap-3 text-sm">
+      <p>Wallet names saved on this device. Name sync is pending.</p>
+      <Button
+        className="justify-self-start"
+        variant="outline"
+        disabled={wallets.nameSync === "checking"}
+        onClick={() => void wallets.retryWalletNames().catch(() => undefined)}
+      >
+        {wallets.nameSync === "checking"
+          ? "Syncing wallet names…"
+          : "Sync wallet names"}
+      </Button>
+    </section>
   )
 }
 
@@ -1192,7 +1215,6 @@ function WalletRow({
               <WalletReceivingAddress
                 state={addressState}
                 setState={setAddressState}
-                displayLabel={displayLabel}
                 walletId={wallet.id}
                 onPendingChange={setPending}
                 ready={ready}
@@ -1314,7 +1336,6 @@ function WalletAddressActions({
 
 function WalletReceivingAddress({
   walletId,
-  displayLabel,
   onPendingChange,
   ready,
   resolve,
@@ -1323,7 +1344,6 @@ function WalletReceivingAddress({
   requestAddressName,
   accountPubkey,
 }: {
-  displayLabel: string
   requestAddressName?: UseWalletsReturn["requestAddressName"]
   accountPubkey?: string | null
   state: BreezAddressState | null
@@ -1380,8 +1400,6 @@ function WalletReceivingAddress({
             key={`${accountPubkey}:${walletId}`}
             ownerPubkey={accountPubkey}
             walletId={walletId}
-            presentation="dialog"
-            walletLabel={displayLabel}
             submit={requestAddressName}
             activate={async (name) => {
               const value = await resolve(walletId, true, name, "conduit.cash")
@@ -1416,6 +1434,10 @@ function RenameWalletDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Rename wallet</DialogTitle>
+          <DialogDescription>
+            Saved on this device immediately. Names for account-backed wallets
+            also sync across your devices through your Nostr signer.
+          </DialogDescription>
         </DialogHeader>
         <Label htmlFor="wallet-name">Wallet name</Label>
         <Input

@@ -360,6 +360,52 @@ describe("browser process diagnostics", () => {
 })
 
 describe("bounded smoke failure diagnostics", () => {
+  it("retains only bounded foreground wallet state counts and availability", () => {
+    const privateValue = crypto.randomUUID()
+    const annotation = {
+      type: "smoke:wallet-foreground-open",
+      description: JSON.stringify({
+        runtimeLockedCount: 1,
+        runtimeConnectingCount: 0,
+        runtimeReadyCount: 0,
+        runtimeErrorCount: 1,
+        runtimeMissingCount: 0,
+        sparkAvailability: "ready",
+        walletId: privateValue,
+        error: privateValue,
+        balance: privateValue,
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-cross-app.playwright.ts", [annotation])
+    ).toEqual([
+      {
+        kind: "wallet-foreground-open",
+        runtimeLockedCount: 1,
+        runtimeConnectingCount: 0,
+        runtimeReadyCount: 0,
+        runtimeErrorCount: 1,
+        runtimeMissingCount: 0,
+        sparkAvailability: "ready",
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-cross-app.playwright.ts", [
+        {
+          type: annotation.type,
+          description: JSON.stringify({
+            sparkAvailability: privateValue,
+            runtimeErrorCount: privateValue,
+            runtimeMissingCount: 32769,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("limits migration diagnostics to fixed phases and scenario names", () => {
     const privateValue = crypto.randomUUID()
     const annotation = {

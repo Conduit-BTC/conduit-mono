@@ -1,21 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ArrowRight } from "lucide-react"
 import { type BreezAddressState } from "@conduit/core"
 import {
   ADDRESS_REQUEST_ACTION,
   type AddressNameRequestStatus,
 } from "@conduit/core/wallets/address-name-request"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import {
-  Button,
-  Input,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "../index"
+import { Button, Input } from "../index"
 
 interface ChallengeApi {
   render(node: HTMLElement, options: Record<string, unknown>): string
@@ -158,18 +148,13 @@ export function AddressNameRequestForm({
   submit,
   activate,
   siteKey = import.meta.env?.VITE_ADDRESS_REQUEST_TURNSTILE_SITE_KEY ?? "",
-  presentation = "inline",
-  walletLabel,
 }: {
   walletId: string
   ownerPubkey: string
   submit: NonNullable<UseWalletsReturn["requestAddressName"]>
   activate(name: string): Promise<BreezAddressState>
   siteKey?: string
-  presentation?: "inline" | "dialog"
-  walletLabel?: string
 }) {
-  const [open, setOpen] = useState(false)
   const storageKey = `conduit:address-request:v1:${ownerPubkey}:${walletId}`
   const [name, setName] = useState("")
   const [status, setStatus] = useState<AddressNameRequestStatus | null>(null)
@@ -260,7 +245,7 @@ export function AddressNameRequestForm({
     unavailable:
       "Requests are temporarily unavailable. Your wallet remains usable.",
   }
-  const form = (
+  return (
     <form
       className="grid min-w-0 gap-2"
       aria-busy={pending}
@@ -269,11 +254,9 @@ export function AddressNameRequestForm({
         void run(false)
       }}
     >
-      {presentation === "inline" && (
-        <p className="text-pretty text-sm text-[var(--text-secondary)]">
-          Get your own @conduit.cash address. Names require approval.
-        </p>
-      )}
+      <p className="text-pretty text-sm text-[var(--text-secondary)]">
+        Get your own @conduit.cash address. Names require approval.
+      </p>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <AddressRequestFields
           walletId={walletId}
@@ -384,50 +367,5 @@ export function AddressNameRequestForm({
         </div>
       )}
     </form>
-  )
-  if (presentation === "inline") return form
-  if (!siteKey && !status) {
-    return (
-      <p
-        role="status"
-        className="text-pretty text-sm text-[var(--warning-text)]"
-      >
-        {import.meta.env?.VITE_DEPLOYMENT_PROFILE === "production"
-          ? "Name requests are temporarily unavailable."
-          : "Preview: requests open after release."}
-      </p>
-    )
-  }
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!pending) setToken("")
-        setOpen(next)
-      }}
-    >
-      <DialogTrigger asChild>
-        <Button className="w-full gap-2">
-          {status ? (
-            "View address request"
-          ) : (
-            <span>
-              Get my <strong className="font-semibold">@conduit.cash</strong>{" "}
-              address
-            </span>
-          )}
-          <ArrowRight className="size-4 shrink-0" aria-hidden="true" />
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Get my @conduit.cash address</DialogTitle>
-          <DialogDescription>
-            {walletLabel ? `${walletLabel}. ` : ""}Names require approval.
-          </DialogDescription>
-        </DialogHeader>
-        {form}
-      </DialogContent>
-    </Dialog>
   )
 }

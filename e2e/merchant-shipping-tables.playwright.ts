@@ -12,6 +12,7 @@ import {
   TEST_RELAY_URL,
 } from "./helpers/auth"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -572,7 +573,7 @@ for (const [viewportName, width, height] of [
       fullPage: true,
     })
 
-    await page.goto(`${merchantUrl}/products`)
+    await prepareEmptyMerchantCatalog(page, `${merchantUrl}/products`)
     // Wait for the independently read public policy before opening a new draft.
     await expect(page.locator('aside a[href="/shipping"]')).toHaveText(
       "Shipping",
@@ -585,7 +586,15 @@ for (const [viewportName, width, height] of [
       [1, "250"],
       [2, "400"],
     ] as const) {
-      await activate(page.getByRole("button", { name: "Add product" }).first())
+      const addProduct = page
+        .getByRole("button", { name: "Add product" })
+        .first()
+      // A native touch click can arrive after focus starts smooth scrolling.
+      // Settle the target first, as in the digital-draft journey above.
+      await addProduct.evaluate((element) =>
+        element.scrollIntoView({ behavior: "instant", block: "center" })
+      )
+      await activate(addProduct)
       const dialog = page.getByRole("dialog", { name: "Add product" })
       await expect(dialog).toBeVisible()
       await dialog
@@ -770,11 +779,17 @@ for (const [viewportName, width, height] of [
     await expect(
       measurements.getByLabel("Shipping weight", { exact: true })
     ).toBeEnabled()
-    await measurements.getByLabel("Weight unit", { exact: true }).click()
+    const weightUnit = measurements.getByLabel("Weight unit", { exact: true })
+    await weightUnit.click()
     await page.getByRole("option", { name: "Grams", exact: true }).click()
-    await measurements
-      .getByLabel("Shipping weight", { exact: true })
-      .fill("450")
+    // Select restores focus asynchronously; finish that handoff before typing.
+    await expect(weightUnit).toBeFocused()
+    await expect(weightUnit).toHaveText("Grams")
+    const shippingWeight = measurements.getByLabel("Shipping weight", {
+      exact: true,
+    })
+    await shippingWeight.fill("450")
+    await expect(shippingWeight).toHaveValue("450")
     await measurements
       .getByText("Packing and dimensions", { exact: true })
       .click()

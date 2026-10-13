@@ -31,15 +31,16 @@ const snapshotSchema = z
     receiveWalletId: id.nullable(),
     createdAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   })
-  .refine(
-    (value) =>
-      value.activeWalletIds.every(
-        (id) => !value.removedWalletIds.includes(id)
-      ) &&
+  .refine((value) => {
+    const active = new Set(value.activeWalletIds)
+    const removed = new Set(value.removedWalletIds)
+    return (
+      value.activeWalletIds.every((id) => !removed.has(id)) &&
       [value.payInvoiceWalletId, value.receiveWalletId].every(
-        (id) => id === null || value.activeWalletIds.includes(id)
+        (id) => id === null || active.has(id)
       )
-  )
+    )
+  })
 
 export type SparkWalletRegistrySnapshot = z.infer<typeof snapshotSchema>
 export function parseSparkWalletRegistrySnapshot(

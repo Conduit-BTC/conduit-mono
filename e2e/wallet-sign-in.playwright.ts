@@ -403,8 +403,6 @@ for (const size of [
               walletId: "controlled-wallet",
               ownerPubkey: owner,
               siteKey: "controlled-public-site-key",
-              presentation: "dialog",
-              walletLabel: "Name request wallet",
               async submit(
                 _id: string,
                 value: {
@@ -457,15 +455,7 @@ for (const size of [
           owner: identity.pubkey,
         }
       )
-      await page
-        .getByRole("button", {
-          name: "Get my @conduit.cash address",
-          exact: true,
-        })
-        .click()
-      await expect(page.getByRole("dialog")).toContainText(
-        "Name request wallet"
-      )
+      await expect(page.getByRole("dialog")).toHaveCount(0)
       await page.getByLabel("Desired name", { exact: true }).fill("Review-Name")
       await expect(
         page.getByLabel("Connected public identity", { exact: true })

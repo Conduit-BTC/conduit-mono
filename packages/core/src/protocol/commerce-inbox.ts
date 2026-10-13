@@ -264,6 +264,7 @@ export class CommerceInbox {
   private initialized?: Promise<void>
   private work?: Promise<void>
   private syncing?: Promise<CommerceInboxSnapshot>
+  private queuedFreshSync?: Promise<CommerceInboxSnapshot>
   private refreshing?: Promise<void>
   private lastPaint = 0
   private stopped = false
@@ -903,6 +904,28 @@ export class CommerceInbox {
         this.syncing = undefined
       })
     return await this.syncing
+  }
+  /** An explicit refresh must start a read after any earlier read completes. */
+  async refreshRecent(
+    options: Parameters<CommerceInbox["syncRecent"]>[0] = {}
+  ): Promise<CommerceInboxSnapshot> {
+    this.assertCurrent()
+    if (this.queuedFreshSync) return await this.queuedFreshSync
+    if (!this.syncing) return await this.syncRecent(options)
+    const earlier = this.syncing
+    const fresh = (async () => {
+      try {
+        await earlier
+      } catch {
+        // A failed earlier read does not satisfy this explicit refresh.
+      }
+      // New clicks during this read must queue their own later read.
+      this.queuedFreshSync = undefined
+      this.assertCurrent()
+      return await this.syncRecent(options)
+    })()
+    this.queuedFreshSync = fresh
+    return await fresh
   }
   async loadOlder(
     options: {

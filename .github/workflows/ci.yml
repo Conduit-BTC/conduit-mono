@@ -3,7 +3,11 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main]
+    branches:
+      - main
+      - test/smoke-route-scenarios
+      - feat/wallet-name-sync
+      - feat/wallet-ui-hierarchy
   push:
     branches: [main]
 
@@ -185,8 +189,22 @@ jobs:
         if: matrix.job.area != 'none'
         run: |
           set -euo pipefail
-          # The Playwright image has npm, but not setup-bun's unzip dependency.
-          npm install --global bun@1.3.5
+          # The Playwright image has no unzip. Fetch Bun's pinned native archive
+          # directly so npm registry resolution cannot consume the smoke budget.
+          [[ "$(uname -m)" == "x86_64" ]]
+          timeout 90s apt-get update -qq
+          timeout 90s apt-get install -y -qq --no-install-recommends unzip
+          bun_archive_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$bun_archive_dir"' EXIT
+          curl --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 90 --retry 0 \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-linux-x64.zip \
+            -o "$bun_archive_dir/bun-linux-x64.zip"
+          printf '%s  %s\n' \
+            '7051d86a924aefea3e0b96213b5fd8f79c0793f9cae6534233e627e5c3db4669' \
+            "$bun_archive_dir/bun-linux-x64.zip" | sha256sum --check --status
+          unzip -q "$bun_archive_dir/bun-linux-x64.zip" -d "$bun_archive_dir"
+          install -m 0755 "$bun_archive_dir/bun-linux-x64/bun" /usr/local/bin/bun
           bun --version
           # GitHub mounts the checkout with a different owner inside the image.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"

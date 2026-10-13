@@ -264,6 +264,127 @@ describe("merchant NWC payment verification", () => {
     expect(published).toBe(1)
   })
 
+  it("does not reconfirm a settled invoice when its buyer proof arrives", async () => {
+    const invoiceCandidate = getMerchantPaymentVerificationCandidates([
+      invoiceOnlyConversation("proof-arrival"),
+    ])[0]!
+    const proofCandidate = getMerchantPaymentVerificationCandidates([
+      conversation("proof-arrival"),
+    ])[0]!
+    expect(invoiceCandidate.evidenceMessageId).not.toBe(
+      proofCandidate.evidenceMessageId
+    )
+    const confirmedEvidence = new Set<string>()
+    let lookups = 0
+    let publications = 0
+    const lookupInvoice = async () => {
+      lookups += 1
+      return {
+        type: "incoming" as const,
+        state: "settled" as const,
+        invoice,
+        paymentHash,
+        amountMsats: 100_000,
+        settledAt: 1_700_000_010,
+      }
+    }
+    const publishConfirmation = async () => {
+      publications += 1
+    }
+
+    await verifyMerchantPaymentCandidates({
+      candidates: [invoiceCandidate],
+      confirmedEvidence,
+      lookupInvoice,
+      publishConfirmation,
+    })
+    await verifyMerchantPaymentCandidates({
+      candidates: [proofCandidate],
+      confirmedEvidence,
+      lookupInvoice,
+      publishConfirmation,
+    })
+
+    expect({ lookups, publications }).toEqual({ lookups: 1, publications: 1 })
+  })
+
+  it("keeps a distinct invoice on the same order eligible for verification", async () => {
+    const first = getMerchantPaymentVerificationCandidates([
+      invoiceOnlyConversation("replacement-invoice"),
+    ])[0]!
+    const replacement = invoiceOnlyConversation("replacement-invoice")
+    const replacementRequest = replacement.messages!.find(
+      (message) => message.type === "payment_request"
+    )!
+    if (replacementRequest.type !== "payment_request")
+      throw new Error("Missing replacement request")
+    replacementRequest.payload.invoice = minimalBolt11Invoice(
+      "lnbc1000n",
+      "02".repeat(32)
+    )
+    const second = getMerchantPaymentVerificationCandidates([replacement])[0]!
+    const confirmedEvidence = new Set<string>()
+    let publications = 0
+    const lookupInvoice = async (candidate: typeof first) => ({
+      type: "incoming" as const,
+      state: "settled" as const,
+      invoice: candidate.invoice,
+      paymentHash: candidate.paymentHash,
+      amountMsats: candidate.expectedAmountMsats,
+      settledAt: 1_700_000_010,
+    })
+
+    for (const candidate of [first, second]) {
+      await verifyMerchantPaymentCandidates({
+        candidates: [candidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation: async () => {
+          publications += 1
+        },
+      })
+    }
+    expect(publications).toBe(2)
+  })
+
+  it("retries the settled invoice after publication fails before proof arrives", async () => {
+    const invoiceCandidate = getMerchantPaymentVerificationCandidates([
+      invoiceOnlyConversation("proof-retry"),
+    ])[0]!
+    const proofCandidate = getMerchantPaymentVerificationCandidates([
+      conversation("proof-retry"),
+    ])[0]!
+    const confirmedEvidence = new Set<string>()
+    let publications = 0
+    const lookupInvoice = async () => ({
+      type: "incoming" as const,
+      state: "settled" as const,
+      invoice,
+      paymentHash,
+      amountMsats: 100_000,
+      settledAt: 1_700_000_010,
+    })
+    const publishConfirmation = async () => {
+      publications += 1
+      if (publications === 1) throw new Error("publication failed")
+    }
+    await expect(
+      verifyMerchantPaymentCandidates({
+        candidates: [invoiceCandidate],
+        confirmedEvidence,
+        lookupInvoice,
+        publishConfirmation,
+      })
+    ).rejects.toThrow("publication failed")
+    await verifyMerchantPaymentCandidates({
+      candidates: [proofCandidate],
+      confirmedEvidence,
+      lookupInvoice,
+      publishConfirmation,
+    })
+    expect(publications).toBe(2)
+  })
+
   it("retries lookup and publication failures", async () => {
     const candidate = getMerchantPaymentVerificationCandidates([
       conversation(),
