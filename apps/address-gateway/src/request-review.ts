@@ -37,16 +37,20 @@ export function reviewNameRequest(row: StoredNameRequest): ApprovedName {
     )
       throw new Error()
     const payload = JSON.parse(row.signed_payload) as SignedAddressNameRequest
-    const account = JSON.parse(row.account_proof) as Event
+    const saved = JSON.parse(row.account_proof) as
+      Event | { version: 2; event: Event }
+    const durable = "version" in saved && saved.version === 2
+    const account = durable ? saved.event : (saved as Event)
     if (
       !verifyAddressRequestAuthority(
         payload,
         account,
         ADDRESS_REQUEST_PATH,
-        row.created_at,
+        durable ? payload.timestamp : row.created_at,
         ADDRESS_REQUEST_ORIGIN,
         row.signed_payload
       ) ||
+      payload.timestamp > row.created_at + 60 ||
       row.request_id !== payload.requestId ||
       row.owner_pubkey !== payload.ownerPubkey ||
       row.spark_identity !== payload.sparkIdentity ||

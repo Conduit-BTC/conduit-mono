@@ -103,7 +103,7 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
   })
   const nwc = useNwcConnection()
   // Device wallets remain usable without account payment authority.
-  const wallets = useWallets()
+  const wallets = useWallets({ appId: "merchant" })
   const receivingWallet =
     wallets.wallets.find(
       (wallet) =>

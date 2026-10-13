@@ -15,8 +15,10 @@ log or artifact. Production access belongs to the trusted operator environment;
 the repository utility is offline and receives no production credentials.
 
 Run `scripts/deploy/review_address_request.ts` with the private evidence path and
-a new proposal output path. It verifies both original signatures at the recorded
-receipt time, including the exact HTTP bytes, endpoint and method. It checks
+a new proposal output path. It verifies both original signatures, including the exact HTTP bytes, endpoint
+and method. Legacy evidence uses the recorded receipt time. Durable retry
+evidence retains the original signing time and verifies fresh transport
+authority separately. It checks
 that every denormalized column agrees with the original signed request. Existing
 v1 requests, including their note field, remain valid without rewriting evidence.
 Migration `0002_immutable_request_evidence.sql` prevents later edits to those
@@ -35,7 +37,66 @@ A status check reports `approved` only when the deployed manifest matches the
 request's account, wallet and name. Activation still requires current provider
 recovery, fresh Spark authority and fresh NIP-98 account authority. An unknown
 route or generic 404 is not `not_received`; only the explicit authenticated
-record-absence response permits releasing uncertain request state.
+record-absence response offers a retry of the same immutable request. It never
+authorizes changing the saved name or request ID.
+
+## Encrypted wallet progress
+
+The optional `addressNameRequests` map belongs to the existing encrypted
+`conduit:spark:registry:v1:<network>` record, keyed by the existing wallet ID.
+There is no additional event kind, settings record, relay query or plaintext
+request cache. Each entry retains exact canonical request bytes, the original
+account proof, the wallet proof inside those bytes, and a monotonic phase.
+The normal encrypted recovery journal retains and reads back signed registry
+successors before submission. Local retention is shown separately from confirmed
+relay publication; another device cannot restore a local-only checkpoint.
+
+Normal wallet loading restores this map. Automatic checks are bounded to three
+requests per signer session, once per request; signer refusal pauses automatic
+checks. Explicit checks use foreground consent. Receipt/uncertainty continue to
+show the existing receiving address. Once approval or decline is recorded,
+pending checks stop. Activation is an explicit action and independently checks
+current gateway approval and authenticated provider registration. A saved phase
+is a resume hint, never approval or proof of current registration.
+
+`Activate and use address` first retains activation intent, registers only after
+an authenticated absence, verifies the exact name and public lookup, saves
+registration progress, then uses the existing field-preserving kind-0 address
+publisher. A profile failure leaves `registered` progress with `Finish profile
+update`; the retry verifies the existing registration without registering again.
+Completion includes the profile event ID and requires fresh profile observation.
+A failure to sync completion offers a separate sync retry. A generic routing
+error or unavailable relay never erases request evidence.
+
+Durable HTTP submissions retain the original body and send its original NIP-98
+proof in `X-Address-Request-Proof`, together with a fresh NIP-98 Authorization
+header bound to the exact current endpoint/body. The gateway verifies both
+layers and the Spark signature. D1 stores durable original account proofs as
+`{version: 2, event: <original event>}` in the existing immutable column; legacy
+plain-event records and legacy clients remain readable. Existing rows are never
+rewritten by retries. No database migration is needed for the wrapper.
+
+Conflicting immutable evidence fails closed. Observed removal always wins;
+retained stronger phases survive stale successors, and a repair successor must
+actually republish omitted metadata before claiming cross-device restoration.
+Display-name metadata uses the compatible `walletNames` contract; this release
+preserves it and drops it with removed wallets, without changing rename UI.
+
+### Reader rollout and limits
+
+The record retains version 1 and the existing coordinate. New readers accept old
+records and preserve opaque encrypted extensions when creating successors.
+Pre-extension strict readers reject added fields. Deploy compatible readers to
+both applications and refresh all devices before enabling real custom requests;
+maintainer sign-off must cover this rollout. A still-running old writer can omit
+metadata. A device that retained the earlier signed record can repair it, but a
+fresh device cannot reconstruct history that every replaceable relay has already
+discarded. Do not claim compatibility with unupgraded writers or global consensus.
+Rollback must retain compatible readers, ciphertext history and D1 evidence; do
+not downgrade the wallet reader after extended records have been published.
+The existing 16 KiB plaintext bound still applies; exceeding it fails before
+network submission. Controlled encrypted tests prove bounded reconciliation,
+not arbitrary relay retention or physical-device recovery.
 
 ## Qualification boundary
 

@@ -966,3 +966,102 @@ describe("approved-name gateway", () => {
     expect(f.calls).toHaveLength(0)
   })
 })
+
+test("durable request retries retain original proofs after expiry and require fresh account authority", async () => {
+  const f = fixture()
+  const original = f.nameRequest()
+  const payload = await original.text()
+  const originalProof = original.headers.get("Authorization")!.slice(6)
+  const later = f.now + 86400
+  const make = (path: string, key = f.accountSecret, proof = originalProof) => {
+    const event = finalizeEvent(
+      {
+        kind: 27235,
+        content: "",
+        created_at: later,
+        tags: [
+          ["u", "https://conduit.cash" + path],
+          ["method", "POST"],
+          ["payload", addressRequestHash(payload)],
+        ],
+      },
+      key
+    )
+    return new Request("https://conduit.cash" + path, {
+      method: "POST",
+      body: payload,
+      headers: {
+        Origin: "https://shop.conduit.market",
+        Authorization: `Nostr ${btoa(JSON.stringify(event))}`,
+        "X-Address-Request-Proof": proof,
+        "X-Turnstile-Token": "controlled",
+      },
+    })
+  }
+  expect(
+    (
+      await handleAddressGateway(
+        make(ADDRESS_REQUEST_PATH, generateSecretKey()),
+        f.env,
+        [],
+        f.fetcher,
+        later
+      )
+    ).status
+  ).toBe(401)
+  expect(
+    (
+      await handleAddressGateway(
+        make(ADDRESS_REQUEST_PATH, f.accountSecret, btoa("{}")),
+        f.env,
+        [],
+        f.fetcher,
+        later
+      )
+    ).status
+  ).toBe(401)
+  expect(
+    (
+      await handleAddressGateway(
+        make(ADDRESS_REQUEST_PATH),
+        f.env,
+        [],
+        f.fetcher,
+        later
+      )
+    ).status
+  ).toBe(200)
+  const row = f.db
+    .query("SELECT * FROM name_requests")
+    .get() as StoredNameRequest
+  expect(row.signed_payload).toBe(payload)
+  expect(JSON.parse(row.account_proof).event).toEqual(
+    JSON.parse(atob(originalProof))
+  )
+  expect(reviewNameRequest(row)).toEqual(f.approved)
+  expect(
+    (
+      await handleAddressGateway(
+        make(ADDRESS_REQUEST_PATH),
+        f.env,
+        [],
+        f.fetcher,
+        later
+      )
+    ).status
+  ).toBe(200)
+  expect(f.db.query("SELECT * FROM name_requests").get()).toEqual(row)
+  const result = await handleAddressGateway(
+    make(ADDRESS_REQUEST_PATH + "/status"),
+    f.env,
+    [f.approved],
+    f.fetcher,
+    later
+  )
+  expect(await result.json()).toEqual({ status: "approved" })
+  const stale = make(ADDRESS_REQUEST_PATH + "/status")
+  expect(
+    (await handleAddressGateway(stale, f.env, [], f.fetcher, later + 120))
+      .status
+  ).toBe(401)
+})

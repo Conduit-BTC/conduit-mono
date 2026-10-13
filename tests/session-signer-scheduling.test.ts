@@ -236,6 +236,15 @@ describe("session signer scheduling", () => {
       f.signer.decryptNip44(f.peer, f.ciphertext("three"))
     ).rejects.toMatchObject({ code: "background_paused" })
     expect(attempts).toBe(1)
+    await expect(
+      f.signer.signEvent(f.draft(), { priority: "background" })
+    ).rejects.toMatchObject({ code: "background_paused" })
+    await expect(
+      f.signer.encryptNip44(f.peer, "private request", {
+        priority: "background",
+      })
+    ).rejects.toMatchObject({ code: "background_paused" })
+    expect(f.calls).toEqual(["decrypt"])
     expect((await f.signer.signEvent(f.draft())).content).toBe("synthetic")
     f.signer.resumeBackgroundOperations()
     expect(await f.signer.decryptNip44(f.peer, f.ciphertext("retry"))).toBe(

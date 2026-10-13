@@ -1182,10 +1182,8 @@ function WalletReceivingAddress({
           ownerPubkey={accountPubkey}
           walletId={walletId}
           submit={requestAddressName}
-          activate={async (name) => {
-            const value = await resolve(walletId, true, name, "conduit.cash")
-            setState(value)
-            return value
+          onActivated={async () => {
+            setState(await resolve(walletId))
           }}
         />
       )}

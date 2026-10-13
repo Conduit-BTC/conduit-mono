@@ -159,14 +159,28 @@ async function nameRequest(
   const path = new URL(request.url).pathname
   const raw = await boundedText(request.body, 8192)
   const value = JSON.parse(raw) as SignedAddressNameRequest
-  const event = decodeAccountProof(request)
+  let event = decodeAccountProof(request)
+  const original = request.headers.get("X-Address-Request-Proof")
+  if (original) {
+    if (
+      original.length > 5500 ||
+      !validManagementAccountProof(request, raw, value.ownerPubkey, now)
+    )
+      return response({ status: "invalid" }, 401)
+    try {
+      event = JSON.parse(atob(original)) as Event
+    } catch {
+      return response({ status: "invalid" }, 401)
+    }
+  }
   if (
     !event ||
+    value.timestamp > now + 60 ||
     !verifyAddressRequestAuthority(
       value,
       event,
-      path,
-      now,
+      original ? ADDRESS_REQUEST_PATH : path,
+      original ? value.timestamp : now,
       new URL(request.url).origin,
       raw
     )
@@ -256,7 +270,7 @@ async function nameRequest(
       value.note,
       hash,
       raw,
-      JSON.stringify(event),
+      JSON.stringify(original ? { version: 2, event } : event),
       value.walletSignature,
       now
     )
@@ -618,7 +632,7 @@ export async function handleAddressGateway(
     )
     result.headers.set(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, X-Turnstile-Token"
+      "Content-Type, Authorization, X-Turnstile-Token, X-Address-Request-Proof"
     )
   }
   return result
