@@ -190,7 +190,8 @@ function validatePlan(
 ): SparkRecoveryRelay[] {
   if (!Array.isArray(targets)) throw new SparkRecoveryError("invalid_record")
   const count = targets.length
-  if (count < 1 || count > 8) throw new SparkRecoveryError("invalid_record")
+  if (!Number.isSafeInteger(count) || count < 1 || count > 8)
+    throw new SparkRecoveryError("invalid_record")
   const urls: string[] = []
   for (let index = 0; index < count; index++) urls.push(targets[index].url)
   if (
@@ -217,76 +218,121 @@ export function validateSparkRecoveryState(
   owner: string
 ): SparkRecoveryState {
   try {
+    const ownerPubkey = input.ownerPubkey
+    const unresolvedObserved = input.unresolvedObserved
+    const sourceRecords = input.records
+    const sourceRemoved = input.removedWalletIds
     if (
-      input.ownerPubkey !== owner ||
-      typeof input.unresolvedObserved !== "boolean" ||
-      input.records.length > MAX_JOURNAL_INPUT_RECORDS ||
-      (input.removedWalletIds !== undefined &&
-        (!Array.isArray(input.removedWalletIds) ||
-          input.removedWalletIds.length > MAX_RECORDS ||
-          new Set(input.removedWalletIds).size !==
-            input.removedWalletIds.length ||
-          input.removedWalletIds.some(
-            (id) => typeof id !== "string" || !id.length || id.length > 128
-          )))
+      typeof ownerPubkey !== "string" ||
+      ownerPubkey !== owner ||
+      typeof unresolvedObserved !== "boolean" ||
+      !Array.isArray(sourceRecords)
     )
       throw new SparkRecoveryError("invalid_record")
+    const recordCount = sourceRecords.length
+    if (
+      !Number.isSafeInteger(recordCount) ||
+      recordCount < 0 ||
+      recordCount > MAX_JOURNAL_INPUT_RECORDS
+    )
+      throw new SparkRecoveryError("invalid_record")
+    let removedWalletIds: string[] | undefined
+    if (sourceRemoved !== undefined) {
+      if (!Array.isArray(sourceRemoved))
+        throw new SparkRecoveryError("invalid_record")
+      const removedCount = sourceRemoved.length
+      if (
+        !Number.isSafeInteger(removedCount) ||
+        removedCount < 0 ||
+        removedCount > MAX_RECORDS
+      )
+        throw new SparkRecoveryError("invalid_record")
+      removedWalletIds = []
+      for (let index = 0; index < removedCount; index++) {
+        const id = sourceRemoved[index]
+        if (typeof id !== "string" || !id.length || id.length > 128)
+          throw new SparkRecoveryError("invalid_record")
+        removedWalletIds.push(id)
+      }
+      if (new Set(removedWalletIds).size !== removedCount)
+        throw new SparkRecoveryError("invalid_record")
+    }
     // Reuse only pure lexical URL checks within this synchronous snapshot.
     // Every record, operator binding and later read-back remains validated.
     const positiveUrls = new Set<string>()
-    const records = input.records.map((r) => {
-      const event = validateSparkRecoveryEvent(r.event, owner)
-      const targets = validatePlan(r.targets, positiveUrls)
+    const records: SparkRecoveryRecord[] = []
+    for (let index = 0; index < recordCount; index++) {
+      const source = sourceRecords[index]
+      const sourceEvent = source.event
+      const sourceTargets = source.targets
+      const sourceDelivery = source.delivery
+      const exported = source.exported
+      const event = validateSparkRecoveryEvent(sourceEvent, owner)
+      const targets = validatePlan(sourceTargets, positiveUrls)
+      if (typeof exported !== "boolean" || !Array.isArray(sourceDelivery))
+        throw new SparkRecoveryError("invalid_record")
+      const deliveryCount = sourceDelivery.length
       if (
-        typeof r.exported !== "boolean" ||
-        r.delivery.length !== targets.length ||
-        new Set(r.delivery.map((d) => d.url)).size !== targets.length ||
-        r.delivery.some(
-          (d) =>
-            !targets.some((t) => t.url === d.url) ||
-            typeof d.accepted !== "boolean" ||
-            typeof d.readBack !== "boolean" ||
-            !["not_queried", "present", "absent", "unavailable"].includes(
-              d.lastRead
-            ) ||
-            !Number.isSafeInteger(d.checkedAt) ||
-            d.checkedAt < 0 ||
-            ![
-              "pending",
-              "acked",
-              "rejected",
-              "timed_out",
-              "auth_required",
-              "cancelled",
-              "policy_blocked",
-              "error",
-            ].includes(d.status)
-        )
+        !Number.isSafeInteger(deliveryCount) ||
+        deliveryCount !== targets.length
       )
         throw new SparkRecoveryError("invalid_record")
-      return {
+      const delivery: SparkRecoveryDelivery[] = []
+      for (
+        let deliveryIndex = 0;
+        deliveryIndex < deliveryCount;
+        deliveryIndex++
+      ) {
+        const sourceEvidence = sourceDelivery[deliveryIndex]
+        const evidence = {
+          url: sourceEvidence.url,
+          status: sourceEvidence.status,
+          accepted: sourceEvidence.accepted,
+          readBack: sourceEvidence.readBack,
+          lastRead: sourceEvidence.lastRead,
+          checkedAt: sourceEvidence.checkedAt,
+        }
+        if (
+          !targets.some((target) => target.url === evidence.url) ||
+          typeof evidence.accepted !== "boolean" ||
+          typeof evidence.readBack !== "boolean" ||
+          !["not_queried", "present", "absent", "unavailable"].includes(
+            evidence.lastRead
+          ) ||
+          !Number.isSafeInteger(evidence.checkedAt) ||
+          evidence.checkedAt < 0 ||
+          ![
+            "pending",
+            "acked",
+            "rejected",
+            "timed_out",
+            "auth_required",
+            "cancelled",
+            "policy_blocked",
+            "error",
+          ].includes(evidence.status)
+        )
+          throw new SparkRecoveryError("invalid_record")
+        delivery.push(evidence)
+      }
+      if (
+        new Set(delivery.map((evidence) => evidence.url)).size !== deliveryCount
+      )
+        throw new SparkRecoveryError("invalid_record")
+      records.push({
         event,
         targets,
-        delivery: r.delivery.map((d) => ({
-          url: d.url,
-          status: d.status,
-          accepted: d.accepted,
-          readBack: d.readBack,
-          lastRead: d.lastRead,
-          checkedAt: d.checkedAt,
-        })),
-        exported: r.exported,
-      }
-    })
+        delivery,
+        exported,
+      })
+    }
     if (new Set(records.map((r) => r.event.id)).size !== records.length)
       throw new SparkRecoveryError("invalid_record")
     return {
-      ownerPubkey: owner,
+      ownerPubkey,
       records: compactSparkRecoveryChoices(records),
-      unresolvedObserved: input.unresolvedObserved,
-      ...(input.removedWalletIds
-        ? { removedWalletIds: [...input.removedWalletIds] }
-        : {}),
+      unresolvedObserved,
+      ...(removedWalletIds !== undefined ? { removedWalletIds } : {}),
     }
   } catch {
     throw new SparkRecoveryError("invalid_record")
@@ -297,15 +343,12 @@ export function mergeSparkRecoveryRecords(
   incoming: SparkRecoveryRecord[],
   unresolvedObserved = false
 ): SparkRecoveryState {
+  const saved = validateSparkRecoveryState(current, current.ownerPubkey)
   const next = validateSparkRecoveryState(
-    { ownerPubkey: current.ownerPubkey, records: incoming, unresolvedObserved },
-    current.ownerPubkey
+    { ownerPubkey: saved.ownerPubkey, records: incoming, unresolvedObserved },
+    saved.ownerPubkey
   )
-  const records = new Map(
-    validateSparkRecoveryState(current, current.ownerPubkey).records.map(
-      (r) => [r.event.id, r]
-    )
-  )
+  const records = new Map(saved.records.map((r) => [r.event.id, r]))
   for (const record of next.records) {
     const old = records.get(record.event.id)
     if (!old) {
@@ -330,17 +373,19 @@ export function mergeSparkRecoveryRecords(
       }),
     })
   }
-  return validateSparkRecoveryState(
-    {
-      ownerPubkey: current.ownerPubkey,
-      records: [...records.values()],
-      unresolvedObserved: current.unresolvedObserved || unresolvedObserved,
-      ...(current.removedWalletIds
-        ? { removedWalletIds: current.removedWalletIds }
-        : {}),
-    },
-    current.ownerPubkey
-  )
+  // Both inputs are fully validated owned snapshots. Construction above changes
+  // only checked delivery metadata; signatures and plans cannot acquire aliases.
+  // Preserve the aggregate bounds/choice frontier without another crypto scan.
+  if (records.size > MAX_JOURNAL_INPUT_RECORDS)
+    throw new SparkRecoveryError("invalid_record")
+  return {
+    ownerPubkey: saved.ownerPubkey,
+    records: compactSparkRecoveryChoices([...records.values()]),
+    unresolvedObserved: saved.unresolvedObserved || next.unresolvedObserved,
+    ...(saved.removedWalletIds !== undefined
+      ? { removedWalletIds: saved.removedWalletIds }
+      : {}),
+  }
 }
 
 export class SparkRecoveryService {
