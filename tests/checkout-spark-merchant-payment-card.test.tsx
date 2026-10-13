@@ -17,6 +17,36 @@ const base = {
 }
 
 describe("Merchant order payment presentation", () => {
+  it("shows completed recovery without stale continue controls or resumed notices", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        paused
+        processingScope="order"
+        recoveryPending
+        automaticProcessing
+        outcome="retired"
+        notice="This order's payment processing has resumed. Keep Orders open."
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: false,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Recovery cleanup complete")
+    expect(html).toContain("Payment verified")
+    expect(html).toContain("Continue with fulfillment")
+    expect(html).not.toContain("Finish recovery")
+    expect(html).not.toContain("Continue this order")
+    expect(html).not.toContain("Pause")
+    expect(html).not.toContain('role="progressbar"')
+    expect(html).not.toContain("has resumed")
+    expect(html).not.toContain("Keep Orders open")
+  })
+
   it("shows playful indeterminate progress only while this order is automatically processing", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
@@ -65,6 +95,30 @@ describe("Merchant order payment presentation", () => {
     expect(html).not.toContain("all loaded orders")
     expect(html).not.toContain('role="progressbar"')
     expect(html).not.toContain("Payment needs attention")
+  })
+
+  it("does not flash Finish recovery while checking an already-paid order's local cleanup status", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        paused
+        processingScope="order"
+        recoveryPending
+        recoveryStatusRefreshing
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: false,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Payment verified")
+    expect(html).toContain("Checking recovery cleanup…")
+    expect(html).not.toContain("Finish recovery")
+    expect(html).not.toContain("Recovery cleanup complete")
+    expect(html).not.toContain('role="progressbar"')
   })
 
   it.each([false, true])(

@@ -20,7 +20,10 @@ import {
 } from "@conduit/ui"
 import { CheckoutSparkMerchantPayoutReview } from "./CheckoutSparkMerchantPayoutReview"
 import { CheckoutSparkMerchantPaymentCard } from "./CheckoutSparkMerchantPaymentCard"
-import { readMerchantCheckoutSparkVerification } from "../lib/checkout-spark-merchant-verification"
+import {
+  readMerchantCheckoutSparkVerification,
+  type MerchantCheckoutSparkRetirementRead,
+} from "../lib/checkout-spark-merchant-verification"
 import {
   advanceMerchantCheckoutSparkOrder,
   reconcileMerchantCheckoutSparkOrder,
@@ -232,6 +235,27 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   >({})
   const [verificationReadUnavailable, setVerificationReadUnavailable] =
     useState(false)
+  const [retirement, setRetirement] = useState<
+    Record<string, MerchantCheckoutSparkRetirementRead>
+  >({})
+  const applySavedVerification = useCallback(
+    (
+      saved: Awaited<ReturnType<typeof readMerchantCheckoutSparkVerification>>
+    ) => {
+      setVerified((previous) => ({ ...previous, ...saved.verified }))
+      setRetirement((previous) => {
+        const next = { ...previous, ...saved.retirement }
+        // A later unavailable/partial local read cannot revoke a positive
+        // terminal fact already observed for this exact account/plan.
+        for (const [digest, status] of Object.entries(previous)) {
+          if (status === "retired") next[digest] = status
+        }
+        return next
+      })
+      setVerificationReadUnavailable(saved.unavailable)
+    },
+    []
+  )
   const [confirmation, setConfirmation] = useState<{
     candidate: MerchantCheckoutSparkRecoveryCandidate
     review: MerchantCheckoutSparkPayoutReview
@@ -258,6 +282,39 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     busy || automaticTransition !== null || !hasCurrentSession()
   const manualExecutionDisabled =
     manualControlsDisabled || !hasCurrentExecutionSession()
+
+  useEffect(() => {
+    if (!candidate || !hasCurrentSession()) return
+    let closed = false
+    const isSelectionCurrent = reviewSelection.capture(candidate.orderId)
+    const isCurrent = () =>
+      !closed && hasCurrentSession() && isSelectionCurrent()
+    // Read the selected order's saved terminal marker immediately; it need not
+    // wait its turn in the provider observation queue. This opens no wallet.
+    void readMerchantCheckoutSparkVerification(principalPubkey, [candidate])
+      .then((saved) => {
+        if (isCurrent()) applySavedVerification(saved)
+      })
+      .catch(() => {
+        if (!isCurrent()) return
+        setVerificationReadUnavailable(true)
+        setRetirement((previous) =>
+          previous[candidate.planDigest] === "retired"
+            ? previous
+            : { ...previous, [candidate.planDigest]: "unavailable" }
+        )
+      })
+    return () => {
+      closed = true
+    }
+  }, [
+    candidate,
+    principalPubkey,
+    reviewSelection,
+    reviewSelectionRevision,
+    hasCurrentSession,
+    applySavedVerification,
+  ])
 
   useEffect(
     () => () => {
@@ -340,8 +397,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           candidates
         )
         if (!isCurrent() || verificationRead !== read) return
-        setVerified((previous) => ({ ...previous, ...saved.verified }))
-        setVerificationReadUnavailable(saved.unavailable)
+        applySavedVerification(saved)
       } catch {
         if (isCurrent() && verificationRead === read) {
           setVerificationReadUnavailable(true)
@@ -517,6 +573,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     automaticSession,
     executionEnabled,
     hasCurrentSession,
+    applySavedVerification,
     busy,
     confirmation,
     discoveryRefresh,
@@ -641,8 +698,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         candidates
       )
       if (!current.isCurrent()) return
-      setVerified((previous) => ({ ...previous, ...saved.verified }))
-      setVerificationReadUnavailable(saved.unavailable)
+      applySavedVerification(saved)
     } catch {
       // A local read failure must neither erase verified payment evidence nor
       // turn a successfully completed provider action into a retry prompt.
@@ -1115,7 +1171,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     orderCandidates.length > 1
       ? "needs_attention"
       : candidate
-        ? outcomes[candidate.planDigest]
+        ? retirement[candidate.planDigest] === "retired"
+          ? "retired"
+          : outcomes[candidate.planDigest]
         : discoveryStatus === "unavailable"
           ? "unavailable"
           : undefined
@@ -1144,17 +1202,22 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           automaticPayouts && automaticScope?.kind === "all" ? "all" : "order"
         }
         recoveryPending={recoveryPending}
+        recoveryStatusRefreshing={
+          candidate !== null && retirement[candidate.planDigest] === undefined
+        }
         automaticProcessing={selectedAutomaticAuthority && recoveryPending}
         transitioning={busy || automaticTransition !== null}
         handoffAt={candidate?.takeoverAt ?? 0}
         nowMs={displayNowMs}
         notice={
-          !executionEnabled &&
-          (!projection?.commerceVerified || projection.feePending)
-            ? "Saved payment status remains available. Processing is paused in this build; do not request another payment."
-            : noticeOrderId === selectedOrderId
-              ? notice
-              : null
+          outcome === "retired"
+            ? null
+            : !executionEnabled &&
+                (!projection?.commerceVerified || projection.feePending)
+              ? "Saved payment status remains available. Processing is paused in this build; do not request another payment."
+              : noticeOrderId === selectedOrderId
+                ? notice
+                : null
         }
         onRetry={inspect}
         onPause={() => void changeAutomaticPayouts(false)}

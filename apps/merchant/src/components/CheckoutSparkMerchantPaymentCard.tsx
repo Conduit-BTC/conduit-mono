@@ -15,6 +15,7 @@ interface CheckoutSparkMerchantPaymentCardProps {
   paused: boolean
   processingScope?: "order" | "all"
   recoveryPending?: boolean
+  recoveryStatusRefreshing?: boolean
   automaticProcessing?: boolean
   canContinue: boolean
   transitioning: boolean
@@ -38,6 +39,7 @@ export function CheckoutSparkMerchantPaymentCard({
   paused,
   processingScope = "all",
   recoveryPending = false,
+  recoveryStatusRefreshing = false,
   automaticProcessing = false,
   canContinue,
   transitioning,
@@ -54,6 +56,7 @@ export function CheckoutSparkMerchantPaymentCard({
   const renewalExplanation =
     "The saved payout invoice has expired. A replacement is allowed only after the exact previous attempt is closed and its funds are confirmed returned and spendable. Do not request another buyer payment."
   const paid = projection?.commerceVerified === true
+  const recoveryComplete = outcome === "retired"
   // A terminal invoice payment can still lack independent recipient attribution.
   // Keep that fee-only exception visible without revoking verified commerce.
   const coordinationFeeUnresolved =
@@ -71,10 +74,20 @@ export function CheckoutSparkMerchantPaymentCard({
       outcome === "unavailable" ||
       projection?.recipientUnverified === true)
   const showPaymentDetails =
-    attention ||
-    (paused && (coordinationFeeUnresolved || (!paid && Boolean(children))))
+    !recoveryComplete &&
+    (attention ||
+      (paused && (coordinationFeeUnresolved || (!paid && Boolean(children)))))
   const processingPending =
-    !paid || coordinationFeeUnresolved || recoveryPending
+    !recoveryComplete && (!paid || coordinationFeeUnresolved || recoveryPending)
+  const checkingCleanup =
+    !recoveryComplete &&
+    paused &&
+    paid &&
+    !coordinationFeeUnresolved &&
+    recoveryPending &&
+    recoveryStatusRefreshing
+  const showProcessingControls =
+    processingPending && canContinue && !checkingCleanup
   const showAutomaticProgress =
     automaticProcessing && processingPending && !paused && !attention
   const waitingForHandoff = nowMs < handoffAt
@@ -126,7 +139,7 @@ export function CheckoutSparkMerchantPaymentCard({
             {description}
           </p>
         </div>
-        {processingPending && canContinue && (
+        {showProcessingControls && (
           <Button
             type="button"
             variant="outline"
@@ -150,7 +163,17 @@ export function CheckoutSparkMerchantPaymentCard({
           </Button>
         )}
       </div>
-      {processingPending && canContinue && (
+      {recoveryComplete && (
+        <p role="status" className="mt-3 text-sm text-[var(--text-secondary)]">
+          Recovery cleanup complete
+        </p>
+      )}
+      {checkingCleanup && (
+        <p role="status" className="mt-3 text-sm text-[var(--text-muted)]">
+          Checking recovery cleanup…
+        </p>
+      )}
+      {showProcessingControls && (
         <p
           id={processingScopeId}
           className="mt-3 text-sm text-[var(--text-muted)]"
@@ -172,7 +195,7 @@ export function CheckoutSparkMerchantPaymentCard({
           />
         </div>
       )}
-      {!paid && waitingForHandoff && (
+      {!recoveryComplete && !paid && waitingForHandoff && (
         <p className="mt-3 text-sm text-[var(--text-muted)]">
           If the buyer leaves, automatic recovery can continue after{" "}
           <time dateTime={new Date(handoffAt).toISOString()}>
@@ -184,15 +207,20 @@ export function CheckoutSparkMerchantPaymentCard({
           . This is the recovery start time, not the payment time.
         </p>
       )}
-      {!paid && ((checking && !hasSavedResult) || paused || transitioning) && (
-        <p role="status" className="mt-3 text-sm text-[var(--text-secondary)]">
-          {transitioning
-            ? "Waiting for the current operation to finish safely."
-            : paused
-              ? "Automatic payments are paused. A payment already sent may still finish."
-              : "Checking this order's payment…"}
-        </p>
-      )}
+      {!recoveryComplete &&
+        !paid &&
+        ((checking && !hasSavedResult) || paused || transitioning) && (
+          <p
+            role="status"
+            className="mt-3 text-sm text-[var(--text-secondary)]"
+          >
+            {transitioning
+              ? "Waiting for the current operation to finish safely."
+              : paused
+                ? "Automatic payments are paused. A payment already sent may still finish."
+                : "Checking this order's payment…"}
+          </p>
+        )}
       {coordinationFeeUnresolved && (
         <p role="status" className="mt-3 text-sm text-[var(--text-muted)]">
           {attention
@@ -207,7 +235,7 @@ export function CheckoutSparkMerchantPaymentCard({
           {renewalExplanation}
         </p>
       )}
-      {notice && (
+      {notice && !recoveryComplete && (
         <p role="status" className="mt-3 text-sm text-[var(--text-secondary)]">
           {notice}
         </p>

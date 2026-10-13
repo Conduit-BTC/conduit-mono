@@ -47,7 +47,11 @@ describe("Merchant saved payout confirmation", () => {
     expect(source).toContain(
       "const [automaticPayouts, setAutomaticPayouts] = useState(false)"
     )
-    expect(worker).toContain("if (automaticPayouts)")
+    expect(source).toContain(
+      "const automaticDispatch = automaticPayouts && automaticScope !== null"
+    )
+    expect(worker).toContain("if (automaticDispatch)")
+    expect(worker).toContain("assertAutomaticCurrent(candidate.orderId)")
     expect(worker).toContain("await advanceMerchantCheckoutSparkOrder")
     expect(worker).toContain("controller?.requestRescan()")
     expect(worker).toContain("await reconcileMerchantCheckoutSparkOrder")

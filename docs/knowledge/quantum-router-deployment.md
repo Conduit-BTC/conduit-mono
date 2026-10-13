@@ -71,7 +71,9 @@ the current session is active. A paused order also offers an explicit
 the existing recovery worker. Changing the selection, pausing, or replacing
 the session revokes that scoped authority; it does not authorize other loaded
 orders. `Finish recovery` continues evidence-gated cleanup after payouts are
-verified. Buyer and Merchant use the same randomized, reduced-motion-aware
+verified. A query-only read of the exact saved retirement marker restores
+cleanup completion after reload; paid totals alone cannot establish retirement.
+Buyer and Merchant use the same randomized, reduced-motion-aware
 loading presentation, without treating animation as payment evidence.
 
 ## Local exceptions remain separate

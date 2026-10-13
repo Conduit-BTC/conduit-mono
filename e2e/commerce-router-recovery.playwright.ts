@@ -1252,6 +1252,22 @@ async function rehearseRouter(
         exact: true,
       })
       const recoveredOrder = recovery
+      const assertScopedCleanupComplete = async () => {
+        await expect(
+          recovery.getByText("Recovery cleanup complete", { exact: true })
+        ).toBeVisible()
+        await expect(
+          recovery.getByRole("button", {
+            name: /^(?:Finish recovery|Continue this order|Pause|Pause coordination fee|Resume payment processing|Resume coordination fee)$/,
+          })
+        ).toHaveCount(0)
+        await expect(recovery.getByRole("progressbar")).toHaveCount(0)
+        await expect(
+          recovery.getByText(
+            /Keep Orders open; unresolved payouts remain held until verified\./
+          )
+        ).toHaveCount(0)
+      }
       await expect(recoveredOrder).toBeVisible({ timeout: 45_000 })
       setStage(
         "Merchant order sorting keeps the selected payment target stable"
@@ -1739,6 +1755,7 @@ async function rehearseRouter(
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
+      if (scopedRecovery) await assertScopedCleanupComplete()
       const completed = control().snapshot()
       setStage(
         "cold Merchant reload automatically checks without replaying payouts"
@@ -1760,7 +1777,7 @@ async function rehearseRouter(
       ).toEqual(completedReceipt)
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
       if (scopedRecovery) {
-        await expect(recovery.getByRole("progressbar")).toHaveCount(0)
+        await assertScopedCleanupComplete()
         expect(untouchedControl!.snapshot()).toEqual(untouchedSnapshot)
         expect(untouchedControl!.nativeSnapshot()).toEqual(
           untouchedNativeSnapshot
