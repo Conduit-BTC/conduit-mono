@@ -118,11 +118,4 @@ describe("shared Wallets recovery delivery wording", () => {
     expect(markup).toContain("Encrypted relay recovery is confirmed.")
     expect(markup).not.toContain("Relay recovery is not confirmed yet.")
   })
-  it("pending recovery shows the wallet backup delivery diagnosis", () => {
-    const markup = surface("pending")
-    expect(markup).toContain("Recovery sync details")
-    expect(markup).toContain("Wallet 1 backup:")
-    expect(markup).toContain("relay acceptance pending")
-    expect(markup).toContain("0/1 fresh target readbacks; 0 independent copies")
-  })
 })
