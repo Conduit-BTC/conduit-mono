@@ -128,7 +128,7 @@ export function useCommerceInbox(
     )
   }, [owner, sync])
   const run = useCallback(
-    async (action: "syncRecent" | "loadOlder" | "retryDecode") => {
+    async (action: "refreshRecent" | "loadOlder" | "retryDecode") => {
       if (!owner) return
       try {
         await owner[action]()
@@ -140,7 +140,7 @@ export function useCommerceInbox(
     },
     [owner]
   )
-  const refetch = useCallback(() => run("syncRecent"), [run])
+  const refetch = useCallback(() => run("refreshRecent"), [run])
   const loadOlder = useCallback(() => run("loadOlder"), [run])
   const retry = useCallback(() => run("retryDecode"), [run])
   const retained =
