@@ -26,10 +26,35 @@ function surface(
     createdAt: 1,
     updatedAt: 1,
   }
+  const walletDiagnosis: UseWalletsReturn["recoveryDiagnosisByWallet"][string] =
+    {
+      backup: {
+        ready: recoverySync !== "pending",
+        confirmedTargets: 0,
+        targetCount: recoverySync === "pending" ? 1 : 0,
+        independentCopies: 0,
+        issues: recoverySync === "pending" ? ["awaiting_publish"] : [],
+      },
+      primary: {
+        ready: true,
+        confirmedTargets: 0,
+        targetCount: 0,
+        independentCopies: 0,
+        issues: [],
+      },
+    }
   const wallets = {
+    wallets: hasWallet ? [wallet] : [],
     portableWallets: hasWallet ? [wallet] : [],
     connectedWallets: [],
     runtime: {},
+    recoverySyncByWallet: hasWallet
+      ? { wallet: recoverySync === "ready" ? "ready" : "pending" }
+      : {},
+    recoveryDiagnosisByWallet: hasWallet ? { wallet: walletDiagnosis } : {},
+    mainWalletSync: null,
+    mainWalletDiagnosis: null,
+    recoveryDiscoveryDiagnosis: null,
     nwcSnapshots: {},
     loading: false,
     initializationError: null,
@@ -92,5 +117,12 @@ describe("shared Wallets recovery delivery wording", () => {
     const markup = surface("ready")
     expect(markup).toContain("Encrypted relay recovery is confirmed.")
     expect(markup).not.toContain("Relay recovery is not confirmed yet.")
+  })
+  it("pending recovery shows the wallet backup delivery diagnosis", () => {
+    const markup = surface("pending")
+    expect(markup).toContain("Recovery sync details")
+    expect(markup).toContain("Wallet 1 backup:")
+    expect(markup).toContain("relay acceptance pending")
+    expect(markup).toContain("0/1 fresh target readbacks; 0 independent copies")
   })
 })
