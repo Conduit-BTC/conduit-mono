@@ -20,6 +20,8 @@ const HISTORICAL = getCheckoutSparkPricingAuthorityPublicKey(
 
 function retainedTrustProfile(name: "preview" | "production" = "preview") {
   const file = structuredClone(loadPagesProfiles())
+  file.profiles[name].publicFeatures.quantumRouterEnabled = false
+  file.profiles[name].publicFeatures.quantumRouterExecutionEnabled = false
   const policy = file.quantumRouterTrust[name]
   policy.pricingUrl = null
   policy.receiverContracts = [
@@ -237,7 +239,7 @@ describe("managed router public trust configuration", () => {
       "production cannot enable Quantum Router"
     )
   })
-  it("keeps code-owned defaults explicitly inactive in every managed profile", () => {
+  it("activates only reviewed private Breez receivers in preview while other profiles stay inactive", () => {
     const file = loadPagesProfiles()
     expect(Object.keys(file.quantumRouterTrust).sort()).toEqual([
       "preview",
@@ -245,14 +247,26 @@ describe("managed router public trust configuration", () => {
     ])
     for (const name of ["preview", "production"] as const) {
       const policy = file.quantumRouterTrust[name]
-      expect(policy.receiverContracts.length).toBe(0)
       expect(file.profiles[name].publicFeatures.quantumRouterEnabled).toBe(
-        false
+        name === "preview"
       )
       expect(
         file.profiles[name].publicFeatures.quantumRouterExecutionEnabled
-      ).toBe(false)
+      ).toBe(name === "preview")
       if (name === "preview") {
+        expect(policy.receiverContracts).toEqual([
+          {
+            schemaVersion: 1,
+            contractId: "breez-tips-private-v1",
+            qualification: "accepted",
+            payRequestOrigins: ["https://breez.tips"],
+            callbackOrigins: ["https://breez.tips"],
+            verifyOrigins: ["https://breez.tips"],
+            verifyPathPrefix: "/lnurlp/verify/",
+            modes: ["private"],
+            binding: "metadata_hash",
+          },
+        ])
         expect(policy.pricingUrl).toBe(
           "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing"
         )
@@ -260,6 +274,7 @@ describe("managed router public trust configuration", () => {
           "preview-20261007-01",
         ])
       } else {
+        expect(policy.receiverContracts).toHaveLength(0)
         expect(policy.pricingPublicKeys.length).toBe(0)
         expect(policy.pricingUrl === null).toBe(true)
       }
@@ -268,13 +283,19 @@ describe("managed router public trust configuration", () => {
       const profile = resolveDeploymentProfile({
         CONDUIT_DEPLOYMENT_PROFILE: name,
       })
-      expect(profile.quantumRouterTrust.receiverContracts).toBe("")
       if (name !== "preview") {
+        expect(profile.publicFeatures.quantumRouterEnabled).toBe(false)
+        expect(profile.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
         expect(
           Object.values(profile.quantumRouterTrust).every(
             (value) => value === ""
           )
         ).toBe(true)
+      }
+      if (name === "preview") {
+        expect(
+          JSON.parse(profile.quantumRouterTrust.receiverContracts)
+        ).toEqual(file.quantumRouterTrust.preview.receiverContracts)
       }
       expect(
         profile.quantumRouterTrustDigest ===
@@ -283,6 +304,56 @@ describe("managed router public trust configuration", () => {
       expect(
         Object.keys(defineCheckoutSparkDeploymentTrust(profile)).length
       ).toBe(4)
+    }
+  })
+
+  it("still rejects an active preview with missing, pending or public-only receiver qualification", () => {
+    for (const receiverState of ["empty", "pending", "public-only"] as const) {
+      const file = structuredClone(loadPagesProfiles())
+      if (receiverState === "empty") {
+        file.quantumRouterTrust.preview.receiverContracts = []
+      } else {
+        file.quantumRouterTrust.preview.receiverContracts =
+          file.quantumRouterTrust.preview.receiverContracts.map((contract) => ({
+            ...contract,
+            ...(receiverState === "pending"
+              ? { qualification: "pending" as const }
+              : {
+                  modes: ["public" as const],
+                  binding: "verifier_recipient" as const,
+                }),
+          }))
+      }
+      expect(() => parsePagesProfiles(file)).toThrow(
+        "without a qualified private receiver"
+      )
+    }
+  })
+
+  it("compiles the configured preview receiver and activation through both apps without production fallback", async () => {
+    for (const app of ["market", "merchant"] as const) {
+      const preview = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: "preview",
+      })
+      const compiled = await compiledCore(preview, app)
+      expect(compiled.config.quantumRouterEnabled).toBe(true)
+      expect(compiled.config.quantumRouterExecutionEnabled).toBe(true)
+      expect(compiled.config.checkoutSparkReceiverContracts).toBe(
+        preview.quantumRouterTrust.receiverContracts
+      )
+      expect(compiled.readCompiledCheckoutSparkPublicTrust()).toEqual(
+        preview.quantumRouterTrust
+      )
+      const production = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: "production",
+      })
+      const inactive = await compiledCore(production, app)
+      expect(inactive.config.quantumRouterEnabled).toBe(false)
+      expect(inactive.config.quantumRouterExecutionEnabled).toBe(false)
+      expect(inactive.config.checkoutSparkReceiverContracts).toBeNull()
+      expect(inactive.readCompiledCheckoutSparkPublicTrust()).toEqual(
+        production.quantumRouterTrust
+      )
     }
   })
 

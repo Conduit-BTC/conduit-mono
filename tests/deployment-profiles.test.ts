@@ -152,10 +152,11 @@ describe("deployment profiles", () => {
     expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
     expect(production.publicFeatures.livePresenceEnabled).toBe(true)
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
-    expect(preview.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(preview.publicFeatures.quantumRouterEnabled).toBe(true)
     expect(production.publicFeatures.quantumRouterEnabled).toBe(false)
     expect(staging.publicFeatures.quantumRouterEnabled).toBe(false)
-    for (const profile of [preview, production, staging]) {
+    expect(preview.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
+    for (const profile of [production, staging]) {
       expect(profile.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
     }
     expect(preview.lightningNetwork).toBe("mainnet")
@@ -165,7 +166,7 @@ describe("deployment profiles", () => {
 
   it("ignores dashboard router overrides for managed public profiles", () => {
     for (const profile of ["preview", "production", "staging"] as const) {
-      const expected = false
+      const expected = profile === "preview"
       for (const override of ["true", "false"]) {
         expect(
           resolveDeploymentProfile({
@@ -183,7 +184,7 @@ describe("deployment profiles", () => {
             VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
             VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
           }).publicFeatures.quantumRouterExecutionEnabled
-        ).toBe(false)
+        ).toBe(expected)
       }
     }
   })
@@ -439,8 +440,8 @@ describe("deployment profiles", () => {
       true
     )
     expect(manifest.publicFeatures.livePresenceEnabled).toBe(true)
-    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(false)
-    expect(manifest.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
+    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(manifest.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
     expect(Object.keys(manifest.publicFeatures).sort()).toEqual([
       "breezLightningAddressEnabled",
       "dmCompatibilityOrderRoutingEnabled",
@@ -514,8 +515,8 @@ describe("deployment profiles", () => {
       })
       expect(result.exitCode).toBe(0)
       expect(JSON.parse(result.stdout.toString())).toEqual({
-        router: JSON.stringify("false"),
-        execution: JSON.stringify("false"),
+        router: JSON.stringify(profile === "preview" ? "true" : "false"),
+        execution: JSON.stringify(profile === "preview" ? "true" : "false"),
         network: JSON.stringify(profile === "staging" ? "signet" : "mainnet"),
         profile: JSON.stringify(profile),
       })

@@ -83,10 +83,21 @@ in-flight/delayed history, and external mobile payment followed by Safari
 termination while Merchant is offline, then cold Merchant restore and completion.
 No synthetic test or source inspection waives this gate.
 
+The managed preview qualifies the ordinary-private `https://breez.tips`
+pay-request, callback and `/lnurlp/verify/` contract only. Its metadata identifies
+the selected address; private invoices bind that metadata, and historical invoice
+records retain the original receiving account separately from current name
+assignment. Qualification uses the provider implementation together with deployed
+issuance and exact verification/CORS observations. It does not establish paid
+receipt, spendable receiver credit, or physical-device recovery acceptance.
+Production and staging routing remain disabled. No other origin or public-zap
+mode inherits this preview qualification.
+
 ## Public references
 
 - [LUD-06 LNURL-pay](https://github.com/lnurl/luds/blob/luds/06.md)
 - [LUD-16 Lightning addresses](https://github.com/lnurl/luds/blob/luds/16.md)
 - [LUD-21 invoice verification](https://github.com/lnurl/luds/blob/luds/21.md)
+- [Breez LNURL receiving implementation](https://github.com/breez/spark-sdk/blob/eb8be531d1bdb9e9d08cdf39e7800fbbded67397/crates/breez-sdk/lnurl/src/routes.rs)
 - [NIP-57 public zaps](https://github.com/nostr-protocol/nips/blob/master/57.md)
 - [Merchant reconciliation boundary](merchant-checkout-reconciliation.md)
