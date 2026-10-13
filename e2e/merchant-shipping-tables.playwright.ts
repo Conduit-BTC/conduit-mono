@@ -403,8 +403,14 @@ for (const [viewportName, width, height] of [
   }, testInfo) => {
     test.setTimeout(180_000)
     page.setDefaultTimeout(25_000)
-    const activate = (control: Locator) =>
-      testInfo.project.use.hasTouch ? control.tap() : control.click()
+    const activate = async (control: Locator) => {
+      await control.evaluate(async (element) => {
+        await document.fonts.ready
+        element.scrollIntoView({ behavior: "instant", block: "center" })
+      })
+      if (testInfo.project.use.hasTouch) await control.tap()
+      else await control.click()
+    }
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     await seedTestRelayIdentity(secretKey)
@@ -572,6 +578,9 @@ for (const [viewportName, width, height] of [
       "Shipping",
       { timeout: 20_000 }
     )
+    await expect(
+      page.getByText("No listings yet", { exact: true })
+    ).toBeVisible()
     for (const [index, weight] of [
       [1, "250"],
       [2, "400"],
@@ -711,6 +720,9 @@ for (const [viewportName, width, height] of [
           { timeout: 20_000 }
         )
         .toBe(index)
+      await expect(
+        page.getByText(`Table product ${index}`, { exact: true })
+      ).toBeVisible()
     }
     const products = await readTestRelayEvents({
       kinds: [30402],
