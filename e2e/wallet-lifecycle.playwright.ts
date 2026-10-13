@@ -1490,12 +1490,15 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
               await original.call(this, owner, records, unresolved)
               if (
                 !injected &&
-                records.some((record) =>
-                  record.event.tags.some(
-                    (tag: string[]) =>
-                      tag[0] === "d" &&
-                      tag[1].startsWith("conduit:spark:main:v1")
-                  )
+                records.some(
+                  (record) =>
+                    record.event.id !==
+                      (window as any).__mainChoiceBefore.eventId &&
+                    record.event.tags.some(
+                      (tag: string[]) =>
+                        tag[0] === "d" &&
+                        tag[1].startsWith("conduit:spark:main:v1")
+                    )
                 )
               ) {
                 injected = true
