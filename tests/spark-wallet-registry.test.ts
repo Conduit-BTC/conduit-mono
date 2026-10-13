@@ -1,4 +1,6 @@
 import { accountAddressRequests } from "../packages/core/src/wallets/account-address-request"
+import { AddressRequestService } from "../packages/core/src/wallets/address-request-service"
+import { DexieAddressRequestStore } from "../packages/core/src/wallets/address-request-store"
 import { secp256k1 } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { sha256 } from "../packages/core/node_modules/@noble/hashes/sha2.js"
 import { bytesToHex } from "../packages/core/node_modules/@noble/hashes/utils.js"
@@ -45,6 +47,7 @@ import {
 } from "../packages/core/src/wallets/spark-recovery-service"
 import { generateSparkMnemonic } from "../packages/core/src/wallets/spark-recovery-contract"
 import { sparkWalletRegistryDTag } from "../packages/core/src/wallets/spark-wallet-registry"
+import { addressRequestsDTag } from "../packages/core/src/wallets/spark-recovery-address"
 import { MarketWalletStore } from "../packages/core/src/wallets/wallet-storage"
 import { sealSignerSparkRecovery } from "../packages/core/src/wallets/signer-spark-recovery"
 import {
@@ -257,6 +260,7 @@ function fixture() {
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
   const unavailableRelays = new Set<string>()
+  const unavailableAddressReads = new Set<string>()
   const transport: SparkRecoveryTransport = {
     async publish(url, event, authorized) {
       if (!authorized()) return "cancelled"
@@ -280,7 +284,12 @@ function fixture() {
       return "acked"
     },
     async read(url, _owner, eventId, authorized, address) {
-      if (!authorized() || unavailableRelays.has(url))
+      if (
+        !authorized() ||
+        unavailableRelays.has(url) ||
+        (address === addressRequestsDTag("mainnet") &&
+          unavailableAddressReads.has(url))
+      )
         return { status: "unavailable", events: [] }
       return {
         status: "complete",
@@ -293,14 +302,24 @@ function fixture() {
       }
     },
   }
+  const storeDatabases = new WeakMap<DexieSparkRecoveryStore, ConduitDB>()
   const newStore = () => {
     const database = new ConduitDB(`wallet-registry-${crypto.randomUUID()}`, {
       indexedDB,
       IDBKeyRange,
     })
     databases.push(database)
-    return new DexieSparkRecoveryStore(database)
+    const store = new DexieSparkRecoveryStore(database)
+    storeDatabases.set(store, database)
+    return store
   }
+  const requestService = (store = newStore()) =>
+    new AddressRequestService({
+      signer,
+      currentSigner: () => signer,
+      store: new DexieAddressRequestStore(storeDatabases.get(store)!),
+      transport,
+    })
   const service = (store = newStore()) =>
     new SparkRecoveryService({
       signer,
@@ -308,6 +327,8 @@ function fixture() {
       store,
       transport,
       deriveIdentity: async () => bytesToHex(secp256k1.getPublicKey(secret)),
+      migrateLegacyRequests: (network, discovery, options) =>
+        requestService(store).migrateLegacy(network, discovery, options),
     })
   return {
     owner,
@@ -316,7 +337,9 @@ function fixture() {
     relays,
     relayUrls,
     unavailableRelays,
+    unavailableAddressReads,
     newStore,
+    requestService,
     service,
     async requestRecord(): Promise<AddressRequestRecord> {
       const value = {
@@ -1441,7 +1464,7 @@ test("explicit registry verification succeeds after denial without resuming back
   ).rejects.toMatchObject({ code: "background_paused" })
 })
 
-test("encrypted request restores exact evidence on fresh sessions and second devices; stale progress cannot regress completion", async () => {
+test("encrypted optional request restores on a fresh store and stale progress cannot regress completion", async () => {
   const f = fixture()
   const journal = f.newStore()
   const service = f.service(journal)
@@ -1451,61 +1474,69 @@ test("encrypted request restores exact evidence on fresh sessions and second dev
     await service.prepareRegistry("mainnet", { type: "add", walletId })
   )
   const record = await f.requestRecord()
-  const requestEvent = await service.prepareRegistry("mainnet", {
-    type: "address_request",
+  const requests = f.requestService(journal)
+  const saved = await requests.save(
+    "mainnet",
+    await service.discover(false, "mainnet"),
     walletId,
-    record,
-  })
+    record
+  )
+  expect(saved.confirmed).toBe(true)
   // Local journal retains only encrypted events, no requested name or wallet linkage payload.
   expect(JSON.stringify(await journal.load(f.owner))).not.toContain(
     "saved-name"
   )
   const local = await f.service(journal).discover(false, "mainnet")
-  expect(local.registry?.addressNameRequests?.[walletId]).toEqual(record)
-  expect(local.registryMembershipReady).toBe(false)
-  expect((await service.deliver(requestEvent)).ready).toBe(true)
+  expect((await requests.load("mainnet", local)).records[walletId]).toEqual(
+    record
+  )
+  expect(local.registry?.addressNameRequests).toBeUndefined()
   const second = f.service()
+  const secondRequests = f.requestService()
   expect(
-    (await second.discover(false, "mainnet")).registry?.addressNameRequests?.[
-      walletId
-    ]
+    (
+      await secondRequests.load(
+        "mainnet",
+        await second.discover(false, "mainnet")
+      )
+    ).records[walletId]
   ).toEqual(record)
   const complete = {
     ...record,
     phase: "complete" as const,
     profileEventId: "b".repeat(64),
   }
-  await second.deliver(
-    await second.prepareRegistry("mainnet", {
-      type: "address_request",
-      walletId,
-      record: complete,
-    })
-  )
-  // A stale device reloads the current head before writing a successor.
-  await service.deliver(
-    await service.prepareRegistry("mainnet", {
-      type: "address_request",
-      walletId,
-      record,
-    })
-  )
   expect(
-    (await f.service().discover(false, "mainnet")).registry
-      ?.addressNameRequests?.[walletId]
+    (
+      await secondRequests.save(
+        "mainnet",
+        await second.discover(false, "mainnet"),
+        walletId,
+        complete
+      )
+    ).confirmed
+  ).toBe(true)
+  // A stale device reloads the current head before writing a successor.
+  expect(
+    (
+      await requests.save(
+        "mainnet",
+        await service.discover(false, "mainnet"),
+        walletId,
+        record
+      )
+    ).records[walletId]
   ).toEqual(complete)
   await second.deliver(
     await second.prepareRegistry("mainnet", { type: "remove", walletId })
   )
   const removed = await f.service().discover(false, "mainnet")
-  expect(removed.registry?.addressNameRequests?.[walletId]).toBeUndefined()
+  expect(
+    (await secondRequests.load("mainnet", removed)).records[walletId]
+  ).toBeUndefined()
   expect(removed.registry?.removedWalletIds).toContain(walletId)
   await expect(
-    service.prepareRegistry("mainnet", {
-      type: "address_request",
-      walletId,
-      record,
-    })
+    requests.save("mainnet", removed, walletId, record)
   ).rejects.toThrow()
 })
 
@@ -1518,20 +1549,25 @@ test("request evidence conflicts fail closed and unavailable relay reads cannot 
     await service.prepareRegistry("mainnet", { type: "add", walletId })
   )
   const record = await f.requestRecord()
-  await service.deliver(
-    await service.prepareRegistry("mainnet", {
-      type: "address_request",
-      walletId,
-      record,
-    })
-  )
+  const requests = f.requestService()
+  expect(
+    (
+      await requests.save(
+        "mainnet",
+        await service.discover(false, "mainnet"),
+        walletId,
+        record
+      )
+    ).confirmed
+  ).toBe(true)
   const replacement = await f.requestRecord()
   await expect(
-    service.prepareRegistry("mainnet", {
-      type: "address_request",
+    requests.save(
+      "mainnet",
+      await service.discover(false, "mainnet"),
       walletId,
-      record: replacement,
-    })
+      replacement
+    )
   ).rejects.toThrow()
   expect(() =>
     mergeAddressRequestRecord(
@@ -1540,16 +1576,14 @@ test("request evidence conflicts fail closed and unavailable relay reads cannot 
     )
   ).toThrow()
   f.unavailableRelays.add(f.relayUrls[0])
-  expect(
-    (await service.discover(false, "mainnet")).registry?.addressNameRequests?.[
-      walletId
-    ]
-  ).toEqual(record)
+  const partial = await service.discover(false, "mainnet")
+  expect((await requests.load("mainnet", partial)).records[walletId]).toEqual(
+    record
+  )
   await expect(
-    service.prepareRegistry("mainnet", {
-      type: "address_request",
-      walletId,
-      record: { ...record, phase: "approved" },
+    requests.save("mainnet", partial, walletId, {
+      ...record,
+      phase: "approved",
     })
   ).rejects.toThrow()
 })
@@ -1558,6 +1592,7 @@ test("restored uncertain requests retry identical evidence; approval polling sto
   const f = fixture()
   const journal = f.newStore()
   let service = f.service(journal)
+  let requests = f.requestService(journal)
   const walletId = crypto.randomUUID()
   await backedUp(service, walletId)
   await service.deliver(
@@ -1577,34 +1612,31 @@ test("restored uncertain requests retry identical evidence; approval polling sto
       assertCurrent() {},
       async load(id) {
         const d = await service.discover(false, "mainnet")
-        const record = d.registry?.addressNameRequests?.[id]
+        const saved = await requests.load("mainnet", d)
+        const record = saved.records[id]
         return record
           ? {
               record,
-              publication: d.registryMembershipReady ? "confirmed" : "local",
+              publication: saved.confirmed ? "confirmed" : "local",
             }
           : undefined
       },
       async save(id, record) {
-        const eventId = await service.prepareRegistry("mainnet", {
-          type: "address_request",
-          walletId: id,
-          record,
-        })
-        const result = await service.deliver(eventId)
         const d = await service.discover(false, "mainnet")
+        const saved = await requests.save("mainnet", d, id, record)
         return {
-          record: d.registry!.addressNameRequests![id],
-          publication: result.ready ? "confirmed" : "local",
+          record: saved.records[id],
+          publication: saved.confirmed ? "confirmed" : "local",
         } as AddressRequestView
       },
       signWallet: async () => JSON.parse(original.payload),
       signAccount: (draft) => f.signer.signEvent(draft),
       fetch: (async (_url, init) => {
         const d = await f.service().discover(false, "mainnet")
-        expect(d.registry?.addressNameRequests?.[walletId]?.payload).toBe(
-          init?.body
-        )
+        expect(
+          (await f.requestService().load("mainnet", d)).records[walletId]
+            ?.payload
+        ).toBe(init?.body)
         bodies.push(String(init?.body))
         if (gateway === "pending") throw new Error("delivery outcome unknown")
         return Response.json({ status: gateway })
@@ -1645,6 +1677,7 @@ test("restored uncertain requests retry identical evidence; approval polling sto
     ).record.phase
   ).toBe("pending")
   service = f.service() // Completely separate journal; only relay evidence can restore.
+  requests = f.requestService()
   gateway = "received"
   const restored = await workflow().load(walletId)
   expect(restored?.record.payload).toBe(original.payload)
@@ -1669,12 +1702,14 @@ test("restored uncertain requests retry identical evidence; approval polling sto
   )
   expect((await workflow().load(walletId))?.record.phase).toBe("activating")
   service = f.service()
+  requests = f.requestService()
   await expect(workflow().activate(walletId)).rejects.toThrow(
     "publication unavailable"
   )
   expect((await workflow().load(walletId))?.record.phase).toBe("registered")
   expect(registrations).toBe(1)
   service = f.service()
+  requests = f.requestService()
   profileFails = false
   expect((await workflow().activate(walletId)).record.phase).toBe("complete")
   expect(registrations).toBe(1)
@@ -1684,7 +1719,7 @@ test("restored uncertain requests retry identical evidence; approval polling sto
   expect(profileCalls).toBe(2)
 })
 
-test("legacy omission is repaired from retained encrypted history while display names and unrelated metadata survive", async () => {
+test("legacy extended request migrates before a clean membership successor", async () => {
   const f = fixture()
   const service = f.service()
   const walletId = crypto.randomUUID()
@@ -1693,23 +1728,16 @@ test("legacy omission is repaired from retained encrypted history while display 
     await service.prepareRegistry("mainnet", { type: "add", walletId })
   )
   const record = await f.requestRecord()
-  await service.deliver(
-    await service.prepareRegistry("mainnet", {
-      type: "address_request",
-      walletId,
-      record,
-    })
-  )
   const before = await service.discover(false, "mainnet")
   const snapshot = {
     ...before.registry!,
     revision: before.registry!.revision + 1,
     parentEventId: before.registryEventId!,
     createdAt: before.registry!.createdAt + 1,
+    addressNameRequests: { [walletId]: record },
     walletNames: { [walletId]: "Travel" },
     compatibleFutureField: { version: 1 },
   }
-  delete snapshot.addressNameRequests
   const event = await f.signer.signEvent({
     kind: 30078,
     pubkey: f.owner,
@@ -1721,42 +1749,43 @@ test("legacy omission is repaired from retained encrypted history while display 
     relay.delete(before.registryEventId!)
     relay.set(event.id, event)
   }
-  // This device has retained the old proof. A successor must actually carry it;
-  // returning the stripping head as an idempotent success would lose it on a new device.
-  const repaired = await service.prepareRegistry("mainnet", {
-    type: "address_request",
+  const discovered = await service.discover(false, "mainnet")
+  expect(discovered.registry?.addressNameRequests?.[walletId]).toEqual(record)
+  f.unavailableAddressReads.add(f.relayUrls[0])
+  await expect(
+    service.prepareRegistry("mainnet", { type: "main", walletId })
+  ).rejects.toThrow()
+  expect((await f.service().discover(false, "mainnet")).registryEventId).toBe(
+    event.id
+  )
+  f.unavailableAddressReads.clear()
+  const clean = await service.prepareRegistry("mainnet", {
+    type: "main",
     walletId,
-    record,
   })
-  expect(repaired).not.toBe(event.id)
-  expect((await service.deliver(repaired)).ready).toBe(true)
+  expect((await service.deliver(clean)).ready).toBe(true)
   const fresh = await f.service().discover(false, "mainnet")
-  expect(fresh.registry?.addressNameRequests?.[walletId]).toEqual(record)
-  expect(fresh.registry?.walletNames).toEqual({ [walletId]: "Travel" })
-  expect(fresh.registry?.compatibleFutureField).toEqual({ version: 1 })
+  expect(fresh.registry?.addressNameRequests).toBeUndefined()
+  expect(fresh.registry?.walletNames).toBeUndefined()
+  expect(fresh.registry?.compatibleFutureField).toBeUndefined()
+  expect(
+    (await f.requestService().load("mainnet", fresh)).records[walletId]
+  ).toEqual(record)
   await service.deliver(
     await service.prepareRegistry("mainnet", { type: "remove", walletId })
   )
   const removed = await f.service().discover(false, "mainnet")
-  expect(removed.registry?.walletNames).toEqual({})
-  expect(removed.registry?.addressNameRequests).toBeUndefined()
+  expect(
+    (await f.requestService().load("mainnet", removed)).records[walletId]
+  ).toBeUndefined()
 })
 
-test("request writes remain disabled before compatible-reader rollout", () => {
+test("separate request writes are enabled by default", () => {
   const f = fixture()
   activateAccountSigner(f.signer)
   try {
     const requests = accountAddressRequests(f.signer, "market")
-    expect(requests.writesEnabled).toBe(false)
-    expect(() =>
-      requests.submit(crypto.randomUUID(), {
-        desiredName: "saved-name",
-        token: "unused",
-      })
-    ).toThrow("compatible wallet readers")
-    expect(() => requests.activate(crypto.randomUUID())).toThrow(
-      "compatible wallet readers"
-    )
+    expect(requests.writesEnabled).toBe(true)
   } finally {
     retireAccountSigner(f.signer)
   }

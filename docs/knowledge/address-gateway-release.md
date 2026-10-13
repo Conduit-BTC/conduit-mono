@@ -42,16 +42,18 @@ authorizes changing the saved name or request ID.
 
 ## Encrypted wallet progress
 
-The optional `addressNameRequests` map belongs to the existing encrypted
-`conduit:spark:registry:v1:<network>` record, keyed by the existing wallet ID.
-There is no additional event kind, settings record, relay query or plaintext
-request cache. Each entry retains exact canonical request bytes, the original
-account proof, the wallet proof inside those bytes, and a monotonic phase.
-The normal encrypted recovery journal retains and reads back signed registry
-successors before submission. Local retention is shown separately from confirmed
-relay publication; another device cannot restore a local-only checkpoint.
+Request progress uses a separate encrypted kind-30078 record at
+`conduit:address-requests:v1:mainnet`, keyed within its ciphertext by the
+existing wallet ID. It does not add fields to the wallet-membership registry.
+Each entry retains exact canonical request bytes, the original account proof,
+the wallet proof inside those bytes, and a monotonic phase. The account journal
+retains the signed event before relay publication, and the workflow requires
+readback at every planned target before submitting the request or registering
+an address. Local retention is shown separately from confirmed publication;
+another device cannot restore a local-only checkpoint.
 
-Normal wallet loading restores this map. Automatic checks are bounded to three
+Normal wallet loading reads this optional record independently of membership.
+Automatic checks are bounded to three
 requests per signer session, once per request; signer refusal pauses automatic
 checks. Explicit checks use foreground consent. Receipt/uncertainty continue to
 show the existing receiving address. Once approval or decline is recorded,
@@ -76,32 +78,29 @@ layers and the Spark signature. D1 stores durable original account proofs as
 plain-event records and legacy clients remain readable. Existing rows are never
 rewritten by retries. No database migration is needed for the wrapper.
 
-Conflicting immutable evidence fails closed. Observed removal always wins;
-retained stronger phases survive stale successors, and a repair successor must
-actually republish omitted metadata before claiming cross-device restoration.
-Display-name metadata uses the compatible `walletNames` contract; this release
-preserves it and drops it with removed wallets, without changing rename UI.
+Conflicting immutable evidence fails closed. Confirmed membership removal
+always wins; retained stronger phases survive stale optional heads. Optional
+read failure never changes wallet membership or grants approval. Display names
+use their own `conduit:wallet-names:v1:<network>` record.
 
-### Reader rollout and limits
+### Reader compatibility and limits
 
-The record retains version 1 and the existing coordinate. New readers accept old
-records and preserve opaque encrypted extensions when creating successors.
-Pre-extension strict readers reject added fields.
-`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED` defaults to false; the finished
-inline form remains visible while submission/activation writes are disabled.
-Deploy compatible readers to both applications and refresh participating devices
-before setting that public build flag to `true` for the reviewed release.
-An isolated preview may enable it only after that rollout or with a dedicated
-test account that has never been used in older clients. Before real requests,
-maintainer sign-off must cover this rollout. A still-running old writer can omit
-metadata. A device that retained the earlier signed record can repair it, but a
-fresh device cannot reconstruct history that every replaceable relay has already
-discarded. Do not claim compatibility with unupgraded writers or global consensus.
-Rollback must retain compatible readers, ciphertext history and D1 evidence; do
-not downgrade the wallet reader after extended records have been published.
-The existing 16 KiB plaintext bound still applies; exceeding it fails before
-network submission. Controlled encrypted tests prove bounded reconciliation,
-not arbitrary relay retention or physical-device recovery.
+New ordinary membership successors contain only the deployed strict v1 fields.
+An older client can continue to read and write wallet membership while a newer
+client writes the separate request record. Older clients do not show that
+optional progress. The workflow is enabled by default; setting
+`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED=false` is an emergency disable,
+not a staged-reader requirement.
+
+Some earlier preview clients wrote `addressNameRequests` inside the registry.
+New readers still accept that legacy extension. Before an ordinary successor
+drops it, the writer must publish and read back the exact legacy progress in
+the separate record. If migration cannot be confirmed, the membership change
+stops rather than erasing the only relay copy. Rollback must preserve encrypted
+request history and D1 evidence; a fresh old client cannot display optional
+progress. The 16 KiB plaintext bound still applies. Controlled encrypted tests
+prove bounded reconciliation, not arbitrary relay retention or physical-device
+recovery.
 
 ## Qualification boundary
 

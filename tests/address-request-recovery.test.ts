@@ -18,6 +18,9 @@ import { ConduitDB } from "../packages/core/src/db"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 import type { SignedNostrEvent } from "../packages/core/src/protocol/nostr-event-signer"
 import { createAddressRequestWorkflow } from "../packages/core/src/wallets/address-request-workflow"
+import { AddressRequestService } from "../packages/core/src/wallets/address-request-service"
+import { DexieAddressRequestStore } from "../packages/core/src/wallets/address-request-store"
+import { parseAddressRequests } from "../packages/core/src/wallets/address-request-metadata"
 import {
   addressNameRequestMessage,
   type AddressNameRequest,
@@ -30,6 +33,7 @@ import {
 import { generateSparkMnemonic } from "../packages/core/src/wallets/spark-recovery-contract"
 import {
   sparkRecoveryNetworkSchema,
+  addressRequestsDTag,
   sparkWalletRegistryDTag,
   walletNamesDTag,
 } from "../packages/core/src/wallets/spark-recovery-address"
@@ -116,6 +120,7 @@ test("signed name request completes after approval and restores on another stora
   const relays = new Map(
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
+  let optionalUnavailable = false
   const transport: SparkRecoveryTransport = {
     async publish(url, event) {
       const events = relays.get(url)!
@@ -131,6 +136,8 @@ test("signed name request completes after approval and restores on another stora
       return "acked"
     },
     async read(url, _owner, eventId, _authorized, address) {
+      if (optionalUnavailable && address === addressRequestsDTag("mainnet"))
+        return { status: "unavailable", events: [] }
       return {
         status: "complete",
         events: [...relays.get(url)!.values()].filter(
@@ -214,6 +221,13 @@ test("signed name request completes after approval and restores on another stora
       deriveIdentity: async (bundle) =>
         bundle.accountNumber === 2 ? secondIdentity : identity,
     })
+  const metadata = (db: ConduitDB) =>
+    new AddressRequestService({
+      signer,
+      currentSigner: () => signer,
+      store: new DexieAddressRequestStore(db),
+      transport,
+    })
   const first = service(dbA)
   const walletId = crypto.randomUUID()
   const secondWalletId = crypto.randomUUID()
@@ -253,35 +267,30 @@ test("signed name request completes after approval and restores on another stora
     await namesA.queue(owner, "mainnet", walletId, "Pending local name")
     const pendingToken = (await namesA.load(owner, "mainnet")).pending[walletId]
       .token
-    const workflow = (recovery: SparkRecoveryService) =>
+    const workflow = (
+      recovery: SparkRecoveryService,
+      requests: AddressRequestService
+    ) =>
       createAddressRequestWorkflow({
         owner,
         assertCurrent() {},
         async load(id) {
           const discovery = await recovery.discover(false, "mainnet")
-          const record = discovery.registry?.addressNameRequests?.[id]
+          const saved = await requests.load("mainnet", discovery)
+          const record = saved.records[id]
           return record
             ? {
                 record,
-                publication: discovery.registryMembershipReady
-                  ? "confirmed"
-                  : "local",
+                publication: saved.confirmed ? "confirmed" : "local",
               }
             : undefined
         },
         async save(id, record) {
-          const eventId = await recovery.prepareRegistry("mainnet", {
-            type: "address_request",
-            walletId: id,
-            record,
-          })
-          await recovery.deliver(eventId)
           const discovery = await recovery.discover(false, "mainnet")
+          const saved = await requests.save("mainnet", discovery, id, record)
           return {
-            record: discovery.registry!.addressNameRequests![id],
-            publication: discovery.registryMembershipReady
-              ? "confirmed"
-              : "local",
+            record: saved.records[id],
+            publication: saved.confirmed ? "confirmed" : "local",
           }
         },
         async signWallet(
@@ -351,12 +360,31 @@ test("signed name request completes after approval and restores on another stora
           return publishedProfile.id
         },
       })
-    const flowA = workflow(first)
+    const flowA = workflow(first, metadata(dbA))
+    optionalUnavailable = true
+    await expect(
+      flowA.submit(walletId, { desiredName: "saved-name", token: "controlled" })
+    ).rejects.toThrow("Finish wallet sync")
+    expect(
+      sqlite.query("SELECT COUNT(*) AS count FROM name_requests").get()
+    ).toEqual({ count: 0 })
+    const retained = await new DexieAddressRequestStore(dbA).load(
+      owner,
+      "mainnet"
+    )
+    expect(retained.operation).toBeDefined()
+    const originalBytes = parseAddressRequests(
+      await signer.decryptNip44(owner, retained.operation!.event.content),
+      retained.operation!.event,
+      "mainnet"
+    ).requests[walletId].payload
+    optionalUnavailable = false
     const submitted = await flowA.submit(walletId, {
       desiredName: "saved-name",
       token: "controlled",
     })
     expect(submitted.record.phase).toBe("received")
+    expect(submitted.record.payload).toBe(originalBytes)
     expect((await namesA.load(owner, "mainnet")).pending[walletId].token).toBe(
       pendingToken
     )
@@ -370,25 +398,40 @@ test("signed name request completes after approval and restores on another stora
       .get(signedRequestRegistry.registryEventId!)!
     const plaintext = await signer.decryptNip44(owner, registryEvent.content)
     const snapshot = JSON.parse(plaintext)
-    expect(strictV1Registry.safeParse(snapshot).success).toBe(false)
-    const oldShape = { ...snapshot }
-    delete oldShape.addressNameRequests
-    expect(strictV1Registry.safeParse(oldShape).success).toBe(true)
+    expect(strictV1Registry.safeParse(snapshot).success).toBe(true)
     expect(
       parseSparkWalletRegistrySnapshot(plaintext, registryEvent)
-        .addressNameRequests?.[walletId]
-    ).toEqual(submitted.record)
-    expect(Object.keys(snapshot.addressNameRequests)).toHaveLength(1)
+        .addressNameRequests
+    ).toBeUndefined()
     expect(snapshot.activeWalletIds).toHaveLength(2)
     expect(registryEvent.tags.find((tag) => tag[0] === "d")?.[1]).toBe(
       sparkWalletRegistryDTag("mainnet")
     )
+    const requestEvent = [...relays.get(relayUrls[0])!.values()].find((event) =>
+      event.tags.some(
+        (tag) => tag[0] === "d" && tag[1] === addressRequestsDTag("mainnet")
+      )
+    )!
+    expect(verifyEvent(requestEvent)).toBe(true)
+    expect(
+      parseAddressRequests(
+        await signer.decryptNip44(owner, requestEvent.content),
+        requestEvent,
+        "mainnet"
+      ).requests[walletId]
+    ).toEqual(submitted.record)
     const successor = await first.prepareRegistry("mainnet", {
       type: "main",
       walletId: secondWalletId,
     })
     expect(successor).not.toBe(signedRequestRegistry.registryEventId)
     expect((await first.deliver(successor)).ready).toBe(true)
+    const successorEvent = relays.get(relayUrls[0])!.get(successor)!
+    expect(
+      strictV1Registry.safeParse(
+        JSON.parse(await signer.decryptNip44(owner, successorEvent.content))
+      ).success
+    ).toBe(true)
     expect((await namesA.load(owner, "mainnet")).pending[walletId].token).toBe(
       pendingToken
     )
@@ -401,10 +444,16 @@ test("signed name request completes after approval and restores on another stora
       discovery.candidates.some((candidate) => candidate.walletId === walletId)
     ).toBe(true)
     expect(discovery.registry?.activeWalletIds).toHaveLength(2)
+    expect(discovery.registry?.addressNameRequests).toBeUndefined()
+    optionalUnavailable = true
     expect(
-      Object.keys(discovery.registry?.addressNameRequests ?? {})
-    ).toHaveLength(1)
-    const flowB = workflow(fresh)
+      (await fresh.discover(false, "mainnet")).registry?.activeWalletIds
+    ).toHaveLength(2)
+    expect(await workflow(fresh, metadata(dbB)).load(walletId)).toBeUndefined()
+    expect(registrations).toBe(0)
+    expect(profileUpdates).toBe(0)
+    optionalUnavailable = false
+    const flowB = workflow(fresh, metadata(dbB))
     expect((await flowB.load(walletId))?.record.phase).toBe("received")
     approved = [
       {
@@ -426,15 +475,17 @@ test("signed name request completes after approval and restores on another stora
     })
     expect(activated.record.profileEventId).toBe(publishedProfile!.id)
     expect(registrations).toBe(1)
-    const restored = await workflow(service(dbA)).load(walletId)
+    const restored = await workflow(service(dbA), metadata(dbA)).load(walletId)
     expect(restored?.record).toEqual(activated.record)
     expect(restored?.publication).toBe("confirmed")
-    expect((await workflow(service(dbA)).check(walletId))?.record.phase).toBe(
-      "complete"
-    )
-    expect((await workflow(service(dbA)).activate(walletId)).record.phase).toBe(
-      "complete"
-    )
+    expect(
+      (await workflow(service(dbA), metadata(dbA)).check(walletId))?.record
+        .phase
+    ).toBe("complete")
+    expect(
+      (await workflow(service(dbA), metadata(dbA)).activate(walletId)).record
+        .phase
+    ).toBe("complete")
     expect(registrations).toBe(1)
     expect(profileUpdates).toBe(1)
     expect((await namesA.load(owner, "mainnet")).pending[walletId].token).toBe(
@@ -462,9 +513,9 @@ test("signed name request completes after approval and restores on another stora
     )
     expect(namesEvent).toBeDefined()
     expect(verifyEvent(namesEvent!)).toBe(true)
-    expect((await workflow(service(dbB)).load(walletId))?.record.phase).toBe(
-      "complete"
-    )
+    expect(
+      (await workflow(service(dbB), metadata(dbB)).load(walletId))?.record.phase
+    ).toBe("complete")
     expect((await namesA.load(owner, "mainnet")).pending).toEqual({})
   } finally {
     sqlite.close()

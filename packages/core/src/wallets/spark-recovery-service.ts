@@ -1,9 +1,5 @@
 import { type WalletNameStates } from "./wallet-name-contract"
-import {
-  mergeAddressRequestRecord,
-  requestEvidence,
-  type AddressRequestRecord,
-} from "./address-request-record"
+import { type AddressRequestStates } from "./address-request-metadata"
 import {
   NostrSignerError,
   type AccountSigner,
@@ -114,6 +110,8 @@ export interface SparkRecoveryState {
   registryExcludedWalletIds?: string[]
   /** Local display-name intents and their separate encrypted delivery evidence. */
   walletNameSync?: WalletNameStates
+  /** Local immutable request-progress delivery evidence. */
+  addressRequestSync?: AddressRequestStates
 }
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
@@ -318,6 +316,9 @@ export function validateSparkRecoveryState(
       ...(input.walletNameSync
         ? { walletNameSync: structuredClone(input.walletNameSync) }
         : {}),
+      ...(input.addressRequestSync
+        ? { addressRequestSync: structuredClone(input.addressRequestSync) }
+        : {}),
       records: compactSparkRecoveryChoices(records),
       unresolvedObserved: input.unresolvedObserved,
       ...(input.removedWalletIds
@@ -373,6 +374,7 @@ export function mergeSparkRecoveryRecords(
     {
       ownerPubkey: current.ownerPubkey,
       walletNameSync: current.walletNameSync,
+      addressRequestSync: current.addressRequestSync,
       records: [...records.values()],
       unresolvedObserved: current.unresolvedObserved || unresolvedObserved,
       ...(current.removedWalletIds
@@ -418,6 +420,11 @@ export class SparkRecoveryService {
       deriveIdentity: SparkIdentityDeriver
       currentSigner?: () => AccountSigner | undefined
       userRelayUrls?: readonly string[]
+      migrateLegacyRequests?: (
+        network: SparkRecoveryBundle["network"],
+        discovery: SparkRecoveryDiscovery,
+        options: AccountSignerOperationOptions
+      ) => Promise<void>
     }
   ) {
     this.current = input.currentSigner ?? getAccountSigner
@@ -668,12 +675,7 @@ export class SparkRecoveryService {
           walletId: string
           replacementPayWalletId?: string
         }
-      | { type: "main"; walletId: string }
-      | {
-          type: "address_request"
-          walletId: string
-          record: AddressRequestRecord
-        },
+      | { type: "main"; walletId: string },
     commit?: (retain: () => Promise<void>) => Promise<void>,
     options: AccountSignerOperationOptions = { priority: "foreground" }
   ): Promise<string> {
@@ -706,6 +708,12 @@ export class SparkRecoveryService {
     const previous = discovery.registry
     if (change.type === "bootstrap" && previous)
       throw new SparkRecoveryError("conflict")
+    if (Object.keys(previous?.addressNameRequests ?? {}).length) {
+      if (!this.input.migrateLegacyRequests)
+        throw new SparkRecoveryError("conflict")
+      await this.input.migrateLegacyRequests(network, discovery, options)
+      this.scope.assertCurrent()
+    }
     if (previous && discovery.registryEventId) {
       const head = local.records.find(
         (record) => record.event.id === discovery.registryEventId
@@ -716,30 +724,18 @@ export class SparkRecoveryService {
         head.event
       )
       const metadataNeedsRepair =
-        JSON.stringify(storedHead.addressNameRequests ?? {}) !==
-          JSON.stringify(previous.addressNameRequests ?? {}) ||
-        JSON.stringify(storedHead.walletNames ?? {}) !==
-          JSON.stringify(previous.walletNames ?? {})
+        !!Object.keys(storedHead.addressNameRequests ?? {}).length ||
+        !!Object.keys(storedHead.walletNames ?? {}).length
       const applied =
         change.type === "remove"
           ? previous.removedWalletIds.includes(change.walletId) &&
             !previous.activeWalletIds.includes(change.walletId)
-          : change.type === "address_request"
-            ? JSON.stringify(
-                previous.addressNameRequests?.[change.walletId]
-              ) ===
-              JSON.stringify(
-                mergeAddressRequestRecord(
-                  previous.addressNameRequests?.[change.walletId],
-                  change.record
-                )
-              )
-            : change.type === "add"
-              ? previous.activeWalletIds.includes(change.walletId)
-              : change.type === "bootstrap"
-                ? false
-                : previous.payInvoiceWalletId === change.walletId &&
-                  previous.receiveWalletId === change.walletId
+          : change.type === "add"
+            ? previous.activeWalletIds.includes(change.walletId)
+            : change.type === "bootstrap"
+              ? false
+              : previous.payInvoiceWalletId === change.walletId &&
+                previous.receiveWalletId === change.walletId
       if (
         applied &&
         !metadataNeedsRepair &&
@@ -822,46 +818,7 @@ export class SparkRecoveryService {
     const payFallback = previous?.payInvoiceWalletId ?? legacyPay ?? firstWallet
     const receiveFallback =
       previous?.receiveWalletId ?? legacyReceive ?? firstWallet
-    const addressNameRequests = { ...previous?.addressNameRequests }
-    for (const walletId of removed) delete addressNameRequests[walletId]
-    if (change.type === "address_request") {
-      const evidence = requestEvidence(change.record)
-      const backup = local.records.find((record) =>
-        record.event.tags.some(
-          (tag) =>
-            tag[0] === "d" && tag[1] === SPARK_RECOVERY_PREFIX + change.walletId
-        )
-      )
-      if (!backup || network !== "mainnet")
-        throw new SparkRecoveryError("invalid_record")
-      const envelope = parseSparkRecoveryEnvelope(
-        await this.decrypt(backup.event, options),
-        backup.event
-      )
-      if (
-        envelope.identityPublicKey !== evidence.sparkIdentity ||
-        evidence.ownerPubkey !== this.scope.owner
-      )
-        throw new SparkRecoveryError("identity_mismatch")
-      addressNameRequests[change.walletId] = mergeAddressRequestRecord(
-        addressNameRequests[change.walletId],
-        change.record
-      )
-    }
     const snapshot: SparkWalletRegistrySnapshot = {
-      ...previous,
-      ...(previous?.walletNames
-        ? {
-            walletNames: Object.fromEntries(
-              Object.entries(previous.walletNames).filter(([walletId]) =>
-                active.has(walletId)
-              )
-            ),
-          }
-        : {}),
-      addressNameRequests: Object.keys(addressNameRequests).length
-        ? addressNameRequests
-        : undefined,
       format: "conduit.spark.registry",
       version: 1,
       ownerPubkey: this.scope.owner,

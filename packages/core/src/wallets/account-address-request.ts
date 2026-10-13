@@ -6,6 +6,7 @@ import {
   publishProfileContext,
 } from "../protocol/profiles"
 import {
+  getAccountAddressRequestService,
   getAccountSparkRecovery,
   runAccountWalletSetup,
 } from "./account-spark-recovery"
@@ -17,6 +18,7 @@ import {
   type AddressRequestView,
 } from "./address-request-workflow"
 import type { SparkRecoveryDiscovery } from "./spark-recovery-service"
+import { requestEvidence } from "./address-request-record"
 
 const paused = new WeakSet<AccountSigner>()
 const checked = new WeakMap<AccountSigner, Set<string>>()
@@ -25,14 +27,13 @@ export function accountAddressRequests(
   appId: ConduitAppId
 ): AddressRequestWorkflow {
   const writesEnabled =
-    import.meta.env?.VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED === "true"
+    import.meta.env?.VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED !== "false"
   const assertWritesEnabled = () => {
     if (!writesEnabled)
-      throw new Error(
-        "Name requests open after compatible wallet readers are deployed."
-      )
+      throw new Error("Name requests are temporarily unavailable.")
   }
   const service = getAccountSparkRecovery(signer)
+  const metadata = getAccountAddressRequestService(signer)
   const current = () => assertWalletSignerCurrent(signer)
   const manager = () => {
     current()
@@ -40,10 +41,11 @@ export function accountAddressRequests(
     if (!value) throw new Error("Open this wallet to continue.")
     return value
   }
-  const viewOf = (
+  const viewOf = async (
     discovery: SparkRecoveryDiscovery,
-    walletId: string
-  ): AddressRequestView | undefined => {
+    walletId: string,
+    priority: "foreground" | "background"
+  ): Promise<AddressRequestView | undefined> => {
     if (
       discovery.state === "conflict" ||
       discovery.state === "unresolved" ||
@@ -61,13 +63,12 @@ export function accountAddressRequests(
       registry.removedWalletIds.includes(walletId)
     )
       return undefined
-    const record = registry.addressNameRequests?.[walletId]
+    const saved = await metadata.load("mainnet", discovery, { priority })
+    const record = saved.records[walletId]
     return record
       ? {
           record,
-          publication: discovery.registryMembershipReady
-            ? "confirmed"
-            : "local",
+          publication: saved.confirmed ? "confirmed" : "local",
         }
       : undefined
   }
@@ -78,47 +79,40 @@ export function accountAddressRequests(
       async load(walletId) {
         return viewOf(
           await service.discover(false, "mainnet", { priority }),
-          walletId
+          walletId,
+          priority
         )
       },
       async save(walletId, record) {
         assertWritesEnabled()
-        let discovery = await service.discover(false, "mainnet", {
+        const discovery = await service.discover(false, "mainnet", {
           priority,
         })
-        if (discovery.registryEventId && !discovery.registryMembershipReady) {
-          const result = await service.deliver(discovery.registryEventId, {
-            priority,
-          })
-          if (!result.ready) {
-            const existing = viewOf(discovery, walletId)
-            if (
-              existing &&
-              JSON.stringify(existing.record) === JSON.stringify(record)
-            )
-              return existing
-            throw new Error(
-              "Wallet progress is saved locally. Finish syncing it before continuing."
-            )
-          }
-        }
-        const eventId = await service.prepareRegistry(
+        const candidate = discovery.candidates.find(
+          (value) =>
+            value.walletId === walletId &&
+            value.network === "mainnet" &&
+            value.source === "conduit_v1"
+        )
+        if (!candidate)
+          throw new Error("Wallet recovery evidence is unavailable.")
+        const backup = await service.restore(candidate, undefined, { priority })
+        if (
+          !("identityPublicKey" in backup) ||
+          backup.identityPublicKey !== requestEvidence(record).sparkIdentity
+        )
+          throw new Error("Wallet identity does not match the signed request.")
+        const saved = await metadata.save(
           "mainnet",
-          {
-            type: "address_request",
-            walletId,
-            record,
-          },
-          undefined,
+          discovery,
+          walletId,
+          record,
           { priority }
         )
-        await service.deliver(eventId, { priority })
-        discovery = await service.discover(false, "mainnet", {
-          priority,
-        })
-        const view = viewOf(discovery, walletId)
-        if (!view) throw new Error("Saved request could not be restored.")
-        return view
+        return {
+          record: saved.records[walletId],
+          publication: saved.confirmed ? "confirmed" : "local",
+        }
       },
       signWallet: (walletId, input) =>
         manager().signAddressNameRequest(walletId, input),
@@ -223,7 +217,13 @@ export async function restoreAddressRequests(
   discovery: SparkRecoveryDiscovery,
   appId: ConduitAppId
 ): Promise<void> {
-  const ids = Object.entries(discovery.registry?.addressNameRequests ?? {})
+  if (!discovery.registry) return
+  const saved = await getAccountAddressRequestService(signer).load(
+    "mainnet",
+    discovery,
+    { priority: "background" }
+  )
+  const ids = Object.entries(saved.records)
     .filter(([, record]) => ["pending", "received"].includes(record.phase))
     .map(([id]) => id)
     .slice(0, 3)

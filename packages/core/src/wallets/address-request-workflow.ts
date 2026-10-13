@@ -46,7 +46,7 @@ export interface AddressRequestWorkflowDependencies {
   publishProfile(address: string): Promise<string>
 }
 export interface AddressRequestWorkflow {
-  /** Rollout gate; readers deploy before any extended registry write. */
+  /** Enabled by default; an explicit false disables new writes in an emergency. */
   writesEnabled?: boolean
   load(walletId: string): Promise<AddressRequestView | undefined>
   submit(
