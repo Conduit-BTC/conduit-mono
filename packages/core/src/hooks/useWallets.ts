@@ -8,6 +8,7 @@ import {
   type AddressNameRequestStatus,
 } from "../wallets/address-name-request"
 import type { AccountSignerOperationOptions } from "../protocol/nostr-event-signer"
+import { SessionSignerError } from "../protocol/session-signer"
 import { DexieSparkRecoveryStore } from "../wallets/spark-recovery-store"
 import {
   accountRegistryReadiness,
@@ -1473,6 +1474,19 @@ export function useWallets(
           previous = signerWalletOpens.get(signer)?.get(walletId)
           if (previous === joined) break
         } catch (error) {
+          if (
+            options.priority !== "background" &&
+            error instanceof SessionSignerError &&
+            error.code === "background_paused" &&
+            isWalletSignerCurrent(signer)
+          ) {
+            // Foreground consent cannot be satisfied by a paused background
+            // attempt. Join a newer open if one replaced it; otherwise start
+            // this caller's explicitly authorized open below.
+            previous = signerWalletOpens.get(signer)?.get(walletId)
+            if (previous === joined) previous = undefined
+            continue
+          }
           if (isWalletSignerCurrent(signer))
             setRuntime((current) => ({
               ...current,

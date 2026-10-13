@@ -570,6 +570,136 @@ for (const app of ["market", "merchant"] as const) {
   })
 }
 
+test("foreground Open does not inherit a paused background wallet open @merchant", async ({
+  browser,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const context = await browser.newContext()
+  const source = await context.newPage()
+  const target = await context.newPage()
+  let denied = true
+  try {
+    for (const page of [source, target]) await prepareControlledWallet(page)
+    await observeWalletController(target)
+    await installRealTestSigner(source, identity, relay)
+    await installRealTestSigner(target, identity, relay, {
+      beforeDecrypt: () => {
+        if (denied) throw new Error("Signer permission denied")
+      },
+    })
+    await source.goto(apps.market + "/wallet")
+    await installControlledWallet(source)
+    await openWalletSetup(source, "Create wallet")
+    await saved(source)
+    const originalWallets = await wallets(source)
+    expect(originalWallets).toHaveLength(1)
+    await target.goto(apps.merchant + "/wallet")
+    await installControlledWallet(target)
+    await expect(
+      target.getByText(
+        "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    denied = false
+    await target.getByRole("button", { name: "Sync wallet recovery" }).click()
+    await expect.poll(() => wallets(target)).toEqual(originalWallets)
+    await expect(
+      target.getByRole("button", { name: "Open wallet", exact: true })
+    ).toBeVisible()
+
+    await target.evaluate(async (storage) => {
+      const { getMarketWalletStore } = await import(storage)
+      const fixture = window as any
+      const controller = fixture.__controlledWalletController
+      const walletId = controller.portableWallets[0].id
+      const store = getMarketWalletStore()
+      const original = store.getSparkRecovery.bind(store)
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let armed = true
+      store.getSparkRecovery = async (id: string) => {
+        const recovery = await original(id)
+        if (armed && id === walletId) {
+          armed = false
+          fixture.__backgroundRecoveryReadHeld = true
+          await gate
+        }
+        return recovery
+      }
+      fixture.__releaseBackgroundRecoveryRead = release
+      const result = (promise: Promise<void>) =>
+        promise.then(
+          () => "resolved",
+          (error: { code?: string }) => error.code ?? "rejected"
+        )
+      fixture.__backgroundOpen = result(
+        controller.unlockSpark(walletId, "", false, {
+          priority: "background",
+        })
+      )
+    }, storage)
+    await expect
+      .poll(() =>
+        target.evaluate(() => (window as any).__backgroundRecoveryReadHeld)
+      )
+      .toBe(true)
+    await target.evaluate(() => {
+      const fixture = window as any
+      const controller = fixture.__controlledWalletController
+      const walletId = controller.portableWallets[0].id
+      fixture.__foregroundOpen = controller.unlockSpark(walletId).then(
+        () => "resolved",
+        (error: { code?: string }) => error.code ?? "rejected"
+      )
+      fixture.__secondForegroundOpen = controller.unlockSpark(walletId).then(
+        () => "resolved",
+        (error: { code?: string }) => error.code ?? "rejected"
+      )
+      fixture.__releaseBackgroundRecoveryRead()
+    })
+    const result = await target.evaluate(async () => {
+      const fixture = window as any
+      return {
+        background: await fixture.__backgroundOpen,
+        foreground: await fixture.__foregroundOpen,
+        secondForeground: await fixture.__secondForegroundOpen,
+        nativeOpens: fixture.__walletProbe.opens,
+      }
+    })
+    expect(result).toEqual({
+      background: "background_paused",
+      foreground: "resolved",
+      secondForeground: "resolved",
+      nativeOpens: 1,
+    })
+    await expect(target.getByText("Ready", { exact: true })).toBeVisible()
+    expect(await wallets(target)).toEqual(originalWallets)
+    expect(
+      await target.evaluate(async (moduleUrl) => {
+        const { getAccountSigner } = await import(moduleUrl)
+        const signer = getAccountSigner()
+        try {
+          await signer.decryptNip44(signer.pubkey, "unused", {
+            priority: "background",
+          })
+          return "unexpected_success"
+        } catch (error) {
+          return (error as { code?: string }).code
+        }
+      }, core)
+    ).toBe("background_paused")
+  } finally {
+    await target
+      .evaluate(() => (window as any).__releaseBackgroundRecoveryRead?.())
+      .catch(() => undefined)
+    await context.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
 for (const size of [
   { name: "desktop", width: 1280, height: 900 },
   { name: "mobile", width: 390, height: 844 },
