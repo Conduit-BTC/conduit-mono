@@ -1,28 +1,52 @@
 import path from "node:path"
 import type { WalletDescriptor } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { expect, type Page } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
+import { recordSmokeDiagnostic } from "./smoke-diagnostics"
 
 export async function retryWalletRecovery(page: Page) {
   const retry = page.getByRole("button", {
     name: "Retry encrypted wallet sync",
     exact: true,
   })
-  if (!(await retry.count())) {
-    await page
-      .getByRole("button", { name: /^Manage / })
-      .first()
-      .click()
-    await page
-      .getByRole("menuitem", { name: "Recovery details", exact: true })
-      .click()
-  }
-  await retry.click()
-  await expect
-    .poll(async () => !(await retry.count()) || (await retry.isEnabled()))
-    .toBe(true)
-  if (await page.getByRole("dialog", { name: /^Recovery for / }).count()) {
-    await page.keyboard.press("Escape")
+  const recoveryDialog = page.getByRole("dialog", { name: /^Recovery for / })
+  let phase = "open_details"
+  try {
+    if (!(await retry.count())) {
+      await page
+        .getByRole("button", { name: /^Manage / })
+        .first()
+        .click()
+      await page
+        .getByRole("menuitem", { name: "Recovery details", exact: true })
+        .click()
+    }
+    phase = "click_retry"
+    await retry.click()
+    phase = "await_sync"
+    await expect
+      .poll(async () => !(await retry.count()) || (await retry.isEnabled()))
+      .toBe(true)
+    phase = "dismiss_details"
+    if (await recoveryDialog.count()) await page.keyboard.press("Escape")
+  } catch (error) {
+    const observed = await Promise.all([
+      retry.count(),
+      recoveryDialog.count(),
+      page.getByRole("button", { name: /^Manage / }).count(),
+    ]).catch(() => null)
+    recordSmokeDiagnostic(test.info(), "wallet-retry", {
+      phase,
+      observationAvailable: observed !== null,
+      retryPresent: !!observed?.[0],
+      retryVisible:
+        observed?.[0] === 1 && (await retry.isVisible().catch(() => false)),
+      retryEnabled:
+        observed?.[0] === 1 && (await retry.isEnabled().catch(() => false)),
+      recoveryDialogPresent: !!observed?.[1],
+      managePresent: !!observed?.[2],
+    })
+    throw error
   }
 }
 
