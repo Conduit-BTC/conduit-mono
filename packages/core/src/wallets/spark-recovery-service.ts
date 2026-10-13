@@ -1490,7 +1490,7 @@ export function recoveryReadiness(record: SparkRecoveryRecord): {
   }
 }
 
-function hasFreshReadback(
+export function hasFreshReadback(
   evidence: SparkRecoveryDelivery | undefined
 ): boolean {
   return (
