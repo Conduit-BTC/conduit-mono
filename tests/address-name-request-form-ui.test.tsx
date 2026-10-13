@@ -36,7 +36,7 @@ describe("address name request form", () => {
     expect(markup).not.toContain("Submit name request")
   })
 
-  it("explains preview availability without claiming requests are generally disabled", () => {
+  it("shows restoration before request availability is known", () => {
     const markup = renderForm()
 
     expect(markup).toContain("Restoring your saved request")

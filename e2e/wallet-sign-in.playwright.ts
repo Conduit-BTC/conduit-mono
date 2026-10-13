@@ -476,7 +476,7 @@ for (const size of [
       page.getByRole("button", { name: "Request name", exact: true })
     ).toBeDisabled()
     await expect(page.getByRole("status")).toContainText(
-      "Preview: requests open after release."
+      "Name requests are temporarily unavailable."
     )
     await page.evaluate(() =>
       Reflect.get(window, "__addressRequestUi").setWritesEnabled(true)

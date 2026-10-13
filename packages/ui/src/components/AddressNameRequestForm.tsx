@@ -273,7 +273,7 @@ export function AddressNameRequestForm({
                       ? "No submission found. Retry the same saved request."
                       : "Submission is uncertain. Your saved request will be checked again."
                     : !siteKey || !writesEnabled
-                      ? "Preview: requests open after release."
+                      ? "Name requests are temporarily unavailable."
                       : "Requests do not reserve or approve names."
   return (
     <form
