@@ -2,10 +2,13 @@ import {
   openWalletSetup,
   closeDefaultWalletSession,
   observeWalletController,
+  installWalletReloadObservationBarrier,
+  openWalletDuringDescriptorReload,
 } from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import type { WalletDescriptor } from "@conduit/core"
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import type { SparkRecoveryTransport } from "@conduit/core/wallets/spark-recovery-service"
 import {
   prepareControlledWallet,
@@ -54,7 +57,7 @@ test("wallet names follow encrypted account recovery across apps and reloads @ma
   const context = await browser.newContext()
   const market = await context.newPage()
   const merchant = await context.newPage()
-  const rename = async (page: Page, name: string) => {
+  const rename = async (page: Page, name: string, waitForSync = true) => {
     await page.getByRole("button", { name: /^Manage / }).click()
     await page.getByRole("menuitem", { name: "Rename", exact: true }).click()
     const dialog = page.getByRole("dialog", { name: "Rename wallet" })
@@ -64,9 +67,23 @@ test("wallet names follow encrypted account recovery across apps and reloads @ma
     await expect(
       page.getByRole("button", { name: `Manage ${name}`, exact: true })
     ).toBeVisible()
+    if (waitForSync)
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (
+                window as typeof window & {
+                  __controlledWalletController?: UseWalletsReturn
+                }
+              ).__controlledWalletController?.nameSync
+          )
+        )
+        .toBe("ready")
   }
   try {
     for (const page of [market, merchant]) {
+      await observeWalletController(page)
       await prepareControlledWallet(page)
       await installRealTestSigner(page, identity, relay)
     }
@@ -96,6 +113,44 @@ test("wallet names follow encrypted account recovery across apps and reloads @ma
       })
     ).toBeVisible()
     expect(await wallets(market)).toEqual(original)
+    await context.setOffline(true)
+    await rename(market, "Offline travel wallet", false)
+    await expect(
+      market.getByText(
+        "Wallet names saved on this device. Name sync is pending.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    await context.setOffline(false)
+    await market.reload()
+    await installControlledWallet(market)
+    await expect(
+      market.getByRole("button", {
+        name: "Manage Offline travel wallet",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect
+      .poll(() =>
+        market.evaluate(
+          () =>
+            (
+              window as typeof window & {
+                __controlledWalletController?: UseWalletsReturn
+              }
+            ).__controlledWalletController?.nameSync
+        )
+      )
+      .toBe("ready")
+    await merchant.reload()
+    await installControlledWallet(merchant)
+    await expect(
+      merchant.getByRole("button", {
+        name: "Manage Offline travel wallet",
+        exact: true,
+      })
+    ).toBeVisible()
+    expect(await wallets(merchant)).toEqual(original)
   } finally {
     await context.close()
     disposeRuntimeSignerIdentity(identity)
@@ -298,10 +353,18 @@ for (const from of ["market", "merchant"] as const) {
       const target = await context.newPage()
       const to = from === "market" ? "merchant" : "market"
       let denyTargetRecovery = recoveryMode === "foreground"
+      let explicitlyReopenedAccount: number | undefined
       let targetSignerDecryptCalls = 0
       let targetSignerDecryptDenials = 0
       try {
         for (const page of [source, target]) {
+          await observeWalletController(page)
+          if (
+            page === target &&
+            from === "market" &&
+            recoveryMode === "foreground"
+          )
+            await installWalletReloadObservationBarrier(page)
           await prepareControlledWallet(page)
           await installRealTestSigner(page, identity, relay, {
             beforeDecrypt: () => {
@@ -415,6 +478,9 @@ for (const from of ["market", "merchant"] as const) {
             dialog.getByLabel("Make this my main wallet", { exact: true })
           ).not.toBeChecked()
           await saved(target, false)
+          if (from === "market")
+            explicitlyReopenedAccount =
+              await openWalletDuringDescriptorReload(target)
           // Background consent remains paused; explicitly open the other
           // restored wallet instead of assuming automatic consent resumed.
           const openWallet = target.getByRole("button", {
@@ -485,6 +551,14 @@ for (const from of ["market", "merchant"] as const) {
             recordSmokeDiagnostic(test.info(), "wallet-foreground-open", safe)
             throw error
           }
+          if (from === "market")
+            await target.evaluate(() =>
+              (
+                window as typeof window & {
+                  __releaseControlledWalletBalance?: () => void
+                }
+              ).__releaseControlledWalletBalance?.()
+            )
           await openWallet.click()
         }
         await expect.poll(async () => (await wallets(target)).length).toBe(2)
@@ -494,7 +568,15 @@ for (const from of ["market", "merchant"] as const) {
               (window as any).__walletProbe.openedAccounts.sort()
             )
           )
-          .toEqual([1, 7])
+          .toEqual(
+            [
+              1,
+              7,
+              ...(explicitlyReopenedAccount === undefined
+                ? []
+                : [explicitlyReopenedAccount]),
+            ].sort()
+          )
         const state = await target.evaluate(
           async ({ core, storage, selected }) => {
             const { getAccountSigner } = await import(core)

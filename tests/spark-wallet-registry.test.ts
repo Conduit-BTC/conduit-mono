@@ -30,7 +30,6 @@ import { MarketWalletStore } from "../packages/core/src/wallets/wallet-storage"
 import { sealSignerSparkRecovery } from "../packages/core/src/wallets/signer-spark-recovery"
 import {
   applyAccountWalletRegistryDefaults,
-  applyAccountWalletRegistryNames,
   bootstrapLegacyAccountWalletRegistry,
   isCompleteAccountRegistryDiscovery,
   listAutomaticSignerSparkWallets,
@@ -47,8 +46,7 @@ test("explicit main choice seeds a fresh device but leaves later local NWC choic
   const f = fixture()
   activateAccountSigner(f.signer)
   try {
-    const journal = f.newStore()
-    const service = f.service(journal)
+    const service = f.service()
     const walletId = crypto.randomUUID()
     const backup = await backedUp(service, walletId)
     const main = await service.prepareMain(backup)
@@ -56,7 +54,6 @@ test("explicit main choice seeds a fresh device but leaves later local NWC choic
     const added = await service.prepareRegistry("mainnet", {
       type: "add",
       walletId,
-      name: "Shared account wallet",
     })
     expect((await service.deliver(added)).ready).toBe(true)
     const discovery = await f.service().discover(false, "mainnet")
@@ -108,18 +105,6 @@ test("explicit main choice seeds a fresh device but leaves later local NWC choic
         registry,
       })
     await sync()
-    await applyAccountWalletRegistryNames({
-      signer: f.signer,
-      discovery,
-      network: "mainnet",
-      store,
-      journal: new DexieSparkRecoveryStore(device),
-    })
-    expect(
-      (await store.listVisible(f.owner)).find(
-        (wallet) => wallet.id === spark.id
-      )?.label
-    ).toBe("Shared account wallet")
     expect(
       (await store.listVisible(f.owner)).find((wallet) =>
         wallet.defaultIntents.includes("pay_invoice")
@@ -139,19 +124,6 @@ test("explicit main choice seeds a fresh device but leaves later local NWC choic
     f.unavailableRelays.add(f.relayUrls[0])
     const partial = await service.discover(false, "mainnet")
     expect(partial.coverage).toBe("partial")
-    await store.rename(spark.id, "Keep local name during incomplete reads")
-    await applyAccountWalletRegistryNames({
-      signer: f.signer,
-      discovery: partial,
-      network: "mainnet",
-      store,
-      journal: new DexieSparkRecoveryStore(device),
-    })
-    expect(
-      (await store.listVisible(f.owner)).find(
-        (wallet) => wallet.id === spark.id
-      )?.label
-    ).toBe("Keep local name during incomplete reads")
     await applyAccountWalletRegistryDefaults({
       signer: f.signer,
       discovery: partial,
@@ -169,29 +141,6 @@ test("explicit main choice seeds a fresh device but leaves later local NWC choic
       afterPartial.find((wallet) => wallet.defaultIntents.includes("receive"))
         ?.id
     ).toBe(nwc.id)
-    f.unavailableRelays.clear()
-    const newerName = await service.prepareRegistry("mainnet", {
-      type: "rename",
-      walletId,
-      name: "Newer local name",
-    })
-    const intent = (await journal.load(f.owner)).records.find(
-      (record) => record.event.id === newerName
-    )!
-    await new DexieSparkRecoveryStore(device).retain(f.owner, [intent])
-    await store.rename(spark.id, "Newer local name")
-    await applyAccountWalletRegistryNames({
-      signer: f.signer,
-      discovery,
-      network: "mainnet",
-      store,
-      journal: new DexieSparkRecoveryStore(device),
-    })
-    expect(
-      (await store.listVisible(f.owner)).find(
-        (wallet) => wallet.id === spark.id
-      )?.label
-    ).toBe("Newer local name")
   } finally {
     retireAccountSigner(f.signer)
   }
@@ -250,116 +199,6 @@ test("an implicit registry preference does not become a fresh device default", a
     expect((await store.listVisible(f.owner))[0]?.defaultIntents).toEqual([])
   } finally {
     retireAccountSigner(f.signer)
-  }
-})
-
-test("encrypted names survive a fresh device, immutable retry and removal", async () => {
-  const f = fixture()
-  const journal = f.newStore()
-  const service = f.service(journal)
-  const walletId = crypto.randomUUID()
-  await backedUp(service, walletId)
-  const added = await service.prepareRegistry("mainnet", {
-    type: "add",
-    walletId,
-    name: "Travel wallet",
-  })
-  expect((await service.deliver(added)).ready).toBe(true)
-  const renamed = await service.prepareRegistry("mainnet", {
-    type: "rename",
-    walletId,
-    name: "Family wallet",
-  })
-  const signed = (await journal.load(f.owner)).records.find(
-    (record) => record.event.id === renamed
-  )!.event
-  expect(JSON.stringify(signed)).not.toContain("Family wallet")
-  f.unavailableRelays.add(f.relayUrls[0])
-  await expect(service.deliver(renamed)).rejects.toThrow("conflict")
-  await expect(
-    service.prepareRegistry("mainnet", {
-      type: "rename",
-      walletId,
-      name: "Do not replace pending intent",
-    })
-  ).rejects.toThrow()
-  f.unavailableRelays.clear()
-  expect((await service.deliver(renamed)).ready).toBe(true)
-  expect(
-    (await journal.load(f.owner)).records.find(
-      (record) => record.event.id === renamed
-    )!.event
-  ).toEqual(signed)
-  const fresh = await f.service().discover(false, "mainnet")
-  expect(fresh.registry?.walletNames).toEqual({ [walletId]: "Family wallet" })
-  const removed = await service.prepareRegistry("mainnet", {
-    type: "remove",
-    walletId,
-  })
-  expect((await service.deliver(removed)).ready).toBe(true)
-  const afterRemoval = await f.service().discover(false, "mainnet")
-  expect(afterRemoval.registry?.walletNames).toEqual({})
-  expect(afterRemoval.registry?.removedWalletIds).toContain(walletId)
-  await expect(
-    service.prepareRegistry("mainnet", {
-      type: "rename",
-      walletId,
-      name: "Cannot restore",
-    })
-  ).rejects.toThrow("conflict")
-})
-
-test("legacy successors retain known ancestor names and preserve other encrypted metadata", async () => {
-  const f = fixture()
-  const service = f.service()
-  const walletId = crypto.randomUUID()
-  await backedUp(service, walletId)
-  const added = await service.prepareRegistry("mainnet", {
-    type: "add",
-    walletId,
-    name: "Named wallet",
-  })
-  expect((await service.deliver(added)).ready).toBe(true)
-  const previous = (await service.discover(false, "mainnet")).registry!
-  const { walletNames: _names, ...legacy } = previous
-  const createdAt = previous.createdAt + 1
-  const successor = await f.provider.signEvent({
-    kind: 30078,
-    pubkey: f.owner,
-    created_at: createdAt,
-    tags: [["d", sparkWalletRegistryDTag("mainnet")]],
-    content: await f.provider.encryptNip44!(
-      f.owner,
-      JSON.stringify({
-        ...legacy,
-        revision: previous.revision + 1,
-        parentEventId: added,
-        createdAt,
-        extensionOwnedByAnotherWorkflow: { retained: true },
-      })
-    ),
-  })
-  for (const events of f.relays.values()) {
-    events.delete(added)
-    events.set(successor.id, successor)
-  }
-  const observed = await service.discover(false, "mainnet")
-  expect(observed.registry?.walletNames?.[walletId]).toBe("Named wallet")
-  const renamed = await service.prepareRegistry("mainnet", {
-    type: "rename",
-    walletId,
-    name: "Later name",
-  })
-  expect((await service.deliver(renamed)).ready).toBe(true)
-  const fresh = await f.service().discover(false, "mainnet")
-  expect(fresh.registry?.walletNames?.[walletId]).toBe("Later name")
-  expect(fresh.registry?.extensionOwnedByAnotherWorkflow).toEqual({
-    retained: true,
-  })
-  for (const name of ["", " ", "x".repeat(81)]) {
-    await expect(
-      service.prepareRegistry("mainnet", { type: "rename", walletId, name })
-    ).rejects.toThrow()
   }
 })
 

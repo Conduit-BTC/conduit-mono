@@ -577,6 +577,26 @@ type WalletDialogAction = (
 function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
   return (
     <>
+      {(wallets.nameSync === "pending" || wallets.nameSync === "checking") && (
+        <section
+          role="status"
+          className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-5 text-sm"
+        >
+          <p>Wallet names saved on this device. Name sync is pending.</p>
+          <Button
+            className="justify-self-start"
+            variant="outline"
+            disabled={wallets.nameSync === "checking"}
+            onClick={() =>
+              void wallets.retryWalletNames().catch(() => undefined)
+            }
+          >
+            {wallets.nameSync === "checking"
+              ? "Syncing wallet names…"
+              : "Sync wallet names"}
+          </Button>
+        </section>
+      )}
       {wallets.mainWalletSync === "pending" && (
         <div
           role="status"

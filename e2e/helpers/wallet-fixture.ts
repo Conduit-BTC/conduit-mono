@@ -1,4 +1,6 @@
 import path from "node:path"
+import type { WalletDescriptor } from "@conduit/core"
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, type Page } from "@playwright/test"
 
 export async function saveWalletRecovery(page: Page, makeMain = true) {
@@ -11,6 +13,11 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
   await expect(
     dialog.getByText("Checking for your Lightning address…", { exact: true })
   ).toHaveCount(0)
+  // The early recovery callback can render this heading before setup settles.
+  // This helper changes the main choice, so wait for that existing control to be ready.
+  await expect(
+    dialog.getByLabel("Make this my main wallet", { exact: true })
+  ).toBeEnabled()
   if (
     await dialog
       .getByRole("heading", { name: "Wallet imported", exact: true })
@@ -100,6 +107,7 @@ export async function prepareControlledWallet(page: Page) {
             probe.disconnects++
           },
           async getInfo() {
+            if (probe.infoBarrier) await probe.infoBarrier()
             if (probe.failBalance) throw new Error("Injected post-open failure")
             return { balanceSats: 0 }
           },
@@ -260,6 +268,101 @@ export async function closeDefaultWalletSession(page: Page) {
       storage:
         "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
       core: "/@fs" + path.resolve("packages/core/src/index.ts"),
+    }
+  )
+}
+
+/** Pause descriptor metadata reads after the provider sample to exercise a real reload/open interleaving. */
+export async function installWalletReloadObservationBarrier(page: Page) {
+  await page.route(
+    "**/packages/core/src/hooks/useWallets.ts*",
+    async (route) => {
+      const response = await route.fetch()
+      const body = await response.text()
+      const marker = ["const", "hasPasswordWallets", "="].join(" ")
+      if (body.split(marker).length !== 2)
+        throw new Error("Wallet reload observation seam changed")
+      await route.fulfill({
+        response,
+        body: body.replace(
+          marker,
+          "await window.__controlledWalletReloadBarrier?.(); " + marker
+        ),
+      })
+    }
+  )
+}
+
+export async function openWalletDuringDescriptorReload(page: Page) {
+  return page.evaluate(
+    async ({ storage, core, sdk }) => {
+      const { getMarketWalletStore } = await import(storage)
+      const { getAccountSigner } = await import(core)
+      const { getSparkWalletManager } = await import(sdk)
+      const fixtureWindow = window as typeof window & {
+        __controlledWalletController: UseWalletsReturn
+        __walletProbe: {
+          savedMnemonic: string
+          lastAccount: number
+          infoBarrier?: () => Promise<void>
+        }
+        __controlledWalletReloadBarrier?: () => Promise<void>
+        __releaseControlledWalletBalance?: () => void
+      }
+      const controller = fixtureWindow.__controlledWalletController
+      const signer = getAccountSigner()
+      const manager = getSparkWalletManager()
+      const wallets = await getMarketWalletStore().listVisible(signer.pubkey)
+      const wallet = wallets.find((wallet: WalletDescriptor) =>
+        manager.isOpen(wallet.id)
+      )
+      if (!wallet) throw new Error("Recovered native session was not open")
+      const recovery = {
+        mnemonic: fixtureWindow.__walletProbe.savedMnemonic,
+        accountNumber: fixtureWindow.__walletProbe.lastAccount,
+      }
+      await controller.lockSpark(wallet.id)
+      let releaseMetadata!: () => void,
+        releaseBalance!: () => void,
+        sampled!: () => void
+      const metadata = new Promise<void>((resolve) => {
+        releaseMetadata = resolve
+      })
+      const balance = new Promise<void>((resolve) => {
+        releaseBalance = resolve
+      })
+      const sample = new Promise<void>((resolve) => {
+        sampled = resolve
+      })
+      fixtureWindow.__controlledWalletReloadBarrier = async () => {
+        sampled()
+        await metadata
+      }
+      fixtureWindow.__walletProbe.infoBarrier = () => balance
+      const reload = controller.retryInitialization()
+      await sample
+      await manager.openWithMnemonic({
+        walletId: wallet.id,
+        mnemonic: recovery.mnemonic,
+        accountNumber: recovery.accountNumber,
+        shouldContinue: () => getAccountSigner() === signer,
+      })
+      // Metadata completes while the manager's balance notification is still in flight.
+      delete fixtureWindow.__controlledWalletReloadBarrier
+      releaseMetadata()
+      await reload
+      fixtureWindow.__releaseControlledWalletBalance = () => {
+        releaseBalance()
+        delete fixtureWindow.__walletProbe.infoBarrier
+        delete fixtureWindow.__releaseControlledWalletBalance
+      }
+      return recovery.accountNumber
+    },
+    {
+      storage:
+        "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts"),
+      core: "/@fs" + path.resolve("packages/core/src/index.ts"),
+      sdk: "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
     }
   )
 }

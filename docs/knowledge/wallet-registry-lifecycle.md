@@ -8,27 +8,37 @@ The latest signed record carries active wallet IDs, retained removal IDs,
 an explicit main-wallet choice, a revision and the previous event ID. It
 contains no mnemonic. Recovery remains independent of account membership.
 
-Wallet display names live in the optional encrypted `walletNames` map, keyed by
-active wallet ID. Names are trimmed, nonempty and at most 80 characters. Creating
-or explicitly syncing a wallet publishes its existing name when none is recorded;
-renaming a signer-owned wallet retains the new name and exact signed registry
-event in one transaction before delivery. Interrupted delivery remains pending
-and uses the existing wallet-recovery retry. Device-only wallet names stay local.
+Wallet display names use a separate encrypted NIP-78 record at
+`d=conduit:wallet-names:v1:<network>`. The v1 membership payload remains unchanged.
+The name coordinate is outside `conduit:spark:*`, which deployed recovery readers
+interpret as recovery evidence. Older clients ignore names and continue their
+existing membership, main-wallet and removal lifecycle. Their membership writes
+do not replace the name record. The protected reader and publisher accept only
+these exact network-scoped coordinates with current account authorization.
 
-Confirmed complete discovery applies names to existing account-owned wallets and
-fresh recovery. Incomplete or conflicting reads do not overwrite local names.
-Validated ancestry retains a name when a legacy successor omits it; removal wins
-and drops names for removed wallets. Successors preserve other encrypted metadata
-without interpreting it as membership or name authority.
+Names are trimmed, nonempty and at most 80 characters. Rename commits the local
+label and account/network-scoped pending intent in the same wallet transaction,
+before relay discovery or signer consent. The name stays usable during outages,
+denial and reload. Name sync has its own pending status and retry action; it does
+not change backup readiness or require users to save recovery details again.
+Device-only names remain local. Creation and explicit recovery sync seed existing
+local names only when no shared name is recorded.
 
-This extends the existing version-1 payload and event address; it adds no event,
-discovery path or recovery-material migration. Earlier strict version-1 readers
-reject extended records, so old open clients must refresh before using account
-sync after a name is published. Deploy the updated readers to both apps before
-using name publication across them. New readers accept records without names;
-missing names never erase an existing local label. Historical names can be
-retained only when their signed ancestry is available, not reconstructed after
-all sources have discarded it.
+Complete confirmed membership determines which names can be applied or published.
+Incomplete, conflicting, malformed or stale name observations preserve local
+labels. A pending local intent fences older confirmed names until synchronization
+completes. Names never add membership; confirmed removal dominates retained names
+and discards pending names for that wallet. Missing names never erase a label.
+Optional metadata failures cannot invalidate otherwise usable recovery evidence.
+
+Before publication, agreeing bounded name reads supply the parent record. The
+signed encrypted successor and frozen targets are retained before the first send.
+Interrupted delivery retries those exact bytes. A newer local rename keeps its
+own token and cannot be cleared by an older delivery completion. A conflicting
+remote successor prevents stale publication and retains local intent for repair.
+Name delivery is confirmed only by fresh exact head readback from every frozen
+target. This is bounded evidence, not cross-device compare-and-swap or global
+convergence. No recovery material or database schema is migrated.
 
 Shared discovery applies this record in Market and Merchant. A complete registry
 read excludes explicitly removed wallets from automatic restore and the device
@@ -89,6 +99,12 @@ Verified migration retains the exact password-encrypted envelope as a fallback,
 alongside signer-backed recovery. Ordinary automatic opening does not retire
 that envelope. The previous-password path remains available when that envelope
 exists; an envelope erased by an older build cannot be reconstructed.
+
+Descriptor reloads reconcile runtime with the live native session at commit time.
+If another consumer opens a wallet while credential reads are pending, the card
+shows Ready with an unknown balance until the balance observation arrives. A close
+invalidates previously sampled ready state. Pending backup or name synchronization
+does not mark an already open native session as closed.
 
 The everyday UI deliberately omits Lock. Account logout/replacement still closes
 signer-owned provider sessions. The shared `lockSpark` operation remains available

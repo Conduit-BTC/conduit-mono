@@ -33,6 +33,7 @@ import {
 import { serializeSignerOperation } from "./interactive-signer"
 import {
   isSparkWalletRegistryDTag,
+  isWalletNamesDTag,
   parseSparkRecoveryChoiceAddress,
 } from "../wallets/spark-recovery-address"
 
@@ -497,7 +498,8 @@ function assertRequest(
         (filter["#d"] !== undefined &&
           (filter["#d"].length !== 1 ||
             (!parseSparkRecoveryChoiceAddress(filter["#d"][0]) &&
-              !isSparkWalletRegistryDTag(filter["#d"][0])))) ||
+              !isSparkWalletRegistryDTag(filter["#d"][0]) &&
+              !isWalletNamesDTag(filter["#d"][0])))) ||
         (filter.ids !== undefined &&
           (filter.ids.length !== 1 ||
             !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||

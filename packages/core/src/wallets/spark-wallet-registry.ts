@@ -17,11 +17,8 @@ const ids = z
   .array(id)
   .max(128)
   .refine((values) => new Set(values).size === values.length)
-export const sparkWalletNameSchema = z.string().trim().min(1).max(80)
 const snapshotSchema = z
-  // Preserve encrypted metadata owned by other wallet workflows on successors.
-  // Only the fields validated here participate in membership/name decisions.
-  .looseObject({
+  .strictObject({
     format: z.literal("conduit.spark.registry"),
     version: z.literal(1),
     ownerPubkey: owner,
@@ -32,7 +29,6 @@ const snapshotSchema = z
     removedWalletIds: ids,
     payInvoiceWalletId: id.nullable(),
     receiveWalletId: id.nullable(),
-    walletNames: z.record(id, sparkWalletNameSchema).optional(),
     createdAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   })
   .refine((value) => {
@@ -42,8 +38,7 @@ const snapshotSchema = z
       value.activeWalletIds.every((id) => !removed.has(id)) &&
       [value.payInvoiceWalletId, value.receiveWalletId].every(
         (id) => id === null || active.has(id)
-      ) &&
-      Object.keys(value.walletNames ?? {}).every((id) => active.has(id))
+      )
     )
   })
 
@@ -112,19 +107,6 @@ export function resolveSparkWalletRegistry(
     lineage.add(parent.event.id)
     ancestor = parent
   }
-  // A legacy successor can omit names. Keep the latest name in its validated
-  // ancestry; a removal always drops the metadata with the wallet membership.
-  const walletNames = Object.assign(
-    {},
-    ...ordered
-      .filter(({ event }) => lineage.has(event.id))
-      .reverse()
-      .map(({ snapshot }) => snapshot.walletNames ?? {})
-  ) as Record<string, string>
-  const activeIds = new Set(activeWalletIds)
-  for (const walletId of Object.keys(walletNames)) {
-    if (!activeIds.has(walletId)) delete walletNames[walletId]
-  }
   return {
     eventId: latest.event.id,
     conflict: ordered.some(
@@ -135,9 +117,6 @@ export function resolveSparkWalletRegistry(
     ),
     snapshot: {
       ...latest.snapshot,
-      ...(latest.snapshot.walletNames || Object.keys(walletNames).length
-        ? { walletNames }
-        : {}),
       activeWalletIds,
       removedWalletIds: [...removed],
       payInvoiceWalletId: activeWalletIds.includes(
