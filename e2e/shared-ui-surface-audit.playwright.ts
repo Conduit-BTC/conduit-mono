@@ -91,35 +91,32 @@ for (const area of ["market", "merchant"] as const) {
           phase = value
           record()
         }
-        const observePage = () => {
-          page.on("request", (request) => {
-            pending.add(request)
-            record()
-          })
-          const finish = (request: Request) => {
-            pending.delete(request)
-            record()
-          }
-          page.on("requestfinished", finish)
-          page.on("requestfailed", (request) => {
-            if (request.resourceType() === "document") failedDocuments += 1
-            finish(request)
-          })
-          // WebKit reports network-process crashes on sockets, not page crashes
-          // or necessarily browser stderr. Retain only this fixed observation.
-          page.on("websocket", (socket) => {
-            socket.on("socketerror", (error) => {
-              if (!/Network process crashed/i.test(error)) return
-              networkProcessCrashed = true
-              record()
-            })
-          })
-          page.on("crash", () => {
-            pageCrashed = true
-            record()
-          })
+        page.on("request", (request) => {
+          pending.add(request)
+          record()
+        })
+        const finish = (request: Request) => {
+          pending.delete(request)
+          record()
         }
-        observePage()
+        page.on("requestfinished", finish)
+        page.on("requestfailed", (request) => {
+          if (request.resourceType() === "document") failedDocuments += 1
+          finish(request)
+        })
+        // WebKit reports network-process crashes on sockets, not page crashes
+        // or necessarily browser stderr. Retain only this fixed observation.
+        page.on("websocket", (socket) => {
+          socket.on("socketerror", (error) => {
+            if (!/Network process crashed/i.test(error)) return
+            networkProcessCrashed = true
+            record()
+          })
+        })
+        page.on("crash", () => {
+          pageCrashed = true
+          record()
+        })
         record()
         // A nonessential image must not become the readiness gate for route UI.
         let releaseImage: (() => void) | undefined
