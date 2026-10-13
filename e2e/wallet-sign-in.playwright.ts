@@ -330,6 +330,7 @@ test("locally saved recovery can finish while relay sync remains pending @market
         registrations: (window as any).__walletProbe.registrations,
       }))
     ).toEqual({ opens: 1, registrations: 1 })
+    await expect.poll(() => publicAddress(page)).toBe("wallet1@breez.tips")
   } finally {
     disposeRuntimeSignerIdentity(identity)
   }

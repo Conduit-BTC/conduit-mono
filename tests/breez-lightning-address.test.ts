@@ -64,6 +64,61 @@ it("explicit custom-name activation replaces only the requested domain while ord
   expect(f.calls.filter((call) => call === "register")).toHaveLength(1)
 })
 
+it("replaces a confirmed prior registration with an explicitly approved custom name on the same client", async () => {
+  const f = await fixture()
+  const client = f.client()
+  expect(await client.ensure("original-name")).toMatchObject({
+    status: "registered",
+    username: "original-name",
+  })
+  expect([...f.checkpoints.values()]).toMatchObject([
+    { username: "original-name", phase: "registering" },
+  ])
+
+  expect(
+    await client.ensure("approved-name", { activateApprovedName: true })
+  ).toMatchObject({
+    status: "registered",
+    username: "approved-name",
+    address: "approved-name@conduit.cash",
+  })
+  expect(f.calls.filter((call) => call === "register")).toHaveLength(2)
+  expect(await client.lookup()).toMatchObject({
+    status: "registered",
+    username: "approved-name",
+  })
+})
+
+it("keeps an uncertain approved-name submission pinned when recovery still finds the prior name", async () => {
+  const f = await fixture()
+  const client = f.client()
+  expect(await client.ensure("original-name")).toMatchObject({
+    status: "registered",
+    username: "original-name",
+  })
+  f.setOverride(async (operation) => {
+    if (operation === "register") throw new Error("lost response")
+    return null
+  })
+  expect(
+    await client.ensure("pending-name", { activateApprovedName: true })
+  ).toEqual({ status: "unavailable", reason: "registration_pending" })
+  expect([...f.checkpoints.values()]).toMatchObject([
+    { username: "pending-name", phase: "registering" },
+  ])
+  const submissions = f.calls.filter((call) => call === "register").length
+
+  expect(
+    await client.ensure("another-name", { activateApprovedName: true })
+  ).toEqual({ status: "unavailable", reason: "registration_pending" })
+  expect(f.calls.filter((call) => call === "register")).toHaveLength(
+    submissions
+  )
+  expect([...f.checkpoints.values()]).toMatchObject([
+    { username: "pending-name", phase: "registering" },
+  ])
+})
+
 async function fixture(domain = "conduit.cash") {
   const mnemonic = generateMnemonic(wordlist)
   const native = new DefaultSparkSigner()
