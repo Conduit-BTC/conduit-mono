@@ -835,6 +835,30 @@ describe("bounded smoke failure diagnostics", () => {
         ])
       ).toEqual([])
     }
+    expect(
+      safeSmokeDiagnostics("e2e/merchant-product-image-preview.playwright.ts", [
+        {
+          type: "smoke:fallback-recovery",
+          description: JSON.stringify({
+            phase: "publish_ready",
+            fulfillmentFocusedAtSelection: false,
+            tagInputFocused: true,
+            committedTagCount: 2,
+            publishEnabled: false,
+            rawError: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([
+      {
+        kind: "fallback-recovery",
+        phase: "publish_ready",
+        fulfillmentFocusedAtSelection: false,
+        tagInputFocused: true,
+        committedTagCount: 2,
+        publishEnabled: false,
+      },
+    ])
   })
 
   it("keeps first-attempt readiness evidence in the report and failure progress without private annotations", () => {
