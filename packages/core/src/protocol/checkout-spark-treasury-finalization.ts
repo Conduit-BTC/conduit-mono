@@ -715,6 +715,13 @@ export async function runCheckoutSparkNativeTreasuryStep(
         observedAt: now(),
       })
     )
+    const durable = await input.store.load(input.checkoutId, input.planDigest)
+    if (
+      durable.status !== "active" ||
+      durable.revision !== revision ||
+      JSON.stringify(durable.state) !== JSON.stringify(state)
+    )
+      invalid()
     if (input.store.nativeAdmissionScope && input.store.savePreProviderRetry)
       rememberPreProviderCancellation(
         input.store.nativeAdmissionScope,

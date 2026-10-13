@@ -410,6 +410,32 @@ describe("Checkout Spark native treasury durable step", () => {
     expect(e.state().treasuryFinalization!.intent).toEqual(intent)
     expect(e.sends()).toBe(1)
   })
+  it("never retries after interrupted cancellation readback", async () => {
+    const e = engine(fixture(), { failedProofAt: 3 })
+    const input = {
+      ...e.input,
+      store: {
+        ...e.input.store,
+        load: async (...args: Parameters<typeof e.input.store.load>) => {
+          const durable = await e.input.store.load(...args)
+          if (
+            durable.status === "active" &&
+            durable.state.treasuryFinalization?.status === "terminal_failure"
+          )
+            throw new Error("Cancellation readback interrupted")
+          return durable
+        },
+      },
+    }
+    await expect(runCheckoutSparkNativeTreasuryStep(input)).rejects.toThrow(
+      "Cancellation readback interrupted"
+    )
+    expect(e.sends()).toBe(0)
+    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
+      "prior_possible_send"
+    )
+    expect(e.sends()).toBe(0)
+  })
   it("rejects authority loss after the final ACK without calling the provider", async () => {
     const e = engine()
     let expired = false
