@@ -243,6 +243,82 @@ describe("Merchant order payment presentation", () => {
     expect(html).not.toContain("Payment details")
   })
 
+  it.each([false, true])(
+    "exposes only collapsed per-order recovery when funded processing is paused and global continuation is %s",
+    (canContinue) => {
+      const html = renderToStaticMarkup(
+        <CheckoutSparkMerchantPaymentCard
+          {...base}
+          paused
+          canContinue={canContinue}
+          projection={{
+            creditVerified: true,
+            merchantVerified: false,
+            commerceVerified: false,
+            feePending: true,
+            recipientUnverified: false,
+          }}
+        >
+          <button>Review this order's saved payout</button>
+        </CheckoutSparkMerchantPaymentCard>
+      )
+      expect(html).toContain("Processing payment")
+      expect(html).toContain("Automatic payments are paused")
+      expect(html).toContain("The buyer&#x27;s payment has arrived.")
+      expect(html).not.toContain(
+        "finishing this order&#x27;s payments automatically"
+      )
+      expect(html).toContain("Payment details")
+      expect(html).toContain("Review this order&#x27;s saved payout")
+      expect(html).toContain("<details")
+      expect(html).not.toContain("<details open")
+      expect(html).not.toContain("Check payment again")
+      expect(html).not.toContain("Payment needs attention")
+      expect(html).not.toContain("Continue with fulfillment")
+      expect(html.includes("Resume payment processing")).toBe(canContinue)
+    }
+  )
+
+  it("keeps funded automatic processing clean until the merchant pauses", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        projection={{
+          creditVerified: true,
+          merchantVerified: false,
+          commerceVerified: false,
+          feePending: true,
+          recipientUnverified: false,
+        }}
+      >
+        <button>Review this order's saved payout</button>
+      </CheckoutSparkMerchantPaymentCard>
+    )
+    expect(html).toContain("Processing payment")
+    expect(html).not.toContain("Payment details")
+    expect(html).not.toContain("Review this order&#x27;s saved payout")
+    expect(html).not.toContain("<details")
+  })
+
+  it("does not add empty payment details to a paused order without recovery actions", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        paused
+        projection={{
+          creditVerified: true,
+          merchantVerified: false,
+          commerceVerified: false,
+          feePending: true,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Processing payment")
+    expect(html).not.toContain("Payment details")
+    expect(html).not.toContain("<details")
+  })
+
   it("offers an exception action with its feedback at the affected order", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard

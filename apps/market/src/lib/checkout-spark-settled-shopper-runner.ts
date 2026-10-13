@@ -267,6 +267,12 @@ export function createCheckoutSparkSettledShopperRunner(
       })
       assertCurrent()
       if (control.status === "blocked" || control.status === "retired") {
+        if (
+          control.status === "blocked" &&
+          control.cause === "authority_transferred"
+        ) {
+          throw new RoutingPaused("authority_transferred")
+        }
         throw new RoutingPaused("authorization_changed")
       }
       if (control.status === "complete") return { status: "complete" }

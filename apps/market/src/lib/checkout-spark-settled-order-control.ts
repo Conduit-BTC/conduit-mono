@@ -45,7 +45,7 @@ export interface CheckoutSparkSettledNativeTreasuryReview {
 }
 
 export type CheckoutSparkSettledOrderControlState =
-  | { status: "blocked"; reason: string }
+  | { status: "blocked"; reason: string; cause?: "authority_transferred" }
   /** A cleanup tombstone is not evidence that any recipient was paid. */
   | { status: "retired" }
   | {
@@ -326,9 +326,12 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     now >= plan.takeoverAt &&
     canInspectCheckoutSparkSettledSubmittedAttempt(state, nextLegId)
   if (state.credit && now >= plan.takeoverAt && !inspectAfterTakeover) {
-    return blocked(
-      "Shopper routing authority moved to the merchant. Do not pay again."
-    )
+    return {
+      status: "blocked",
+      reason:
+        "Shopper routing authority moved to the merchant. Do not pay again.",
+      cause: "authority_transferred",
+    }
   }
   if (!input.routerWalletOpen) {
     return blocked(

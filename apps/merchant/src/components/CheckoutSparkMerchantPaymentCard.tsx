@@ -64,7 +64,9 @@ export function CheckoutSparkMerchantPaymentCard({
       outcome === "unbound" ||
       outcome === "unavailable" ||
       projection?.recipientUnverified === true)
-  const showPaymentDetails = attention || (coordinationFeeUnresolved && paused)
+  const showPaymentDetails =
+    attention ||
+    (paused && (coordinationFeeUnresolved || (!paid && Boolean(children))))
   const waitingForHandoff = nowMs < handoffAt
   const label = paid
     ? "Payment verified"
@@ -95,7 +97,9 @@ export function CheckoutSparkMerchantPaymentCard({
                       !projection?.creditVerified
                     ? "A recipient receipt was observed. We still need this checkout's exact wallet payment history before confirming payment or fulfillment. Do not request another payment."
                     : projection?.creditVerified
-                      ? "The buyer's payment has arrived. We are finishing this order's payments automatically."
+                      ? paused
+                        ? "The buyer's payment has arrived."
+                        : "The buyer's payment has arrived. We are finishing this order's payments automatically."
                       : "We are checking for the buyer's payment. Funding and recipient payments are verified separately."
 
   return (

@@ -561,7 +561,7 @@ describe("foreground settled shopper routing", () => {
       const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
       expect(await runner.run(f.input)).toEqual({
         status: "paused",
-        reason: "authorization_changed",
+        reason: "authority_transferred",
       })
       const saved = await f.repository.load(
         f.plan.checkoutId,
@@ -901,7 +901,7 @@ describe("foreground settled shopper routing", () => {
           })
         ).toEqual({
           status: "paused",
-          reason: change === "visibility" ? "paused" : "authorization_changed",
+          reason: change === "visibility" ? "paused" : "authority_transferred",
         })
         expect(waits).toBe(1)
         expect(f.calls.payer).toBe(1)
