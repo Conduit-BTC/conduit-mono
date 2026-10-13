@@ -1655,9 +1655,15 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
       await expect(
         page.getByRole("button", { name: "Open wallet", exact: true })
       ).toHaveCount(0)
+      // Reconcile the confirmed native session immediately; balance
+      // availability remains independent while the sampled read is pending.
       await expect(
         page.getByRole("button", { name: "Opening…", exact: true })
-      ).toHaveCount(1)
+      ).toHaveCount(0)
+      await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+      await expect(
+        page.getByText("Balance unavailable", { exact: true })
+      ).toBeVisible()
     } finally {
       await page.evaluate(() =>
         (window as unknown as WalletRaceWindow).__walletProbe.releaseBalance()
