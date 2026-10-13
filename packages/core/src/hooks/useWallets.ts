@@ -27,6 +27,7 @@ import {
   backUpAccountSparkWallet,
   bootstrapLegacyAccountWalletRegistry,
   reconcileAccountWalletRegistryMembership,
+  applyAccountWalletRegistryNames,
   listAutomaticSignerSparkWallets,
   isCompleteAccountRegistryDiscovery,
   applyAccountWalletRegistryDefaults,
@@ -1013,6 +1014,13 @@ export function useWallets(
       )
       assertWalletSignerCurrent(signer)
       if (isCompleteAccountRegistryDiscovery(discovery)) {
+        await applyAccountWalletRegistryNames({
+          signer,
+          discovery,
+          network,
+          store,
+          journal: new DexieSparkRecoveryStore(),
+        })
         await applyAccountWalletRegistryDefaults({
           signer,
           discovery,
@@ -2175,8 +2183,58 @@ export function useWallets(
   )
   const renameWallet = useCallback(
     async (walletId: string, label: string) => {
-      await store.rename(walletId, requireWalletLabel(label))
-      await refreshAfterCommittedWalletMutation()
+      const name = requireWalletLabel(label)
+      const signer = getAccountSigner()
+      const recovery = await store.getSparkRecovery(walletId)
+      if (
+        !signer ||
+        recovery?.type !== "signer" ||
+        recovery.ownerPubkey !== signer.pubkey
+      ) {
+        await store.rename(walletId, name)
+        await refreshAfterCommittedWalletMutation()
+        return
+      }
+      await runAccountWalletSetup(signer, async () => {
+        const wallet = (await store.listVisible(signer.pubkey)).find(
+          (wallet) => wallet.id === walletId
+        )
+        if (!wallet || wallet.providerId !== "spark")
+          throw new Error("Wallet is no longer available.")
+        const service = getAccountSparkRecovery(signer)
+        const eventId = await service.prepareRegistry(
+          wallet.network,
+          { type: "rename", walletId, name },
+          (retain) =>
+            store.transaction(async () => {
+              assertWalletSignerCurrent(signer)
+              await store.rename(walletId, name)
+              await retain()
+              assertWalletSignerCurrent(signer)
+            })
+        )
+        let ready = false
+        try {
+          ready = (await service.deliver(eventId, { priority: "foreground" }))
+            .ready
+          assertWalletSignerCurrent(signer)
+          if (!ready)
+            throw new Error(
+              "Name saved on this device. Sync wallet recovery to finish sharing it."
+            )
+        } catch (cause) {
+          assertWalletSignerCurrent(signer)
+          throw new Error(
+            "Name saved on this device. Sync wallet recovery to finish sharing it.",
+            { cause }
+          )
+        } finally {
+          if (isWalletSignerCurrent(signer)) {
+            setRecoverySync(ready ? "ready" : "pending")
+            await refreshAfterCommittedWalletMutation()
+          }
+        }
+      })
     },
     [store, refreshAfterCommittedWalletMutation]
   )
@@ -2297,6 +2355,8 @@ function requireWalletLabel(label: string): string {
   if (!normalized) {
     throw new Error("Enter a wallet label.")
   }
+  if (normalized.length > 80)
+    throw new Error("Use at most 80 characters for the wallet name.")
   return normalized
 }
 

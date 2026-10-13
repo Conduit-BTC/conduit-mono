@@ -17,7 +17,10 @@ import {
 } from "./spark-recovery-service"
 import { DexieSparkRecoveryStore } from "./spark-recovery-store"
 import { createSparkRecoveryReader } from "./spark-recovery-read"
-import { isSparkWalletRegistryDTag } from "./spark-recovery-address"
+import {
+  isSparkWalletRegistryDTag,
+  sparkWalletRegistryDTag,
+} from "./spark-recovery-address"
 import { deriveSparkRecoveryIdentity } from "./spark-sdk"
 import {
   sealSignerSparkRecovery,
@@ -342,6 +345,55 @@ export async function applyAccountWalletRegistryDefaults(input: {
   })
 }
 
+/** Apply only confirmed names for this account's active signer-owned wallets. */
+export async function applyAccountWalletRegistryNames(input: {
+  signer: AccountSigner
+  discovery: SparkRecoveryDiscovery
+  network: SparkRecoveryBundle["network"]
+  store: Pick<
+    MarketWalletStore,
+    "listVisible" | "getSparkRecovery" | "rename" | "transaction"
+  >
+  journal: Pick<DexieSparkRecoveryStore, "load">
+}): Promise<void> {
+  const { signer, discovery, network, store, journal } = input
+  if (!isCompleteAccountRegistryDiscovery(discovery)) return
+  const names = discovery.registry?.walletNames
+  if (!names) return
+  assertWalletSignerCurrent(signer)
+  await store.transaction(async () => {
+    const retained = await journal.load(signer.pubkey)
+    if (
+      retained.records.some(
+        ({ event }) =>
+          event.id !== discovery.registryEventId &&
+          event.created_at >= discovery.registry!.createdAt &&
+          event.tags.some(
+            (tag) =>
+              tag[0] === "d" && tag[1] === sparkWalletRegistryDTag(network)
+          )
+      )
+    )
+      return
+    for (const wallet of await store.listVisible(signer.pubkey)) {
+      const name = names[wallet.id]
+      if (
+        !name ||
+        name === wallet.label ||
+        wallet.providerId !== "spark" ||
+        wallet.network !== network
+      )
+        continue
+      const recovery = await store.getSparkRecovery(wallet.id)
+      if (recovery?.type !== "signer" || recovery.ownerPubkey !== signer.pubkey)
+        continue
+      assertWalletSignerCurrent(signer)
+      await store.rename(wallet.id, name)
+    }
+    assertWalletSignerCurrent(signer)
+  })
+}
+
 export async function restoreAccountSparkWallets(
   signer: AccountSigner,
   discovery: SparkRecoveryDiscovery,
@@ -413,7 +465,9 @@ export async function restoreAccountSparkWallets(
           kind: "portable",
           providerId: "spark",
           network: bundle.network,
-          label: "Conduit Wallet",
+          label:
+            discovery.registry?.walletNames?.[bundle.walletId] ??
+            "Conduit Wallet",
           capabilities: [
             "pay_invoice",
             "receive",
@@ -476,11 +530,15 @@ export async function backUpAccountSparkWallet(
   )
     return false
   const latest = await service.discover(false, bundle.network, options)
+  const wallet = (await getMarketWalletStore().listVisible(signer.pubkey)).find(
+    (wallet) => wallet.id === walletId
+  )
   if (
     latest.coverage === "complete" &&
     latest.state === "recoverable" &&
     !latest.invalidCount &&
-    latest.registry?.activeWalletIds.includes(walletId)
+    latest.registry?.activeWalletIds.includes(walletId) &&
+    (!wallet || latest.registry.walletNames?.[walletId] !== undefined)
   )
     return latest.registryEventId
       ? (await service.deliver(latest.registryEventId, options)).ready &&
@@ -490,6 +548,9 @@ export async function backUpAccountSparkWallet(
   const registryEventId = await service.prepareRegistry(bundle.network, {
     type: "add",
     walletId,
+    ...(wallet
+      ? { name: latest.registry?.walletNames?.[walletId] ?? wallet.label }
+      : {}),
   })
   return (
     (await service.deliver(registryEventId, options)).ready &&

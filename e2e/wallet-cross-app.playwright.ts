@@ -47,6 +47,61 @@ async function wallets(page: Page) {
   }, core)
 }
 
+test("wallet names follow encrypted account recovery across apps and reloads @market @merchant", async ({
+  browser,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const context = await browser.newContext()
+  const market = await context.newPage()
+  const merchant = await context.newPage()
+  const rename = async (page: Page, name: string) => {
+    await page.getByRole("button", { name: /^Manage / }).click()
+    await page.getByRole("menuitem", { name: "Rename", exact: true }).click()
+    const dialog = page.getByRole("dialog", { name: "Rename wallet" })
+    await dialog.getByLabel("Wallet name", { exact: true }).fill(name)
+    await dialog.getByRole("button", { name: "Save name", exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: `Manage ${name}`, exact: true })
+    ).toBeVisible()
+  }
+  try {
+    for (const page of [market, merchant]) {
+      await prepareControlledWallet(page)
+      await installRealTestSigner(page, identity, relay)
+    }
+    await market.goto(apps.market + "/wallet")
+    await installControlledWallet(market)
+    await openWalletSetup(market, "Create wallet")
+    await saved(market)
+    const original = await wallets(market)
+    expect(original).toHaveLength(1)
+    await rename(market, "Shared travel wallet")
+    await merchant.goto(apps.merchant + "/wallet")
+    await installControlledWallet(merchant)
+    await expect(
+      merchant.getByRole("button", {
+        name: "Manage Shared travel wallet",
+        exact: true,
+      })
+    ).toBeVisible()
+    expect(await wallets(merchant)).toEqual(original)
+    await rename(merchant, "Shared family wallet")
+    await market.reload()
+    await installControlledWallet(market)
+    await expect(
+      market.getByRole("button", {
+        name: "Manage Shared family wallet",
+        exact: true,
+      })
+    ).toBeVisible()
+    expect(await wallets(market)).toEqual(original)
+  } finally {
+    await context.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
 async function gateWalletSigner(page: Page) {
   await page.evaluate(async (moduleUrl) => {
     const { db } = await import(moduleUrl)

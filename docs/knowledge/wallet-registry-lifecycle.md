@@ -8,6 +8,28 @@ The latest signed record carries active wallet IDs, retained removal IDs,
 an explicit main-wallet choice, a revision and the previous event ID. It
 contains no mnemonic. Recovery remains independent of account membership.
 
+Wallet display names live in the optional encrypted `walletNames` map, keyed by
+active wallet ID. Names are trimmed, nonempty and at most 80 characters. Creating
+or explicitly syncing a wallet publishes its existing name when none is recorded;
+renaming a signer-owned wallet retains the new name and exact signed registry
+event in one transaction before delivery. Interrupted delivery remains pending
+and uses the existing wallet-recovery retry. Device-only wallet names stay local.
+
+Confirmed complete discovery applies names to existing account-owned wallets and
+fresh recovery. Incomplete or conflicting reads do not overwrite local names.
+Validated ancestry retains a name when a legacy successor omits it; removal wins
+and drops names for removed wallets. Successors preserve other encrypted metadata
+without interpreting it as membership or name authority.
+
+This extends the existing version-1 payload and event address; it adds no event,
+discovery path or recovery-material migration. Earlier strict version-1 readers
+reject extended records, so old open clients must refresh before using account
+sync after a name is published. Deploy the updated readers to both apps before
+using name publication across them. New readers accept records without names;
+missing names never erase an existing local label. Historical names can be
+retained only when their signed ancestry is available, not reconstructed after
+all sources have discarded it.
+
 Shared discovery applies this record in Market and Merchant. A complete registry
 read excludes explicitly removed wallets from automatic restore and the device
 cache without erasing independently held recovery. Removing every wallet leaves

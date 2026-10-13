@@ -43,6 +43,7 @@ import {
   parseSparkWalletRegistrySnapshot,
   resolveSparkWalletRegistry,
   sparkWalletRegistryDTag,
+  sparkWalletNameSchema,
   type SparkWalletRegistrySnapshot,
 } from "./spark-wallet-registry"
 
@@ -645,7 +646,8 @@ export class SparkRecoveryService {
     network: SparkRecoveryBundle["network"],
     change:
       | { type: "bootstrap" }
-      | { type: "add"; walletId: string }
+      | { type: "add"; walletId: string; name?: string }
+      | { type: "rename"; walletId: string; name: string }
       | {
           type: "remove"
           walletId: string
@@ -654,6 +656,10 @@ export class SparkRecoveryService {
       | { type: "main"; walletId: string },
     commit?: (retain: () => Promise<void>) => Promise<void>
   ): Promise<string> {
+    const name =
+      "name" in change && change.name !== undefined
+        ? sparkWalletNameSchema.parse(change.name)
+        : undefined
     const discovery = await this.discover(false, network, {
       priority: "foreground",
     })
@@ -691,11 +697,15 @@ export class SparkRecoveryService {
           ? previous.removedWalletIds.includes(change.walletId) &&
             !previous.activeWalletIds.includes(change.walletId)
           : change.type === "add"
-            ? previous.activeWalletIds.includes(change.walletId)
-            : change.type === "bootstrap"
-              ? false
-              : previous.payInvoiceWalletId === change.walletId &&
-                previous.receiveWalletId === change.walletId
+            ? previous.activeWalletIds.includes(change.walletId) &&
+              (name === undefined ||
+                previous.walletNames?.[change.walletId] === name)
+            : change.type === "rename"
+              ? previous.walletNames?.[change.walletId] === name
+              : change.type === "bootstrap"
+                ? false
+                : previous.payInvoiceWalletId === change.walletId &&
+                  previous.receiveWalletId === change.walletId
       if (
         applied &&
         localRemoved.every((walletId) =>
@@ -777,7 +787,18 @@ export class SparkRecoveryService {
     const payFallback = previous?.payInvoiceWalletId ?? legacyPay ?? firstWallet
     const receiveFallback =
       previous?.receiveWalletId ?? legacyReceive ?? firstWallet
+    const walletNames = Object.fromEntries(
+      Object.entries(previous?.walletNames ?? {}).filter(([id]) =>
+        active.has(id)
+      )
+    )
+    if (
+      name !== undefined &&
+      (change.type === "add" || change.type === "rename")
+    )
+      walletNames[change.walletId] = name
     const snapshot: SparkWalletRegistrySnapshot = {
+      ...previous,
       format: "conduit.spark.registry",
       version: 1,
       ownerPubkey: this.scope.owner,
@@ -786,6 +807,9 @@ export class SparkRecoveryService {
       parentEventId: discovery.registryEventId ?? null,
       activeWalletIds: [...active].sort(),
       removedWalletIds: [...removed].sort(),
+      ...(previous?.walletNames || Object.keys(walletNames).length
+        ? { walletNames }
+        : {}),
       payInvoiceWalletId:
         change.type === "main"
           ? change.walletId
