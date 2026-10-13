@@ -765,7 +765,7 @@ function WalletSection({
       {loading ? (
         <WalletSectionLoading title={title} />
       ) : wallets.length === 0 ? (
-        <div className="grid gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-8 text-pretty text-sm">
+        <div className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-pretty text-sm">
           <p>{empty}</p>
           <p className="text-[var(--text-secondary)]">{description}</p>
         </div>
@@ -929,7 +929,7 @@ function WalletRow({
         data-wallet-state={runtime.status}
         data-wallet-id={wallet.id}
         aria-label={`${displayLabel} wallet`}
-        className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-7"
+        className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-7"
       >
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
