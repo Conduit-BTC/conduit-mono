@@ -1,23 +1,27 @@
+import { useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
+import { useWalletBalanceUpdates } from "@conduit/core/hooks/useWallets"
 import { useAuth } from "@conduit/core"
 import {
   useWalletAddress,
   type WalletAddressSuggestion,
 } from "@conduit/core/hooks/useWalletAddress"
-import { Wallets, ProfileLightningAddressEditor, Button } from "@conduit/ui"
+import { Wallets, Button } from "@conduit/ui"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 export const Route = createFileRoute("/wallet")({ component: WalletsPage })
-function AddressEditor(props: {
-  suggestion: WalletAddressSuggestion | null
-  onDismiss(): void
-}) {
-  const controller = useWalletAddress({ ...props, appId: "merchant" })
-  return <ProfileLightningAddressEditor controller={controller} />
-}
 function WalletsPage() {
   const auth = useAuth()
   const automation = useMerchantPaymentAutomation()
   const wallets = automation.wallets
+  useWalletBalanceUpdates(wallets)
+  const [suggestion, setSuggestion] = useState<WalletAddressSuggestion | null>(
+    null
+  )
+  const addressController = useWalletAddress({
+    suggestion,
+    onDismiss: () => setSuggestion(null),
+    appId: "merchant",
+  })
   return (
     <Wallets
       auth={auth}
@@ -53,13 +57,8 @@ function WalletsPage() {
           )}
         </div>
       }
-      renderAddressEditor={(suggestion, onDismiss) => (
-        <AddressEditor
-          key={`${auth.accountPubkey}:${auth.authGeneration}`}
-          suggestion={suggestion}
-          onDismiss={onDismiss}
-        />
-      )}
+      addressController={addressController}
+      onSuggestAddress={setSuggestion}
     />
   )
 }

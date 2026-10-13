@@ -402,13 +402,12 @@ export function AddressNameRequestForm({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (pending) return
-        setToken("")
+        if (!pending) setToken("")
         setOpen(next)
       }}
     >
       <DialogTrigger asChild>
-        <Button className="w-full gap-2" disabled={pending}>
+        <Button className="w-full gap-2">
           {status ? (
             "View address request"
           ) : (
@@ -420,7 +419,7 @@ export function AddressNameRequestForm({
           <ArrowRight className="size-4 shrink-0" aria-hidden="true" />
         </Button>
       </DialogTrigger>
-      <DialogContent showCloseButton={!pending}>
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Get my @conduit.cash address</DialogTitle>
           <DialogDescription>

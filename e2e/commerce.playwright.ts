@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import {
   expect,
   test,
@@ -654,20 +655,15 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("wallet_route")
     await merchantPage.goto(`${merchantUrl}/wallet`)
-    await merchantPage
-      .getByText("External wallet management", { exact: true })
-      .click()
     await expect(
-      merchantPage.getByRole("heading", { name: "My wallets", exact: true })
+      merchantPage.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
     // Retain an older mainnet default while this app creates testnet invoices.
     phase("foreign_wallet")
     await foreignWallet.configureMerchantConnection(
       async (connectionString) => {
         phase("foreign_open_dialog")
-        await merchantPage
-          .getByRole("button", { name: "Connect wallet", exact: true })
-          .click()
+        await openWalletSetup(merchantPage, "Connect wallet")
         phase("foreign_connection_form")
         await merchantPage
           .getByLabel("Wallet label", { exact: true })
@@ -735,14 +731,10 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .toBe(false)
     foreignMenuObservation.foreignRegistryRefreshObserved = true
     phase("foreign_manage")
-    const foreignPreferences = merchantPage
-      .getByRole("heading", { name: "Foreign NWC", exact: true })
-      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
-    await foreignPreferences
-      .getByText("Wallet preferences", { exact: true })
+    await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
       .click()
-    phase("foreign_select_default")
-    const foreignMenuItem = foreignPreferences.getByRole("button", {
+    const foreignMenuItem = merchantPage.getByRole("menuitem", {
       name: "Make default for merchant invoices",
       exact: true,
     })
@@ -765,18 +757,17 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     recordJourney()
     await foreignMenuItem.click()
     phase("foreign_default_committed")
+    await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
+      .click()
     await expect(
-      merchantPage
-        .getByRole("heading", { name: "Foreign NWC", exact: true })
-        .locator("..")
-        .getByText("Default for merchant invoices", { exact: true })
+      merchantPage.getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
+    await merchantPage.keyboard.press("Escape")
     phase("receiving_wallet")
     await wallet.configureMerchantConnection(async (connectionString) => {
       phase("receiving_open_dialog")
-      await merchantPage
-        .getByRole("button", { name: "Connect wallet", exact: true })
-        .click()
+      await openWalletSetup(merchantPage, "Connect wallet")
       phase("receiving_connection_form")
       await merchantPage
         .getByLabel("Wallet label", { exact: true })
@@ -796,16 +787,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       merchantPage.getByText("Connected via NWC", { exact: true })
     ).toHaveCount(2, { timeout: 20_000 })
+    await expect(merchantPage.getByRole("article")).toHaveCount(2)
     await expect(
-      merchantPage.getByText("Choose this wallet at checkout.", {
-        exact: true,
-      })
-    ).toHaveCount(2)
-    await expect(
-      merchantPage.getByText(`Current address: ${merchantLud16}`, {
-        exact: true,
-      })
-    ).toBeVisible()
+      merchantPage
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .locator("[data-wallet-address]")
+    ).toHaveText(merchantLud16)
     await expect(
       merchantPage.getByText(
         "Payments are checked automatically against the original invoice in its receiving wallet.",
@@ -813,27 +800,24 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       )
     ).toBeVisible({ timeout: 20_000 })
     phase("receiving_manage")
-    const receivingPreferences = merchantPage
-      .getByRole("heading", { name: "Commerce NWC", exact: true })
-      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
-    await receivingPreferences
-      .getByText("Wallet preferences", { exact: true })
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
       .click()
     phase("receiving_select_default")
-    await receivingPreferences
-      .getByRole("button", {
+    await merchantPage
+      .getByRole("menuitem", {
         name: "Make default for merchant invoices",
         exact: true,
       })
       .click()
     phase("receiving_default_committed")
-    // Confirm the asynchronous default commit before a full-page navigation.
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
+      .click()
     await expect(
-      merchantPage
-        .getByRole("heading", { name: "Commerce NWC", exact: true })
-        .locator("..")
-        .getByText("Default for merchant invoices", { exact: true })
+      merchantPage.getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
+    await merchantPage.keyboard.press("Escape")
 
     phase("publish_product")
     await publishProduct(merchantPage, productTitle, testInfo)

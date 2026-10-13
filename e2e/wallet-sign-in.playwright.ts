@@ -415,8 +415,13 @@ for (const size of [
                 }
               ) {
                 requests.push({ ...value, check: value.check === true })
-                if (requests.length === 1)
+                if (requests.length === 1) {
+                  await new Promise<void>((resolve) => {
+                    ;(window as any).__addressRequestUi.releaseSubmission =
+                      resolve
+                  })
                   throw new Error("controlled transport failure")
+                }
                 if (value.check) {
                   const checks = requests.filter(
                     (request) => request.check
@@ -430,6 +435,10 @@ for (const size of [
               },
               async activate(name: string) {
                 approvals++
+                await new Promise<void>((resolve) => {
+                  ;(window as any).__addressRequestUi.releaseActivation =
+                    resolve
+                })
                 return {
                   status: "registered",
                   username: name,
@@ -496,6 +505,23 @@ for (const size of [
       await page
         .getByRole("button", { name: "Request name", exact: true })
         .click()
+      await page.keyboard.press("Escape")
+      await expect(page.getByRole("dialog")).toHaveCount(0)
+      await page
+        .getByRole("button", { name: "View address request", exact: true })
+        .click()
+      await expect(
+        page.getByLabel("Desired name", { exact: true })
+      ).toHaveValue("review-name")
+      await expect(
+        page.getByLabel("Desired name", { exact: true })
+      ).toBeDisabled()
+      await expect(
+        page.getByRole("button", { name: "Check request status", exact: true })
+      ).toBeDisabled()
+      await page.evaluate(() =>
+        (window as any).__addressRequestUi.releaseSubmission()
+      )
       await expect(page.getByRole("status")).toContainText(
         "Submission is not confirmed"
       )
@@ -569,6 +595,24 @@ for (const size of [
       )
       await page
         .getByRole("button", { name: "Activate approved address", exact: true })
+        .click()
+      await page.getByRole("button", { name: "Close", exact: true }).click()
+      await expect(page.getByRole("dialog")).toHaveCount(0)
+      await page
+        .getByRole("button", { name: "View address request", exact: true })
+        .click()
+      await expect(
+        page.getByRole("button", {
+          name: "Activate approved address",
+          exact: true,
+        })
+      ).toBeDisabled()
+      await page.keyboard.press("Escape")
+      await page.evaluate(() =>
+        (window as any).__addressRequestUi.releaseActivation()
+      )
+      await page
+        .getByRole("button", { name: "View address request", exact: true })
         .click()
       await expect(
         page
@@ -723,9 +767,6 @@ for (const size of [
       await openWalletSetup(page, "Create wallet")
       await saveRecovery(page)
       expect(await publicAddress(page)).toBe("current@wallet.example")
-      await page
-        .getByRole("button", { name: "Keep the current address" })
-        .click()
       await expect(
         page.getByRole("button", { name: "Receive", exact: true })
       ).toBeVisible()
@@ -789,13 +830,15 @@ for (const size of [
         .getByRole("dialog")
         .getByRole("button", { name: "Import wallet", exact: true })
         .click()
-      await saveRecovery(page)
       await expect(
-        page.getByText(
-          "Payments to its existing address continue reaching the recovered wallet.",
-          { exact: false }
-        )
+        page
+          .getByRole("dialog")
+          .getByText(
+            "Payments to an existing address continue reaching this recovered wallet.",
+            { exact: false }
+          )
       ).toBeVisible()
+      await saveRecovery(page)
       expect(await publicAddress(page)).toBe("current@wallet.example")
       await expect(
         page.getByText("support@conduit.cash", {
@@ -807,6 +850,16 @@ for (const size of [
         account: (window as any).__walletProbe.lastAccount,
       }))
       expect(recovered).toEqual({ registrations: 1, account: 7 })
+      await page
+        .getByRole("article")
+        .filter({
+          has: page
+            .locator("[data-wallet-address]")
+            .filter({ hasText: "support@conduit.cash" }),
+        })
+        .locator("..")
+        .getByRole("button", { name: "Use this address", exact: true })
+        .click()
       await page
         .getByRole("button", { name: "Use the Conduit address" })
         .click()
@@ -1304,7 +1357,6 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       phase("legacy_focus")
       await expect(page.getByLabel("Manage Legacy wallet")).toBeFocused()
       phase("signer_recovery")
-      await page.getByRole("tab", { name: /^Conduit Wallet/ }).click()
       await page.getByLabel("Manage Conduit Wallet").click()
       await page
         .getByRole("menuitem", { name: "Recovery details", exact: true })

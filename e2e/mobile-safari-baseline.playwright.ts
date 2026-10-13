@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
   finalizeEvent,
@@ -1586,8 +1587,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await assertMobileViewport(page)
 
-    await page.getByText("External wallet management", { exact: true }).tap()
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    await openWalletSetup(page, "Connect wallet")
     const dialog = page.getByRole("dialog", { name: "Connect wallet" })
     const connectionString = dialog.getByPlaceholder(
       "nostr+walletconnect://..."
@@ -1604,8 +1604,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
-    await page.getByText("External wallet management", { exact: true }).tap()
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    await openWalletSetup(page, "Connect wallet")
     await expect(connectionString).toBeVisible()
   })
 

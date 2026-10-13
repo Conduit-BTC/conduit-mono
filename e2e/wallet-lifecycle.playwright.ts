@@ -508,10 +508,13 @@ for (const unavailable of ["signet", "coordination"] as const) {
           externalStatus: "ready",
         })
       await expect(
-        page.getByRole("tab", { name: "External capability", exact: true })
+        page.getByRole("article", {
+          name: "External capability wallet",
+          exact: true,
+        })
       ).toBeVisible()
       await expect(
-        page.getByRole("tab", { name: "Legacy fence", exact: true })
+        page.getByRole("article", { name: "Legacy fence wallet", exact: true })
       ).toBeVisible()
     } finally {
       await wallet.close()
@@ -2113,6 +2116,10 @@ for (const app of ["market", "merchant"] as const) {
           )
         )
         .toBe(true)
+      await page
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .getByRole("button", { name: "Edit", exact: true })
+        .click()
       await page.evaluate(() => {
         const auth = (window as any).__walletLifecycle.auth
         ;(window as any).__forcedAddressSuggestion = {
@@ -2169,17 +2176,23 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Save public address", exact: true })
         .click()
       await expect(
-        page.getByText("Current address: mixed.case@example.com", {
-          exact: true,
-        })
-      ).toBeVisible()
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("mixed.case@example.com")
+      await page
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .getByRole("button", { name: "Edit", exact: true })
+        .click()
       await page.getByLabel("Lightning address", { exact: true }).fill("")
       await page
         .getByRole("button", { name: "Save public address", exact: true })
         .click()
       await expect(
-        page.getByText("Current address: None", { exact: true })
-      ).toBeVisible()
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("No address set")
     } finally {
       disposeRuntimeSignerIdentity(identity)
     }

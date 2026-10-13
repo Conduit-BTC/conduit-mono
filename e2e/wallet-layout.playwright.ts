@@ -18,7 +18,7 @@ test.use({ trace: "off", screenshot: "off", video: "off" })
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
 
 for (const app of ["market", "merchant"] as const) {
-  test(`${app} wallet hierarchy keeps selection separate from defaults on desktop and mobile @market @merchant`, async ({
+  test(`${app} wallet hierarchy stacks cards without changing defaults on desktop and mobile @market @merchant`, async ({
     page,
   }) => {
     const identity = createRuntimeSignerIdentity()
@@ -76,29 +76,29 @@ for (const app of ["market", "merchant"] as const) {
           )
         })
       const before = await defaults()
-      const choices = page.getByRole("tab")
-      await expect(choices).toHaveCount(2)
-      await choices.last().click()
+      const cards = page.getByRole("article", { name: / wallet$/ })
+      await expect(cards).toHaveCount(2)
+      await expect(page.getByRole("tab")).toHaveCount(0)
+      await expect(cards.nth(0)).toBeVisible()
+      await expect(cards.nth(1)).toBeVisible()
       expect(await defaults()).toEqual(before)
-      await page.getByRole("tab", { name: "Daily wallet", exact: true }).click()
       await expect(
-        page.getByRole("button", {
+        cards.nth(0).getByRole("button", {
           name: "Get my @conduit.cash address",
           exact: true,
         })
       ).toBeVisible()
+      await expect(page.locator("[data-wallet-profile-row]")).toHaveCount(2)
+      await expect(
+        page.getByRole("button", { name: /^Refresh .* balance$/ })
+      ).toHaveCount(2)
       await expect(
         page.getByRole("button", {
-          name: "Set Nostr receiving address",
+          name: "Retry encrypted wallet sync",
           exact: true,
         })
-      ).toBeVisible()
-      await expect(
-        page.getByRole("button", {
-          name: /^(Retry encrypted wallet sync|Sync encrypted wallet recovery)$/,
-        })
-      ).toHaveCount(1)
-      // Recovery is a single action in the selected wallet's overflow.
+      ).toHaveCount(0)
+      // Each wallet keeps one recovery-management action in its overflow.
       await page
         .getByRole("button", { name: "Manage Daily wallet", exact: true })
         .click()
@@ -141,9 +141,15 @@ for (const app of ["market", "merchant"] as const) {
             "data-theme",
             theme
           )
-          await page.evaluate(() => window.scrollTo(0, 0))
+          await page.evaluate(async () => {
+            await document.fonts.ready
+            window.scrollTo({ top: 0, behavior: "instant" })
+            document
+              .querySelector<HTMLElement>("[data-merchant-main-scroll]")
+              ?.scrollTo({ top: 0, behavior: "instant" })
+          })
           await expect(
-            page.getByRole("button", { name: "Send", exact: true })
+            cards.first().getByRole("button", { name: "Send", exact: true })
           ).toBeEnabled()
           await expect(
             page.getByRole("button", { name: "Add wallet", exact: true })
@@ -159,6 +165,7 @@ for (const app of ["market", "merchant"] as const) {
             .toBeGreaterThanOrEqual(4.5)
           const geometry = await page
             .locator("[data-wallet-balance]:visible")
+            .first()
             .evaluate((node) => ({
               fontSize: parseFloat(getComputedStyle(node).fontSize),
               overflow: document.documentElement.scrollWidth > innerWidth,

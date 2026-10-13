@@ -1,3 +1,4 @@
+import { retryWalletRecovery } from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import { readTestRelayEvents } from "./helpers/auth"
@@ -229,9 +230,7 @@ test("failed removal survives reload and retries the retained event before exclu
     await installControlledWallet(page)
     await expect(page.getByRole("button", { name: /^Manage / })).toHaveCount(1)
     expect(await localSparkWalletIds(page)).toEqual([walletId])
-    await page
-      .getByRole("button", { name: "Retry encrypted wallet sync", exact: true })
-      .click()
+    await retryWalletRecovery(page)
     await expect(page.getByRole("button", { name: /^Manage / })).toHaveCount(0)
     const registryEvents = await readTestRelayEvents({
       authors: [identity.pubkey],

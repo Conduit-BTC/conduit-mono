@@ -1,3 +1,4 @@
+import { retryWalletRecovery } from "./helpers/wallet-fixture"
 import {
   openWalletSetup,
   closeDefaultWalletSession,
@@ -101,14 +102,13 @@ for (const app of ["market", "merchant"] as const) {
       await expect(dialog.getByLabel("Conduit address name")).toHaveCount(0)
       await saved(page)
       await expect(
-        page.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("current@wallet.example")
-      await page
-        .getByRole("button", { name: "Keep the current address", exact: true })
-        .click()
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("current@wallet.example")
       await page
         .getByRole("button", {
-          name: "Set Nostr receiving address",
+          name: "Use this address",
           exact: true,
         })
         .click()
@@ -124,8 +124,10 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Use this wallet’s address", exact: true })
         .click()
       await expect(
-        page.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("wallet1@breez.tips")
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("wallet1@breez.tips")
       const metadata = await page.evaluate(async (core) => {
         const { fetchProfileContext, getAccountSigner } = await import(core)
         const owner = getAccountSigner().pubkey
@@ -241,6 +243,8 @@ for (const from of ["market", "merchant"] as const) {
       const context = await browser.newContext()
       const source = await context.newPage()
       const target = await context.newPage()
+      source.setDefaultTimeout(10_000)
+      target.setDefaultTimeout(10_000)
       const to = from === "market" ? "merchant" : "market"
       let denyTargetRecovery = recoveryMode === "foreground"
       let targetSignerDecryptCalls = 0
@@ -265,8 +269,10 @@ for (const from of ["market", "merchant"] as const) {
         await openWalletSetup(source, "Create wallet")
         await saved(source)
         await expect(
-          source.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@breez.tips")
+          source
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .locator("[data-wallet-address]")
+        ).toHaveText("wallet1@breez.tips")
         const first = (await wallets(source))[0]
         await openWalletSetup(source, "Import wallet")
         await source
@@ -285,12 +291,6 @@ for (const from of ["market", "merchant"] as const) {
           .getByRole("button", { name: "Import wallet", exact: true })
           .click()
         await saved(source, false)
-        await source
-          .getByRole("button", {
-            name: "Keep the current address",
-            exact: true,
-          })
-          .click()
         const ids = await wallets(source)
         expect(ids).toHaveLength(2)
         const selected = ids.find((id) => id !== first)!
@@ -307,9 +307,6 @@ for (const from of ["market", "merchant"] as const) {
           },
           { storage, core, selected }
         )
-        await source
-          .getByRole("tab", { name: selectedLabel, exact: true })
-          .click()
         await source
           .getByRole("button", { name: `Manage ${selectedLabel}`, exact: true })
           .click()
@@ -338,8 +335,10 @@ for (const from of ["market", "merchant"] as const) {
           )
           .toEqual(["pay_invoice", "receive"])
         await expect(
-          source.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@breez.tips")
+          source
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .locator("[data-wallet-address]")
+        ).toHaveText("wallet1@breez.tips")
         await target.goto(apps[to] + "/wallet")
         await installControlledWallet(target, false, "support@conduit.cash")
         if (recoveryMode === "foreground") {
@@ -366,15 +365,14 @@ for (const from of ["market", "merchant"] as const) {
           // Background consent remains paused; explicitly open the other
           // restored wallet instead of assuming automatic consent resumed.
           const closedChoice = target.locator(
-            '[role="tab"]:not([data-runtime-status="ready"]):not([data-runtime-status="connecting"])'
+            'article[data-wallet-state]:not([data-wallet-state="ready"]):not([data-wallet-state="connecting"])'
           )
-          await expect(closedChoice).toHaveCount(1)
-          await closedChoice.click()
           const openWallet = target.getByRole("button", {
             name: "Open wallet",
             exact: true,
           })
           try {
+            await expect(closedChoice).toHaveCount(1)
             await expect(openWallet).toHaveCount(1)
           } catch (error) {
             const safe = {
@@ -468,13 +466,14 @@ for (const from of ["market", "merchant"] as const) {
         expect(state.registrations).toBe(0)
         expect((await wallets(target)).sort()).toEqual(ids.sort())
         await expect(
-          target.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@breez.tips")
+          target
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .locator("[data-wallet-address]")
+        ).toHaveText("wallet1@breez.tips")
         await target
-          .getByRole("tab")
-          .filter({ hasText: "Spending default" })
+          .locator(`[data-wallet-id="${selected}"]`)
+          .getByRole("button", { name: /^Manage / })
           .click()
-        await target.getByRole("button", { name: /^Manage / }).click()
         await expect(
           target.getByText("Default for merchant invoices", { exact: true })
         ).toBeVisible()
@@ -492,7 +491,20 @@ for (const from of ["market", "merchant"] as const) {
             exact: true,
           })
         ).toHaveCount(2)
+      } catch (error) {
+        // Only source locations, never assertion values or wallet material.
+        const locations =
+          error instanceof Error
+            ? (error.stack?.match(
+                /wallet-cross-app\.playwright\.ts:\d+:\d+/g
+              ) ?? [])
+            : []
+        process.stderr.write(
+          `Wallet regression failed at ${locations.join(", ") || "unknown source location"}\n`
+        )
+        throw error
       } finally {
+        await Promise.all([source.close(), target.close()])
         await context.close()
         disposeRuntimeSignerIdentity(identity)
       }
@@ -550,12 +562,7 @@ for (const app of ["market", "merchant"] as const) {
       expect((await journal()).unresolved).toBe(false)
 
       denied = false
-      await target
-        .getByRole("button", {
-          name: "Retry encrypted wallet sync",
-          exact: true,
-        })
-        .click()
+      await retryWalletRecovery(target)
       await expect.poll(() => wallets(target)).toEqual(originalWallets)
       await expect(blocked).toHaveCount(0)
       expect((await journal()).unresolved).toBe(false)
@@ -621,9 +628,7 @@ test("foreground Open does not inherit a paused background wallet open @merchant
       )
     ).toBeVisible()
     denied = false
-    await target
-      .getByRole("button", { name: "Retry encrypted wallet sync" })
-      .click()
+    await retryWalletRecovery(target)
     await expect.poll(() => wallets(target)).toEqual(originalWallets)
     await expect(
       target.getByRole("button", { name: "Open wallet", exact: true })
@@ -858,8 +863,10 @@ for (const size of [
             .click()
           await saved(source)
           await expect(
-            source.getByLabel("Lightning address", { exact: true })
-          ).toHaveValue("")
+            source
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .locator("[data-wallet-address]")
+          ).toHaveText("No address set")
           const sourceIds = await wallets(source)
           expect(sourceIds).toHaveLength(1)
 
@@ -893,8 +900,10 @@ for (const size of [
             )
           ).toBe(true)
           await expect(
-            target.getByLabel("Lightning address", { exact: true })
-          ).toHaveValue("")
+            target
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .locator("[data-wallet-address]")
+          ).toHaveText("No address set")
           await target.screenshot({
             path:
               "/tmp/635-" + to + "-" + size.name + "-import-shared-wallet.png",
@@ -1056,12 +1065,7 @@ test("controlled recovery transport retains concurrent signed branches and block
     for (const ids of originalWallets) expect(ids).toHaveLength(1)
     expect(new Set(originalWallets.flat()).size).toBe(2)
     for (const [index, page] of pages.entries()) {
-      await page
-        .getByRole("button", {
-          name: "Retry encrypted wallet sync",
-          exact: true,
-        })
-        .click()
+      await retryWalletRecovery(page)
       await expect(
         page.getByText(
           "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
@@ -1199,6 +1203,10 @@ for (const app of ["market", "merchant"] as const) {
           await installRealTestSigner(page, identity, relay)
           await page.goto(apps[app] + "/wallet")
           await installControlledWallet(page)
+          await page
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .getByRole("button", { name: "Edit", exact: true })
+            .click()
           const address = page.getByLabel("Lightning address", { exact: true })
           await expect(address).toHaveValue(
             "https://wallet.example/LNURL/Token"
@@ -1239,7 +1247,17 @@ for (const app of ["market", "merchant"] as const) {
               ...completeMetadata,
               lud16: "new@wallet.example",
             })
-            await expect(address).toHaveValue("new@wallet.example")
+            await expect(
+              page
+                .getByRole("region", {
+                  name: "Nostr profile receiving address",
+                })
+                .locator("[data-wallet-address]")
+            ).toHaveText("new@wallet.example")
+            await page
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .getByRole("button", { name: "Edit", exact: true })
+              .click()
           }
           await address.fill("")
           await page
@@ -1250,12 +1268,16 @@ for (const app of ["market", "merchant"] as const) {
             .click()
           await expect.poll(retained).toEqual(completeMetadata)
           await page.reload()
-          await expect(address).toHaveValue("")
           await expect(
-            page.getByText("Current address: None", {
-              exact: true,
-            })
-          ).toBeVisible()
+            page
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .locator("[data-wallet-address]")
+          ).toHaveText("No address set")
+          await page
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .getByRole("button", { name: "Edit", exact: true })
+            .click()
+          await expect(address).toHaveValue("")
           expect(await retained()).toEqual(completeMetadata)
         } finally {
           disposeRuntimeSignerIdentity(identity)

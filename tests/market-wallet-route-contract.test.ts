@@ -82,7 +82,7 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Add wallet")
     expect(content).toContain("Import wallet")
     expect(content).toContain("Connect an external wallet")
-    expect(content).toContain("ProfileLightningAddressEditor")
+    expect(content).toContain("useWalletAddress")
     expect(content).toContain("wallets.portableWallets")
     expect(content).toContain("wallets.connectedWallets")
     expect(content).toContain("wallets.setDefaultPaymentWallet")
@@ -384,7 +384,7 @@ describe("Market wallet route contracts", () => {
     expect(wallet).toContain(
       "dialogTriggerRef.current = addWalletTriggerRef.current"
     )
-    expect(wallet.includes("Retry balance")).toBe(true)
+    expect(wallet).toContain('"Refresh"} ${displayLabel} balance`')
     expect(wallet.includes("Use previous password")).toBe(false)
     expect(wallet.includes("Use for new invoices")).toBe(false)
     expect(wallet.includes("Remove from this device")).toBe(true)

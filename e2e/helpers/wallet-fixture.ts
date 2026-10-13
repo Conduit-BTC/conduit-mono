@@ -1,8 +1,35 @@
 import path from "node:path"
 import { expect, type Page } from "@playwright/test"
 
+export async function retryWalletRecovery(page: Page) {
+  const retry = page.getByRole("button", {
+    name: "Retry encrypted wallet sync",
+    exact: true,
+  })
+  if (!(await retry.count())) {
+    await page
+      .getByRole("button", { name: /^Manage / })
+      .first()
+      .click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+  }
+  await retry.click()
+  await expect
+    .poll(async () => !(await retry.count()) || (await retry.isEnabled()))
+    .toBe(true)
+  if (await page.getByRole("dialog", { name: /^Recovery for / }).count()) {
+    await page.keyboard.press("Escape")
+  }
+}
+
 export async function saveWalletRecovery(page: Page, makeMain = true) {
-  const dialog = page.getByRole("dialog")
+  const dialog = page.getByRole("dialog").filter({
+    has: page.getByRole("heading", {
+      name: /^(Wallet imported|Save your recovery details)$/,
+    }),
+  })
   await expect(
     dialog.getByRole("heading", {
       name: /^(Wallet imported|Save your recovery details)$/,
@@ -32,9 +59,13 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
     exact: true,
   })
   if (await chooser.count()) await chooser.click()
-  await dialog
-    .getByLabel("Make this my main wallet", { exact: true })
-    .setChecked(makeMain)
+  const mainChoice = dialog.getByLabel("Make this my main wallet", {
+    exact: true,
+  })
+  // An already-unchecked control does not wait for actionability in setChecked.
+  // Ordinary setup helpers must finish setup; early dismissal has dedicated tests.
+  await expect(mainChoice).toBeEnabled()
+  await mainChoice.setChecked(makeMain)
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
   await expect(dialog).toHaveCount(0)
 }
@@ -100,8 +131,13 @@ export async function prepareControlledWallet(page: Page) {
             probe.disconnects++
           },
           async getInfo() {
+            probe.balanceReads = (probe.balanceReads ?? 0) + 1
+            if (probe.delayBalance)
+              await new Promise<void>((resolve) => {
+                probe.releaseBalance = resolve
+              })
             if (probe.failBalance) throw new Error("Injected post-open failure")
-            return { balanceSats: 0 }
+            return { balanceSats: probe.balanceSats ?? 0 }
           },
           async listPayments() {
             return { payments: [] }
