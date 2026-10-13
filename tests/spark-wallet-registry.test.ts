@@ -1,3 +1,4 @@
+import { accountAddressRequests } from "../packages/core/src/wallets/account-address-request"
 import { secp256k1 } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { sha256 } from "../packages/core/node_modules/@noble/hashes/sha2.js"
 import { bytesToHex } from "../packages/core/node_modules/@noble/hashes/utils.js"
@@ -1739,4 +1740,24 @@ test("legacy omission is repaired from retained encrypted history while display 
   const removed = await f.service().discover(false, "mainnet")
   expect(removed.registry?.walletNames).toEqual({})
   expect(removed.registry?.addressNameRequests).toBeUndefined()
+})
+
+test("request writes remain disabled before compatible-reader rollout", () => {
+  const f = fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const requests = accountAddressRequests(f.signer, "market")
+    expect(requests.writesEnabled).toBe(false)
+    expect(() =>
+      requests.submit(crypto.randomUUID(), {
+        desiredName: "saved-name",
+        token: "unused",
+      })
+    ).toThrow("compatible wallet readers")
+    expect(() => requests.activate(crypto.randomUUID())).toThrow(
+      "compatible wallet readers"
+    )
+  } finally {
+    retireAccountSigner(f.signer)
+  }
 })

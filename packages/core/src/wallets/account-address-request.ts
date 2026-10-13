@@ -24,6 +24,14 @@ export function accountAddressRequests(
   signer: AccountSigner,
   appId: ConduitAppId
 ): AddressRequestWorkflow {
+  const writesEnabled =
+    import.meta.env?.VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED === "true"
+  const assertWritesEnabled = () => {
+    if (!writesEnabled)
+      throw new Error(
+        "Name requests open after compatible wallet readers are deployed."
+      )
+  }
   const service = getAccountSparkRecovery(signer)
   const current = () => assertWalletSignerCurrent(signer)
   const manager = () => {
@@ -74,6 +82,7 @@ export function accountAddressRequests(
         )
       },
       async save(walletId, record) {
+        assertWritesEnabled()
         let discovery = await service.discover(false, "mainnet", {
           priority,
         })
@@ -166,10 +175,15 @@ export function accountAddressRequests(
   const workflow = makeWorkflow("foreground")
   const background = makeWorkflow("background")
   return {
+    writesEnabled,
     load: (walletId) =>
       runAccountWalletSetup(signer, async () => {
         const view = await background.load(walletId)
-        if (!view || !["pending", "received"].includes(view.record.phase))
+        if (
+          !writesEnabled ||
+          !view ||
+          !["pending", "received"].includes(view.record.phase)
+        )
           return view
         let attempts = checked.get(signer)
         if (!attempts) {
@@ -188,12 +202,18 @@ export function accountAddressRequests(
           return view
         }
       }),
-    submit: (walletId, input) =>
-      runAccountWalletSetup(signer, () => workflow.submit(walletId, input)),
+    submit: (walletId, input) => {
+      assertWritesEnabled()
+      return runAccountWalletSetup(signer, () =>
+        workflow.submit(walletId, input)
+      )
+    },
     check: (walletId) =>
       runAccountWalletSetup(signer, () => workflow.check(walletId)),
-    activate: (walletId) =>
-      runAccountWalletSetup(signer, () => workflow.activate(walletId)),
+    activate: (walletId) => {
+      assertWritesEnabled()
+      return runAccountWalletSetup(signer, () => workflow.activate(walletId))
+    },
   }
 }
 

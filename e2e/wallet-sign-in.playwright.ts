@@ -383,6 +383,7 @@ for (const size of [
           },
         })
         const api = {
+          writesEnabled: true,
           async load() {
             loads++
             return saved
@@ -444,6 +445,10 @@ for (const size of [
         Object.assign(window, {
           __addressRequestUi: {
             mount,
+            setWritesEnabled(value: boolean) {
+              api.writesEnabled = value
+              mount()
+            },
             get registrations() {
               return registrations
             },
@@ -465,6 +470,18 @@ for (const size of [
           "/@fs" +
           path.resolve("packages/ui/src/components/AddressNameRequestForm.tsx"),
       }
+    )
+    await page.evaluate(() =>
+      Reflect.get(window, "__addressRequestUi").setWritesEnabled(false)
+    )
+    await expect(
+      page.getByRole("button", { name: "Request name", exact: true })
+    ).toBeDisabled()
+    await expect(page.getByRole("status")).toContainText(
+      "Preview: requests open after release."
+    )
+    await page.evaluate(() =>
+      Reflect.get(window, "__addressRequestUi").setWritesEnabled(true)
     )
     await page.getByLabel("Desired name", { exact: true }).fill("Review-Name")
     await expect(

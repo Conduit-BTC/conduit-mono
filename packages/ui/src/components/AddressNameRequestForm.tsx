@@ -246,6 +246,7 @@ export function AddressNameRequestForm({
       }
     }
   }
+  const writesEnabled = submit.writesEnabled !== false
   const phase = view?.record.phase
   const unresolved = phase === "pending" || phase === "received"
   const retry =
@@ -271,7 +272,7 @@ export function AddressNameRequestForm({
                     ? view?.status === "not_received"
                       ? "No submission found. Retry the same saved request."
                       : "Submission is uncertain. Your saved request will be checked again."
-                    : !siteKey
+                    : !siteKey || !writesEnabled
                       ? "Preview: requests open after release."
                       : "Requests do not reserve or approve names."
   return (
@@ -294,13 +295,15 @@ export function AddressNameRequestForm({
           <Button
             size="sm"
             type="submit"
-            disabled={pending || !loaded || !token || !name.trim()}
+            disabled={
+              pending || !loaded || !writesEnabled || !token || !name.trim()
+            }
           >
             {view ? "Retry same request" : "Request name"}
           </Button>
         )}
       </div>
-      {(!view || retry) && siteKey && (
+      {writesEnabled && (!view || retry) && siteKey && (
         <AddressChallenge
           key={challengeRevision}
           siteKey={siteKey}
@@ -337,7 +340,7 @@ export function AddressNameRequestForm({
           <Button
             size="sm"
             type="button"
-            disabled={pending}
+            disabled={pending || !writesEnabled}
             onClick={() => void run("activate")}
           >
             {phase === "complete"

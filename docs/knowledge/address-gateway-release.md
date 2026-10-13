@@ -86,8 +86,13 @@ preserves it and drops it with removed wallets, without changing rename UI.
 
 The record retains version 1 and the existing coordinate. New readers accept old
 records and preserve opaque encrypted extensions when creating successors.
-Pre-extension strict readers reject added fields. Deploy compatible readers to
-both applications and refresh all devices before enabling real custom requests;
+Pre-extension strict readers reject added fields.
+`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED` defaults to false; the finished
+inline form remains visible while submission/activation writes are disabled.
+Deploy compatible readers to both applications and refresh participating devices
+before setting that public build flag to `true` for the reviewed release.
+An isolated preview may enable it only after that rollout or with a dedicated
+test account that has never been used in older clients. Before real requests,
 maintainer sign-off must cover this rollout. A still-running old writer can omit
 metadata. A device that retained the earlier signed record can repair it, but a
 fresh device cannot reconstruct history that every replaceable relay has already
