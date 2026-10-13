@@ -115,7 +115,7 @@ for (const app of ["market", "merchant"] as const) {
       await expect(
         recoveryDialog.locator("li").filter({ hasText: "Wallet 1 backup:" })
       ).toHaveText(
-        /^Wallet 1 backup: (?:no local signed record|relay acceptance pending|relay authentication required|relay rejected the write|relay write timed out|relay policy blocked the write|write was interrupted|relay write failed|exact readback has not run|exact readback did not find the record|exact readback was unavailable|last confirmed readback is stale|not enough confirmed copies)(?: \(.*\))?$/
+        "Wallet 1 backup: not enough confirmed copies (1/1 fresh target readbacks; 0 independent copies)"
       )
       await page.keyboard.press("Escape")
       await page
