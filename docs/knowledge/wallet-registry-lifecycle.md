@@ -112,6 +112,9 @@ If another consumer opens a wallet while credential reads are pending, the card
 shows Ready with an unknown balance until the balance observation arrives. A close
 invalidates previously sampled ready state. Pending backup or name synchronization
 does not mark an already open native session as closed.
+An error from an earlier denied opening cannot hide a later confirmed native
+session. Current balance errors remain visible; the live session does not erase
+those failures or invent a balance.
 
 The everyday UI deliberately omits Lock. Account logout/replacement still closes
 signer-owned provider sessions. The shared `lockSpark` operation remains available

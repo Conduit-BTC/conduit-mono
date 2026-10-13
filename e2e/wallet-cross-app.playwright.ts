@@ -505,10 +505,26 @@ for (const from of ["market", "merchant"] as const) {
                     getAccountSigner()?.pubkey ?? null
                   )
                   const manager = getSparkWalletManager()
+                  const runtime =
+                    (
+                      window as typeof window & {
+                        __controlledWalletController?: UseWalletsReturn
+                      }
+                    ).__controlledWalletController?.runtime ?? {}
                   return {
                     visibleWalletCount: visible.length,
                     nativeOpenCount: visible.filter(
                       (wallet: WalletDescriptor) => manager?.isOpen(wallet.id)
+                    ).length,
+                    nativeErrorCount: visible.filter(
+                      (wallet: WalletDescriptor) =>
+                        manager?.isOpen(wallet.id) &&
+                        runtime[wallet.id]?.status === "error"
+                    ).length,
+                    nativeLockedCount: visible.filter(
+                      (wallet: WalletDescriptor) =>
+                        manager?.isOpen(wallet.id) &&
+                        runtime[wallet.id]?.status === "locked"
                     ).length,
                   }
                 },

@@ -5,13 +5,14 @@ export type WalletRuntimeState =
       status: "unavailable" | "error"
       balanceMsats: number | null
       error: string
+      errorSource?: "opening" | "balance"
     }
 
 export function lockedWalletRuntime(): WalletRuntimeState {
   return { status: "locked", balanceMsats: null, error: null }
 }
 
-/** The live provider session can advance while descriptor/credential reads await. */
+/** A live session supersedes old opening errors, while balance failures remain visible. */
 export function reconcileSparkWalletRuntime(input: {
   nativeOpen: boolean
   opening: boolean
@@ -20,7 +21,9 @@ export function reconcileSparkWalletRuntime(input: {
 }): WalletRuntimeState {
   return input.nativeOpen
     ? (input.sampled ??
-        (input.current?.status === "ready" || input.current?.status === "error"
+        (input.current?.status === "ready" ||
+        (input.current?.status === "error" &&
+          input.current.errorSource !== "opening")
           ? input.current
           : { status: "ready", balanceMsats: null, error: null }))
     : input.opening

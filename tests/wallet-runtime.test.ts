@@ -34,6 +34,20 @@ test("closing during metadata reads invalidates sampled ready state", () => {
     })
   ).toEqual(lockedWalletRuntime())
 })
+test("a prior denied open cannot mask a new native session during metadata reload", () => {
+  expect(
+    reconcileSparkWalletRuntime({
+      nativeOpen: true,
+      opening: false,
+      current: {
+        status: "error",
+        balanceMsats: null,
+        error: "Signer permission denied",
+        errorSource: "opening",
+      },
+    })
+  ).toEqual({ status: "ready", balanceMsats: null, error: null })
+})
 test("an unfinished native open remains connecting", () => {
   expect(
     reconcileSparkWalletRuntime({
@@ -68,4 +82,18 @@ test("an open wallet retains sampled balance failure and newer ready state", () 
       current: ready,
     })
   ).toEqual(ready)
+  expect(
+    reconcileSparkWalletRuntime({
+      nativeOpen: true,
+      opening: false,
+      current: { ...error, errorSource: "balance" },
+    })
+  ).toEqual({ ...error, errorSource: "balance" })
+  expect(
+    reconcileSparkWalletRuntime({
+      nativeOpen: false,
+      opening: false,
+      current: { ...error, errorSource: "opening" },
+    })
+  ).toEqual({ ...error, errorSource: "opening" })
 })

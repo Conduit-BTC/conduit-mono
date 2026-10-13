@@ -347,6 +347,7 @@ export function useWallets(
                 } catch (error) {
                   openSparkRuntime.set(wallet.id, {
                     status: "error",
+                    errorSource: "balance",
                     balanceMsats: null,
                     error: getErrorMessage(
                       error,
@@ -1500,6 +1501,7 @@ export function useWallets(
                   error,
                   "Could not unlock Portable Wallet."
                 ),
+                errorSource: "opening",
               },
             }))
           throw error
@@ -1605,6 +1607,7 @@ export function useWallets(
                   error,
                   "Could not unlock Portable Wallet."
                 ),
+                errorSource: "opening",
               },
             }))
           throw error
@@ -2417,6 +2420,7 @@ async function refreshSparkBalance(
         status: "error",
         balanceMsats: null,
         error: getErrorMessage(error, "Could not refresh wallet balance."),
+        errorSource: "balance",
       },
     }))
     throw error

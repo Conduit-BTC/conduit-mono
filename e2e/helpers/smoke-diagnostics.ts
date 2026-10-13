@@ -93,6 +93,8 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
       fields: {
         visibleWalletCount: "number",
         nativeOpenCount: "number",
+        nativeErrorCount: "number",
+        nativeLockedCount: "number",
         openButtonCount: "number",
         openingButtonCount: "number",
         readyCount: "number",

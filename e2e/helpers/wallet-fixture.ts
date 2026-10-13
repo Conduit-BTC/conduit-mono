@@ -300,7 +300,15 @@ export async function openWalletDuringDescriptorReload(page: Page) {
       const { getAccountSigner } = await import(core)
       const { getSparkWalletManager } = await import(sdk)
       const fixtureWindow = window as typeof window & {
-        __controlledWalletController: UseWalletsReturn
+        // The controlled probe also exercises the hook's internal background option.
+        __controlledWalletController: UseWalletsReturn & {
+          unlockSpark(
+            walletId: string,
+            password?: string,
+            migrate?: boolean,
+            options?: { priority?: "foreground" | "background" }
+          ): Promise<void>
+        }
         __walletProbe: {
           savedMnemonic: string
           lastAccount: number
@@ -341,6 +349,20 @@ export async function openWalletDuringDescriptorReload(page: Page) {
       fixtureWindow.__walletProbe.infoBarrier = () => balance
       const reload = controller.retryInitialization()
       await sample
+      // A prior background consent denial can leave an error before another
+      // consumer completes the explicitly authorized native open.
+      let denied = false
+      try {
+        await controller.unlockSpark(wallet.id, "", false, {
+          priority: "background",
+        })
+      } catch {
+        denied = true
+      }
+      if (!denied) throw new Error("Expected paused background wallet opening")
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve())
+      )
       await manager.openWithMnemonic({
         walletId: wallet.id,
         mnemonic: recovery.mnemonic,
