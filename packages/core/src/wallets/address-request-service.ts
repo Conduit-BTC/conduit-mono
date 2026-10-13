@@ -30,9 +30,40 @@ import {
   planSparkRecoveryRelays,
   type SparkRecoveryDiscovery,
   type SparkRecoveryTransport,
+  type SparkRecoveryWriteStatus,
 } from "./spark-recovery-service"
 
 type Records = Record<string, AddressRequestRecord>
+export type AddressRequestSyncReason =
+  | "recovery_unconfirmed"
+  | "membership_unconfirmed"
+  | "request_read_unavailable"
+  | "request_heads_disagree"
+  | "local_event_pending"
+  | "legacy_registry_only"
+  | "request_event_missing"
+  | "request_contents_unconfirmed"
+  | "membership_read_unavailable"
+  | "membership_head_mismatch"
+  | "relay_write_failed"
+  | "readback_unavailable"
+  | "readback_absent"
+  | "readback_different"
+
+/** Local diagnosis only: no event, owner, wallet, relay URL, or request content. */
+export interface AddressRequestSyncDiagnosis {
+  reason: AddressRequestSyncReason
+  eventSource?: "legacy" | "pending" | "observed" | "new" | "relay"
+  writeStatus?: SparkRecoveryWriteStatus
+  confirmedTargets?: number
+  targetCount?: number
+}
+
+export interface AddressRequestSyncResult {
+  records: Records
+  confirmed: boolean
+  diagnosis?: AddressRequestSyncDiagnosis
+}
 function combine(
   into: Records,
   incoming: Records,
@@ -132,11 +163,11 @@ export class AddressRequestService {
       if (head) await this.decrypt(head, network, options)
     return { heads, complete }
   }
-  private async membershipHeadUnchanged(
+  private async membershipHeadStatus(
     network: AddressRequestNetwork,
     eventId: string | undefined
-  ): Promise<boolean> {
-    if (!eventId) return false
+  ): Promise<"confirmed" | "unavailable" | "mismatch"> {
+    if (!eventId) return "mismatch"
     for (const url of this.targets) {
       this.scope.assertCurrent()
       const membership = await this.input.transport.read(
@@ -147,14 +178,11 @@ export class AddressRequestService {
         sparkWalletRegistryDTag(network)
       )
       this.scope.assertCurrent()
-      if (
-        membership.status !== "complete" ||
-        membership.events.length !== 1 ||
-        membership.events[0].id !== eventId
-      )
-        return false
+      if (membership.status !== "complete") return "unavailable"
+      if (membership.events.length !== 1 || membership.events[0].id !== eventId)
+        return "mismatch"
     }
-    return true
+    return "confirmed"
   }
   private async collect(
     network: AddressRequestNetwork,
@@ -213,7 +241,7 @@ export class AddressRequestService {
     network: AddressRequestNetwork,
     discovery: SparkRecoveryDiscovery,
     options: AccountSignerOperationOptions = {}
-  ): Promise<{ records: Records; confirmed: boolean }> {
+  ): Promise<AddressRequestSyncResult> {
     const collected = await this.collect(network, discovery, options)
     const confirmed =
       discovery.coverage === "complete" &&
@@ -236,7 +264,42 @@ export class AddressRequestService {
         ...current,
         observed: collected.head,
       }))
-    return { records: collected.records, confirmed }
+    const legacy = !!Object.keys(discovery.registry?.addressNameRequests ?? {})
+      .length
+    const eventSource = collected.state.operation
+      ? "pending"
+      : collected.state.observed
+        ? "observed"
+        : collected.head
+          ? "relay"
+          : legacy
+            ? "legacy"
+            : undefined
+    const reason: AddressRequestSyncReason =
+      discovery.coverage !== "complete" ||
+      discovery.invalidCount > 0 ||
+      discovery.unresolvedObserved
+        ? "recovery_unconfirmed"
+        : !discovery.registryMembershipReady
+          ? "membership_unconfirmed"
+          : !collected.readComplete
+            ? "request_read_unavailable"
+            : !collected.complete
+              ? "request_heads_disagree"
+              : collected.state.operation
+                ? "local_event_pending"
+                : legacy && !collected.head
+                  ? "legacy_registry_only"
+                  : collected.head
+                    ? "request_contents_unconfirmed"
+                    : "request_event_missing"
+    return {
+      records: collected.records,
+      confirmed,
+      ...(!confirmed
+        ? { diagnosis: { reason, ...(eventSource ? { eventSource } : {}) } }
+        : {}),
+    }
   }
   async save(
     network: AddressRequestNetwork,
@@ -244,7 +307,7 @@ export class AddressRequestService {
     walletId: string,
     record: AddressRequestRecord,
     options: AccountSignerOperationOptions = {}
-  ): Promise<{ records: Records; confirmed: boolean }> {
+  ): Promise<AddressRequestSyncResult> {
     if (
       discovery.coverage !== "complete" ||
       discovery.invalidCount ||
@@ -261,6 +324,24 @@ export class AddressRequestService {
     combine(collected.records, { [walletId]: record }, collected.active)
     const { head, state, heads } = collected
     let event = state.operation?.event
+    let eventSource: AddressRequestSyncDiagnosis["eventSource"] = event
+      ? "pending"
+      : undefined
+    let confirmedTargets = 0
+    const local = (
+      reason: AddressRequestSyncReason,
+      writeStatus?: SparkRecoveryWriteStatus
+    ): AddressRequestSyncResult => ({
+      records: collected.records,
+      confirmed: false,
+      diagnosis: {
+        reason,
+        ...(eventSource ? { eventSource } : {}),
+        ...(writeStatus ? { writeStatus } : {}),
+        confirmedTargets,
+        targetCount: this.targets.length,
+      },
+    })
     const replacedOperationId = event?.id
     if (event) {
       const pending = await this.decrypt(event, network, options)
@@ -276,9 +357,11 @@ export class AddressRequestService {
         throw new SparkRecoveryError("conflict")
       // A new agreed head may have won while the immutable local event was pending.
       // Rebase its exact request bytes after merging the signed heads.
-      if (changed || foreign) event = undefined
-      else if (!collected.readComplete)
-        return { records: collected.records, confirmed: false }
+      if (changed || foreign) {
+        event = undefined
+        eventSource = undefined
+      } else if (!collected.readComplete)
+        return local("request_read_unavailable")
     }
     if (
       !event &&
@@ -293,6 +376,7 @@ export class AddressRequestService {
         (!head || head.created_at < state.observed.created_at)
       ) {
         event = state.observed
+        eventSource = "observed"
         await this.input.store.update(this.scope.owner, network, (current) => {
           if (current.operation?.event.id !== replacedOperationId)
             throw new SparkRecoveryError("conflict")
@@ -311,13 +395,18 @@ export class AddressRequestService {
         if (
           JSON.stringify(prior.requests) === JSON.stringify(collected.records)
         ) {
-          if (
-            !(await this.membershipHeadUnchanged(
-              network,
-              discovery.registryEventId
-            ))
+          const membership = await this.membershipHeadStatus(
+            network,
+            discovery.registryEventId
           )
-            return { records: collected.records, confirmed: false }
+          if (membership !== "confirmed") {
+            eventSource = "relay"
+            return local(
+              membership === "unavailable"
+                ? "membership_read_unavailable"
+                : "membership_head_mismatch"
+            )
+          }
           await this.input.store.update(
             this.scope.owner,
             network,
@@ -370,6 +459,7 @@ export class AddressRequestService {
         this.scope.owner,
         network
       )
+      eventSource = "new"
       if (
         JSON.stringify(await this.decrypt(event, network, options)) !==
         JSON.stringify(snapshot)
@@ -385,21 +475,33 @@ export class AddressRequestService {
         }
       })
       if (!collected.complete)
-        return { records: collected.records, confirmed: false }
+        return local(
+          collected.readComplete
+            ? "request_heads_disagree"
+            : "request_read_unavailable"
+        )
     }
     // Optional progress may be sent only while the frozen membership head is
     // still confirmed at every target. A removal must win before the send.
-    if (
-      !(await this.membershipHeadUnchanged(network, discovery.registryEventId))
+    const membership = await this.membershipHeadStatus(
+      network,
+      discovery.registryEventId
     )
-      return { records: collected.records, confirmed: false }
+    if (membership !== "confirmed")
+      return local(
+        membership === "unavailable"
+          ? "membership_read_unavailable"
+          : "membership_head_mismatch"
+      )
     for (const url of this.targets) {
       this.scope.assertCurrent()
-      if (
-        (await this.input.transport.publish(url, event, this.continues)) !==
-        "acked"
+      const writeStatus = await this.input.transport.publish(
+        url,
+        event,
+        this.continues
       )
-        return { records: collected.records, confirmed: false }
+      if (writeStatus !== "acked")
+        return local("relay_write_failed", writeStatus)
       const read = await this.input.transport.read(
         url,
         this.scope.owner,
@@ -408,13 +510,15 @@ export class AddressRequestService {
         addressRequestsDTag(network)
       )
       this.scope.assertCurrent()
+      if (read.status !== "complete") return local("readback_unavailable")
+      if (!read.events.length) return local("readback_absent")
       if (
-        read.status !== "complete" ||
         read.events.length !== 1 ||
         validateAddressRequestEvent(read.events[0], this.scope.owner, network)
           .id !== event.id
       )
-        return { records: collected.records, confirmed: false }
+        return local("readback_different")
+      confirmedTargets++
     }
     await this.input.store.update(this.scope.owner, network, (current) => ({
       ...current,

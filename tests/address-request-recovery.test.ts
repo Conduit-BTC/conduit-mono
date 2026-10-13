@@ -121,10 +121,21 @@ test("signed name request completes after approval and restores on another stora
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
   let optionalUnavailable = false
+  let optionalWriteStatus: "timed_out" | undefined
+  let failNextOptionalReadback = false
+  let armOptionalReadbackFailure = false
+  let mismatchNextMembershipRead = false
   const transport: SparkRecoveryTransport = {
     async publish(url, event) {
       const events = relays.get(url)!
       const address = event.tags.find((tag) => tag[0] === "d")?.[1]
+      if (address === addressRequestsDTag("mainnet")) {
+        if (optionalWriteStatus) return optionalWriteStatus
+        if (armOptionalReadbackFailure) {
+          failNextOptionalReadback = true
+          armOptionalReadbackFailure = false
+        }
+      }
       for (const old of events.values())
         if (
           old.pubkey === event.pubkey &&
@@ -138,6 +149,20 @@ test("signed name request completes after approval and restores on another stora
     async read(url, _owner, eventId, _authorized, address) {
       if (optionalUnavailable && address === addressRequestsDTag("mainnet"))
         return { status: "unavailable", events: [] }
+      if (
+        failNextOptionalReadback &&
+        address === addressRequestsDTag("mainnet")
+      ) {
+        failNextOptionalReadback = false
+        return { status: "unavailable", events: [] }
+      }
+      if (
+        mismatchNextMembershipRead &&
+        address === sparkWalletRegistryDTag("mainnet")
+      ) {
+        mismatchNextMembershipRead = false
+        return { status: "unavailable", events: [] }
+      }
       return {
         status: "complete",
         events: [...relays.get(url)!.values()].filter(
@@ -178,6 +203,7 @@ test("signed name request completes after approval and restores on another stora
   }
   let publishedProfile: Event | null = null
   let profileUpdates = 0
+  let suspendOptionalAfterProfile = false
   const env: AddressGatewayEnv = {
     ADDRESS_REQUESTS: {
       prepare(sql) {
@@ -282,6 +308,7 @@ test("signed name request completes after approval and restores on another stora
             ? {
                 record,
                 publication: saved.confirmed ? "confirmed" : "local",
+                sync: saved.diagnosis,
               }
             : undefined
         },
@@ -291,6 +318,7 @@ test("signed name request completes after approval and restores on another stora
           return {
             record: saved.records[id],
             publication: saved.confirmed ? "confirmed" : "local",
+            sync: saved.diagnosis,
           }
         },
         async signWallet(
@@ -345,6 +373,7 @@ test("signed name request completes after approval and restores on another stora
         },
         async publishProfile(address) {
           profileUpdates++
+          if (suspendOptionalAfterProfile) optionalUnavailable = true
           const retained = Object.fromEntries(
             Object.entries(originalProfile).filter(([key]) => key !== "lud06")
           )
@@ -373,6 +402,10 @@ test("signed name request completes after approval and restores on another stora
       "mainnet"
     )
     expect(retained.operation).toBeDefined()
+    expect((await flowA.load(walletId))?.sync).toMatchObject({
+      reason: "request_read_unavailable",
+      eventSource: "pending",
+    })
     const originalBytes = parseAddressRequests(
       await signer.decryptNip44(owner, retained.operation!.event.content),
       retained.operation!.event,
@@ -464,8 +497,16 @@ test("signed name request completes after approval and restores on another stora
       },
     ]
     expect((await flowB.check(walletId))?.record.phase).toBe("approved")
+    suspendOptionalAfterProfile = true
     const activated = await flowB.activate(walletId)
     expect(activated.record.phase).toBe("complete")
+    expect(activated.publication).toBe("local")
+    expect(activated.sync).toMatchObject({
+      reason: "request_read_unavailable",
+      eventSource: "new",
+      confirmedTargets: 0,
+      targetCount: 3,
+    })
     expect(publishedProfile && verifyEvent(publishedProfile)).toBe(true)
     expect(JSON.parse(publishedProfile!.content)).toEqual({
       name: "Merchant profile",
@@ -475,6 +516,53 @@ test("signed name request completes after approval and restores on another stora
     })
     expect(activated.record.profileEventId).toBe(publishedProfile!.id)
     expect(registrations).toBe(1)
+    const retainedComplete = (
+      await new DexieAddressRequestStore(dbB).load(owner, "mainnet")
+    ).operation?.event.id
+    expect(retainedComplete).toBeDefined()
+    expect((await flowB.activate(walletId)).sync).toMatchObject({
+      reason: "request_read_unavailable",
+      eventSource: "pending",
+    })
+    optionalUnavailable = false
+    optionalWriteStatus = "timed_out"
+    expect((await flowB.activate(walletId)).sync).toMatchObject({
+      reason: "relay_write_failed",
+      eventSource: "pending",
+      writeStatus: "timed_out",
+      confirmedTargets: 0,
+    })
+    optionalWriteStatus = undefined
+    armOptionalReadbackFailure = true
+    expect((await flowB.activate(walletId)).sync).toMatchObject({
+      reason: "readback_unavailable",
+      eventSource: "pending",
+      confirmedTargets: 0,
+    })
+    const beforeMembershipCheck = await fresh.discover(false, "mainnet")
+    mismatchNextMembershipRead = true
+    expect(
+      (
+        await metadata(dbB).save(
+          "mainnet",
+          beforeMembershipCheck,
+          walletId,
+          activated.record
+        )
+      ).diagnosis
+    ).toMatchObject({
+      reason: "membership_read_unavailable",
+      eventSource: "pending",
+    })
+    const synced = await flowB.activate(walletId)
+    expect(synced.publication).toBe("confirmed")
+    expect(synced.record).toEqual(activated.record)
+    expect(
+      (await new DexieAddressRequestStore(dbB).load(owner, "mainnet")).observed
+        ?.id
+    ).toBe(retainedComplete)
+    expect(registrations).toBe(1)
+    expect(profileUpdates).toBe(1)
     const restored = await workflow(service(dbA), metadata(dbA)).load(walletId)
     expect(restored?.record).toEqual(activated.record)
     expect(restored?.publication).toBe("confirmed")

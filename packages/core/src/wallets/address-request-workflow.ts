@@ -17,10 +17,12 @@ import {
   requestEvidence,
   type AddressRequestRecord,
 } from "./address-request-record"
+import type { AddressRequestSyncDiagnosis } from "./address-request-service"
 
 export interface AddressRequestView {
   record: AddressRequestRecord
   publication: "confirmed" | "local"
+  sync?: AddressRequestSyncDiagnosis
   status?: AddressNameRequestStatus
 }
 export interface AddressRequestWorkflowDependencies {

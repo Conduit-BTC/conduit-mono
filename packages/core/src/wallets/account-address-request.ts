@@ -69,6 +69,7 @@ export function accountAddressRequests(
       ? {
           record,
           publication: saved.confirmed ? "confirmed" : "local",
+          sync: saved.diagnosis,
         }
       : undefined
   }
@@ -112,6 +113,7 @@ export function accountAddressRequests(
         return {
           record: saved.records[walletId],
           publication: saved.confirmed ? "confirmed" : "local",
+          sync: saved.diagnosis,
         }
       },
       signWallet: (walletId, input) =>
