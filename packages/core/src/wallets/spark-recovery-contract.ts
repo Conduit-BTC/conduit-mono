@@ -35,7 +35,7 @@ import {
 } from "./spark-recovery-address"
 export const MAX_SPARK_ACCOUNT_NUMBER = 0x7fffffff
 export const MAX_SPARK_RECOVERY_BYTES = 2048
-const MAX_CIPHERTEXT_CHARS = 4096
+const MAX_CIPHERTEXT_CHARS = 32768
 const opaqueId = z.uuid()
 const pubkey = z.string().regex(/^[0-9a-f]{64}$/)
 const timestamp = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
@@ -178,6 +178,9 @@ export function validateSparkRecoveryEvent(
 export function isSparkRecoveryAddress(value: string): boolean {
   return (
     !!parseSparkRecoveryChoiceAddress(value) ||
+    /^conduit:spark:registry:v1:(mainnet|testnet|signet|regtest)$/.test(
+      value
+    ) ||
     value === "spark-wallet-backup" ||
     /^spark-wallet-backup:[0-9a-f]{16}$/.test(value) ||
     (value.startsWith(SPARK_RECOVERY_PREFIX) &&

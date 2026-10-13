@@ -199,6 +199,9 @@ for (const theme of ["day-market", "night-market"]) {
         })
         mark("wallet_reload")
         await page.reload()
+        await page
+          .getByText("External wallet management", { exact: true })
+          .click()
         mark("wallet_ready")
         await expect(page.getByText("Ready", { exact: true })).toBeVisible()
         mark("wallet_contrast")

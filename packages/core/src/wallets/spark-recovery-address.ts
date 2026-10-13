@@ -10,6 +10,17 @@ export const sparkRecoveryNetworkSchema = z.enum([
 
 export const SPARK_PRIMARY_D_TAG = "conduit:spark:primary:v1"
 export const SPARK_MAIN_D_TAG = "conduit:spark:main:v1"
+export function sparkWalletRegistryDTag(network: WalletNetwork): string {
+  return `conduit:spark:registry:v1:${network}`
+}
+export function isSparkWalletRegistryDTag(value: string): boolean {
+  return (
+    value === sparkWalletRegistryDTag("mainnet") ||
+    value === sparkWalletRegistryDTag("testnet") ||
+    value === sparkWalletRegistryDTag("signet") ||
+    value === sparkWalletRegistryDTag("regtest")
+  )
+}
 export type SparkRecoveryChoiceDTag =
   | typeof SPARK_PRIMARY_D_TAG
   | typeof SPARK_MAIN_D_TAG

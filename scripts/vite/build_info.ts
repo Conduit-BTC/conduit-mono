@@ -80,6 +80,10 @@ export function createConduitBuildContract(appDir: string): {
   const sourceUrl = getSourceUrl()
   const profile = resolveDeploymentProfile()
   const app = readAppId(appDir)
+  assertPagesWalletConfiguration(
+    app,
+    profile.publicFeatures.breezLightningAddressEnabled
+  )
   const deploymentManifest = createPublicDeploymentManifest({
     app,
     profile,
@@ -137,4 +141,22 @@ export function createConduitBuildContract(appDir: string): {
 
 export function defineConduitBuildEnv(appDir: string): Record<string, string> {
   return createConduitBuildContract(appDir).define
+}
+
+/** Hosted wallet builds must include their public provider configuration. */
+export function assertPagesWalletConfiguration(
+  app: string,
+  addressesEnabled: boolean,
+  env: Record<string, string | undefined> = process.env
+): void {
+  if (
+    env.CF_PAGES === "1" &&
+    (app === "market" || app === "merchant") &&
+    addressesEnabled &&
+    !env.VITE_BREEZ_SPARK_API_KEY?.trim()
+  ) {
+    throw new Error(
+      "Wallet address configuration is missing VITE_BREEZ_SPARK_API_KEY for this Pages environment."
+    )
+  }
 }

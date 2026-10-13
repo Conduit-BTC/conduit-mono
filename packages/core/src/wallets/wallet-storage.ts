@@ -24,6 +24,7 @@ const MAX_STORED_WALLET_ID_LENGTH = 128
 const MAX_STORED_SPARK_RECOVERY_LENGTH = 8_192
 
 import type { SignerSparkRecovery } from "./signer-spark-recovery"
+import { DexieSparkRecoveryStore } from "./spark-recovery-store"
 
 export type StoredSparkWalletRecovery =
   | PasswordSparkWalletRecovery
@@ -203,10 +204,21 @@ export class MarketWalletStore
       wallets.map(async (wallet) => {
         if (wallet.providerId !== "spark") return true
         const recovery = await this.getSparkRecovery(wallet.id)
+        if (recovery?.type === "signer") {
+          const journal = await new DexieSparkRecoveryStore(this.database).load(
+            recovery.ownerPubkey
+          )
+          if (
+            journal.removedWalletIds?.includes(wallet.id) ||
+            journal.registryExcludedWalletIds?.includes(wallet.id)
+          )
+            return false
+        }
         return (
           !recovery ||
           recovery.type === "password" ||
-          recovery.ownerPubkey === ownerPubkey
+          recovery.ownerPubkey === ownerPubkey ||
+          (!!recovery.legacyRecovery && ownerPubkey === null)
         )
       })
     )
@@ -246,6 +258,7 @@ export class MarketWalletStore
       "rw",
       this.database.wallets,
       this.database.walletCredentials,
+      this.database.sparkRecoveryEvidence,
       async () => {
         const wallets = await this.listVisible(owner)
         if (

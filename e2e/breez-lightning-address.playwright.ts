@@ -6,6 +6,13 @@ import {
 } from "../apps/market/node_modules/@scure/bip39/index.js"
 import { wordlist } from "../apps/market/node_modules/@scure/bip39/wordlists/english.js"
 import { expect, test } from "@playwright/test"
+import { verifyEvent, type Event } from "nostr-tools/pure"
+import { addressRequestHash } from "../packages/core/src/wallets/address-name-request"
+import {
+  createRuntimeSignerIdentity,
+  disposeRuntimeSignerIdentity,
+  signRuntimeTestEvent,
+} from "./helpers/real-nip07-signer"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const source = (file: string) => `/@fs${path.resolve(process.cwd(), file)}`
@@ -68,6 +75,8 @@ test("Breez registration serializes across clients and restores after a reload @
   const publicIdentity = Buffer.from(
     await signer.getIdentityPublicKey()
   ).toString("hex")
+  const account = createRuntimeSignerIdentity()
+  page.on("close", () => disposeRuntimeSignerIdentity(account))
   await context.exposeBinding(
     "__conduitBreezSignDigest",
     async (_, digest: number[]) => {
@@ -82,6 +91,22 @@ test("Breez registration serializes across clients and restores after a reload @
       return Array.from(
         await signer.signMessageWithIdentityKey(new Uint8Array(digest))
       )
+    }
+  )
+  await context.exposeBinding(
+    "__conduitBreezSignAccountProof",
+    async (_, request: { url: string; method: string; body: string }) => {
+      const event = signRuntimeTestEvent(account, {
+        kind: 27235,
+        created_at: Math.floor(Date.now() / 1000),
+        content: "",
+        tags: [
+          ["u", request.url],
+          ["method", request.method],
+          ["payload", addressRequestHash(request.body)],
+        ],
+      })
+      return `Nostr ${Buffer.from(JSON.stringify(event)).toString("base64")}`
     }
   )
   let identity: string | null = null
@@ -103,6 +128,25 @@ test("Breez registration serializes across clients and restores after a reload @
       const owner = url.pathname.split("/")[2]
       identity ??= owner
       expect(owner).toBe(identity)
+      if (
+        !url.pathname.endsWith("/recover") &&
+        !url.pathname.endsWith("/available")
+      ) {
+        const authorization = request.headers().authorization
+        expect(authorization).toMatch(/^Nostr /)
+        const event = JSON.parse(
+          Buffer.from(authorization!.slice(6), "base64").toString("utf8")
+        ) as Event
+        expect(verifyEvent(event)).toBe(true)
+        expect(event.pubkey).toBe(account.pubkey)
+        expect(event.kind).toBe(27235)
+        expect(event.tags).toContainEqual(["u", request.url()])
+        expect(event.tags).toContainEqual(["method", "POST"])
+        expect(event.tags).toContainEqual([
+          "payload",
+          addressRequestHash(request.postData() ?? ""),
+        ])
+      }
     }
     const reply = async (body: unknown, status = 200) =>
       route.fulfill({
@@ -171,6 +215,20 @@ test("Breez registration serializes across clients and restores after a reload @
                 ).__conduitBreezSignDigest(Array.from(digest))
               ),
           },
+          signAccountProof: async (request: {
+            url: string
+            method: "POST"
+            body: string
+          }) =>
+            (
+              window as unknown as {
+                __conduitBreezSignAccountProof(input: {
+                  url: string
+                  method: "POST"
+                  body: string
+                }): Promise<string>
+              }
+            ).__conduitBreezSignAccountProof(request),
           runExclusive: (scope: string, operation: () => Promise<unknown>) =>
             navigator.locks.request(`fixture:breez:${scope}`, operation),
           store: {
@@ -208,6 +266,7 @@ test("Breez registration serializes across clients and restores after a reload @
   await page.reload()
   expect(await run()).toMatchObject({ sameAddress: true, registered: true })
   expect(registrations).toBe(1)
+  disposeRuntimeSignerIdentity(account)
 })
 
 test("Breez receive setup exposes an address and QR after verified public lookup @market", async ({
