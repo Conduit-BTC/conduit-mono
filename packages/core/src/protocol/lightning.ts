@@ -52,6 +52,14 @@ export type FetchLnurlPayMetadataOptions = {
 const DEFAULT_LNURL_METADATA_TIMEOUT_MS = 10_000
 const MAX_LNURL_METADATA_RESPONSE_BYTES = 64 * 1_024
 
+/** Metadata transport availability; malformed or unsafe data is not retryable. */
+export class LnurlMetadataTransportUnavailableError extends Error {
+  constructor(readonly reason: "network" | "timeout" | "server") {
+    super("LNURL metadata transport is unavailable")
+    this.name = "LnurlMetadataTransportUnavailableError"
+  }
+}
+
 async function readResponseTextWithLimit(
   response: Response,
   maxBytes: number
@@ -160,18 +168,39 @@ export async function fetchLnurlPayMetadataFromUrl(
       ? Math.min(options.timeoutMs!, 30_000)
       : DEFAULT_LNURL_METADATA_TIMEOUT_MS
 
+  const signal = AbortSignal.timeout(timeoutMs)
   let data: Record<string, unknown>
   try {
-    const res = await (options.fetchImpl ?? fetch)(safePayRequestUrl, {
-      headers: { accept: "application/json" },
-      credentials: "omit",
-      cache: "no-store",
-      referrerPolicy: "no-referrer",
-      // Cloudflare's edge fetch accepts manual but can reject error mode.
-      // A redirect is still rejected below because a 3xx response is not ok.
-      redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
-    })
+    let res: Response
+    try {
+      res = await (options.fetchImpl ?? fetch)(safePayRequestUrl, {
+        headers: { accept: "application/json" },
+        credentials: "omit",
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+        // Cloudflare's edge fetch accepts manual but can reject error mode.
+        // A redirect is still rejected below because a 3xx response is not ok.
+        redirect: "manual",
+        signal,
+      })
+    } catch (error) {
+      if (signal.aborted && error === signal.reason) {
+        throw new LnurlMetadataTransportUnavailableError("timeout")
+      }
+      if (error instanceof TypeError) {
+        throw new LnurlMetadataTransportUnavailableError("network")
+      }
+      throw error
+    }
+    if (
+      (res.status === 408 ||
+        res.status === 429 ||
+        (res.status >= 500 && res.status <= 599)) &&
+      !res.redirected &&
+      (!res.url || res.url === safePayRequestUrl)
+    ) {
+      throw new LnurlMetadataTransportUnavailableError("server")
+    }
     if (!res.ok) {
       throw new Error(`LNURL endpoint returned ${res.status}`)
     }
@@ -200,6 +229,10 @@ export async function fetchLnurlPayMetadataFromUrl(
     }
     data = parsed as Record<string, unknown>
   } catch (error) {
+    if (error instanceof LnurlMetadataTransportUnavailableError) throw error
+    if (signal.aborted && error === signal.reason) {
+      throw new LnurlMetadataTransportUnavailableError("timeout")
+    }
     throw new Error(
       `Failed to reach LNURL endpoint: ${error instanceof Error ? error.message : "network error"}`,
       { cause: error }
@@ -252,6 +285,7 @@ export async function fetchLnurlPayMetadata(
   try {
     return await fetchLnurlPayMetadataFromUrl(url, options)
   } catch (error) {
+    if (error instanceof LnurlMetadataTransportUnavailableError) throw error
     throw new Error(
       `Failed to reach LNURL endpoint for ${lud16}: ${error instanceof Error ? error.message : "network error"}`,
       { cause: error }

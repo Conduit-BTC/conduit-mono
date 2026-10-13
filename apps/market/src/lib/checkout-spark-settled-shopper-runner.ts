@@ -1,5 +1,7 @@
 import {
   DexieCheckoutSparkSettledRepository,
+  CheckoutSparkLnurlMetadataUnavailableError,
+  CheckoutSparkBuyerPreparationAuthorityEndedError,
   getOrderLifecycle,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledOutgoingStepResult,
@@ -333,9 +335,20 @@ export function createCheckoutSparkSettledShopperRunner(
         { ...dependencies, repository }
       ).catch((error: unknown) => {
         assertCurrent()
+        if (error instanceof CheckoutSparkBuyerPreparationAuthorityEndedError)
+          throw new RoutingPaused("authority_transferred")
+        // Only this finite, pre-invoice metadata transport classification may
+        // re-enter preparation. Unknown, validation, authority and storage
+        // failures stay fail-closed; every retry reloads the frozen plan.
+        if (error instanceof CheckoutSparkLnurlMetadataUnavailableError)
+          return null
         throw error
       })
       assertCurrent()
+      if (result === null) {
+        if (await waitForPendingObservation()) continue
+        return { status: "paused", reason: "provider_evidence_unavailable" }
+      }
       if (result.status === "funding") {
         if (result.funding.status === "funded") continue
         if (result.funding.status === "external_ready") {

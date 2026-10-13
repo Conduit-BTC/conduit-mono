@@ -4,7 +4,6 @@ import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-inv
 import { qualifiedReceiverInvoiceFixture } from "./support/checkout-spark-qualified-receiver-fixture"
 import { CheckoutSparkLnurlInvoiceRangeError } from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
 import {
-  CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS,
   assertCheckoutSparkSettledBuyerPreparationWindow,
   assertCheckoutSparkSettledMerchantPreparationWindow,
   prepareCheckoutSparkSettledOutgoingLegShared,
@@ -650,9 +649,8 @@ describe("shared settled Spark payout preparation", () => {
     ).toBe("prepared")
   })
 
-  it("retains the separate 60-second buyer preparation cutoff before handoff", async () => {
-    expect(CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS).toBe(60_000)
-    const cutoff = TAKEOVER_AT - CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS
+  it("allows buyer preparation until the exact saved handoff without an extra minute buffer", async () => {
+    const cutoff = TAKEOVER_AT
     const before = harness("shopper")
     before.setClock(cutoff - 1)
     expect(
@@ -663,7 +661,7 @@ describe("shared settled Spark payout preparation", () => {
         )
       ).state.legs[0]!.status
     ).toBe("prepared")
-    for (const now of [cutoff, TAKEOVER_AT]) {
+    for (const now of [cutoff, cutoff + 1]) {
       const test = harness("shopper")
       test.setClock(now)
       await expect(
@@ -696,7 +694,7 @@ describe("shared settled Spark payout preparation", () => {
           takeoverAt: CREATED_AT + timing.takeoverAfterMs,
         })
       )
-      const buyerCutoff = demo.plan.takeoverAt - 60_000
+      const buyerCutoff = demo.plan.takeoverAt
       expect(() =>
         assertCheckoutSparkSettledBuyerPreparationWindow(demo, buyerCutoff - 1)
       ).not.toThrow()
@@ -795,6 +793,40 @@ describe("shared settled Spark payout preparation", () => {
     expect(test.saves).toHaveLength(0)
     expect(test.acknowledgements).toHaveLength(0)
   })
+
+  it.each(["invoice", "fee"] as const)(
+    "rejects a last-millisecond buyer preparation when its %s await reaches exact handoff",
+    async (seam) => {
+      const test = harness("shopper")
+      test.setClock(TAKEOVER_AT - 1)
+      if (seam === "invoice") {
+        const original = test.dependencies.resolveInvoice!
+        test.dependencies.resolveInvoice = async (request, context) => {
+          const result = await original(request, context)
+          test.setClock(TAKEOVER_AT)
+          return result
+        }
+      } else {
+        const original = test.dependencies.estimateFee
+        test.dependencies.estimateFee = async (request) => {
+          const result = await original(request)
+          test.setClock(TAKEOVER_AT)
+          return result
+        }
+      }
+      await expect(
+        prepareCheckoutSparkSettledOutgoingLegShared(
+          test.input,
+          test.dependencies
+        )
+      ).rejects.toThrow("buyer payout authority has ended")
+      expect(test.invoiceRequests).toHaveLength(1)
+      expect(test.saves).toHaveLength(0)
+      expect(test.acknowledgements).toHaveLength(0)
+      expect(test.getState().legs[0]!.intent).toBeNull()
+      expect(test.getState().plan.takeoverAt).toBe(TAKEOVER_AT)
+    }
+  )
 
   it("uses the durable save admission guard to reject revocation before commit", async () => {
     const test = harness()

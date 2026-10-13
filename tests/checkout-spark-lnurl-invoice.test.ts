@@ -1,7 +1,10 @@
 import { describe, expect, it, mock } from "bun:test"
-import type { LnurlPayMetadata } from "@conduit/core"
+import { fetchLnurlPayMetadata, type LnurlPayMetadata } from "@conduit/core"
 import { resolveCheckoutSparkLnurlInvoice } from "../apps/market/src/lib/checkout-spark-lnurl-invoice"
-import { CheckoutSparkLnurlInvoiceRangeError } from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
+import {
+  CheckoutSparkLnurlInvoiceRangeError,
+  CheckoutSparkLnurlMetadataUnavailableError,
+} from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -66,6 +69,78 @@ function request(amountSats = 5) {
 }
 
 describe("checkout Spark private LNURL invoice resolution", () => {
+  it("preserves finite metadata-fetch availability before any invoice request", async () => {
+    const fetchImpl = mock(async () => {
+      throw new TypeError("Synthetic network transport unavailable")
+    })
+    const fetchInvoice = mock(async () => ({ invoice: signedInvoice(5) }))
+    const error = await resolveCheckoutSparkLnurlInvoice(request(), {
+      fetchMetadata: (address) =>
+        fetchLnurlPayMetadata(address, {
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        }),
+      fetchInvoice,
+    }).catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(CheckoutSparkLnurlMetadataUnavailableError)
+    expect(error).toMatchObject({
+      name: "CheckoutSparkLnurlMetadataUnavailableError",
+      reason: "network",
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchInvoice).toHaveBeenCalledTimes(0)
+  })
+
+  it("keeps unknown metadata adapter errors and callback failures terminal", async () => {
+    for (const failure of [
+      new Error("Synthetic metadata defect"),
+      new TypeError("Synthetic metadata defect"),
+    ]) {
+      const error = await resolveCheckoutSparkLnurlInvoice(request(), {
+        fetchMetadata: async () => {
+          throw failure
+        },
+      }).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(
+        CheckoutSparkLnurlMetadataUnavailableError
+      )
+    }
+    const callbackError = await resolveCheckoutSparkLnurlInvoice(request(), {
+      fetchMetadata: async () => lnurlMetadata(),
+      fetchInvoice: async () => {
+        throw new TypeError("Synthetic callback failure")
+      },
+    }).catch((error: unknown) => error)
+    expect(callbackError).toBeInstanceOf(Error)
+    expect(callbackError).not.toBeInstanceOf(
+      CheckoutSparkLnurlMetadataUnavailableError
+    )
+  })
+
+  it("keeps authority revocation terminal when metadata transport also fails", async () => {
+    let current = true
+    const fetchInvoice = mock(async () => ({ invoice: signedInvoice(5) }))
+    const error = await resolveCheckoutSparkLnurlInvoice(
+      { ...request(), shouldContinue: () => current },
+      {
+        fetchMetadata: (address) =>
+          fetchLnurlPayMetadata(address, {
+            fetchImpl: mock(async () => {
+              current = false
+              throw new TypeError("Synthetic network failure")
+            }) as unknown as typeof fetch,
+          }),
+        fetchInvoice,
+      }
+    ).catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(CheckoutSparkLnurlMetadataUnavailableError)
+    expect((error as Error).message).toBe(
+      "Checkout Spark payout authority changed."
+    )
+    expect(fetchInvoice).toHaveBeenCalledTimes(0)
+  })
+
   it("returns a signed exact invoice from a plain two-argument callback without requiring Nostr support", async () => {
     const invoice = signedInvoice(5)
     const fetchMetadata = mock(async () => lnurlMetadata())

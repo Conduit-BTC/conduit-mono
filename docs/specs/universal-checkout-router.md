@@ -189,9 +189,11 @@ Merchant recovery can reconcile exact late credit under the original plan.
 Expiry is not proof that payment never started and does not erase recovery or
 authorize an automatic replacement funding invoice.
 
-Buyer outgoing admission ends at the two-minute boundary. The existing
-sixty-second preparation buffer for a new payout is separate from invoice
-validity. A send admitted before handoff must drain or reconcile under its
+Buyer payout preparation and outgoing admission end at the exact saved
+two-minute boundary, without an earlier fixed preparation buffer. Current
+authority is rechecked after asynchronous preparation and before provider
+admission; an invoice's signed expiry remains a separate limit. A send
+admitted before handoff must drain or reconcile under its
 same saved identifiers even when completion is late. A terminal result may be
 reported only against the current bound order and buyer session; reporting a
 saved paid fact grants no new send authority.

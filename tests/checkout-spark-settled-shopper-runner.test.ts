@@ -15,6 +15,7 @@ import {
   resolveCheckoutSparkLnurlInvoice,
   verifyCheckoutSparkInvoiceRecipient,
   type OrderLifecycle,
+  fetchLnurlPayMetadata,
 } from "@conduit/core"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
 import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
@@ -114,6 +115,7 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
     beforeNativeSend?: () => Promise<void>
     beforeWait?: (milliseconds: number) => Promise<void>
     beforeAck?: () => Promise<void>
+    beforeMetadataRead?: () => Promise<void>
     wrongOrigin?: boolean
     feeOverCap?: boolean
     feeUnavailable?: boolean
@@ -280,7 +282,12 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
   } as OrderLifecycle
   await database.orderLifecycles.put(lifecycle)
   const control = native.control.forIdentity(identity)
-  const calls = { payer: 0, invoices: [] as string[], acknowledgments: 0 }
+  const calls = {
+    payer: 0,
+    invoices: [] as string[],
+    invoiceCallbacks: 0,
+    acknowledgments: 0,
+  }
   const receivers = new Map<
     string,
     ReturnType<typeof qualifiedReceiverFixture>
@@ -398,11 +405,17 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
             })
             return resolveCheckoutSparkLnurlInvoice(request, {
               receiverContracts: receiver.contracts,
-              fetchMetadata: async () => receiver.metadata,
-              fetchInvoice: async () => ({
-                invoice: receiver.paymentRequest,
-                verifyUrl: receiver.receiverBinding.verifyUrl,
-              }),
+              fetchMetadata: async () => {
+                await hooks.beforeMetadataRead?.()
+                return receiver.metadata
+              },
+              fetchInvoice: async () => {
+                calls.invoiceCallbacks += 1
+                return {
+                  invoice: receiver.paymentRequest,
+                  verifyUrl: receiver.receiverBinding.verifyUrl,
+                }
+              },
               fetchReceiverVerify: async () => receiver.verifier(false),
             })
           }
@@ -479,6 +492,214 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
 }
 
 describe("foreground settled shopper routing", () => {
+  it("reports exact authority transfer when next-recipient metadata crosses handoff without preparing or sending", async () => {
+    const f = await fixture(120_000)
+    try {
+      f.hooks.beforeMetadataRead = async () => {
+        if (f.control.snapshot().sendInvocationCount === 1)
+          f.authority.now = f.plan.takeoverAt
+      }
+      const result = await createCheckoutSparkSettledShopperRunner(
+        f.dependencies
+      ).run(f.input)
+      expect(result).toEqual({
+        status: "paused",
+        reason: "authority_transferred",
+      })
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoiceCallbacks).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(1)
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status !== "active") throw new Error("Expected active state")
+      expect(saved.state.legs[0]!.status).toBe("paid")
+      expect(saved.state.legs[1]!.intent).toBeNull()
+      expect(saved.state.plan.takeoverAt).toBe(NOW + 120_000)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("automatically rechecks positively classified metadata transport failure after the first paid leg", async () => {
+    const f = await fixture(120_000)
+    try {
+      let interrupted = false
+      let waits = 0
+      let firstIntent: unknown
+      const prepare = f.dependencies.prepareLeg!
+      f.dependencies.prepareLeg = async (input, options) => {
+        if (!interrupted && f.control.snapshot().sendInvocationCount === 1) {
+          interrupted = true
+          return prepareCheckoutSparkSettledOutgoingLeg(input, {
+            ...options,
+            resolveInvoice: (request) =>
+              resolveCheckoutSparkLnurlInvoice(request, {
+                fetchMetadata: (address) =>
+                  fetchLnurlPayMetadata(address, {
+                    fetchImpl: (async () => {
+                      throw new TypeError(
+                        "Synthetic network transport unavailable"
+                      )
+                    }) as typeof fetch,
+                  }),
+              }),
+          })
+        }
+        return prepare(input, options)
+      }
+      f.hooks.beforeWait = async (milliseconds) => {
+        waits += 1
+        f.authority.now += milliseconds
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(saved.status).toBe("active")
+        if (saved.status !== "active") throw new Error("Expected active state")
+        expect(saved.state.legs[0]!.status).toBe("paid")
+        firstIntent = saved.state.legs[0]!.intent
+        expect(saved.state.legs[1]!.intent).toBeNull()
+        expect(f.calls.payer).toBe(1)
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(1)
+      }
+      const result = await createCheckoutSparkSettledShopperRunner(
+        f.dependencies
+      ).run({
+        ...f.input,
+        fundingPoll: { attempts: 3, intervalMs: 1 },
+      })
+      expect(result).toEqual({ status: "complete" })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.legs[0]!.intent).toEqual(
+        firstIntent
+      )
+      expect(interrupted).toBe(true)
+      expect(waits).toBe(1)
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it.each(["untyped", "revoked", "handoff", "persistent"] as const)(
+    "keeps metadata preparation fail-closed at the %s boundary without replaying a paid leg",
+    async (boundary) => {
+      const f = await fixture(120_000)
+      try {
+        let failures = 0
+        let waits = 0
+        const prepare = f.dependencies.prepareLeg!
+        f.dependencies.prepareLeg = async (input, options) => {
+          if (f.control.snapshot().sendInvocationCount !== 1)
+            return prepare(input, options)
+          failures += 1
+          return prepareCheckoutSparkSettledOutgoingLeg(input, {
+            ...options,
+            resolveInvoice: (request) =>
+              resolveCheckoutSparkLnurlInvoice(request, {
+                fetchMetadata:
+                  boundary === "untyped"
+                    ? async () => {
+                        throw new TypeError(
+                          "Synthetic unclassified adapter failure"
+                        )
+                      }
+                    : (address) =>
+                        fetchLnurlPayMetadata(address, {
+                          fetchImpl: (async () => {
+                            if (boundary === "revoked")
+                              f.authority.active = false
+                            throw new TypeError(
+                              "Synthetic network transport unavailable"
+                            )
+                          }) as typeof fetch,
+                        }),
+              }),
+          })
+        }
+        f.hooks.beforeWait = async (milliseconds) => {
+          waits += 1
+          f.authority.now =
+            boundary === "handoff"
+              ? f.plan.takeoverAt
+              : f.authority.now + milliseconds
+        }
+        const result = await createCheckoutSparkSettledShopperRunner(
+          f.dependencies
+        ).run({
+          ...f.input,
+          fundingPoll: { attempts: 3, intervalMs: 1 },
+        })
+        expect(result).toEqual({
+          status: "paused",
+          reason: {
+            untyped: "unavailable",
+            revoked: "paused",
+            handoff: "authority_transferred",
+            persistent: "provider_evidence_unavailable",
+          }[boundary],
+        })
+        expect(waits).toBe(
+          boundary === "persistent" ? 2 : boundary === "handoff" ? 1 : 0
+        )
+        expect(failures).toBe(boundary === "persistent" ? 3 : 1)
+        expect(f.calls.payer).toBe(1)
+        expect(f.calls.invoices).toHaveLength(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(saved.status).toBe("active")
+        if (saved.status !== "active") throw new Error("Expected active state")
+        expect(saved.state.legs[0]!.status).toBe("paid")
+        expect(saved.state.legs[1]!.intent).toBeNull()
+        expect(saved.state.plan.takeoverAt).toBe(NOW + 120_000)
+      } finally {
+        await f.cleanup()
+      }
+    },
+    20_000
+  )
+
+  it("continues the same approved route after a first payout completes in the last minute before handoff", async () => {
+    const f = await fixture(120_000)
+    try {
+      f.authority.now = NOW + 35_000
+      f.hooks.beforeNativeSend = async () => {
+        expect(f.authority.now).toBeLessThan(f.plan.takeoverAt)
+        if (f.control.snapshot().sendInvocationCount === 0)
+          f.authority.now = NOW + 65_000
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(await runner.run(f.input)).toEqual({ status: "complete" })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status !== "active") throw new Error("Expected active state")
+      expect(saved.state.legs.every((leg) => leg.status === "paid")).toBe(true)
+      expect(f.authority.now).toBe(NOW + 65_000)
+      expect(f.authority.now).toBeLessThan(f.plan.takeoverAt)
+      expect(saved.state.plan.takeoverAt).toBe(NOW + 120_000)
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(3)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+      expect(f.control.snapshot().outgoingPaymentCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
   it("does not authorize a completed legacy checkout through the foreground route gate", async () => {
     const f = await fixture()
     try {

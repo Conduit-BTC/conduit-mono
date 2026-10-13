@@ -6,6 +6,7 @@ import {
   getLightningInvoiceNetwork,
   isValidLightningInvoice,
   isValidLud16Address,
+  LnurlMetadataTransportUnavailableError,
   normalizeLightningInvoice,
   normalizeSafeLnurlPayRequestUrl,
 } from "./lightning"
@@ -126,6 +127,14 @@ export class CheckoutSparkLnurlInvoiceRangeError extends Error {
   }
 }
 
+/** Metadata failed before this invocation requested a payout invoice. */
+export class CheckoutSparkLnurlMetadataUnavailableError extends Error {
+  constructor(readonly reason: "network" | "timeout" | "server") {
+    super("Checkout Spark recipient payment endpoint is unavailable.")
+    this.name = "CheckoutSparkLnurlMetadataUnavailableError"
+  }
+}
+
 /**
  * Resolve one private, exact-amount payout invoice. Recipient and amount
  * authority must already be settled; this helper never infers them from LNURL
@@ -165,8 +174,17 @@ export async function resolveCheckoutSparkLnurlInvoice(
     lnurlMetadata = await (dependencies.fetchMetadata ?? fetchLnurlPayMetadata)(
       lud16
     )
-  } catch {
-    throw new Error("Checkout Spark recipient payment endpoint is unavailable.")
+  } catch (error) {
+    assertCurrent()
+    if (error instanceof LnurlMetadataTransportUnavailableError) {
+      throw new CheckoutSparkLnurlMetadataUnavailableError(error.reason)
+    }
+    throw new Error(
+      "Checkout Spark recipient payment endpoint is unavailable.",
+      {
+        cause: error,
+      }
+    )
   }
   assertCurrent()
   if (

@@ -3,6 +3,7 @@ import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { ConduitDB } from "@conduit/core/db"
 import {
+  CheckoutSparkBuyerPreparationAuthorityEndedError,
   DexieCheckoutSparkSettledRepository,
   deriveCheckoutSparkNativeTreasuryInvoiceId,
   prepareCheckoutSparkNativeTreasury,
@@ -824,6 +825,39 @@ describe("settled Spark guest buyer authority", () => {
 })
 
 describe("settled Spark buyer order control", () => {
+  it("keeps new payout preparation available through the last millisecond but transfers authority at exact handoff", () => {
+    const { plan, input } = fixture(NOW + 120_000)
+    const credited = recordCheckoutSparkSettledCredit(input.snapshot.state, {
+      requestId: plan.funding.requestId,
+      paymentHash: plan.funding.paymentHash,
+      transferId: "synthetic-cutoff-funding",
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+      grossSats: 1_113,
+      creditedSats: 1_111,
+      observedAt: NOW + 2,
+    })
+    for (const elapsed of [65_000, 119_999]) {
+      expect(
+        assessCheckoutSparkSettledOrderControl({
+          ...input,
+          now: NOW + elapsed,
+          snapshot: { ...input.snapshot, state: credited },
+        }).status
+      ).toBe("prepare_payout")
+    }
+    for (const elapsed of [120_000, 120_001]) {
+      expect(
+        assessCheckoutSparkSettledOrderControl({
+          ...input,
+          now: NOW + elapsed,
+          snapshot: { ...input.snapshot, state: credited },
+        })
+      ).toMatchObject({ status: "blocked", cause: "authority_transferred" })
+    }
+    expect(credited.plan.takeoverAt).toBe(NOW + 120_000)
+    expect(credited.legs[0]!.intent).toBeNull()
+  })
+
   it("projects the saved buyer price without disclosing recipient identities or splits", () => {
     const { input } = fixture()
     const control = assessCheckoutSparkSettledOrderControl(input)
@@ -2300,11 +2334,13 @@ describe("settled Spark buyer action", () => {
       else if (change === "guest_expired") clock = guest!.expiresAt
       else clock = plan.takeoverAt
       release.resolve()
-      await expect(advancing).rejects.toThrow(
-        change !== "takeover"
-          ? "shopper session changed"
-          : "order authority changed"
-      )
+      if (change === "takeover") {
+        await expect(advancing).rejects.toBeInstanceOf(
+          CheckoutSparkBuyerPreparationAuthorityEndedError
+        )
+      } else {
+        await expect(advancing).rejects.toThrow("shopper session changed")
+      }
       expect(irreversibleSends).toBe(0)
     }
   )

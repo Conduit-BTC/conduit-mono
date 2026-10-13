@@ -1,5 +1,6 @@
 import {
   DexieCheckoutSparkSettledRepository,
+  CheckoutSparkBuyerPreparationAuthorityEndedError,
   getOrderLifecycle,
   runCheckoutSparkSettledOutgoingStep,
   runCheckoutSparkNativeTreasuryStep,
@@ -185,6 +186,15 @@ export async function advanceCheckoutSparkSettledShopper(
     canInspectCheckoutSparkSettledSubmittedAttempt(snapshot.state, input.legId)
   let admittedProviderDrained = false
 
+  function canPreparePayout(): boolean {
+    if (!currentSessionMatches()) return false
+    const time = now()
+    if (!Number.isSafeInteger(time) || time < plan.createdAt) return false
+    if (time >= plan.takeoverAt)
+      throw new CheckoutSparkBuyerPreparationAuthorityEndedError()
+    return true
+  }
+
   async function assertAuthority(fundingAdmission = false): Promise<void> {
     assertSession()
     if (
@@ -219,6 +229,7 @@ export async function advanceCheckoutSparkSettledShopper(
       Boolean(plan.nativeTreasury) &&
       input.legId ===
         plan.recipients.find((recipient) => recipient.kind === "conduit")?.legId
+    const authorityTime = now()
     if (
       !lifecycle ||
       lifecycle.buyerIdentityKind !==
@@ -242,17 +253,20 @@ export async function advanceCheckoutSparkSettledShopper(
       configuration.status !== "ready" ||
       configuration.network !== plan.network ||
       !manager.isOpen(plan.walletId) ||
-      !Number.isSafeInteger(now()) ||
-      now() < plan.createdAt ||
+      !Number.isSafeInteger(authorityTime) ||
+      authorityTime < plan.createdAt ||
       // Funding is a separate inbound invoice; a null leg cannot admit a
       // payout. The bridge independently enforces its exact invoice expiry.
-      (input.legId !== null &&
-        now() >= plan.takeoverAt &&
-        !readOnlyExistingAttempt) ||
-      (fundingAdmission && now() >= plan.funding.expiresAt)
+      (fundingAdmission && authorityTime >= plan.funding.expiresAt)
     ) {
       throw new Error("Checkout Spark shopper order authority changed.")
     }
+    if (
+      input.legId !== null &&
+      authorityTime >= plan.takeoverAt &&
+      !readOnlyExistingAttempt
+    )
+      throw new CheckoutSparkBuyerPreparationAuthorityEndedError()
   }
 
   async function assertDispatchAuthority(): Promise<void> {
@@ -444,8 +458,7 @@ export async function advanceCheckoutSparkSettledShopper(
           checkoutId: plan.checkoutId,
           planDigest: plan.planDigest,
           legId: nextId,
-          shouldContinue: () =>
-            currentSessionMatches() && now() < plan.takeoverAt,
+          shouldContinue: canPreparePayout,
         },
         {
           repository,
@@ -462,8 +475,7 @@ export async function advanceCheckoutSparkSettledShopper(
                   checkoutId: plan.checkoutId,
                   planDigest: plan.planDigest,
                   legId,
-                  shouldContinue: () =>
-                    currentSessionMatches() && now() < plan.takeoverAt,
+                  shouldContinue: canPreparePayout,
                 },
                 {
                   repository,

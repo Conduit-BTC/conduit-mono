@@ -12,6 +12,10 @@ import {
   isValidLightningInvoice,
 } from "../packages/core/src/protocol/lightning"
 import { CheckoutSparkSettledRepositoryConflictError } from "../packages/core/src/protocol/checkout-spark-settled-router-repository"
+import {
+  assertCheckoutSparkSettledBuyerPreparationWindow,
+  CheckoutSparkBuyerPreparationAuthorityEndedError,
+} from "../packages/core/src/protocol/checkout-spark-settled-leg-preparation"
 import { prepareCheckoutSparkSettledOutgoingLeg } from "../apps/market/src/lib/checkout-spark-settled-leg-preparation"
 import type { CheckoutSparkLnurlInvoiceInput } from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
@@ -40,7 +44,9 @@ function invoice(amountSats: number, hashByte: number) {
   })
 }
 
-function creditedState(): CheckoutSparkSettledReconciliation {
+function creditedState(
+  takeoverAfterMs = 45 * 60_000
+): CheckoutSparkSettledReconciliation {
   const plan = freezeCheckoutSparkSettledPlan({
     checkoutId: "checkout-1",
     orderId: "order-1",
@@ -48,7 +54,7 @@ function creditedState(): CheckoutSparkSettledReconciliation {
     walletId: "wallet-1",
     network: "mainnet",
     createdAt: CREATED_AT,
-    takeoverAt: CREATED_AT + 45 * 60_000,
+    takeoverAt: CREATED_AT + takeoverAfterMs,
     commerceQuote: {
       commerceTotalSats: 1_000,
       lines: [
@@ -179,6 +185,96 @@ function harness() {
     getState: () => state,
   }
 }
+
+describe("settled Spark buyer preparation authority", () => {
+  it("reports only an exact valid takeover as transferred buyer authority", () => {
+    const state = creditedState(2 * 60_000)
+    let error: unknown
+    try {
+      assertCheckoutSparkSettledBuyerPreparationWindow(
+        state,
+        state.plan.takeoverAt
+      )
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toMatchObject({
+      name: "CheckoutSparkBuyerPreparationAuthorityEndedError",
+    })
+    expect(error).toBeInstanceOf(
+      CheckoutSparkBuyerPreparationAuthorityEndedError
+    )
+  })
+
+  it("does not classify an invalid current or saved clock as transferred authority", () => {
+    const state = creditedState(2 * 60_000)
+    for (const [takeoverAt, nowMs] of [
+      [state.plan.takeoverAt, NaN],
+      [NaN, state.plan.takeoverAt],
+      [-1, state.plan.takeoverAt],
+    ] as const) {
+      let error: unknown
+      try {
+        assertCheckoutSparkSettledBuyerPreparationWindow(
+          { ...state, plan: { ...state.plan, takeoverAt } },
+          nowMs
+        )
+      } catch (caught) {
+        error = caught
+      }
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(
+        CheckoutSparkBuyerPreparationAuthorityEndedError
+      )
+    }
+  })
+
+  it.each([2 * 60_000, 45 * 60_000])(
+    "keeps the full saved %s-ms window without an extra minute buffer",
+    (takeoverAfterMs) => {
+      const state = creditedState(takeoverAfterMs)
+      const original = structuredClone(state)
+      expect(() =>
+        assertCheckoutSparkSettledBuyerPreparationWindow(
+          state,
+          state.plan.takeoverAt - 55_000
+        )
+      ).not.toThrow()
+      expect(() =>
+        assertCheckoutSparkSettledBuyerPreparationWindow(
+          state,
+          state.plan.takeoverAt - 1
+        )
+      ).not.toThrow()
+      expect(state).toEqual(original)
+    }
+  )
+
+  it.each([0, 1])(
+    "blocks fresh preparation at or after takeover plus %s ms",
+    (offset) => {
+      const state = creditedState(2 * 60_000)
+      expect(() =>
+        assertCheckoutSparkSettledBuyerPreparationWindow(
+          state,
+          state.plan.takeoverAt + offset
+        )
+      ).toThrow("buyer payout authority has ended")
+    }
+  )
+
+  it.each([-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects an invalid preparation clock without mutating the plan",
+    (nowMs) => {
+      const state = creditedState(2 * 60_000)
+      const original = structuredClone(state)
+      expect(() =>
+        assertCheckoutSparkSettledBuyerPreparationWindow(state, nowMs)
+      ).toThrow("buyer payout authority has ended")
+      expect(state).toEqual(original)
+    }
+  )
+})
 
 describe("settled Spark payout invoice preparation", () => {
   it("obtains a fresh smaller invoice after exact credit and ACKs the persisted intent", async () => {

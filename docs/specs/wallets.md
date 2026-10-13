@@ -238,6 +238,9 @@ Normal new plans freeze Merchant takeover two minutes after preparation while
 requesting a fifteen-minute funding invoice. Existing plans keep their original
 deadlines. New buyer outgoing admission ends at that boundary; already admitted
 operations remain queryable and must drain or reconcile under their exact saved identifiers.
+New payout preparation uses that same exact saved boundary, not an earlier
+fixed preparation buffer. Recheck current authority after asynchronous work
+and before provider admission; signed invoice expiry remains independent.
 Merchant eligibility is not proof of an unattempted payment and must not bypass
 those records, recipient attribution, or provider idempotency. The five-minute
 checking budget does not extend buyer dispatch beyond the frozen handoff.

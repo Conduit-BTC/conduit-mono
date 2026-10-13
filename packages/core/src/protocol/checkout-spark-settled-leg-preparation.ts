@@ -32,9 +32,6 @@ import {
 
 const MAX_INVOICE_ATTEMPTS = 3
 const MAX_SAVE_ATTEMPTS = 3
-/** Application handoff budget; independent of an invoice's signed expiry. */
-export const CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS = 60_000
-
 type ActiveSnapshot = Extract<
   CheckoutSparkSettledRepositorySnapshot,
   { status: "active" }
@@ -139,6 +136,14 @@ function requireLeg(snapshot: ActiveSnapshot, legId: string) {
   return { leg, recipient }
 }
 
+/** Positive exact-cutoff fact only; malformed clocks do not mint this category. */
+export class CheckoutSparkBuyerPreparationAuthorityEndedError extends Error {
+  constructor() {
+    super("Checkout Spark buyer payout authority has ended.")
+    this.name = "CheckoutSparkBuyerPreparationAuthorityEndedError"
+  }
+}
+
 /** Time-only buyer policy. The caller must also authenticate buyer and wallet. */
 export function assertCheckoutSparkSettledBuyerPreparationWindow(
   state: CheckoutSparkSettledReconciliation,
@@ -147,10 +152,13 @@ export function assertCheckoutSparkSettledBuyerPreparationWindow(
   if (
     !Number.isSafeInteger(nowMs) ||
     nowMs < 0 ||
-    !Number.isSafeInteger(nowMs + CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS) ||
-    nowMs + CHECKOUT_SPARK_BUYER_PREPARATION_BUFFER_MS >= state.plan.takeoverAt
+    !Number.isSafeInteger(state.plan.takeoverAt) ||
+    state.plan.takeoverAt < 0
   ) {
     throw new Error("Checkout Spark buyer payout authority has ended.")
+  }
+  if (nowMs >= state.plan.takeoverAt) {
+    throw new CheckoutSparkBuyerPreparationAuthorityEndedError()
   }
 }
 
