@@ -753,11 +753,17 @@ for (const [viewportName, width, height] of [
     await expect(
       measurements.getByLabel("Shipping weight", { exact: true })
     ).toBeEnabled()
-    await measurements.getByLabel("Weight unit", { exact: true }).click()
+    const weightUnit = measurements.getByLabel("Weight unit", { exact: true })
+    await weightUnit.click()
     await page.getByRole("option", { name: "Grams", exact: true }).click()
-    await measurements
-      .getByLabel("Shipping weight", { exact: true })
-      .fill("450")
+    // Select restores focus asynchronously; finish that handoff before typing.
+    await expect(weightUnit).toBeFocused()
+    await expect(weightUnit).toHaveText("Grams")
+    const shippingWeight = measurements.getByLabel("Shipping weight", {
+      exact: true,
+    })
+    await shippingWeight.fill("450")
+    await expect(shippingWeight).toHaveValue("450")
     await measurements
       .getByText("Packing and dimensions", { exact: true })
       .click()

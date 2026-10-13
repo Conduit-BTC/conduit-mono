@@ -23,8 +23,10 @@ browsers. The three project instances of `Merchant legacy Payments opens
 Wallets before the next route navigation @merchant` retain the same shared
 page, redirect, title and subsequent navigation assertions. Nothing moves to
 helper-only tests. Full discovery changes from 613 to 781 unique project
-cases and from 656 to 824 area executions; the overlapping area memberships
-outside this file remain unchanged.
+cases and from 656 to 824 area executions for the route split; the overlapping
+area memberships outside this file remain unchanged. A separate wallet reload
+regression adds one Chromium Market case, bringing full discovery to 782
+unique cases and 825 area executions.
 
 ## Invariants and fixtures
 
@@ -64,3 +66,15 @@ Progress and manifest names allow only this file's fixed area/theme/route
 combinations. Unknown or sensitive variants remain redacted, and retained
 evidence remains title-free. Failure commands are explicitly source-group
 reproducers; their file-and-line selection includes the generated route group.
+
+## Readiness regressions
+
+The shipping-table edit waits for the weight-unit select to return focus before
+entering a weight, then checks the entered value. This preserves the existing
+signed-weight and relay assertions while preventing the deferred focus handoff
+from consuming the input.
+
+The wallet reload regression holds an older reload across a native wallet open
+and a pending balance read. The UI must show Opening, then Ready when the read
+completes, rather than preserve a stale Locked state. Existing foreground
+cross-app recovery, wallet identity and default-selection assertions remain.

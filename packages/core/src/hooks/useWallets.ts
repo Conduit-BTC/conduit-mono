@@ -490,9 +490,13 @@ export function useWallets(
                 // Recovery metadata reads can outlive a manager open/close.
                 // Apply the snapshot only while its wallet is still open, and
                 // retain a newer open state when the snapshot predates it.
+                // A locked state predating that open cannot describe the live
+                // session while its balance refresh is still pending.
                 next[wallet.id] = getSparkWalletManager()?.isOpen(wallet.id)
                   ? (openSparkRuntime.get(wallet.id) ??
-                    current[wallet.id] ?? {
+                    (current[wallet.id]?.status === "locked"
+                      ? undefined
+                      : current[wallet.id]) ?? {
                       status: "connecting",
                       balanceMsats: null,
                       error: null,
