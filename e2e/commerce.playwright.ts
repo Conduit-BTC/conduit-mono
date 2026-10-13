@@ -916,6 +916,14 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       name: "Cart inventory",
       exact: true,
     })
+    await expect(cartHud).toBeVisible()
+    // Mobile keyboard/viewport changes can collapse the dock after a search.
+    // Verify the add committed, then explicitly open this purchase for checkout.
+    const purchase = cartHud.getByRole("button", {
+      name: new RegExp(`^${merchantName}, 1 cart item,`),
+    })
+    await expect(purchase).toBeVisible()
+    await purchase.click()
     const checkout = cartHud.getByRole("link", {
       name: "Continue to checkout",
       exact: true,
@@ -1120,37 +1128,50 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("buyer_paid")
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    try {
+    const openPaidMessages = async () => {
+      await buyerPage.evaluate(() => document.fonts.ready)
+      const trigger = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      if (testInfo.project.use.isMobile) await trigger.tap()
+      else await trigger.click()
       await expect(
-        buyerPage.getByText("Status: Paid", { exact: true })
-      ).toBeVisible({ timeout: 30_000 })
-    } catch (error) {
-      try {
-        const completion = await readBuyerLifecycleCompletion(
-          buyerPage,
-          orderId
-        )
-        buyerPaidObservation = {
-          buyerObservationAvailable: true,
-          buyerLifecyclePaid: completion.paymentPaid,
-          buyerProofSent: completion.proofSent,
-          buyerPaidMessages: await buyerPage
-            .getByText("Status: Paid", { exact: true })
-            .count(),
-          buyerMessageDialogVisible: await buyerPage
-            .getByRole("dialog", { name: "Messages", exact: true })
-            .isVisible(),
-        }
-      } catch {
-        // Diagnostic reads must not replace the original assertion failure.
-        buyerPaidObservation = { buyerObservationAvailable: false }
-      }
-      recordJourney()
-      throw error
+        buyerPage.getByRole("dialog", { name: "Messages", exact: true })
+      ).toBeVisible()
     }
+    const expectPaidMessages = async () => {
+      try {
+        await expect(
+          buyerPage.getByText("Status: Paid", { exact: true })
+        ).toBeVisible({ timeout: 30_000 })
+      } catch (error) {
+        try {
+          const completion = await readBuyerLifecycleCompletion(
+            buyerPage,
+            orderId
+          )
+          buyerPaidObservation = {
+            buyerObservationAvailable: true,
+            buyerLifecyclePaid: completion.paymentPaid,
+            buyerProofSent: completion.proofSent,
+            buyerPaidMessages: await buyerPage
+              .getByText("Status: Paid", { exact: true })
+              .count(),
+            buyerMessageDialogVisible: await buyerPage
+              .getByRole("dialog", { name: "Messages", exact: true })
+              .isVisible(),
+          }
+        } catch {
+          // Diagnostic reads must not replace the original assertion failure.
+          buyerPaidObservation = { buyerObservationAvailable: false }
+        }
+        recordJourney()
+        throw error
+      }
+    }
+    await openPaidMessages()
+    await expectPaidMessages()
 
     phase("reload")
     await Promise.all([merchantPage.reload(), buyerPage.reload()])
@@ -1159,12 +1180,8 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         .getByRole("list", { name: "Order progress" })
         .getByText("Payment confirmed", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    await expect(
-      buyerPage.getByText("Status: Paid", { exact: true })
-    ).toBeVisible({ timeout: 30_000 })
+    await openPaidMessages()
+    await expectPaidMessages()
     await expect
       .poll(() => readBuyerLifecycleCompletion(buyerPage, orderId), {
         timeout: 30_000,

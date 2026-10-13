@@ -495,6 +495,9 @@ for (const unavailable of ["signet", "coordination"] as const) {
               spark: wallets.sparkAvailability.status,
               externalStatus:
                 wallets.runtime[wallets.connectedWallets[0]?.id]?.status,
+              externalBalanceLoaded:
+                typeof wallets.runtime[wallets.connectedWallets[0]?.id]
+                  ?.balanceMsats === "number",
             }
           })
         )
@@ -506,6 +509,7 @@ for (const unavailable of ["signet", "coordination"] as const) {
           legacy: 1,
           spark: "unavailable",
           externalStatus: "ready",
+          externalBalanceLoaded: true,
         })
       await expect(
         page.getByRole("article", {
@@ -517,6 +521,8 @@ for (const unavailable of ["signet", "coordination"] as const) {
         page.getByRole("article", { name: "Legacy fence wallet", exact: true })
       ).toBeVisible()
     } finally {
+      // Stop route-owned balance updates before shutting down their provider.
+      await page.close()
       await wallet.close()
       disposeRuntimeSignerIdentity(identity)
     }
