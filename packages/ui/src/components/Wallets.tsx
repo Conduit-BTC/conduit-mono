@@ -434,12 +434,13 @@ export function Wallets({
                 ? " Encrypted relay recovery is confirmed."
                 : " Relay recovery is not confirmed yet."}{" "}
               Save your phrase, account number and network to recover elsewhere.
-              Your Nostr signer can see the recovery details when encrypting or
-              opening the wallet. External wallet authorizations are stored on
-              this device. Copying a recovery phrase puts it on your system
-              clipboard, where other apps or sync services may retain it. Never
-              include wallet secrets in support reports, telemetry, screenshots,
-              or public issues.
+              Your Nostr signer can see the recovery details and account-backed
+              wallet names when encrypting or opening them. Account-backed names
+              sync across your devices; other names stay on this device.
+              External wallet authorizations are stored on this device. Copying
+              a recovery phrase puts it on your system clipboard, where other
+              apps or sync services may retain it. Never include wallet secrets
+              in support reports, telemetry, screenshots, or public issues.
             </p>
           </div>
           <a
@@ -1245,6 +1246,10 @@ function RenameWalletDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Rename wallet</DialogTitle>
+          <DialogDescription>
+            Saved on this device immediately. Names for account-backed wallets
+            also sync across your devices through your Nostr signer.
+          </DialogDescription>
         </DialogHeader>
         <Label htmlFor="wallet-name">Wallet name</Label>
         <Input

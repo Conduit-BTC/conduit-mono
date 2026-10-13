@@ -13,14 +13,15 @@ services never receive plaintext wallet credentials or control funds.
   protocol. Nostr Wallet Connect (NWC) is the first Connected Wallet protocol.
 - **Provider**: the implementation behind a wallet, such as Spark or NWC.
 - **Wallet instance**: one wallet registered on the device. A user may assign
-  an optional device-local nickname, and a provider may have multiple
-  instances.
+  an optional display name, and a provider may have multiple instances.
 
 The shared Wallets surface calls these sections **My wallets** and **External
 wallets**. Default names use **Conduit Wallet**, numbered when needed. This is
 product branding, not a custody or provider claim: Spark remains the single wallet
 provider and signer runtime. Recovery details identify the actual Spark account
-number and network; custom names remain device-local.
+number and network. Names for signer-owned Spark wallets synchronize across Market,
+Merchant and devices using the same Nostr account. Device-only and Connected Wallet
+names remain local.
 
 ## Ownership and key boundary
 
@@ -101,7 +102,7 @@ Market maintains a collection of wallet instances. Each descriptor contains:
 - a locally generated opaque identifier;
 - kind (`portable` or `connected`);
 - provider identifier;
-- user-facing device-local label, generated from `Conduit Wallet` when an
+- locally persisted display name, generated from `Conduit Wallet` when an
   optional nickname is omitted;
 - network;
 - declared capabilities;
@@ -130,6 +131,39 @@ operations. Initial capabilities are:
 - `balance`
 - `history`
 - `spark_transfer`
+
+## Wallet names
+
+Renaming saves the local display name immediately. For a signer-owned Spark
+wallet, the label and durable account/network-scoped pending intent commit in
+the same transaction before signer consent or relay work. An outage or denied
+signer request cannot prevent a local rename or erase it on reload. Device-only
+and Connected Wallet names are never included in account name synchronization.
+
+Signer-owned names use a separate self-encrypted NIP-44 v2 payload in a NIP-78
+kind `30078` record at `conduit:wallet-names:v1:<network>`. The connected signer
+receives plaintext names for encryption and decryption; with NIP-46, that signer
+may run off-device. Relays receive ciphertext. Names must not enter logs,
+telemetry, public profile metadata or commerce messages. This optional metadata
+does not replace the strict v1 wallet membership or recovery record, and older
+clients can continue their existing recovery lifecycle while ignoring names.
+
+Only complete, confirmed account membership authorizes applying or publishing a
+wallet's name. Recovery must refresh membership after backup and membership
+mutations before synchronizing names or calculating readiness. Absence from a
+snapshot cannot discard pending intent; an explicit confirmed removal can.
+Names never add membership or restore a removed wallet. A pending rename fences
+older shared names, and a missing shared name never erases a local label.
+Creation and explicit recovery sync seed eligible local labels only when no
+shared name exists.
+
+Name synchronization has its own pending status and retry action, separate from
+wallet recovery and backup readiness. Partial, unavailable, malformed, stale or
+conflicting evidence preserves local names and pending intent. Retained signed
+name operations retry identical bytes; completing an older operation cannot
+clear a newer rename. Ready means the current pending intent has completed the
+bounded relay plan, not that every relay globally agrees. Names are trimmed,
+nonempty and limited to 80 characters.
 
 ## Connected Wallet migration
 
@@ -214,7 +248,7 @@ transfer can be prepared.
 ## Wallet owner experience
 
 The `/wallet` route lets the owner distinguish Portable and Connected Wallet
-instances by provider and device-local label. Actions must make clear whether
+instances by provider and display name. Actions must make clear whether
 they create, connect, disconnect, or remove a wallet from this device. Removal
 must not imply that network funds were deleted.
 
@@ -226,8 +260,10 @@ Spark setup and restore identify the actual network. Before a Mainnet wallet is
 created or restored, the owner is informed that it uses real bitcoin and
 supports Lightning and Spark payments. Restore accepts the recovery phrase and
 any non-standard account number needed for the intended wallet. The owner is
-informed that a nickname is local and not backed up. New wallet recovery uses the
-account signer; older password wallets keep their migration and recovery path.
+informed that signer-owned Spark names synchronize through their account and can
+remain pending while saved locally. Device-only and Connected Wallet names remain
+local. New wallet recovery uses the account signer; older password wallets keep
+their migration and recovery path.
 
 The route renders while signed out, with sign-in required for new account-backed
 creation/import and signer-backed access. Legacy device-wallet access remains

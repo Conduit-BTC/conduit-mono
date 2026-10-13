@@ -31,7 +31,10 @@ import {
   walletNamesDTag,
   type WalletNameStates,
 } from "../packages/core/src/wallets/wallet-name-contract"
-import { synchronizeAccountWalletNames } from "../packages/core/src/wallets/account-spark-recovery"
+import {
+  synchronizeAccountWalletNames,
+  synchronizeAccountWalletNamesAfterRecovery,
+} from "../packages/core/src/wallets/account-spark-recovery"
 import type {
   SignedNostrEvent,
   NostrKeySigner,
@@ -278,6 +281,106 @@ test("failed local persistence rolls back the label and leaves no rename intent"
     retireAccountSigner(f.signer)
   }
 })
+
+test("pre-add membership cannot discard pending names or report them synchronized", async () => {
+  const f = await fixture()
+  const addedId = crypto.randomUUID()
+  const backup = await f.recovery.prepare(
+    { mnemonic: generateSparkMnemonic(), network: "mainnet", accountNumber: 2 },
+    addedId
+  )
+  await f.recovery.deliver(backup.eventId)
+  const membership = await f.recovery.prepareRegistry("mainnet", {
+    type: "add",
+    walletId: addedId,
+  })
+  await f.recovery.deliver(membership)
+  const latest = await f.recovery.discover(false, "mainnet")
+  await f.local.names.queue(f.owner, "mainnet", addedId, "New wallet label")
+  f.unavailable.add([...f.relays.keys()][0])
+  expect((await f.namesService().sync("mainnet", latest)).ready).toBe(false)
+  f.unavailable.clear()
+  expect((await f.namesService().sync("mainnet", f.discovery)).ready).toBe(
+    false
+  )
+  expect(
+    (await f.local.names.load(f.owner, "mainnet")).pending[addedId]?.name
+  ).toBe("New wallet label")
+  const result = await f.namesService().sync("mainnet", latest)
+  expect(result.ready).toBe(true)
+  expect(result.names[addedId]).toBe("New wallet label")
+})
+
+for (const pendingRename of [false, true]) {
+  test(`post-backup name sync refreshes membership after an unavailable name read (${pendingRename ? "pending rename" : "initial label"})`, async () => {
+    const f = await fixture()
+    const addedId = crypto.randomUUID()
+    await register({ ...f, walletId: addedId })
+    try {
+      const backup = await f.recovery.prepare(
+        {
+          mnemonic: generateSparkMnemonic(),
+          network: "mainnet",
+          accountNumber: 2,
+        },
+        addedId
+      )
+      await f.recovery.deliver(backup.eventId)
+      const membership = await f.recovery.prepareRegistry("mainnet", {
+        type: "add",
+        walletId: addedId,
+      })
+      await f.recovery.deliver(membership)
+      expect(f.discovery.registry?.activeWalletIds).not.toContain(addedId)
+      const latest = await f.recovery.discover(false, "mainnet")
+      if (pendingRename)
+        await saveWalletNameLocally({
+          walletId: addedId,
+          name: "Pending rename",
+          store: f.local.store,
+          names: f.local.names,
+        })
+      // The inner post-add sync fails, but backup and membership are confirmed.
+      f.unavailable.add([...f.relays.keys()][0])
+      expect(
+        await synchronizeAccountWalletNames({
+          signer: f.signer,
+          discovery: latest,
+          network: "mainnet",
+          store: f.local.store,
+          names: f.local.names,
+          service: f.namesService(),
+          seedExisting: true,
+        })
+      ).toBe(false)
+      f.unavailable.clear()
+      // Exercise the same fresh-membership boundary used after the recovery loop.
+      const result = await synchronizeAccountWalletNamesAfterRecovery({
+        signer: f.signer,
+        recoveryService: f.recovery,
+        network: "mainnet",
+        store: f.local.store,
+        names: f.local.names,
+        service: f.namesService(),
+        seedExisting: true,
+      })
+      expect(result.discovery.registry?.activeWalletIds).toContain(addedId)
+      expect(result.discovery.registryMembershipReady).toBe(true)
+      expect(result.ready).toBe(true)
+      expect((await f.local.names.load(f.owner, "mainnet")).pending).toEqual({})
+      const remote = await f
+        .namesService(device().names)
+        .sync("mainnet", result.discovery)
+      expect(remote.ready).toBe(true)
+      expect(remote.names[addedId]).toBe(
+        pendingRename ? "Pending rename" : "Original"
+      )
+      expect((await f.local.store.list())[0].label).toBe(remote.names[addedId])
+    } finally {
+      retireAccountSigner(f.signer)
+    }
+  })
+}
 
 test("delivery retries immutable signed bytes and retains a newer rename queued during delivery", async () => {
   const f = await fixture()

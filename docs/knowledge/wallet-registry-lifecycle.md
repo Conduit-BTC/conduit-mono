@@ -15,6 +15,8 @@ interpret as recovery evidence. Older clients ignore names and continue their
 existing membership, main-wallet and removal lifecycle. Their membership writes
 do not replace the name record. The protected reader and publisher accept only
 these exact network-scoped coordinates with current account authorization.
+The governing name scope, signer plaintext boundary and offline behavior are
+defined in [the wallet specification](../specs/wallets.md#wallet-names).
 
 Names are trimmed, nonempty and at most 80 characters. Rename commits the local
 label and account/network-scoped pending intent in the same wallet transaction,
@@ -25,10 +27,15 @@ Device-only names remain local. Creation and explicit recovery sync seed existin
 local names only when no shared name is recorded.
 
 Complete confirmed membership determines which names can be applied or published.
+After backup and membership writes, recovery discovers membership again before
+name synchronization and readiness calculation. A pre-write snapshot cannot
+override a confirmed wallet addition.
 Incomplete, conflicting, malformed or stale name observations preserve local
 labels. A pending local intent fences older confirmed names until synchronization
 completes. Names never add membership; confirmed removal dominates retained names
-and discards pending names for that wallet. Missing names never erase a label.
+and discards pending names for that wallet. Absence from active membership alone
+preserves pending intent and prevents name readiness; only explicit removal can
+discard it. Missing names never erase a label.
 Optional metadata failures cannot invalidate otherwise usable recovery evidence.
 
 Before publication, agreeing bounded name reads supply the parent record. The

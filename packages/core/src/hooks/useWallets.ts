@@ -37,6 +37,7 @@ import {
   bootstrapLegacyAccountWalletRegistry,
   reconcileAccountWalletRegistryMembership,
   synchronizeAccountWalletNames,
+  synchronizeAccountWalletNamesAfterRecovery,
   listAutomaticSignerSparkWallets,
   isCompleteAccountRegistryDiscovery,
   applyAccountWalletRegistryDefaults,
@@ -1093,16 +1094,17 @@ export function useWallets(
         await service.deliver(mainRecord.event.id, options)
       assertWalletSignerCurrent(signer)
       await refreshAfterCommittedWalletMutation()
-      const nameReady = await synchronizeAccountWalletNames({
+      const nameSync = await synchronizeAccountWalletNamesAfterRecovery({
         signer,
-        discovery,
+        recoveryService: service,
         network,
         store,
         options,
         seedExisting: publishExisting,
       })
+      discovery = nameSync.discovery
       setNameSync(
-        !discovery.registry ? "idle" : nameReady ? "ready" : "pending"
+        !discovery.registry ? "idle" : nameSync.ready ? "ready" : "pending"
       )
       await refreshAfterCommittedWalletMutation()
       setRecoverySync(

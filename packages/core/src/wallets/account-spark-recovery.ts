@@ -352,10 +352,8 @@ export async function applyAccountWalletRegistryDefaults(input: {
   })
 }
 
-/** Optional name synchronization cannot invalidate otherwise usable wallet recovery. */
-export async function synchronizeAccountWalletNames(input: {
+interface AccountWalletNameSyncInput {
   signer: AccountSigner
-  discovery: SparkRecoveryDiscovery
   network: WalletNameNetwork
   store: Pick<
     MarketWalletStore,
@@ -365,7 +363,27 @@ export async function synchronizeAccountWalletNames(input: {
   service?: WalletNameService
   options?: AccountSignerOperationOptions
   seedExisting?: boolean
-}): Promise<boolean> {
+}
+
+/** Recovery writes may advance membership. Never reuse their pre-write snapshot. */
+export async function synchronizeAccountWalletNamesAfterRecovery(
+  input: AccountWalletNameSyncInput & {
+    recoveryService?: Pick<SparkRecoveryService, "discover">
+  }
+): Promise<{ discovery: SparkRecoveryDiscovery; ready: boolean }> {
+  assertWalletSignerCurrent(input.signer)
+  const recovery =
+    input.recoveryService ?? getAccountSparkRecovery(input.signer)
+  const discovery = await recovery.discover(false, input.network, input.options)
+  assertWalletSignerCurrent(input.signer)
+  const ready = await synchronizeAccountWalletNames({ ...input, discovery })
+  return { discovery, ready }
+}
+
+/** Optional name synchronization cannot invalidate otherwise usable wallet recovery. */
+export async function synchronizeAccountWalletNames(
+  input: AccountWalletNameSyncInput & { discovery: SparkRecoveryDiscovery }
+): Promise<boolean> {
   const { signer, discovery, network, store, options = {} } = input
   const names = input.names ?? new DexieWalletNameStore()
   if (!isCompleteAccountRegistryDiscovery(discovery)) return false

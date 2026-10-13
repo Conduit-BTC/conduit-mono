@@ -86,6 +86,7 @@ export class WalletNameService {
       return { ready: false, names: {} }
     const owner = this.scope.owner
     const active = new Set(discovery.registry.activeWalletIds)
+    const removed = new Set(discovery.registry.removedWalletIds)
     let state = await this.input.store.load(owner, network)
     const targets = state.operation?.targets ?? this.targets
     const reads = await Promise.all(
@@ -196,14 +197,21 @@ export class WalletNameService {
     const pending = Object.fromEntries(
       Object.entries(state.pending).filter(([id]) => active.has(id))
     )
-    // Confirmed removal discards pending name intent; it never adds membership.
+    // Absence can mean an older snapshot or a not-yet-confirmed add. Only
+    // explicit removal can discard local intent; names never add membership.
     await this.input.store.update(owner, network, (current) => ({
       ...current,
       pending: Object.fromEntries(
-        Object.entries(current.pending).filter(([id]) => active.has(id))
+        Object.entries(current.pending).filter(([id]) => !removed.has(id))
       ),
     }))
-    if (!Object.keys(pending).length) return { ready: true, names: confirmed }
+    if (!Object.keys(pending).length)
+      return {
+        ready: !Object.keys(
+          (await this.input.store.load(owner, network)).pending
+        ).length,
+        names: confirmed,
+      }
     const createdAt = Math.max(
       Math.floor(Date.now() / 1000),
       (head?.created_at ?? 0) + 1
