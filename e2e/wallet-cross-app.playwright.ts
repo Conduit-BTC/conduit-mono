@@ -1622,3 +1622,153 @@ test("stale balance failure cannot replace a reopened wallet session @market", a
     disposeRuntimeSignerIdentity(identity)
   }
 })
+
+test("stale unlock failure cannot replace a reopened wallet session @market", async ({
+  page,
+}) => {
+  test.setTimeout(30_000)
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await prepareControlledWallet(page)
+    await observeWalletController(page)
+    await installRealTestSigner(page, identity, relay)
+    await page.goto(apps.market + "/wallet")
+    await installControlledWallet(page)
+    await openWalletSetup(page, "Create wallet")
+    await saved(page)
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await page
+      .getByRole("button", { name: /^Manage / })
+      .first()
+      .click()
+    await closeDefaultWalletSession(page)
+    await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
+
+    await page.evaluate(async (storageUrl) => {
+      const { getMarketWalletStore } = await import(storageUrl)
+      const store = getMarketWalletStore()
+      const target = window as unknown as WalletRaceWindow & {
+        __unlockRace: {
+          held: boolean
+          settled: boolean
+          rejected: boolean
+          release: () => void
+        }
+      }
+      const controller = target.__controlledWalletController
+      const walletId = controller.portableWallets[0].id
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      target.__unlockRace = {
+        held: false,
+        settled: false,
+        rejected: false,
+        release,
+      }
+      store.getSparkRecovery = async () => {
+        target.__unlockRace.held = true
+        await gate
+        throw new Error("Injected old recovery failure")
+      }
+      void Promise.allSettled([
+        controller.unlockSpark(walletId),
+        controller.unlockSpark(walletId),
+      ]).then((results) => {
+        target.__unlockRace.rejected = results.every(
+          (result) => result.status === "rejected"
+        )
+        target.__unlockRace.settled = true
+      })
+    }, storage)
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window as unknown as WalletRaceWindow & {
+                __unlockRace: { held: boolean }
+              }
+            ).__unlockRace.held
+        )
+      )
+      .toBe(true)
+    await page.evaluate(async (managerUrl) => {
+      const { getSparkWalletManager } = await import(managerUrl)
+      const target = window as unknown as WalletRaceWindow
+      const controller = target.__controlledWalletController
+      const probe = target.__walletProbe
+      const walletId = controller.portableWallets[0].id
+      await getSparkWalletManager()!.openWithMnemonic({
+        walletId,
+        mnemonic: probe.savedMnemonic,
+        accountNumber: 1,
+      })
+      await controller.refreshBalance(walletId)
+    }, sparkSdk)
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await page.evaluate(() =>
+      (
+        window as unknown as Window & { __unlockRace: { release(): void } }
+      ).__unlockRace.release()
+    )
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window as unknown as Window & {
+                __unlockRace: { settled: boolean }
+              }
+            ).__unlockRace.settled
+        )
+      )
+      .toBe(true)
+    expect(
+      await page.evaluate(
+        () =>
+          (
+            window as unknown as Window & {
+              __unlockRace: { rejected: boolean }
+            }
+          ).__unlockRace.rejected
+      )
+    ).toBe(true)
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        )
+    )
+    expect(
+      await page.evaluate(() => {
+        const controller = (window as unknown as WalletRaceWindow)
+          .__controlledWalletController
+        return controller.runtime[controller.portableWallets[0].id]?.status
+      })
+    ).toBe("ready")
+    await expect(
+      page.getByRole("button", { name: "Open wallet", exact: true })
+    ).toHaveCount(0)
+
+    // A current unlock failure must still replace the visible state.
+    await page.evaluate(async (storageUrl) => {
+      const { getMarketWalletStore } = await import(storageUrl)
+      const controller = (window as unknown as WalletRaceWindow)
+        .__controlledWalletController
+      const walletId = controller.portableWallets[0].id
+      await controller.lockSpark(walletId)
+      getMarketWalletStore().getSparkRecovery = async () => {
+        throw new Error("Injected current recovery failure")
+      }
+      await controller.unlockSpark(walletId).catch(() => undefined)
+    }, storage)
+    await expect(page.getByText("Ready", { exact: true })).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: "Open wallet", exact: true })
+    ).toHaveCount(1)
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})

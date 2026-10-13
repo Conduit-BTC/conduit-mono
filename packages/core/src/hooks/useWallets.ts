@@ -1502,18 +1502,24 @@ export function useWallets(
             if (previous === joined) previous = undefined
             continue
           }
-          if (isWalletSignerCurrent(signer))
-            setRuntime((current) => ({
-              ...current,
-              [walletId]: {
-                status: "error",
-                balanceMsats: null,
-                error: getErrorMessage(
-                  error,
-                  "Could not unlock Portable Wallet."
-                ),
-              },
-            }))
+          // The joined attempt reports its own failure. Do not let this
+          // observer overwrite a different session opened in the meantime.
+          if (isWalletSignerCurrent(signer) && !manager.isOpen(walletId))
+            setRuntime((current) =>
+              manager.isOpen(walletId)
+                ? current
+                : {
+                    ...current,
+                    [walletId]: {
+                      status: "error",
+                      balanceMsats: null,
+                      error: getErrorMessage(
+                        error,
+                        "Could not unlock Portable Wallet."
+                      ),
+                    },
+                  }
+            )
           throw error
         }
       }
@@ -1525,6 +1531,9 @@ export function useWallets(
           return
         }
       }
+      let ownsOpenSession: (() => boolean) | undefined
+      const canReportOpenError = () =>
+        !manager.isOpen(walletId) || ownsOpenSession?.() === true
       const open = async () => {
         setRuntime((current) => ({
           ...current,
@@ -1537,7 +1546,13 @@ export function useWallets(
         try {
           await openRegisteredSparkWallet({
             walletId,
-            manager,
+            manager: {
+              openWithMnemonic: async (input) => {
+                await manager.openWithMnemonic(input)
+                ownsOpenSession = manager.captureSession(walletId)
+              },
+              close: (id) => manager.close(id),
+            },
             expectedNetwork: getSparkWalletNetwork(),
             listWallets: () =>
               signer ? store.listVisible(signer.pubkey) : registry.list(),
@@ -1607,18 +1622,25 @@ export function useWallets(
           if (signer && isWalletSignerCurrent(signer))
             deliberatelyLockedWallets.get(signer)?.delete(walletId)
         } catch (error) {
-          if (!signer || isWalletSignerCurrent(signer))
-            setRuntime((current) => ({
-              ...current,
-              [walletId]: {
-                status: "error",
-                balanceMsats: null,
-                error: getErrorMessage(
-                  error,
-                  "Could not unlock Portable Wallet."
-                ),
-              },
-            }))
+          if (
+            (!signer || isWalletSignerCurrent(signer)) &&
+            canReportOpenError()
+          )
+            setRuntime((current) =>
+              canReportOpenError()
+                ? {
+                    ...current,
+                    [walletId]: {
+                      status: "error",
+                      balanceMsats: null,
+                      error: getErrorMessage(
+                        error,
+                        "Could not unlock Portable Wallet."
+                      ),
+                    },
+                  }
+                : current
+            )
           throw error
         }
       }

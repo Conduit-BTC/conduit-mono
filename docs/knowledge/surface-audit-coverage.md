@@ -24,9 +24,9 @@ Wallets before the next route navigation @merchant` retain the same shared
 page, redirect, title and subsequent navigation assertions. Nothing moves to
 helper-only tests. Full discovery changes from 613 to 781 unique project
 cases and from 656 to 824 area executions for the route split; the overlapping
-area memberships outside this file remain unchanged. Two wallet state
-regressions add Chromium Market cases, bringing full discovery to 783
-unique cases and 826 area executions.
+area memberships outside this file remain unchanged. Three wallet state
+regressions add Chromium Market cases, bringing full discovery to 784
+unique cases and 827 area executions.
 
 ## Invariants and fixtures
 
@@ -83,3 +83,7 @@ Balance results also retain their originating native session identity. A held
 read from a closed session cannot overwrite a reopened session; current-session
 failures remain visible. Failure diagnostics retain only bounded status counts
 and a fixed availability enum.
+
+An older unlock failure, including a joined caller, must also preserve a newer
+open session while still rejecting its original callers. Failures belonging to
+the current unlock remain visible.
