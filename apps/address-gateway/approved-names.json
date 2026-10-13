@@ -1,4 +1,11 @@
 {
   "version": 1,
-  "names": []
+  "names": [
+    {
+      "name": "release-check-1013",
+      "ownerPubkey": "7821ccd67e51093e67751ad5fce9b9fc73fb545736dc29cf75f3f8dafcd5ecec",
+      "sparkIdentity": "03742b3712bbe0dabb7e4acf2b391c6270a0f2812bdcb9ea2dac3490ad301086a0",
+      "registration": true
+    }
+  ]
 }
