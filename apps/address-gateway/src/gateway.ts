@@ -349,12 +349,13 @@ async function proxy(
   if (!env.BREEZ_PROXY_SHARED_SECRET || !env.BREEZ_DOMAIN_API_KEY)
     return response("domain unavailable", 503)
   const source = new URL(request.url)
+  // A same-zone Route subrequest goes to the zone's DNS origin. Keep the
+  // custom domain in the URL so TLS SNI and Host both identify it at Breez.
   const upstream = new URL(
     source.pathname + source.search,
-    "https://breez.tips"
+    "https://conduit.cash"
   )
   const headers = new Headers({
-    Host: "conduit.cash",
     "X-Breez-Reverse-Proxy-Shared-Secret": env.BREEZ_PROXY_SHARED_SECRET,
     "X-Forwarded-For": request.headers.get("CF-Connecting-IP") ?? "",
   })
@@ -370,6 +371,7 @@ async function proxy(
     headers,
     body,
     redirect: "manual",
+    cache: "no-store",
     signal: AbortSignal.timeout(15_000),
   })
   if (result.status >= 300 && result.status < 400)

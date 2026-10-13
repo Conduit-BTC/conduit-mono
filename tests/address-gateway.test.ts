@@ -103,7 +103,7 @@ function fixture() {
     if (
       headers.get("X-Breez-Reverse-Proxy-Shared-Secret") !==
         env.BREEZ_PROXY_SHARED_SECRET ||
-      headers.get("Host") !== "conduit.cash"
+      url.origin !== "https://conduit.cash"
     )
       return Response.json("proxy required", { status: 403 })
     if (url.pathname.endsWith("/recover"))
@@ -915,11 +915,10 @@ describe("approved-name gateway", () => {
     const f = fixture(),
       signed = f.management("register")
     const direct = await f.fetcher(
-      "https://breez.tips/lnurlpay/" + f.identity,
+      "https://conduit.cash/lnurlpay/" + f.identity,
       {
         method: "POST",
         headers: {
-          Host: "conduit.cash",
           Authorization: `Bearer ${f.env.BREEZ_DOMAIN_API_KEY}`,
         },
         body: await signed.text(),

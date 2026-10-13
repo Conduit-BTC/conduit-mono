@@ -136,6 +136,13 @@ upstream qualification alone does not prove gateway deployment correctness.
 
 ## Deployment and rollback contract
 
+The gateway runs as a Cloudflare **Route** over the cash-domain DNS record,
+whose origin remains Breez. Its provider fetch uses `https://conduit.cash`,
+keeping TLS SNI and Host aligned. Cloudflare routes same-zone subrequests to
+the DNS origin rather than recursively invoking the Route. Do not replace this
+with a Worker Custom Domain or rely on overriding Host on a `breez.tips` URL.
+Validate the origin, TLS and receiving path before activating the Route.
+
 Production needs a dedicated D1 binding with real database ID and both migrations,
 exact application origins, Turnstile server validation for the request action,
 and the server-only Breez domain/proxy credentials. The deployment configuration
@@ -177,6 +184,7 @@ qualification.
 
 ## Sources
 
+- [Cloudflare Route origin subrequests](https://developers.cloudflare.com/workers/configuration/routing/routes/)
 - [Breez reverse proxy](https://sdk-doc-spark.breez.technology/guide/custom_domain.html)
 - [Breez signed lifecycle messages](https://github.com/breez/spark-sdk/blob/5ea587cd84f0757a40998d58b46342abde79ce54/crates/breez-sdk/lnurl-models/src/signed_message.rs)
 - [NIP-98 HTTP authentication](https://github.com/nostr-protocol/nips/blob/master/98.md)
