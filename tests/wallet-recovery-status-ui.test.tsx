@@ -3,11 +3,15 @@ import { renderToStaticMarkup } from "react-dom/server"
 import type { WalletDescriptor } from "@conduit/core/wallets"
 import type { AuthContextValue } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { Wallets } from "../packages/ui/src/components/Wallets"
+import {
+  Wallets,
+  WalletRecoveryNotice,
+} from "../packages/ui/src/components/Wallets"
 
 function surface(
   recoverySync: UseWalletsReturn["recoverySync"],
-  hasWallet = true
+  hasWallet = true,
+  recoveryDetails = true
 ) {
   const wallet: WalletDescriptor = {
     id: "wallet",
@@ -39,15 +43,26 @@ function surface(
     authGeneration: 1,
   } as AuthContextValue
   return renderToStaticMarkup(
-    <Wallets
-      auth={auth}
-      wallets={wallets}
-      formatSats={String}
-      renderAddressEditor={() => null}
-    />
+    recoveryDetails ? (
+      <WalletRecoveryNotice wallets={wallets} />
+    ) : (
+      <Wallets
+        auth={auth}
+        wallets={wallets}
+        formatSats={String}
+        renderAddressEditor={() => null}
+      />
+    )
   )
 }
 describe("shared Wallets recovery delivery wording", () => {
+  it("keeps routine backup disclosure in recovery details rather than the wallet card", () => {
+    const markup = surface("ready", true, false)
+    expect(markup).not.toContain("Encrypted relay recovery is confirmed.")
+    expect(markup).not.toContain("Save your phrase, account number and network")
+    expect(markup).toContain("Sync encrypted wallet recovery")
+    expect(markup).toContain("Balance unavailable")
+  })
   for (const status of ["idle", "checking", "pending", "blocked"] as const) {
     it(`${status} never claims confirmed relay storage`, () => {
       const markup = surface(status)

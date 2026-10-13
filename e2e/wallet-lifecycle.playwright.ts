@@ -270,11 +270,15 @@ for (const app of ["market", "merchant"] as const) {
           label: "Legacy fence",
         })
       await expect(signedOutPage).toHaveTitle(/Wallets/)
-      for (const name of ["Add a wallet", "Import wallet"]) {
+      await signedOutPage
+        .getByRole("button", { name: "Add wallet", exact: true })
+        .click()
+      for (const name of ["Create a wallet", "Import an existing wallet"]) {
         await expect(
-          signedOutPage.getByRole("button", { name, exact: true })
+          signedOutPage.getByRole("menuitem", { name, exact: true })
         ).toBeDisabled()
       }
+      await signedOutPage.keyboard.press("Escape")
       await signedOutPage
         .getByRole("button", { name: "Open wallet", exact: true })
         .click()
@@ -503,14 +507,11 @@ for (const unavailable of ["signet", "coordination"] as const) {
           spark: "unavailable",
           externalStatus: "ready",
         })
-      await page
-        .getByText("External wallet management", { exact: true })
-        .click()
       await expect(
-        page.getByText("External capability", { exact: true })
+        page.getByRole("tab", { name: "External capability", exact: true })
       ).toBeVisible()
       await expect(
-        page.getByText("Legacy fence", { exact: true })
+        page.getByRole("tab", { name: "Legacy fence", exact: true })
       ).toBeVisible()
     } finally {
       await wallet.close()
@@ -1062,9 +1063,8 @@ test("Merchant retires the verified legacy NWC owner and Disconnect survives rel
         legacyConnection: false,
         legacyTip: false,
       })
-    await page.getByText("External wallet management", { exact: true }).click()
     await expect(
-      page.getByRole("heading", { name: "External wallets", exact: true })
+      page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
     ).toBeVisible()
     await page.getByRole("button", { name: /^Manage / }).click()
     await page

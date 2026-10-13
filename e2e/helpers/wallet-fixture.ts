@@ -194,18 +194,23 @@ export async function installControlledWallet(
   )
 }
 
-/** Use the visible wallet actions and secondary external-wallet controls. */
+/** Open the shared Add wallet menu without changing setup behavior. */
 export async function openWalletSetup(
   page: Page,
   name: "Create wallet" | "Import wallet" | "Connect wallet"
 ) {
-  const button = page.getByRole("button", {
-    name: name === "Create wallet" ? "Add a wallet" : name,
-    exact: true,
-  })
-  if (name === "Connect wallet" && !(await button.isVisible()))
-    await page.getByText("External wallet management", { exact: true }).click()
-  await button.click()
+  await page.getByRole("button", { name: "Add wallet", exact: true }).click()
+  await page
+    .getByRole("menuitem", {
+      name:
+        name === "Create wallet"
+          ? "Create a wallet"
+          : name === "Import wallet"
+            ? "Import an existing wallet"
+            : "Connect an external wallet",
+      exact: true,
+    })
+    .click()
 }
 
 /** Observe the real route controller without adding a production test API. */

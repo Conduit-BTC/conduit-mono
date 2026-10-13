@@ -41,7 +41,9 @@ async function inspect(page: Page, info: TestInfo, name: string) {
     path: join(directory, `${info.project.name}-${name}.png`),
     fullPage: true,
     mask: [
-      page.locator("input,textarea,.font-mono,.tabular-nums"),
+      page.locator(
+        "input,textarea,.font-mono,.tabular-nums,[data-wallet-address]"
+      ),
       page.getByRole("button", { name: /Open.*account menu/ }),
     ],
   })
@@ -199,29 +201,18 @@ for (const theme of ["day-market", "night-market"]) {
         })
         mark("wallet_reload")
         await page.reload()
-        await page
-          .getByText("External wallet management", { exact: true })
-          .click()
         mark("wallet_ready")
-        await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+        await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
         mark("wallet_contrast")
-        const success = page
-          .getByText("Ready", { exact: true })
-          .locator("..")
-          .locator("svg")
-        const color = await success.evaluate((el) => getComputedStyle(el).color)
-        expect(color).not.toBe(
-          await page.locator("h1").evaluate((el) => getComputedStyle(el).color)
+        await expectReadable(
+          page.getByRole("heading", { name: "Wallets", level: 1, exact: true }),
+          info,
+          "wallets-heading-contrast"
         )
         await expectReadable(
-          page.getByRole("heading", { name: "My wallets", exact: true }),
+          page.locator('article[data-wallet-state="ready"] h3'),
           info,
-          "wallets-owned-contrast"
-        )
-        await expectReadable(
-          page.getByRole("heading", { name: "External wallets", exact: true }),
-          info,
-          "wallets-external-contrast"
+          "wallet-name-contrast"
         )
         await inspect(page, info, `wallets-ready-${theme}-${width}`)
         mark("network_navigate")

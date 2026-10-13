@@ -230,7 +230,7 @@ test("failed removal survives reload and retries the retained event before exclu
     await expect(page.getByRole("button", { name: /^Manage / })).toHaveCount(1)
     expect(await localSparkWalletIds(page)).toEqual([walletId])
     await page
-      .getByRole("button", { name: "Sync wallet recovery", exact: true })
+      .getByRole("button", { name: "Retry encrypted wallet sync", exact: true })
       .click()
     await expect(page.getByRole("button", { name: /^Manage / })).toHaveCount(0)
     const registryEvents = await readTestRelayEvents({

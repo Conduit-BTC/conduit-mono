@@ -22,6 +22,7 @@
   },
   "include": [
     "wallet-sign-in.playwright.ts",
+    "wallet-layout.playwright.ts",
     "wallet-addy-bootstrap.playwright.ts",
     "wallet-cross-app.playwright.ts",
     "wallet-reload.playwright.ts",
