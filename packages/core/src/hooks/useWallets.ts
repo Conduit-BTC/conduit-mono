@@ -20,8 +20,13 @@ import type { AccountSignerOperationOptions } from "../protocol/nostr-event-sign
 import { SessionSignerError } from "../protocol/session-signer"
 import { DexieSparkRecoveryStore } from "../wallets/spark-recovery-store"
 import {
+  diagnoseRecoveryDelivery,
+  type RecoveryDeliveryDiagnosis,
+} from "../wallets/spark-recovery-diagnostics"
+import {
   accountRegistryReadiness,
   recoveryReadiness,
+  type SparkRecoveryDiscovery,
 } from "../wallets/spark-recovery-service"
 import { sparkWalletRegistryDTag } from "../wallets/spark-recovery-address"
 import {
@@ -160,7 +165,21 @@ export interface UseWalletsReturn {
   connectedWallets: WalletDescriptor[]
   runtime: Record<string, WalletRuntimeState>
   recoverySyncByWallet: Record<string, "ready" | "pending">
+  recoveryDiagnosisByWallet: Record<
+    string,
+    { backup: RecoveryDeliveryDiagnosis; primary: RecoveryDeliveryDiagnosis }
+  >
   mainWalletSync: "ready" | "pending" | null
+  mainWalletDiagnosis: {
+    choice: RecoveryDeliveryDiagnosis
+    registry: RecoveryDeliveryDiagnosis | null
+  } | null
+  recoveryDiscoveryDiagnosis: {
+    coverage: SparkRecoveryDiscovery["coverage"]
+    state: SparkRecoveryDiscovery["state"]
+    invalidEvidence: boolean
+    registryMembershipReady: boolean
+  } | null
   nwcSnapshots: Record<string, NwcSessionSnapshot>
   loading: boolean
   hasPasswordWallets: boolean
@@ -251,6 +270,17 @@ export interface UseWalletsReturn {
   retryInitialization(): Promise<void>
 }
 
+function summarizeRecoveryDiscovery(
+  discovery: SparkRecoveryDiscovery
+): NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]> {
+  return {
+    coverage: discovery.coverage,
+    state: discovery.state,
+    invalidEvidence: discovery.invalidCount > 0 || discovery.unresolvedObserved,
+    registryMembershipReady: discovery.registryMembershipReady === true,
+  }
+}
+
 const walletInitialization = new WalletInitializationCoordinator()
 
 export function useWallets(
@@ -284,8 +314,15 @@ export function useWallets(
   const [recoverySyncByWallet, setRecoverySyncByWallet] = useState<
     UseWalletsReturn["recoverySyncByWallet"]
   >({})
+  const [recoveryDiagnosisByWallet, setRecoveryDiagnosisByWallet] = useState<
+    UseWalletsReturn["recoveryDiagnosisByWallet"]
+  >({})
   const [mainWalletSync, setMainWalletSync] =
     useState<UseWalletsReturn["mainWalletSync"]>(null)
+  const [mainWalletDiagnosis, setMainWalletDiagnosis] =
+    useState<UseWalletsReturn["mainWalletDiagnosis"]>(null)
+  const [recoveryDiscoveryDiagnosis, setRecoveryDiscoveryDiagnosis] =
+    useState<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>(null)
   const [nwcSnapshots, setNwcSnapshots] = useState<
     Record<string, NwcSessionSnapshot>
   >({})
@@ -396,6 +433,7 @@ export function useWallets(
             (r) => r.event.id === primaryEventId
           )
           const sync: UseWalletsReturn["recoverySyncByWallet"] = {}
+          const diagnoses: UseWalletsReturn["recoveryDiagnosisByWallet"] = {}
           const mainEventId =
             signer?.pubkey === ownerPubkey && configuration.status === "ready"
               ? getAccountSparkRecovery(signer).getVerifiedMainChoiceEventId(
@@ -439,6 +477,10 @@ export function useWallets(
               recoveryReadiness(primary).ready
                 ? "ready"
                 : "pending"
+            diagnoses[wallet.id] = {
+              backup: diagnoseRecoveryDelivery(backup),
+              primary: diagnoseRecoveryDelivery(primary),
+            }
           }
           return {
             nextWallets,
@@ -446,12 +488,21 @@ export function useWallets(
             hasPasswordWallets,
             ownerPubkey,
             sync,
+            diagnoses,
             mainSync: main
               ? recoveryReadiness(main).ready &&
                 (!registryRecord ||
                   accountRegistryReadiness(registryRecord).ready)
                 ? ("ready" as const)
                 : ("pending" as const)
+              : null,
+            mainDiagnosis: main
+              ? {
+                  choice: diagnoseRecoveryDelivery(main),
+                  registry: registryRecord
+                    ? diagnoseRecoveryDelivery(registryRecord, "all_targets")
+                    : null,
+                }
               : null,
           }
         },
@@ -461,7 +512,9 @@ export function useWallets(
           hasPasswordWallets,
           ownerPubkey,
           sync,
+          diagnoses,
           mainSync,
+          mainDiagnosis,
         }) => {
           if (
             !enabledRef.current ||
@@ -481,7 +534,9 @@ export function useWallets(
           setLoadedOwner(ownerPubkey)
           setHasPasswordWallets(hasPasswordWallets)
           setRecoverySyncByWallet(sync)
+          setRecoveryDiagnosisByWallet(diagnoses)
           setMainWalletSync(mainSync)
+          setMainWalletDiagnosis(mainDiagnosis)
           const nextNwcWalletIds = nextWallets
             .filter((wallet) => wallet.providerId === "nwc")
             .map((wallet) => wallet.id)
@@ -973,6 +1028,7 @@ export function useWallets(
       const service = getAccountSparkRecovery(signer)
       const network = getSparkWalletNetwork()
       let discovery = await service.discover(false, network, options)
+      setRecoveryDiscoveryDiagnosis(summarizeRecoveryDiscovery(discovery))
       const bootstrap = await bootstrapLegacyAccountWalletRegistry({
         signer,
         discovery,
@@ -987,6 +1043,7 @@ export function useWallets(
         return { discovery, restored: [] }
       }
       discovery = bootstrap.discovery
+      setRecoveryDiscoveryDiagnosis(summarizeRecoveryDiscovery(discovery))
       await reconcileAccountWalletRegistryMembership({
         signer,
         discovery,
@@ -1005,6 +1062,7 @@ export function useWallets(
           )
           if (delivered.ready) {
             discovery = await service.discover(false, network, options)
+            setRecoveryDiscoveryDiagnosis(summarizeRecoveryDiscovery(discovery))
             await reconcileAccountWalletRegistryMembership({
               signer,
               discovery,
@@ -1129,6 +1187,7 @@ export function useWallets(
         seedExisting: publishExisting,
       })
       discovery = nameSync.discovery
+      setRecoveryDiscoveryDiagnosis(summarizeRecoveryDiscovery(discovery))
       setNameSync(
         !discovery.registry ? "idle" : nameSync.ready ? "ready" : "pending"
       )
@@ -1442,6 +1501,7 @@ export function useWallets(
 
   useEffect(() => {
     setRecoverySync("idle")
+    setRecoveryDiscoveryDiagnosis(null)
     setNameSync("idle")
     setRecoverySyncAttempt(null)
     const signer = getAccountSigner()
@@ -2347,7 +2407,13 @@ export function useWallets(
     nameSync,
     retryWalletNames,
     recoverySyncByWallet,
+    recoveryDiagnosisByWallet:
+      loadedOwner === auth.accountPubkey ? recoveryDiagnosisByWallet : {},
     mainWalletSync,
+    mainWalletDiagnosis:
+      loadedOwner === auth.accountPubkey ? mainWalletDiagnosis : null,
+    recoveryDiscoveryDiagnosis:
+      loadedOwner === auth.accountPubkey ? recoveryDiscoveryDiagnosis : null,
     retryRecovery,
     signerUnlockSupported: getAccountSigner()?.capabilities.nip44 === true,
     sparkAvailability: getSparkConfiguration(),

@@ -591,6 +591,125 @@ type WalletDialogAction = (
   trigger: HTMLButtonElement
 ) => void | Promise<void>
 
+const recoveryIssueText: Record<
+  NonNullable<
+    UseWalletsReturn["mainWalletDiagnosis"]
+  >["choice"]["issues"][number],
+  string
+> = {
+  missing_local_record: "no local signed record",
+  awaiting_publish: "relay acceptance pending",
+  auth_required: "relay authentication required",
+  rejected: "relay rejected the write",
+  timed_out: "relay write timed out",
+  policy_blocked: "relay policy blocked the write",
+  cancelled: "write was interrupted",
+  publish_error: "relay write failed",
+  read_not_queried: "exact readback has not run",
+  read_absent: "exact readback did not find the record",
+  read_unavailable: "exact readback was unavailable",
+  readback_stale: "last confirmed readback is stale",
+  insufficient_copies: "not enough confirmed copies",
+}
+const recoveryCoverageText: Record<
+  NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>["coverage"],
+  string
+> = {
+  complete: "all selected relays answered",
+  partial: "some relay checks did not complete",
+  unavailable: "relay checks were unavailable",
+}
+const recoveryStateText: Record<
+  NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>["state"],
+  string
+> = {
+  absent_within_scope: "no matching backup was found in this check",
+  recoverable: "a matching backup was found",
+  conflict: "recovery records conflict",
+  unresolved: "recovery evidence is incomplete",
+}
+
+function RecoveryDeliveryDetail({
+  label,
+  diagnosis,
+}: {
+  label: string
+  diagnosis: NonNullable<UseWalletsReturn["mainWalletDiagnosis"]>["choice"]
+}) {
+  if (diagnosis.ready) return null
+  return (
+    <li>
+      {label}:{" "}
+      {diagnosis.issues.map((issue) => recoveryIssueText[issue]).join("; ")}
+      {diagnosis.targetCount > 0 &&
+        ` (${diagnosis.confirmedTargets}/${diagnosis.targetCount} fresh target readbacks; ${diagnosis.independentCopies} independent copies)`}
+    </li>
+  )
+}
+
+function RecoveryDiagnosisDetails({ wallets }: { wallets: UseWalletsReturn }) {
+  const pendingWallets = wallets.wallets
+    .filter((wallet) => wallet.providerId === "spark")
+    .map((wallet) => wallets.recoveryDiagnosisByWallet[wallet.id])
+    .filter((diagnosis) => diagnosis && !diagnosis.backup.ready)
+  const primary = Object.values(wallets.recoveryDiagnosisByWallet)[0]?.primary
+  const main = wallets.mainWalletDiagnosis
+  const discovery = wallets.recoveryDiscoveryDiagnosis
+  if (
+    !pendingWallets.length &&
+    (primary?.ready ?? true) &&
+    (main?.choice.ready ?? true) &&
+    (main?.registry?.ready ?? true) &&
+    wallets.recoverySync !== "pending" &&
+    wallets.recoverySync !== "blocked"
+  )
+    return null
+  return (
+    <details className="text-sm text-[var(--text-secondary)]">
+      <summary className="cursor-pointer">Recovery sync details</summary>
+      <div className="grid gap-2 pt-2">
+        {discovery && (
+          <p>
+            Relay checks: {recoveryCoverageText[discovery.coverage]}. Result:{" "}
+            {recoveryStateText[discovery.state]}.
+            {discovery.invalidEvidence &&
+              " Some signed recovery evidence could not be interpreted."}
+            {!discovery.registryMembershipReady &&
+              " Account membership is not confirmed."}
+          </p>
+        )}
+        <ul className="list-disc pl-5">
+          {pendingWallets.map((diagnosis, index) => (
+            <RecoveryDeliveryDetail
+              key={index}
+              label={`Wallet ${index + 1} backup`}
+              diagnosis={diagnosis.backup}
+            />
+          ))}
+          {primary && (
+            <RecoveryDeliveryDetail
+              label="Primary choice"
+              diagnosis={primary}
+            />
+          )}
+          {main && (
+            <RecoveryDeliveryDetail
+              label="Main choice"
+              diagnosis={main.choice}
+            />
+          )}
+          {main?.registry && (
+            <RecoveryDeliveryDetail
+              label="Account membership"
+              diagnosis={main.registry}
+            />
+          )}
+        </ul>
+      </div>
+    </details>
+  )
+}
+
 export function WalletRecoveryNotice({
   wallets,
 }: {
@@ -692,6 +811,7 @@ function RecoverySyncNotice({
           </p>
         </>
       )}
+      <RecoveryDiagnosisDetails wallets={wallets} />
     </div>
   )
 }

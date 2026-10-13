@@ -10,6 +10,7 @@ import {
   type NostrKeySigner,
 } from "../packages/core/src/protocol/nostr-event-signer"
 import { DexieSparkRecoveryStore } from "../packages/core/src/wallets/spark-recovery-store"
+import { diagnoseRecoveryDelivery } from "../packages/core/src/wallets/spark-recovery-diagnostics"
 import {
   SparkRecoveryService,
   SPARK_RECOVERY_RENDEZVOUS,
@@ -773,6 +774,52 @@ describe("signer-backed Spark recovery composed foundations", () => {
     expect(
       recoveryReadiness((await f.store.load(f.owner)).records[0]).ready
     ).toBe(true)
+  })
+  it("explains pending delivery without exposing relay or signed-event data", async () => {
+    const f = fixture()
+    expect(diagnoseRecoveryDelivery(undefined).issues).toEqual([
+      "missing_local_record",
+    ])
+    await f.service().prepare(bundle())
+    const record = (await f.store.load(f.owner)).records[0]
+    record.delivery[0].status = "auth_required"
+    record.delivery[1] = {
+      ...record.delivery[1],
+      status: "acked",
+      accepted: true,
+      lastRead: "unavailable",
+      checkedAt: Date.now(),
+    }
+    record.delivery[2] = {
+      ...record.delivery[2],
+      status: "acked",
+      accepted: true,
+      readBack: true,
+      lastRead: "present",
+      checkedAt: Date.now() - 301_000,
+    }
+    const pending = diagnoseRecoveryDelivery(record)
+    expect(pending.ready).toBe(false)
+    expect(pending.confirmedTargets).toBe(0)
+    expect(pending.issues).toContain("auth_required")
+    expect(pending.issues).toContain("read_unavailable")
+    expect(pending.issues).toContain("readback_stale")
+    expect(JSON.stringify(pending)).not.toContain(f.owner)
+    expect(JSON.stringify(pending)).not.toContain(record.event.id)
+    for (const delivery of record.delivery) {
+      delivery.status = "acked"
+      delivery.accepted = true
+      delivery.readBack = true
+      delivery.lastRead = "present"
+      delivery.checkedAt = Date.now()
+    }
+    expect(diagnoseRecoveryDelivery(record).ready).toBe(true)
+    record.delivery[2].lastRead = "unavailable"
+    const registry = diagnoseRecoveryDelivery(record, "all_targets")
+    expect(registry.ready).toBe(false)
+    expect(registry.independentCopies).toBe(2)
+    expect(registry.confirmedTargets).toBe(2)
+    expect(registry.issues).toContain("read_unavailable")
   })
   it("validates signatures before decrypting and validates owner/address/checksum/unknown fields", async () => {
     const f = fixture()
