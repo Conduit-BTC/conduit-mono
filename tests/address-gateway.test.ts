@@ -469,7 +469,8 @@ describe("approved-name gateway", () => {
     f.env.ADDRESS_REQUESTS.prepare = (sql) => {
       const statement = originalPrepare(sql)
       if (
-        sql === "SELECT request_hash FROM name_requests WHERE request_id = ?"
+        sql ===
+        "SELECT request_hash, signed_payload FROM name_requests WHERE request_id = ?"
       ) {
         const originalFirst = statement.first.bind(statement)
         statement.first = async <T>() => {
@@ -972,7 +973,12 @@ test("durable request retries retain original proofs after expiry and require fr
   const payload = await original.text()
   const originalProof = original.headers.get("Authorization")!.slice(6)
   const later = f.now + 86400
-  const make = (path: string, key = f.accountSecret, proof = originalProof) => {
+  const make = (
+    path: string,
+    key = f.accountSecret,
+    proof = originalProof,
+    body = payload
+  ) => {
     const event = finalizeEvent(
       {
         kind: 27235,
@@ -981,14 +987,14 @@ test("durable request retries retain original proofs after expiry and require fr
         tags: [
           ["u", "https://conduit.cash" + path],
           ["method", "POST"],
-          ["payload", addressRequestHash(payload)],
+          ["payload", addressRequestHash(body)],
         ],
       },
       key
     )
     return new Request("https://conduit.cash" + path, {
       method: "POST",
-      body: payload,
+      body,
       headers: {
         Origin: "https://shop.conduit.market",
         Authorization: `Nostr ${btoa(JSON.stringify(event))}`,
@@ -1012,6 +1018,17 @@ test("durable request retries retain original proofs after expiry and require fr
     (
       await handleAddressGateway(
         make(ADDRESS_REQUEST_PATH, f.accountSecret, btoa("{}")),
+        f.env,
+        [],
+        f.fetcher,
+        later
+      )
+    ).status
+  ).toBe(401)
+  expect(
+    (
+      await handleAddressGateway(
+        make(ADDRESS_REQUEST_PATH, f.accountSecret, ""),
         f.env,
         [],
         f.fetcher,
@@ -1050,6 +1067,63 @@ test("durable request retries retain original proofs after expiry and require fr
     ).status
   ).toBe(200)
   expect(f.db.query("SELECT * FROM name_requests").get()).toEqual(row)
+  const originalValue = JSON.parse(payload)
+  const alteredSignature = bytesToHex(
+    secp256k1.sign(
+      sha256(
+        new TextEncoder().encode(addressNameRequestMessage(originalValue))
+      ),
+      f.walletSecret,
+      {
+        prehash: false,
+        format: "der",
+        extraEntropy: new Uint8Array(32).fill(1),
+      }
+    )
+  )
+  expect(alteredSignature).not.toBe(originalValue.walletSignature)
+  const changedRequests = [
+    { ...originalValue, note: "Different reviewer note" },
+    { ...originalValue, timestamp: f.now + 30 },
+    { ...originalValue, walletSignature: alteredSignature },
+  ]
+  const changedBodies = changedRequests.map((changed) => {
+    if (changed.walletSignature === originalValue.walletSignature)
+      changed.walletSignature = f.signatures(addressNameRequestMessage(changed))
+    return addressNameRequestPayload(changed)
+  })
+  changedBodies.push(
+    JSON.stringify(Object.fromEntries(Object.entries(originalValue).reverse()))
+  )
+  for (const body of changedBodies) {
+    const changed = JSON.parse(body)
+    const proof = finalizeEvent(
+      {
+        kind: 27235,
+        content: "",
+        created_at: changed.timestamp,
+        tags: [
+          ["u", `https://conduit.cash${ADDRESS_REQUEST_PATH}`],
+          ["method", "POST"],
+          ["payload", addressRequestHash(body)],
+        ],
+      },
+      f.accountSecret
+    )
+    for (const path of [ADDRESS_REQUEST_PATH, `${ADDRESS_REQUEST_PATH}/status`])
+      expect(
+        (
+          await handleAddressGateway(
+            make(path, f.accountSecret, btoa(JSON.stringify(proof)), body),
+            f.env,
+            [],
+            f.fetcher,
+            later
+          )
+        ).status
+      ).toBe(409)
+  }
+  expect(f.db.query("SELECT * FROM name_requests").get()).toEqual(row)
   const result = await handleAddressGateway(
     make(ADDRESS_REQUEST_PATH + "/status"),
     f.env,
@@ -1058,6 +1132,13 @@ test("durable request retries retain original proofs after expiry and require fr
     later
   )
   expect(await result.json()).toEqual({ status: "approved" })
+  const legacyStatus = await f.handle(
+    f.nameRequest(`${ADDRESS_REQUEST_PATH}/status`, {
+      note: "Legacy status lookup",
+    }),
+    []
+  )
+  expect(await legacyStatus.json()).toEqual({ status: "received" })
   const stale = make(ADDRESS_REQUEST_PATH + "/status")
   expect(
     (await handleAddressGateway(stale, f.env, [], f.fetcher, later + 120))

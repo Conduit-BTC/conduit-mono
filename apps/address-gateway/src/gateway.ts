@@ -161,8 +161,9 @@ async function nameRequest(
   const value = JSON.parse(raw) as SignedAddressNameRequest
   let event = decodeAccountProof(request)
   const original = request.headers.get("X-Address-Request-Proof")
-  if (original) {
+  if (original !== null) {
     if (
+      !original ||
       original.length > 5500 ||
       !validManagementAccountProof(request, raw, value.ownerPubkey, now)
     )
@@ -179,8 +180,8 @@ async function nameRequest(
     !verifyAddressRequestAuthority(
       value,
       event,
-      original ? ADDRESS_REQUEST_PATH : path,
-      original ? value.timestamp : now,
+      original !== null ? ADDRESS_REQUEST_PATH : path,
+      original !== null ? value.timestamp : now,
       new URL(request.url).origin,
       raw
     )
@@ -195,7 +196,7 @@ async function nameRequest(
     ])
   )
   const previous = await env.ADDRESS_REQUESTS.prepare(
-    "SELECT owner_pubkey, spark_identity, desired_name, request_hash, status FROM name_requests WHERE request_id = ?"
+    "SELECT owner_pubkey, spark_identity, desired_name, request_hash, signed_payload, status FROM name_requests WHERE request_id = ?"
   )
     .bind(value.requestId)
     .first<{
@@ -203,6 +204,7 @@ async function nameRequest(
       spark_identity: string
       desired_name: string
       request_hash: string
+      signed_payload: string
       status: string
     }>()
   if (
@@ -210,6 +212,7 @@ async function nameRequest(
     (previous.owner_pubkey !== value.ownerPubkey ||
       previous.spark_identity !== value.sparkIdentity ||
       previous.desired_name !== value.desiredName ||
+      (original !== null && previous.signed_payload !== raw) ||
       (!path.endsWith("/status") && previous.request_hash !== hash))
   )
     return response({ status: "invalid" }, 409)
@@ -270,18 +273,19 @@ async function nameRequest(
       value.note,
       hash,
       raw,
-      JSON.stringify(original ? { version: 2, event } : event),
+      JSON.stringify(original !== null ? { version: 2, event } : event),
       value.walletSignature,
       now
     )
     .run()
   if (!result.success) return response({ status: "unavailable" }, 503)
   const saved = await env.ADDRESS_REQUESTS.prepare(
-    "SELECT request_hash FROM name_requests WHERE request_id = ?"
+    "SELECT request_hash, signed_payload FROM name_requests WHERE request_id = ?"
   )
     .bind(value.requestId)
-    .first<{ request_hash: string }>()
-  return saved?.request_hash === hash
+    .first<{ request_hash: string; signed_payload: string }>()
+  return saved?.request_hash === hash &&
+    (original === null || saved.signed_payload === raw)
     ? response({ status: "received" })
     : response({ status: "invalid" }, 409)
 }
