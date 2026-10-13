@@ -1,16 +1,19 @@
 # Quantum Router deployment capability
 
-The code-owned mainnet Pages preview and production profiles keep Quantum
-Router inactive until their ordinary receiving endpoints are qualified and
-activation is explicitly approved. New preparation uses the shared
+The code-owned mainnet Pages preview profile enables Quantum Router for
+maintainer-approved funded acceptance using the qualified ordinary-private
+Breez receiver descriptor. Production remains inactive with empty receiving
+and pricing trust; preview qualification does not authorize production.
+New preparation uses the shared
 `isQuantumRouterEnabled()` admission capability and requires execution to be
 enabled as well. Existing bound-plan actions use the separate compiled
 `isQuantumRouterExecutionEnabled()` capability. Disabling new admission need
 not stop recovery of an already approved plan; explicitly disabling execution
 pauses funding disclosure/payment, wallet claims, payout preparation/sending
 and retirement for that plan. Neither capability replaces its exact evidence,
-approval, current-session or frozen timing requirements. Current managed
-profiles keep both settings false; this split does not activate routing.
+approval, current-session or frozen timing requirements. Preview enables both
+settings; production and Signet staging keep both false. The capabilities do
+not themselves establish successful funded or device acceptance.
 
 Authenticated existing-order settlement projections and pinned query-only
 observation remain available independently of both settings. They retain paid
@@ -61,6 +64,15 @@ client; this does not require inferred abandonment or add an always-on executor.
 Funding is not commerce settlement, and commerce settlement is separate from
 the platform fee. Missing receiving-origin evidence and uncertain attempts
 retain an attention state without replay.
+
+Merchant recovery normally continues eligible loaded orders automatically while
+the current session is active. A paused order also offers an explicit
+`Continue this order` action that authorizes only that selected order through
+the existing recovery worker. Changing the selection, pausing, or replacing
+the session revokes that scoped authority; it does not authorize other loaded
+orders. `Finish recovery` continues evidence-gated cleanup after payouts are
+verified. Buyer and Merchant use the same randomized, reduced-motion-aware
+loading presentation, without treating animation as payment evidence.
 
 ## Local exceptions remain separate
 
@@ -196,7 +208,9 @@ current-session guards and public dispatch policy checks.
 
 Automated capability and synthetic payment fixtures do not establish live
 provider settlement, signer/device behavior or recovery liveness. Those remain
-maintainer-owned funded validation before release sign-off. Current source-only
-receiving defaults and production activation are inactive. Preview pricing
-still requires current-source service qualification; accepted live receivers
-and explicit routing activation are separate acceptance prerequisites.
+maintainer-owned funded validation before release sign-off. The approved preview
+pricing trust and ordinary-private Breez receiver descriptor are configured,
+and both hosted preview apps expose enabled routing and execution. Exact-head
+readback, real recipient settlement, claimed native collection, safe retirement
+and physical-device recovery remain separate acceptance evidence. Production
+and Signet staging are not activated by these preview settings.

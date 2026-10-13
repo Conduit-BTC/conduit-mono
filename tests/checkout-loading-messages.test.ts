@@ -1,6 +1,11 @@
 import { expect, it } from "bun:test"
 
 import { shuffleLoadingMessages } from "../apps/market/src/components/checkout-loading-messages"
+import { shuffleLoadingMessages as sharedShuffleLoadingMessages } from "@conduit/ui"
+
+it("keeps Market and Merchant on one shared loading-message shuffle", () => {
+  expect(shuffleLoadingMessages).toBe(sharedShuffleLoadingMessages)
+})
 
 it("exhausts every message once before the loading bag repeats", () => {
   const messages = Object.freeze(["first", "second", "third", "fourth"])

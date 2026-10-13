@@ -17,6 +17,134 @@ const base = {
 }
 
 describe("Merchant order payment presentation", () => {
+  it("shows playful indeterminate progress only while this order is automatically processing", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        processingScope="order"
+        automaticProcessing
+        projection={{
+          creditVerified: true,
+          merchantVerified: false,
+          commerceVerified: false,
+          feePending: true,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Completing this order…")
+    expect(html).toContain('role="progressbar"')
+    expect(html).not.toContain("aria-valuenow")
+    expect(html).toContain('aria-hidden="true"')
+    expect(html).toContain("motion-reduce:animate-none")
+    expect(html).toContain("only this order")
+    expect(html).not.toContain("all loaded orders")
+  })
+
+  it("offers only this order's remaining recovery after all its payments are verified", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        paused
+        processingScope="order"
+        recoveryPending
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: false,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Payment verified")
+    expect(html).toContain("Continue with fulfillment")
+    expect(html).toContain("Finish recovery")
+    expect(html).toContain("only this order")
+    expect(html).not.toContain("Resume")
+    expect(html).not.toContain("all loaded orders")
+    expect(html).not.toContain('role="progressbar"')
+    expect(html).not.toContain("Payment needs attention")
+  })
+
+  it.each([false, true])(
+    "continues the selected order without globally resuming pending payment when fee-only is %s",
+    (commerceVerified) => {
+      const html = renderToStaticMarkup(
+        <CheckoutSparkMerchantPaymentCard
+          {...base}
+          paused
+          processingScope="order"
+          recoveryPending
+          projection={{
+            creditVerified: true,
+            merchantVerified: commerceVerified,
+            commerceVerified,
+            feePending: true,
+            recipientUnverified: false,
+          }}
+        />
+      )
+      expect(html).toContain("Continue this order")
+      expect(html).toContain("only this order")
+      expect(html).not.toContain("Resume")
+      expect(html).not.toContain("all loaded orders")
+      expect(html).not.toContain("Finish recovery")
+      expect(html).not.toContain('role="progressbar"')
+    }
+  )
+
+  it.each(["paused", "attention", "complete", "inactive"] as const)(
+    "never shows playful active progress for a %s order",
+    (scenario) => {
+      const complete = scenario === "complete"
+      const html = renderToStaticMarkup(
+        <CheckoutSparkMerchantPaymentCard
+          {...base}
+          processingScope="order"
+          automaticProcessing={scenario !== "inactive"}
+          paused={scenario === "paused"}
+          outcome={scenario === "attention" ? "needs_attention" : undefined}
+          projection={{
+            creditVerified: true,
+            merchantVerified: complete,
+            commerceVerified: complete,
+            feePending: !complete,
+            recipientUnverified: false,
+          }}
+        />
+      )
+      expect(html).not.toContain('role="progressbar"')
+      expect(html).not.toContain("Completing this order…")
+      expect(html).not.toContain("Finishing recovery…")
+    }
+  )
+
+  it("shows recovery progress without pretending that verified commerce is still unpaid", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        processingScope="order"
+        recoveryPending
+        automaticProcessing
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: false,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Payment verified")
+    expect(html).toContain("Continue with fulfillment")
+    expect(html).toContain("Finishing recovery…")
+    expect(html).toContain('role="progressbar"')
+    expect(html).not.toContain("aria-valuenow")
+    expect(html).not.toContain("Completing this order…")
+    expect(html).not.toContain("Payment needs attention")
+  })
+
   it("does not call a missing payment record unpaid or verified", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard {...base} />

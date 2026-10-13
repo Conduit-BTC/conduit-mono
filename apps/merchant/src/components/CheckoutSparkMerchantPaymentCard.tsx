@@ -3,7 +3,7 @@ import type {
   CheckoutSparkMerchantSettlementProjection,
   MerchantCheckoutSparkReconciliationStatus,
 } from "@conduit/core"
-import { Button } from "@conduit/ui"
+import { Button, CheckoutPaymentProgress } from "@conduit/ui"
 
 interface CheckoutSparkMerchantPaymentCardProps {
   projection: CheckoutSparkMerchantSettlementProjection | null
@@ -13,6 +13,9 @@ interface CheckoutSparkMerchantPaymentCardProps {
   settlementReadUnavailable?: boolean
   checking: boolean
   paused: boolean
+  processingScope?: "order" | "all"
+  recoveryPending?: boolean
+  automaticProcessing?: boolean
   canContinue: boolean
   transitioning: boolean
   handoffAt: number
@@ -33,6 +36,9 @@ export function CheckoutSparkMerchantPaymentCard({
   settlementReadUnavailable = false,
   checking,
   paused,
+  processingScope = "all",
+  recoveryPending = false,
+  automaticProcessing = false,
   canContinue,
   transitioning,
   handoffAt,
@@ -67,6 +73,10 @@ export function CheckoutSparkMerchantPaymentCard({
   const showPaymentDetails =
     attention ||
     (paused && (coordinationFeeUnresolved || (!paid && Boolean(children))))
+  const processingPending =
+    !paid || coordinationFeeUnresolved || recoveryPending
+  const showAutomaticProgress =
+    automaticProcessing && processingPending && !paused && !attention
   const waitingForHandoff = nowMs < handoffAt
   const label = paid
     ? "Payment verified"
@@ -116,7 +126,7 @@ export function CheckoutSparkMerchantPaymentCard({
             {description}
           </p>
         </div>
-        {(!paid || coordinationFeeUnresolved) && canContinue && (
+        {processingPending && canContinue && (
           <Button
             type="button"
             variant="outline"
@@ -127,23 +137,40 @@ export function CheckoutSparkMerchantPaymentCard({
             {transitioning
               ? "Finishing current check…"
               : paused
-                ? coordinationFeeUnresolved
-                  ? "Resume coordination fee"
-                  : "Resume payment processing"
+                ? processingScope === "order"
+                  ? paid && !coordinationFeeUnresolved
+                    ? "Finish recovery"
+                    : "Continue this order"
+                  : coordinationFeeUnresolved
+                    ? "Resume coordination fee"
+                    : "Resume payment processing"
                 : coordinationFeeUnresolved
                   ? "Pause coordination fee"
                   : "Pause"}
           </Button>
         )}
       </div>
-      {(!paid || coordinationFeeUnresolved) && canContinue && (
+      {processingPending && canContinue && (
         <p
           id={processingScopeId}
           className="mt-3 text-sm text-[var(--text-muted)]"
         >
-          Pause and Resume affect automatic payment processing for all loaded
-          orders.
+          {processingScope === "order"
+            ? "Pause and Continue affect automatic payment processing for only this order."
+            : "Pause and Resume affect automatic payment processing for all loaded orders."}
         </p>
+      )}
+      {showAutomaticProgress && (
+        <div className="mt-4">
+          <CheckoutPaymentProgress
+            pausing={transitioning}
+            statusLabel={
+              paid && !coordinationFeeUnresolved
+                ? "Finishing recovery…"
+                : "Completing this order…"
+            }
+          />
+        </div>
       )}
       {!paid && waitingForHandoff && (
         <p className="mt-3 text-sm text-[var(--text-muted)]">

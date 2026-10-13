@@ -32,6 +32,8 @@ import {
 import {
   captureMerchantCheckoutSparkRecoveryAction,
   createMerchantCheckoutSparkAutomaticSession,
+  merchantCheckoutSparkAutomaticScopeIncludes,
+  type MerchantCheckoutSparkAutomaticScope,
 } from "../lib/checkout-spark-automatic-session"
 import { createMerchantCheckoutSparkPayoutReviewSelection } from "../lib/checkout-spark-payout-review-selection"
 import {
@@ -186,13 +188,21 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     ]).then(() => undefined)
     return discoveryDrain.current
   }, [])
+  const [reviewSelection] = useState(
+    createMerchantCheckoutSparkPayoutReviewSelection
+  )
+  const reviewSelectionRevision = reviewSelection.select(
+    selectedOrderId ?? null
+  )
   const [automaticSession] = useState(() =>
     createMerchantCheckoutSparkAutomaticSession({
       isCurrent: () => automaticAllowed.current && hasCurrentExecutionSession(),
       stopAndDrain: stopDiscovery,
+      captureOrder: (orderId) => reviewSelection.capture(orderId),
     })
   )
   const [automaticPayouts, setAutomaticPayouts] = useState(false)
+  const automaticScope = automaticSession.getScope()
   const [automaticTransition, setAutomaticTransition] = useState<
     "starting" | "pausing" | null
   >(null)
@@ -227,12 +237,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     review: MerchantCheckoutSparkPayoutReview
     isSelectionCurrent: () => boolean
   } | null>(null)
-  const [reviewSelection] = useState(
-    createMerchantCheckoutSparkPayoutReviewSelection
-  )
-  const reviewSelectionRevision = reviewSelection.select(
-    selectedOrderId ?? null
-  )
   const confirmationSelectionCurrent =
     confirmation?.isSelectionCurrent() === true
   const [confirmationNowMs, setConfirmationNowMs] = useState(Date.now)
@@ -265,12 +269,24 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   )
 
   useEffect(() => {
-    if (executionEnabled) return
+    if (executionEnabled && allowAutomaticPayouts) return
     automaticSession.revoke()
     setAutomaticPayouts(false)
     setConfirmation(null)
     void stopDiscovery().catch(() => undefined)
-  }, [executionEnabled, automaticSession, stopDiscovery])
+  }, [executionEnabled, allowAutomaticPayouts, automaticSession, stopDiscovery])
+
+  useEffect(() => {
+    if (!automaticPayouts || automaticScope !== null) return
+    // The captured selection/session already rejects new work synchronously.
+    // Drain the old scope without granting the newly selected order authority.
+    generation.current += 1
+    automaticSession.revoke()
+    automaticTransitionRef.current = null
+    setAutomaticTransition(null)
+    setAutomaticPayouts(false)
+    void stopDiscovery().catch(() => undefined)
+  }, [automaticPayouts, automaticScope, automaticSession, stopDiscovery])
 
   useEffect(() => {
     const timer = window.setInterval(() => setDisplayNowMs(Date.now()), 10_000)
@@ -313,6 +329,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       discoveryGeneration.current === current &&
       generation.current === actionGeneration
     const assertAutomaticCurrent = automaticSession.capture()
+    const automaticDispatch = automaticPayouts && automaticScope !== null
     const refreshSaved = async (
       candidates: readonly MerchantCheckoutSparkRecoveryCandidate[]
     ) => {
@@ -343,8 +360,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           async reconcile(candidate, assertWorkerCurrent) {
             const assertActive = () => {
               assertWorkerCurrent()
-              if (automaticPayouts) {
-                assertAutomaticCurrent()
+              if (automaticDispatch) {
+                assertAutomaticCurrent(candidate.orderId)
                 if (executionRevision.current !== actionExecutionRevision) {
                   throw new Error("Merchant execution permission changed.")
                 }
@@ -361,7 +378,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             if (isCurrent()) setCheckingDigest(candidate.planDigest)
             try {
               let outcome: MerchantCheckoutSparkReconciliationStatus
-              if (automaticPayouts) {
+              if (automaticDispatch) {
                 outcome = await advanceMerchantCheckoutSparkOrder(
                   principalPubkey,
                   candidate,
@@ -463,7 +480,16 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             setResult(page)
             // A late discovery page may finish while hidden. The separate worker
             // rechecks visibility at dispatch and every provider boundary.
-            provider?.replaceCandidates(page.candidates)
+            provider?.replaceCandidates(
+              automaticDispatch
+                ? page.candidates.filter((candidate) =>
+                    merchantCheckoutSparkAutomaticScopeIncludes(
+                      automaticScope,
+                      candidate.orderId
+                    )
+                  )
+                : page.candidates
+            )
             void refreshSaved(page.candidates)
           },
         })
@@ -486,6 +512,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   }, [
     principalPubkey,
     automaticPayouts,
+    automaticScope,
     automaticTransition,
     automaticSession,
     executionEnabled,
@@ -496,7 +523,10 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     stopDiscovery,
   ])
 
-  async function changeAutomaticPayouts(next: boolean): Promise<void> {
+  async function changeAutomaticPayouts(
+    next: boolean,
+    scope: MerchantCheckoutSparkAutomaticScope = { kind: "all" }
+  ): Promise<void> {
     if (busyRef.current || confirmation) return
     if (
       next &&
@@ -514,12 +544,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     setNoticeOrderId(selectedOrderId ?? null)
     try {
       // change() revokes synchronously and drains before granting the new mode.
-      const enabled = await automaticSession.change(next)
+      const enabled = await automaticSession.change(next, scope)
       if (generation.current !== current || !hasCurrentSession()) return
       setAutomaticPayouts(enabled)
       setNotice(
         enabled
-          ? "Payment processing has resumed. Keep Orders open; unresolved payouts remain held until verified."
+          ? scope.kind === "order"
+            ? "This order's payment processing has resumed. Keep Orders open; unresolved payouts remain held until verified."
+            : "Payment processing has resumed. Keep Orders open; unresolved payouts remain held until verified."
           : "Payment processing is paused. A payment already sent may still finish."
       )
     } catch {
@@ -551,7 +583,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       requested = true
       // Use the same revoke/drain boundary as an explicit Start. A manual
       // action or Pause does not retrigger this mount-scoped activation.
-      void changeAutomaticMode.current(true)
+      void changeAutomaticMode.current(true, { kind: "all" })
     }
     startWhenVisible()
     document.addEventListener("visibilitychange", startWhenVisible)
@@ -1087,6 +1119,10 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         : discoveryStatus === "unavailable"
           ? "unavailable"
           : undefined
+  const selectedAutomaticAuthority =
+    automaticPayouts &&
+    merchantCheckoutSparkAutomaticScopeIncludes(automaticScope, selectedOrderId)
+  const recoveryPending = candidate !== null && outcome !== "retired"
   const card = (
     <>
       <CheckoutSparkMerchantPaymentCard
@@ -1100,8 +1136,15 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             ? checkingDigest === candidate.planDigest
             : discoveryStatus === "checking"
         }
-        paused={!automaticPayouts && automaticTransition !== "starting"}
+        paused={
+          !selectedAutomaticAuthority && automaticTransition !== "starting"
+        }
         canContinue={allowAutomaticPayouts && executionEnabled}
+        processingScope={
+          automaticPayouts && automaticScope?.kind === "all" ? "all" : "order"
+        }
+        recoveryPending={recoveryPending}
+        automaticProcessing={selectedAutomaticAuthority && recoveryPending}
         transitioning={busy || automaticTransition !== null}
         handoffAt={candidate?.takeoverAt ?? 0}
         nowMs={displayNowMs}
@@ -1115,7 +1158,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         }
         onRetry={inspect}
         onPause={() => void changeAutomaticPayouts(false)}
-        onContinue={() => void changeAutomaticPayouts(true)}
+        onContinue={() =>
+          void changeAutomaticPayouts(true, {
+            kind: "order",
+            orderId: selectedOrderId,
+          })
+        }
       >
         {candidate && (
           <>

@@ -860,7 +860,7 @@ describe("Market native treasury composed provider evidence", () => {
         f.setNow(f.plan.takeoverAt)
         expect(await runner.run(input)).toEqual({
           status: "paused",
-          reason: "authorization_changed",
+          reason: "authority_transferred",
         })
         expect((await f.loadState()).state.treasuryFinalization).toEqual(
           prepared

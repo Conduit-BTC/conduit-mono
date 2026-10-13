@@ -21,13 +21,30 @@ export function captureMerchantCheckoutSparkRecoveryAction(input: {
   }
 }
 
+export type MerchantCheckoutSparkAutomaticScope =
+  | { readonly kind: "all" }
+  | { readonly kind: "order"; readonly orderId: string }
+
+export function merchantCheckoutSparkAutomaticScopeIncludes(
+  scope: MerchantCheckoutSparkAutomaticScope | null,
+  orderId: string | null | undefined
+): boolean {
+  return Boolean(
+    scope && orderId && (scope.kind === "all" || scope.orderId === orderId)
+  )
+}
+
 /** Session-local UI authority only; this does not authorize any payout itself. */
 export function createMerchantCheckoutSparkAutomaticSession(input: {
   isCurrent: () => boolean
   stopAndDrain: () => Promise<void>
+  /** Capture the existing selected-order revision before draining prior work. */
+  captureOrder?: (orderId: string) => () => boolean
 }) {
   let enabled = false
   let generation = 0
+  let scope: MerchantCheckoutSparkAutomaticScope | null = null
+  let scopeCurrent: () => boolean = () => false
   const isCurrent = () => {
     try {
       return input.isCurrent()
@@ -37,23 +54,58 @@ export function createMerchantCheckoutSparkAutomaticSession(input: {
   }
   const revoke = () => {
     enabled = false
+    scope = null
     generation += 1
+  }
+  const hasCurrentScope = () => {
+    try {
+      return enabled && scope !== null && isCurrent() && scopeCurrent()
+    } catch {
+      return false
+    }
   }
   return {
     revoke,
-    async change(next: boolean): Promise<boolean> {
+    getScope(): MerchantCheckoutSparkAutomaticScope | null {
+      return hasCurrentScope() ? scope : null
+    },
+    async change(
+      next: boolean,
+      requestedScope: MerchantCheckoutSparkAutomaticScope = { kind: "all" }
+    ): Promise<boolean> {
       // Invalidate held work before the first await, including a pending Start.
       revoke()
       const current = generation
+      const capturedScope = Object.freeze({ ...requestedScope })
+      const capturedOrderCurrent =
+        capturedScope.kind === "order"
+          ? (input.captureOrder?.(capturedScope.orderId) ?? (() => false))
+          : () => true
       await input.stopAndDrain()
-      if (generation !== current || !isCurrent()) return false
+      if (
+        generation !== current ||
+        !isCurrent() ||
+        (next && !capturedOrderCurrent())
+      )
+        return false
       enabled = next
+      scope = next ? capturedScope : null
+      scopeCurrent = capturedOrderCurrent
       return enabled
     },
-    capture(): () => void {
+    capture(): (orderId?: string) => void {
       const current = generation
-      return () => {
-        if (!enabled || generation !== current || !isCurrent()) {
+      const capturedScope = scope
+      return (orderId) => {
+        if (
+          !hasCurrentScope() ||
+          generation !== current ||
+          (orderId !== undefined &&
+            !merchantCheckoutSparkAutomaticScopeIncludes(
+              capturedScope,
+              orderId
+            ))
+        ) {
           throw new Error("Merchant automatic recovery session changed.")
         }
       }

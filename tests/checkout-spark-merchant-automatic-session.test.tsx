@@ -319,10 +319,13 @@ describe("Merchant automatic recovery session activation", () => {
       <CheckoutSparkRecoveryPanel {...base} />
     )
     expect(unavailable).not.toContain("Resume payment processing")
+    expect(unavailable).not.toContain("Continue this order")
     const available = renderToStaticMarkup(
       <CheckoutSparkRecoveryPanel {...base} allowAutomaticPayouts />
     )
-    expect(available).toContain("Resume payment processing")
+    expect(available).toContain("Continue this order")
+    expect(available).toContain("only this order")
+    expect(available).not.toContain("all loaded orders")
     expect(available).not.toContain(">Pause<")
     expect(available).toContain("Checking payment")
     expect(available).not.toContain("Verify recovery key")
@@ -385,7 +388,8 @@ describe("Merchant automatic recovery session activation", () => {
       />
     )
     expect(html).toContain("Payment verified")
-    expect(html).toContain("Resume coordination fee")
+    expect(html).toContain("Continue this order")
+    expect(html).toContain("only this order")
     expect(html).not.toContain("Pay for order")
   })
 
@@ -432,7 +436,7 @@ describe("Merchant automatic recovery session activation", () => {
         /const current = beginManualAction\((?:reviewed\.)?candidate\.orderId(?:, true)?\)/g
       )
     ).toHaveLength(8)
-    expect(source).toContain("assertAutomaticCurrent()")
+    expect(source).toContain("assertAutomaticCurrent(candidate.orderId)")
     expect(source).toContain(
       "executionRevision.current !== actionExecutionRevision"
     )

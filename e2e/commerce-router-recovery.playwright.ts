@@ -443,7 +443,8 @@ async function rehearseRouter(
     | "unsupported-merchant"
     | "unsupported-supplier"
     | null = null,
-  capabilityRegression = false
+  capabilityRegression = false,
+  scopedRecovery = false
 ): Promise<void> {
   test.setTimeout(240_000)
   const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
@@ -1105,6 +1106,85 @@ async function rehearseRouter(
       expect(frozenTiming!.fundingExpiresAt).toBeGreaterThan(
         frozenTiming!.takeoverAt
       )
+      let untouchedOrderId: string | null = null
+      let untouchedIdentity: string | undefined
+      let untouchedTakeoverAt = 0
+      let untouchedTiming: Awaited<ReturnType<typeof frozenRouterTiming>> = null
+      if (scopedRecovery) {
+        // Prepare another genuine signed order in separate browser storage.
+        // Neither buyer is allowed to route it; only the selected Merchant
+        // order will receive the later explicit continuation authorization.
+        const selectedIdentity = identity
+        const otherContext = await browser.newContext({
+          serviceWorkers: "block",
+        })
+        contexts.push(otherContext)
+        await otherContext.grantPermissions(["local-network-access"], {
+          origin: marketUrl,
+        })
+        const otherNetwork = await installHermeticCommerceNetwork(
+          otherContext,
+          {
+            ...networkOptions,
+            lnurl: lnurl.respond,
+            onLocalFailure: recordNetworkFailure,
+          }
+        )
+        beginNetworkTeardown.set(otherContext, otherNetwork)
+        await installHermeticSparkTransport(otherContext, transport, {
+          appUrl: marketUrl,
+        })
+        const otherPage = await otherContext.newPage()
+        await installRealTestSigner(otherPage, buyer, TEST_RELAY_URL)
+        await otherPage.goto(`${marketUrl}${catalogPath}`)
+        const otherProduct = otherPage
+          .getByRole("listitem")
+          .filter({ hasText: productTitle })
+        await expect(otherProduct).toBeVisible({ timeout: 30_000 })
+        await otherProduct
+          .getByRole("button", {
+            name: `Add ${productTitle} to cart`,
+            exact: true,
+          })
+          .click()
+        await otherPage
+          .getByRole("region", { name: "Cart inventory", exact: true })
+          .getByRole("link", { name: "Continue to checkout", exact: true })
+          .click()
+        const otherPrepare = otherPage.getByRole("button", {
+          name: "Continue to payment",
+          exact: true,
+        })
+        await expect(otherPrepare).toBeEnabled({ timeout: 30_000 })
+        await otherPrepare.click()
+        await expect(
+          otherPage.getByRole("heading", { name: "Orders", exact: true })
+        ).toBeVisible({ timeout: 45_000 })
+        untouchedOrderId = new URL(otherPage.url()).searchParams.get("order")
+        untouchedIdentity = identity
+        const otherTiming = await frozenRouterTiming(
+          otherPage,
+          untouchedOrderId
+        )
+        expect(
+          untouchedOrderId !== null &&
+            untouchedOrderId !== orderId &&
+            untouchedIdentity !== undefined &&
+            untouchedIdentity !== selectedIdentity &&
+            otherTiming !== null
+        ).toBe(true)
+        untouchedTakeoverAt = otherTiming!.takeoverAt
+        untouchedTiming = otherTiming
+        expect(control().snapshot()).toEqual({
+          fundingInvoiceCount: 1,
+          sendInvocationCount: 0,
+          outgoingPaymentCount: 0,
+          debitedSats: 0,
+        })
+        beginNetworkTeardown.get(otherContext)?.()
+        await otherContext.close()
+        identity = selectedIdentity
+      }
       beginNetworkTeardown.get(buyerContext)?.()
       beginNetworkTeardown.get(merchantContext)?.()
       await buyerContext.close()
@@ -1114,6 +1194,12 @@ async function rehearseRouter(
         expect(lnurl.snapshot().invoicesIssued).toBe(0)
         expect(control().snapshot().outgoingPaymentCount).toBe(0)
       }
+      const untouchedControl = untouchedIdentity
+        ? native.control.forIdentity(untouchedIdentity)
+        : null
+      untouchedControl?.completeFunding()
+      const untouchedSnapshot = untouchedControl?.snapshot()
+      const untouchedNativeSnapshot = untouchedControl?.nativeSnapshot()
 
       // A fresh browser has no buyer or former Merchant IndexedDB/session state.
       // Recovery must come from the real signed private order/inbox messages.
@@ -1151,13 +1237,16 @@ async function rehearseRouter(
       // eligibility stays meaningful. Exact boundary behavior is unit-tested;
       // this browser case observes the original frozen deadlines unchanged.
       const coldObservationStartedAt = sharedClock.nowMs()
-      expect(coldObservationStartedAt < frozenTiming!.takeoverAt).toBe(true)
+      if (!scopedRecovery)
+        expect(coldObservationStartedAt < frozenTiming!.takeoverAt).toBe(true)
       await coldPage.clock.install({
         time: new Date(coldObservationStartedAt),
       })
       await coldPage.clock.setSystemTime(coldObservationStartedAt)
       await installRealTestSigner(coldPage, merchant, TEST_RELAY_URL)
-      await coldPage.goto(`${merchantUrl}/orders?order=${orderId}`)
+      await coldPage.goto(
+        `${merchantUrl}/orders?order=${orderId}${scopedRecovery ? "&recovery=paused" : ""}`
+      )
       const recovery = coldPage.getByRole("region", {
         name: "Order payment",
         exact: true,
@@ -1188,7 +1277,8 @@ async function rehearseRouter(
       expect(await frozenRouterTiming(coldPage, orderId)).toEqual(frozenTiming)
       const beforeHandoffTime = await coldPage.evaluate(() => Date.now())
       expect(beforeHandoffTime).toBeGreaterThanOrEqual(coldObservationStartedAt)
-      expect(beforeHandoffTime).toBeLessThan(frozenTiming!.takeoverAt)
+      if (!scopedRecovery)
+        expect(beforeHandoffTime).toBeLessThan(frozenTiming!.takeoverAt)
       setStage("cold Merchant requests query-only native authentication")
       await expect
         .poll(() => observationOpenAttempts - observationAttemptsBeforeCold, {
@@ -1203,7 +1293,9 @@ async function rehearseRouter(
         .toBeGreaterThan(0)
       await expect(
         recovery.getByRole("button", {
-          name: /^(?:Pause|Pause coordination fee)$/,
+          name: scopedRecovery
+            ? "Continue this order"
+            : /^(?:Pause|Pause coordination fee)$/,
         })
       ).toBeVisible()
       const beforeHandoff = control().snapshot()
@@ -1211,16 +1303,20 @@ async function rehearseRouter(
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(
         partialRecovery ? 1 : 0
       )
-      expect(await coldPage.evaluate(() => Date.now())).toBeLessThan(
-        frozenTiming!.takeoverAt
-      )
+      if (!scopedRecovery) {
+        expect(await coldPage.evaluate(() => Date.now())).toBeLessThan(
+          frozenTiming!.takeoverAt
+        )
+      }
       expect(nativeWalletOpenSuccesses).toBe(nativeWalletsBeforeCold)
-      await recovery
-        .getByRole("button", { name: /^(?:Pause|Pause coordination fee)$/ })
-        .click()
+      if (!scopedRecovery) {
+        await recovery
+          .getByRole("button", { name: /^(?:Pause|Pause coordination fee)$/ })
+          .click()
+      }
       await expect(
         recovery.getByRole("button", {
-          name: /^(?:Resume payment processing|Resume coordination fee)$/,
+          name: /^(?:Resume payment processing|Resume coordination fee|Continue this order|Finish recovery)$/,
         })
       ).toBeVisible()
 
@@ -1232,7 +1328,15 @@ async function rehearseRouter(
       setStage(
         "cold Merchant automatically continues after handoff without a prompt"
       )
-      const resumedClockTime = frozenTiming!.takeoverAt + 1
+      // Preparing the additional order can legitimately cross the first
+      // deadline. The scoped case needs both original deadlines expired, not
+      // a claim that its extra setup happened within the buyer's authority.
+      const resumedClockTime =
+        Math.max(
+          frozenTiming!.takeoverAt,
+          untouchedTakeoverAt,
+          scopedRecovery ? sharedClock.nowMs() : 0
+        ) + 1
       const clockAdvance = resumedClockTime - sharedClock.nowMs()
       expect(clockAdvance >= 0).toBe(true)
       sharedClock.advanceBy(clockAdvance)
@@ -1243,7 +1347,7 @@ async function rehearseRouter(
       setStage("cold Merchant stays paused across the isolated clock advance")
       await expect(
         recovery.getByRole("button", {
-          name: /^(?:Resume payment processing|Resume coordination fee)$/,
+          name: /^(?:Resume payment processing|Resume coordination fee|Continue this order|Finish recovery)$/,
         })
       ).toBeVisible()
       setStage("cold Merchant has no sends before reopening")
@@ -1270,6 +1374,59 @@ async function rehearseRouter(
         throw error
       }
       setStage("cold Merchant enables automatic recovery on reopening")
+      if (scopedRecovery) {
+        const continueOrder = recovery.getByRole("button", {
+          name: "Continue this order",
+          exact: true,
+        })
+        await expect(continueOrder).toBeVisible({ timeout: 30_000 })
+        // The other funded order must really be discovered and independently
+        // admitted; a missing candidate would not prove scope isolation.
+        await expect
+          .poll(() => merchantRecoveryAdmission(coldPage, untouchedOrderId), {
+            timeout: 30_000,
+          })
+          .toMatchObject({ uniqueWitness: true, sourcesValidated: true })
+        for (const fundedOrderId of [orderId, untouchedOrderId]) {
+          await expect
+            .poll(
+              () =>
+                merchantRecordedCompletion(
+                  coldPage,
+                  merchant.pubkey,
+                  fundedOrderId
+                ),
+              { timeout: 30_000 }
+            )
+            .toMatchObject({
+              creditVerified: true,
+              creditedSats: 1_113,
+              paidCommerceCount: 0,
+              nativePrincipalSats: null,
+            })
+        }
+        expect(await frozenRouterTiming(coldPage, orderId)).toEqual(
+          frozenTiming
+        )
+        expect(await frozenRouterTiming(coldPage, untouchedOrderId)).toEqual(
+          untouchedTiming
+        )
+        const continuedAt = await coldPage.evaluate(() => Date.now())
+        expect(continuedAt).toBeGreaterThan(frozenTiming!.takeoverAt)
+        expect(continuedAt).toBeGreaterThan(untouchedTakeoverAt)
+        expect(control().snapshot()).toEqual(beforeHandoff)
+        expect(untouchedControl!.snapshot()).toEqual(untouchedSnapshot)
+        expect(untouchedControl!.nativeSnapshot()).toEqual(
+          untouchedNativeSnapshot
+        )
+        await continueOrder.click()
+        await expect(
+          recovery.getByRole("progressbar", {
+            name: "Completing this order…",
+            exact: true,
+          })
+        ).toBeVisible()
+      }
       await expect(
         recovery.getByRole("button", {
           name: /^(?:Pause|Pause coordination fee)$/,
@@ -1278,6 +1435,8 @@ async function rehearseRouter(
       setStage("cold Merchant foreground Date advances after reopening")
       const reopenedClockTime = await coldPage.evaluate(() => Date.now())
       expect(reopenedClockTime).toBeGreaterThan(frozenTiming!.takeoverAt)
+      if (scopedRecovery)
+        expect(reopenedClockTime).toBeGreaterThan(untouchedTakeoverAt)
       await expect
         .poll(
           async () =>
@@ -1386,12 +1545,24 @@ async function rehearseRouter(
           },
         ],
       })
+      if (scopedRecovery) {
+        await expect(
+          recovery.getByRole("progressbar", {
+            name: "Completing this order…",
+            exact: true,
+          })
+        ).toBeVisible()
+        expect(untouchedControl!.snapshot()).toEqual(untouchedSnapshot)
+        expect(untouchedControl!.nativeSnapshot()).toEqual(
+          untouchedNativeSnapshot
+        )
+      }
 
       setStage("cold Merchant preserves recovery while residual funds remain")
       control().setAdditionalOwnedSats(1)
       control().setNativeCompletion(true)
       setStage("cold Merchant reconciles the completed transfer without replay")
-      await coldPersistence.reload()
+      if (!scopedRecovery) await coldPersistence.reload()
       setStage(
         "cold Merchant keeps automatic native reconciliation active after claim"
       )
@@ -1547,18 +1718,24 @@ async function rehearseRouter(
         name: "Pause",
         exact: true,
       })
-      if (await pauseBeforeRetirement.isVisible()) {
+      if (scopedRecovery) {
+        await expect(
+          recovery.getByRole("progressbar", {
+            name: "Finishing recovery…",
+            exact: true,
+          })
+        ).toBeVisible()
+      } else if (await pauseBeforeRetirement.isVisible()) {
         await pauseBeforeRetirement.click()
         await expect(
           recovery.getByRole("button", {
-            name: "Resume payment processing",
-            exact: true,
+            name: /^(?:Resume payment processing|Continue this order|Finish recovery)$/,
           })
         ).toBeVisible()
       }
       setStage("cold Merchant retires only after fresh terminal zero evidence")
       control().setAdditionalOwnedSats(0)
-      await coldPersistence.reload()
+      if (!scopedRecovery) await coldPersistence.reload()
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
@@ -1582,6 +1759,16 @@ async function rehearseRouter(
         await merchantRecordedCompletion(coldPage, merchant.pubkey, orderId)
       ).toEqual(completedReceipt)
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
+      if (scopedRecovery) {
+        await expect(recovery.getByRole("progressbar")).toHaveCount(0)
+        expect(untouchedControl!.snapshot()).toEqual(untouchedSnapshot)
+        expect(untouchedControl!.nativeSnapshot()).toEqual(
+          untouchedNativeSnapshot
+        )
+        expect(await merchantWalletState(coldPage, untouchedOrderId)).not.toBe(
+          "retired"
+        )
+      }
       expect(await supplierNoticeCount()).toBe(1)
       expect(
         (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
@@ -2077,6 +2264,10 @@ test("native router cold Merchant restores a funded checkout and finishes all pa
 test("native router cold Merchant independently verifies supported recipients and finishes a partial checkout without replaying paid commerce @commerce", async ({
   browser,
 }) => rehearseRouter(browser, "partial-cold-merchant"))
+
+test("native router scoped Merchant continuation finishes only the selected funded order with truthful progress @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "cold-merchant", "signed-in", null, false, true))
 
 test("native router ordinary guest checkout completes private commerce and native treasury without public zap signing @commerce", async ({
   browser,

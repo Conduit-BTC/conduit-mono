@@ -2,6 +2,7 @@ import { expect, it, spyOn } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { CheckoutPaymentProgress } from "../apps/market/src/components/CheckoutPaymentProgress"
+import { CheckoutPaymentProgress as SharedCheckoutPaymentProgress } from "@conduit/ui"
 
 it("starts independent mounts with randomized loading messages", () => {
   const random = spyOn(Math, "random").mockReturnValue(0)
@@ -48,5 +49,28 @@ it("replaces playful loading text with a clear safe-pause message", () => {
   expect(markup).toContain('aria-label="Pausing safely…"')
   expect(markup).not.toContain("HODLing the door")
   expect(markup).not.toContain("Completing your payment")
+  expect(markup).not.toContain("aria-valuenow")
+})
+
+it("shares the buyer's unchanged progress component with Merchant order processing", () => {
+  expect(CheckoutPaymentProgress).toBe(SharedCheckoutPaymentProgress)
+  const markup = renderToStaticMarkup(
+    <SharedCheckoutPaymentProgress
+      pausing={false}
+      statusLabel="Completing this order…"
+    />
+  )
+  expect(markup).toContain("Completing this order…")
+  expect(markup).toContain('aria-label="Completing this order…"')
+  expect(markup).not.toContain("Completing your payment")
+  expect(markup).not.toContain("aria-valuenow")
+})
+
+it("always gives safe pausing priority over an active recovery label", () => {
+  const markup = renderToStaticMarkup(
+    <SharedCheckoutPaymentProgress pausing statusLabel="Finishing recovery…" />
+  )
+  expect(markup).toContain("Pausing safely…")
+  expect(markup).not.toContain("Finishing recovery…")
   expect(markup).not.toContain("aria-valuenow")
 })
