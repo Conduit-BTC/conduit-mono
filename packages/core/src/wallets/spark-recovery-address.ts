@@ -62,3 +62,8 @@ export function isWalletNamesDTag(value: string): boolean {
     (network) => value === walletNamesDTag(network as WalletNetwork)
   )
 }
+export function isAddressRequestsDTag(value: string): boolean {
+  return ["mainnet", "testnet", "signet", "regtest"].some(
+    (network) => value === addressRequestsDTag(network as WalletNetwork)
+  )
+}

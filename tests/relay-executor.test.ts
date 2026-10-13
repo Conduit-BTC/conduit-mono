@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { getPublicKey, finalizeEvent, verifyEvent } from "nostr-tools"
+import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { applyE2eRelayIsolation, config } from "@conduit/core"
 import {
   __resetProtectedReadSigner,
@@ -32,6 +33,9 @@ import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
+import { addressRequestsDTag } from "../packages/core/src/wallets/spark-recovery-address"
+import { createSparkRecoveryReader } from "../packages/core/src/wallets/spark-recovery-read"
+import { db } from "../packages/core/src/db"
 
 const PRIVATE_KEY_A = new Uint8Array(32).fill(1)
 const PRIVATE_KEY_B = new Uint8Array(32).fill(2)
@@ -2170,6 +2174,9 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         `conduit:spark:main:v1:${network}`,
         `conduit:spark:registry:v1:${network}`,
         "conduit:wallet-names:v1:mainnet",
+        addressRequestsDTag(
+          network as "mainnet" | "testnet" | "signet" | "regtest"
+        ),
       ]),
     ]
     const events = new Map(
@@ -2216,6 +2223,30 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         events.get(coordinate)!.id,
       ])
     }
+    // The production reader's account-policy repository uses the shared Dexie
+    // instance; Bun needs an IndexedDB implementation for this composed read.
+    const dependencies = Reflect.get(db, "_deps") as {
+      indexedDB?: IDBFactory
+      IDBKeyRange?: typeof IDBKeyRange
+    }
+    const previousDependencies = { ...dependencies }
+    Object.assign(dependencies, { indexedDB, IDBKeyRange })
+    try {
+      const requestRead = await createSparkRecoveryReader(executor)(
+        "wss://protected.example",
+        PUBKEY_A,
+        undefined,
+        () => true,
+        addressRequestsDTag("mainnet")
+      )
+      expect(requestRead.status).toBe("complete")
+      expect(requestRead.events.map((item) => item.id)).toEqual([
+        events.get(addressRequestsDTag("mainnet"))!.id,
+      ])
+    } finally {
+      db.close()
+      Object.assign(dependencies, previousDependencies)
+    }
     for (const coordinate of [
       "conduit:spark:primary:v1:unknown",
       "conduit:spark:main:v1:mainnet:extra",
@@ -2223,6 +2254,8 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       "conduit:spark:registry:v1:mainnet:extra",
       "conduit:wallet-names:v1:unknown",
       "conduit:wallet-names:v1:mainnet:extra",
+      "conduit:address-requests:v1:unknown",
+      "conduit:address-requests:v1:mainnet:extra",
     ]) {
       await expect(
         executor.query(

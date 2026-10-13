@@ -32,6 +32,7 @@ import {
 } from "./relay-settings"
 import { serializeSignerOperation } from "./interactive-signer"
 import {
+  isAddressRequestsDTag,
   isSparkWalletRegistryDTag,
   isWalletNamesDTag,
   parseSparkRecoveryChoiceAddress,
@@ -499,7 +500,8 @@ function assertRequest(
           (filter["#d"].length !== 1 ||
             (!parseSparkRecoveryChoiceAddress(filter["#d"][0]) &&
               !isSparkWalletRegistryDTag(filter["#d"][0]) &&
-              !isWalletNamesDTag(filter["#d"][0])))) ||
+              !isWalletNamesDTag(filter["#d"][0]) &&
+              !isAddressRequestsDTag(filter["#d"][0])))) ||
         (filter.ids !== undefined &&
           (filter.ids.length !== 1 ||
             !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||
