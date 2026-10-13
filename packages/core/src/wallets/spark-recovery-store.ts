@@ -47,6 +47,33 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
       }
     )
   }
+  async setRegistryExcluded(
+    owner: string,
+    scopedWalletIds: readonly string[],
+    excludedWalletIds: readonly string[]
+  ): Promise<void> {
+    await this.database.transaction(
+      "rw",
+      this.database.sparkRecoveryEvidence,
+      async () => {
+        const current = await this.load(owner)
+        const scope = new Set(scopedWalletIds)
+        const ids = new Set(
+          (current.registryExcludedWalletIds ?? []).filter(
+            (id) => !scope.has(id)
+          )
+        )
+        for (const id of excludedWalletIds) ids.add(id)
+        const next = validateSparkRecoveryState(
+          { ...current, registryExcludedWalletIds: [...ids] },
+          owner
+        )
+        await this.database.sparkRecoveryEvidence.put(next)
+        if (JSON.stringify(await this.load(owner)) !== JSON.stringify(next))
+          throw new SparkRecoveryError("storage_unavailable")
+      }
+    )
+  }
   async retain(
     owner: string,
     records: SparkRecoveryRecord[],

@@ -7,8 +7,31 @@ import {
   selectDeploymentProfileName,
 } from "../scripts/vite/deployment_profile"
 import { resolveDmCompatibilityOrderRoutingEnabled } from "../packages/core/src/config"
+import { assertPagesWalletConfiguration } from "../scripts/vite/build_info"
 
 describe("deployment profiles", () => {
+  it("rejects a hosted wallet build missing its public Breez configuration", () => {
+    for (const app of ["market", "merchant"]) {
+      expect(() =>
+        assertPagesWalletConfiguration(app, true, { CF_PAGES: "1" })
+      ).toThrow("VITE_BREEZ_SPARK_API_KEY")
+      expect(() =>
+        assertPagesWalletConfiguration(app, true, {
+          CF_PAGES: "1",
+          VITE_BREEZ_SPARK_API_KEY: "public-test-key",
+        })
+      ).not.toThrow()
+      expect(() =>
+        assertPagesWalletConfiguration(app, false, { CF_PAGES: "1" })
+      ).not.toThrow()
+    }
+    expect(() =>
+      assertPagesWalletConfiguration("store-builder", true, { CF_PAGES: "1" })
+    ).not.toThrow()
+    expect(() =>
+      assertPagesWalletConfiguration("merchant", true, {})
+    ).not.toThrow()
+  })
   it("fails compatibility routing closed on official hosts outside production", () => {
     for (const runtimeHostname of [
       "shop.conduit.market",
@@ -140,7 +163,7 @@ describe("deployment profiles", () => {
           VITE_BREEZ_SPARK_API_KEY: "public-test-key",
           VITE_BREEZ_LNURL_DOMAIN: "conduit.cash",
         }).publicFeatures.breezLightningAddressEnabled
-      ).toBe(false)
+      ).toBe(name !== "staging")
     expect(
       resolveDeploymentProfile({}).publicFeatures.breezLightningAddressEnabled
     ).toBe(false)
@@ -180,7 +203,7 @@ describe("deployment profiles", () => {
       buildTime: "2026-10-09T00:00:00.000Z",
       sourceUrl: "https://github.com/Conduit-BTC/conduit-mono",
     })
-    expect(manifest.publicFeatures.breezLightningAddressEnabled).toBe(false)
+    expect(manifest.publicFeatures.breezLightningAddressEnabled).toBe(true)
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
   })
 

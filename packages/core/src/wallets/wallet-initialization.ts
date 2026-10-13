@@ -48,7 +48,7 @@ export class LatestWalletReloadCoordinator {
   #latestCompletion: Promise<"committed" | "superseded"> | null = null
 
   run<T>(
-    load: () => Promise<T>,
+    load: (isCurrent: () => boolean) => Promise<T>,
     commit: (value: T) => void
   ): Promise<"committed" | "superseded"> {
     const generation = ++this.#generation
@@ -76,12 +76,12 @@ export class LatestWalletReloadCoordinator {
 
   async #run<T>(
     generation: number,
-    load: () => Promise<T>,
+    load: (isCurrent: () => boolean) => Promise<T>,
     commit: (value: T) => void
   ): Promise<"committed" | "superseded"> {
     let value: T
     try {
-      value = await load()
+      value = await load(() => generation === this.#generation)
     } catch (error) {
       if (generation !== this.#generation) return "superseded"
       throw error

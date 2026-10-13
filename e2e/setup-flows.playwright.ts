@@ -2297,6 +2297,10 @@ test("market wallets route renders owned and external wallet groups @market", as
   ).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "External wallets", exact: true })
+  ).toBeHidden()
+  await page.getByText("External wallet management", { exact: true }).click()
+  await expect(
+    page.getByRole("heading", { name: "External wallets", exact: true })
   ).toBeVisible()
   await expect(
     page.getByText("Create or import your first wallet.", { exact: true })
@@ -2373,9 +2377,7 @@ test("portable wallet import keeps derivation advanced and clears form state @ma
     await expect(dialog.getByLabel("Spark account number")).toHaveValue("1")
     await expect(dialog.getByLabel("Wallet nickname (optional)")).toHaveCount(0)
     await expect(dialog.getByLabel("Local wallet password")).toHaveCount(0)
-    await expect(dialog).toContainText(
-      "Your Nostr signer opens this wallet. No separate wallet password."
-    )
+    await expect(dialog).toContainText("Your Nostr signer opens this wallet.")
 
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
     await page

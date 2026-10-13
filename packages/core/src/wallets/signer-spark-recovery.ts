@@ -138,7 +138,7 @@ export async function openSignerSparkRecovery(
   return normalizeSparkMnemonic(value.mnemonic)
 }
 
-/** A migrated wallet retains its verified old encrypted recovery copy. */
+/** A migrated wallet keeps its original encrypted password fallback. */
 export async function recoverStoredSparkMnemonic(
   stored: StoredSparkWalletRecovery,
   binding: SparkRecoveryBinding,
@@ -149,24 +149,19 @@ export async function recoverStoredSparkMnemonic(
     return {
       mnemonic: await decryptSparkMnemonic(stored.recovery, password, binding),
     }
-  if (password && stored.legacyRecovery) {
-    const signer = getAccountSigner()
-    if (!signer || signer.pubkey !== stored.ownerPubkey)
-      throw new Error(
-        "Sign in with this wallet's Nostr identity before using its previous password."
-      )
+  if (password) {
+    if (!stored.legacyRecovery)
+      throw new Error("This wallet opens with its Nostr identity.")
     const mnemonic = await decryptSparkMnemonic(
       stored.legacyRecovery.recovery,
       password,
       binding
     )
-    assertWalletSignerCurrent(signer)
     if (
       (await sparkRecoveryIdentityKey(mnemonic, binding)) !== stored.identityKey
     )
       throw new Error("Wallet recovery data does not match this wallet.")
-    assertWalletSignerCurrent(signer)
-    return { mnemonic, signer }
+    return { mnemonic }
   }
   const signer = requireWalletSigner()
   return {

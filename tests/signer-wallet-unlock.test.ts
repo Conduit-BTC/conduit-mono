@@ -204,7 +204,7 @@ describe("wallet signer authority", () => {
   })
 })
 
-it("retains a verified legacy encrypted copy as a same-account migration fallback", async () => {
+it("reads signer records and retains their previous-password fallback", async () => {
   const { encryptSparkMnemonic } =
     await import("../apps/market/src/lib/spark-recovery")
   const { recoverStoredSparkMnemonic } =
@@ -227,12 +227,45 @@ it("retains a verified legacy encrypted copy as a same-account migration fallbac
     serializeStoredSparkWalletRecovery(migrated)
   )!
   expect(saved).toEqual(migrated)
-  install("nip07", provider, false)
+  install("nip07", provider)
+  expect((await recoverStoredSparkMnemonic(saved, binding)).mnemonic).toBe(
+    mnemonic
+  )
   expect(
     (await recoverStoredSparkMnemonic(saved, binding, password)).mnemonic
   ).toBe(mnemonic)
   install()
-  await expect(
-    recoverStoredSparkMnemonic(saved, binding, password)
-  ).rejects.toThrow("Nostr identity")
+  expect(
+    (await recoverStoredSparkMnemonic(saved, binding, password)).mnemonic
+  ).toBe(mnemonic)
+})
+
+it("rejects a different mnemonic in a migrated password fallback while signed out", async () => {
+  const { encryptSparkMnemonic } =
+    await import("../apps/market/src/lib/spark-recovery")
+  const { recoverStoredSparkMnemonic } =
+    await import("@conduit/core/wallets/signer-spark-recovery")
+  const { signer } = install()
+  const mnemonic = generateSparkMnemonic()
+  const password = crypto.randomUUID()
+  const migrated = await sealSignerSparkRecovery(mnemonic, binding, signer)
+  retireAccountSigner(signer)
+  for (const sameWallet of [true, false]) {
+    const stored = {
+      ...migrated,
+      legacyRecovery: {
+        ...binding,
+        type: "password" as const,
+        recovery: await encryptSparkMnemonic(
+          sameWallet ? mnemonic : generateSparkMnemonic(),
+          password,
+          binding,
+          { iterations: 100000 }
+        ),
+      },
+    }
+    const recovered = recoverStoredSparkMnemonic(stored, binding, password)
+    if (sameWallet) expect((await recovered).mnemonic).toBe(mnemonic)
+    else await expect(recovered).rejects.toThrow("does not match this wallet")
+  }
 })

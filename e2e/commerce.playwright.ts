@@ -654,6 +654,9 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("wallet_route")
     await merchantPage.goto(`${merchantUrl}/wallet`)
+    await merchantPage
+      .getByText("External wallet management", { exact: true })
+      .click()
     await expect(
       merchantPage.getByRole("heading", { name: "My wallets", exact: true })
     ).toBeVisible()
@@ -732,12 +735,15 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .toBe(false)
     foreignMenuObservation.foreignRegistryRefreshObserved = true
     phase("foreign_manage")
-    await merchantPage
-      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
+    const foreignPreferences = merchantPage
+      .getByRole("heading", { name: "Foreign NWC", exact: true })
+      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
+    await foreignPreferences
+      .getByText("Wallet preferences", { exact: true })
       .click()
     phase("foreign_select_default")
-    const foreignMenuItem = merchantPage.getByRole("menuitem", {
-      name: "Use for new invoices",
+    const foreignMenuItem = foreignPreferences.getByRole("button", {
+      name: "Make default for merchant invoices",
       exact: true,
     })
     foreignMenuObservation.foreignMenuVisibleBeforeClick =
@@ -763,7 +769,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       merchantPage
         .getByRole("heading", { name: "Foreign NWC", exact: true })
         .locator("..")
-        .getByText("Main wallet", { exact: true })
+        .getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
     phase("receiving_wallet")
     await wallet.configureMerchantConnection(async (connectionString) => {
@@ -807,12 +813,18 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       )
     ).toBeVisible({ timeout: 20_000 })
     phase("receiving_manage")
-    await merchantPage
-      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
+    const receivingPreferences = merchantPage
+      .getByRole("heading", { name: "Commerce NWC", exact: true })
+      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
+    await receivingPreferences
+      .getByText("Wallet preferences", { exact: true })
       .click()
     phase("receiving_select_default")
-    await merchantPage
-      .getByRole("menuitem", { name: "Use for new invoices", exact: true })
+    await receivingPreferences
+      .getByRole("button", {
+        name: "Make default for merchant invoices",
+        exact: true,
+      })
       .click()
     phase("receiving_default_committed")
     // Confirm the asynchronous default commit before a full-page navigation.
@@ -820,7 +832,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       merchantPage
         .getByRole("heading", { name: "Commerce NWC", exact: true })
         .locator("..")
-        .getByText("Main wallet", { exact: true })
+        .getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
 
     phase("publish_product")
