@@ -22,8 +22,8 @@ The 12 tour cases become 180 route cases. All 180 route visits remain in real
 browsers. The three project instances of `Merchant legacy Payments opens
 Wallets before the next route navigation @merchant` retain the same shared
 page, redirect, title and subsequent navigation assertions. Nothing moves to
-helper-only tests. Full discovery changes from 601 to 769 unique project
-cases and from 642 to 810 area executions; the overlapping area memberships
+helper-only tests. Full discovery changes from 613 to 781 unique project
+cases and from 656 to 824 area executions; the overlapping area memberships
 outside this file remain unchanged.
 
 ## Invariants and fixtures
@@ -40,7 +40,7 @@ Every route retains:
 - The existing content-free phase, route index, navigation/crash and pending
   resource observations. A failure stops only its route case.
 
-The `/wallet` cases also retain the exact wallet URL and visible Create wallet
+The `/wallet` cases also retain the exact wallet URL and visible Add a wallet
 assertions. Each `/` case retains the held-image probe, proving that a pending
 nonessential image does not prevent UI and font readiness. Optional local
 masked screenshots retain their existing names and scope; required CI still
@@ -59,3 +59,8 @@ Selection, shard configuration, zero retries, manifest/SHA verification and
 artifact privacy rules remain unchanged. More precise case outcomes and
 smaller units are the purpose of this change; timing and reliability claims
 require measured candidate evidence.
+
+Progress and manifest names allow only this file's fixed area/theme/route
+combinations. Unknown or sensitive variants remain redacted, and retained
+evidence remains title-free. Failure commands are explicitly source-group
+reproducers; their file-and-line selection includes the generated route group.
