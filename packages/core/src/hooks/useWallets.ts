@@ -1460,6 +1460,29 @@ export function useWallets(
     ) => {
       const manager = requireSparkManager()
       const signer = !password && !migrate ? getAccountSigner() : undefined
+      const reportOpenFailure = (error: unknown) => {
+        if (signer && !isWalletSignerCurrent(signer)) return
+        if (
+          signer &&
+          options.priority === "background" &&
+          error instanceof SessionSignerError &&
+          error.code === "background_paused" &&
+          manager.isOpen(walletId)
+        ) {
+          // An older background refusal must not overwrite a foreground
+          // restore's newer state, including a genuine balance error.
+          // The refused attempt still rejects without resuming consent.
+          return
+        }
+        setRuntime((current) => ({
+          ...current,
+          [walletId]: {
+            status: "error",
+            balanceMsats: null,
+            error: getErrorMessage(error, "Could not unlock Portable Wallet."),
+          },
+        }))
+      }
       let previous = signer && signerWalletOpens.get(signer)?.get(walletId)
       while (signer && previous) {
         const joined = previous
@@ -1488,18 +1511,7 @@ export function useWallets(
             if (previous === joined) previous = undefined
             continue
           }
-          if (isWalletSignerCurrent(signer))
-            setRuntime((current) => ({
-              ...current,
-              [walletId]: {
-                status: "error",
-                balanceMsats: null,
-                error: getErrorMessage(
-                  error,
-                  "Could not unlock Portable Wallet."
-                ),
-              },
-            }))
+          reportOpenFailure(error)
           throw error
         }
       }
@@ -1593,18 +1605,7 @@ export function useWallets(
           if (signer && isWalletSignerCurrent(signer))
             deliberatelyLockedWallets.get(signer)?.delete(walletId)
         } catch (error) {
-          if (!signer || isWalletSignerCurrent(signer))
-            setRuntime((current) => ({
-              ...current,
-              [walletId]: {
-                status: "error",
-                balanceMsats: null,
-                error: getErrorMessage(
-                  error,
-                  "Could not unlock Portable Wallet."
-                ),
-              },
-            }))
+          reportOpenFailure(error)
           throw error
         }
       }

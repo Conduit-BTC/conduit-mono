@@ -67,6 +67,7 @@ type WalletFixtureWindow = Window & {
   __releaseLateBackgroundRecoveryRead(): void
   __restoreLateBackgroundRecoveryRead(): void
   __lateBackgroundOpen: Promise<string>
+  __joinedLateBackgroundOpen: Promise<string>
 }
 
 const core = "/@fs" + path.resolve("packages/core/src/index.ts")
@@ -1557,6 +1558,13 @@ test("foreground wallet import stays ready after an older background opening is 
             () => "resolved",
             (error: { code?: string }) => error.code ?? "rejected"
           )
+        fixture.__joinedLateBackgroundOpen =
+          fixture.__controlledWalletController
+            .unlockSpark(walletId, "", false, { priority: "background" })
+            .then(
+              () => "resolved",
+              (error: { code?: string }) => error.code ?? "rejected"
+            )
       },
       { storage, walletId }
     )
@@ -1590,11 +1598,17 @@ test("foreground wallet import stays ready after an older background opening is 
     const backgroundOutcome = await target.evaluate(async () => {
       const fixture = window as WalletFixtureWindow
       fixture.__releaseLateBackgroundRecoveryRead()
-      const outcome = await fixture.__lateBackgroundOpen
+      const outcome = {
+        original: await fixture.__lateBackgroundOpen,
+        joined: await fixture.__joinedLateBackgroundOpen,
+      }
       fixture.__restoreLateBackgroundRecoveryRead()
       return outcome
     })
-    expect(backgroundOutcome).toBe("background_paused")
+    expect(backgroundOutcome).toEqual({
+      original: "background_paused",
+      joined: "background_paused",
+    })
     expect(
       await target.evaluate(
         async ({ sparkSdk, walletId }) => {
