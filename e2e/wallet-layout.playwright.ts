@@ -96,6 +96,27 @@ for (const app of ["market", "merchant"] as const) {
           exact: true,
         })
       ).toBeVisible()
+      await page
+        .getByRole("menuitem", { name: "Recovery details", exact: true })
+        .click()
+      const recoveryDialog = page.getByRole("dialog", {
+        name: "Recovery for Daily wallet",
+        exact: true,
+      })
+      const recoveryDetails = recoveryDialog.getByText(
+        "Recovery sync details",
+        { exact: true }
+      )
+      await expect(recoveryDetails).toBeVisible()
+      await recoveryDetails.click()
+      await expect(
+        recoveryDialog.getByText("Wallet 1 backup:", { exact: false })
+      ).toBeVisible()
+      await expect(
+        recoveryDialog.locator("li").filter({ hasText: "Wallet 1 backup:" })
+      ).toHaveText(
+        "Wallet 1 backup: not enough confirmed copies (1/1 fresh target readbacks; 0 independent copies)"
+      )
       await page.keyboard.press("Escape")
       await page
         .getByRole("button", { name: "Add wallet", exact: true })

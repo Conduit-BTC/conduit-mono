@@ -26,10 +26,35 @@ function surface(
     createdAt: 1,
     updatedAt: 1,
   }
+  const walletDiagnosis: UseWalletsReturn["recoveryDiagnosisByWallet"][string] =
+    {
+      backup: {
+        ready: recoverySync !== "pending",
+        confirmedTargets: 0,
+        targetCount: recoverySync === "pending" ? 1 : 0,
+        independentCopies: 0,
+        issues: recoverySync === "pending" ? ["awaiting_publish"] : [],
+      },
+      primary: {
+        ready: true,
+        confirmedTargets: 0,
+        targetCount: 0,
+        independentCopies: 0,
+        issues: [],
+      },
+    }
   const wallets = {
+    wallets: hasWallet ? [wallet] : [],
     portableWallets: hasWallet ? [wallet] : [],
     connectedWallets: [],
     runtime: {},
+    recoverySyncByWallet: hasWallet
+      ? { wallet: recoverySync === "ready" ? "ready" : "pending" }
+      : {},
+    recoveryDiagnosisByWallet: hasWallet ? { wallet: walletDiagnosis } : {},
+    mainWalletSync: null,
+    mainWalletDiagnosis: null,
+    recoveryDiscoveryDiagnosis: null,
     nwcSnapshots: {},
     loading: false,
     initializationError: null,
