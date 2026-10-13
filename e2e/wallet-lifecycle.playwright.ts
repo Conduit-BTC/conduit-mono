@@ -1493,7 +1493,11 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
                 records.some(
                   (record) =>
                     record.event.id !==
-                      (window as any).__mainChoiceBefore.eventId &&
+                      (
+                        window as Window & {
+                          __mainChoiceBefore: { eventId: string }
+                        }
+                      ).__mainChoiceBefore.eventId &&
                     record.event.tags.some(
                       (tag: string[]) =>
                         tag[0] === "d" &&
