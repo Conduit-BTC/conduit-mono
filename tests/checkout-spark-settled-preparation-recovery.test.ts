@@ -7,6 +7,7 @@ import {
   calculateConduitCheckoutFeeSats,
   checkoutSparkConduitFeeRecipient,
   DexieCheckoutSparkSettledRepository,
+  CheckoutSparkBuyerPreparationAuthorityEndedError,
   fetchLnurlPayMetadata,
   stageOrderRelayDelivery,
   retryOrderRelayDelivery,
@@ -785,7 +786,7 @@ describe("settled preparation phase recovery", () => {
             { ...step, legId: plan.recipients[0]!.legId },
             dependencies
           )
-        ).rejects.toThrow("order authority changed")
+        ).rejects.toThrow(CheckoutSparkBuyerPreparationAuthorityEndedError)
         expect(payoutCalls).toBe(0)
         expect(payerCalls).toBe(0)
         expect(f.calls).toEqual({ open: 1, close: 0, invoice: 1, transport: 1 })

@@ -20,6 +20,7 @@ import {
 } from "@conduit/ui"
 import { CheckoutSparkMerchantPayoutReview } from "./CheckoutSparkMerchantPayoutReview"
 import { CheckoutSparkMerchantPaymentCard } from "./CheckoutSparkMerchantPaymentCard"
+import { formatMerchantCheckoutSparkPayoutHistory } from "../lib/checkout-spark-payout-history-display"
 import {
   readMerchantCheckoutSparkVerification,
   type MerchantCheckoutSparkRetirementRead,
@@ -889,9 +890,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           "No unpaid frozen payout invoice is saved for this order. No payout was sent."
         )
       } else if (inspected.payoutHistory?.status === "inspected") {
-        const history = inspected.payoutHistory
         setNotice(
-          `Checked ${history.checkedLegs} exact payout transfer${history.checkedLegs === 1 ? "" : "s"}: ${history.newlyConfirmedLegs} newly confirmed, ${history.unresolvedLegs} unresolved. ${history.withoutIntentLegs} leg${history.withoutIntentLegs === 1 ? "" : "s"} still lack a frozen invoice. No payout was sent by this check.`
+          formatMerchantCheckoutSparkPayoutHistory(inspected.payoutHistory)
         )
       }
     } catch {

@@ -16,6 +16,7 @@ import {
   buildCheckoutSparkRecoveryRumor,
   buildCheckoutSparkMerchantProgressRumor,
   createCheckoutSparkMerchantProgress,
+  createCheckoutSparkMerchantSettlementRecord,
   createCheckoutSparkRecoveryPayload,
   EVENT_KINDS,
   getDirectMessageConversationList,
@@ -29,19 +30,23 @@ import {
   DexieCheckoutSparkSettledRepository,
   deriveCheckoutSparkSettledTransferId,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
   freezeCheckoutSparkPlan,
   getMerchantCheckoutSparkRecoveryList,
   parseCheckoutSparkMerchantProgressRumor,
   parseCheckoutSparkRecoveryRumor,
   prepareCheckoutSparkSettledLeg,
+  prepareCheckoutSparkNativeTreasury,
   projectCheckoutSparkMerchantSettlement,
   recordCheckoutSparkSettledCredit,
   recordCheckoutSparkSettledLegStatus,
+  recordCheckoutSparkNativeTreasuryStatus,
   resolveCheckoutSparkLnurlInvoice,
   withMerchantCheckoutSparkRecovery,
   type CheckoutSparkMerchantProgressPayload,
   type MerchantCheckoutSparkRecoveryCandidate,
   type SignedPublicNostrEvent,
+  type CheckoutSparkNativeTreasuryObservation,
 } from "@conduit/core"
 import { ConduitDB } from "@conduit/core/db"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
@@ -85,6 +90,7 @@ import {
   type MerchantCheckoutSparkContinuationDependencies,
 } from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
 import { advanceMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
+import { formatMerchantCheckoutSparkPayoutHistory } from "../apps/merchant/src/lib/checkout-spark-payout-history-display"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -93,6 +99,7 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { nativeTreasuryFixture } from "./support/checkout-spark-native-treasury-fixture"
 import {
   __resetProtectedReadSigner,
   getProtectedReadAuthorization,
@@ -2813,6 +2820,324 @@ describe("Merchant checkout Spark payout history inspection", () => {
           registerPayoutHistoryTest.each([...cases])(name, run, 15_000),
     }
   )
+
+  async function nativeHistoryFixture(
+    repository: DexieCheckoutSparkSettledRepository,
+    status:
+      | "unprepared"
+      | "prepared"
+      | "submitted"
+      | "paid"
+      | "conflicting_evidence" = "prepared"
+  ) {
+    const base = nativeTreasuryFixture(undefined, undefined, MERCHANT)
+    const product = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: CREATED_AT / 1_000,
+        tags: [
+          ["d", "sku"],
+          ["title", "Native history fixture"],
+          ["price", "1000", "SAT"],
+          ["type", "simple", "digital"],
+        ],
+        content: "Signed native history listing",
+      },
+      MERCHANT_SECRET
+    )
+    const plan = freezeCheckoutSparkSettledTreasuryPlan({
+      ...base.plan,
+      commerceQuote: {
+        ...base.plan.commerceQuote,
+        lines: base.plan.commerceQuote.lines.map((line) => ({
+          ...line,
+          productEventId: product.id,
+        })),
+      },
+      recipients: base.plan.recipients.map((recipient) =>
+        recipient.kind === "merchant"
+          ? {
+              ...recipient,
+              destination: {
+                ...recipient.destination,
+                source: {
+                  type: "signed_profile" as const,
+                  profileEventId: SETTLED_PROFILE.id,
+                  profileEventCreatedAt: SETTLED_PROFILE.created_at,
+                },
+              },
+            }
+          : recipient
+      ),
+    })
+    const credited = recordCheckoutSparkSettledCredit(
+      createCheckoutSparkSettledReconciliation(plan),
+      {
+        ...base.state.credit!,
+        requestId: plan.funding.requestId,
+        paymentHash: plan.funding.paymentHash,
+        receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+        grossSats: plan.funding.grossFundingSats,
+      }
+    )
+    const legId = plan.recipients[0]!.legId
+    const prepared = prepareCheckoutSparkSettledLeg(credited, {
+      ...base.state.legs[0]!.intent!,
+      legId,
+      transferId: deriveCheckoutSparkSettledTransferId(plan, legId),
+    })
+    const paid = recordCheckoutSparkSettledLegStatus(prepared, {
+      legId,
+      transferId: prepared.legs[0]!.intent!.transferId,
+      paymentHash: prepared.legs[0]!.intent!.paymentHash,
+      status: "paid",
+      observedAt: CREATED_AT + 3,
+      finalFeeSats: base.state.legs[0]!.finalFeeSats!,
+      finalDebitSats: base.state.legs[0]!.finalDebitSats!,
+    })
+    const record = {
+      ...createCheckoutSparkMerchantSettlementRecord(plan),
+      credit: base.record.credit,
+      paidLegs: base.record.paidLegs.map((leg) => ({
+        ...leg,
+        legId,
+        transferId: prepared.legs[0]!.intent!.transferId,
+      })),
+    }
+    const f = { ...base, plan, state: paid, record }
+    let state =
+      status !== "unprepared"
+        ? prepareCheckoutSparkNativeTreasury(f.state, {
+            settlement: f.record,
+            preparedAt: CREATED_AT + 4,
+          })
+        : createCheckoutSparkSettledReconciliation(f.plan)
+    if (status !== "prepared" && status !== "unprepared") {
+      state = recordCheckoutSparkNativeTreasuryStatus(state, {
+        invoiceId: f.plan.nativeTreasury!.invoiceId,
+        status,
+        observedAt: CREATED_AT + 5,
+        ...(status === "paid"
+          ? {
+              providerTransferId: "native-summary-provider-transfer",
+              finalFeeSats: 0,
+              finalDebitSats: state.treasuryFinalization!.intent!.amountSats,
+            }
+          : {}),
+      })
+    }
+    const rumor = buildCheckoutSparkRecoveryRumor(
+      createCheckoutSparkSettledRecoveryPayload({
+        state,
+        senderPubkey: BUYER,
+        mnemonic: SETTLED_MNEMONIC,
+        accountNumber: 0,
+        preparedAt: CREATED_AT + 10,
+        sourceEvents: [product, SETTLED_PROFILE],
+      })
+    )
+    const wrap = signedWrap(MERCHANT, CREATED_AT)
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async () => protectedRead([wrap]),
+      giftUnwrap: async () => rumor,
+      readCheckoutSparkPlanSourceEvents: async () => ({
+        events: [product, SETTLED_PROFILE],
+        coverage: "complete",
+      }),
+    })
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+    await repository.importMerchantOrderRecovery(
+      state,
+      {
+        schemaVersion: 1,
+        merchantPubkey: MERCHANT,
+        buyerPubkey: BUYER,
+        orderId: f.plan.orderId,
+        rumorId: "a".repeat(64),
+        contentHash: "b".repeat(64),
+        checkoutId: f.plan.checkoutId,
+        planDigest: f.plan.planDigest,
+      },
+      () => {}
+    )
+    return { ...f, state, selected }
+  }
+
+  it("reports a finite prepared native lookup without another provider read or send", async () => {
+    await withRecoveryDatabase(async (_database, repository) => {
+      const f = await nativeHistoryFixture(repository)
+      let nativeReads = 0
+      let sends = 0
+      const result = await inspectMerchantCheckoutSparkSettledPayoutHistory(
+        MERCHANT,
+        f.selected,
+        {
+          repository,
+          now: () => f.plan.takeoverAt + 1,
+          deriveIdentity: async () => f.plan.funding.receiverIdentityPublicKey,
+          openWallet: async () => ({
+            ensurePrivateReady: async () => {},
+            getIdentityPublicKey: async () =>
+              f.plan.funding.receiverIdentityPublicKey,
+            getLightningReceiveRequest: async () => null,
+            getTransfer: async () => undefined,
+            getTransferFromSsp: async () => undefined,
+            cleanup: async () => {},
+            nativeTreasury: {
+              inspectCheckoutTreasury: async (request) => {
+                nativeReads += 1
+                return {
+                  invoiceId: request.nativeTreasury.invoiceId,
+                  status: "pending",
+                } satisfies CheckoutSparkNativeTreasuryObservation
+              },
+              preflightCheckoutTreasury: async () => {
+                throw new Error("History inspection cannot preflight")
+              },
+              sendCheckoutTreasury: async () => {
+                sends += 1
+                throw new Error("History inspection cannot send")
+              },
+            },
+          }),
+          lockManager: null,
+          requireCrossTabLock: false,
+        }
+      )
+      expect(result.status).toBe("consumed")
+      expect(result.payoutHistory).toMatchObject({
+        status: "inspected",
+        nativeSummary: {
+          savedStatus: "prepared",
+          hasProviderTransferId: false,
+          providerObservation: "pending",
+          receiptProof: "not_checked",
+        },
+      })
+      expect(nativeReads).toBe(1)
+      expect(sends).toBe(0)
+    })
+  })
+
+  it("retains unprepared native facts without opening a wallet or pretending to inspect", async () => {
+    await withRecoveryDatabase(async (_database, repository) => {
+      const f = await nativeHistoryFixture(repository, "unprepared")
+      let opens = 0
+      const result = await inspectMerchantCheckoutSparkSettledPayoutHistory(
+        MERCHANT,
+        f.selected,
+        {
+          repository,
+          now: () => f.plan.takeoverAt + 1,
+          openWallet: async () => {
+            opens += 1
+            throw new Error("No funding or intent may open a wallet")
+          },
+          lockManager: null,
+          requireCrossTabLock: false,
+        }
+      )
+      expect(result.status).toBe("consumed")
+      expect(result.payoutHistory).toMatchObject({
+        status: "credit_needed",
+        nativeSummary: {
+          savedStatus: "unprepared",
+          hasProviderTransferId: false,
+          providerObservation: "not_checked",
+          receiptProof: "not_checked",
+        },
+      })
+      expect(opens).toBe(0)
+    })
+  })
+
+  it.each([
+    { saved: "submitted", observed: "pending", hasId: false },
+    { saved: "prepared", observed: "not_found", hasId: false },
+    {
+      saved: "conflicting_evidence",
+      observed: "conflicting_evidence",
+      hasId: false,
+    },
+    { saved: "paid", observed: "paid", hasId: true },
+  ] as const)(
+    "preserves finite native $saved / $observed inspection without extra reads or receipt invention",
+    async ({ saved, observed, hasId }) => {
+      await withRecoveryDatabase(async (_database, repository) => {
+        const f = await nativeHistoryFixture(repository, saved)
+        let nativeReads = 0
+        let fundingReads = 0
+        let sends = 0
+        const result = await inspectMerchantCheckoutSparkSettledPayoutHistory(
+          MERCHANT,
+          f.selected,
+          {
+            repository,
+            now: () => f.plan.takeoverAt + 1,
+            deriveIdentity: async () =>
+              f.plan.funding.receiverIdentityPublicKey,
+            openWallet: async () => ({
+              ensurePrivateReady: async () => {},
+              getIdentityPublicKey: async () =>
+                f.plan.funding.receiverIdentityPublicKey,
+              getLightningReceiveRequest: async () => {
+                fundingReads += 1
+                return null
+              },
+              getTransfer: async () => undefined,
+              getTransferFromSsp: async () => undefined,
+              cleanup: async () => {},
+              nativeTreasury: {
+                inspectCheckoutTreasury: async (request) => {
+                  nativeReads += 1
+                  return observed === "paid"
+                    ? {
+                        invoiceId: request.nativeTreasury.invoiceId,
+                        status: "paid",
+                        providerTransferId: "native-summary-provider-transfer",
+                        finalFeeSats: 0,
+                        finalDebitSats: request.authorizedDebitSats,
+                      }
+                    : {
+                        invoiceId: request.nativeTreasury.invoiceId,
+                        status: observed,
+                      }
+                },
+                preflightCheckoutTreasury: async () => {
+                  throw new Error("History inspection cannot preflight")
+                },
+                sendCheckoutTreasury: async () => {
+                  sends += 1
+                  throw new Error("History inspection cannot send")
+                },
+              },
+            }),
+            lockManager: null,
+            requireCrossTabLock: false,
+          }
+        )
+        expect(result.status).toBe("consumed")
+        expect(result.payoutHistory!.nativeSummary).toEqual({
+          savedStatus: saved,
+          hasProviderTransferId: hasId,
+          providerObservation: observed,
+          receiptProof: observed === "paid" ? "unavailable" : "not_checked",
+        })
+        expect(nativeReads).toBe(1)
+        expect(fundingReads).toBe(observed === "paid" ? 1 : 0)
+        expect(sends).toBe(0)
+        expect(Object.keys(result.payoutHistory!.nativeSummary!)).toEqual([
+          "savedStatus",
+          "hasProviderTransferId",
+          "providerObservation",
+          "receiptProof",
+        ])
+      })
+    }
+  )
+
   async function preparedHistoryFixture(
     repository: DexieCheckoutSparkSettledRepository,
     input: { merchantPrepared?: boolean; localOrigin?: boolean } = {}
@@ -4615,7 +4940,17 @@ describe("Merchant checkout Spark payout history inspection", () => {
       "inspectMerchantCheckoutSparkSettledPayoutHistory"
     )
     expect(panelSource).toMatch(/may\s+claim\s+pending\s+inbound\s+funds/)
-    expect(panelSource).toContain("No payout was sent by this check")
+    expect(panelSource).toContain("formatMerchantCheckoutSparkPayoutHistory")
+    expect(
+      formatMerchantCheckoutSparkPayoutHistory({
+        status: "inspected",
+        checkedLegs: 1,
+        newlyConfirmedLegs: 0,
+        unresolvedLegs: 1,
+        withoutIntentLegs: 0,
+        alreadyPaidLegs: 0,
+      })
+    ).toContain("No payout was sent by this check")
   })
 
   it("cancels payout-history inspection after wallet setup and cleans up", async () => {

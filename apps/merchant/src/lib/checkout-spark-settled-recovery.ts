@@ -46,6 +46,7 @@ import {
   type SparkCheckoutLightningClosedReturnedInspection,
   type SparkCheckoutLightningClosedReturnedInspectionInput,
   type CheckoutSparkMerchantSettlementRecord,
+  type CheckoutSparkNativeTreasuryObservation,
 } from "@conduit/core"
 import merchantPackage from "../../package.json"
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
@@ -320,6 +321,16 @@ interface RecoveryCreditDependencies extends RecoveryKeyVerificationDependencies
 
 type RecoveryHistoryDependencies = RecoveryCreditDependencies
 
+export interface MerchantCheckoutSparkNativeHistorySummary {
+  savedStatus: NonNullable<
+    CheckoutSparkSettledReconciliation["treasuryFinalization"]
+  >["status"]
+  hasProviderTransferId: boolean
+  providerObservation:
+    CheckoutSparkNativeTreasuryObservation["status"] | "not_checked"
+  receiptProof: "not_checked" | "verified" | "unavailable"
+}
+
 export interface MerchantCheckoutSparkPayoutHistory {
   status: "credit_needed" | "no_intents" | "inspected"
   checkedLegs: number
@@ -328,6 +339,8 @@ export interface MerchantCheckoutSparkPayoutHistory {
   withoutIntentLegs: number
   /** Imported paid claims re-attested against exact provider history. */
   alreadyPaidLegs: number
+  /** Finite facts from this existing inspection, never payment identifiers. */
+  nativeSummary?: MerchantCheckoutSparkNativeHistorySummary
 }
 
 export interface MerchantCheckoutSparkPayoutHistoryResult extends MerchantCheckoutSparkRecoveryHandoffResult {
@@ -1855,12 +1868,23 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
         )
     ).length
     const frozenLegs = imported.state.legs.filter((leg) => leg.intent !== null)
-    const base = {
+    const base: Omit<MerchantCheckoutSparkPayoutHistory, "status"> = {
       checkedLegs: 0,
       newlyConfirmedLegs: 0,
       unresolvedLegs: 0,
       withoutIntentLegs,
       alreadyPaidLegs: 0,
+      ...(imported.state.treasuryFinalization
+        ? {
+            nativeSummary: {
+              savedStatus: imported.state.treasuryFinalization.status,
+              hasProviderTransferId:
+                imported.state.treasuryFinalization.providerTransferId !== null,
+              providerObservation: "not_checked",
+              receiptProof: "not_checked",
+            },
+          }
+        : {}),
     }
     if (!imported.state.credit) {
       payoutHistory = { ...base, status: "credit_needed" }
@@ -2044,6 +2068,12 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
           summary.unresolvedLegs += 1
         } else {
           const native = current.state.treasuryFinalization!
+          summary.nativeSummary = {
+            savedStatus: native.status,
+            hasProviderTransferId: native.providerTransferId !== null,
+            providerObservation: "not_checked",
+            receiptProof: "not_checked",
+          }
           const observation =
             await wallet.nativeTreasury.inspectCheckoutTreasury({
               network: plan.network,
@@ -2053,6 +2083,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
               providerTransferId: native.providerTransferId,
             })
           assertEligible()
+          summary.nativeSummary.providerObservation = observation.status
           if (
             observation.status !== "paid" ||
             (native.status === "paid" &&
@@ -2093,8 +2124,10 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
                 assertEligible()
                 summary.newlyConfirmedLegs += 1
               }
+              summary.nativeSummary.receiptProof = "verified"
             } catch {
               assertEligible()
+              summary.nativeSummary.receiptProof = "unavailable"
               summary.unresolvedLegs += 1
             }
           }

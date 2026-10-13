@@ -168,8 +168,15 @@ const inspected = {
 }
 
 function interruptedNativeFixture(
-  status: "prepared" | "submitted" | "ambiguous",
-  observation: "paid" | "not_found" = "paid"
+  status: "prepared" | "submitted" | "ambiguous" | "terminal_failure",
+  observation:
+    | "paid"
+    | "not_found"
+    | "terminal_failure"
+    | "conflicting_evidence"
+    | "lookup_unavailable"
+    | "pending" = "paid",
+  policy: { noSavedReceipt?: boolean; acknowledgmentUnavailable?: boolean } = {}
 ) {
   const native = nativeTreasuryFixture()
   const clock = native.plan.takeoverAt + 1
@@ -195,11 +202,9 @@ function interruptedNativeFixture(
   }
   // The provider receipt was saved, but the subsequent terminal state write
   // was interrupted. Payment truth does not itself repair this router state.
-  const record = recordCheckoutSparkMerchantTreasury(
-    native.record,
-    state,
-    evidence
-  )
+  const record = policy.noSavedReceipt
+    ? native.record
+    : recordCheckoutSparkMerchantTreasury(native.record, state, evidence)
   const selected: MerchantCheckoutSparkRecoveryCandidate = {
     ...candidate,
     checkoutId: native.plan.checkoutId,
@@ -262,7 +267,7 @@ function interruptedNativeFixture(
     selectPayout: async () => ({ status: "native_treasury" }),
     continueNativeTreasury: async (_principal, recovered, input) => {
       expect(recovered).toEqual(selected)
-      expect(input?.inspectionOnly).toBe(true)
+      expect(input?.inspectionOnly).toBe(!policy.noSavedReceipt)
       const payout = await runCheckoutSparkNativeTreasuryStep({
         checkoutId: selected.checkoutId,
         planDigest: selected.planDigest,
@@ -287,7 +292,7 @@ function interruptedNativeFixture(
             expect(target.nativeTreasury).toEqual(native.plan.nativeTreasury)
             return observation === "paid"
               ? evidence
-              : { status: "not_found", invoiceId: intent.invoiceId }
+              : { status: observation, invoiceId: intent.invoiceId }
           },
           preflight: async () => {
             throw new Error("Receipt repair is query-only")
@@ -298,9 +303,12 @@ function interruptedNativeFixture(
           },
         },
         proveCommerce: async () => {
+          if (policy.noSavedReceipt) return native.record
           throw new Error("Existing native intent must reconcile first")
         },
         acknowledgeRecoverySnapshot: async () => {
+          if (policy.acknowledgmentUnavailable)
+            throw new Error("Temporary recovery acknowledgment outage")
           throw new Error("Inspection does not authorize a new send snapshot")
         },
       })
@@ -328,8 +336,13 @@ function interruptedNativeFixture(
       retirementChecks,
       rescans,
     }),
-    run: () =>
-      advanceMerchantCheckoutSparkOrder(merchant, selected, () => {}, options),
+    run: (assertActive = () => {}) =>
+      advanceMerchantCheckoutSparkOrder(
+        merchant,
+        selected,
+        assertActive,
+        options
+      ),
   }
 }
 
@@ -585,6 +598,105 @@ describe("automatic checkout Spark order reconciliation adapter", () => {
       expect(context.counts().sends).toBe(0)
     }
   )
+
+  it("reports an exact terminal native failure as attention without another payment", async () => {
+    const context = interruptedNativeFixture("submitted", "terminal_failure")
+    expect(await context.run()).toBe("needs_attention")
+    expect(context.state().treasuryFinalization!.status).toBe(
+      "terminal_failure"
+    )
+    expect(context.counts()).toEqual({
+      inspections: 1,
+      sends: 0,
+      preparations: 0,
+      retirementChecks: 0,
+      rescans: 0,
+    })
+  })
+
+  it("reports conflicting exact native evidence as attention without another payment", async () => {
+    const context = interruptedNativeFixture(
+      "submitted",
+      "conflicting_evidence"
+    )
+    expect(await context.run()).toBe("needs_attention")
+    expect(context.state().treasuryFinalization!.status).toBe(
+      "conflicting_evidence"
+    )
+    expect(context.counts().sends).toBe(0)
+    expect(context.counts().preparations).toBe(0)
+    expect(context.counts().rescans).toBe(0)
+  })
+
+  it("reports unavailable exact native history without claiming continued payment progress", async () => {
+    const context = interruptedNativeFixture("submitted", "lookup_unavailable")
+    expect(await context.run()).toBe("unavailable")
+    expect(context.state().treasuryFinalization!.status).toBe("submitted")
+    expect(context.counts().inspections).toBe(1)
+    expect(context.counts().sends).toBe(0)
+    expect(context.counts().preparations).toBe(0)
+    expect(context.counts().rescans).toBe(0)
+  })
+
+  it("keeps a restored terminal native marker awaiting attention when no exact transfer is found", async () => {
+    const context = interruptedNativeFixture("terminal_failure", "not_found")
+    expect(await context.run()).toBe("needs_attention")
+    expect(context.state().treasuryFinalization!.status).toBe(
+      "terminal_failure"
+    )
+    expect(context.counts().inspections).toBe(1)
+    expect(context.counts().sends).toBe(0)
+    expect(context.counts().preparations).toBe(0)
+    expect(context.counts().rescans).toBe(0)
+  })
+
+  it("reports unavailable native recovery acknowledgment without claiming send progress", async () => {
+    const context = interruptedNativeFixture("prepared", "not_found", {
+      noSavedReceipt: true,
+      acknowledgmentUnavailable: true,
+    })
+    expect(await context.run()).toBe("unavailable")
+    expect(context.state().treasuryFinalization!.status).toBe("prepared")
+    expect(context.counts().sends).toBe(0)
+    expect(context.counts().rescans).toBe(0)
+  })
+
+  it("keeps an exact pending native transfer on the same query-only continuation", async () => {
+    const context = interruptedNativeFixture("submitted", "pending")
+    expect(await context.run()).toBe("progress_pending")
+    expect(context.state().treasuryFinalization!.status).toBe("ambiguous")
+    expect(context.counts()).toEqual({
+      inspections: 1,
+      sends: 0,
+      preparations: 0,
+      retirementChecks: 0,
+      rescans: 1,
+    })
+  })
+
+  it("discards a held native possible-send classification after the Merchant session changes", async () => {
+    const context = interruptedNativeFixture("terminal_failure", "not_found")
+    let active = true
+    const repository = context.options.repository!
+    const continueNative = context.options.continueNativeTreasury!
+    context.options.continueNativeTreasury = async (...args) => {
+      const result = await continueNative(...args)
+      const load = repository.load.bind(repository)
+      repository.load = async (...input) => {
+        const current = await load(...input)
+        active = false
+        return current
+      }
+      return result
+    }
+    await expect(
+      context.run(() => {
+        if (!active) throw new Error("Merchant session changed")
+      })
+    ).rejects.toThrow("Merchant session changed")
+    expect(context.counts().sends).toBe(0)
+    expect(context.counts().rescans).toBe(0)
+  })
 
   it("does not resend a stale prepared native request when its paid ledger lacks fresh provider readback", async () => {
     const context = interruptedNativeFixture("prepared", "not_found")

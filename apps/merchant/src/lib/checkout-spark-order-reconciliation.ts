@@ -422,10 +422,52 @@ export async function advanceMerchantCheckoutSparkOrder(
     })
     assertActive()
     if (result.status !== "consumed" || !result.payout) return "unavailable"
+    if (
+      result.payout.reason === "terminal_failure" ||
+      result.payout.reason === "provider_evidence_conflicting" ||
+      result.payout.reason === "zero_remainder" ||
+      result.payout.reason === "funding_shortfall" ||
+      result.payout.reason === "fee_over_cap" ||
+      result.payout.reason === "insufficient_funds" ||
+      result.payout.reason === "prerequisite_unpaid" ||
+      result.payout.reason === "authority_not_started" ||
+      result.payout.reason === "authority_transferred"
+    )
+      return "needs_attention"
+    if (
+      result.payout.reason === "provider_evidence_unavailable" ||
+      result.payout.reason === "recovery_handoff_unavailable" ||
+      result.payout.reason === "fee_unavailable"
+    )
+      return "unavailable"
+    if (result.payout.reason === "recipient_unverified")
+      return "recipient_unverified"
+    if (result.payout.reason === "prior_possible_send") {
+      // Pending exact history stays query-only. A restored terminal marker with
+      // no current cancellation capability is not healthy payment progress.
+      assertActive()
+      const current = await repository.load(
+        candidate.checkoutId,
+        candidate.planDigest
+      )
+      assertActive()
+      if (
+        current.status !== "active" ||
+        current.state.plan.merchantPubkey !== principal ||
+        current.state.plan.checkoutId !== candidate.checkoutId ||
+        current.state.plan.orderId !== candidate.orderId ||
+        current.state.plan.planDigest !== candidate.planDigest ||
+        current.state.plan.takeoverAt !== candidate.takeoverAt
+      )
+        return "unavailable"
+      if (
+        current.state.treasuryFinalization?.status === "terminal_failure" ||
+        current.state.treasuryFinalization?.status === "conflicting_evidence"
+      )
+        return "needs_attention"
+    }
     dependencies.requestRescan()
-    return result.payout.reason === "zero_remainder"
-      ? "needs_attention"
-      : "progress_pending"
+    return "progress_pending"
   }
   if (
     selection.status === "preparation_needed" ||
