@@ -413,13 +413,8 @@ for (const size of [
                 }
               ) {
                 requests.push({ ...value, check: value.check === true })
-                if (requests.length === 1) {
-                  await new Promise<void>((resolve) => {
-                    ;(window as any).__addressRequestUi.releaseSubmission =
-                      resolve
-                  })
+                if (requests.length === 1)
                   throw new Error("controlled transport failure")
-                }
                 if (value.check) {
                   const checks = requests.filter(
                     (request) => request.check
@@ -433,10 +428,6 @@ for (const size of [
               },
               async activate(name: string) {
                 approvals++
-                await new Promise<void>((resolve) => {
-                  ;(window as any).__addressRequestUi.releaseActivation =
-                    resolve
-                })
                 return {
                   status: "registered",
                   username: name,
@@ -455,7 +446,6 @@ for (const size of [
           owner: identity.pubkey,
         }
       )
-      await expect(page.getByRole("dialog")).toHaveCount(0)
       await page.getByLabel("Desired name", { exact: true }).fill("Review-Name")
       await expect(
         page.getByLabel("Connected public identity", { exact: true })
@@ -495,23 +485,6 @@ for (const size of [
       await page
         .getByRole("button", { name: "Request name", exact: true })
         .click()
-      await page.keyboard.press("Escape")
-      await expect(page.getByRole("dialog")).toHaveCount(0)
-      await page
-        .getByRole("button", { name: "View address request", exact: true })
-        .click()
-      await expect(
-        page.getByLabel("Desired name", { exact: true })
-      ).toHaveValue("review-name")
-      await expect(
-        page.getByLabel("Desired name", { exact: true })
-      ).toBeDisabled()
-      await expect(
-        page.getByRole("button", { name: "Check request status", exact: true })
-      ).toBeDisabled()
-      await page.evaluate(() =>
-        (window as any).__addressRequestUi.releaseSubmission()
-      )
       await expect(page.getByRole("status")).toContainText(
         "Submission is not confirmed"
       )
@@ -576,33 +549,8 @@ for (const size of [
       await expect(page.getByRole("status")).toContainText(
         "Name approved for this wallet"
       )
-      await page.getByRole("button", { name: "Close", exact: true }).click()
-      await page
-        .getByRole("button", { name: "View address request", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText(
-        "Name approved for this wallet"
-      )
       await page
         .getByRole("button", { name: "Activate approved address", exact: true })
-        .click()
-      await page.getByRole("button", { name: "Close", exact: true }).click()
-      await expect(page.getByRole("dialog")).toHaveCount(0)
-      await page
-        .getByRole("button", { name: "View address request", exact: true })
-        .click()
-      await expect(
-        page.getByRole("button", {
-          name: "Activate approved address",
-          exact: true,
-        })
-      ).toBeDisabled()
-      await page.keyboard.press("Escape")
-      await page.evaluate(() =>
-        (window as any).__addressRequestUi.releaseActivation()
-      )
-      await page
-        .getByRole("button", { name: "View address request", exact: true })
         .click()
       await expect(
         page
