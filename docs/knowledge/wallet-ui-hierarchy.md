@@ -36,16 +36,16 @@ publication.
 
 ## Receiving address and name requests
 
-The custom-name invitation belongs to its wallet's Lightning address area.
-Hide it only after that wallet has a registered custom address with verified
-public lookup. Keep address verification and activation uncertainty visible.
+Keep the custom-name request form directly in its wallet's Lightning address
+area. The desired-name field and Request name action stay inline within the
+stacked card, including narrow layouts. Preserve verified receiving-address
+state alongside request approval and activation uncertainty.
 
-The address-request component owns request state outside its dialog content.
-Closing and reopening the dialog must preserve the original request ID, name,
-approval status and activation path. Keep the account/wallet React key and the
-existing exact-request retry semantics. Allow dismissal and reopening during
-submission or activation, keep duplicate actions disabled, and leave the frozen
-in-flight payload intact. Dismissal does not imply cancellation.
+Keep the account/wallet React key, original request identity and frozen
+in-flight payload when the card rerenders. Pending submission or activation
+must disable duplicate actions. Balance refresh must not reset request progress.
+The durable request workflow owns reload and cross-device recovery; the layout
+must keep its saved status and resume actions visible.
 
 Put the short Nostr receiving row immediately below its associated wallet card.
 Show "In use" only when the confirmed profile address matches that wallet.
