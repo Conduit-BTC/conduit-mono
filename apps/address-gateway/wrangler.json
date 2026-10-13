@@ -7,8 +7,8 @@
   "preview_urls": false,
   "routes": [{ "pattern": "conduit.cash/*", "zone_name": "conduit.cash" }],
   "vars": {
-    "ALLOWED_ORIGINS": "https://shop.conduit.market,https://sell.conduit.market,https://feat-conduit-cash-release.conduit-market-coo.pages.dev",
-    "TURNSTILE_HOSTNAMES": "shop.conduit.market,sell.conduit.market,feat-conduit-cash-release.conduit-market-coo.pages.dev",
+    "ALLOWED_ORIGINS": "https://shop.conduit.market,https://sell.conduit.market,https://feat-conduit-cash-release.conduit-market-coo.pages.dev,https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev",
+    "TURNSTILE_HOSTNAMES": "shop.conduit.market,sell.conduit.market,feat-conduit-cash-release.conduit-market-coo.pages.dev,feat-conduit-cash-release.conduit-merchant-33n.pages.dev",
     "PROVIDER_PROXY_QUALIFIED": "false"
   },
   "d1_databases": [

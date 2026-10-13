@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { readFileSync } from "node:fs"
+import gatewayConfig from "../apps/address-gateway/wrangler.json"
 import { secp256k1 } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { sha256 } from "../packages/core/node_modules/@noble/hashes/sha2.js"
 import { bytesToHex } from "../packages/core/node_modules/@noble/hashes/utils.js"
@@ -250,6 +251,69 @@ function fixture() {
   }
 }
 describe("approved-name gateway", () => {
+  test("only the exact Merchant release preview receives CORS and Turnstile admission", async () => {
+    const merchantOrigin =
+      "https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev"
+    const otherPreview =
+      "https://another-preview.conduit-merchant-33n.pages.dev"
+    const f = fixture()
+    f.env.ALLOWED_ORIGINS = gatewayConfig.vars.ALLOWED_ORIGINS
+    f.env.TURNSTILE_HOSTNAMES = gatewayConfig.vars.TURNSTILE_HOSTNAMES
+    for (const [origin, status, allowedOrigin] of [
+      [merchantOrigin, 204, merchantOrigin],
+      [otherPreview, 403, null],
+    ] as const) {
+      const result = await f.handle(
+        new Request(`https://conduit.cash${ADDRESS_REQUEST_PATH}`, {
+          method: "OPTIONS",
+          headers: { Origin: origin },
+        })
+      )
+      expect(result.status).toBe(status)
+      expect(result.headers.get("Access-Control-Allow-Origin")).toBe(
+        allowedOrigin
+      )
+    }
+    const request = f.nameRequest()
+    request.headers.set("Origin", merchantOrigin)
+    const verified = await handleAddressGateway(
+      request,
+      f.env,
+      [],
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (new URL(String(input)).hostname === "challenges.cloudflare.com")
+          return Response.json({
+            success: true,
+            hostname: new URL(merchantOrigin).hostname,
+            action: "address_name_request",
+          })
+        return f.fetcher(input, init)
+      }) as typeof fetch,
+      f.now
+    )
+    expect(verified.status).toBe(200)
+    expect(await verified.json()).toEqual({ status: "received" })
+
+    const rejected = fixture()
+    rejected.env.ALLOWED_ORIGINS = gatewayConfig.vars.ALLOWED_ORIGINS
+    rejected.env.TURNSTILE_HOSTNAMES = gatewayConfig.vars.TURNSTILE_HOSTNAMES
+    const rejectedRequest = rejected.nameRequest()
+    rejectedRequest.headers.set("Origin", merchantOrigin)
+    const wrongHostname = await handleAddressGateway(
+      rejectedRequest,
+      rejected.env,
+      [],
+      (async () =>
+        Response.json({
+          success: true,
+          hostname: new URL(otherPreview).hostname,
+          action: "address_name_request",
+        })) as typeof fetch,
+      rejected.now
+    )
+    expect(wrongHostname.status).toBe(400)
+    expect(await wrongHostname.json()).toEqual({ status: "challenge_failed" })
+  })
   test("operator proposes only the original verified binding and preserves legacy records", async () => {
     const f = fixture()
     await f.handle(f.nameRequest(), [])

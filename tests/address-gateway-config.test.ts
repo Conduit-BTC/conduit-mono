@@ -22,6 +22,27 @@ test("dedicated bindings permit offline config validation without credentials", 
   for (const env of ["preview", "production"] as const)
     expect(() => validateGatewayDeployment(configured(), env)).not.toThrow()
 })
+test("production pins the one Merchant release preview without admitting another preview", () => {
+  const config = configured()
+  const merchantOrigin =
+    "https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev"
+  expect(config.vars.ALLOWED_ORIGINS.split(",")).toContain(merchantOrigin)
+  expect(config.vars.TURNSTILE_HOSTNAMES.split(",")).toContain(
+    new URL(merchantOrigin).hostname
+  )
+  expect(() => validateGatewayDeployment(config, "production")).not.toThrow()
+  config.vars.ALLOWED_ORIGINS +=
+    ",https://another-preview.conduit-merchant-33n.pages.dev"
+  expect(() => validateGatewayDeployment(config, "production")).toThrow(
+    "exact app origins"
+  )
+  config.vars.ALLOWED_ORIGINS = source.vars.ALLOWED_ORIGINS
+  config.vars.TURNSTILE_HOSTNAMES +=
+    ",another-preview.conduit-merchant-33n.pages.dev"
+  expect(() => validateGatewayDeployment(config, "production")).toThrow(
+    "exact app origins"
+  )
+})
 test("production rejects missing binding, changed origins, exposed credentials and logging", () => {
   for (const mutate of [
     (c: ReturnType<typeof configured>) => {
