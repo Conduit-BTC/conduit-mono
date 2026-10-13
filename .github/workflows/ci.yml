@@ -205,7 +205,9 @@ jobs:
             "$bun_archive_dir/bun-linux-x64.zip" | sha256sum --check --status
           unzip -q "$bun_archive_dir/bun-linux-x64.zip" -d "$bun_archive_dir"
           install -m 0755 "$bun_archive_dir/bun-linux-x64/bun" /usr/local/bin/bun
+          ln -s /usr/local/bin/bun /usr/local/bin/bunx
           bun --version
+          bunx --version
           # GitHub mounts the checkout with a different owner inside the image.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - if: matrix.job.area != 'none'
