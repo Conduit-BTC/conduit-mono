@@ -1379,7 +1379,12 @@ function PortableWalletDialog({
   mode: PortableWalletMode
   onSaved(suggestion: WalletAddressSuggestion): void
 }) {
-  const { authGeneration, isAuthGenerationCurrent } = auth
+  const {
+    authGeneration,
+    isAuthGenerationCurrent,
+    isAccountIdentityCurrent,
+    accountPubkey,
+  } = auth
   const network =
     wallets.sparkAvailability.status === "ready"
       ? wallets.sparkAvailability.network
@@ -1402,10 +1407,12 @@ function PortableWalletDialog({
   const [setupReady, setSetupReady] = useState(false)
   const [dismissedDuringSetup, setDismissedDuringSetup] = useState(false)
   const dismissedDuringSetupRef = useRef(false)
+  const acknowledgedDuringSetupRef = useRef(false)
   const started = useRef(false)
   const runScope = useRef(0)
   const dismissDuringSetup = () => {
     dismissedDuringSetupRef.current = true
+    acknowledgedDuringSetupRef.current = !!recovery && saved
     setDismissedDuringSetup(true)
     setRecovery(null)
     setMnemonic("")
@@ -1419,6 +1426,7 @@ function PortableWalletDialog({
     runScope.current++
     started.current = false
     dismissedDuringSetupRef.current = false
+    acknowledgedDuringSetupRef.current = false
     setDismissedDuringSetup(false)
     setMnemonic("")
     setAccountNumber(String(defaultAccount))
@@ -1473,8 +1481,12 @@ function PortableWalletDialog({
   const submit = useCallback(async () => {
     const scope = ++runScope.current
     const generation = authGeneration
+    const owner = accountPubkey
     const current = () =>
-      runScope.current === scope && isAuthGenerationCurrent(generation)
+      runScope.current === scope &&
+      isAuthGenerationCurrent(generation) &&
+      !!owner &&
+      isAccountIdentityCurrent(owner)
     setPending(true)
     setError(null)
     try {
@@ -1555,9 +1567,29 @@ function PortableWalletDialog({
         setPhase("address")
       }
       const value = await wallets.getSparkLightningAddress(wallet.id)
-      if (current() && !dismissedDuringSetupRef.current) {
-        setAddress(value)
-        setSetupReady(true)
+      if (current()) {
+        if (!dismissedDuringSetupRef.current) {
+          setAddress(value)
+          setSetupReady(true)
+        } else if (
+          acknowledgedDuringSetupRef.current &&
+          mode === "create" &&
+          first &&
+          !imported &&
+          publicDefaultAllowed &&
+          owner &&
+          value.status === "registered"
+        ) {
+          // Done may precede relay sync and address registration. Carry only
+          // the acknowledged default choice through that background work.
+          onSaved({
+            address: value.address,
+            ownerPubkey: owner,
+            authGeneration: generation,
+            firstWallet: true,
+            imported: false,
+          })
+        }
       }
     } catch (caught) {
       if (current())
@@ -1568,12 +1600,15 @@ function PortableWalletDialog({
     }
   }, [
     authGeneration,
+    accountPubkey,
+    isAccountIdentityCurrent,
     isAuthGenerationCurrent,
     wallets,
     mode,
     mnemonic,
     accountNumber,
     defaultAccount,
+    onSaved,
   ])
   useEffect(() => {
     if (!open) return

@@ -241,7 +241,12 @@ export class BreezLightningAddressClient {
           throw new AddressError("storage_unavailable")
         }
         if (selected && checkpoint?.username !== selected) {
-          if (checkpoint?.phase === "registering")
+          // Recovery of this exact name resolves a completed submission;
+          // a different pending name may still commit and must stay pinned.
+          if (
+            checkpoint?.phase === "registering" &&
+            checkpoint.username !== existing?.username
+          )
             throw new AddressError("registration_pending")
           checkpoint = { username: selected, attempts: 1, phase: "selected" }
         }
