@@ -1825,12 +1825,17 @@ describe("SparkWalletManager", () => {
       mnemonic: "abandon ".repeat(11) + "about",
       accountNumber: 0,
     }
+    const unopened = manager.captureSession("wallet-personal")
     await manager.openWithMnemonic(openInput)
+    const firstSession = manager.captureSession("wallet-personal")
+    expect(unopened()).toBe(false)
+    expect(firstSession()).toBe(true)
 
     await expect(manager.close("wallet-personal")).rejects.toThrow(
       "disconnect not confirmed"
     )
     expect(manager.isOpen("wallet-personal")).toBe(false)
+    expect(firstSession()).toBe(false)
     expect(releaseCalls).toBe(0)
 
     await expect(manager.openWithMnemonic(openInput)).rejects.toThrow(
@@ -1845,6 +1850,8 @@ describe("SparkWalletManager", () => {
 
     await manager.openWithMnemonic(openInput)
     expect(openCalls).toBe(2)
+    expect(firstSession()).toBe(false)
+    expect(manager.captureSession("wallet-personal")()).toBe(true)
   })
 
   it("releases the wallet session lease when SDK open fails", async () => {

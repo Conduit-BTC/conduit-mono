@@ -936,6 +936,13 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       name: "Continue to checkout",
       exact: true,
     })
+    // Scrolling may legitimately collapse the dock after Add. Open this
+    // purchase explicitly; HUD tests own automatic expansion/scroll behavior.
+    const purchase = cartHud
+      .getByRole("group", { name: "Cart purchases", exact: true })
+      .getByRole("button")
+    await expect(purchase).toHaveCount(1)
+    await purchase.click()
     await expect(checkout).toBeVisible()
     await checkout.click()
     await expect(

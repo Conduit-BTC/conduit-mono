@@ -17,7 +17,7 @@ export interface MerchantPaymentVerificationCandidate {
   buyerPubkey: string
   evidenceMessageId: string
   invoice: string
-  paymentHash?: string
+  paymentHash: string
   expectedAmountMsats: number
   orderCreatedAt: number
   delivery: "buyer_and_self" | "self_only"
@@ -32,7 +32,12 @@ export type MerchantPaymentVerificationResult = {
 function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
-  return `${candidate.orderId}:${candidate.evidenceMessageId}`
+  // The invoice and its later buyer proof are two messages for one settlement.
+  // Keep a replacement invoice distinct by its decoded payment hash.
+  return JSON.stringify([
+    candidate.orderId,
+    candidate.paymentHash.toLowerCase(),
+  ])
 }
 
 export async function verifyMerchantPaymentCandidates({

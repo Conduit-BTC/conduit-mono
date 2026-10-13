@@ -43,6 +43,12 @@ not prevent reaching valid older records. Capped equal-timestamp pages retain
 unresolved range evidence; an empty or short page describes that bounded
 observation, not global historical absence.
 
+Automatic inbox synchronization coalesces with an active read. Explicit Refresh
+waits for a new read after any older read completes; concurrent clicks waiting on
+that older read share one follow-up. Browser focus, online and visibility resume
+use the coalescing path, including Market Orders. Neither path bypasses account
+authority or protected-read checks.
+
 Recent sync can seed a partial cursor before any older-page read. The durable
 `historyAttempted` marker explicitly distinguishes that seed from an attempted
 historical read. Older partial ranges without the marker remain conservatively
