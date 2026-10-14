@@ -408,11 +408,17 @@ for (const size of [
             saved =
               checks === 1
                 ? { ...saved!, status: "not_received" }
-                : {
-                    ...saved!,
-                    record: { ...saved!.record, phase: "approved" },
-                    status: "approved",
-                  }
+                : checks === 2
+                  ? {
+                      ...saved!,
+                      record: { ...saved!.record, phase: "received" },
+                      status: "awaiting_review",
+                    }
+                  : {
+                      ...saved!,
+                      record: { ...saved!.record, phase: "approved" },
+                      status: "approved",
+                    }
             return saved
           },
           async activate() {
@@ -503,6 +509,11 @@ for (const size of [
     await expect(page.getByRole("status")).toContainText("No submission found")
     await expect(page.getByLabel("Desired name")).toBeDisabled()
     await page.getByRole("button", { name: "Retry same request" }).click()
+    await page.getByRole("button", { name: "Check request status" }).click()
+    await expect(page.getByRole("status")).toContainText("Pending approval")
+    await expect(
+      page.getByRole("button", { name: "Activate and use address" })
+    ).toHaveCount(0)
     await page.getByRole("button", { name: "Check request status" }).click()
     await expect(
       page.getByRole("button", { name: "Check request status" })
