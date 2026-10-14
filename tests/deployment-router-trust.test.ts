@@ -239,7 +239,7 @@ describe("managed router public trust configuration", () => {
       "production cannot enable Quantum Router"
     )
   })
-  it("activates only reviewed private Breez receivers in preview while other profiles stay inactive", () => {
+  it("activates reviewed private Breez and custom-domain receivers only in preview", () => {
     const file = loadPagesProfiles()
     expect(Object.keys(file.quantumRouterTrust).sort()).toEqual([
       "preview",
@@ -262,6 +262,17 @@ describe("managed router public trust configuration", () => {
             payRequestOrigins: ["https://breez.tips"],
             callbackOrigins: ["https://breez.tips"],
             verifyOrigins: ["https://breez.tips"],
+            verifyPathPrefix: "/lnurlp/verify/",
+            modes: ["private"],
+            binding: "metadata_hash",
+          },
+          {
+            schemaVersion: 1,
+            contractId: "conduit-cash-private-v1",
+            qualification: "accepted",
+            payRequestOrigins: ["https://conduit.cash"],
+            callbackOrigins: ["https://conduit.cash"],
+            verifyOrigins: ["https://conduit.cash"],
             verifyPathPrefix: "/lnurlp/verify/",
             modes: ["private"],
             binding: "metadata_hash",

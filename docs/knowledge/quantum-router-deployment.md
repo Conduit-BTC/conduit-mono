@@ -2,8 +2,9 @@
 
 The code-owned mainnet Pages preview profile enables Quantum Router for
 maintainer-approved funded acceptance using the qualified ordinary-private
-Breez receiver descriptor. Production remains inactive with empty receiving
-and pricing trust; preview qualification does not authorize production.
+Breez and Conduit custom-domain receiver descriptors. Production remains inactive
+with empty receiving and pricing trust; preview qualification does not authorize
+production.
 New preparation uses the shared
 `isQuantumRouterEnabled()` admission capability and requires execution to be
 enabled as well. Existing bound-plan actions use the separate compiled
@@ -137,7 +138,7 @@ See the [Cloudflare rate-limit semantics](https://developers.cloudflare.com/work
 Deterministic SAT, MSAT and BTC quotes do not need the pricing service, but still
 require qualified receiving endpoints. Unconfigured trust fails before funding;
 no localhost flag or direct-pay fallback should bypass that result. Synthetic
-qualification does not imply the reference `@conduit.cash` endpoint is accepted.
+qualification alone cannot accept a receiving endpoint.
 
 ## Native final fee collection
 
@@ -211,7 +212,7 @@ current-session guards and public dispatch policy checks.
 Automated capability and synthetic payment fixtures do not establish live
 provider settlement, signer/device behavior or recovery liveness. Those remain
 maintainer-owned funded validation before release sign-off. The approved preview
-pricing trust and ordinary-private Breez receiver descriptor are configured,
+pricing trust and ordinary-private Breez and Conduit receiver descriptors are configured,
 and both hosted preview apps expose enabled routing and execution. Exact-head
 readback, real recipient settlement, claimed native collection, safe retirement
 and physical-device recovery remain separate acceptance evidence. Production

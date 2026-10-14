@@ -17,6 +17,17 @@
           "verifyPathPrefix": "/lnurlp/verify/",
           "modes": ["private"],
           "binding": "metadata_hash"
+        },
+        {
+          "schemaVersion": 1,
+          "contractId": "conduit-cash-private-v1",
+          "qualification": "accepted",
+          "payRequestOrigins": ["https://conduit.cash"],
+          "callbackOrigins": ["https://conduit.cash"],
+          "verifyOrigins": ["https://conduit.cash"],
+          "verifyPathPrefix": "/lnurlp/verify/",
+          "modes": ["private"],
+          "binding": "metadata_hash"
         }
       ],
       "pricingUrl": "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing",
