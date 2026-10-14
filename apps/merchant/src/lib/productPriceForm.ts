@@ -3,6 +3,7 @@ import {
   type CommerceShippingCostLike,
   getCurrencyAmountStep,
   isSatsLikeCurrency,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyAmount,
   normalizeCommercePrice,
   normalizeCurrencyCode,
@@ -141,6 +142,9 @@ export function normalizePublishableProductShippingCost(
   amount: number,
   currency: string
 ): number {
+  if (!isSupportedCommercePriceCurrency(currency)) {
+    throw new Error("Shipping currency is not supported for new commerce.")
+  }
   if (!Number.isFinite(amount) || amount < 0) {
     throw new Error("Shipping must be a non-negative amount.")
   }

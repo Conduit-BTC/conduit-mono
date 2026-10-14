@@ -12,6 +12,7 @@ export * from "./theme"
 
 // Utils
 export { cn } from "./utils"
+export { shuffleLoadingMessages } from "./checkout-loading-messages"
 
 export * from "./event-timeline-presentation"
 

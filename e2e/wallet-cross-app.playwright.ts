@@ -6,7 +6,12 @@ import {
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import type { WalletDescriptor } from "@conduit/core"
-import type { SparkRecoveryTransport } from "@conduit/core/wallets/spark-recovery-service"
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
+import type { AccountSignerOperationOptions } from "@conduit/core/protocol/nostr-event-signer"
+import type {
+  SparkRecoveryRecord,
+  SparkRecoveryTransport,
+} from "@conduit/core/wallets/spark-recovery-service"
 import {
   prepareControlledWallet,
   installControlledWallet,
@@ -20,6 +25,51 @@ import {
 } from "./helpers/real-nip07-signer"
 import { publishTestRelayEvents } from "./helpers/auth"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+
+type WalletFixtureWindow = Window & {
+  nostr: {
+    nip44: {
+      decrypt(peer: string, ciphertext: string): Promise<string>
+    }
+  }
+  __walletProbe: {
+    opens: number
+    disconnects: number
+    registrations: number
+    importMnemonic: string
+    openedAccounts: number[]
+    addressUnavailableReason?: string
+    reloadHeld: boolean
+    reloadReleased: boolean
+    recoveryReads: number
+    releaseReload(): void
+  }
+  __controlledWalletController: Omit<UseWalletsReturn, "unlockSpark"> & {
+    unlockSpark(
+      walletId: string,
+      password?: string,
+      migrate?: boolean,
+      options?: Pick<AccountSignerOperationOptions, "priority">
+    ): Promise<void>
+  }
+  __walletSignerGate: {
+    mode: "deny" | "hold"
+    entered: number
+    exited: number
+    release(): void
+  }
+  __backgroundRecoveryReadHeld: boolean
+  __releaseBackgroundRecoveryRead(): void
+  __backgroundOpen: Promise<string>
+  __foregroundOpen: Promise<string>
+  __secondForegroundOpen: Promise<string>
+  __lateBackgroundRecoveryReadHeld: boolean
+  __releaseLateBackgroundRecoveryRead(): void
+  __restoreLateBackgroundRecoveryRead(): void
+  __lateBackgroundOpen: Promise<string>
+  __joinedLateBackgroundOpen: Promise<string>
+}
+
 const core = "/@fs" + path.resolve("packages/core/src/index.ts")
 const storage =
   "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts")
@@ -52,9 +102,14 @@ async function gateWalletSigner(page: Page) {
     const { db } = await import(moduleUrl)
     const credential = (await db.walletCredentials.toArray())[0]
     const ciphertext = JSON.parse(credential.credential).ciphertext
-    const fixture = window as any
+    const fixture = window as WalletFixtureWindow
     const decrypt = fixture.nostr.nip44.decrypt
-    const gate = { mode: "deny", entered: 0, exited: 0, release: () => {} }
+    const gate: WalletFixtureWindow["__walletSignerGate"] = {
+      mode: "deny",
+      entered: 0,
+      exited: 0,
+      release: () => {},
+    }
     fixture.__walletSignerGate = gate
     fixture.nostr.nip44.decrypt = async (peer: string, value: string) => {
       if (value !== ciphertext) return decrypt(peer, value)
@@ -161,17 +216,21 @@ for (const app of ["market", "merchant"] as const) {
         page.getByRole("alert").filter({ hasText: "authorization_denied" })
       ).toBeVisible()
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.opens)
+        await page.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.opens
+        )
       ).toBe(1)
       await page.evaluate(() => {
-        ;(window as any).__walletSignerGate.mode = "hold"
+        ;(window as WalletFixtureWindow).__walletSignerGate.mode = "hold"
       })
       await page
         .getByRole("button", { name: "Open wallet", exact: true })
         .click()
       await expect
         .poll(() =>
-          page.evaluate(() => (window as any).__walletSignerGate.entered)
+          page.evaluate(
+            () => (window as WalletFixtureWindow).__walletSignerGate.entered
+          )
         )
         .toBe(2)
       // A descriptor reload while external permission is pending must retain
@@ -185,10 +244,14 @@ for (const app of ["market", "merchant"] as const) {
         page.getByRole("button", { name: "Opening…", exact: true })
       ).toBeDisabled()
       await expect(page.getByRole("dialog")).toHaveCount(0)
-      await page.evaluate(() => (window as any).__walletSignerGate.release())
+      await page.evaluate(() =>
+        (window as WalletFixtureWindow).__walletSignerGate.release()
+      )
       await expect(page.getByText("Ready", { exact: true })).toBeVisible()
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.opens)
+        await page.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.opens
+        )
       ).toBe(2)
       await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
       await closeDefaultWalletSession(page)
@@ -197,7 +260,9 @@ for (const app of ["market", "merchant"] as const) {
         .click()
       await expect
         .poll(() =>
-          page.evaluate(() => (window as any).__walletSignerGate.entered)
+          page.evaluate(
+            () => (window as WalletFixtureWindow).__walletSignerGate.entered
+          )
         )
         .toBe(3)
       await expect(page.getByRole("dialog")).toHaveCount(0)
@@ -209,18 +274,27 @@ for (const app of ["market", "merchant"] as const) {
       await page
         .getByRole("menuitem", { name: "Disconnect", exact: true })
         .click()
-      await page.evaluate(() => (window as any).__walletSignerGate.release())
+      await page.evaluate(() =>
+        (window as WalletFixtureWindow).__walletSignerGate.release()
+      )
       await expect
         .poll(() =>
-          page.evaluate(() => (window as any).__walletSignerGate.exited)
+          page.evaluate(
+            () => (window as WalletFixtureWindow).__walletSignerGate.exited
+          )
         )
         .toBe(3)
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.opens)
+        await page.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.opens
+        )
       ).toBe(2)
       await expect
         .poll(() =>
-          page.evaluate(() => (window as any).__walletProbe?.disconnects ?? 0)
+          page.evaluate(
+            () =>
+              (window as WalletFixtureWindow).__walletProbe?.disconnects ?? 0
+          )
         )
         .toBeGreaterThan(0)
       if (app === "merchant") await page.goto(apps[app] + "/wallet")
@@ -273,7 +347,7 @@ for (const from of ["market", "merchant"] as const) {
           .getByLabel("Recovery phrase", { exact: true })
           .fill(
             await source.evaluate(
-              () => (window as any).__walletProbe.importMnemonic
+              () => (window as WalletFixtureWindow).__walletProbe.importMnemonic
             )
           )
         await source.getByText("Advanced settings", { exact: true }).click()
@@ -436,7 +510,9 @@ for (const from of ["market", "merchant"] as const) {
         await expect
           .poll(() =>
             target.evaluate(() =>
-              (window as any).__walletProbe.openedAccounts.sort()
+              (
+                window as WalletFixtureWindow
+              ).__walletProbe.openedAccounts.sort()
             )
           )
           .toEqual([1, 7])
@@ -451,7 +527,8 @@ for (const from of ["market", "merchant"] as const) {
             ).find((wallet: WalletDescriptor) => wallet.id === selected)!
             return {
               intents: descriptor.defaultIntents,
-              registrations: (window as any).__walletProbe.registrations,
+              registrations: (window as WalletFixtureWindow).__walletProbe
+                .registrations,
             }
           },
           { core, storage, selected }
@@ -560,7 +637,9 @@ for (const app of ["market", "merchant"] as const) {
         .click()
       await expect(target.getByText("Ready", { exact: true })).toBeVisible()
       expect(
-        await target.evaluate(() => (window as any).__walletProbe.opens)
+        await target.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.opens
+        )
       ).toBe(1)
       expect(await wallets(target)).toEqual(originalWallets)
     } finally {
@@ -610,7 +689,7 @@ test("foreground Open does not inherit a paused background wallet open @merchant
 
     await target.evaluate(async (storage) => {
       const { getMarketWalletStore } = await import(storage)
-      const fixture = window as any
+      const fixture = window as WalletFixtureWindow
       const controller = fixture.__controlledWalletController
       const walletId = controller.portableWallets[0].id
       const store = getMarketWalletStore()
@@ -643,11 +722,13 @@ test("foreground Open does not inherit a paused background wallet open @merchant
     }, storage)
     await expect
       .poll(() =>
-        target.evaluate(() => (window as any).__backgroundRecoveryReadHeld)
+        target.evaluate(
+          () => (window as WalletFixtureWindow).__backgroundRecoveryReadHeld
+        )
       )
       .toBe(true)
     await target.evaluate(() => {
-      const fixture = window as any
+      const fixture = window as WalletFixtureWindow
       const controller = fixture.__controlledWalletController
       const walletId = controller.portableWallets[0].id
       fixture.__foregroundOpen = controller.unlockSpark(walletId).then(
@@ -661,7 +742,7 @@ test("foreground Open does not inherit a paused background wallet open @merchant
       fixture.__releaseBackgroundRecoveryRead()
     })
     const result = await target.evaluate(async () => {
-      const fixture = window as any
+      const fixture = window as WalletFixtureWindow
       return {
         background: await fixture.__backgroundOpen,
         foreground: await fixture.__foregroundOpen,
@@ -693,7 +774,9 @@ test("foreground Open does not inherit a paused background wallet open @merchant
     ).toBe("background_paused")
   } finally {
     await target
-      .evaluate(() => (window as any).__releaseBackgroundRecoveryRead?.())
+      .evaluate(() =>
+        (window as WalletFixtureWindow).__releaseBackgroundRecoveryRead?.()
+      )
       .catch(() => undefined)
     await context.close()
     disposeRuntimeSignerIdentity(identity)
@@ -733,7 +816,9 @@ for (const size of [
             )
           ).toHaveCount(0)
           expect(
-            await source.evaluate(() => (window as any).__walletProbe.opens)
+            await source.evaluate(
+              () => (window as WalletFixtureWindow).__walletProbe.opens
+            )
           ).toBe(0)
           await openWalletSetup(source, "Create wallet")
           await saved(source)
@@ -764,7 +849,7 @@ for (const size of [
           ).toBeVisible()
           expect(
             await target.evaluate(
-              () => (window as any).__walletProbe.registrations
+              () => (window as WalletFixtureWindow).__walletProbe.registrations
             )
           ).toBe(0)
           expect(
@@ -821,7 +906,7 @@ for (const size of [
           await installControlledWallet(source)
           await openWalletSetup(source, "Import wallet")
           const phrase = await source.evaluate(
-            () => (window as any).__walletProbe.importMnemonic
+            () => (window as WalletFixtureWindow).__walletProbe.importMnemonic
           )
           await source
             .getByLabel("Recovery phrase", { exact: true })
@@ -861,7 +946,7 @@ for (const size of [
           ).toBeVisible()
           expect(
             await target.evaluate(
-              () => (window as any).__walletProbe.registrations
+              () => (window as WalletFixtureWindow).__walletProbe.registrations
             )
           ).toBe(0)
           expect(
@@ -1052,7 +1137,7 @@ test("controlled recovery transport retains concurrent signed branches and block
         const evidence = await db.sparkRecoveryEvidence.get(
           getAccountSigner().pubkey
         )
-        return evidence.records.flatMap((record: any) =>
+        return evidence.records.flatMap((record: SparkRecoveryRecord) =>
           record.event.tags
             .filter(
               (tag: string[]) =>
@@ -1073,7 +1158,7 @@ test("controlled recovery transport retains concurrent signed branches and block
         "Wallet recovery is incomplete or conflicting. Retry recovery before creating or importing another wallet."
       )
       const opens = await page.evaluate(
-        () => (window as any).__walletProbe.opens
+        () => (window as WalletFixtureWindow).__walletProbe.opens
       )
       await page
         .getByRole("button", { name: "Retry creation", exact: true })
@@ -1083,7 +1168,9 @@ test("controlled recovery transport retains concurrent signed branches and block
       )
       expect((await wallets(page)).sort()).toEqual(before)
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.opens)
+        await page.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.opens
+        )
       ).toBe(opens)
       await page.getByRole("button", { name: "Cancel", exact: true }).click()
     }
@@ -1110,8 +1197,9 @@ for (const app of ["market", "merchant"] as const) {
         ).toBeVisible()
         await installControlledWallet(page)
         await page.evaluate(() => {
-          ;(window as any).__walletProbe.addressUnavailableReason =
-            "unconfigured"
+          ;(
+            window as WalletFixtureWindow
+          ).__walletProbe.addressUnavailableReason = "unconfigured"
         })
         await expect(
           page.getByText(
@@ -1120,7 +1208,9 @@ for (const app of ["market", "merchant"] as const) {
           )
         ).toHaveCount(0)
         expect(
-          await page.evaluate(() => (window as any).__walletProbe.opens)
+          await page.evaluate(
+            () => (window as WalletFixtureWindow).__walletProbe.opens
+          )
         ).toBe(0)
         await openWalletSetup(page, "Create wallet")
         await saved(page)
@@ -1262,7 +1352,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
         const { getSparkWalletManager } = await import(managerUrl)
         const manager = getSparkWalletManager()
         const read = manager.getBalance.bind(manager)
-        const probe = (window as any).__walletProbe
+        const probe = (window as WalletFixtureWindow).__walletProbe
         probe.reloadHeld = false
         probe.releaseReload = () => {}
         const gate = new Promise<void>((resolve) => {
@@ -1289,7 +1379,11 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
       }
     )
     await expect
-      .poll(() => page.evaluate(() => (window as any).__walletProbe.reloadHeld))
+      .poll(() =>
+        page.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.reloadHeld
+        )
+      )
       .toBe(true)
     await page
       .getByRole("button", { name: /^Manage / })
@@ -1297,7 +1391,9 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
       .click()
     await closeDefaultWalletSession(page)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
-    await page.evaluate(() => (window as any).__walletProbe.releaseReload())
+    await page.evaluate(() =>
+      (window as WalletFixtureWindow).__walletProbe.releaseReload()
+    )
     await expect(
       page.getByLabel("Manage Reload gated wallet", { exact: true })
     ).toBeVisible()
@@ -1334,7 +1430,7 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
         const { getMarketWalletStore } = await import(storage)
         const store = getMarketWalletStore()
         const read = store.getSparkRecovery.bind(store)
-        const probe = (window as any).__walletProbe
+        const probe = (window as WalletFixtureWindow).__walletProbe
         probe.recoveryReads = 0
         probe.reloadHeld = false
         const gate = new Promise<void>((resolve) => {
@@ -1356,17 +1452,185 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
       { core, storage }
     )
     await expect
-      .poll(() => page.evaluate(() => (window as any).__walletProbe.reloadHeld))
+      .poll(() =>
+        page.evaluate(
+          () => (window as WalletFixtureWindow).__walletProbe.reloadHeld
+        )
+      )
       .toBe(true)
     await page.getByRole("button", { name: "Open wallet", exact: true }).click()
     await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
-    await page.evaluate(() => (window as any).__walletProbe.releaseReload())
+    await page.evaluate(() =>
+      (window as WalletFixtureWindow).__walletProbe.releaseReload()
+    )
     await expect(
       page.getByLabel("Manage Reload gated wallet", { exact: true })
     ).toBeVisible()
     await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(0)
   } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+test("foreground wallet import stays ready after an older background opening is refused @market @merchant", async ({
+  browser,
+}) => {
+  const identity = createRuntimeSignerIdentity()
+  const context = await browser.newContext()
+  const source = await context.newPage()
+  const target = await context.newPage()
+  let denied = true
+  try {
+    for (const page of [source, target]) await prepareControlledWallet(page)
+    await observeWalletController(target)
+    await installRealTestSigner(source, identity, relay)
+    await installRealTestSigner(target, identity, relay, {
+      beforeDecrypt: () => {
+        if (denied) throw new Error("Signer permission denied")
+      },
+    })
+    await source.goto(apps.merchant + "/wallet")
+    await installControlledWallet(source)
+    await openWalletSetup(source, "Create wallet")
+    await saved(source)
+    const first = (await wallets(source))[0]
+    await openWalletSetup(source, "Import wallet")
+    const mnemonic = await source.evaluate(
+      () => (window as WalletFixtureWindow).__walletProbe.importMnemonic
+    )
+    await source.getByLabel("Recovery phrase", { exact: true }).fill(mnemonic)
+    await source.getByText("Advanced settings", { exact: true }).click()
+    await source.getByLabel("Spark account number", { exact: true }).fill("7")
+    await source
+      .getByRole("dialog")
+      .getByRole("button", { name: "Import wallet", exact: true })
+      .click()
+    await saved(source, false)
+    const sourceWallets = await wallets(source)
+    expect(sourceWallets).toHaveLength(2)
+    const walletId = sourceWallets.find((id) => id !== first)!
+
+    await target.goto(apps.market + "/wallet")
+    await installControlledWallet(target, false, "support@conduit.cash")
+    await expect(
+      target.getByText(
+        "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    denied = false
+    await target.getByRole("button", { name: "Sync wallet recovery" }).click()
+    await expect
+      .poll(async () => (await wallets(target)).sort())
+      .toEqual([...sourceWallets].sort())
+    await expect(
+      target.getByRole("button", { name: "Open wallet", exact: true })
+    ).toHaveCount(2)
+
+    await target.evaluate(
+      async ({ storage, walletId }) => {
+        const { getMarketWalletStore } = await import(storage)
+        const fixture = window as WalletFixtureWindow
+        const store = getMarketWalletStore()
+        const original = store.getSparkRecovery.bind(store)
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        let armed = true
+        store.getSparkRecovery = async (id: string) => {
+          const recovery = await original(id)
+          if (armed && id === walletId) {
+            armed = false
+            fixture.__lateBackgroundRecoveryReadHeld = true
+            await gate
+          }
+          return recovery
+        }
+        fixture.__releaseLateBackgroundRecoveryRead = release
+        fixture.__restoreLateBackgroundRecoveryRead = () => {
+          store.getSparkRecovery = original
+        }
+        fixture.__lateBackgroundOpen = fixture.__controlledWalletController
+          .unlockSpark(walletId, "", false, { priority: "background" })
+          .then(
+            () => "resolved",
+            (error: { code?: string }) => error.code ?? "rejected"
+          )
+        fixture.__joinedLateBackgroundOpen =
+          fixture.__controlledWalletController
+            .unlockSpark(walletId, "", false, { priority: "background" })
+            .then(
+              () => "resolved",
+              (error: { code?: string }) => error.code ?? "rejected"
+            )
+      },
+      { storage, walletId }
+    )
+    await expect
+      .poll(() =>
+        target.evaluate(
+          () => (window as WalletFixtureWindow).__lateBackgroundRecoveryReadHeld
+        )
+      )
+      .toBe(true)
+
+    const restoredSameWallet = await target.evaluate(
+      async ({ mnemonic, walletId }) => {
+        const wallet = await (
+          window as WalletFixtureWindow
+        ).__controlledWalletController.importSpark({
+          label: "",
+          mnemonic,
+          accountNumber: 7,
+        })
+        return wallet.id === walletId
+      },
+      { mnemonic, walletId }
+    )
+    expect(restoredSameWallet).toBe(true)
+    await expect(target.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(
+      target.getByRole("button", { name: "Open wallet", exact: true })
+    ).toHaveCount(1)
+
+    const backgroundOutcome = await target.evaluate(async () => {
+      const fixture = window as WalletFixtureWindow
+      fixture.__releaseLateBackgroundRecoveryRead()
+      const outcome = {
+        original: await fixture.__lateBackgroundOpen,
+        joined: await fixture.__joinedLateBackgroundOpen,
+      }
+      fixture.__restoreLateBackgroundRecoveryRead()
+      return outcome
+    })
+    expect(backgroundOutcome).toEqual({
+      original: "background_paused",
+      joined: "background_paused",
+    })
+    expect(
+      await target.evaluate(
+        async ({ sparkSdk, walletId }) => {
+          const { getSparkWalletManager } = await import(sparkSdk)
+          return getSparkWalletManager()?.isOpen(walletId) === true
+        },
+        { sparkSdk, walletId }
+      )
+    ).toBe(true)
+    await expect(target.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(
+      target.getByRole("button", { name: "Open wallet", exact: true })
+    ).toHaveCount(1)
+  } finally {
+    await target
+      .evaluate(() => {
+        const fixture = window as WalletFixtureWindow
+        fixture.__releaseLateBackgroundRecoveryRead?.()
+        fixture.__restoreLateBackgroundRecoveryRead?.()
+      })
+      .catch(() => undefined)
+    await context.close()
     disposeRuntimeSignerIdentity(identity)
   }
 })

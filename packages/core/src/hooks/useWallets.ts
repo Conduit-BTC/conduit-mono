@@ -1,3 +1,4 @@
+import { closeUnusedSparkWallets } from "../wallets/checkout-spark-router-wallet-retention"
 import { commitVerifiedSignerRecovery } from "../wallets/signer-recovery-commit"
 import {
   ADDRESS_REQUEST_ORIGIN,
@@ -323,18 +324,18 @@ export function useWallets(
           if (sparkManager) {
             // A superseded list can predate a newly registered/open wallet.
             // Never let that old snapshot close the newer native session.
-            if (
+            const canCloseUnusedWallets = () =>
               isCurrent() &&
               enabledRef.current &&
               shouldApply() &&
               ownerRef.current === ownerPubkey
-            )
-              await sparkManager.closeWalletsExcept(
-                new Set(
-                  nextWallets
-                    .filter((wallet) => wallet.providerId === "spark")
-                    .map((wallet) => wallet.id)
-                )
+            if (canCloseUnusedWallets())
+              await closeUnusedSparkWallets(
+                sparkManager,
+                nextWallets
+                  .filter((wallet) => wallet.providerId === "spark")
+                  .map((wallet) => wallet.id),
+                { shouldContinue: canCloseUnusedWallets }
               )
             await Promise.all(
               nextWallets.map(async (wallet) => {
@@ -1459,6 +1460,29 @@ export function useWallets(
     ) => {
       const manager = requireSparkManager()
       const signer = !password && !migrate ? getAccountSigner() : undefined
+      const reportOpenFailure = (error: unknown) => {
+        if (signer && !isWalletSignerCurrent(signer)) return
+        if (
+          signer &&
+          options.priority === "background" &&
+          error instanceof SessionSignerError &&
+          error.code === "background_paused" &&
+          manager.isOpen(walletId)
+        ) {
+          // An older background refusal must not overwrite a foreground
+          // restore's newer state, including a genuine balance error.
+          // The refused attempt still rejects without resuming consent.
+          return
+        }
+        setRuntime((current) => ({
+          ...current,
+          [walletId]: {
+            status: "error",
+            balanceMsats: null,
+            error: getErrorMessage(error, "Could not unlock Portable Wallet."),
+          },
+        }))
+      }
       let previous = signer && signerWalletOpens.get(signer)?.get(walletId)
       while (signer && previous) {
         const joined = previous
@@ -1487,18 +1511,7 @@ export function useWallets(
             if (previous === joined) previous = undefined
             continue
           }
-          if (isWalletSignerCurrent(signer))
-            setRuntime((current) => ({
-              ...current,
-              [walletId]: {
-                status: "error",
-                balanceMsats: null,
-                error: getErrorMessage(
-                  error,
-                  "Could not unlock Portable Wallet."
-                ),
-              },
-            }))
+          reportOpenFailure(error)
           throw error
         }
       }
@@ -1592,18 +1605,7 @@ export function useWallets(
           if (signer && isWalletSignerCurrent(signer))
             deliberatelyLockedWallets.get(signer)?.delete(walletId)
         } catch (error) {
-          if (!signer || isWalletSignerCurrent(signer))
-            setRuntime((current) => ({
-              ...current,
-              [walletId]: {
-                status: "error",
-                balanceMsats: null,
-                error: getErrorMessage(
-                  error,
-                  "Could not unlock Portable Wallet."
-                ),
-              },
-            }))
+          reportOpenFailure(error)
           throw error
         }
       }

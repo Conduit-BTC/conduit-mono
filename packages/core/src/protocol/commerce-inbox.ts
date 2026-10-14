@@ -6,6 +6,7 @@ import {
   checkoutRecoveryPayloadDigest,
   type CheckoutRecoveryDescriptor,
 } from "./checkout-spark-recovery"
+import { parseCheckoutSparkMerchantProgressRumor } from "./checkout-spark-merchant-progress"
 import { sendPrivateAttachment } from "./private-file-upload"
 import { sendAccountInboxRumor } from "./inbox-send"
 import type { AccountInboxSendResult } from "./inbox-send"
@@ -19,6 +20,7 @@ import {
 } from "./commerce-message-codec"
 import {
   CommerceInboxStore,
+  isInboxTransportDeliveryRow,
   INBOX_DECODE_RULES_VERSION,
   projectDirectOrFileRumor,
   readRetainedInboxProjections,
@@ -441,8 +443,9 @@ export class CommerceInbox {
         clientSealMetadataAccepted: wrappers.filter(
           (row) => row.clientSealMetadata
         ).length,
-        outgoingPending: deliveries.filter((row) => row.state !== "accepted")
-          .length,
+        outgoingPending: deliveries.filter(
+          (row) => isInboxTransportDeliveryRow(row) && row.state !== "accepted"
+        ).length,
         historyUnresolved: ranges.filter((r) => r.status !== "source_eose")
           .length,
       },
@@ -553,7 +556,10 @@ export class CommerceInbox {
             if (record.category === "machine") {
               state = "machine"
               const type = rumor.tags.find((tag) => tag[0] === "type")?.[1]
-              if (type === "checkout_spark_recovery") {
+              if (
+                type === "checkout_spark_recovery" ||
+                type === "checkout_spark_recovery_progress"
+              ) {
                 const payload = parseCheckoutSparkRecoveryRumor(rumor)
                 projection = {
                   kind: "checkout_recovery",
@@ -568,6 +574,23 @@ export class CommerceInbox {
                     takeoverAt: payload.plan.takeoverAt,
                     preparedAt: payload.preparedAt,
                     payloadDigest: checkoutRecoveryPayloadDigest(payload),
+                  },
+                }
+              } else if (type === "checkout_spark_merchant_progress") {
+                const payload = parseCheckoutSparkMerchantProgressRumor(rumor)
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.state.plan.checkoutId,
+                    orderId: payload.state.plan.orderId,
+                    planDigest: payload.state.plan.planDigest,
+                    takeoverAt: payload.state.plan.takeoverAt,
+                    preparedAt: payload.recordedAt,
+                    payloadDigest: payload.snapshotId,
                   },
                 }
               } else if (

@@ -4,44 +4,58 @@ import {
   resetFixturePublishers,
 } from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
+import { setAppWritePlanFixture as __setRelayPublishTestOverrides } from "./helpers/app-write-plan"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
-import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
-import {
+import { IDBFactory as FakeIDBFactory, IDBKeyRange } from "fake-indexeddb"
+import type {
+  CommerceProductRecord,
+  OrderSummary,
+  ParsedShippingOption,
+  ProductSchema,
+  SignedPublicNostrEvent,
+} from "@conduit/core"
+import type {
+  ProductListingPublishTarget,
+  ProductPublicationDependencies,
+  ProductSignerRequestProgress,
+} from "../apps/merchant/src/lib/product-publishing"
+import type { ProductListingRecordLike } from "../apps/merchant/src/lib/productVariations"
+
+const {
   __resetCommerceTestOverrides,
   __resetShippingTestOverrides,
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setShippingTestOverrides,
   buildProductListingEventDraft,
+  config,
+  db,
+  EVENT_KINDS,
   getProductShippingOptionAddress,
   getShippingOptionsByCoordinates,
-  type CommerceProductRecord,
-  type OrderSummary,
-  type ParsedShippingOption,
-  type ProductSchema,
-} from "@conduit/core"
-import { config } from "@conduit/core"
-import { setAppWritePlanFixture as __setRelayPublishTestOverrides } from "./helpers/app-write-plan"
-import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
-import {
+} = await import("@conduit/core")
+const { __resetPublicReaderTestState } =
+  await import("../packages/core/src/protocol/relay-reader")
+const {
   applyProductFulfillmentIntentForPublication,
   getProductPreservedFulfillmentFields,
+  SignedProductDeliveryError,
   signAndPublishProductWriteBundle,
-  type ProductListingPublishTarget,
-  type ProductPublicationDependencies,
-  type ProductSignerRequestProgress,
-} from "../apps/merchant/src/lib/product-publishing"
-import { prepareOrderStockUpdate } from "../apps/merchant/src/lib/order-stock-fulfillment"
-import { getOrderStockDecisionKey } from "../apps/merchant/src/lib/productStock"
-import {
+} = await import("../apps/merchant/src/lib/product-publishing")
+const { prepareOrderStockUpdate } =
+  await import("../apps/merchant/src/lib/order-stock-fulfillment")
+const { getOrderStockDecisionKey } =
+  await import("../apps/merchant/src/lib/productStock")
+const {
   MAX_PRODUCT_VARIATION_COUNT,
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
+  getProductFamilySupplierAllocationRevisionKey,
   getProductVariationFormError,
   getProductVariationFormState,
-  type ProductListingRecordLike,
-} from "../apps/merchant/src/lib/productVariations"
+} = await import("../apps/merchant/src/lib/productVariations")
 
 const SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(SECRET)
@@ -180,15 +194,124 @@ interface PublicationObservation {
   signerRequests: ProductSignerRequestProgress[]
   publishedKinds: number[]
   signedBundleCount: number
-  signedEvents?: NDKEvent[]
+  signedEvents?: SignedPublicNostrEvent[]
+  queuedDeliveryCount?: number
+}
+
+function installTestBrowserDurability(): () => void {
+  // Other test files may load the singleton before this fixture. Dexie snapshots
+  // its dependencies at construction, so a global polyfill is insufficient.
+  const dependencies = (
+    db as unknown as {
+      _deps: {
+        indexedDB?: IDBFactory
+        IDBKeyRange?: typeof IDBKeyRange
+      }
+    }
+  )._deps
+  const previousIndexedDB = dependencies.indexedDB
+  const previousKeyRange = dependencies.IDBKeyRange
+  db.close({ disableAutoOpen: false })
+  dependencies.indexedDB = new FakeIDBFactory()
+  dependencies.IDBKeyRange = IDBKeyRange
+  const previousNavigator = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "navigator"
+  )
+  const previousStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage"
+  )
+  const testNavigator = Object.create(
+    typeof navigator === "undefined" ? null : navigator
+  ) as Navigator
+  Object.defineProperty(testNavigator, "locks", {
+    configurable: true,
+    value: {
+      // These cases have one writer; contention belongs to the lock tests.
+      request: async <T>(
+        name: string,
+        operation: (lock: { name: string }) => Promise<T>
+      ): Promise<T> => operation({ name }),
+    },
+  })
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: testNavigator,
+  })
+  const values = new Map<string, string>()
+  const testStorage: Storage = {
+    get length() {
+      return values.size
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => {
+      values.delete(key)
+    },
+    setItem: (key, value) => {
+      values.set(key, value)
+    },
+  }
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: testStorage,
+  })
+  return () => {
+    db.close({ disableAutoOpen: false })
+    dependencies.indexedDB = previousIndexedDB
+    dependencies.IDBKeyRange = previousKeyRange
+    if (previousNavigator) {
+      Object.defineProperty(globalThis, "navigator", previousNavigator)
+    } else {
+      Reflect.deleteProperty(globalThis, "navigator")
+    }
+    if (previousStorage) {
+      Object.defineProperty(globalThis, "localStorage", previousStorage)
+    } else {
+      Reflect.deleteProperty(globalThis, "localStorage")
+    }
+  }
 }
 
 async function attemptProductPublication(input: {
   listings: readonly ProductListingPublishTarget[]
+  durableBaselines?: readonly ProductSchema[]
+  stopAfterDurableCommit?: boolean
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   now?: number
   observed?: PublicationObservation
+  assertBeforeSignerRequest?: () => void
 }): Promise<void> {
+  if (input.stopAfterDurableCommit && !input.durableBaselines) {
+    throw new Error("A durable baseline is required to stop after commit")
+  }
+  const stopAfterCommit = new Error("Stopped after durable test preparation")
+  const baselinesByAddress = new Map(
+    (input.durableBaselines ?? []).map((baseline) => [baseline.id, baseline])
+  )
+  const listings = input.listings.map((listing) => {
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${listing.dTag}`
+    const baseline =
+      baselinesByAddress.get(addressId) ??
+      (listing.fulfillmentIntent.kind === "preserve_existing"
+        ? listing.fulfillmentIntent.baseline
+        : undefined)
+    if (baseline) baselinesByAddress.set(addressId, baseline)
+    return {
+      ...listing,
+      ...(baseline ? { previousEventId: record(baseline).eventId } : {}),
+    }
+  })
+  const relayUrl = input.durableBaselines
+    ? "wss://relay.conduit.market"
+    : "wss://relay.example"
+  // The injected exact listing plan is an App fixture, not signed owner
+  // authority. Register it so the real last-mile grant gate remains active.
+  config.commerceRelayUrls = [
+    ...new Set([...config.commerceRelayUrls, relayUrl]),
+  ]
   setSigner(new NDKPrivateKeySigner(SECRET))
   __setCommerceTestOverrides({
     now: () => input.now ?? START,
@@ -201,45 +324,124 @@ async function attemptProductPublication(input: {
     accountNetworkLocalStateRepository: { get: async () => undefined },
     planPublishRelays: async () => ({
       intent: "author_event",
-      primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
+      primaryRelayUrls: [relayUrl],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
     }),
   })
   const publish = spyOn(fixturePublisher, "publish").mockImplementation(
-    async function (this: NDKEvent) {
-      if (typeof this.kind === "number") {
-        input.observed?.publishedKinds.push(this.kind)
-      }
-      return new Set([{ url: "wss://relay.fixture.conduit.market/" }]) as never
+    async function (
+      this: SignedPublicNostrEvent,
+      relaySet: { relayUrls: Set<string> }
+    ) {
+      input.observed?.publishedKinds.push(this.kind)
+      return new Set([...relaySet.relayUrls].map((url) => ({ url }))) as never
     }
   )
   const clock =
     input.now === undefined
       ? undefined
       : spyOn(Date, "now").mockReturnValue(input.now)
+  const restoreBrowserDurability = installTestBrowserDurability()
   try {
+    if (baselinesByAddress.size > 0) {
+      await db.products.bulkPut(
+        [...baselinesByAddress.values()].map((baseline) => ({
+          ...baseline,
+          eventId: record(baseline).eventId,
+          eventCreatedAt: record(baseline).eventCreatedAt,
+          cachedAt: START,
+        }))
+      )
+    }
     await signAndPublishProductWriteBundle(
       {
         merchantPubkey: MERCHANT,
-        listings: input.listings,
+        listings,
+        durableCommit: {},
         waitForSignerVisibility: async () => {},
-        onSignerRequest: (progress) =>
-          input.observed?.signerRequests.push(progress),
-        onSignedLocal: async ({ events }) => {
+        onSignerRequest: (progress) => {
+          input.assertBeforeSignerRequest?.()
+          input.observed?.signerRequests.push(progress)
+        },
+        onSignedLocal: async ({ events, productListingDeliveryJobId }) => {
+          if (input.observed?.queuedDeliveryCount !== undefined) {
+            input.observed.queuedDeliveryCount += 1
+          }
+          if (input.durableBaselines) {
+            const intent = (await db.localProductWriteIntents.toArray()).find(
+              (row) => row.listingJobId === productListingDeliveryJobId
+            )
+            expect(intent?.shippingEventIds).toHaveLength(
+              input.durableBaselines.length
+            )
+            expect(intent?.productAddressIds).toEqual(
+              input.durableBaselines.map((baseline) => baseline.id)
+            )
+            expect(
+              await db.productListingOutbox.get(productListingDeliveryJobId!)
+            ).toBeDefined()
+            for (const eventId of intent?.shippingEventIds ?? []) {
+              expect(
+                (await db.localProductShippingOutbox.get(eventId))?.signedEvent
+                  .kind
+              ).toBe(EVENT_KINDS.SHIPPING_OPTION)
+            }
+          }
           if (input.observed) {
             input.observed.signedBundleCount += 1
             input.observed.signedEvents?.push(...events)
           }
+          if (input.stopAfterDurableCommit) throw stopAfterCommit
+        },
+        productListingDeliveryOptions: {
+          accountNetworkLocalStateRepository: { get: async () => undefined },
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            if (input.durableBaselines) {
+              const intent = (await db.localProductWriteIntents.toArray()).find(
+                (row) =>
+                  row.productAddressIds.includes(
+                    `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${signedEvent.tags.find(([name]) => name === "d")?.[1]}`
+                  )
+              )
+              expect(intent).toBeDefined()
+              for (const eventId of intent?.shippingEventIds ?? []) {
+                expect(
+                  (await db.localProductShippingOutbox.get(eventId))
+                    ?.acknowledgedRelayUrls
+                ).toContain(relayUrl)
+              }
+            }
+            input.observed?.publishedKinds.push(signedEvent.kind)
+            return { status: "acked" }
+          },
         },
       },
       {
         getShippingOptions: input.getShippingOptions ?? (async () => []),
+        planProductListingRelayTargets: async () => [
+          {
+            relayUrl,
+            ownerSelected: false,
+            personalRelay: true,
+          },
+        ],
       }
     )
+  } catch (error) {
+    if (
+      input.stopAfterDurableCommit &&
+      error instanceof SignedProductDeliveryError &&
+      error.deliveryCause === stopAfterCommit
+    ) {
+      return
+    }
+    throw error
   } finally {
     publish.mockRestore()
     clock?.mockRestore()
+    restoreBrowserDurability?.()
   }
 }
 
@@ -249,6 +451,7 @@ async function attemptPreservedPublication(input: {
   options?: ParsedShippingOption[]
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   observed?: PublicationObservation
+  durableShippingIntent?: boolean
 }): Promise<void> {
   const change = plan(input.baseline, input.update)
   await attemptProductPublication({
@@ -259,6 +462,9 @@ async function attemptPreservedPublication(input: {
     getShippingOptions:
       input.getShippingOptions ?? (async () => input.options ?? []),
     observed: input.observed,
+    ...(input.durableShippingIntent
+      ? { durableBaselines: [input.baseline] }
+      : {}),
   })
 }
 
@@ -272,6 +478,92 @@ afterEach(() => {
 })
 
 describe("merchant-owned product mutation boundary", () => {
+  it("stops a stale allocation save before signing or queuing after shipping preparation", async () => {
+    const absent = { state: "absent" as const, recipients: [], issues: [] }
+    const baseline = canonicalProduct("allocation-frontier", {
+      supplierAllocation: absent,
+    })
+    const family = {
+      root: record(baseline),
+      variations: [
+        record(product("allocation-child", { supplierAllocation: absent })),
+      ],
+      orphanVariation: false,
+    }
+    const expectedRevision =
+      getProductFamilySupplierAllocationRevisionKey(family)
+    let currentFamily = structuredClone(family)
+    let releaseShippingRead!: () => void
+    let notifyShippingRead!: () => void
+    const shippingReadStarted = new Promise<void>((resolve) => {
+      notifyShippingRead = resolve
+    })
+    const shippingReadRelease = new Promise<void>((resolve) => {
+      releaseShippingRead = resolve
+    })
+    const observed: PublicationObservation = {
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+      queuedDeliveryCount: 0,
+    }
+    const change = plan(baseline, { stock: 4 })
+    const publication = attemptProductPublication({
+      listings: change.publish.map((target) => ({
+        ...target,
+        previousEventCreatedAt: target.existing!.eventCreatedAt,
+      })),
+      getShippingOptions: async () => {
+        notifyShippingRead()
+        await shippingReadRelease
+        return [shippingOption(baseline)]
+      },
+      assertBeforeSignerRequest: () => {
+        if (
+          getProductFamilySupplierAllocationRevisionKey(currentFamily) !==
+          expectedRevision
+        ) {
+          throw new Error("Products changed while this editor was open.")
+        }
+      },
+      observed,
+    })
+
+    await shippingReadStarted
+    currentFamily = structuredClone(currentFamily)
+    currentFamily.variations[0]!.eventId = "new-child-revision"
+    currentFamily.variations[0]!.product.supplierAllocation = {
+      state: "valid",
+      recipients: [
+        { pubkey: MERCHANT, weight: 1, role: "merchant" },
+        { pubkey: ORGANIZER, weight: 1, role: "supplier" },
+      ],
+      issues: [],
+    }
+    releaseShippingRead()
+
+    await expect(publication).rejects.toThrow(
+      "Products changed while this editor was open."
+    )
+    expect(observed).toEqual({
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+      queuedDeliveryCount: 0,
+    })
+
+    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
+    expect(route).toMatch(
+      /onSignerRequest:\s*\(progress\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)/
+    )
+    expect(route).toMatch(
+      /assertCurrentWriteBaseline:\s*async\s*\(\)\s*=>\s*assertCurrentFamilyRevision\?\.\(\)/
+    )
+    expect(route).toMatch(
+      /additionalExpectedRevisions:\s*\[\s*existing,\s*\.\.\.existing\.variations/
+    )
+  })
+
   for (const now of [START - 1, START, START + 1, START + 86_400_000]) {
     it(`signs only the owned stock edit at ${now - START}ms without rediscovering event authority`, async () => {
       const marketCoordinate = `30409:${ORGANIZER}:current-market`
@@ -280,7 +572,7 @@ describe("merchant-owned product mutation boundary", () => {
       })
       const change = plan(baseline, { stock: 4 }, now)
       let shippingReads = 0
-      const signed: NDKEvent[] = []
+      const signed: SignedPublicNostrEvent[] = []
       const observed = {
         signerRequests: [] as ProductSignerRequestProgress[],
         publishedKinds: [] as number[],
@@ -466,6 +758,7 @@ describe("merchant-owned product mutation boundary", () => {
       update: { stock: 4 },
       options: [shippingOption(baseline)],
       observed,
+      durableShippingIntent: true,
     })
     expect(observed).toEqual({
       signerRequests: [
@@ -534,7 +827,7 @@ describe("merchant-owned product mutation boundary", () => {
       `30405:${ORGANIZER}:secondary-market`,
     ]
     const baseline = canonicalProduct("cataloged", { collectionRefs })
-    const signedEvents: NDKEvent[] = []
+    const signedEvents: SignedPublicNostrEvent[] = []
     const observed = {
       signerRequests: [] as ProductSignerRequestProgress[],
       publishedKinds: [] as number[],
@@ -546,6 +839,7 @@ describe("merchant-owned product mutation boundary", () => {
       update: { stock: 4 },
       options: [shippingOption(baseline)],
       observed,
+      durableShippingIntent: true,
     })
 
     expect(observed.publishedKinds).toEqual([30406, 30402])
@@ -565,7 +859,7 @@ describe("merchant-owned product mutation boundary", () => {
       (_, index) => canonicalProduct(`family-${index}`)
     )
     const requestedCoordinates: string[][] = []
-    const signedEvents: NDKEvent[] = []
+    const signedEvents: SignedPublicNostrEvent[] = []
     const observed = {
       signerRequests: [] as ProductSignerRequestProgress[],
       publishedKinds: [] as number[],
@@ -585,6 +879,10 @@ describe("merchant-owned product mutation boundary", () => {
         return baselines.map((baseline) => shippingOption(baseline))
       },
       observed,
+      durableBaselines: baselines,
+      // This case covers max-size batch preparation; delivery is exercised
+      // with a smaller family below to keep the in-memory IDB test bounded.
+      stopAfterDurableCommit: true,
     })
 
     expect(requestedCoordinates).toEqual([
@@ -604,7 +902,36 @@ describe("merchant-owned product mutation boundary", () => {
         event!.tags.filter(([name]) => name === "shipping_option")
       ).toEqual([["shipping_option", baseline.shippingOptionId!]])
     }
+    expect(observed.publishedKinds).toEqual([])
   }, 20000)
+
+  it("acks all shipping options before publishing a canonical family", async () => {
+    const baselines = [
+      canonicalProduct("paired-root"),
+      canonicalProduct("paired-child"),
+    ]
+    const observed = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+
+    await attemptProductPublication({
+      listings: baselines.map((baseline) => ({
+        product: { ...baseline, stock: 4 },
+        dTag: record(baseline).dTag!,
+        previousEventCreatedAt: record(baseline).eventCreatedAt,
+        fulfillmentIntent: { kind: "preserve_existing", baseline },
+      })),
+      getShippingOptions: async () =>
+        baselines.map((baseline) => shippingOption(baseline)),
+      durableBaselines: baselines,
+      observed,
+    })
+
+    expect(observed.publishedKinds).toEqual([30406, 30406, 30402, 30402])
+    expect(observed.signedBundleCount).toBe(1)
+  })
 
   it("rejects a missing option in a maximum-size family before signing", async () => {
     const baselines = Array.from(
@@ -728,7 +1055,7 @@ describe("merchant-owned product mutation boundary", () => {
 
     for (const target of targets) {
       let shippingReads = 0
-      const signedEvents: NDKEvent[] = []
+      const signedEvents: SignedPublicNostrEvent[] = []
       const observed = {
         signerRequests: [] as ProductSignerRequestProgress[],
         publishedKinds: [] as number[],

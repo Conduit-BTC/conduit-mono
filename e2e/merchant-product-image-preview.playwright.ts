@@ -167,7 +167,8 @@ async function openProductDialogWithSigner(
 
 test.afterEach(async ({ page }, info) => {
   if (
-    !info.title.startsWith("fallback upload is disclosed") ||
+    (!info.title.startsWith("fallback upload is disclosed") &&
+      !info.title.startsWith("fallback rejection clears the durable claim")) ||
     info.status === info.expectedStatus
   )
     return
@@ -937,15 +938,20 @@ test("fallback destination persistence fails before signing and survives draft r
 test("fallback rejection clears the durable claim across reload @merchant", async ({
   page,
 }) => {
+  const mark = (phase: string) =>
+    recordSmokeDiagnostic(test.info(), "fallback-upload", { phase })
+  mark("setup")
   test.setTimeout(90_000)
   const state = await interceptBlossom(page, fallbackServer, {
     rejectFirstStatus: 429,
   })
-  const { dialog } = await openProductDialogWithSigner(page)
+  mark("open_draft")
+  const { dialog } = await openProductDialogWithSigner(page, { onPhase: mark })
   await expect(
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
   await dialog.getByLabel("Title").fill("Rejected fallback draft")
+  mark("valid_file")
   await dialog.locator("#product-image-file").setInputFiles(image192)
   await expect(
     dialog.getByText("This media server is rate limiting uploads.", {
@@ -954,11 +960,15 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   ).toBeVisible()
   expect(state.putCount).toBe(1)
 
+  mark("discard_draft")
   await dialog.locator("form").getByRole("button", { name: "Close" }).click()
   await expect(dialog).toBeHidden()
+  mark("navigate")
   await page.reload()
+  mark("open_dialog")
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
+  mark("dialog_visible")
   const addImage = resumed.getByRole("button", {
     name: "Add image",
     exact: true,
@@ -1019,11 +1029,13 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
     }
     throw error
   }
+  mark("fresh_file")
   await resumed.locator("#product-image-file").setInputFiles(image512)
   await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
   )
   expect(state.putCount).toBe(2)
+  mark("complete")
 })
 
 test("ambiguous fallback retries only the same prepared hash after reload @merchant", async ({
@@ -1077,7 +1089,12 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   await page.reload()
   await expect
     .poll(() =>
-      page.evaluate(() => Boolean((window as any).__productDraftRestorePending))
+      page.evaluate(() =>
+        Boolean(
+          (window as Window & { __productDraftRestorePending?: boolean })
+            .__productDraftRestorePending
+        )
+      )
     )
     .toBe(true)
   const accountMenu = page.getByRole("button", {
@@ -1086,7 +1103,13 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   })
   await expect(accountMenu).not.toBeVisible()
   mark("restore_draft")
-  await page.evaluate(() => (window as any).__releaseProductDraftRestore())
+  await page.evaluate(() =>
+    (
+      window as Window & {
+        __releaseProductDraftRestore?: () => void
+      }
+    ).__releaseProductDraftRestore!()
+  )
   await expect(accountMenu).toBeVisible()
   mark("open_dialog")
   await page.getByRole("button", { name: "Add product" }).first().click()

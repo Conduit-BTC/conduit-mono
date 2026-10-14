@@ -55,6 +55,80 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
+  it.each(["BGN", "XYZ"])(
+    "rejects %s new listings even when a retained source has cached sats",
+    (currency) => {
+      for (const product of [
+        baseProduct({ price: 10, currency }),
+        baseProduct({
+          price: 5_000,
+          currency: "SATS",
+          priceSats: 5_000,
+          sourcePrice: { amount: 10, currency, normalizedCurrency: currency },
+        }),
+        baseProduct({
+          sourcePrice: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: currency,
+          },
+        }),
+      ]) {
+        expect(() =>
+          buildProductListingEventDraft({ product, dTag: "unsupported-price" })
+        ).toThrow("Product currency is not supported for new commerce")
+      }
+    }
+  )
+
+  it.each(["BGN", "XYZ"])(
+    "reads an exact historical %s listing without allowing its republication",
+    async (currency) => {
+      const event = await signFixture({
+        created_at: 1,
+        content: "Retained listing",
+        tags: [
+          ["d", "retained-price"],
+          ["title", "Retained price"],
+          ["price", "10", currency],
+          ["type", "simple", "digital"],
+        ],
+      })
+      const parsed = parseProductEvent(event)
+      expect(parsed).toMatchObject({
+        id: `30402:${publicFixturePubkey}:retained-price`,
+        price: 10,
+        currency,
+        sourcePrice: { amount: 10, currency, normalizedCurrency: currency },
+      })
+      expect(() =>
+        buildProductListingEventDraft({
+          product: parsed,
+          dTag: "retained-price",
+        })
+      ).toThrow("Product currency is not supported for new commerce")
+    }
+  )
+
+  it("keeps supported fiat and native aliases publishable", () => {
+    for (const currency of [
+      "USD",
+      "EUR",
+      "SAT",
+      "SATS",
+      "MSAT",
+      "MSATS",
+      "BTC",
+      "XBT",
+    ]) {
+      const draft = buildProductListingEventDraft({
+        product: baseProduct({ price: 10, currency }),
+        dTag: "supported-price",
+      })
+      expect(draft.tags).toContainEqual(["price", "10", currency])
+    }
+  })
+
   it("round-trips signed listing-area tags for digital and physical products", async () => {
     for (const format of ["digital", "physical"] as const) {
       const product = baseProduct({

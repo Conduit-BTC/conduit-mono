@@ -5,7 +5,6 @@ import {
 
 const MIN_EXECUTION_ALLOWANCE_MS = 5 * 60_000
 const PER_OBLIGATION_ALLOWANCE_MS = 60_000
-export const CHECKOUT_SPARK_PROVIDER_SEND_WINDOW_MS = 60_000
 
 function invoiceExpiryMs(paymentRequest: string): number | null {
   if (!isValidLightningInvoice(paymentRequest)) return null
@@ -52,17 +51,23 @@ export function assertCheckoutSparkOutgoingInvoiceLifetime(input: {
   }
 }
 
+/**
+ * The signed invoice's exclusive send deadline, not an extra provider margin.
+ * Callers recheck after awaits and immediately before SDK admission. Expiration
+ * after admission does not prove that a transfer was never started.
+ */
+export function checkoutSparkProviderSendWindowEndsAt(
+  paymentRequest: string
+): number | null {
+  return invoiceExpiryMs(paymentRequest)
+}
+
 /** Fail closed before a provider preflight or send if this exact leg is stale. */
 export function hasCheckoutSparkProviderSendWindow(input: {
   paymentRequest: string
   nowMs: number
 }): boolean {
   if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0) return false
-  const expiresAtMs = invoiceExpiryMs(input.paymentRequest)
-  const requiredUntil = input.nowMs + CHECKOUT_SPARK_PROVIDER_SEND_WINDOW_MS
-  return (
-    expiresAtMs !== null &&
-    Number.isSafeInteger(requiredUntil) &&
-    expiresAtMs > requiredUntil
-  )
+  const endsAt = checkoutSparkProviderSendWindowEndsAt(input.paymentRequest)
+  return endsAt !== null && input.nowMs < endsAt
 }

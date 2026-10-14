@@ -30,7 +30,10 @@ import {
   exportCommerceInboxDiagnostics,
   readRetainedCommerceInbox,
 } from "../packages/core/src/protocol/commerce-inbox"
-import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import {
+  CommerceInboxStore,
+  INBOX_DECODE_RULES_VERSION,
+} from "../packages/core/src/protocol/commerce-inbox-store"
 import type { ParsedOrderMessage } from "../packages/core/src/protocol/orders"
 import {
   getProtectedReadAuthorization,
@@ -425,7 +428,7 @@ describe("durable account-owned commerce inbox", () => {
       sources: [],
       observedAt: Date.now(),
       state: "permission_declined",
-      rulesVersion: 1,
+      rulesVersion: INBOX_DECODE_RULES_VERSION,
       attempts: 1,
     })
     await database.commerceInboxRanges.put({

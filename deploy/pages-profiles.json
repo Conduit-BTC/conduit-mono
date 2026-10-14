@@ -1,5 +1,38 @@
 {
   "schemaVersion": 1,
+  "quantumRouterTreasury": {
+    "mainnetAddress": "spark1pgssxg8d048c6ge7ysvjq0zg8xz7l8ryqjxmyhrlm7s56rjfns0ylpxymhm9sn",
+    "retiredMainnetAddresses": []
+  },
+  "quantumRouterTrust": {
+    "preview": {
+      "receiverContracts": [
+        {
+          "schemaVersion": 1,
+          "contractId": "breez-tips-private-v1",
+          "qualification": "accepted",
+          "payRequestOrigins": ["https://breez.tips"],
+          "callbackOrigins": ["https://breez.tips"],
+          "verifyOrigins": ["https://breez.tips"],
+          "verifyPathPrefix": "/lnurlp/verify/",
+          "modes": ["private"],
+          "binding": "metadata_hash"
+        }
+      ],
+      "pricingUrl": "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing",
+      "pricingPublicKeys": [
+        {
+          "keyId": "preview-20261007-01",
+          "publicKey": "7d67f2698711a7b54187b613b66acb301af9d749b98f752cc7e2099145cc0dc8"
+        }
+      ]
+    },
+    "production": {
+      "receiverContracts": [],
+      "pricingUrl": null,
+      "pricingPublicKeys": []
+    }
+  },
   "apps": {
     "market": {
       "package": "@conduit/market",
@@ -27,6 +60,8 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
         "livePresenceEnabled": true,
+        "quantumRouterEnabled": true,
+        "quantumRouterExecutionEnabled": true,
         "breezLightningAddressEnabled": true
       }
     },
@@ -36,6 +71,8 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": false,
         "livePresenceEnabled": true,
+        "quantumRouterEnabled": false,
+        "quantumRouterExecutionEnabled": false,
         "breezLightningAddressEnabled": true
       }
     },
@@ -45,6 +82,8 @@
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
         "livePresenceEnabled": false,
+        "quantumRouterEnabled": false,
+        "quantumRouterExecutionEnabled": false,
         "breezLightningAddressEnabled": false
       }
     }

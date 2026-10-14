@@ -38,6 +38,7 @@ export async function readCheckoutSparkRecipientPayoutAddress(
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "payment",
+      authorRelayPaymentPolicy: true,
       priority: "visible",
     })
   } catch (error) {

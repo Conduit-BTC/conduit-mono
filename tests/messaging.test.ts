@@ -52,9 +52,9 @@ import {
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import { admitFixture } from "./helpers/public-event"
 
-const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
-const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)
-const INBOX_OTHER_SECRET = new Uint8Array(32).fill(13)
+const INBOX_OWNER_SECRET = generateSecretKey()
+const INBOX_PEER_SECRET = generateSecretKey()
+const INBOX_OTHER_SECRET = generateSecretKey()
 const INBOX_OWNER = getPublicKey(INBOX_OWNER_SECRET)
 const INBOX_PEER = getPublicKey(INBOX_PEER_SECRET)
 const SHARED_INBOX_RELAY = sharedInboxDiscoveryRelayUrls()[0]!
@@ -474,35 +474,45 @@ describe("unwrapGiftWrap", () => {
     })
   })
 
-  it("defers a machine-only checkout recovery wrap without exposing its rumor", async () => {
-    const recoveryMaterial = crypto.randomUUID()
-    const giftUnwrap: GiftUnwrapFn = async () =>
-      rumor(EVENT_KINDS.ORDER, {
-        tags: [
-          [
-            "p",
-            "0202020202020202020202020202020202020202020202020202020202020202",
+  it.each([
+    "checkout_spark_recovery",
+    "checkout_spark_recovery_progress",
+    "checkout_spark_merchant_progress",
+  ])(
+    "defers machine-only %s without exposing its rumor",
+    async (messageType) => {
+      const recoveryMaterial = crypto.randomUUID()
+      const giftUnwrap: GiftUnwrapFn = async () =>
+        rumor(EVENT_KINDS.ORDER, {
+          tags: [
+            [
+              "p",
+              "0202020202020202020202020202020202020202020202020202020202020202",
+            ],
+            ["type", messageType],
+            ["order", "order-1"],
+            ["checkout", "checkout-1"],
+            ["handoff", "a".repeat(64)],
           ],
-          ["type", "checkout_spark_recovery"],
-          ["order", "order-1"],
-          ["checkout", "checkout-1"],
-          ["handoff", "a".repeat(64)],
-        ],
-        content: JSON.stringify({ mnemonic: recoveryMaterial }),
+          content: JSON.stringify({ mnemonic: recoveryMaterial }),
+        })
+      const outcome = await unwrapGiftWrap(wrap("w-recovery"), signer, {
+        giftUnwrap,
       })
-    const outcome = await unwrapGiftWrap(wrap("w-recovery"), signer, {
-      giftUnwrap,
-    })
+      expect(outcome).toEqual({
+        status: "deferred_machine",
+        wrapId: "w-recovery",
+        kind: EVENT_KINDS.ORDER,
+      })
+      expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
+    }
+  )
 
-    expect(outcome).toEqual({
-      status: "deferred_machine",
-      wrapId: "w-recovery",
-      kind: EVENT_KINDS.ORDER,
-    })
-    expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
-  })
-
-  it("does not defer an incomplete checkout recovery envelope", async () => {
+  it.each([
+    "checkout_spark_recovery",
+    "checkout_spark_recovery_progress",
+    "checkout_spark_merchant_progress",
+  ])("quarantines an incomplete %s envelope", async (messageType) => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
         tags: [
@@ -510,11 +520,10 @@ describe("unwrapGiftWrap", () => {
             "p",
             "0202020202020202020202020202020202020202020202020202020202020202",
           ],
-          ["type", "checkout_spark_recovery"],
+          ["type", messageType],
         ],
         content: "{}",
       })
-
     expect(
       await unwrapGiftWrap(wrap("w-incomplete-recovery"), signer, {
         giftUnwrap,
@@ -526,7 +535,11 @@ describe("unwrapGiftWrap", () => {
     })
   })
 
-  it("rejects a recovery marker mixed into ordinary order type tags", async () => {
+  it.each([
+    "checkout_spark_recovery",
+    "checkout_spark_recovery_progress",
+    "checkout_spark_merchant_progress",
+  ])("quarantines %s mixed into ordinary order tags", async (messageType) => {
     const recoveryMaterial = crypto.randomUUID()
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
@@ -536,12 +549,11 @@ describe("unwrapGiftWrap", () => {
             "0202020202020202020202020202020202020202020202020202020202020202",
           ],
           ["type", "order"],
-          ["type", "checkout_spark_recovery"],
+          ["type", messageType],
           ["order", "order-1"],
         ],
         content: JSON.stringify({ mnemonic: recoveryMaterial }),
       })
-
     const outcome = await unwrapGiftWrap(wrap("w-mixed-recovery"), signer, {
       giftUnwrap,
     })
