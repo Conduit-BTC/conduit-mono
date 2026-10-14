@@ -1,4 +1,7 @@
-import { retryWalletRecovery } from "./helpers/wallet-fixture"
+import {
+  retryWalletRecovery,
+  walletRetryControlSettled,
+} from "./helpers/wallet-fixture"
 import {
   openWalletSetup,
   closeDefaultWalletSession,
@@ -2258,4 +2261,68 @@ test("foreground wallet import stays ready after an older background opening is 
     await context.close()
     disposeRuntimeSignerIdentity(identity)
   }
+})
+
+test("wallet retry accepts a button removed during readiness observation @market @merchant", async ({
+  page,
+}) => {
+  await page.setContent(`
+    <button id="retry" aria-label="Retry encrypted wallet sync"
+      onclick="this.disabled = true">Retry</button>
+  `)
+  const getByRole = page.getByRole.bind(page)
+  let countReads = 0
+  let removedOnRead = false
+  const removeRetry = async () => {
+    if (removedOnRead) return
+    await page.locator("#retry").evaluate((button) => button.remove())
+    removedOnRead = true
+  }
+  page.getByRole = ((role, options) => {
+    const locator = getByRole(role, options)
+    if (role === "button" && options?.name === "Retry encrypted wallet sync") {
+      const count = locator.count.bind(locator)
+      locator.count = async () => {
+        const observed = await count()
+        countReads++
+        if (countReads === 2 && observed === 1) {
+          await removeRetry()
+        }
+        return observed
+      }
+      const evaluateAll = locator.evaluateAll.bind(locator)
+      locator.evaluateAll = (async (
+        ...args: Parameters<typeof locator.evaluateAll>
+      ) => {
+        await removeRetry()
+        return evaluateAll(...args)
+      }) as typeof locator.evaluateAll
+    }
+    return locator
+  }) as Page["getByRole"]
+
+  await retryWalletRecovery(page)
+  expect(removedOnRead).toBe(true)
+  expect(countReads).toBe(1)
+  const retry = getByRole("button", {
+    name: "Retry encrypted wallet sync",
+    exact: true,
+  })
+  expect(await walletRetryControlSettled(retry)).toBe(true)
+  await page.setContent(
+    '<button aria-label="Retry encrypted wallet sync" disabled>Retry</button>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(false)
+  await page.setContent(
+    '<div aria-disabled="true"><button aria-label="Retry encrypted wallet sync">Retry</button></div>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(false)
+  await page.setContent(
+    '<button aria-label="Retry encrypted wallet sync">Retry</button>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(true)
+  await page.setContent(
+    '<button aria-label="Retry encrypted wallet sync">Retry</button><button aria-label="Retry encrypted wallet sync">Retry</button>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(false)
 })
