@@ -78,10 +78,12 @@ wallet support. Invoice expiry before payment is a different limit; this frozen
 request encodes no invoice expiry. Payment completion means the sender fulfilled
 the fee obligation, not that the receiver has claimed or can already spend it.
 
-Explicit Merchant history details distinguish sender completion pending from
-receiver completion pending using only the existing exact transfer read. These
-two finite progress labels do not identify why a wallet has not completed,
-claim that its receiver is offline, or authorize retry, receipt or retirement.
+Explicit Merchant history details can display sender completion pending from
+the exact transfer read. The receiver-pending label remains readable for
+historical or injected provider observations; the pinned native adapter records
+an exactly verified post-commit transfer as paid even while its receiver claim
+is pending. These finite progress labels do not identify why a wallet has not
+completed, claim that its receiver is offline, or authorize retry or retirement.
 They are per-inspection diagnostics, not additional persisted recovery evidence.
 Unknown provider states retain the existing conflicting-evidence result.
 

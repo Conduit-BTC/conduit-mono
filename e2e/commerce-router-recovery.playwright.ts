@@ -1905,6 +1905,10 @@ async function rehearseRouter(
       )
       .toBe(1)
     if (offlineTreasury) {
+      const buyerOrderId = new URL(page.url()).searchParams.get("order")
+      expect(typeof buyerOrderId === "string" && buyerOrderId.length > 0).toBe(
+        true
+      )
       setStage("native treasury sender commits before receiver claim")
       const beforeCommit = control().nativeSnapshot()
       expect(beforeCommit).toMatchObject({
@@ -1935,6 +1939,7 @@ async function rehearseRouter(
         outgoingPaymentCount: 2,
         debitedSats: 1_113,
       })
+      setStage("sender-committed exact provider transfer matches")
       const committedNative = control().nativeSnapshot()
       expect(committedNative).toMatchObject({
         nativeSendInvocationCount: beforeCommit.nativeSendInvocationCount,
@@ -1955,8 +1960,9 @@ async function rehearseRouter(
           },
         ],
       })
+      setStage("sender-committed persisted obligations match")
       await expect
-        .poll(() => merchantTerminalReconciliation(page, orderId), {
+        .poll(() => merchantTerminalReconciliation(page, buyerOrderId), {
           timeout: 30_000,
         })
         .toEqual({ treasuryPaid: true, allLegsPaid: true })
@@ -1995,9 +2001,11 @@ async function rehearseRouter(
         )
       ).toBeVisible()
       await expect
-        .poll(() => merchantWalletState(page, orderId), { timeout: 30_000 })
+        .poll(() => merchantWalletState(page, buyerOrderId), {
+          timeout: 30_000,
+        })
         .toBe("active")
-      expect(await hasActiveEncryptedRecovery(page, orderId)).toBe(true)
+      expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
 
       setStage("sender-committed refresh does not replay native payment")
       const refresh = page.getByRole("button", {
@@ -2012,8 +2020,8 @@ async function rehearseRouter(
       expect(control().snapshot()).toEqual(committedPayments)
       expect(control().nativeSnapshot()).toEqual(committedNative)
       await expect(cleanup).toBeEnabled()
-      expect(await merchantWalletState(page, orderId)).toBe("active")
-      expect(await hasActiveEncryptedRecovery(page, orderId)).toBe(true)
+      expect(await merchantWalletState(page, buyerOrderId)).toBe("active")
+      expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
       bodyCompleted = true
       return
     }

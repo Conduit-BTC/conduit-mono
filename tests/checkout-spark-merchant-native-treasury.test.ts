@@ -56,7 +56,7 @@ async function fixture(
     ackFailure?: number
     ambiguous?: boolean
     preflight?: "ready" | "fee_over_cap" | "unavailable"
-    pendingUntilReceiverClaimed?: boolean
+    pendingUntilSenderCommitted?: boolean
   } = {}
 ) {
   const f = nativeTreasuryFixture(undefined, undefined, MERCHANT)
@@ -132,7 +132,7 @@ async function fixture(
   let sends = 0
   let publishes = 0
   let nativeInspections = 0
-  let receiverClaimed = !options.pendingUntilReceiverClaimed
+  let senderCommitted = !options.pendingUntilSenderCommitted
   let clock = f.plan.takeoverAt + 1
   const wallet: MerchantSparkRecoveryWallet = {
     ensurePrivateReady: async () => {
@@ -150,8 +150,8 @@ async function fixture(
         nativeInspections += 1
         expect(request.nativeTreasury).toEqual(f.plan.nativeTreasury)
         expect(request.amountSats).toBe(112)
-        if (options.pendingUntilReceiverClaimed) {
-          return receiverClaimed
+        if (options.pendingUntilSenderCommitted) {
+          return senderCommitted
             ? {
                 invoiceId: request.nativeTreasury.invoiceId,
                 status: "paid",
@@ -163,7 +163,7 @@ async function fixture(
                 invoiceId: request.nativeTreasury.invoiceId,
                 status: "pending",
                 providerTransferId: "actual-native-provider-id",
-                pendingPhase: "receiver",
+                pendingPhase: "sender",
               }
         }
         return sends && !options.ambiguous
@@ -293,8 +293,8 @@ async function fixture(
     progress,
     sends: () => sends,
     nativeInspections: () => nativeInspections,
-    claimNativeReceiver: () => {
-      receiverClaimed = true
+    commitNativeSender: () => {
+      senderCommitted = true
     },
     run: () =>
       continueMerchantCheckoutSparkNativeTreasury(
@@ -466,10 +466,10 @@ describe("Merchant native treasury continuation", () => {
     }
   }, 15_000)
 
-  it("automatically rechecks the same pending native fee until its receiver claims it", async () => {
+  it("automatically rechecks the same pending native fee until sender commitment without requiring a receiver claim", async () => {
     const f = await fixture({
       restoredStatus: "submitted",
-      pendingUntilReceiverClaimed: true,
+      pendingUntilSenderCommitted: true,
     })
     const clock = fakeClock(f.plan.takeoverAt + 1)
     const firstRun = deferred()
@@ -566,7 +566,7 @@ describe("Merchant native treasury continuation", () => {
       expect(rescans).toBe(1)
       expect(clock.nextDelay()).toBe(30_000)
 
-      f.claimNativeReceiver()
+      f.commitNativeSender()
       await clock.advance(30_000)
       await secondRun.promise
 
