@@ -714,20 +714,30 @@ async function rehearseRouter(
       await expect(
         merchantPage.getByRole("heading", { name: "Wallets", exact: true })
       ).toBeVisible()
-      await merchantPage
+      const addressSection = merchantPage.getByRole("region", {
+        name: "Nostr profile receiving address",
+        exact: true,
+      })
+      await addressSection
+        .getByRole("button", { name: "Edit", exact: true })
+        .click()
+      const addressDialog = merchantPage.getByRole("dialog", {
+        name: "Public Lightning address",
+        exact: true,
+      })
+      await addressDialog
         .getByLabel("Lightning address", { exact: true })
         .fill(merchantAddress)
-      const save = merchantPage.getByRole("button", {
+      const save = addressDialog.getByRole("button", {
         name: "Save public address",
         exact: true,
       })
       await expect(save).toBeEnabled()
       await save.click()
-      await expect(
-        merchantPage.getByText(`Current address: ${merchantAddress}`, {
-          exact: true,
-        })
-      ).toBeVisible({ timeout: 30_000 })
+      await expect(addressSection.locator("[data-wallet-address]")).toHaveText(
+        merchantAddress,
+        { timeout: 30_000 }
+      )
       setStage("Merchant setup reads back its genuine signed receiving profile")
       await expect
         .poll(async () => {
@@ -746,11 +756,10 @@ async function rehearseRouter(
         })
         .toBe(true)
       await persistence.reload()
-      await expect(
-        merchantPage.getByText(`Current address: ${merchantAddress}`, {
-          exact: true,
-        })
-      ).toBeVisible({ timeout: 30_000 })
+      await expect(addressSection.locator("[data-wallet-address]")).toHaveText(
+        merchantAddress,
+        { timeout: 30_000 }
+      )
       expect(walletInitializations).toBe(0)
       expect(identity === undefined && grossFundingSats === undefined).toBe(
         true

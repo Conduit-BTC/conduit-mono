@@ -1,8 +1,32 @@
 import path from "node:path"
 import type { WalletDescriptor } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { recordSmokeDiagnostic } from "./smoke-diagnostics"
+
+async function walletRetryControlState(retry: Locator) {
+  return retry.evaluateAll((buttons) => {
+    const button =
+      buttons.length === 1 && buttons[0] instanceof HTMLButtonElement
+        ? buttons[0]
+        : null
+    return {
+      count: buttons.length,
+      enabled:
+        button !== null &&
+        !button.matches(":disabled") &&
+        !button.closest('[aria-disabled="true"]'),
+    }
+  })
+}
+
+/** One non-waiting DOM observation; an absent retry control means the sync UI settled. */
+export async function walletRetryControlSettled(
+  retry: Locator
+): Promise<boolean> {
+  const state = await walletRetryControlState(retry)
+  return state.count === 0 || (state.count === 1 && state.enabled)
+}
 
 export async function retryWalletRecovery(page: Page) {
   const retry = page.getByRole("button", {
@@ -24,12 +48,11 @@ export async function retryWalletRecovery(page: Page) {
     phase = "click_retry"
     await retry.click()
     phase = "await_sync"
-    await expect
-      .poll(async () => !(await retry.count()) || (await retry.isEnabled()))
-      .toBe(true)
+    await expect.poll(() => walletRetryControlSettled(retry)).toBe(true)
     phase = "dismiss_details"
     if (await recoveryDialog.count()) await page.keyboard.press("Escape")
   } catch (error) {
+    const controlState = await walletRetryControlState(retry).catch(() => null)
     const observed = await Promise.all([
       retry.count(),
       recoveryDialog.count(),
@@ -42,7 +65,9 @@ export async function retryWalletRecovery(page: Page) {
       retryVisible:
         observed?.[0] === 1 && (await retry.isVisible().catch(() => false)),
       retryEnabled:
-        observed?.[0] === 1 && (await retry.isEnabled().catch(() => false)),
+        observed?.[0] === 1 &&
+        controlState?.count === 1 &&
+        controlState.enabled,
       recoveryDialogPresent: !!observed?.[1],
       managePresent: !!observed?.[2],
       syncCheckingVisible: await page
