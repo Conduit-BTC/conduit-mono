@@ -458,6 +458,11 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         enabled: "boolean",
         signerAvailable: "boolean",
         invalidControls: "number",
+        imageRowCount: "number",
+        blankImageRows: "number",
+        invalidImageRows: "number",
+        primaryImageMatchesExpected: "boolean",
+        expectedImagePresent: "boolean",
         action: [
           "publish",
           "waiting_signer",
