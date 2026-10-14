@@ -632,9 +632,8 @@ for (const [viewportName, width, height] of [
         .getByLabel("Handling per item", { exact: true })
         .fill(index === 1 ? "25" : "1.25")
       await dialog.getByRole("button", { name: "Add by URL" }).click()
-      await dialog
-        .getByLabel("Primary image URL")
-        .fill(`https://media.conduit.market/shipping-table-${index}.png`)
+      const expectedImageUrl = `https://media.conduit.market/shipping-table-${index}.png`
+      await dialog.getByLabel("Primary image URL").fill(expectedImageUrl)
       const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
       await tags.fill("shipping, table, test")
       await tags.press("Tab")
@@ -658,9 +657,14 @@ for (const [viewportName, width, height] of [
       try {
         await expect(submit).toBeEnabled()
       } catch (error) {
-        const state = await dialog.evaluate((element) => {
+        const state = await dialog.evaluate((element, expectedImageUrl) => {
           const button = element.querySelector<HTMLButtonElement>(
             'button[type="submit"]'
+          )
+          const imageInputs = Array.from(
+            element.querySelectorAll<HTMLInputElement>(
+              'input[type="url"][id^="product-image-"]'
+            )
           )
           const actionText = button?.textContent?.trim()
           const status = Array.from(
@@ -693,6 +697,17 @@ for (const [viewportName, width, height] of [
             invalidControls: element.querySelectorAll(
               '[aria-invalid="true"], input:invalid'
             ).length,
+            imageRowCount: imageInputs.length,
+            blankImageRows: imageInputs.filter((input) => !input.value.trim())
+              .length,
+            invalidImageRows: imageInputs.filter(
+              (input) => input.getAttribute("aria-invalid") === "true"
+            ).length,
+            primaryImageMatchesExpected:
+              imageInputs[0]?.value === expectedImageUrl,
+            expectedImagePresent: imageInputs.some(
+              (input) => input.value === expectedImageUrl
+            ),
             action:
               actionText === "Publish product"
                 ? "publish"
@@ -705,7 +720,7 @@ for (const [viewportName, width, height] of [
                       : "other",
             validation,
           }
-        })
+        }, expectedImageUrl)
         const signerAvailable = await page.evaluate(async (root) => {
           const { getAccountSigner } = await import(`${root}/session-signer.ts`)
           return !!getAccountSigner()
