@@ -174,13 +174,14 @@ describe("Merchant order payment presentation", () => {
     }
   )
 
-  it("shows recovery progress without pretending that verified commerce is still unpaid", () => {
+  it("shows completed payments without active routing progress while recovery is retained", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
         {...base}
         processingScope="order"
         recoveryPending
         automaticProcessing
+        notice="This order's payment processing has resumed. Keep Orders open."
         projection={{
           creditVerified: true,
           merchantVerified: true,
@@ -192,9 +193,13 @@ describe("Merchant order payment presentation", () => {
     )
     expect(html).toContain("Payment verified")
     expect(html).toContain("Continue with fulfillment")
-    expect(html).toContain("Finishing recovery…")
-    expect(html).toContain('role="progressbar"')
-    expect(html).not.toContain("aria-valuenow")
+    expect(html).toContain("Payment complete. Recovery remains saved.")
+    expect(html).not.toContain("Finishing recovery…")
+    expect(html).not.toContain('role="progressbar"')
+    expect(html).not.toContain(">Pause<")
+    expect(html).not.toContain("has resumed")
+    expect(html).not.toContain("Keep Orders open")
+    expect(html).not.toContain("Recovery cleanup complete")
     expect(html).not.toContain("Completing this order…")
     expect(html).not.toContain("Payment needs attention")
   })
@@ -207,6 +212,82 @@ describe("Merchant order payment presentation", () => {
     expect(html).not.toContain("Payment verified")
     expect(html).not.toContain("unpaid")
     expect(html).not.toContain("Continue with fulfillment")
+    expect(html).not.toContain("Payment complete.")
+  })
+
+  it.each([
+    { feePending: true, recipientUnverified: false },
+    { feePending: false, recipientUnverified: true },
+  ])(
+    "does not show completion while the fee or recipient proof is unresolved: %j",
+    (fee) => {
+      const html = renderToStaticMarkup(
+        <CheckoutSparkMerchantPaymentCard
+          {...base}
+          processingScope="order"
+          recoveryPending
+          automaticProcessing
+          projection={{
+            creditVerified: true,
+            merchantVerified: true,
+            commerceVerified: true,
+            ...fee,
+          }}
+        />
+      )
+      expect(html).toContain("Payment verified")
+      expect(html).toContain("Pause coordination fee")
+      expect(html).not.toContain("Payment complete.")
+      if (fee.feePending) {
+        expect(html).toContain("Completing this order…")
+        expect(html).toContain('role="progressbar"')
+      } else {
+        expect(html).toContain("The coordination fee needs attention")
+      }
+    }
+  )
+
+  it("does not show completion without an explicit recipient verification result", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        recoveryPending
+        automaticProcessing
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: false,
+        }}
+      />
+    )
+    expect(html).toContain("Payment verified")
+    expect(html).not.toContain("Payment complete.")
+  })
+
+  it("keeps manual cleanup feedback available without reopening completed payments", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        paused
+        processingScope="order"
+        recoveryPending
+        notice="Recovery cleanup could not finish. Saved recovery is retained."
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: false,
+          recipientUnverified: false,
+        }}
+      />
+    )
+    expect(html).toContain("Payment complete. Recovery remains saved.")
+    expect(html).toContain("Finish recovery")
+    expect(html).toContain("Recovery cleanup could not finish")
+    expect(html).not.toContain('role="progressbar"')
+    expect(html).not.toContain("Recovery cleanup complete")
+    expect(html).not.toContain("Resume coordination fee")
   })
 
   it.each([false, true])(

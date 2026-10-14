@@ -63,6 +63,10 @@ export function CheckoutSparkMerchantPaymentCard({
     paid &&
     (projection?.feePending === true ||
       projection?.recipientUnverified === true)
+  const paymentsComplete =
+    paid &&
+    projection?.feePending === false &&
+    projection?.recipientUnverified === false
   const attention =
     (!paid || coordinationFeeUnresolved) &&
     (settlementReadUnavailable ||
@@ -87,9 +91,16 @@ export function CheckoutSparkMerchantPaymentCard({
     recoveryPending &&
     recoveryStatusRefreshing
   const showProcessingControls =
-    processingPending && canContinue && !checkingCleanup
+    processingPending &&
+    canContinue &&
+    !checkingCleanup &&
+    (!paymentsComplete || paused)
   const showAutomaticProgress =
-    automaticProcessing && processingPending && !paused && !attention
+    automaticProcessing &&
+    processingPending &&
+    !paymentsComplete &&
+    !paused &&
+    !attention
   const waitingForHandoff = nowMs < handoffAt
   const label = paid
     ? "Payment verified"
@@ -173,6 +184,17 @@ export function CheckoutSparkMerchantPaymentCard({
           Checking recovery cleanup…
         </p>
       )}
+      {paymentsComplete &&
+        recoveryPending &&
+        !recoveryComplete &&
+        !checkingCleanup && (
+          <p
+            role="status"
+            className="mt-3 text-sm text-[var(--text-secondary)]"
+          >
+            Payment complete. Recovery remains saved.
+          </p>
+        )}
       {showProcessingControls && (
         <p
           id={processingScopeId}
@@ -187,11 +209,7 @@ export function CheckoutSparkMerchantPaymentCard({
         <div className="mt-4">
           <CheckoutPaymentProgress
             pausing={transitioning}
-            statusLabel={
-              paid && !coordinationFeeUnresolved
-                ? "Finishing recovery…"
-                : "Completing this order…"
-            }
+            statusLabel="Completing this order…"
           />
         </div>
       )}
@@ -235,7 +253,7 @@ export function CheckoutSparkMerchantPaymentCard({
           {renewalExplanation}
         </p>
       )}
-      {notice && !recoveryComplete && (
+      {notice && !recoveryComplete && (!paymentsComplete || paused) && (
         <p role="status" className="mt-3 text-sm text-[var(--text-secondary)]">
           {notice}
         </p>

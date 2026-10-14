@@ -1633,9 +1633,16 @@ async function rehearseRouter(
         "cold Merchant keeps automatic native reconciliation active after claim"
       )
       await expect(
-        recovery.getByRole("button", {
-          name: /^(?:Pause|Pause coordination fee)$/,
-        })
+        recovery
+          .getByRole("progressbar", {
+            name: "Completing this order…",
+            exact: true,
+          })
+          .or(
+            recovery.getByText("Payment complete. Recovery remains saved.", {
+              exact: true,
+            })
+          )
       ).toBeVisible({ timeout: 30_000 })
       await expect
         .poll(
@@ -1780,25 +1787,15 @@ async function rehearseRouter(
       await expect.poll(supplierNoticeCount, { timeout: 30_000 }).toBe(1)
 
       setStage("cold Merchant drains automatic recovery before retirement")
-      const pauseBeforeRetirement = recovery.getByRole("button", {
-        name: "Pause",
-        exact: true,
-      })
-      if (scopedRecovery) {
-        await expect(
-          recovery.getByRole("progressbar", {
-            name: "Finishing recovery…",
-            exact: true,
-          })
-        ).toBeVisible()
-      } else if (await pauseBeforeRetirement.isVisible()) {
-        await pauseBeforeRetirement.click()
-        await expect(
-          recovery.getByRole("button", {
-            name: /^(?:Resume payment processing|Continue this order|Finish recovery)$/,
-          })
-        ).toBeVisible()
-      }
+      await expect(
+        recovery.getByText("Payment complete. Recovery remains saved.", {
+          exact: true,
+        })
+      ).toBeVisible()
+      await expect(recovery.getByRole("progressbar")).toHaveCount(0)
+      await expect(
+        recovery.getByRole("button", { name: "Pause", exact: true })
+      ).toHaveCount(0)
       setStage("cold Merchant retires only after fresh terminal zero evidence")
       control().setAdditionalOwnedSats(0)
       if (!scopedRecovery) await coldPersistence.reload()
