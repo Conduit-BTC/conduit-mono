@@ -328,25 +328,41 @@ export async function openWalletSetup(
 }
 
 /** Observe the real route controller without adding a production test API. */
+type WalletRouteFetchDiagnostic = {
+  routeFetchCategory: "closed" | "aborted" | "timeout" | "network" | "other"
+  routeFetchPageClosed: boolean
+  routeFetchNavigationRequest: boolean
+  routeFetchNavigations: number
+  routeFetchStarts: number
+  routeFetchCompletes: number
+}
+
+export type WalletRouteFetchDetail = WalletRouteFetchDiagnostic & {
+  routeFetchStartNavigations: number
+  routeFetchStartNavigationRequests: number
+  routeFetchFailureNavigationRequests: number
+  routeFetchNewNavigationRequested: boolean
+}
+
 export async function observeWalletController(
   page: Page,
-  onFetchError?: (diagnostic: {
-    routeFetchCategory: "closed" | "aborted" | "timeout" | "network" | "other"
-    routeFetchPageClosed: boolean
-    routeFetchNavigationRequest: boolean
-    routeFetchNavigations: number
-    routeFetchStarts: number
-    routeFetchCompletes: number
-  }) => void
+  onFetchError?: (diagnostic: WalletRouteFetchDiagnostic) => void,
+  onFetchErrorDetail?: (diagnostic: WalletRouteFetchDetail) => void
 ) {
   let navigations = 0
+  let navigationRequests = 0
   let routeStarts = 0
   let routeCompletes = 0
   page.on("framenavigated", (frame) => {
     if (frame === page.mainFrame()) navigations++
   })
+  page.on("request", (request) => {
+    if (request.isNavigationRequest()) navigationRequests++
+  })
   await page.route("**/src/routes/wallet.tsx*", async (route) => {
     routeStarts++
+    const startedNavigations = navigations
+    const startedNavigationRequests = navigationRequests
     const navigationRequest = route.request().isNavigationRequest()
     let response
     try {
@@ -363,14 +379,24 @@ export async function observeWalletController(
             : /net::|network/i.test(message)
               ? "network"
               : "other"
-      onFetchError?.({
+      const diagnostic: WalletRouteFetchDiagnostic = {
         routeFetchCategory: category,
         routeFetchPageClosed: page.isClosed(),
         routeFetchNavigationRequest: navigationRequest,
         routeFetchNavigations: navigations,
         routeFetchStarts: routeStarts,
         routeFetchCompletes: routeCompletes,
+      }
+      onFetchErrorDetail?.({
+        ...diagnostic,
+        routeFetchStartNavigations: startedNavigations,
+        routeFetchStartNavigationRequests: startedNavigationRequests,
+        routeFetchFailureNavigationRequests: navigationRequests,
+        routeFetchNewNavigationRequested:
+          navigationRequests > startedNavigationRequests ||
+          navigations > startedNavigations,
       })
+      onFetchError?.(diagnostic)
       throw error
     }
     const body = await response.text()

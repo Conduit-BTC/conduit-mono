@@ -1608,3 +1608,70 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 })
+
+describe("wallet balance route diagnostics", () => {
+  it("retains only bounded wallet route observations for its owning balance file", () => {
+    const privateValue = "private-" + crypto.randomUUID()
+    const values = {
+      routeFetchCategory: "closed",
+      routeFetchPageClosed: true,
+      routeFetchNavigationRequest: false,
+      routeFetchNavigations: 2,
+      routeFetchStarts: 1,
+      routeFetchCompletes: 0,
+      routeFetchStartNavigations: 2,
+      routeFetchStartNavigationRequests: 2,
+      routeFetchFailureNavigationRequests: 2,
+      routeFetchNewNavigationRequested: false,
+      walletBalance: privateValue,
+      walletId: privateValue,
+      errorMessage: privateValue,
+    }
+    const annotation = {
+      type: "smoke:wallet-balances",
+      description: JSON.stringify(values),
+    }
+    const expected = { kind: "wallet-balances", ...values }
+    delete (expected as Record<string, unknown>).walletBalance
+    delete (expected as Record<string, unknown>).walletId
+    delete (expected as Record<string, unknown>).errorMessage
+    const retained = safeSmokeDiagnostics("e2e/wallet-balances.playwright.ts", [
+      annotation,
+    ])
+    expect(retained).toEqual([expected])
+    expect(JSON.stringify(retained)).not.toContain(privateValue)
+    expect(
+      safeRetainedSmokeDiagnostics(
+        "e2e/wallet-balances.playwright.ts",
+        retained
+      )
+    ).toEqual([expected])
+    for (const file of [
+      "e2e/wallet-cross-app.playwright.ts",
+      "e2e/wallet-sign-in.playwright.ts",
+      "e2e/commerce.playwright.ts",
+    ]) {
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([])
+      expect(safeRetainedSmokeDiagnostics(file, retained)).toEqual([])
+    }
+    for (const [field, value] of [
+      ["routeFetchCategory", privateValue],
+      ["routeFetchPageClosed", privateValue],
+      ["routeFetchStarts", privateValue],
+      ["routeFetchStarts", 32_769],
+      ["routeFetchStarts", Number.POSITIVE_INFINITY],
+    ] as const) {
+      const altered = safeSmokeDiagnostics(
+        "e2e/wallet-balances.playwright.ts",
+        [
+          {
+            type: annotation.type,
+            description: JSON.stringify({ ...values, [field]: value }),
+          },
+        ]
+      )
+      expect(altered[0]).not.toHaveProperty(field)
+      expect(JSON.stringify(altered)).not.toContain(privateValue)
+    }
+  })
+})

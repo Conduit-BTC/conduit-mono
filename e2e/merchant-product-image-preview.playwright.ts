@@ -1209,9 +1209,81 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   mark("open_dialog")
   await page.getByRole("button", { name: "Add product" }).first().click()
   const resumed = page.getByRole("dialog", { name: "Add product" })
-  await expect(
-    resumed.getByText("Choose the same image to retry", { exact: false })
-  ).toBeVisible()
+  try {
+    await expect(resumed).toBeVisible()
+    // The media preference read has a 4s relay connect bound followed by a
+    // 6s fetch bound. Wait for its fallback target to render before checking
+    // the retry-specific guidance; keep that assertion's own timeout intact.
+    await expect(
+      resumed.getByText(fallbackDisclosureText, { exact: false })
+    ).toBeVisible({ timeout: 15_000 })
+    await expect(
+      resumed.getByText("Choose the same image to retry", { exact: false })
+    ).toBeVisible()
+  } catch (error) {
+    try {
+      const addImage = resumed.getByRole("button", {
+        name: "Add image",
+        exact: true,
+      })
+      const [
+        accountMenuCount,
+        addImageCount,
+        fallbackDisclosureVisible,
+        uploadPendingVisible,
+        dialogCount,
+      ] = await Promise.all([
+        accountMenu.count(),
+        addImage.count(),
+        resumed.getByText(fallbackDisclosureText, { exact: false }).isVisible(),
+        resumed
+          .getByText("Checking your media server settings.", { exact: false })
+          .isVisible(),
+        page.getByRole("dialog").count(),
+      ])
+      const claimState = await page.evaluate(() => {
+        try {
+          const keys = Object.keys(localStorage).filter((key) =>
+            key.startsWith("conduit:merchant:product_image_fallback:v1")
+          )
+          if (keys.length === 0) return "absent"
+          if (keys.length !== 1) return "malformed"
+          const value: unknown = JSON.parse(
+            localStorage.getItem(keys[0]!) ?? ""
+          )
+          return value &&
+            typeof value === "object" &&
+            "state" in value &&
+            (value.state === "retry_same_hash" || value.state === "consumed")
+            ? value.state
+            : "malformed"
+        } catch {
+          return "unavailable"
+        }
+      })
+      recordSmokeDiagnostic(test.info(), "fallback-upload", {
+        phase: "open_dialog",
+        dialogCount,
+      })
+      recordSmokeDiagnostic(test.info(), "merchant-image-reload", {
+        authReady: accountMenuCount > 0,
+        addImagePresent: addImageCount > 0,
+        addImageEnabled: await addImage.evaluateAll(
+          (buttons) =>
+            buttons.length === 1 &&
+            buttons[0] instanceof HTMLButtonElement &&
+            !buttons[0].matches(":disabled") &&
+            !buttons[0].closest('[aria-disabled="true"]')
+        ),
+        fallbackDisclosureVisible,
+        uploadPendingVisible,
+        claimState,
+      })
+    } catch {
+      // Teardown may close the page; preserve the original assertion failure.
+    }
+    throw error
+  }
   await expect(
     resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()

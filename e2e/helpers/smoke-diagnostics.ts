@@ -233,6 +233,27 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         signerPromptVisible: "boolean",
       },
     },
+    "wallet-balances": {
+      file: "e2e/wallet-balances.playwright.ts",
+      fields: {
+        routeFetchCategory: [
+          "closed",
+          "aborted",
+          "timeout",
+          "network",
+          "other",
+        ],
+        routeFetchPageClosed: "boolean",
+        routeFetchNavigationRequest: "boolean",
+        routeFetchNavigations: "number",
+        routeFetchStarts: "number",
+        routeFetchCompletes: "number",
+        routeFetchStartNavigations: "number",
+        routeFetchStartNavigationRequests: "number",
+        routeFetchFailureNavigationRequests: "number",
+        routeFetchNewNavigationRequested: "boolean",
+      },
+    },
     "wallet-foreground-open": {
       file: "e2e/wallet-cross-app.playwright.ts",
       fields: {
@@ -751,6 +772,7 @@ export function recordSmokeDiagnostic(
     | "wallet-import-menu"
     | "wallet-foreground-open"
     | "wallet-retry"
+    | "wallet-balances"
     | "merchant-image-reload"
     | "manual-checkout-stop"
     | "commerce-journey"
