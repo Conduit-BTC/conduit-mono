@@ -46,6 +46,7 @@ export function resolvePlaywrightWebServerTarget(
       env: {
         RELAY_EPHEMERAL: "true",
         RELAY_FAULT_MODE: "none",
+        RELAY_HOST: "127.0.0.1",
         RELAY_PORT: relayPort,
       },
     },

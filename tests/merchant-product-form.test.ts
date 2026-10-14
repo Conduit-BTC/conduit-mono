@@ -1,9 +1,17 @@
 import { describe, expect, it } from "bun:test"
 import {
+  buildProductSupplierAllocation,
+  CANONICAL_COMMERCE_DISCOVERY_RELAYS,
+  pubkeyToNpub,
+} from "@conduit/core"
+import { nip19 } from "@nostr-dev-kit/ndk"
+import {
   addProductTags,
+  applyMerchantProductSupplierAllocationFormChange,
   buildProductShippingMetadata,
   canSubmitProductForm,
   formatProductTags,
+  getMerchantProductSupplierAllocationFormState,
   getProductShippingPricingMode,
   getProductTagEditFeedback,
   MAX_PRODUCT_TAG_COUNT,
@@ -17,6 +25,7 @@ import {
   removeProductTagAtIndex,
   isProductUsingPresetShippingZone,
   validateProductPublishForm,
+  validateMerchantProductSupplierAllocationForm,
   type MerchantProductFormValues,
   type ProductPublishFormValues,
 } from "../apps/merchant/src/lib/productForm"
@@ -25,6 +34,48 @@ import {
   createEmptyProductVariationForm,
   generateProductVariationRows,
 } from "../apps/merchant/src/lib/productVariations"
+
+const MERCHANT =
+  "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+const SUPPLIER =
+  "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+
+function supplierTerms() {
+  const result = buildProductSupplierAllocation({
+    merchantPubkey: MERCHANT,
+    merchantWeight: "3",
+    merchantRelayHint: "wss://relay.conduit.market",
+    suppliers: [
+      { identity: SUPPLIER, relayHint: "wss://nos.lol", weight: "1" },
+    ],
+  })
+  if (!result.ok) throw new Error("Expected normal supplier terms")
+  return result.allocation
+}
+
+function merchantForm(): MerchantProductFormValues {
+  return {
+    ...form(),
+    summary: "Signed listing summary",
+    listingAreaCountry: "US",
+    listingAreaState: "CA",
+    listingAreaPlaceId: 5378538,
+    listingAreaMode: "selected",
+    listingAreaDefault: { location: "Oakland, California", geohash: "9q9p" },
+    variations: createEmptyProductVariationForm(),
+    fulfillment: "ship",
+    eventMarketReference: "",
+    futureEventMarketReference: `30409:${MERCHANT}:future-market`,
+    eventHandoffMode: "merchant_handoff",
+    merchantPickupTitle: "Merchant booth pickup",
+    merchantPickupLocation: "Oakland",
+    merchantPickupGeohash: "9q9p",
+    merchantPickupCountry: "US",
+    publicZapEnabled: false,
+    zapMessagePolicy: "generic_only",
+    ...getMerchantProductSupplierAllocationFormState(supplierTerms()),
+  }
+}
 
 function form(
   overrides: Partial<ProductPublishFormValues> = {}
@@ -62,6 +113,183 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
+  it.each([
+    [
+      "explicit",
+      "wss://relay.damus.io",
+      ["wss://nos.lol"],
+      "wss://relay.damus.io/",
+    ],
+    [
+      "embedded",
+      "",
+      ["ws://127.0.0.1:7777", "wss://nos.lol"],
+      "wss://nos.lol/",
+    ],
+    [
+      "canonical",
+      "",
+      ["ws://127.0.0.1:7777"],
+      new URL(CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!).href,
+    ],
+  ] as const)(
+    "keeps %s supplier profile discovery precedence without accepting unsafe hints",
+    (_case, relayHint, relays, expectedRelayHint) => {
+      const values = merchantForm()
+      values.supplierAllocations = [
+        {
+          identity: nip19.nprofileEncode({
+            pubkey: SUPPLIER,
+            relays: [...relays],
+          }),
+          relayHint,
+          weight: "1",
+        },
+      ]
+      const validation = validateMerchantProductSupplierAllocationForm(
+        values,
+        MERCHANT
+      )
+      expect(validation.canPublish).toBe(true)
+      expect(validation.allocation?.recipients[1]?.relayHint).toBe(
+        expectedRelayHint
+      )
+    }
+  )
+
+  it("does not replace an unsafe explicit supplier relay with the canonical fallback", () => {
+    const values = merchantForm()
+    values.supplierAllocations = [
+      {
+        identity: pubkeyToNpub(SUPPLIER),
+        relayHint: "ws://127.0.0.1:7777",
+        weight: "1",
+      },
+    ]
+    const validation = validateMerchantProductSupplierAllocationForm(
+      values,
+      MERCHANT
+    )
+    expect(validation.canPublish).toBe(false)
+    expect(validation.error).toContain("safe public relay hint")
+  })
+
+  it("loads and copies valid supplier terms without changing listing or event fields", () => {
+    const original = merchantForm()
+    expect(original.supplierAllocationEnabled).toBe(true)
+    expect(original.supplierAllocationRepairRequired).toBe(false)
+    expect(original.supplierAllocations).toEqual([
+      {
+        identity: pubkeyToNpub(SUPPLIER),
+        relayHint: "wss://nos.lol/",
+        weight: "1",
+      },
+    ])
+    const validation = validateMerchantProductSupplierAllocationForm(
+      original,
+      MERCHANT
+    )
+    expect(validation).toEqual({
+      canPublish: true,
+      error: null,
+      allocation: supplierTerms(),
+    })
+    const copied = applyMerchantProductSupplierAllocationFormChange(original, {
+      enabled: true,
+      merchantWeight: original.merchantAllocationWeight,
+      merchantRelayHint: original.merchantAllocationRelayHint,
+      suppliers: original.supplierAllocations,
+    })
+    expect(copied).toEqual(original)
+    expect(copied.supplierAllocations).not.toBe(original.supplierAllocations)
+    expect(copied.supplierAllocations[0]).not.toBe(
+      original.supplierAllocations[0]
+    )
+    copied.supplierAllocations[0]!.weight = "2"
+    expect(original.supplierAllocations[0]!.weight).toBe("1")
+  })
+
+  it("requires an explicit allocation edit or removal to clear a repair-required listing", () => {
+    const repair = {
+      ...merchantForm(),
+      ...getMerchantProductSupplierAllocationFormState({
+        ...supplierTerms(),
+        state: "invalid",
+        issues: ["invalid_version"],
+      }),
+    }
+    expect(repair.supplierAllocationEnabled).toBe(true)
+    expect(repair.supplierAllocationRepairRequired).toBe(true)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        { ...repair, title: "Unrelated edit" },
+        MERCHANT
+      ).canPublish
+    ).toBe(false)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        { ...repair, supplierAllocationEnabled: false },
+        MERCHANT
+      ).canPublish
+    ).toBe(false)
+    for (const enabled of [true, false]) {
+      const changed = applyMerchantProductSupplierAllocationFormChange(repair, {
+        enabled,
+        merchantWeight: "3",
+        merchantRelayHint: "wss://relay.conduit.market",
+        suppliers: repair.supplierAllocations,
+      })
+      expect(changed.supplierAllocationRepairRequired).toBe(false)
+      expect(
+        validateMerchantProductSupplierAllocationForm(changed, MERCHANT)
+          .canPublish
+      ).toBe(true)
+      expect(changed.listingAreaDefault).toEqual(repair.listingAreaDefault)
+      expect(changed.futureEventMarketReference).toBe(
+        repair.futureEventMarketReference
+      )
+    }
+  })
+
+  it("keeps ordinary no-split authoring optional and explains incomplete supplier terms", () => {
+    const absent = getMerchantProductSupplierAllocationFormState(undefined)
+    expect(absent).toEqual({
+      supplierAllocationEnabled: false,
+      supplierAllocationRepairRequired: false,
+      merchantAllocationWeight: "1",
+      merchantAllocationRelayHint: "",
+      supplierAllocations: [],
+    })
+    expect(
+      validateMerchantProductSupplierAllocationForm(absent, MERCHANT)
+    ).toEqual({ canPublish: true, error: null })
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        { ...absent, supplierAllocationEnabled: true },
+        MERCHANT
+      ).error
+    ).toContain("at least one supplier")
+    const values = merchantForm()
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        { ...values, merchantAllocationWeight: "0" },
+        MERCHANT
+      ).error
+    ).toContain("positive supplier percentages")
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          ...values,
+          supplierAllocations: [
+            ...values.supplierAllocations,
+            ...values.supplierAllocations,
+          ],
+        },
+        MERCHANT
+      ).error
+    ).toContain("only once")
+  })
+
   it("uses one product-scoped wire identity for preset and custom fixed shipping", () => {
     const fixedIntent = {
       kind: "fixed_standard" as const,
@@ -137,6 +365,7 @@ describe("merchant product form validation", () => {
   it("reconciles restored drafts with current shipping readiness", () => {
     const values: MerchantProductFormValues = {
       ...form({ usePresetShippingZone: true }),
+      ...getMerchantProductSupplierAllocationFormState(undefined),
       summary: "",
       listingAreaCountry: "",
       listingAreaState: "",

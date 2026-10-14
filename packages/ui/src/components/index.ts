@@ -1,4 +1,8 @@
 export {
+  CheckoutPaymentProgress,
+  type CheckoutPaymentProgressProps,
+} from "./CheckoutPaymentProgress"
+export {
   EventFulfillmentChoice,
   type EventFulfillmentSelection,
 } from "./EventFulfillmentChoice"

@@ -9,6 +9,7 @@ import {
 } from "./event-guest-checkout"
 import {
   canonicalizeProductPrice,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   type CommercePriceLike,
@@ -30,6 +31,10 @@ import {
   parseSignedProductShippingOptionTags as parseShippingOptionTags,
   signedProductPriceEvidenceIsMalformed,
 } from "./product-event-evidence"
+import {
+  emitProductSupplierAllocationTags,
+  parseProductSupplierAllocationTags,
+} from "./product-supplier-allocation"
 
 export const PRODUCT_SHIPPING_ADJUSTMENTS_TAG = "conduit_shipping_adjustments"
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
@@ -277,6 +282,14 @@ export function buildProductListingEventDraft({
   const sourcePrice = product.sourcePrice
   const priceAmount = sourcePrice?.amount ?? product.price
   const priceCurrency = sourcePrice?.currency ?? product.currency
+  if (
+    [priceCurrency, sourcePrice?.normalizedCurrency].some(
+      (currency) =>
+        currency !== undefined && !isSupportedCommercePriceCurrency(currency)
+    )
+  ) {
+    throw new Error("Product currency is not supported for new commerce")
+  }
   const emittedZapMessagePolicy: ProductZapMessagePolicy =
     product.zapMessagePolicy === "custom" ? "custom" : "generic_only"
   const specifications = canonicalizeProductSpecifications(
@@ -417,6 +430,21 @@ export function buildProductListingEventDraft({
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
     tags.push(["t", tag])
+  }
+
+  if (product.supplierAllocation?.state === "invalid") {
+    throw new Error("Product supplier allocation evidence is malformed")
+  }
+  if (product.supplierAllocation?.state === "valid") {
+    const merchantRecipient = product.supplierAllocation.recipients.find(
+      (recipient) => recipient.role === "merchant"
+    )
+    if (merchantRecipient?.pubkey !== product.pubkey) {
+      throw new Error(
+        "Product supplier allocation merchant must match the product author"
+      )
+    }
+    tags.push(...emitProductSupplierAllocationTags(product.supplierAllocation))
   }
 
   if (clientAppId) {
@@ -1129,6 +1157,11 @@ function parseProductFields(
   const productTypeTag = parseProductTypeTag(event.tags)
   const visibilityTag = parseProductVisibilityTag(event.tags)
   const specifications = parseProductSpecifications(event.tags)
+  const supplierAllocation = parseProductSupplierAllocationTags({
+    tags: event.tags,
+    merchantPubkey: event.pubkey,
+    signedRevisionEvent: signedProductEvent,
+  })
   const signedLocation = getTagValue(event.tags, "location")
   const signedGeohash = getTagValue(event.tags, "g")
   const validLocation = signedLocation?.trim() ? signedLocation : undefined
@@ -1170,6 +1203,7 @@ function parseProductFields(
       signedProductEvent,
       pubkey: event.pubkey,
       ...zapPolicy,
+      supplierAllocation,
       eventGuestContactOptional: hasSignedEventGuestOptIn(event.tags),
       canonicalShippingResolved: false,
       createdAt: createdAtMs,
@@ -1284,6 +1318,7 @@ function parseProductFields(
       ...(visibilityTag ? { visibility: visibilityTag } : {}),
       ...shippingTags,
       ...zapPolicy,
+      supplierAllocation,
       eventGuestContactOptional: hasSignedEventGuestOptIn(event.tags),
       ...stockTag,
       images,

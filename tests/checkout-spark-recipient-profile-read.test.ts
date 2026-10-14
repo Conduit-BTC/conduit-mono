@@ -20,18 +20,21 @@ function signedProfileContext(): SelectedProfileContext {
     },
     generateSecretKey()
   )
-  return createSelectedProfileContext({
-    pubkey: event.pubkey,
-    row: {
+  return {
+    ...createSelectedProfileContext({
       pubkey: event.pubkey,
-      eventId: event.id,
-      eventCreatedAt: event.created_at,
-      rawContent: event.content,
-      cachedAt: Date.now(),
-    },
-    observed: true,
-    readComplete: true,
-  })
+      row: {
+        pubkey: event.pubkey,
+        eventId: event.id,
+        eventCreatedAt: event.created_at,
+        rawContent: event.content,
+        cachedAt: Date.now(),
+      },
+      observed: true,
+      readComplete: true,
+    }),
+    signedEvent: event,
+  }
 }
 
 function profileRead(
@@ -75,6 +78,7 @@ describe("checkout Spark recipient profile read", () => {
       skipCache: true,
       requireCompleteEvidence: true,
       evidenceScope: "payment",
+      authorRelayPaymentPolicy: true,
       priority: "visible",
     })
     expect(result).toEqual({
@@ -83,6 +87,7 @@ describe("checkout Spark recipient profile read", () => {
       lud16: "seller@example.com",
       profileEventId: context.frontier?.eventId,
       profileEventCreatedAt: context.frontier?.eventCreatedAt,
+      signedEvent: structuredClone(context.signedEvent),
     })
   })
 
@@ -125,7 +130,7 @@ describe("checkout Spark recipient profile read", () => {
     expect(readProfiles).toHaveBeenCalledTimes(1)
   })
 
-  it("does not use display data or an incomplete final read as payment authority", async () => {
+  it("uses positive signed evidence from a partial final read, never display-only data", async () => {
     const context = signedProfileContext()
     const incomplete = profileRead(context, { degraded: true })
     expect(
@@ -136,7 +141,10 @@ describe("checkout Spark recipient profile read", () => {
         },
         { readProfiles: async () => incomplete }
       )
-    ).toEqual({ state: "unavailable", reason: "read_incomplete" })
+    ).toMatchObject({
+      state: "ready",
+      signedEvent: structuredClone(context.signedEvent),
+    })
 
     const displayOnly: ProfileRead = {
       ...profileRead(context),

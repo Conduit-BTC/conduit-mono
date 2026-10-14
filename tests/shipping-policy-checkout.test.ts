@@ -1,4 +1,4 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -7,7 +7,6 @@ import {
 } from "nostr-tools/pure"
 import {
   buildShippingPolicyEventDraft,
-  admitPublicEvent,
   extractOrderSummary,
   getMerchantShippingPolicyCoordinate,
   orderSchema,
@@ -22,9 +21,39 @@ import {
   type PricingRateInput,
   type ShippingPolicy,
   validateAddressConsistency,
+  deriveCheckoutSparkSignedCommerceObligations,
+  calculateCheckoutSparkSettledGrossFundingSats,
+  calculateCheckoutSparkAllocationWeights,
+  freezeCheckoutSparkSettledPlan,
+  createCheckoutSparkMerchantOrderWitness,
+  readCheckoutSparkMerchantOrderEvidence,
+  createCheckoutSparkSettledReconciliation,
+  getNdk,
 } from "@conduit/core"
+import { plainTestSigner } from "./helpers/plain-signer"
+import { admitFixture } from "./helpers/public-event"
+import { publishCheckoutSparkSettledBoundOrder } from "../apps/market/src/lib/checkout-spark-bound-order"
+import {
+  saveCheckoutSparkSettledPreparation,
+  type PreparedCheckoutSparkSettledFunding,
+} from "../apps/market/src/lib/checkout-spark-settled-preparation"
+import {
+  prepareBuyerRumor,
+  assertStagedOrderLifecycleMatchesRumor,
+  type BuyerMessageDeliveryResult,
+} from "../apps/market/src/lib/order-publish"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+} from "./support/bolt11-fixture"
+import {
+  bolt11PaymentSecretField,
+  makeSignedBolt11Fixture,
+} from "./support/signed-bolt11-fixture"
+import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import { buildCheckoutSparkQuoteAuthority } from "../apps/market/src/lib/checkout-spark-quote-authority"
+import { assessCheckoutSparkCheckoutAdmission } from "../apps/market/src/lib/checkout-spark-checkout-admission"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
 import {
   createCartItemFromProduct,
@@ -70,11 +99,6 @@ const policy: ShippingPolicy = {
     freeShippingThresholdMinor: 5000,
   },
 }
-async function admitted(event: unknown) {
-  const result = await admitPublicEvent(event)
-  if (result.status !== "verified") throw new Error("Invalid signed fixture")
-  return result.event
-}
 async function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
   const event = finalizeEvent(
     {
@@ -83,7 +107,7 @@ async function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
     },
     secret
   )
-  const parsed = parseShippingOptionEvent(await admitted(event))
+  const parsed = parseShippingOptionEvent(await admitFixture(event))
   if (!parsed) throw new Error("Signed policy fixture failed parsing")
   return {
     ...parsed,
@@ -119,7 +143,7 @@ async function product(
     },
     key
   )
-  const parsed = parseProductEvent(await admitted(event))
+  const parsed = parseProductEvent(await admitFixture(event))
   if (!parsed) throw new Error("Signed product fixture failed parsing")
   return { ...parsed, sourceEventId: event.id }
 }
@@ -165,6 +189,324 @@ function payload(
 }
 
 describe("signed shipping policy composed checkout", () => {
+  it("retains the table's own frozen FX terms but rejects stale or unproven rate snapshots", async () => {
+    const rate = {
+      rate: 100_000,
+      fetchedAt: 599_000,
+      source: "mempool" as const,
+    }
+    const inputs = [await raw("fiat-table")]
+    const tableEvent = finalizeEvent(
+      {
+        ...buildShippingPolicyEventDraft({
+          policy: {
+            version: 2,
+            title: "Fiat table",
+            originCountry: "US",
+            currency: "USD",
+            international: null,
+            domestic: {
+              rules: [
+                {
+                  country: "US",
+                  bands: [{ maxWeightGrams: 1_000, priceMinor: 100 }],
+                },
+              ],
+            },
+          },
+        }),
+        created_at: 1,
+      },
+      secret
+    )
+    const table = {
+      ...parseShippingOptionEvent(await admitFixture(tableEvent))!,
+      readSource: "relay" as const,
+      readCoverage: "complete" as const,
+    }
+    const prepared = prepareCartFulfillment(
+      inputs,
+      [table],
+      destination,
+      rate
+    ).items
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      rawItems: inputs,
+      reviewedItems: prepared,
+      refreshedProducts: [await product("fiat-table")],
+      readShippingOptions: async () => [table],
+      destination,
+      rateInput: rate,
+      resolveProductFulfillment: async (product) => ({
+        status: "standard",
+        type: "shipping",
+        product,
+      }),
+      authorizePickupHandlers: async () => {},
+    })
+    if (authorization.status !== "ok")
+      throw new Error("Expected table authorization")
+    const authority = buildCheckoutSparkQuoteAuthority({
+      authorization,
+      rateInput: rate,
+      nowMs: 600_000,
+    })
+    const quote = buildCheckoutSparkCommerceEvidence(authority)
+    quote.pricing = {
+      version: 1,
+      rate: { rate: 200_000, fetchedAt: 600_000, source: "mempool" },
+    }
+    const derive = (quote: typeof quote) =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote,
+        products: authority.products,
+        merchantPubkey: merchant,
+        shippingEvents: authority.shippingSourceEvents,
+        acceptedAtMs: 600_000,
+      })
+    expect(derive(quote)).toEqual([
+      { kind: "merchant", recipientId: merchant, amountSats: 1_100 },
+    ])
+    for (const invalidRate of [
+      { ...rate, fetchedAt: 1 },
+      100_000,
+      { ...rate, fiatUsdRates: { usd: 1 } },
+    ]) {
+      const changed = structuredClone(quote)
+      changed.lines[0]!.shippingPolicy!.quote.pricingRate = invalidRate
+      expect(() => derive(changed)).toThrow()
+    }
+  })
+  it("routes the exact whole-line table allocations rather than multiplying them by quantity", async () => {
+    const inputs = [await raw("table-a", 2), await raw("table-b", 1)]
+    const table = await option()
+    const prepared = prepareCartFulfillment(inputs, [table], destination).items
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      rawItems: inputs,
+      reviewedItems: prepared,
+      refreshedProducts: [await product("table-a"), await product("table-b")],
+      readShippingOptions: async () => [table],
+      destination,
+      resolveProductFulfillment: async (product) => ({
+        status: "standard",
+        type: "shipping",
+        product,
+      }),
+      authorizePickupHandlers: async () => {},
+    })
+    if (authorization.status !== "ok")
+      throw new Error("Expected table authorization")
+    const authority = buildCheckoutSparkQuoteAuthority({
+      authorization,
+      rateInput: null,
+      nowMs: 3_000,
+    })
+    const quote = buildCheckoutSparkCommerceEvidence(authority)
+    expect(
+      quote.lines.map((line) => line.shippingPolicy?.allocatedCostSats)
+    ).toEqual([5, 2])
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote,
+        products: authority.products,
+        merchantPubkey: merchant,
+        shippingEvents: authority.shippingSourceEvents,
+        acceptedAtMs: 3_000,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: merchant, amountSats: 307 }])
+    const gross = calculateCheckoutSparkSettledGrossFundingSats(307)
+    const plan = freezeCheckoutSparkSettledPlan({
+      checkoutId: "table-checkout",
+      orderId: "shipping-order",
+      walletId: "table-wallet",
+      merchantPubkey: merchant,
+      network: "mainnet",
+      createdAt: 3_000,
+      takeoverAt: 123_000,
+      commerceQuote: quote,
+      funding: {
+        requestId: "table-funding",
+        paymentRequest: makeSignedBolt11Fixture({
+          hrp: `lnbc${gross * 10}n`,
+          createdAt: 3,
+          fields: [
+            bolt11PaymentHashField(new Uint8Array(32).fill(1)),
+            bolt11PaymentSecretField(),
+            bolt11PlainDescriptionField(),
+            { tag: "x", words: [28, 4] },
+          ],
+        }),
+        paymentHash: "01".repeat(32),
+        receiverIdentityPublicKey: `02${"f".repeat(64)}`,
+        grossFundingSats: gross,
+        createdAt: 3_000,
+        expiresAt: 903_000,
+      },
+      recipients: [
+        {
+          kind: "merchant",
+          recipientId: merchant,
+          destination: {
+            type: "lightning_address",
+            value: "merchant@example.test",
+            source: {
+              type: "signed_profile",
+              profileEventId: "d".repeat(64),
+              profileEventCreatedAt: 2,
+            },
+          },
+          weightSats: 307,
+        },
+        {
+          kind: "conduit",
+          recipientId: "conduithodlings@strike.me",
+          destination: {
+            type: "lightning_address",
+            value: "conduithodlings@strike.me",
+            source: { type: "conduit_allowlist", policy: "production" },
+          },
+          weightSats:
+            calculateCheckoutSparkAllocationWeights(307).conduitWeightSats,
+        },
+      ],
+    })
+    const buyer = plainTestSigner(NDKPrivateKeySigner.generate())
+    const order = {
+      ...payload(authority.pricing.items, 7),
+      buyerPubkey: buyer.pubkey,
+      createdAt: 3_000,
+      buyerIdentityKind: "signed_in" as const,
+    }
+    const sources = [
+      ...authority.products.map((product) => product.signedProductEvent!),
+      ...(authority.shippingSourceEvents ?? []),
+    ]
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value)
+      },
+      removeItem: (key: string) => {
+        values.delete(key)
+      },
+    }
+    saveCheckoutSparkSettledPreparation(
+      {
+        schemaVersion: 3,
+        checkoutId: plan.checkoutId,
+        planDigest: plan.planDigest,
+        recoveryHandoffId: "table-handoff",
+        fundingInvoiceExposedAt: 3_000,
+        fundingSubmissionState: "not_started",
+        savedAt: 3_000,
+      },
+      storage
+    )
+    let emitted: NDKEvent | undefined
+    await publishCheckoutSparkSettledBoundOrder(
+      {
+        checkoutId: plan.checkoutId,
+        order,
+        buyer: { kind: "signed_in", pubkey: buyer.pubkey, signer: buyer },
+        authenticatedPubkey: buyer.pubkey,
+        ndk: getNdk(),
+        shouldContinue: () => true,
+        addressValidity: "valid",
+        shippingZoneEligibility: "eligible",
+        storage,
+        sourceEvents: sources,
+      },
+      {
+        now: () => 3_001,
+        loadSettledFunding: async () =>
+          ({
+            plan,
+            state: createCheckoutSparkSettledReconciliation(plan),
+          }) as PreparedCheckoutSparkSettledFunding,
+        publishOrder: async (rumor, recipient, _buyer, options) => {
+          prepareBuyerRumor(rumor, buyer.pubkey)
+          assertStagedOrderLifecycleMatchesRumor(
+            options!.orderLifecycle!,
+            rumor,
+            buyer.pubkey,
+            recipient
+          )
+          expect(
+            options!.orderLifecycle!.items.map(
+              (line) => line.shippingAllocatedCostSats
+            )
+          ).toEqual([5, 2])
+          emitted = rumor
+          return { localCacheError: null } as BuyerMessageDeliveryResult
+        },
+        bindBuyerOrder: async (_plan, buyerPubkey, assertCurrent) => {
+          assertCurrent()
+          return {
+            schemaVersion: 1,
+            checkoutId: plan.checkoutId,
+            planDigest: plan.planDigest,
+            walletId: plan.walletId,
+            orderId: plan.orderId,
+            merchantPubkey: merchant,
+            buyerPubkey,
+            commerceTotalSats: 307,
+          }
+        },
+      }
+    )
+    const evidence = readCheckoutSparkMerchantOrderEvidence(emitted!)
+    expect(evidence).not.toBeNull()
+    expect(
+      createCheckoutSparkMerchantOrderWitness(
+        plan,
+        evidence!,
+        order.buyerPubkey,
+        sources
+      )
+    ).not.toBeNull()
+    const changed = structuredClone(quote)
+    changed.lines[0]!.shippingPolicy!.allocatedCostSats = 4
+    changed.lines[1]!.shippingPolicy!.allocatedCostSats = 3
+    expect(() =>
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: changed,
+        products: authority.products,
+        merchantPubkey: merchant,
+        shippingEvents: authority.shippingSourceEvents,
+        acceptedAtMs: 3_000,
+      })
+    ).toThrow()
+    const changedPlan = freezeCheckoutSparkSettledPlan({
+      ...plan,
+      commerceQuote: changed,
+    })
+    expect(
+      createCheckoutSparkMerchantOrderWitness(
+        changedPlan,
+        {
+          ...evidence!,
+          lines: evidence!.lines.map((line, index) => ({
+            ...line,
+            shipping: {
+              ...line.shipping!,
+              shippingAllocatedCostSats: index === 0 ? 4 : 3,
+            },
+          })),
+        },
+        order.buyerPubkey,
+        sources
+      )
+    ).toBeNull()
+    const malformed = structuredClone(quote)
+    Object.assign(malformed.lines[0]!.shippingPolicy!, { unboundExtra: true })
+    expect(() =>
+      freezeCheckoutSparkSettledPlan({ ...plan, commerceQuote: malformed })
+    ).toThrow()
+  })
+
   it("keeps accepted region names aligned through pricing, authorization and order replay", async () => {
     const input = await raw("region-name")
     const table = await option(3, {
@@ -287,7 +629,7 @@ describe("signed shipping policy composed checkout", () => {
       otherSecret
     )
     const otherOption = parseShippingOptionEvent(
-      await admitted(otherPolicyEvent)
+      await admitFixture(otherPolicyEvent)
     )!
     otherOption.readSource = "relay"
     otherOption.readCoverage = "complete"
@@ -318,7 +660,7 @@ describe("signed shipping policy composed checkout", () => {
   it("excludes current signed Event Market pickup and stale table quotes from parcel shipping", async () => {
     const fixture = createEventMarketOrderFixture({ mode: "merchant_present" })
     const signedProduct = fixture.fulfillment.product.signedEvent
-    const listing = parseProductEvent(await admitted(signedProduct))!
+    const listing = parseProductEvent(await admitFixture(signedProduct))!
     const staleTable = prepareCartFulfillment(
       [await raw("stale-table")],
       [await option()],
@@ -339,6 +681,14 @@ describe("signed shipping policy composed checkout", () => {
       destination
     ).items
     expect(prepared[0]!.shippingPolicyQuote).toBeUndefined()
+    expect(
+      assessCheckoutSparkCheckoutAdmission({
+        enabled: true,
+        freeOrderVerified: false,
+        items: prepared,
+        fulfillment: new Map(),
+      })
+    ).toEqual({ mode: "router", ready: false })
     expect(getCartShippingOptionsAvailable(prepared)).toBe(true)
     expect(
       getCartShippingDestinationEligibility(destination, prepared)
@@ -365,7 +715,7 @@ describe("signed shipping policy composed checkout", () => {
     expect(getMixedFulfillmentBlockingMessage(prepared)).toBeNull()
   })
 
-  it("preserves rich authorization evidence while safely rejecting table charges at the Spark router boundary", async () => {
+  it("preserves rich authorization evidence and freezes exact table charges at the Spark router boundary", async () => {
     const input = await raw("router-table")
     const shipping = await option()
     const reviewed = prepareCartFulfillment(
@@ -397,9 +747,14 @@ describe("signed shipping policy composed checkout", () => {
       options: [shipping],
     })
     expect(priced(authorization.items).totalSats).toBe(107)
-    expect(() =>
-      buildCheckoutSparkQuoteAuthority({ authorization, rateInput: null })
-    ).toThrow("Current signed checkout evidence changed")
+    const authority = buildCheckoutSparkQuoteAuthority({
+      authorization,
+      rateInput: null,
+    })
+    expect(
+      buildCheckoutSparkCommerceEvidence(authority).lines[0]?.shippingPolicy
+        ?.allocatedCostSats
+    ).toBe(7)
   })
 
   it("sends a mixed table and unresolved physical order for coordination without agreeing to a partial charge", async () => {
@@ -689,7 +1044,7 @@ async function mixedOption(changes: Partial<ShippingPolicy> = {}) {
     secret
   )
   return {
-    ...parseShippingOptionEvent(await admitted(event))!,
+    ...parseShippingOptionEvent(await admitFixture(event))!,
     readSource: "relay" as const,
     readCoverage: "complete" as const,
   }
@@ -734,7 +1089,7 @@ async function mixedProduct(
     },
     secret
   )
-  const parsed = parseProductEvent(await admitted(event))
+  const parsed = parseProductEvent(await admitFixture(event))
   if (!parsed) throw new Error("Signed mixed currency product did not parse")
   return parsed
 }

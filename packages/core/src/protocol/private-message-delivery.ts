@@ -20,7 +20,11 @@ import {
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
-import { CommerceInboxStore } from "./commerce-inbox-store"
+import {
+  CommerceInboxStore,
+  assertInboxTransportDeliveryRow,
+  isInboxTransportDeliveryRow,
+} from "./commerce-inbox-store"
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
 import { type AccountSigner, type NostrKeySigner } from "./nostr-event-signer"
@@ -149,6 +153,7 @@ export async function recordPrivateDelivery(
   for (let attempt = 0; attempt < 32; attempt++) {
     const row = await store.database.commerceInboxDeliveries.get(store.key(id))
     store.assertCurrent()
+    assertInboxTransportDeliveryRow(row)
     if (!row) throw new Error("Private delivery stage is missing")
     const job = await store.open<PrivateDeliveryJob>(row.value, id)
     const leg = job.legs.find((candidate) => candidate.event.id === eventId)
@@ -172,6 +177,7 @@ export async function recordPrivateDelivery(
       async () => {
         store.assertCurrent()
         const current = await store.database.commerceInboxDeliveries.get(row.id)
+        assertInboxTransportDeliveryRow(current)
         if (!current) throw new Error("Private delivery stage is missing")
         if (
           current.value.nonce.some(
@@ -214,6 +220,7 @@ export async function holdPrivateDeliveryClaim(
 ) {
   const row = await store.database.commerceInboxDeliveries.get(store.key(id))
   store.assertCurrent()
+  assertInboxTransportDeliveryRow(row)
   const owner = row?.claim?.owner
   if (!owner) throw new Error("Private delivery claim is missing")
   let lost = false
@@ -231,6 +238,7 @@ export async function holdPrivateDeliveryClaim(
         const current = await store.database.commerceInboxDeliveries.get(
           store.key(id)
         )
+        assertInboxTransportDeliveryRow(current)
         if (current?.claim?.owner !== owner)
           throw new Error("Private delivery ownership changed")
         await store.database.commerceInboxDeliveries.update(current.id, {
@@ -255,6 +263,7 @@ export async function holdPrivateDeliveryClaim(
           const current = await store.database.commerceInboxDeliveries.get(
             store.key(id)
           )
+          assertInboxTransportDeliveryRow(current)
           if (current?.claim?.owner === owner)
             await store.database.commerceInboxDeliveries.update(current.id, {
               claim: undefined,
@@ -327,6 +336,7 @@ export async function retryPrivateDeliveries(
     .equals(principal)
     .filter(
       (row) =>
+        isInboxTransportDeliveryRow(row) &&
         (options.replayAcknowledged || row.state !== "accepted") &&
         (!onlyId || row.id === store.key(onlyId))
     )
@@ -341,6 +351,7 @@ export async function retryPrivateDeliveries(
       async () => {
         store.assertCurrent()
         const current = await store.database.commerceInboxDeliveries.get(row.id)
+        assertInboxTransportDeliveryRow(current)
         if (
           !current ||
           (!options.replayAcknowledged && current.state === "accepted") ||
@@ -420,6 +431,7 @@ export async function resumePrivateDelivery(
   const id = `delivery:${rumorId}`
   let row = await store.database.commerceInboxDeliveries.get(store.key(id))
   store.assertCurrent()
+  assertInboxTransportDeliveryRow(row)
   if (!row) return null
   // A retained immutable send needs the same caller fence before recovery I/O.
   await onDeliveryStarting?.()
@@ -427,6 +439,7 @@ export async function resumePrivateDelivery(
     await retryPrivateDeliveries(store.principal, publisher, id, store)
     row = await store.database.commerceInboxDeliveries.get(store.key(id))
     store.assertCurrent()
+    assertInboxTransportDeliveryRow(row)
   }
   if (!row) throw new Error("Saved delivery is unavailable")
   const job = await store.open<PrivateDeliveryJob>(row.value, id)
@@ -444,6 +457,7 @@ export async function resumePrivateDelivery(
     const row = await store.database.commerceInboxDeliveries.get(
       store.key(selfId)
     )
+    assertInboxTransportDeliveryRow(row)
     if (row)
       self = (await store.open<PrivateDeliveryJob>(row.value, selfId)).legs[0]
   } catch {
@@ -1025,6 +1039,7 @@ export async function publishPrivateMessage(
     input.shouldContinue,
     input.inboxDeclarationEvidenceRepository
   )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
     resolvedRecipientDeclaration,
     accountPubkey,
@@ -1032,6 +1047,7 @@ export async function publishPrivateMessage(
     input.accountNetworkLocalStateRepository,
     input.inboxDeclarationEvidenceRepository
   )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   if (
     resolvedRecipientDeclaration.state === "declared" &&
     resolvedRecipientDeclaration.relayUrls.length > 0 &&
@@ -1384,7 +1400,7 @@ export async function publishPrivateMessage(
             selfCopyError = summary.error
             if (deliveryStore) await deliveryStore.receive(wrappedToSelf)
           } catch (error) {
-            let sessionChanged = false
+            let sessionChanged: boolean
             try {
               sessionChanged = input.shouldContinue?.() === false
             } catch {
@@ -1932,6 +1948,7 @@ export async function retryPrivateMessageWraps(
     const row =
       store && (await store.database.commerceInboxDeliveries.get(store.key(id)))
     if (store && row) {
+      assertInboxTransportDeliveryRow(row)
       const saved = await store.open<PrivateDeliveryJob>(row.value, id)
       const leg = saved.legs.find(
         (leg) => leg.event.id === event.id && leg.recipientPubkey === recipient
@@ -1971,6 +1988,7 @@ export async function retryPrivateMessageWraps(
       }
       const current = await store.database.commerceInboxDeliveries.get(row.id)
       store.assertCurrent()
+      assertInboxTransportDeliveryRow(current)
       const job =
         current && (await store.open<PrivateDeliveryJob>(current.value, id))
       const result = job?.legs.find((leg) => leg.event.id === event.id)
@@ -2218,6 +2236,8 @@ async function stageAndPublishPrivateLeg(
   const claim = store && id ? await holdPrivateDeliveryClaim(store, id) : null
   let acceptedDelivery:
     Awaited<ReturnType<typeof publishPrivateDeliveryLeg>> | undefined
+  let publishFailed = false
+  let publishError: unknown
   try {
     acceptedDelivery = await publishPrivateDeliveryLeg({
       ...input,
@@ -2234,17 +2254,20 @@ async function stageAndPublishPrivateLeg(
           })
       },
     })
-    return acceptedDelivery
-  } finally {
-    try {
-      await claim?.release()
-    } catch (error) {
-      if (
-        !acceptedDelivery?.successfulRelayUrls.length ||
-        !input.onAcceptedCheckpointFailure
-      )
-        throw error
-      input.onAcceptedCheckpointFailure()
-    }
+  } catch (error) {
+    publishFailed = true
+    publishError = error
   }
+  try {
+    await claim?.release()
+  } catch (error) {
+    if (
+      !acceptedDelivery?.successfulRelayUrls.length ||
+      !input.onAcceptedCheckpointFailure
+    )
+      throw error
+    input.onAcceptedCheckpointFailure()
+  }
+  if (publishFailed) throw publishError
+  return acceptedDelivery!
 }

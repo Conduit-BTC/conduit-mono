@@ -3,7 +3,10 @@ import {
   observeWalletController,
   closeDefaultWalletSession,
 } from "./helpers/wallet-fixture"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 import {
   prepareControlledWallet,
   installControlledWallet,
@@ -1239,11 +1242,15 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       phase("fresh_signin")
       // A new document gets a fresh account session and the same encrypted local
       // wallet. The fixture controls the network layer before initialization.
+      recordSmokeFailureContext(test.info(), "migration_route_ready")
       await page.goto(`${market}/products`)
       await expect(page.getByLabel("Open account menu")).toBeVisible()
+      recordSmokeFailureContext(test.info(), "migration_route_ready", "met")
+      recordSmokeFailureContext(test.info(), "migration_wallet_opened")
       await installControlledWallet(page, false, "wallet1@breez.tips")
       await enterWallets(page)
       await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
+      recordSmokeFailureContext(test.info(), "migration_wallet_opened", "met")
       expect(
         await page.evaluate(
           async (moduleUrl) => ({

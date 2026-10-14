@@ -51,7 +51,7 @@ describe("Market wallet route contracts", () => {
     const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
 
     expect(hook.match(/await openRegisteredSparkWallet\(\{/g)).toHaveLength(1)
-    expect(hook).toContain("await sparkManager.closeWalletsExcept(")
+    expect(hook).toMatch(/await closeUnusedSparkWallets\(\s*sparkManager,/)
     expect(hook.match(/afterOpen: \(\) =>/g)).toHaveLength(1)
     expect(hook).not.toContain("onValidated")
     expect(hook).toMatch(

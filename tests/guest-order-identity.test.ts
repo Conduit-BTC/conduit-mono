@@ -18,6 +18,7 @@ import {
   createGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  isCurrentGuestOrderSigningIdentity,
   pruneExpiredSessionGuestOrderSigningIdentities,
 } from "../apps/market/src/lib/guest-order-identity"
 
@@ -40,6 +41,63 @@ function fakeStorage(): Storage {
 }
 
 describe("guest order signing identity", () => {
+  it("validates exact scope and deadline without treating it as registry authority", () => {
+    const identity = createGuestOrderSigningIdentity(
+      "scope-order",
+      "a".repeat(64)
+    )
+    const scope = {
+      orderId: identity.orderId,
+      merchantPubkey: identity.merchantPubkey,
+      pubkey: identity.pubkey,
+    }
+    expect(
+      isCurrentGuestOrderSigningIdentity(identity, scope, identity.createdAt)
+    ).toBe(true)
+    expect(
+      isCurrentGuestOrderSigningIdentity(
+        identity,
+        scope,
+        identity.expiresAt - 1
+      )
+    ).toBe(true)
+    expect(
+      isCurrentGuestOrderSigningIdentity(identity, scope, identity.expiresAt)
+    ).toBe(false)
+    expect(
+      isCurrentGuestOrderSigningIdentity(
+        identity,
+        scope,
+        identity.createdAt - 1
+      )
+    ).toBe(false)
+    expect(isCurrentGuestOrderSigningIdentity(null, scope)).toBe(false)
+    expect(
+      isCurrentGuestOrderSigningIdentity(identity, {
+        ...scope,
+        orderId: "other",
+      })
+    ).toBe(false)
+    expect(
+      isCurrentGuestOrderSigningIdentity(identity, {
+        ...scope,
+        merchantPubkey: "b".repeat(64),
+      })
+    ).toBe(false)
+    expect(
+      isCurrentGuestOrderSigningIdentity(identity, {
+        ...scope,
+        pubkey: "c".repeat(64),
+      })
+    ).toBe(false)
+    expect(
+      isCurrentGuestOrderSigningIdentity(
+        { ...identity, expiresAt: identity.expiresAt + 1 },
+        scope
+      )
+    ).toBe(false)
+  })
+
   it("creates a unique ephemeral buyer identity that can sign order rumors", async () => {
     const merchantPubkey = "a".repeat(64)
     const first = createGuestOrderSigningIdentity("order-1", merchantPubkey)
