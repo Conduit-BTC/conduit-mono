@@ -265,9 +265,14 @@ export async function installControlledWallet(
 /** Open the shared Add wallet menu without changing setup behavior. */
 export async function openWalletSetup(
   page: Page,
-  name: "Create wallet" | "Import wallet" | "Connect wallet"
+  name: "Create wallet" | "Import wallet" | "Connect wallet",
+  diagnostic?: (
+    phase: "before_trigger" | "trigger_clicked" | "import_clicked"
+  ) => Promise<void>
 ) {
+  await diagnostic?.("before_trigger")
   await page.getByRole("button", { name: "Add wallet", exact: true }).click()
+  await diagnostic?.("trigger_clicked")
   await page
     .getByRole("menuitem", {
       name:
@@ -279,6 +284,7 @@ export async function openWalletSetup(
       exact: true,
     })
     .click()
+  await diagnostic?.("import_clicked")
 }
 
 /** Observe the real route controller without adding a production test API. */

@@ -88,6 +88,22 @@ export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
 type Rule = "number" | "boolean" | readonly string[]
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "wallet-import-menu": {
+      file: "e2e/shared-ui-composition.playwright.ts",
+      fields: {
+        phase: ["before_trigger", "trigger_clicked", "import_clicked"],
+        observationAvailable: "boolean",
+        triggerVisible: "boolean",
+        triggerEnabled: "boolean",
+        importVisible: "boolean",
+        importEnabled: "boolean",
+        dialogVisible: "boolean",
+        loadingVisible: "boolean",
+        initializationErrorVisible: "boolean",
+        sparkUnavailableVisible: "boolean",
+        signerPromptVisible: "boolean",
+      },
+    },
     "wallet-foreground-open": {
       file: "e2e/wallet-cross-app.playwright.ts",
       fields: {
@@ -531,6 +547,7 @@ export function safeSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "wallet-import-menu"
     | "wallet-foreground-open"
     | "wallet-retry"
     | "merchant-image-reload"

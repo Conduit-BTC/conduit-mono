@@ -360,6 +360,62 @@ describe("browser process diagnostics", () => {
 })
 
 describe("bounded smoke failure diagnostics", () => {
+  it("retains only fixed wallet import menu phases and visible readiness state", () => {
+    const privateValue = crypto.randomUUID()
+    const annotation = {
+      type: "smoke:wallet-import-menu",
+      description: JSON.stringify({
+        phase: "trigger_clicked",
+        observationAvailable: true,
+        triggerVisible: true,
+        triggerEnabled: true,
+        importVisible: false,
+        importEnabled: false,
+        dialogVisible: false,
+        loadingVisible: true,
+        initializationErrorVisible: false,
+        sparkUnavailableVisible: false,
+        signerPromptVisible: true,
+        walletId: privateValue,
+        error: privateValue,
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-composition.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "wallet-import-menu",
+        phase: "trigger_clicked",
+        observationAvailable: true,
+        triggerVisible: true,
+        triggerEnabled: true,
+        importVisible: false,
+        importEnabled: false,
+        dialogVisible: false,
+        loadingVisible: true,
+        initializationErrorVisible: false,
+        sparkUnavailableVisible: false,
+        signerPromptVisible: true,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-sign-in.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-composition.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            phase: privateValue,
+            walletId: privateValue,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("retains only bounded foreground wallet state counts and availability", () => {
     const privateValue = crypto.randomUUID()
     const annotation = {

@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises"
 import { openWalletSetup } from "./helpers/wallet-fixture"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { join } from "node:path"
 import {
   expect,
@@ -66,6 +67,76 @@ async function screenshot(page: Page, info: TestInfo, name: string) {
   })
 }
 
+async function observeWalletImportMenu(
+  page: Page,
+  info: TestInfo,
+  phase: "before_trigger" | "trigger_clicked" | "import_clicked"
+) {
+  try {
+    // One immediate DOM read avoids locator auto-waits when the menu is absent.
+    const state = await page.evaluate(() => {
+      const visible = (element: Element | undefined) =>
+        !!element &&
+        element.getClientRects().length > 0 &&
+        getComputedStyle(element).visibility !== "hidden"
+      const exactText = (selector: string, text: string) =>
+        [...document.querySelectorAll(selector)].find(
+          (element) => element.textContent?.trim() === text
+        )
+      const trigger = exactText("button", "Add wallet") as
+        HTMLButtonElement | undefined
+      const item = exactText('[role="menuitem"]', "Import an existing wallet")
+      const dialog = [...document.querySelectorAll('[role="dialog"]')].find(
+        (element) =>
+          visible(element) &&
+          [...element.querySelectorAll("h1,h2,h3")].some(
+            (heading) => heading.textContent?.trim() === "Import wallet"
+          )
+      )
+      return {
+        triggerVisible: visible(trigger),
+        triggerEnabled:
+          !!trigger &&
+          !trigger.disabled &&
+          trigger.getAttribute("aria-disabled") !== "true",
+        importVisible: visible(item),
+        importEnabled:
+          !!item &&
+          item.getAttribute("aria-disabled") !== "true" &&
+          !item.hasAttribute("data-disabled"),
+        dialogVisible: visible(dialog),
+        loadingVisible: visible(
+          document.querySelector(
+            '[role="status"][aria-label="Loading Wallet list Wallets"]'
+          ) ?? undefined
+        ),
+        initializationErrorVisible: visible(
+          exactText("p", "Wallets are temporarily unavailable")
+        ),
+        sparkUnavailableVisible: visible(
+          exactText("p", "My wallets are unavailable")
+        ),
+        signerPromptVisible: visible(
+          exactText(
+            "p",
+            "Self-custodial. Connect a Nostr signer with NIP-44 encryption to create or import a wallet."
+          )
+        ),
+      }
+    })
+    recordSmokeDiagnostic(info, "wallet-import-menu", {
+      phase,
+      observationAvailable: true,
+      ...state,
+    })
+  } catch {
+    recordSmokeDiagnostic(info, "wallet-import-menu", {
+      phase,
+      observationAvailable: false,
+    })
+  }
+}
+
 for (const theme of ["day-market", "night-market"] as const) {
   test(`shared wallet import composition and sensitive draft clearing in ${theme} @market`, async ({
     page,
@@ -86,7 +157,9 @@ for (const theme of ["day-market", "night-market"] as const) {
         name: "Add wallet",
         exact: true,
       })
-      await openWalletSetup(page, "Import wallet")
+      await openWalletSetup(page, "Import wallet", (phase) =>
+        observeWalletImportMenu(page, info, phase)
+      )
       const dialog = page.getByRole("dialog", {
         name: "Import wallet",
         exact: true,
@@ -115,7 +188,9 @@ for (const theme of ["day-market", "night-market"] as const) {
       await page.keyboard.press("Escape")
       await expect(dialog).not.toBeVisible()
       await expect(trigger).toBeFocused()
-      await openWalletSetup(page, "Import wallet")
+      await openWalletSetup(page, "Import wallet", (phase) =>
+        observeWalletImportMenu(page, info, phase)
+      )
       await expect(phrase).toHaveValue("")
       await dialog
         .locator("summary")
