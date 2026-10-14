@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import path from "node:path"
+
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
 import {
   createRuntimeSignerIdentity,
