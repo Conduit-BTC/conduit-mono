@@ -177,11 +177,13 @@ test.afterEach(async ({ page }, info) => {
   const { phase } = JSON.parse(existing?.description ?? "{}") as {
     phase?: string
   }
-  let observations: Record<string, number | boolean>
+  let observations: Record<string, string | number | boolean>
   try {
     observations = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]')
       const submit = dialog?.querySelector('button[type="submit"]')
+      const tags = dialog?.querySelector<HTMLInputElement>("#product-tags")
+      const submitText = submit?.textContent?.trim()
       return {
         observationAvailable: true,
         dialogCount: document.querySelectorAll('[role="dialog"]').length,
@@ -190,6 +192,28 @@ test.afterEach(async ({ page }, info) => {
           dialog?.querySelectorAll(':invalid,[aria-invalid="true"]').length ??
           0,
         submitEnabled: !!submit && !submit.hasAttribute("disabled"),
+        submitState:
+          submitText === "Publish product"
+            ? "publish"
+            : submitText === "Uploading images..."
+              ? "uploading"
+              : submitText === "Waiting for signer..."
+                ? "saving"
+                : submitText === "Reconnect signer to continue"
+                  ? "reconnect"
+                  : "other",
+        tagCount:
+          tags?.parentElement?.querySelectorAll(
+            'button[aria-label^="Remove "][aria-label$=" tag"]'
+          ).length ?? 0,
+        tagDraftPresent: !!tags?.value.trim(),
+        tagFocused: document.activeElement === tags,
+        digitalSelected:
+          dialog?.querySelector("#product-fulfillment")?.textContent?.trim() ===
+          "Digital",
+        insufficientTagsNotice:
+          dialog?.textContent?.includes("Add at least 3 distinct tags.") ??
+          false,
       }
     })
   } catch {
@@ -749,9 +773,18 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     await tags.press("Enter")
   }
   phase("publish")
-  await freshDialog
-    .getByRole("button", { name: "Publish product", exact: true })
-    .click()
+  await expect(
+    freshDialog
+      .locator("#product-tags")
+      .locator("..")
+      .getByRole("button", { name: /^Remove .* tag$/ })
+  ).toHaveCount(3)
+  const publish = freshDialog.getByRole("button", {
+    name: "Publish product",
+    exact: true,
+  })
+  await expect(publish).toBeEnabled()
+  await publish.click()
   await expect(freshDialog).toBeHidden({ timeout: 15_000 })
   await expect(
     page.getByText("Fallback image listing", { exact: true }).first()
