@@ -158,13 +158,54 @@ async function merchantWalletState(page: Page, orderId: string | null) {
     async ({ modulePath, orderId }) => {
       const { db } = await import(/* @vite-ignore */ modulePath)
       const bindings = await db.checkoutSparkPlanBindings.toArray()
-      const binding = bindings.find(
-        (row: { orderWitness?: { orderId: string } }) =>
-          row.orderWitness?.orderId === orderId
+      const matching = bindings.filter(
+        (row: {
+          orderWitness?: { orderId: string }
+          buyerOrderBinding?: { orderId: string }
+        }) =>
+          (row.orderWitness?.orderId ?? row.buyerOrderBinding?.orderId) ===
+          orderId
       )
-      if (!binding) return "absent"
+      if (matching.length !== 1) return "absent"
+      const binding = matching[0]!
       const retired = await db.checkoutSparkRetirements.get(binding.checkoutId)
       return retired ? "retired" : "active"
+    },
+    { modulePath, orderId }
+  )
+}
+
+// Return only whether the exact order retains a signed kind-1059 ciphertext
+// wrap. Ciphertext, event identifiers, keys and order data never leave the page.
+async function hasActiveEncryptedRecovery(
+  page: Page,
+  orderId: string | null
+): Promise<boolean> {
+  const modulePath = `/@fs/${fileURLToPath(new URL("../apps/market/src/lib/checkout-spark-recovery-handoff.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ modulePath, orderId }) => {
+      if (!orderId) return false
+      const { listCheckoutSparkRecoveryDeliveries } = await import(
+        /* @vite-ignore */ modulePath
+      )
+      return listCheckoutSparkRecoveryDeliveries().some(
+        (saved: {
+          record: {
+            orderId: string
+            signedRecipientWrap: {
+              id: string
+              kind: number
+              content: string
+            }
+          }
+          deliveryProgress: { recipientWrapId: string }
+        }) =>
+          saved.record.orderId === orderId &&
+          saved.record.signedRecipientWrap.kind === 1_059 &&
+          saved.record.signedRecipientWrap.content.length > 0 &&
+          saved.deliveryProgress.recipientWrapId ===
+            saved.record.signedRecipientWrap.id
+      )
     },
     { modulePath, orderId }
   )
@@ -444,7 +485,8 @@ async function rehearseRouter(
     | "unsupported-supplier"
     | null = null,
   capabilityRegression = false,
-  scopedRecovery = false
+  scopedRecovery = false,
+  offlineTreasury = false
 ): Promise<void> {
   test.setTimeout(240_000)
   const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
@@ -1053,6 +1095,7 @@ async function rehearseRouter(
     // application still prepares, submits, persists, and later reconciles its
     // exact transfer ID through the public Spark wallet surface.
     control().setNativeCompletion(false)
+    control().setNativeSenderCommitment(false)
     await expect(confirmation).toBeHidden()
     await expect(
       page.getByText(/Pay once, then return here to check progress/)
@@ -1554,10 +1597,17 @@ async function rehearseRouter(
         nativePaymentCount: 1,
         transfers: [
           {
-            status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+            status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
             transferDirection: "OUTGOING",
             totalValue: 113,
             receiverIdentityPublicKey: treasuryIdentityPublicKey,
+            receivers: [
+              {
+                identityPublicKey: treasuryIdentityPublicKey,
+                amountSats: 113,
+                status: "TRANSFER_RECEIVER_STATUS_INITIATED",
+              },
+            ],
           },
         ],
       })
@@ -1854,6 +1904,119 @@ async function rehearseRouter(
         { timeout: 45_000 }
       )
       .toBe(1)
+    if (offlineTreasury) {
+      setStage("native treasury sender commits before receiver claim")
+      const beforeCommit = control().nativeSnapshot()
+      expect(beforeCommit).toMatchObject({
+        nativeSendInvocationCount: 1,
+        nativePaymentCount: 1,
+        transfers: [
+          {
+            status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
+            receivers: [{ status: "TRANSFER_RECEIVER_STATUS_INITIATED" }],
+          },
+        ],
+      })
+      control().setNativeSenderCommitment(true)
+      await expect(
+        page.getByText("Payment recorded", { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+      await expect(
+        page.getByText(
+          /Your payment is recorded\. Delivery confirmation is separate/
+        )
+      ).toBeVisible()
+
+      setStage("sender commitment completes routing without native replay")
+      const committedPayments = control().snapshot()
+      expect(committedPayments).toEqual({
+        fundingInvoiceCount: 1,
+        sendInvocationCount: 2,
+        outgoingPaymentCount: 2,
+        debitedSats: 1_113,
+      })
+      const committedNative = control().nativeSnapshot()
+      expect(committedNative).toMatchObject({
+        nativeSendInvocationCount: beforeCommit.nativeSendInvocationCount,
+        nativePaymentCount: beforeCommit.nativePaymentCount,
+        transfers: [
+          {
+            status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+            transferDirection: "OUTGOING",
+            totalValue: 113,
+            receiverIdentityPublicKey: treasuryIdentityPublicKey,
+            receivers: [
+              {
+                identityPublicKey: treasuryIdentityPublicKey,
+                amountSats: 113,
+                status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+              },
+            ],
+          },
+        ],
+      })
+      await expect
+        .poll(() => merchantTerminalReconciliation(page, orderId), {
+          timeout: 30_000,
+        })
+        .toEqual({ treasuryPaid: true, allLegsPaid: true })
+
+      setStage("sender-committed payment receipt is fully verified")
+      const committedReceipt = page.getByRole("region", {
+        name: "Payment history",
+        includeHidden: true,
+      })
+      if (!(await committedReceipt.isVisible())) {
+        await page
+          .locator("details")
+          .filter({ has: committedReceipt })
+          .locator("summary")
+          .click()
+      }
+      await expect(committedReceipt).toBeVisible()
+      await expect(
+        committedReceipt.getByText("All checkout payments verified.", {
+          exact: true,
+        })
+      ).toBeVisible()
+
+      setStage("unclaimed receiver keeps encrypted recovery active")
+      const cleanup = page.getByRole("button", {
+        name: "Check wallet cleanup",
+        exact: true,
+      })
+      await page.getByText("Checkout recovery details", { exact: true }).click()
+      await expect(cleanup).toBeEnabled()
+      await cleanup.click()
+      await expect(
+        page.getByText(
+          "Wallet cleanup is still pending. Saved recovery remains available.",
+          { exact: true }
+        )
+      ).toBeVisible()
+      await expect
+        .poll(() => merchantWalletState(page, orderId), { timeout: 30_000 })
+        .toBe("active")
+      expect(await hasActiveEncryptedRecovery(page, orderId)).toBe(true)
+
+      setStage("sender-committed refresh does not replay native payment")
+      const refresh = page.getByRole("button", {
+        name: "Refresh saved status",
+        exact: true,
+      })
+      await refresh.click()
+      await expect(refresh).toBeEnabled()
+      await expect(
+        page.getByText("Payment recorded", { exact: true })
+      ).toBeVisible()
+      expect(control().snapshot()).toEqual(committedPayments)
+      expect(control().nativeSnapshot()).toEqual(committedNative)
+      await expect(cleanup).toBeEnabled()
+      expect(await merchantWalletState(page, orderId)).toBe("active")
+      expect(await hasActiveEncryptedRecovery(page, orderId)).toBe(true)
+      bodyCompleted = true
+      return
+    }
     setStage("pending native treasury buyer progress")
     await expect(
       page.getByText("Completing payment", { exact: true })
@@ -1888,10 +2051,17 @@ async function rehearseRouter(
       nativePaymentCount: 1,
       transfers: [
         {
-          status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
           transferDirection: "OUTGOING",
           totalValue: 113,
           receiverIdentityPublicKey: treasuryIdentityPublicKey,
+          receivers: [
+            {
+              identityPublicKey: treasuryIdentityPublicKey,
+              amountSats: 113,
+              status: "TRANSFER_RECEIVER_STATUS_INITIATED",
+            },
+          ],
         },
       ],
     })
@@ -2273,6 +2443,10 @@ async function rehearseRouter(
 test("native router funding automatically reconciles commerce and the exact native treasury payment without duplicate payouts @commerce", async ({
   browser,
 }) => rehearseRouter(browser))
+
+test("native router records sender-committed treasury payment while receiver claim and retirement remain pending @commerce", async ({
+  browser,
+}) => rehearseRouter(browser, "buyer", "signed-in", null, false, false, true))
 
 test("native router cold Merchant restores a funded checkout and finishes all payouts without the buyer @commerce", async ({
   browser,

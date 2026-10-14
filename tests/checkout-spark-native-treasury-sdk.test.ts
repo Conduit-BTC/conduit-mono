@@ -446,7 +446,148 @@ describe("native checkout treasury SDK boundary", () => {
     expect(TRANSFER_ID).not.toBe(INVOICE_ID)
   })
 
-  it("does not turn invoice FINALIZED or an immediate response into a claimed receipt", async () => {
+  it("accepts exact sender-committed ownership while the receiver remains offline", async () => {
+    const f = fixture({
+      transfer: {
+        status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+        receivers: [
+          {
+            identityPublicKey: RECEIVER,
+            amountSats: 57,
+            status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+          },
+        ],
+      },
+    })
+    expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+      invoiceId: INVOICE_ID,
+      providerTransferId: TRANSFER_ID,
+      status: "paid",
+      finalFeeSats: 0,
+      finalDebitSats: 57,
+    })
+    expect(f.queries).toEqual([[f.request.nativeTreasury.invoiceRequest]])
+    expect(f.reads).toEqual([TRANSFER_ID])
+    expect(f.fulfills).toEqual([])
+  })
+
+  it.each([
+    [
+      "TRANSFER_STATUS_RECEIVER_KEY_TWEAKED",
+      "TRANSFER_RECEIVER_STATUS_KEY_TWEAKED",
+    ],
+    [
+      "TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED",
+      "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_LOCKED",
+    ],
+    [
+      "TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED",
+      "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_APPLIED",
+    ],
+    [
+      "TRANSFER_STATUS_RECEIVER_REFUND_SIGNED",
+      "TRANSFER_RECEIVER_STATUS_REFUND_SIGNED",
+    ],
+    [
+      "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+      "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_APPLIED",
+    ],
+    [
+      "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+      "TRANSFER_RECEIVER_STATUS_COMPLETED",
+    ],
+  ] as const)(
+    "accepts independent committed parent %s and receiver %s evidence",
+    async (status, receiverStatus) => {
+      const f = fixture({
+        transfer: {
+          status,
+          receivers: [
+            {
+              identityPublicKey: RECEIVER,
+              amountSats: 57,
+              status: receiverStatus,
+            },
+          ],
+        },
+      })
+      expect(await f.client.inspectCheckoutTreasury!(f.request)).toMatchObject({
+        providerTransferId: TRANSFER_ID,
+        status: "paid",
+      })
+    }
+  )
+
+  it.each([1, 4])(
+    "requires FINALIZED invoice association instead of status %d before accepting sender commitment",
+    async (queryStatus) => {
+      const f = fixture({
+        queryStatus,
+        transfer: {
+          status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          receivers: [
+            {
+              identityPublicKey: RECEIVER,
+              amountSats: 57,
+              status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+            },
+          ],
+        },
+      })
+      expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+        invoiceId: INVOICE_ID,
+        status: "conflicting_evidence",
+      })
+      expect(f.reads).toEqual([TRANSFER_ID])
+      expect(f.fulfills).toEqual([])
+    }
+  )
+
+  it("does not accept receiver progress before irreversible sender commitment", async () => {
+    const f = fixture({
+      transfer: {
+        status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
+        receivers: [
+          {
+            identityPublicKey: RECEIVER,
+            amountSats: 57,
+            status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+          },
+        ],
+      },
+    })
+    expect(await f.client.inspectCheckoutTreasury!(f.request)).toMatchObject({
+      providerTransferId: TRANSFER_ID,
+      status: "pending",
+      pendingPhase: "sender",
+    })
+  })
+
+  it.each([
+    "TRANSFER_RECEIVER_STATUS_CANCELLED",
+    "UNKNOWN",
+    "constructor",
+    "__proto__",
+  ])("rejects non-claimable receiver evidence %s", async (receiverStatus) => {
+    const f = fixture({
+      transfer: {
+        status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+        receivers: [
+          {
+            identityPublicKey: RECEIVER,
+            amountSats: 57,
+            status: receiverStatus,
+          },
+        ],
+      },
+    })
+    expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+      invoiceId: INVOICE_ID,
+      status: "conflicting_evidence",
+    })
+  })
+
+  it("rejects a pre-claim receiver after sender commitment and never trusts an immediate response", async () => {
     const f = fixture({
       transfer: {
         status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
@@ -461,9 +602,7 @@ describe("native checkout treasury SDK boundary", () => {
     })
     expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
       invoiceId: INVOICE_ID,
-      providerTransferId: TRANSFER_ID,
-      status: "pending",
-      pendingPhase: "receiver",
+      status: "conflicting_evidence",
     })
     f.setQueryStatus(0)
     expect(
@@ -485,11 +624,6 @@ describe("native checkout treasury SDK boundary", () => {
     ["TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING", "sender"],
     ["TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR", "sender"],
     ["TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK", "sender"],
-    ["TRANSFER_STATUS_SENDER_KEY_TWEAKED", "receiver"],
-    ["TRANSFER_STATUS_RECEIVER_KEY_TWEAKED", "receiver"],
-    ["TRANSFER_STATUS_RECEIVER_REFUND_SIGNED", "receiver"],
-    ["TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED", "receiver"],
-    ["TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED", "receiver"],
   ] as const)(
     "reports only finite %s progress as %s completion pending",
     async (status, pendingPhase) => {

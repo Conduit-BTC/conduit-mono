@@ -274,6 +274,24 @@ function nativeTransferIdFromBytes(
     .toString()
 }
 
+// Spark can cancel only before the sender key tweak. These states prove the
+// exact debit is committed even when the receiver claims it after going online.
+const IRREVERSIBLY_COMMITTED_TRANSFER_STATUSES = new Set([
+  "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+  "TRANSFER_STATUS_RECEIVER_KEY_TWEAKED",
+  "TRANSFER_STATUS_RECEIVER_REFUND_SIGNED",
+  "TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED",
+  "TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED",
+])
+const COMMITTED_RECEIVER_STATUSES = new Set([
+  "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+  "TRANSFER_RECEIVER_STATUS_KEY_TWEAKED",
+  "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_LOCKED",
+  "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_APPLIED",
+  "TRANSFER_RECEIVER_STATUS_REFUND_SIGNED",
+  "TRANSFER_RECEIVER_STATUS_COMPLETED",
+])
+
 function exactCheckoutTreasuryTransfer(
   request: CheckoutSparkNativeTreasurySdkInput,
   providerTransferId: string,
@@ -320,16 +338,23 @@ function exactCheckoutTreasuryTransfer(
       finalDebitSats: request.authorizedDebitSats,
     }
   }
+  if (IRREVERSIBLY_COMMITTED_TRANSFER_STATUSES.has(transfer.status)) {
+    if (!COMMITTED_RECEIVER_STATUSES.has(transfer.receivers[0].status)) {
+      return { invoiceId, status: "conflicting_evidence" }
+    }
+    return {
+      invoiceId,
+      providerTransferId,
+      status: "paid",
+      finalFeeSats: 0,
+      finalDebitSats: request.authorizedDebitSats,
+    }
+  }
   const pendingPhases = {
     TRANSFER_STATUS_SENDER_INITIATED: "sender",
     TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING: "sender",
     TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR: "sender",
     TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK: "sender",
-    TRANSFER_STATUS_SENDER_KEY_TWEAKED: "receiver",
-    TRANSFER_STATUS_RECEIVER_KEY_TWEAKED: "receiver",
-    TRANSFER_STATUS_RECEIVER_REFUND_SIGNED: "receiver",
-    TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED: "receiver",
-    TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED: "receiver",
   } as const
   return typeof transfer.status === "string" &&
     Object.hasOwn(pendingPhases, transfer.status)
@@ -453,6 +478,9 @@ export function createCheckoutSparkNativeTreasurySdkAdapter(input: {
       providerTransferId,
       transfer
     )
+    if (observed.status === "paid" && entry.status !== 2) {
+      return { invoiceId, status: "conflicting_evidence" }
+    }
     if (entry.status === 4 && observed.status !== "terminal_failure") {
       return { invoiceId, status: "conflicting_evidence" }
     }

@@ -398,14 +398,24 @@ Before admission, atomically persist the exact intent and possible-send state
 and relay-ACK each required recovery snapshot. Reconcile the exact canonical
 invoice and its actual provider transfer identifier after sending.
 An empty lookup after possible submission never authorizes another send.
-Receiver-claim completion, not a fulfill response or invoice-finalized hint,
-is the payment receipt. A zero attributed remainder creates no transfer or
-fabricated receipt and remains an explicit recovery state.
+The native fee obligation is paid after a fresh exact transfer proves completed
+sender commitment to the frozen receiver and amount, with a finalized exact
+invoice and a recognized non-cancelled receiver claim state. Spark's committed
+sender state is non-cancellable; the receiver need not be online to claim it
+before routing completes. A fulfill response, invoice-finalized hint or zero
+sender balance alone is insufficient. Earlier sender states, unknown receiver
+states and contradictory evidence remain unverified. This payment evidence is
+not evidence that the receiver has claimed or can already spend the funds.
+A zero attributed remainder creates no transfer or fabricated receipt and
+remains an explicit recovery state.
 
-Commerce remains paid while final collection needs attention. Completion and
-wallet retirement still require independent native settlement and safe
-whole-wallet inspection. Late or unrelated deposits are not automatically
-collected; recovery material stays available when retirement is not proven.
+Commerce remains paid while final collection needs attention. Routing completion
+requires independent native sender-commitment evidence. Wallet retirement is
+separate and still requires terminal claim/refund history and safe whole-wallet
+inspection; sender commitment alone cannot authorize it. Retain encrypted
+recovery while that inspection is pending, without reopening a paid fee for
+another send. Late or unrelated deposits are not automatically collected;
+recovery material stays available when retirement is not proven.
 These protocol rules do not publish a new effective legal-document version.
 
 Completed router execution queues may be cleaned only after positive terminal

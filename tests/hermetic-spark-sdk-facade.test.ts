@@ -109,10 +109,11 @@ it("round-trips open-amount native fulfillment and byte-accurate invoice query o
       (await wallet.querySparkInvoices([invoice])).invoiceStatuses[0]!.status
     ).toBe(0)
     control.setNativeCompletion(false)
+    control.setNativeSenderCommitment(false)
     await wallet.fulfillSparkInvoice([{ invoice, amount: 113n }])
     const queried = (await wallet.querySparkInvoices([invoice]))
       .invoiceStatuses[0]!
-    expect(queried.status).toBe(2)
+    expect(queried.status).toBe(1)
     expect(queried.invoice).toBe(invoice)
     expect(queried.transferType?.$case).toBe("satsTransfer")
     if (queried.transferType?.$case !== "satsTransfer")
@@ -126,8 +127,35 @@ it("round-trips open-amount native fulfillment and byte-accurate invoice query o
     ).toBe(true)
     expect(actual.id).not.toBe(invoiceId.toString())
     expect((await wallet.getTransfer(actual.id))!.status).toBe(
-      "TRANSFER_STATUS_SENDER_KEY_TWEAKED"
+      "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK"
     )
+    expect((await wallet.getTransfer(actual.id))!.receivers).toEqual([
+      {
+        identityPublicKey: receiver,
+        amountSats: 113,
+        status: "TRANSFER_RECEIVER_STATUS_INITIATED",
+      },
+    ])
+    const beforeCommit = control.nativeSnapshot()
+    control.setNativeSenderCommitment(true)
+    const committedQuery = (await wallet.querySparkInvoices([invoice]))
+      .invoiceStatuses[0]!
+    expect(committedQuery.status).toBe(2)
+    expect(committedQuery.transferType).toEqual(queried.transferType)
+    expect(await wallet.getTransfer(actual.id)).toMatchObject({
+      status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+    })
+    expect((await wallet.getTransfer(actual.id))!.receivers).toEqual([
+      {
+        identityPublicKey: receiver,
+        amountSats: 113,
+        status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+      },
+    ])
+    expect(control.nativeSnapshot()).toMatchObject({
+      nativeSendInvocationCount: beforeCommit.nativeSendInvocationCount,
+      nativePaymentCount: beforeCommit.nativePaymentCount,
+    })
     control.setNativeCompletion(true)
     expect(await wallet.getTransfer(actual.id)).toMatchObject({
       status: "TRANSFER_STATUS_COMPLETED",

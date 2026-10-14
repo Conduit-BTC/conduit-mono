@@ -752,12 +752,66 @@ async function runForeground(
   )
 }
 
+/** Pre-commit evidence must still wait; an offline post-commit receiver must not. */
+function holdNativeSenderCommitment(f: Awaited<ReturnType<typeof fixture>>) {
+  f.control.setNativeCompletion(false)
+  f.control.setNativeSenderCommitment(false)
+}
+
 describe("Market native treasury composed provider evidence", () => {
   it(
-    "automatically observes an admitted native receiver claim after the two-minute handoff without new payment admission",
+    "finishes routing on exact sender commitment while the native receiver remains offline, retaining recovery for later retirement",
     async () =>
       runForeground(async (f) => {
         f.control.setNativeCompletion(false)
+        f.hooks.mutateTransfer = (transfer) => {
+          if (transfer.type === "TRANSFER")
+            transfer.receivers![0]!.status =
+              "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING"
+        }
+        let waits = 0
+        const { runner, input } = await createForegroundRunner(f, {
+          wait: async () => {
+            waits += 1
+          },
+        })
+        const result = await runner.run({
+          ...input,
+          fundingPoll: { attempts: 1, intervalMs: 1 },
+        })
+        expect(result).toEqual({ status: "complete" })
+        expect(getCheckoutSparkSettledOutcomeMessage(result)).not.toContain(
+          "Resume"
+        )
+        const saved = await f.loadState()
+        expect(saved.state.legs.every((leg) => leg.status === "paid")).toBe(
+          true
+        )
+        expect(saved.state.treasuryFinalization).toMatchObject({
+          status: "paid",
+          providerTransferId: f.control.nativeSnapshot().transfers[0]!.id,
+          finalFeeSats: 0,
+          finalDebitSats:
+            saved.state.treasuryFinalization!.intent!.authorizedDebitSats,
+        })
+        expect(f.control.nativeSnapshot().transfers[0]!.status).toBe(
+          "TRANSFER_STATUS_SENDER_KEY_TWEAKED"
+        )
+        expect(waits).toBe(0)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        expect(await runner.run(input)).toEqual({ status: "complete" })
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        // Routing completion is not wallet retirement or receiver claim.
+        expect((await f.loadState()).status).toBe("active")
+      }, 120_000),
+    15_000
+  )
+  it(
+    "automatically observes admitted native sender commitment after the two-minute handoff without new payment admission",
+    async () =>
+      runForeground(async (f) => {
+        holdNativeSenderCommitment(f)
         let waits = 0
         let admissionsAfterHandoff = 0
         f.hooks.beforeNativeFulfill = async () => {
@@ -793,10 +847,10 @@ describe("Market native treasury composed provider evidence", () => {
     15_000
   )
   it.each(["visibility", "buyer", "cancelled", "deadline"] as const)(
-    "does not accept a post-handoff native claim after %s revocation",
+    "does not accept post-handoff native completion after %s revocation",
     async (change) =>
       runForeground(async (f) => {
-        f.control.setNativeCompletion(false)
+        holdNativeSenderCommitment(f)
         let active = true
         let buyer = f.buyer.pubkey
         let pendingIntent: CheckoutSparkSettledReconciliation["treasuryFinalization"]
@@ -935,7 +989,7 @@ describe("Market native treasury composed provider evidence", () => {
           expect(retained.finalDebitSats).toBe(
             admitted.intent!.authorizedDebitSats
           )
-          // Only exact history and receiver-claimed proof may finish the
+          // Only exact history proving sender commitment may finish the
           // admitted operation; no new admission survives the handoff.
           expect(f.control.nativeSnapshot().transfers[0]!.status).toBe(
             "TRANSFER_STATUS_COMPLETED"
@@ -957,7 +1011,7 @@ describe("Market native treasury composed provider evidence", () => {
     "normal two-minute handoff checks a pending native attempt until the foreground budget without readmitting its payment",
     async () =>
       runForeground(async (f) => {
-        f.control.setNativeCompletion(false)
+        holdNativeSenderCommitment(f)
         let pending:
           CheckoutSparkSettledReconciliation["treasuryFinalization"] | undefined
         let waits = 0
@@ -1001,7 +1055,7 @@ describe("Market native treasury composed provider evidence", () => {
     "reports the native observation poll budget without changing or replaying the pending intent",
     async () =>
       runForeground(async (f) => {
-        f.control.setNativeCompletion(false)
+        holdNativeSenderCommitment(f)
         let waits = 0
         const { runner, input } = await createForegroundRunner(f, {
           wait: async () => {
@@ -1183,10 +1237,10 @@ describe("Market native treasury composed provider evidence", () => {
     15_000
   )
   it.each(["pending", "unknown"] as const)(
-    "automatically reconciles the same delayed native %s attempt to receiver-claimed without Resume",
+    "automatically reconciles the same delayed native %s attempt without Resume",
     async (observation) =>
       runForeground(async (f) => {
-        f.control.setNativeCompletion(false)
+        holdNativeSenderCommitment(f)
         if (observation === "unknown") {
           f.control.setNativeLostResponse(true)
           f.hooks.beforeNativeQuery = () => {
@@ -1345,7 +1399,7 @@ describe("Market native treasury composed provider evidence", () => {
         const completion = new Promise<void>((resolve) => {
           release = resolve
         })
-        f.control.setNativeCompletion(false)
+        holdNativeSenderCommitment(f)
         f.hooks.beforeNativeFulfill = async () => {
           entered()
           await completion
@@ -1527,19 +1581,22 @@ describe("Market native treasury composed provider evidence", () => {
     15_000
   )
   it(
-    "does not treat FINALIZED or fulfill response as receiver completion, and recovers query-only after restart",
+    "records offline sender commitment without pretending receiver claim or retiring the wallet, and never resends after restart",
     async () =>
       run(async (f) => {
         f.control.setNativeCompletion(false)
-        expect((await f.step()).outcome).toBe("wait")
-        expect(f.state().treasuryFinalization!.status).toBe("ambiguous")
-        expect(f.state().treasuryFinalization!.finalDebitSats).toBeNull()
+        expect((await f.step()).outcome).toBe("paid")
+        expect(f.state().treasuryFinalization!.status).toBe("paid")
+        expect(f.state().treasuryFinalization!.finalDebitSats).toBe(
+          f.state().treasuryFinalization!.intent!.authorizedDebitSats
+        )
         expect(await f.retire()).toEqual({ status: "retirement_pending" })
         await f.restart()
-        expect((await f.step()).reason).toBe("prior_possible_send")
+        expect((await f.step(true)).outcome).toBe("already_paid")
+        expect(await f.retire()).toEqual({ status: "retirement_pending" })
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         f.control.setNativeCompletion(true)
-        expect((await f.step(true)).outcome).toBe("paid")
+        expect((await f.step(true)).outcome).toBe("already_paid")
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         expect(await f.retire()).toEqual({ status: "retired" })
       }),
@@ -1583,7 +1640,7 @@ describe("Market native treasury composed provider evidence", () => {
     "does not persist a completed native receipt after restart when fresh %s proof is missing",
     async (change) =>
       run(async (f) => {
-        f.control.setNativeCompletion(false)
+        holdNativeSenderCommitment(f)
         expect((await f.step()).reason).toBe("prior_possible_send")
         const nativeId = f.state().treasuryFinalization!.providerTransferId
         await f.restart()

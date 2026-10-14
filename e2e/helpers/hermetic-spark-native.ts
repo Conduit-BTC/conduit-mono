@@ -203,6 +203,7 @@ function createHermeticWalletNative(input: {
   let nativeSendInvocationCount = 0
   let nativePaymentCount = 0
   let nativeCompleted = true
+  let nativeSenderCommitted = true
   let nativeLostResponse = false
   let extraHistory: NativeHistoryTransfer[] = []
   const extraSspTransfers = new Map<string, NativeSspTransfer>()
@@ -215,6 +216,22 @@ function createHermeticWalletNative(input: {
       nativeTransfer: NativeTransfer
     }
   >()
+  function applyNativeProgress(transfer: NativeTransfer): void {
+    const receiver = transfer.receivers?.[0]
+    if (!receiver || transfer.receivers?.length !== 1) unsupported()
+    if (nativeCompleted) {
+      transfer.status = "TRANSFER_STATUS_COMPLETED"
+      receiver.status = "TRANSFER_RECEIVER_STATUS_COMPLETED"
+      return
+    }
+    if (nativeSenderCommitted) {
+      transfer.status = "TRANSFER_STATUS_SENDER_KEY_TWEAKED"
+      receiver.status = "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING"
+      return
+    }
+    transfer.status = "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK"
+    receiver.status = "TRANSFER_RECEIVER_STATUS_INITIATED"
+  }
   function history(): NativeTransfer[] {
     return [
       ...(incomingTransfer ? [incomingTransfer] : []),
@@ -357,7 +374,11 @@ function createHermeticWalletNative(input: {
             return transfer
               ? {
                   invoice,
-                  status: 2,
+                  status:
+                    transfer.status ===
+                    "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK"
+                      ? 1
+                      : 2,
                   transferType: {
                     $case: "satsTransfer" as const,
                     satsTransfer: {
@@ -408,9 +429,7 @@ function createHermeticWalletNative(input: {
           type: "TRANSFER",
           transferDirection: "OUTGOING",
           totalValue: amountSats,
-          status: nativeCompleted
-            ? "TRANSFER_STATUS_COMPLETED"
-            : "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          status: "TRANSFER_STATUS_COMPLETED",
           valueSentByWallet: amountSats,
           valueReceivedByWallet: 0,
           sparkInvoice: invoice,
@@ -421,12 +440,11 @@ function createHermeticWalletNative(input: {
             {
               identityPublicKey: decoded.identityPublicKey,
               amountSats,
-              status: nativeCompleted
-                ? "TRANSFER_RECEIVER_STATUS_COMPLETED"
-                : "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_PENDING",
+              status: "TRANSFER_RECEIVER_STATUS_COMPLETED",
             },
           ],
         }
+        applyNativeProgress(transfer)
         nativeOutgoing.set(invoice, transfer)
         availableSats -= amountSats
         debitedSats += amountSats
@@ -625,13 +643,16 @@ function createHermeticWalletNative(input: {
     control: {
       setNativeCompletion(completed: boolean) {
         nativeCompleted = completed
+        if (completed) nativeSenderCommitted = true
         for (const transfer of nativeOutgoing.values()) {
-          transfer.status = completed
-            ? "TRANSFER_STATUS_COMPLETED"
-            : "TRANSFER_STATUS_SENDER_KEY_TWEAKED"
-          transfer.receivers![0]!.status = completed
-            ? "TRANSFER_RECEIVER_STATUS_COMPLETED"
-            : "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_PENDING"
+          applyNativeProgress(transfer)
+        }
+      },
+      setNativeSenderCommitment(committed: boolean) {
+        nativeSenderCommitted = committed
+        if (!committed) nativeCompleted = false
+        for (const transfer of nativeOutgoing.values()) {
+          applyNativeProgress(transfer)
         }
       },
       setNativeLostResponse(lost: boolean) {

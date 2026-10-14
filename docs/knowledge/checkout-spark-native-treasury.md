@@ -62,9 +62,21 @@ recovery packages acknowledged before submission.
 
 Once submission may have occurred, reload and merchant recovery query the same
 request and actual provider transfer. Absence or a timeout does not authorize
-another send. A completed invoice query alone is insufficient: exact sender,
-receiver, network, amount, outgoing transfer type and claimed terminal completion
-must also match. Pending/finalized-but-unclaimed transfers are not paid receipts.
+another send. A finalized invoice query alone is insufficient: exact sender,
+receiver, network, amount, outgoing transfer type, debit and completed sender
+commitment must also match, with a recognized non-cancelled receiver claim state.
+`TRANSFER_STATUS_SENDER_KEY_TWEAKED` and recognized later receiver phases prove
+that the native fee was committed; earlier sender phases do not. A completed
+parent transfer must still agree with its completed receiver state. Merely
+submitted transfers, unknown states and zero sender balance are not receipts.
+
+The receiving wallet may be offline. In the inspected Spark operator flow,
+sender commitment cannot be cancelled and is excluded from the early-sender
+expiry sweep. Claiming later has no post-commit timeout in that flow, but this
+does not promise multi-year operator availability, data retention or continued
+wallet support. Invoice expiry before payment is a different limit; this frozen
+request encodes no invoice expiry. Payment completion means the sender fulfilled
+the fee obligation, not that the receiver has claimed or can already spend it.
 
 Explicit Merchant history details distinguish sender completion pending from
 receiver completion pending using only the existing exact transfer read. These
@@ -78,10 +90,12 @@ reconciled automatically against that same request and transfer. An admitted
 transfer remains observable across Merchant takeover, but the five-minute
 checking window and bounded observation count are not renewed. Exhaustion is
 reported as a checking timeout or step limit, not as a new payment failure.
-An active Merchant recovery worker also requeues pending native observation
-and records an exact later claim without a manual per-leg continuation or
-another send. Neither path can perform the receiver's claim on its behalf;
-an accepted submission is not the claimed terminal receipt required above.
+An active Merchant recovery worker also requeues pending sender observation
+and records exact later commitment without a manual per-leg continuation or
+another send. Both paths finish routing once that commitment is proven; neither
+can perform the receiver's claim on its behalf. Retirement still needs terminal
+claim/refund history and zero-funds inspection, so encrypted recovery is retained
+when only the sender payment is complete.
 
 Commerce remains paid if final fee collection needs attention. Recovery material
 is retained until all exact payments are independently verified and an
@@ -115,6 +129,9 @@ provider port in Core and separate app adapters. Relevant public references:
 - [Native transfers](https://docs.spark.money/api-reference/wallet/transfer)
 - [Balances](https://docs.spark.money/wallets/balances)
 - [Fee estimates](https://docs.spark.money/api-reference/wallet/estimate-fees)
+- [Offline receiving](https://www.spark.money/research/lightning-async-offline-payments)
+- [Inspected operator cancellation/commitment flow](https://github.com/buildonspark/spark/blob/0b3a32a05c9ac06cc411683551dd1f1bde9d0caa/spark/so/handler/base_transfer_handler.go)
+- [Inspected early-sender expiry sweep](https://github.com/buildonspark/spark/blob/0b3a32a05c9ac06cc411683551dd1f1bde9d0caa/spark/so/task/task.go)
 
 Synthetic tests exercise amount attribution, recipient binding, relay recovery,
 possible-send replay protection and retirement. They do not establish deployed

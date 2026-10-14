@@ -358,6 +358,114 @@ function fakeClock(start: number) {
 }
 
 describe("Merchant native treasury continuation", () => {
+  it("completes a restored native fee on exact sender commitment without an online receiver or another send", async () => {
+    const f = await fixture({ restoredStatus: "submitted" })
+    const transferId = UUID.parse("0197f9a0-0000-7000-8000-000000000003")
+    let sends = 0
+    const treasury = createCheckoutSparkNativeTreasurySdkAdapter({
+      network: "MAINNET",
+      read: (read) => read(),
+      codec: {
+        nativeTreasuryPolicy: CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+        parseTransferId: UUID.parse,
+        encodeSparkAddress: () => f.plan.nativeTreasury!.invoiceRequest,
+        decodeSparkAddress: () => ({
+          identityPublicKey: f.plan.nativeTreasury!.receiverIdentityPublicKey,
+        }),
+        isValidSparkAddress: () => true,
+        getNetworkFromSparkAddress: () => "MAINNET",
+      },
+      wallet: {
+        getIdentityPublicKey: async () =>
+          f.plan.funding.receiverIdentityPublicKey,
+        getBalance: async () => {
+          throw new Error("A prior send must be reconciled, not prepared again")
+        },
+        querySparkInvoices: async (invoices) => ({
+          invoiceStatuses: [
+            {
+              invoice: invoices[0]!,
+              status: 2,
+              transferType: {
+                $case: "satsTransfer" as const,
+                satsTransfer: { transferId: transferId.bytes },
+              },
+            },
+          ],
+        }),
+        getTransfer: async () => ({
+          id: transferId.toString(),
+          type: "TRANSFER",
+          transferDirection: "OUTGOING",
+          status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          totalValue: 112,
+          valueSentByWallet: 112,
+          valueReceivedByWallet: 0,
+          sparkInvoice: f.plan.nativeTreasury!.invoiceRequest,
+          senders: [
+            {
+              identityPublicKey: f.plan.nativeTreasury!.senderIdentityPublicKey,
+            },
+          ],
+          receivers: [
+            {
+              identityPublicKey:
+                f.plan.nativeTreasury!.receiverIdentityPublicKey,
+              amountSats: 112,
+              status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+            },
+          ],
+        }),
+        fulfillSparkInvoice: async () => {
+          sends += 1
+          throw new Error("A restored committed transfer must never be resent")
+        },
+      },
+    })
+    const openWallet = f.dependencies.openWallet!
+    f.dependencies.openWallet = async (input) => ({
+      ...(await openWallet(input)),
+      nativeTreasury: treasury,
+    })
+    try {
+      expect((await f.run()).payout).toMatchObject({
+        outcome: "paid",
+        sendAttempted: false,
+      })
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(
+        saved.status === "active" && saved.state.treasuryFinalization
+      ).toMatchObject({
+        status: "paid",
+        providerTransferId: transferId.toString(),
+        finalFeeSats: 0,
+        finalDebitSats: 112,
+      })
+      expect(
+        await f.repository.loadMerchantSettlement(
+          MERCHANT,
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+      ).toMatchObject({
+        nativeTreasury: {
+          providerTransferId: transferId.toString(),
+          finalFeeSats: 0,
+          finalDebitSats: 112,
+        },
+      })
+      expect((await f.run()).payout?.outcome).toBe("already_paid")
+      expect(f.sends()).toBe(0)
+      expect(sends).toBe(0)
+      expect(saved.status).toBe("active")
+    } finally {
+      await f.database.delete()
+    }
+  }, 15_000)
+
   it("automatically rechecks the same pending native fee until its receiver claims it", async () => {
     const f = await fixture({
       restoredStatus: "submitted",

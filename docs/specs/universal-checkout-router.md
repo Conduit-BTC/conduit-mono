@@ -259,8 +259,13 @@ access to the buyer's funding wallet and no Conduit-operated custody.
 Recovery requires a retained relay copy and the Merchant eventually running a
 client. There is no Conduit-held credential, background keeper or guaranteed
 eventual settlement. After possible submission, query the same attempt; a
-timeout or absent lookup cannot authorize another send. Native completion
-requires exact claimed-transfer evidence, not only invoice finalization.
+timeout or absent lookup cannot authorize another send. Native fee completion
+requires a finalized exact invoice and fresh exact transfer evidence of
+non-cancellable sender commitment to the frozen receiver and amount, including
+a recognized non-cancelled receiver claim state. It does not require that wallet
+to be online or claim before routing completes. Submission, invoice finalization
+or zero sender balance alone is not payment proof. Receiver claim and safe wallet
+retirement remain separate observations; retain recovery while they are pending.
 
 An exact Lightning or native intent may retry only after durable, positive
 pre-provider cancellation evidence. The executor retains that terminal
