@@ -836,6 +836,34 @@ describe("bounded smoke failure diagnostics", () => {
       ).toEqual([])
     }
     expect(
+      safeSmokeDiagnostics("e2e/merchant-order-inbox.playwright.ts", [
+        {
+          type: "smoke:order-reply",
+          description: JSON.stringify({
+            phase: "buyer_dialog",
+            dialogVisible: true,
+            inputPresent: false,
+            inputVisible: false,
+            inputEnabled: false,
+            sendPresent: false,
+            focusWithinDialog: true,
+            message: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([
+      {
+        kind: "order-reply",
+        phase: "buyer_dialog",
+        dialogVisible: true,
+        inputPresent: false,
+        inputVisible: false,
+        inputEnabled: false,
+        sendPresent: false,
+        focusWithinDialog: true,
+      },
+    ])
+    expect(
       safeSmokeDiagnostics("e2e/merchant-product-image-preview.playwright.ts", [
         {
           type: "smoke:fallback-recovery",
