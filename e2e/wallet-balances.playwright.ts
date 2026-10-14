@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import path from "node:path"
 import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
 import {
@@ -41,7 +42,10 @@ for (const app of ["market", "merchant"] as const) {
     })
     try {
       await prepareControlledWallet(page)
-      await observeWalletController(page)
+      const smokeInfo = test.info()
+      await observeWalletController(page, undefined, (diagnostic) => {
+        recordSmokeDiagnostic(smokeInfo, "wallet-balances", diagnostic)
+      })
       await installRealTestSigner(page, identity, relay)
       await page.clock.install()
       await page.goto(`http://127.0.0.1:${port}/wallet`)
@@ -256,6 +260,7 @@ for (const app of ["market", "merchant"] as const) {
       const readsAfterLeaving = nwc.snapshot().balanceReads
       await page.clock.fastForward(60_001)
       expect(nwc.snapshot().balanceReads).toBe(readsAfterLeaving)
+      await page.unrouteAll({ behavior: "wait" })
     } finally {
       await Promise.all([nwc.close(), privateBalance.close()])
       disposeRuntimeSignerIdentity(identity)
