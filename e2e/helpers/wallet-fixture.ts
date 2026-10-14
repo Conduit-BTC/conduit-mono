@@ -45,6 +45,21 @@ export async function retryWalletRecovery(page: Page) {
         observed?.[0] === 1 && (await retry.isEnabled().catch(() => false)),
       recoveryDialogPresent: !!observed?.[1],
       managePresent: !!observed?.[2],
+      syncCheckingVisible: await page
+        .getByText("Checking encrypted wallet recovery…", { exact: true })
+        .isVisible()
+        .catch(() => false),
+      recoveryBlockedVisible: await page
+        .getByText(
+          "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+          { exact: true }
+        )
+        .isVisible()
+        .catch(() => false),
+      walletCardCount: await page
+        .locator("[data-wallet-group]")
+        .count()
+        .catch(() => 0),
     })
     throw error
   }
