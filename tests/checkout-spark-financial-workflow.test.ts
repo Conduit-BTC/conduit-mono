@@ -359,6 +359,18 @@ describe("shared checkout financial workflow", () => {
     it(`${actor} advances the same obligations, checkpoints and Conduit-last executor`, async () => {
       const source = fixture(true)
       const h = harness(source.state, actor)
+      const observedSteps: string[] = []
+      h.ports.observePerformance = (observation) => {
+        expect(Object.keys(observation).sort()).toEqual([
+          "count",
+          "durationMs",
+          "status",
+          "step",
+        ])
+        observedSteps.push(observation.step)
+        // An optional observer failure cannot alter the financial sequence.
+        throw new Error("diagnostic consumer failed")
+      }
       for (const recipient of source.plan.recipients) {
         const outcome = await h.run("advance", recipient.legId)
         expect(outcome.status).toBe("outgoing_step")
@@ -371,6 +383,8 @@ describe("shared checkout financial workflow", () => {
       expect(h.state().legs.every((leg) => leg.status === "paid")).toBe(true)
       expect((await h.run()).status).toBe("outgoing_step")
       expect(h.sent.length).toBe(4)
+      expect(observedSteps).toContain("router_outgoing_observation")
+      expect(observedSteps).toContain("router_commerce_verification")
     })
     it(`${actor} admits exact credit fact before its durable state and recovers a committed-write interruption`, async () => {
       const source = fixture()

@@ -35,6 +35,11 @@ import {
 } from "./checkout-spark-native-retirement"
 import type { CheckoutSparkRetirementEvidence } from "./checkout-spark-reconciliation"
 import type { CheckoutSparkSettledClosedReturnedProof } from "./checkout-spark-settled-returned"
+import {
+  observeCheckoutSparkOperation,
+  type CheckoutSparkOperationStep,
+  type CheckoutSparkPerformanceObserver,
+} from "./checkout-spark-performance"
 
 type Active = Extract<
   CheckoutSparkSettledRepositorySnapshot,
@@ -55,6 +60,7 @@ export interface CheckoutSparkFinancialWorkflowInput {
 }
 
 export interface CheckoutSparkFinancialWorkflowPorts {
+  observePerformance?: CheckoutSparkPerformanceObserver
   store: CheckoutSparkSettledOutgoingStateStore
   /** Fresh identity/order/session checks before and after every awaited port. */
   assertCurrent(): void | Promise<void>
@@ -175,9 +181,34 @@ export async function runCheckoutSparkFinancialWorkflow(
   input: CheckoutSparkFinancialWorkflowInput,
   ports: CheckoutSparkFinancialWorkflowPorts
 ): Promise<CheckoutSparkFinancialWorkflowResult> {
-  const checked = async <T>(operation: () => Promise<T>): Promise<T> => {
+  if (input.mode === "retire") {
+    return observeCheckoutSparkOperation({
+      app: input.actor === "shopper" ? "market" : "merchant",
+      step: "router_retirement",
+      observe: ports.observePerformance,
+      operation: () => runCheckoutSparkFinancialWorkflowPhase(input, ports),
+    })
+  }
+  return runCheckoutSparkFinancialWorkflowPhase(input, ports)
+}
+
+async function runCheckoutSparkFinancialWorkflowPhase(
+  input: CheckoutSparkFinancialWorkflowInput,
+  ports: CheckoutSparkFinancialWorkflowPorts
+): Promise<CheckoutSparkFinancialWorkflowResult> {
+  const checked = async <T>(
+    operation: () => Promise<T>,
+    step?: CheckoutSparkOperationStep
+  ): Promise<T> => {
     await ports.assertCurrent()
-    const value = await operation()
+    const value = step
+      ? await observeCheckoutSparkOperation({
+          app: input.actor === "shopper" ? "market" : "merchant",
+          step,
+          operation,
+          observe: ports.observePerformance,
+        })
+      : await operation()
     await ports.assertCurrent()
     return value
   }
@@ -352,11 +383,15 @@ export async function runCheckoutSparkFinancialWorkflow(
 
   const provider: Outgoing | undefined = ports.outgoing && {
     reconcile: async (target) => {
-      const observation = await checked(() => ports.outgoing!.reconcile(target))
+      const observation = await checked(
+        () => ports.outgoing!.reconcile(target),
+        "router_outgoing_observation"
+      )
       assertExactObservation(target, observation)
       if (observation.status === "paid" && ports.recordPaid) {
-        const verified = await checked(() =>
-          ports.recordPaid!(target, observation)
+        const verified = await checked(
+          () => ports.recordPaid!(target, observation),
+          "router_commerce_verification"
         )
         if (verified === false)
           return { ...observation, status: "lookup_unavailable" as const }
@@ -369,8 +404,9 @@ export async function runCheckoutSparkFinancialWorkflow(
       if (observation.status !== "not_sent")
         assertExactObservation(target, observation)
       if (observation.status === "paid" && ports.recordPaid) {
-        const verified = await checked(() =>
-          ports.recordPaid!(target, observation)
+        const verified = await checked(
+          () => ports.recordPaid!(target, observation),
+          "router_commerce_verification"
         )
         if (verified === false)
           return { ...observation, status: "lookup_unavailable" as const }
@@ -589,13 +625,23 @@ export async function runCheckoutSparkFinancialWorkflow(
       },
       provider: {
         reconcile: (target) =>
-          checked(() => ports.native!.provider.reconcile(target)),
+          checked(
+            () => ports.native!.provider.reconcile(target),
+            "router_outgoing_observation"
+          ),
         preflight: (...args) =>
           checked(() => ports.native!.provider.preflight(...args)),
-        send: (target) => checked(() => ports.native!.provider.send(target)),
+        send: (target) =>
+          checked(
+            () => ports.native!.provider.send(target),
+            "router_native_commitment"
+          ),
       },
       proveCommerce: (state) =>
-        checked(() => ports.native!.proveCommerce(state)),
+        checked(
+          () => ports.native!.proveCommerce(state),
+          "router_commerce_verification"
+        ),
       acknowledgeRecoverySnapshot: ack,
     })
     return { status: "outgoing_step", step }

@@ -9,8 +9,10 @@ import {
   createCheckoutSparkSettledReconciliation,
   fetchLnurlPayMetadata,
   parseProductEvent,
+  observeCheckoutSparkOperation,
   type LnurlPayMetadata,
   type CheckoutSparkReceiverContract,
+  type CheckoutSparkPerformanceObservation,
   type CheckoutSparkSettledRepositorySnapshot,
 } from "@conduit/core"
 import {
@@ -42,6 +44,10 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { prepareCheckoutSparkSettledOrder } from "../apps/market/src/lib/checkout-spark-settled-entry"
+import { createCartItemFromProduct } from "../apps/market/src/lib/cart-model"
+import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
+import type { PublishedCheckoutSparkBoundOrder } from "../apps/market/src/lib/checkout-spark-bound-order"
 
 const MNEMONIC = createRuntimeMnemonic()
 
@@ -309,23 +315,25 @@ function deferred<T>() {
 
 async function supplierRequest(
   storage: MemoryStorage,
-  sharedDestination = false
+  sharedDestination = false,
+  recipientCount = 2
 ) {
   const input = request(storage)
-  const secret = generateSecretKey()
-  const supplier = getPublicKey(secret)
-  const profile = finalizeEvent(
-    {
-      kind: 0,
-      created_at: NOW / 1_000,
-      tags: [],
-      content: JSON.stringify({
-        lud16: sharedDestination
-          ? "merchant@wallet.conduit.market"
-          : "supplier@wallet.conduit.market",
-      }),
-    },
-    secret
+  if (recipientCount === 1) return input
+  const profiles = Array.from({ length: recipientCount - 1 }, (_, index) =>
+    finalizeEvent(
+      {
+        kind: 0,
+        created_at: NOW / 1_000,
+        tags: [],
+        content: JSON.stringify({
+          lud16: sharedDestination
+            ? "merchant@wallet.conduit.market"
+            : `supplier${recipientCount === 2 ? "" : index}@wallet.conduit.market`,
+        }),
+      },
+      generateSecretKey()
+    )
   )
   const original =
     input.quoteAuthority.products[0]!.supplierAllocation!.revisionEvent!
@@ -337,7 +345,12 @@ async function supplierRequest(
         ...original.tags,
         ["conduit_supplier_allocation", "1"],
         ["zap", MERCHANT, "wss://relay.conduit.market", "1"],
-        ["zap", supplier, "wss://relay.conduit.market", "1"],
+        ...profiles.map((profile) => [
+          "zap",
+          profile.pubkey,
+          "wss://relay.conduit.market",
+          "1",
+        ]),
       ],
       content: original.content,
     },
@@ -353,25 +366,29 @@ async function supplierRequest(
     ...line,
     productEventId: product.id,
   }))
-  input.sourceEvents = [product, MERCHANT_PROFILE, profile]
+  input.sourceEvents = [product, MERCHANT_PROFILE, ...profiles]
+  const supplierSats = Math.floor(1_000 / recipientCount)
   input.recipients = [
-    { ...input.recipients[0]!, weightSats: 500 },
     {
-      kind: "supplier",
-      recipientId: supplier,
-      destination: {
-        type: "lightning_address",
-        value: sharedDestination
-          ? "merchant@wallet.conduit.market"
-          : "supplier@wallet.conduit.market",
-        source: {
-          type: "signed_profile",
-          profileEventId: profile.id,
-          profileEventCreatedAt: profile.created_at,
-        },
-      },
-      weightSats: 500,
+      ...input.recipients[0]!,
+      weightSats: 1_000 - supplierSats * profiles.length,
     },
+    ...profiles
+      .sort((left, right) => left.pubkey.localeCompare(right.pubkey))
+      .map((profile) => ({
+        kind: "supplier" as const,
+        recipientId: profile.pubkey,
+        destination: {
+          type: "lightning_address" as const,
+          value: JSON.parse(profile.content).lud16 as string,
+          source: {
+            type: "signed_profile" as const,
+            profileEventId: profile.id,
+            profileEventCreatedAt: profile.created_at,
+          },
+        },
+        weightSats: supplierSats,
+      })),
     input.recipients[1]!,
   ]
   return input
@@ -439,6 +456,326 @@ async function physicalRequest(storage: MemoryStorage) {
 }
 
 describe("settled Spark pre-funding metadata", () => {
+  it.each([1, 3, 8])(
+    "measures controlled preparation-to-ready stages for fresh and repeated %s-recipient sessions",
+    async (recipientCount) => {
+      const samples: unknown[] = []
+      // Reuse the same signed terms, destination set and client runtime, while
+      // giving each invocation independent preparation/continuation stores.
+      const input = await supplierRequest(
+        new MemoryStorage(),
+        false,
+        recipientCount
+      )
+      const productEvent = input.sourceEvents.find(
+        (event) => event.kind === 30_402
+      )!
+      const product = {
+        ...parseProductEvent(await admitFixture(productEvent)),
+        sourceEventId: productEvent.id,
+      }
+      const pricing = buildCheckoutPricingIntent(
+        [{ ...createCartItemFromProduct(product), quantity: 1 }],
+        null,
+        NOW
+      )
+      if (pricing.status !== "ok")
+        throw new Error("Expected exact digital pricing")
+      const profiles = new Map(
+        input.sourceEvents
+          .filter((event) => event.kind === 0)
+          .map((event) => [event.pubkey, event])
+      )
+      const fundingInvoice = makeSignedBolt11Fixture({
+        hrp: `lnbc${GROSS * 10}n`,
+        createdAt: NOW / 1_000,
+        fields: [
+          bolt11PaymentHashField(new Uint8Array(32).fill(0x44)),
+          bolt11PaymentSecretField(),
+          bolt11PlainDescriptionField(),
+          { tag: "x", words: [28, 4] }, // Existing normal 900-second policy.
+        ],
+      })
+      for (let invocation = 0; invocation < 2; invocation++) {
+        const storage = new MemoryStorage()
+        const { options, calls } = dependencies(true)
+        const stageMs = {
+          profiles: 0,
+          metadata: 0,
+          endpointPreflight: 0,
+          walletInitialization: 0,
+          fundingInvoice: 0,
+          recoveryAck: 0,
+          fundingPreparation: 0,
+          orderReady: 0,
+        }
+        let virtualTime = 0
+        let metadataStarted = 0
+        let profileReads = 0
+        let metadataReads = 0
+        let pending: Array<() => void> = []
+        const delay = () =>
+          new Promise<void>((resolve) => pending.push(resolve))
+        const measure = async <T>(
+          stage: keyof typeof stageMs,
+          operation: () => Promise<T>
+        ) => {
+          const started = virtualTime
+          try {
+            return await operation()
+          } finally {
+            stageMs[stage] = virtualTime - started
+          }
+        }
+        const observations: Readonly<CheckoutSparkPerformanceObservation>[] = []
+        let settled = false
+        let failure: unknown
+        const operation = observeCheckoutSparkOperation({
+          app: "market",
+          step: "router_preparation",
+          now: () => virtualTime,
+          observe: (observation) => observations.push(observation),
+          operation: () =>
+            prepareCheckoutSparkSettledOrder(
+              {
+                checkoutId: input.checkoutId,
+                orderId: input.orderId,
+                buyer: input.identity,
+                network: input.network,
+                nowMs: NOW,
+                shouldContinue: () => true,
+                quoteAuthority: {
+                  ...input.quoteAuthority,
+                  products: [product],
+                  pricing,
+                },
+              },
+              {
+                now: () => NOW,
+                continuationStorage: new MemoryStorage(),
+                readRecipientPayout: async ({ recipientPubkey }) => {
+                  profileReads++
+                  await delay()
+                  const profile = profiles.get(recipientPubkey)!
+                  return {
+                    state: "ready",
+                    recipientPubkey,
+                    lud16: JSON.parse(profile.content).lud16,
+                    profileEventId: profile.id,
+                    profileEventCreatedAt: profile.created_at,
+                    signedEvent: structuredClone(profile),
+                  }
+                },
+                prepareFunding: (terms) => {
+                  stageMs.profiles = virtualTime
+                  metadataStarted = virtualTime
+                  return measure("fundingPreparation", () =>
+                    prepareCheckoutSparkSettledFunding(
+                      { ...terms, storage, recoveryStorage: storage },
+                      {
+                        ...options,
+                        fetchPayoutMetadata: async (lud16) => {
+                          metadataReads++
+                          await delay()
+                          return options.fetchPayoutMetadata(lud16)
+                        },
+                        openWallet: async () => {
+                          stageMs.metadata = virtualTime - metadataStarted
+                          stageMs.endpointPreflight = virtualTime
+                          await measure("walletInitialization", async () => {
+                            await delay()
+                            await options.openWallet()
+                          })
+                        },
+                        createFundingReceive: () =>
+                          measure("fundingInvoice", async () => {
+                            await delay()
+                            return {
+                              ...(await options.createFundingReceive()),
+                              paymentRequest: fundingInvoice,
+                              expirySecs: 900,
+                              expiresAt: NOW + 900_000,
+                            }
+                          }),
+                        publishRecoveryHandoff: (handoff) =>
+                          measure("recoveryAck", async () => {
+                            await delay()
+                            return options.publishRecoveryHandoff(handoff)
+                          }),
+                      }
+                    )
+                  )
+                },
+                publishOrder: () =>
+                  measure("orderReady", async () => {
+                    await delay()
+                    return {
+                      orderId: input.orderId,
+                    } as PublishedCheckoutSparkBoundOrder
+                  }),
+              }
+            ),
+        }).then(
+          () => {
+            settled = true
+          },
+          (error: unknown) => {
+            failure = error
+            settled = true
+          }
+        )
+        while (!settled) {
+          await new Promise<void>((resolve) => setImmediate(resolve))
+          if (pending.length) {
+            virtualTime += 10
+            const current = pending
+            pending = []
+            for (const resolve of current) resolve()
+          }
+        }
+        await operation
+        if (failure) throw failure
+        expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
+        expect(observations[0]?.status).toBe("success")
+        samples.push({
+          ...stageMs,
+          preparationReady: observations[0]?.durationMs,
+          profileReads,
+          metadataReads,
+        })
+      }
+      const readMs = Math.ceil(recipientCount / 4) * 10
+      expect(samples).toEqual(
+        Array.from({ length: 2 }, () => ({
+          profiles: readMs,
+          metadata: readMs,
+          endpointPreflight: readMs * 2,
+          walletInitialization: 10,
+          fundingInvoice: 10,
+          recoveryAck: 10,
+          fundingPreparation: readMs + 30,
+          orderReady: 10,
+          preparationReady: readMs * 2 + 40,
+          profileReads: recipientCount,
+          metadataReads: recipientCount,
+        }))
+      )
+    }
+  )
+
+  it("performs a fresh observation for each isolated preparation of the same destinations", async () => {
+    const readCounts: number[] = []
+    // This is a repeated client invocation, not a provider-cache speed claim.
+    for (let invocation = 0; invocation < 2; invocation++) {
+      const { options, calls } = dependencies(true)
+      let reads = 0
+      await prepareCheckoutSparkSettledFunding(request(new MemoryStorage()), {
+        ...options,
+        fetchPayoutMetadata: async (lud16) => {
+          reads++
+          return options.fetchPayoutMetadata(lud16)
+        },
+      })
+      readCounts.push(reads)
+      expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
+    }
+    expect(readCounts).toEqual([1, 1])
+  })
+
+  it.each([1, 3, 8])(
+    "shares one fresh observation per destination across at most four reads with %s recipients",
+    async (recipientCount) => {
+      const input = await supplierRequest(
+        new MemoryStorage(),
+        false,
+        recipientCount
+      )
+      const { options, calls } = dependencies(true)
+      const observations: Readonly<CheckoutSparkPerformanceObservation>[] = []
+      const reads: string[] = []
+      let pending: Array<() => void> = []
+      let maximumInFlight = 0
+      let waves = 0
+      let settled = false
+      let failure: unknown
+      let virtualTime = 0
+      const controlledObservations: Readonly<CheckoutSparkPerformanceObservation>[] =
+        []
+      const operation = observeCheckoutSparkOperation({
+        app: "market",
+        step: "router_funding_preparation",
+        now: () => virtualTime,
+        observe: (observation) => controlledObservations.push(observation),
+        operation: () =>
+          prepareCheckoutSparkSettledFunding(input, {
+            ...options,
+            observePerformance: (observation) => observations.push(observation),
+            fetchPayoutMetadata: async (lud16) => {
+              expect(calls).toEqual({
+                open: 0,
+                close: 0,
+                publish: 0,
+                invoice: 0,
+              })
+              reads.push(lud16)
+              await new Promise<void>((resolve) => {
+                pending.push(resolve)
+                maximumInFlight = Math.max(maximumInFlight, pending.length)
+              })
+              return options.fetchPayoutMetadata(lud16)
+            },
+          }),
+      }).then(
+        () => {
+          settled = true
+        },
+        (error: unknown) => {
+          failure = error
+          settled = true
+        }
+      )
+      while (!settled) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        if (pending.length) {
+          waves++
+          virtualTime += 10
+          const current = pending
+          pending = []
+          for (const resolve of current) resolve()
+        }
+      }
+      await operation
+      if (failure) throw failure
+      expect({
+        reads: reads.length,
+        distinct: new Set(reads).size,
+        maximumInFlight,
+        waves,
+        durationMs: controlledObservations[0]?.durationMs,
+      }).toEqual({
+        reads: recipientCount,
+        distinct: recipientCount,
+        maximumInFlight: Math.min(4, recipientCount),
+        waves: Math.ceil(recipientCount / 4),
+        durationMs: Math.ceil(recipientCount / 4) * 10,
+      })
+      expect(observations).toHaveLength(recipientCount)
+      for (const observation of observations) {
+        expect(observation).toMatchObject({
+          step: "router_recipient_metadata",
+          status: "success",
+          count: 1,
+        })
+        expect(Object.keys(observation).sort()).toEqual([
+          "count",
+          "durationMs",
+          "status",
+          "step",
+        ])
+      }
+    }
+  )
+
   it("binds exact fixed shipping to recovery before exposing the funding invoice", async () => {
     const input = await physicalRequest(new MemoryStorage())
     const { options, calls } = dependencies(true)
@@ -485,13 +822,8 @@ describe("settled Spark pre-funding metadata", () => {
       const { options, calls } = dependencies(true)
       const reads: string[] = []
       const expected = shared
-        ? ["merchant@wallet.conduit.market", "merchant@wallet.conduit.market"]
-        : [
-            "merchant@wallet.conduit.market",
-            "merchant@wallet.conduit.market",
-            "supplier@wallet.conduit.market",
-            "supplier@wallet.conduit.market",
-          ]
+        ? ["merchant@wallet.conduit.market"]
+        : ["merchant@wallet.conduit.market", "supplier@wallet.conduit.market"]
       const prepared = await prepareCheckoutSparkSettledFunding(input, {
         ...options,
         fetchPayoutMetadata: async (lud16) => {
@@ -538,11 +870,13 @@ describe("settled Spark pre-funding metadata", () => {
     async (failure) => {
       const storage = new MemoryStorage()
       const { options, calls } = dependencies(true)
+      const observations: Readonly<CheckoutSparkPerformanceObservation>[] = []
       let generated = 0
       let error: unknown
       try {
         await prepareCheckoutSparkSettledFunding(request(storage), {
           ...options,
+          observePerformance: (observation) => observations.push(observation),
           fetchPayoutMetadata: async (lud16) => {
             if (failure === "unavailable")
               throw new Error("Synthetic transport unavailable")
@@ -564,7 +898,25 @@ describe("settled Spark pre-funding metadata", () => {
         CheckoutSparkSettledFundingMetadataPreflightError
       )
       expect(error).not.toHaveProperty("cause")
+      expect(observations).toHaveLength(1)
+      expect(observations[0]).toMatchObject({
+        step: "router_recipient_metadata",
+        status: failure === "unavailable" ? "failure" : "success",
+        count: 1,
+      })
+      expect(Object.keys(observations[0]!).sort()).toEqual([
+        "count",
+        "durationMs",
+        "status",
+        "step",
+      ])
       expect(String(error)).not.toContain("wallet.conduit.market")
+      expect(JSON.stringify(observations)).not.toContain(
+        "wallet.conduit.market"
+      )
+      expect(JSON.stringify(observations)).not.toContain(
+        "Synthetic transport unavailable"
+      )
       expect(generated).toBe(0)
       expect(calls).toEqual({ open: 0, close: 0, publish: 0, invoice: 0 })
       expect(
@@ -593,7 +945,7 @@ describe("settled Spark pre-funding metadata", () => {
       retryOptions
     )
     expect(prepared.plan.checkoutId).toBe(input.checkoutId)
-    expect(reads).toBe(3)
+    expect(reads).toBe(2)
     expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
   })
 
@@ -641,7 +993,7 @@ describe("settled Spark pre-funding metadata", () => {
         await options.fetchPayoutMetadata("merchant@wallet.conduit.market")
       )
       await expect(operation).rejects.toThrow("buyer session changed")
-      expect(reads).toBe(1)
+      expect(reads).toBe(2)
       expect(generated).toBe(0)
       expect(calls).toEqual({ open: 0, close: 0, publish: 0, invoice: 0 })
     }

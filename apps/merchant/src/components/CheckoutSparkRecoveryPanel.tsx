@@ -414,7 +414,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           // The adapter observes exact receiver and query-only native facts now,
           // but retains takeover for every claim-capable Spark operation.
           observeBeforeTakeover: true,
-          async reconcile(candidate, assertWorkerCurrent) {
+          async reconcile(candidate, assertWorkerCurrent, reportProgress) {
             const assertActive = () => {
               assertWorkerCurrent()
               if (automaticDispatch) {
@@ -443,6 +443,10 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                   {
                     repository,
                     assertNotificationActive,
+                    onProgress: () => {
+                      assertActive()
+                      reportProgress()
+                    },
                     requestRescan: () => {
                       assertActive()
                       controller?.requestRescan()

@@ -23,6 +23,7 @@ export const browserTelemetryEventNames = [
   "checkout_success",
   "checkout_result",
   "checkout_handoff_result",
+  "checkout_router_operation_result",
   "relay_connect_result",
   "relay_publish_result",
   "nip17_compatibility_result",
@@ -115,6 +116,20 @@ const checkoutSourcePropertyNames = [
 const sharedTelemetryApps = ["market", "merchant"] as const
 const marketTelemetryApps = ["market"] as const
 const merchantTelemetryApps = ["merchant"] as const
+
+/** Fixed operational labels; no order, destination or provider identity. */
+export const checkoutSparkOperationSteps = [
+  "router_preparation",
+  "router_funding_preparation",
+  "router_recipient_profiles",
+  "router_recipient_metadata",
+  "router_funding_observation",
+  "router_commerce_verification",
+  "router_outgoing_observation",
+  "router_native_commitment",
+  "router_merchant_recovery",
+  "router_retirement",
+] as const
 
 /**
  * Event-specific property contracts. The four base fields above are required
@@ -212,6 +227,11 @@ export const browserTelemetryEventPropertyContracts = {
     apps: marketTelemetryApps,
     required: ["surface", "handoff_stage", "mode"],
     optional: checkoutSourcePropertyNames,
+  },
+  checkout_router_operation_result: {
+    apps: sharedTelemetryApps,
+    required: ["step", "status", "latency_bucket", "count_bucket"],
+    optional: [],
   },
   relay_connect_result: {
     apps: sharedTelemetryApps,
@@ -392,6 +412,7 @@ const browserTelemetryLabelValues = {
     "declaration_repair",
   ],
   step: [
+    ...checkoutSparkOperationSteps,
     "availability",
     "checkout_revalidation",
     "profile",

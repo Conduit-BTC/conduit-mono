@@ -10,6 +10,11 @@ import {
   type CheckoutSparkSettledPreparationStorage,
   type StoredCheckoutSparkSettledPreparation,
 } from "@conduit/core/wallets/checkout-spark-settled-preparation-storage"
+import { mapCheckoutSparkPreparationReads } from "@conduit/core/protocol/checkout-spark-preparation-reads"
+import {
+  observeCheckoutSparkOperation,
+  type CheckoutSparkPerformanceObserver,
+} from "@conduit/core/protocol/checkout-spark-performance"
 
 export {
   getCheckoutSparkSettledPreparation,
@@ -42,7 +47,7 @@ import {
   type CheckoutSparkSettledReconciliation,
   type SignedPublicNostrEvent,
   type CheckoutSparkTreasuryConfiguration,
-  type fetchLnurlPayMetadata,
+  fetchLnurlPayMetadata,
   type CheckoutSparkMerchantPublicZapPolicy,
 } from "@conduit/core"
 
@@ -157,6 +162,7 @@ export class CheckoutSparkSettledFundingExpiredError extends Error {
 }
 
 export interface PrepareCheckoutSparkSettledFundingDependencies {
+  observePerformance?: CheckoutSparkPerformanceObserver
   now?: () => number
   treasuryConfiguration?: CheckoutSparkTreasuryConfiguration
   validateTreasuryDestination?: (input: {
@@ -665,30 +671,45 @@ export async function prepareCheckoutSparkSettledFunding(
       )
       .map((recipient) => recipient.destination.value)
   )
-  for (const lud16 of payoutDestinations) {
-    assertCurrent()
-    try {
-      await assertCheckoutSparkLnurlPayoutMetadata(
-        { lud16, maximumAllocationSats: grossFundingSats, shouldContinue },
-        { fetchMetadata: fetchPayoutMetadata }
-      )
-      const capability = await observeCheckoutSparkReceiverCapability(
-        { lud16, mode: "private", assertCurrent },
-        {
-          ...(dependencies.receiverContracts
-            ? { contracts: dependencies.receiverContracts }
-            : {}),
-          fetchMetadata: fetchPayoutMetadata,
-        }
-      )
-      if (capability.status !== "supported")
-        throw new CheckoutSparkSettledFundingMetadataPreflightError()
-    } catch {
+  await mapCheckoutSparkPreparationReads(
+    [...payoutDestinations],
+    assertCurrent,
+    async (lud16) => {
       assertCurrent()
-      throw new CheckoutSparkSettledFundingMetadataPreflightError()
+      // Both validations consume one fresh observation from this preparation.
+      // This promise is local to one destination, never a retained payment cache.
+      let observation: ReturnType<typeof fetchLnurlPayMetadata> | undefined
+      const fetchMetadata = () =>
+        (observation ??= observeCheckoutSparkOperation({
+          app: "market",
+          step: "router_recipient_metadata",
+          observe: dependencies.observePerformance,
+          operation: () =>
+            (fetchPayoutMetadata ?? fetchLnurlPayMetadata)(lud16),
+        }))
+      try {
+        await assertCheckoutSparkLnurlPayoutMetadata(
+          { lud16, maximumAllocationSats: grossFundingSats, shouldContinue },
+          { fetchMetadata }
+        )
+        const capability = await observeCheckoutSparkReceiverCapability(
+          { lud16, mode: "private", assertCurrent },
+          {
+            ...(dependencies.receiverContracts
+              ? { contracts: dependencies.receiverContracts }
+              : {}),
+            fetchMetadata,
+          }
+        )
+        if (capability.status !== "supported")
+          throw new CheckoutSparkSettledFundingMetadataPreflightError()
+      } catch {
+        assertCurrent()
+        throw new CheckoutSparkSettledFundingMetadataPreflightError()
+      }
+      assertCurrent()
     }
-    assertCurrent()
-  }
+  )
   assertUnprepared()
   // Registry reloads may run while the wallet exists but its plan has not yet
   // reached local storage. Acquire before generation, then recheck a competing

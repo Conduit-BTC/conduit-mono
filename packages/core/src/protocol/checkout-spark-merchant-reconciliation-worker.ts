@@ -50,7 +50,9 @@ interface ReconciliationOptions {
    */
   reconcile: (
     candidate: MerchantCheckoutSparkRecoveryCandidate,
-    assertCurrent: () => void
+    assertCurrent: () => void,
+    /** Mark newly verified payment progress, never an unchanged/uncertain read. */
+    reportProgress: () => void
   ) => Promise<MerchantCheckoutSparkReconciliationStatus>
   /** Aggregate only: no candidate IDs, wallet data, or private order content. */
   onUpdate: (summary: MerchantCheckoutSparkReconciliationSummary) => void
@@ -228,10 +230,19 @@ export function startMerchantCheckoutSparkReconciliation(
         throw new Error("Merchant checkout reconciliation candidate changed.")
       }
     }
+    let madeProgress = false
+    const reportProgress = () => {
+      assertCurrent()
+      madeProgress = true
+    }
     let outcome: MerchantCheckoutSparkReconciliationStatus
     try {
       assertCurrent()
-      const result = await options.reconcile(entry.candidate, assertCurrent)
+      const result = await options.reconcile(
+        entry.candidate,
+        assertCurrent,
+        reportProgress
+      )
       outcome = isStatus(result) ? result : "unavailable"
     } catch {
       outcome = "unavailable"
@@ -247,6 +258,15 @@ export function startMerchantCheckoutSparkReconciliation(
     if (isTerminal(outcome)) {
       entry.nextAt = Number.POSITIVE_INFINITY
       entry.retryCount = 0
+    } else if (madeProgress && outcome === "progress_pending") {
+      // A newly paid phase can promptly inspect the next phase. This wake does
+      // not select another signed intent or grant payment authority. Unchanged
+      // progress on that inspection falls back to ordinary bounded backoff.
+      entry.retryCount = 0
+      entry.nextAt = Math.max(
+        entry.candidate.takeoverAt,
+        checkedAt + MIN_STEP_GAP_MS
+      )
     } else {
       entry.retryCount = Math.min(entry.retryCount + 1, 5)
       const retryAt =

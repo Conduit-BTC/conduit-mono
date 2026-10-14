@@ -298,6 +298,31 @@ order-first submission or paid fast checkout. It may record payment rail class
 and amount bucket, but must not include invoice, payment hash, order,
 merchant, buyer, or product identifiers.
 
+<!-- telemetry-event: checkout_router_operation_result properties=event_name,app,page_url,page_path,step,status,latency_bucket,count_bucket -->
+
+### `checkout_router_operation_result`
+
+Optional aggregate operational timing for routed checkout and Merchant recovery.
+`step` is restricted to the shared fixed router-operation labels: full order
+preparation, funding preparation,
+recipient profile reads, individual recipient metadata reads, funding observation,
+commerce verification, outgoing observation, native commitment, Merchant recovery
+and retirement. One completed operation contributes `count_bucket=1`; results
+can count operations, not shoppers, orders, transfers or verified payments.
+`status=success|failure` means the observed function returned or threw, not that
+funding, settlement, receiver claim or retirement succeeded. Pending provider
+observations may return successfully without authorizing a payment.
+
+Only the existing latency bucket is emitted. A bounded exact duration and fixed
+operation count may be passed transiently to an explicitly supplied local test
+observer; they are never retained in a client trace or sent to telemetry.
+There is no operation/order identifier or cross-event correlation. No arguments,
+results, error text, wallet state, recipients, invoices, amounts, public keys,
+provider URLs, user interaction timing or recovery payloads enter this event.
+Diagnostic clocks do not drive financial deadlines. Observer failure never
+changes financial behavior. Existing telemetry opt-in, host restrictions,
+redaction and GPC controls remain unchanged.
+
 <!-- telemetry-event: relay_connect_result properties=event_name,app,page_url,page_path,network,status,latency_bucket,count,time_bucket -->
 
 ### `relay_connect_result`
