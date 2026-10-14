@@ -1020,6 +1020,45 @@ describe("bounded smoke failure diagnostics", () => {
       ])
     ).toEqual([])
   })
+  it("retains only content-free wallet retry diagnostics for its two owning cases", () => {
+    const annotation = {
+      type: "smoke:wallet-retry",
+      description: JSON.stringify({
+        phase: "await_sync",
+        observationAvailable: true,
+        retryPresent: true,
+        retryEnabled: false,
+        recoveryDialogPresent: true,
+        managePresent: true,
+        syncCheckingVisible: true,
+        recoveryBlockedVisible: false,
+        walletCardCount: 0,
+        walletId: "private-value",
+      }),
+    }
+    const expected = {
+      kind: "wallet-retry",
+      phase: "await_sync",
+      observationAvailable: true,
+      retryPresent: true,
+      retryEnabled: false,
+      recoveryDialogPresent: true,
+      managePresent: true,
+      syncCheckingVisible: true,
+      recoveryBlockedVisible: false,
+      walletCardCount: 0,
+    }
+    for (const file of [
+      "e2e/wallet-registry-removal.playwright.ts",
+      "e2e/wallet-cross-app.playwright.ts",
+    ]) {
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([expected])
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+  })
+
   it("exports only allowlisted scalar observations from the matching fixture", () => {
     const annotation = {
       type: "smoke:footer-layout",

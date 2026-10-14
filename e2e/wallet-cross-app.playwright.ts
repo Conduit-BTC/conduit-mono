@@ -2141,7 +2141,9 @@ test("foreground wallet import stays ready after an older background opening is 
       )
     ).toBeVisible()
     denied = false
-    await target.getByRole("button", { name: "Sync wallet recovery" }).click()
+    await target
+      .getByRole("button", { name: "Retry encrypted wallet sync", exact: true })
+      .click()
     await expect
       .poll(async () => (await wallets(target)).sort())
       .toEqual([...sourceWallets].sort())

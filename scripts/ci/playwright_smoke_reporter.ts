@@ -34,6 +34,7 @@ import {
 } from "../../e2e/helpers/hermetic-network"
 import {
   formatRouterSmokeDiagnostic,
+  parseRouterSmokeDiagnostic,
   routerSmokeDiagnosticFromAnnotations,
   type RouterSmokeDiagnostic,
 } from "./router_smoke_diagnostic"
@@ -825,6 +826,11 @@ export class PrivacySafeSmokeReporter implements Reporter {
               status: attempt.status,
               ...(attempt.error ? { error: attempt.error } : {}),
               ...(attempt.failure ? { failure: attempt.failure } : {}),
+              ...(spec.file === "e2e/commerce-router-recovery.playwright.ts" &&
+              attempt.router &&
+              parseRouterSmokeDiagnostic(attempt.router)
+                ? { router: parseRouterSmokeDiagnostic(attempt.router) }
+                : {}),
               ...(attempt.diagnostics
                 ? {
                     diagnostics: attempt.diagnostics.map(retainedDiagnostic),

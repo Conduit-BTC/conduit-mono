@@ -320,6 +320,11 @@ and scanned before writing. Raw reports, browser output, screenshots, traces,
 step titles, and attachments are never uploaded. An artifact records observed
 execution; the separate manifest/SHA/first-attempt verifier remains the gate.
 
+The isolated router and receiver setup lanes retain separate `smoke-evidence-router-<attempt>`
+and `smoke-evidence-router-receiver-setup-<attempt>` artifacts under the same policy.
+Each lane runs after an earlier lane fails only when its own setup and selection
+succeeded. A later passing lane does not replace an earlier failure.
+
 Schema version 2 retains timing only as fixed duration buckets: `under-1s`,
 `1-5s`, `5-15s`, `15-30s`, `30-60s`, `1-5m`, `5-15m`, and `15m-plus`.
 Lower bounds are inclusive and upper bounds exclusive; invalid durations use
