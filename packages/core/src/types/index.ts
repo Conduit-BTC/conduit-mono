@@ -4,6 +4,7 @@ import type {
   KnownOrderStatus,
   OrderItemFulfillmentSchema,
   ProductShippingOptionReference,
+  ProductSupplierAllocation,
   ProductZapMessagePolicy,
 } from "../schemas"
 
@@ -90,6 +91,8 @@ export interface Product {
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
   publicZapPolicyKnown: boolean
+  /** Signed NIP-57 allocation terms from this exact product revision. */
+  supplierAllocation?: ProductSupplierAllocation
   location?: string
   /** Signed listing-area geohash. Four characters for newly authored areas. */
   geohash?: string

@@ -4,6 +4,7 @@ import {
   createInMemoryInboxDeclarationEvidenceRepository,
   mergeInboxDeclarationEvidence,
   type InboxDeclarationEvidenceRepository,
+  type MergeInboxDeclarationEvidenceInput,
 } from "../packages/core/src/protocol/inbox-declaration-evidence"
 import { EVENT_KINDS } from "../packages/core/src/protocol/kinds"
 import {
@@ -261,11 +262,10 @@ async function stageFailedRecipientWrap(fixture: ReturnType<typeof setup>) {
 
 type DeliveryFixture = Awaited<ReturnType<typeof setup>>
 
-async function updateInboxDeclaration(
-  fixture: DeliveryFixture,
+async function prepareInboxDeclaration(
   secret: Uint8Array,
   relayUrls: readonly string[]
-): Promise<void> {
+): Promise<MergeInboxDeclarationEvidenceInput> {
   const pubkey = getPublicKey(secret)
   const createdAt = Math.max(
     Math.floor(Date.now() / 1000),
@@ -284,16 +284,33 @@ async function updateInboxDeclaration(
     )
   )
   const discoveryRelay = sharedInboxDiscoveryRelayUrls()[0]!
-  const evidence = {
+  return {
     pubkey,
     signedEvent,
     sourceRelayUrls: [discoveryRelay],
     sharedSourceRelayUrls: [discoveryRelay],
   }
+}
+
+async function applyInboxDeclaration(
+  fixture: DeliveryFixture,
+  evidence: MergeInboxDeclarationEvidenceInput
+): Promise<void> {
   mergeInboxDeclarationEvidenceInMemory(evidence)
   await mergeInboxDeclarationEvidence(
     evidence,
     fixture.inboxDeclarationEvidenceRepository
+  )
+}
+
+async function updateInboxDeclaration(
+  fixture: DeliveryFixture,
+  secret: Uint8Array,
+  relayUrls: readonly string[]
+): Promise<void> {
+  await applyInboxDeclaration(
+    fixture,
+    await prepareInboxDeclaration(secret, relayUrls)
   )
 }
 
@@ -402,6 +419,12 @@ describe("private delivery composed contract", () => {
     async (failure) => {
       let failing = true
       const fixture = await setup()
+      // Verify the fixture outside Bun's expected-rejection await; apply the
+      // exact signed-empty evidence only at the original publish boundary.
+      const readinessDeclaration =
+        failure === "readiness"
+          ? await prepareInboxDeclaration(fixture.recipientSecret, [])
+          : null
       const scope = {
         merchantPubkey: fixture.sender,
         buyerPubkey: fixture.recipient,
@@ -452,8 +475,8 @@ describe("private delivery composed contract", () => {
           })
           input.onRecipientDeliveryStarting =
             invoiceInput.onRecipientDeliveryStarting
-          if (failing && failure === "readiness") {
-            await updateInboxDeclaration(fixture, fixture.recipientSecret, [])
+          if (failing && readinessDeclaration) {
+            await applyInboxDeclaration(fixture, readinessDeclaration)
             input.recipientInboxRelays = []
           }
           if (failing && failure === "session")

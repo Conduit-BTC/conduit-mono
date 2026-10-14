@@ -86,6 +86,135 @@ export const populatedAuditPhases = [
 export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
 
 type Rule = "number" | "boolean" | readonly string[]
+export type SmokeFailureBoundary =
+  "app-readiness" | "user-action" | "relay-provider" | "assertion"
+
+export type SmokeFailureContext = {
+  boundary: SmokeFailureBoundary
+  expected: string
+  observed: "pending" | "met" | "unmet" | "unavailable"
+}
+
+// A source file may report only its own static conditions. The boundary comes
+// from this table, never from a worker-authored string.
+const failureConditions: Record<
+  string,
+  Readonly<Record<string, SmokeFailureBoundary>>
+> = {
+  "e2e/merchant-order-inbox.playwright.ts": {
+    buyer_account_ready: "app-readiness",
+    buyer_open_messages_click_completed: "user-action",
+    buyer_dialog_ready: "app-readiness",
+    buyer_input_filled: "user-action",
+    buyer_send_clicked: "user-action",
+    buyer_delivery_status_visible: "app-readiness",
+    buyer_reply_saved: "assertion",
+    buyer_reply_relay_observed: "relay-provider",
+  },
+  "e2e/merchant-product-image-preview.playwright.ts": {
+    fallback_publish_enabled: "app-readiness",
+    fallback_publish_click_completed: "user-action",
+    fallback_dialog_closed: "app-readiness",
+  },
+  "e2e/shared-ui-composition.playwright.ts": {
+    wallet_import_control_ready: "app-readiness",
+    wallet_import_click_completed: "user-action",
+    wallet_import_dialog_ready: "app-readiness",
+  },
+  "e2e/merchant-shipping-tables.playwright.ts": {
+    product_publish_enabled: "app-readiness",
+    product_publish_click_completed: "user-action",
+    product_publish_dialog_closed: "app-readiness",
+  },
+  "e2e/wallet-sign-in.playwright.ts": {
+    migration_route_ready: "app-readiness",
+    migration_wallet_opened: "app-readiness",
+  },
+}
+
+export function parseSmokeFailureContext(
+  file: string,
+  value: unknown
+): SmokeFailureContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined
+  const fields = value as Record<string, unknown>
+  if (
+    Object.keys(fields).length !== 2 ||
+    typeof fields.expected !== "string" ||
+    typeof fields.observed !== "string" ||
+    !["pending", "met", "unmet", "unavailable"].includes(fields.observed)
+  )
+    return undefined
+  const allowed = Object.hasOwn(failureConditions, file)
+    ? failureConditions[file]
+    : undefined
+  const boundary =
+    allowed && Object.hasOwn(allowed, fields.expected)
+      ? allowed[fields.expected]
+      : undefined
+  return boundary
+    ? {
+        boundary,
+        expected: fields.expected,
+        observed: fields.observed as SmokeFailureContext["observed"],
+      }
+    : undefined
+}
+
+export function safeRetainedSmokeFailureContext(
+  file: string,
+  value: unknown
+): SmokeFailureContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined
+  const fields = value as Record<string, unknown>
+  if (Object.keys(fields).length !== 3) return undefined
+  const safe = parseSmokeFailureContext(file, {
+    expected: fields.expected,
+    observed: fields.observed,
+  })
+  return safe?.boundary === fields.boundary ? safe : undefined
+}
+
+export function smokeFailureContextFromAnnotations(
+  file: string,
+  annotations: readonly { type: string; description?: string }[]
+): SmokeFailureContext | undefined {
+  const matches = annotations.filter(
+    (annotation) => annotation.type === "smoke:failure-context"
+  )
+  if (
+    matches.length !== 1 ||
+    !matches[0]?.description ||
+    matches[0].description.length > 256
+  )
+    return undefined
+  try {
+    return parseSmokeFailureContext(file, JSON.parse(matches[0].description))
+  } catch {
+    return undefined
+  }
+}
+
+export function recordSmokeFailureContext(
+  info: TestInfo,
+  expected: string,
+  observed: SmokeFailureContext["observed"] = "pending"
+): void {
+  const file = info.file.replaceAll("\\", "/")
+  const relative = file.slice(file.lastIndexOf("/e2e/") + 1)
+  if (!parseSmokeFailureContext(relative, { expected, observed }))
+    throw new Error("Unapproved smoke failure context")
+  const type = "smoke:failure-context"
+  const description = JSON.stringify({ expected, observed })
+  const existing = info.annotations.find(
+    (annotation) => annotation.type === type
+  )
+  if (existing) existing.description = description
+  else info.annotations.push({ type, description })
+}
+
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
     "wallet-foreground-open": {
@@ -423,9 +552,18 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         scrollY: "number",
         measuredFooterHeight: "number",
         footerHidden: "boolean",
+        widgetMarginBottom: "number",
+        widgetTransformY: "number",
+        footerTransformY: "number",
+        widgetHiddenShift: "number",
+        widgetBottomOffset: "number",
+        atomicTriggerY: "number",
+        atomicTriggerBottom: "number",
+        atomicFooterLinkTop: "number",
+        atomicFooterHeight: "number",
+        atomicLayout: ["missing", "intersecting", "disjoint"],
         triggerMarginBottom: "number",
         triggerTransformY: "number",
-        footerTransformY: "number",
       },
     },
     "product-dialog-open": {
@@ -541,6 +679,33 @@ export function safeSmokeDiagnostics(
     if (Object.keys(safe).length > 1) diagnostics.push(safe)
   }
   return diagnostics
+}
+
+/** Recheck transient report data before including it in public CI text. */
+export function safeRetainedSmokeDiagnostics(
+  file: string,
+  value: unknown
+): Array<Record<string, string | number | boolean>> {
+  if (!Array.isArray(value) || value.length > 4) return []
+  const seen = new Set<string>()
+  const safe: Array<Record<string, string | number | boolean>> = []
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue
+    const kind = (item as Record<string, unknown>).kind
+    if (typeof kind !== "string" || seen.has(kind)) continue
+    seen.add(kind)
+    const retained = safeSmokeDiagnostics(file, [
+      { type: `smoke:${kind}`, description: JSON.stringify(item) },
+    ])
+    for (const diagnostic of retained) {
+      safe.push(
+        Object.fromEntries(
+          Object.entries(diagnostic).filter(([key]) => !key.endsWith("Seconds"))
+        )
+      )
+    }
+  }
+  return safe
 }
 
 export function recordSmokeDiagnostic(

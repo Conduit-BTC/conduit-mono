@@ -1,4 +1,6 @@
 import { z } from "zod"
+import { checkoutSparkCommercePricingSchema } from "../protocol/checkout-spark-commerce-pricing"
+import { checkoutSparkPricingRateAttestationSchema } from "../protocol/checkout-spark-pricing-authority"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 import {
   isVerifiedNostrEvent,
@@ -17,7 +19,10 @@ import {
 import { EVENT_KINDS } from "../protocol/kinds"
 export { shippingPolicyQuoteSchema } from "../protocol/shipping-policy"
 import { isContactFreeEventHandoff } from "../protocol/event-guest-checkout"
-import { normalizePublicMediaUrl } from "../network-target-safety"
+import {
+  normalizePublicMediaUrl,
+  normalizePublicWebSocketUrl,
+} from "../network-target-safety"
 import { resolveEventMarketAuthorizationForPrivateOrder } from "../protocol/event-market-authorization"
 import { parseEventMarketCalendarFieldsForPrivateOrder } from "../protocol/event-market"
 import { parseEventMarketSeriesFieldsForPrivateOrder } from "../protocol/event-market-schedule"
@@ -114,6 +119,142 @@ export const productShippingOptionReferenceSchema = z.object({
 
 export type ProductShippingOptionReference = z.infer<
   typeof productShippingOptionReferenceSchema
+>
+
+export const productSupplierAllocationIssueSchema = z.enum([
+  "invalid_version",
+  "invalid_author",
+  "invalid_recipient",
+  "invalid_relay_hint",
+  "invalid_weight",
+  "duplicate_recipient",
+  "missing_merchant",
+  "duplicate_merchant",
+  "missing_supplier",
+  "weight_total_overflow",
+])
+
+export type ProductSupplierAllocationIssue = z.infer<
+  typeof productSupplierAllocationIssueSchema
+>
+
+export const productSupplierAllocationRecipientSchema = z.object({
+  pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+  relayHint: z
+    .string()
+    .min(1)
+    .refine(
+      (value) => normalizePublicWebSocketUrl(value) === value,
+      "Relay hint must be a normalized public WebSocket URL"
+    ),
+  weight: z.number().int().positive(),
+  role: z.enum(["merchant", "supplier"]),
+})
+
+export type ProductSupplierAllocationRecipient = z.infer<
+  typeof productSupplierAllocationRecipientSchema
+>
+
+const productSupplierAllocationRevisionEventSchema = z
+  .object({
+    id: z.string().regex(/^[0-9a-f]{64}$/),
+    pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+    created_at: z.number().int().min(0),
+    kind: z.literal(30_402),
+    tags: z.array(z.array(z.string())),
+    content: z.string(),
+    sig: z.string().regex(/^[0-9a-f]{128}$/),
+  })
+  .strict()
+
+export const productSupplierAllocationSchema = z
+  .object({
+    state: z.enum(["absent", "valid", "invalid"]),
+    recipients: z.array(productSupplierAllocationRecipientSchema),
+    issues: z.array(productSupplierAllocationIssueSchema),
+    revisionEventId: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    revisionCreatedAt: z.number().int().min(0).optional(),
+    revisionEvent: productSupplierAllocationRevisionEventSchema.optional(),
+  })
+  .superRefine((allocation, context) => {
+    if (allocation.state === "absent") {
+      if (allocation.recipients.length > 0 || allocation.issues.length > 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Absent allocation evidence cannot include terms or issues",
+        })
+      }
+      return
+    }
+
+    if (allocation.state === "valid" && allocation.issues.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Valid allocation evidence cannot include issues",
+      })
+    }
+    if (allocation.state === "invalid" && allocation.issues.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid allocation evidence must explain why it is invalid",
+      })
+    }
+
+    if (allocation.state !== "valid") return
+
+    if (
+      allocation.revisionEvent &&
+      (allocation.revisionEvent.id !== allocation.revisionEventId ||
+        allocation.revisionEvent.created_at !== allocation.revisionCreatedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Allocation revision evidence must match its signed event",
+      })
+    }
+
+    const pubkeys = allocation.recipients.map((recipient) => recipient.pubkey)
+    if (new Set(pubkeys).size !== pubkeys.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Allocation recipients must be unique",
+      })
+    }
+    const merchantCount = allocation.recipients.filter(
+      (recipient) => recipient.role === "merchant"
+    ).length
+    const supplierCount = allocation.recipients.filter(
+      (recipient) => recipient.role === "supplier"
+    ).length
+    if (merchantCount !== 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Valid allocation evidence requires one merchant recipient",
+      })
+    }
+    if (supplierCount === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Valid allocation evidence requires a supplier recipient",
+      })
+    }
+    const totalWeight = allocation.recipients.reduce(
+      (sum, recipient) => sum + recipient.weight,
+      0
+    )
+    if (!Number.isSafeInteger(totalWeight)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Allocation weight total must be a safe integer",
+      })
+    }
+  })
+
+export type ProductSupplierAllocation = z.infer<
+  typeof productSupplierAllocationSchema
 >
 
 export const productSchema = z.object({
@@ -223,6 +364,8 @@ export const productSchema = z.object({
   publicZapEnabled: z.boolean().default(true),
   zapMessagePolicy: productZapMessagePolicySchema.default("generic_only"),
   publicZapPolicyKnown: z.boolean().default(false),
+  /** Signed NIP-57 zap allocation terms declared by this product revision. */
+  supplierAllocation: productSupplierAllocationSchema.optional(),
   location: z.string().optional(),
   geohash: z
     .string()
@@ -611,10 +754,137 @@ export const orderEventMarketPickupFulfillmentSchema = z
     }
   })
 
+/** Bounded decoding of pre-31927 private order/recovery snapshots only. */
+export const eventMarketHandoffModeSchema = z.enum([
+  "merchant_handoff",
+  "organizer_handoff",
+])
+
+export type EventMarketHandoffModeSchema = z.infer<
+  typeof eventMarketHandoffModeSchema
+>
+
+export const orderPickupFulfillmentSchema = z
+  .object({
+    type: z.literal("pickup"),
+    organizerPubkey: hex64Schema,
+    product: pickupEvidenceCoordinateSchema.extend({
+      merchantPubkey: hex64Schema,
+    }),
+    calendar: pickupEvidenceCoordinateSchema,
+    collection: pickupEvidenceCoordinateSchema,
+    option: pickupEvidenceCoordinateSchema.extend({
+      title: z.string().min(1).max(200),
+      location: z.string().min(1).max(500).optional(),
+      geohash: z
+        .string()
+        .regex(/^[0-9bcdefghjkmnpqrstuvwxyz]{1,32}$/i)
+        .optional(),
+    }),
+    /** Omitted only by legacy snapshots, which never authorize organizer sharing. */
+    handoffMode: eventMarketHandoffModeSchema.optional(),
+    handlerPubkey: hex64Schema.optional(),
+    costSats: z.number().int().min(0),
+    sourceCost: z
+      .object({
+        amount: z.number().min(0),
+        currency: z.string().min(1).max(12),
+        normalizedCurrency: z.string().min(1).max(12),
+      })
+      .required(),
+  })
+  .superRefine((fulfillment, context) => {
+    const coordinateAuthor = (coordinate: string) =>
+      coordinate.split(":", 3)[1]?.toLowerCase()
+    const coordinateKind = (coordinate: string) =>
+      Number(coordinate.split(":", 1)[0])
+    const organizer = fulfillment.organizerPubkey.toLowerCase()
+    const merchant = fulfillment.product.merchantPubkey.toLowerCase()
+    const pickupAuthor = coordinateAuthor(fulfillment.option.coordinate)
+    const failures: Array<[boolean, (string | number)[], string]> = [
+      [
+        coordinateKind(fulfillment.product.coordinate) === 30402 &&
+          coordinateAuthor(fulfillment.product.coordinate) === merchant,
+        ["product", "coordinate"],
+        "Product evidence must preserve the merchant-owned kind-30402 identity.",
+      ],
+      [
+        [31922, 31923].includes(
+          coordinateKind(fulfillment.calendar.coordinate)
+        ) && coordinateAuthor(fulfillment.calendar.coordinate) === organizer,
+        ["calendar", "coordinate"],
+        "Calendar evidence must preserve the organizer identity.",
+      ],
+      [
+        coordinateKind(fulfillment.collection.coordinate) === 30405 &&
+          coordinateAuthor(fulfillment.collection.coordinate) === organizer,
+        ["collection", "coordinate"],
+        "Collection evidence must preserve the organizer identity.",
+      ],
+      [
+        coordinateKind(fulfillment.option.coordinate) === 30406 &&
+          (pickupAuthor === organizer || pickupAuthor === merchant),
+        ["option", "coordinate"],
+        "Pickup evidence must preserve either the organizer or merchant handoff identity.",
+      ],
+      [
+        Boolean(fulfillment.option.location || fulfillment.option.geohash),
+        ["option"],
+        "Pickup evidence requires a public location or geohash.",
+      ],
+    ]
+    for (const [valid, path, message] of failures) {
+      if (!valid) context.addIssue({ code: "custom", path, message })
+    }
+    const hasExplicitMode = fulfillment.handoffMode !== undefined
+    const hasExplicitHandler = fulfillment.handlerPubkey !== undefined
+    if (hasExplicitMode !== hasExplicitHandler) {
+      context.addIssue({
+        code: "custom",
+        path: [hasExplicitMode ? "handlerPubkey" : "handoffMode"],
+        message:
+          "Pickup handoff mode and handler must be snapshotted together.",
+      })
+      return
+    }
+    if (!hasExplicitMode || !hasExplicitHandler) return
+    const expectedMode =
+      pickupAuthor === merchant ? "merchant_handoff" : "organizer_handoff"
+    const expectedHandler = pickupAuthor === organizer ? organizer : merchant
+    // Older own-product snapshots used organizer_handoff. Keep them readable;
+    // new same-account pickups resolve as merchant handoff, with no third party.
+    const historicalOwnOrganizerMode =
+      pickupAuthor === merchant &&
+      merchant === organizer &&
+      fulfillment.handoffMode === "organizer_handoff"
+    if (
+      fulfillment.handoffMode !== expectedMode &&
+      !historicalOwnOrganizerMode
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["handoffMode"],
+        message: "Pickup handoff mode must match the exact pickup author.",
+      })
+    }
+    if (fulfillment.handlerPubkey!.toLowerCase() !== expectedHandler) {
+      context.addIssue({
+        code: "custom",
+        path: ["handlerPubkey"],
+        message: "Pickup handler must match the exact pickup author.",
+      })
+    }
+  })
+
+export type OrderPickupFulfillmentSchema = z.infer<
+  typeof orderPickupFulfillmentSchema
+>
+
 export const orderItemFulfillmentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("digital") }),
   z.object({ type: z.literal("shipping") }),
   orderEventMarketPickupFulfillmentSchema,
+  orderPickupFulfillmentSchema,
 ])
 
 export type PickupEvidenceCoordinateSchema = z.infer<
@@ -783,6 +1053,9 @@ export type OrderItemSchema = z.infer<typeof orderItemSchema>
  */
 export const orderSchema = z
   .object({
+    checkoutSparkPricing: checkoutSparkCommercePricingSchema.optional(),
+    checkoutSparkPricingAuthority:
+      checkoutSparkPricingRateAttestationSchema.optional(),
     id: z.string(),
     merchantPubkey: z.string(),
     buyerPubkey: z.string(),

@@ -124,11 +124,24 @@ the ranking policy to graph storage and synchronization.
 
 Checkout collects intent and **starts** the order; Orders owns everything after an order exists. See `docs/specs/order-lifecycle.md` for the durable lifecycle record, order-state semantics, retry idempotency, external-wallet fallback, and the address-validity policy.
 
+New supported upfront purchases use the isolated Spark router defined in
+[`universal-checkout-router.md`](universal-checkout-router.md). The fixed
+SAT-denominated order terms bind exact signed product and fulfillment revisions;
+supplier splits require their signed product policy. A failed readiness check
+must not silently bypass routing through direct payment. Historical direct and
+public-zap orders and negotiated order-first invoices retain their own contracts.
+Funding, exact recipient settlement and final Conduit collection are separate
+states. Connected-wallet and external invoice choices belong to the same order,
+not competing funding attempts; Cash App is visible alongside other supported
+external choices. Routed public Zapout is not enabled by this contract.
+
 Guest external-wallet checkout is the bounded exception: a per-order
 `guest_ephemeral` key submits the encrypted order and payment report, while
 phone/email are required for all merchant follow-up. Guest Orders state is
 local, payment-only, and retained for at most 24 hours; it does not create a
 guest inbox or durable order history. See `docs/specs/protocol.md`.
+Its separately bounded, Merchant-only encrypted router recovery envelope does
+not extend the guest signing lifetime or introduce a guest reply channel.
 
 ### Messaging
 

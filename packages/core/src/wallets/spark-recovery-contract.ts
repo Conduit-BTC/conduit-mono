@@ -138,32 +138,62 @@ export function validateSparkRecoveryEvent(
   owner: string
 ): SignedNostrEvent {
   try {
+    const id = input.id
+    const pubkey = input.pubkey
+    const kind = input.kind
+    const created_at = input.created_at
+    const sourceTags = input.tags
+    const content = input.content
+    const sig = input.sig
     if (
-      input.kind !== SPARK_RECOVERY_KIND ||
-      input.pubkey !== owner ||
-      input.tags.length > 8 ||
-      input.tags.some(
-        (t) =>
-          t.length > 3 || t.some((v) => typeof v !== "string" || v.length > 160)
-      )
+      typeof id !== "string" ||
+      typeof pubkey !== "string" ||
+      kind !== SPARK_RECOVERY_KIND ||
+      pubkey !== owner ||
+      typeof created_at !== "number" ||
+      typeof content !== "string" ||
+      typeof sig !== "string" ||
+      !Array.isArray(sourceTags)
     )
       throw new SparkRecoveryError("invalid_record")
+    const tagCount = sourceTags.length
+    if (!Number.isSafeInteger(tagCount) || tagCount < 0 || tagCount > 8)
+      throw new SparkRecoveryError("invalid_record")
+    // Copy only captured primitive values into plain owned arrays. No caller
+    // array methods, iterators or additional properties cross validation.
+    const tags: string[][] = []
+    for (let index = 0; index < tagCount; index++) {
+      const sourceTag = sourceTags[index]
+      if (!Array.isArray(sourceTag))
+        throw new SparkRecoveryError("invalid_record")
+      const valueCount = sourceTag.length
+      if (!Number.isSafeInteger(valueCount) || valueCount < 0 || valueCount > 3)
+        throw new SparkRecoveryError("invalid_record")
+      const tag: string[] = []
+      for (let valueIndex = 0; valueIndex < valueCount; valueIndex++) {
+        const value = sourceTag[valueIndex]
+        if (typeof value !== "string" || value.length > 160)
+          throw new SparkRecoveryError("invalid_record")
+        tag.push(value)
+      }
+      tags.push(tag)
+    }
     const event = {
-      id: input.id,
-      pubkey: input.pubkey,
-      kind: input.kind,
-      created_at: input.created_at,
-      tags: input.tags.map((t) => [...t]),
-      content: input.content,
-      sig: input.sig,
+      id,
+      pubkey,
+      kind,
+      created_at,
+      tags,
+      content,
+      sig,
     }
     if (!isValidSignedPublicNostrEvent(event))
       throw new SparkRecoveryError("invalid_record")
-    const tags = event.tags.filter((t) => t[0] === "d")
+    const addressTags = event.tags.filter((t) => t[0] === "d")
     if (
-      tags.length !== 1 ||
-      tags[0].length !== 2 ||
-      !isSparkRecoveryAddress(tags[0][1])
+      addressTags.length !== 1 ||
+      addressTags[0].length !== 2 ||
+      !isSparkRecoveryAddress(addressTags[0][1])
     )
       throw new SparkRecoveryError("invalid_record")
     if (event.tags.some((t) => t[0] === "deleted"))

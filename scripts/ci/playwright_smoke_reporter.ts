@@ -8,7 +8,12 @@ import {
 import { createHash } from "node:crypto"
 
 import ts from "typescript"
-import { safeSmokeDiagnostics } from "../../e2e/helpers/smoke-diagnostics"
+import {
+  safeRetainedSmokeFailureContext,
+  safeSmokeDiagnostics,
+  smokeFailureContextFromAnnotations,
+  type SmokeFailureContext,
+} from "../../e2e/helpers/smoke-diagnostics"
 
 import type {
   FullConfig,
@@ -20,6 +25,18 @@ import type {
   TestResult,
   TestStep,
 } from "@playwright/test/reporter"
+import {
+  HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS,
+  HERMETIC_NETWORK_FAILURE_CATEGORIES,
+  HERMETIC_NETWORK_FAILURE_OPERATIONS,
+  HERMETIC_NETWORK_FAILURE_SOURCES,
+  type HermeticNetworkFailureDiagnostic,
+} from "../../e2e/helpers/hermetic-network"
+import {
+  formatRouterSmokeDiagnostic,
+  routerSmokeDiagnosticFromAnnotations,
+  type RouterSmokeDiagnostic,
+} from "./router_smoke_diagnostic"
 
 type ReporterOptions = {
   outputFile: string
@@ -41,6 +58,8 @@ type SafeLocation = {
 }
 
 type SafeResult = {
+  diagnostic?: HermeticNetworkFailureDiagnostic
+  router?: RouterSmokeDiagnostic
   duration: number
   diagnostics?: Array<Record<string, string | number | boolean>>
   error?: { location: SafeLocation }
@@ -48,6 +67,7 @@ type SafeResult = {
   status: TestResult["status"]
   failure?: {
     category: "timeout" | "assertion" | "interrupted" | "unknown"
+    context?: SmokeFailureContext
     failedStep?: SafeStep
     lastCompletedStep?: SafeStep
   }
@@ -106,6 +126,15 @@ const approvedProjects = new Set([
   "mobile-chromium",
   "mobile-webkit",
 ])
+const approvedHermeticNetworkOperations = new Set<string>(
+  HERMETIC_NETWORK_FAILURE_OPERATIONS
+)
+const approvedHermeticNetworkSources = new Set<string>(
+  HERMETIC_NETWORK_FAILURE_SOURCES
+)
+const approvedHermeticNetworkCategories = new Set<string>(
+  HERMETIC_NETWORK_FAILURE_CATEGORIES
+)
 const redactedTitle = "redacted smoke test"
 const gitObjectIdPattern = /^[0-9a-f]{40}$/
 const unsafeTitlePatterns = [
@@ -311,8 +340,48 @@ function safeLocation(
   }
 }
 
+function safeHermeticNetworkDiagnostic(
+  annotations: TestResult["annotations"] | undefined
+): HermeticNetworkFailureDiagnostic | undefined {
+  const operations = (annotations ?? []).filter(
+    ({ type }) => type === HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.operation
+  )
+  const sources = (annotations ?? []).filter(
+    ({ type }) => type === HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.source
+  )
+  const categories = (annotations ?? []).filter(
+    ({ type }) => type === HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.category
+  )
+  if (
+    operations.length !== 1 ||
+    sources.length !== 1 ||
+    categories.length !== 1
+  ) {
+    return undefined
+  }
+  const operation = operations[0]?.description
+  const source = sources[0]?.description
+  const category = categories[0]?.description
+  if (
+    !operation ||
+    !source ||
+    !category ||
+    !approvedHermeticNetworkOperations.has(operation) ||
+    !approvedHermeticNetworkSources.has(source) ||
+    !approvedHermeticNetworkCategories.has(category)
+  ) {
+    return undefined
+  }
+  return {
+    operation: operation as HermeticNetworkFailureDiagnostic["operation"],
+    source: source as HermeticNetworkFailureDiagnostic["source"],
+    category: category as HermeticNetworkFailureDiagnostic["category"],
+  }
+}
+
 export function safePlaywrightFailure(
-  value: unknown
+  value: unknown,
+  file?: string
 ): SafeResult["failure"] | undefined {
   if (
     !isRecord(value) ||
@@ -346,11 +415,30 @@ export function safePlaywrightFailure(
   }
   const failedStep = step(value.failedStep)
   const lastCompletedStep = step(value.lastCompletedStep)
+  const context = file
+    ? safeRetainedSmokeFailureContext(file, value.context)
+    : undefined
   return {
     category: value.category as NonNullable<SafeResult["failure"]>["category"],
+    ...(context ? { context } : {}),
     ...(failedStep ? { failedStep } : {}),
     ...(lastCompletedStep ? { lastCompletedStep } : {}),
   }
+}
+
+export function safePlaywrightRunnerError(
+  value: unknown
+):
+  | { phase: "startup" | "runner"; category: "web-server" | "unknown" }
+  | undefined {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 2 ||
+    (value.phase !== "startup" && value.phase !== "runner") ||
+    (value.category !== "web-server" && value.category !== "unknown")
+  )
+    return undefined
+  return { phase: value.phase, category: value.category }
 }
 
 const durationBuckets = [
@@ -566,8 +654,13 @@ export class PrivacySafeSmokeReporter implements Reporter {
   onTestEnd(test: TestCase, result: TestResult): void {
     this.completedAttempts += 1
     const file = safeFile(test.location.file)
+    const diagnostic = safeHermeticNetworkDiagnostic(result.annotations)
+    const router =
+      file === "e2e/commerce-router-recovery.playwright.ts"
+        ? routerSmokeDiagnosticFromAnnotations(result.annotations)
+        : undefined
     this.progress(
-      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line} case=${safePlaywrightSmokeId(test.id)}`
+      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line} case=${safePlaywrightSmokeId(test.id)}${diagnostic ? ` diagnostic_operation=${diagnostic.operation} diagnostic_source=${diagnostic.source} diagnostic_category=${diagnostic.category}` : ""}${router ? ` ${formatRouterSmokeDiagnostic(router)}` : ""}`
     )
     const existing = this.specs.get(test.id)
     const location = safeLocation(result.error?.location)
@@ -582,6 +675,8 @@ export class PrivacySafeSmokeReporter implements Reporter {
       duration: Math.max(0, Math.round(result.duration)),
       retry: Math.max(0, result.retry),
       status: result.status,
+      ...(diagnostic ? { diagnostic } : {}),
+      ...(router ? { router } : {}),
       ...(location ? { error: { location } } : {}),
       ...(diagnostics.length ? { diagnostics } : {}),
     }
@@ -609,6 +704,10 @@ export class PrivacySafeSmokeReporter implements Reporter {
         .find(({ step }) => !propagatedParents.has(step))
       const failedStep = failed ? safeStep(failed.step) : state?.active?.value
       const completed = failed ? failed.completed : state?.completed
+      const context = smokeFailureContextFromAnnotations(
+        file,
+        result.annotations
+      )
       safeResult.failure = {
         category:
           result.status === "timedOut"
@@ -618,6 +717,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
               : failedStep?.category === "assertion"
                 ? "assertion"
                 : "unknown",
+        ...(context ? { context } : {}),
         ...(failedStep ? { failedStep } : {}),
         ...(completed ? { lastCompletedStep: completed } : {}),
       }
