@@ -329,6 +329,10 @@ export interface MerchantCheckoutSparkNativeHistorySummary {
   providerObservation:
     CheckoutSparkNativeTreasuryObservation["status"] | "not_checked"
   receiptProof: "not_checked" | "verified" | "unavailable"
+  pendingPhase?: Extract<
+    CheckoutSparkNativeTreasuryObservation,
+    { status: "pending" }
+  >["pendingPhase"]
 }
 
 export interface MerchantCheckoutSparkPayoutHistory {
@@ -2084,6 +2088,13 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
             })
           assertEligible()
           summary.nativeSummary.providerObservation = observation.status
+          if (
+            observation.status === "pending" &&
+            (observation.pendingPhase === "sender" ||
+              observation.pendingPhase === "receiver")
+          ) {
+            summary.nativeSummary.pendingPhase = observation.pendingPhase
+          }
           if (
             observation.status !== "paid" ||
             (native.status === "paid" &&

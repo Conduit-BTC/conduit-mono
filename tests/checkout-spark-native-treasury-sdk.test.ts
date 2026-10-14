@@ -459,9 +459,12 @@ describe("native checkout treasury SDK boundary", () => {
         ],
       },
     })
-    expect((await f.client.inspectCheckoutTreasury!(f.request)).status).toBe(
-      "pending"
-    )
+    expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+      invoiceId: INVOICE_ID,
+      providerTransferId: TRANSFER_ID,
+      status: "pending",
+      pendingPhase: "receiver",
+    })
     f.setQueryStatus(0)
     expect(
       await f.client.sendCheckoutTreasury!({
@@ -476,6 +479,65 @@ describe("native checkout treasury SDK boundary", () => {
       "not_found"
     )
   })
+
+  it.each([
+    ["TRANSFER_STATUS_SENDER_INITIATED", "sender"],
+    ["TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING", "sender"],
+    ["TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR", "sender"],
+    ["TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK", "sender"],
+    ["TRANSFER_STATUS_SENDER_KEY_TWEAKED", "receiver"],
+    ["TRANSFER_STATUS_RECEIVER_KEY_TWEAKED", "receiver"],
+    ["TRANSFER_STATUS_RECEIVER_REFUND_SIGNED", "receiver"],
+    ["TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED", "receiver"],
+    ["TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED", "receiver"],
+  ] as const)(
+    "reports only finite %s progress as %s completion pending",
+    async (status, pendingPhase) => {
+      const f = fixture({
+        transfer: {
+          status,
+          receivers: [
+            {
+              identityPublicKey: RECEIVER,
+              amountSats: 57,
+              status: "TRANSFER_RECEIVER_STATUS_INITIATED",
+            },
+          ],
+        },
+      })
+      expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+        invoiceId: INVOICE_ID,
+        providerTransferId: TRANSFER_ID,
+        status: "pending",
+        pendingPhase,
+      })
+      expect(f.queries).toHaveLength(1)
+      expect(f.reads).toHaveLength(1)
+      expect(f.fulfills).toEqual([])
+    }
+  )
+
+  it.each([
+    "UNKNOWN",
+    "constructor",
+    "toString",
+    "__proto__",
+    {
+      toString: () => {
+        throw new Error("No status coercion")
+      },
+    },
+  ])(
+    "does not project unrecognized native %s into pending progress",
+    async (status) => {
+      const f = fixture({ transfer: { status: status as string } })
+      expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+        invoiceId: INVOICE_ID,
+        status: "conflicting_evidence",
+      })
+      expect(f.fulfills).toEqual([])
+    }
+  )
 
   it.each([
     { totalValue: 58 },
@@ -508,9 +570,10 @@ describe("native checkout treasury SDK boundary", () => {
     { senders: undefined },
   ])("rejects conflicting exact transfer evidence %j", async (transfer) => {
     const f = fixture({ transfer })
-    expect((await f.client.inspectCheckoutTreasury!(f.request)).status).toBe(
-      "conflicting_evidence"
-    )
+    expect(await f.client.inspectCheckoutTreasury!(f.request)).toEqual({
+      invoiceId: INVOICE_ID,
+      status: "conflicting_evidence",
+    })
   })
 
   it("rejects saved provider-ID and invoice substitutions even with the same UUID", async () => {
@@ -645,16 +708,18 @@ describe("native checkout treasury SDK boundary", () => {
       (await inconsistent.client.inspectCheckoutTreasury!(inconsistent.request))
         .status
     ).toBe("conflicting_evidence")
-    const returned = fixture({
-      queryStatus: 4,
-      transfer: { status: "TRANSFER_STATUS_RETURNED" },
-    })
-    expect(
-      await returned.client.inspectCheckoutTreasury!(returned.request)
-    ).toEqual({
-      invoiceId: INVOICE_ID,
-      providerTransferId: TRANSFER_ID,
-      status: "terminal_failure",
-    })
+    for (const status of [
+      "TRANSFER_STATUS_RETURNED",
+      "TRANSFER_STATUS_EXPIRED",
+    ]) {
+      const terminal = fixture({ queryStatus: 4, transfer: { status } })
+      expect(
+        await terminal.client.inspectCheckoutTreasury!(terminal.request)
+      ).toEqual({
+        invoiceId: INVOICE_ID,
+        providerTransferId: TRANSFER_ID,
+        status: "terminal_failure",
+      })
+    }
   })
 })

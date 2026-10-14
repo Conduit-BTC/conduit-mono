@@ -66,6 +66,13 @@ another send. A completed invoice query alone is insufficient: exact sender,
 receiver, network, amount, outgoing transfer type and claimed terminal completion
 must also match. Pending/finalized-but-unclaimed transfers are not paid receipts.
 
+Explicit Merchant history details distinguish sender completion pending from
+receiver completion pending using only the existing exact transfer read. These
+two finite progress labels do not identify why a wallet has not completed,
+claim that its receiver is offline, or authorize retry, receipt or retirement.
+They are per-inspection diagnostics, not additional persisted recovery evidence.
+Unknown provider states retain the existing conflicting-evidence result.
+
 Commerce remains paid if final fee collection needs attention. Recovery material
 is retained until all exact payments are independently verified and an
 authenticated complete zero-owned/available/pending inspection permits local

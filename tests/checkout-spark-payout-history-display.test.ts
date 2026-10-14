@@ -3,6 +3,81 @@ import { formatMerchantCheckoutSparkPayoutHistory } from "../apps/merchant/src/l
 import type { MerchantCheckoutSparkPayoutHistory } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 
 describe("Merchant exact payout history display", () => {
+  it("shows receiver completion pending without inventing a receipt or wallet outage", () => {
+    const notice = formatMerchantCheckoutSparkPayoutHistory({
+      status: "inspected",
+      checkedLegs: 3,
+      newlyConfirmedLegs: 0,
+      unresolvedLegs: 1,
+      withoutIntentLegs: 0,
+      alreadyPaidLegs: 2,
+      nativeSummary: {
+        savedStatus: "submitted",
+        hasProviderTransferId: false,
+        providerObservation: "pending",
+        receiptProof: "not_checked",
+        pendingPhase: "receiver",
+      },
+    })
+    expect(notice).toContain("Receiver completion pending.")
+    expect(notice).toContain("Receipt proof: not checked.")
+    expect(notice).toContain("No payout was sent by this check.")
+    expect(notice).not.toContain("offline")
+    expect(notice).not.toContain("claimed")
+  })
+
+  it.each([
+    {
+      observation: "pending",
+      phase: "sender",
+      label: "Sender completion pending.",
+    },
+    { observation: "pending", phase: undefined, label: undefined },
+    { observation: "paid", phase: "receiver", label: undefined },
+    { observation: "terminal_failure", phase: "sender", label: undefined },
+    { observation: "pending", phase: "private-phase", label: undefined },
+    { observation: "pending", phase: "constructor", label: undefined },
+    { observation: "pending", phase: "toString", label: undefined },
+    { observation: "pending", phase: "__proto__", label: undefined },
+    {
+      observation: "pending",
+      phase: {
+        toString: () => {
+          throw new Error("No diagnostic coercion")
+        },
+      },
+      label: undefined,
+    },
+  ])(
+    "renders only typed pending phase $phase for $observation",
+    ({ observation, phase, label }) => {
+      const history = {
+        status: "inspected",
+        checkedLegs: 3,
+        newlyConfirmedLegs: 0,
+        unresolvedLegs: 1,
+        withoutIntentLegs: 0,
+        alreadyPaidLegs: 2,
+        nativeSummary: {
+          savedStatus: "submitted",
+          hasProviderTransferId: false,
+          providerObservation: observation,
+          receiptProof: "not_checked",
+          pendingPhase: phase,
+        },
+      } as unknown as MerchantCheckoutSparkPayoutHistory
+      const notice = formatMerchantCheckoutSparkPayoutHistory(history)
+      if (label) expect(notice).toContain(label)
+      else expect(notice).not.toContain("completion pending")
+      expect(notice).not.toContain("private-phase")
+      expect(notice).not.toContain("constructor")
+      expect(notice).not.toContain("toString")
+      expect(notice).not.toContain("__proto__")
+      expect(notice).not.toContain("function")
+      expect(notice).toContain("Receipt proof: not checked.")
+    }
+  )
+
   it("shows a failed final fee truthfully without exposing payment contents", () => {
     const notice = formatMerchantCheckoutSparkPayoutHistory({
       status: "inspected",

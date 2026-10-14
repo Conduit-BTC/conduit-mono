@@ -2991,6 +2991,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
                 return {
                   invoiceId: request.nativeTreasury.invoiceId,
                   status: "pending",
+                  pendingPhase: "receiver",
                 } satisfies CheckoutSparkNativeTreasuryObservation
               },
               preflightCheckoutTreasury: async () => {
@@ -3014,6 +3015,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
           hasProviderTransferId: false,
           providerObservation: "pending",
           receiptProof: "not_checked",
+          pendingPhase: "receiver",
         },
       })
       expect(nativeReads).toBe(1)
@@ -3054,17 +3056,42 @@ describe("Merchant checkout Spark payout history inspection", () => {
   })
 
   it.each([
-    { saved: "submitted", observed: "pending", hasId: false },
-    { saved: "prepared", observed: "not_found", hasId: false },
+    { saved: "submitted", observed: "pending", hasId: false, phase: undefined },
+    { saved: "submitted", observed: "pending", hasId: false, phase: "sender" },
+    {
+      saved: "submitted",
+      observed: "pending",
+      hasId: false,
+      phase: "receiver",
+    },
+    {
+      saved: "submitted",
+      observed: "pending",
+      hasId: false,
+      phase: "private-phase",
+    },
+    {
+      saved: "submitted",
+      observed: "pending",
+      hasId: false,
+      phase: "constructor",
+    },
+    {
+      saved: "prepared",
+      observed: "not_found",
+      hasId: false,
+      phase: "receiver",
+    },
     {
       saved: "conflicting_evidence",
       observed: "conflicting_evidence",
       hasId: false,
+      phase: "receiver",
     },
-    { saved: "paid", observed: "paid", hasId: true },
+    { saved: "paid", observed: "paid", hasId: true, phase: "receiver" },
   ] as const)(
     "preserves finite native $saved / $observed inspection without extra reads or receipt invention",
-    async ({ saved, observed, hasId }) => {
+    async ({ saved, observed, hasId, phase }) => {
       await withRecoveryDatabase(async (_database, repository) => {
         const f = await nativeHistoryFixture(repository, saved)
         let nativeReads = 0
@@ -3092,18 +3119,25 @@ describe("Merchant checkout Spark payout history inspection", () => {
               nativeTreasury: {
                 inspectCheckoutTreasury: async (request) => {
                   nativeReads += 1
-                  return observed === "paid"
-                    ? {
-                        invoiceId: request.nativeTreasury.invoiceId,
-                        status: "paid",
-                        providerTransferId: "native-summary-provider-transfer",
-                        finalFeeSats: 0,
-                        finalDebitSats: request.authorizedDebitSats,
-                      }
-                    : {
-                        invoiceId: request.nativeTreasury.invoiceId,
-                        status: observed,
-                      }
+                  const observation =
+                    observed === "paid"
+                      ? {
+                          invoiceId: request.nativeTreasury.invoiceId,
+                          status: "paid",
+                          providerTransferId:
+                            "native-summary-provider-transfer",
+                          finalFeeSats: 0,
+                          finalDebitSats: request.authorizedDebitSats,
+                        }
+                      : {
+                          invoiceId: request.nativeTreasury.invoiceId,
+                          status: observed,
+                        }
+                  // Malformed extra phase data must not become a diagnostic.
+                  return {
+                    ...observation,
+                    pendingPhase: phase,
+                  } as CheckoutSparkNativeTreasuryObservation
                 },
                 preflightCheckoutTreasury: async () => {
                   throw new Error("History inspection cannot preflight")
@@ -3119,11 +3153,16 @@ describe("Merchant checkout Spark payout history inspection", () => {
           }
         )
         expect(result.status).toBe("consumed")
+        const pendingPhase =
+          observed === "pending" && (phase === "sender" || phase === "receiver")
+            ? { pendingPhase: phase }
+            : {}
         expect(result.payoutHistory!.nativeSummary).toEqual({
           savedStatus: saved,
           hasProviderTransferId: hasId,
           providerObservation: observed,
           receiptProof: observed === "paid" ? "unavailable" : "not_checked",
+          ...pendingPhase,
         })
         expect(nativeReads).toBe(1)
         expect(fundingReads).toBe(observed === "paid" ? 1 : 0)
@@ -3133,6 +3172,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
           "hasProviderTransferId",
           "providerObservation",
           "receiptProof",
+          ...Object.keys(pendingPhase),
         ])
       })
     }

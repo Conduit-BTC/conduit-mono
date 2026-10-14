@@ -565,8 +565,12 @@ export type CheckoutSparkNativeTreasuryObservation = {
         | "not_found"
         | "lookup_unavailable"
         | "conflicting_evidence"
-        | "pending"
         | "terminal_failure"
+    }
+  | {
+      readonly status: "pending"
+      /** Finite exact-transfer progress only; never receipt or retry authority. */
+      readonly pendingPhase?: "sender" | "receiver"
     }
   | {
       readonly status: "paid"

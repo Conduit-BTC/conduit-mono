@@ -320,19 +320,26 @@ function exactCheckoutTreasuryTransfer(
       finalDebitSats: request.authorizedDebitSats,
     }
   }
-  const pendingStatuses = [
-    "TRANSFER_STATUS_SENDER_INITIATED",
-    "TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING",
-    "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
-    "TRANSFER_STATUS_RECEIVER_KEY_TWEAKED",
-    "TRANSFER_STATUS_RECEIVER_REFUND_SIGNED",
-    "TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR",
-    "TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED",
-    "TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED",
-    "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
-  ]
-  return pendingStatuses.includes(transfer.status)
-    ? { invoiceId, providerTransferId, status: "pending" }
+  const pendingPhases = {
+    TRANSFER_STATUS_SENDER_INITIATED: "sender",
+    TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING: "sender",
+    TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR: "sender",
+    TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK: "sender",
+    TRANSFER_STATUS_SENDER_KEY_TWEAKED: "receiver",
+    TRANSFER_STATUS_RECEIVER_KEY_TWEAKED: "receiver",
+    TRANSFER_STATUS_RECEIVER_REFUND_SIGNED: "receiver",
+    TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED: "receiver",
+    TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED: "receiver",
+  } as const
+  return typeof transfer.status === "string" &&
+    Object.hasOwn(pendingPhases, transfer.status)
+    ? {
+        invoiceId,
+        providerTransferId,
+        status: "pending",
+        pendingPhase:
+          pendingPhases[transfer.status as keyof typeof pendingPhases],
+      }
     : { invoiceId, status: "conflicting_evidence" }
 }
 

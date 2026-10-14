@@ -27,6 +27,11 @@ const RECEIPT_LABELS = {
   unavailable: "incomplete",
 } as const
 
+const PENDING_PHASE_LABELS = {
+  sender: "Sender completion pending",
+  receiver: "Receiver completion pending",
+} as const
+
 /** Explicit recovery details only; provider completion is not receipt proof. */
 export function formatMerchantCheckoutSparkPayoutHistory(
   history: MerchantCheckoutSparkPayoutHistory
@@ -46,5 +51,11 @@ export function formatMerchantCheckoutSparkPayoutHistory(
   const receipt = Object.hasOwn(RECEIPT_LABELS, native.receiptProof)
     ? RECEIPT_LABELS[native.receiptProof]
     : "incomplete"
-  return `${summary} Saved fee status before this check: ${savedStatus}. Transfer reference before this check: ${native.hasProviderTransferId === true ? "saved" : "not saved"}. Exact provider check: ${providerStatus}. Receipt proof: ${receipt}.`
+  const phase =
+    native.providerObservation === "pending" &&
+    typeof native.pendingPhase === "string" &&
+    Object.hasOwn(PENDING_PHASE_LABELS, native.pendingPhase)
+      ? ` ${PENDING_PHASE_LABELS[native.pendingPhase]}.`
+      : ""
+  return `${summary} Saved fee status before this check: ${savedStatus}. Transfer reference before this check: ${native.hasProviderTransferId === true ? "saved" : "not saved"}. Exact provider check: ${providerStatus}.${phase} Receipt proof: ${receipt}.`
 }

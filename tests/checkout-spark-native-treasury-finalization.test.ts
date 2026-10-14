@@ -327,6 +327,24 @@ describe("Checkout Spark native treasury accounting", () => {
 })
 
 describe("Checkout Spark native treasury durable step", () => {
+  it("does not persist pending phase diagnostics or turn them into send authority", async () => {
+    const e = engine()
+    e.input.provider.reconcile = async (target) => ({
+      invoiceId: target.intent.invoiceId,
+      providerTransferId: "actual-native-transfer",
+      status: "pending",
+      pendingPhase: "receiver",
+    })
+    const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(result.reason).toBe("prior_possible_send")
+    expect(e.state().treasuryFinalization!.status).toBe("ambiguous")
+    expect(Object.hasOwn(e.state().treasuryFinalization!, "pendingPhase")).toBe(
+      false
+    )
+    expect(e.state().treasuryFinalization!.finalDebitSats).toBeNull()
+    expect(e.sends()).toBe(0)
+  })
+
   it("saves and ACKs exact prepared/submitted snapshots before one provider send", async () => {
     const e = engine()
     const result = await runCheckoutSparkNativeTreasuryStep(e.input)
