@@ -854,7 +854,7 @@ describe("Market native treasury composed provider evidence", () => {
             ...input,
             fundingPoll: { attempts: 1, intervalMs: 1 },
           })
-        ).toEqual({ status: "paused", reason: "recovery_handoff_unavailable" })
+        ).toEqual({ status: "paused", reason: "step_limit" })
         const prepared = (await f.loadState()).state.treasuryFinalization!
         expect(prepared.status).toBe("prepared")
         f.setNow(f.plan.takeoverAt)
@@ -979,7 +979,7 @@ describe("Market native treasury composed provider evidence", () => {
         })
         expect(await runner.run(input)).toEqual({
           status: "paused",
-          reason: "prior_possible_send",
+          reason: "reconciliation_timeout",
         })
         expect((await f.loadState()).state.treasuryFinalization).toEqual(
           pending!
@@ -991,6 +991,49 @@ describe("Market native treasury composed provider evidence", () => {
         expect(await runner.run(input)).toEqual({ status: "complete" })
         const completed = (await f.loadState()).state.treasuryFinalization!
         expect(completed.intent).toEqual(pending!.intent)
+        expect(completed.status).toBe("paid")
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it(
+    "reports the native observation poll budget without changing or replaying the pending intent",
+    async () =>
+      runForeground(async (f) => {
+        f.control.setNativeCompletion(false)
+        let waits = 0
+        const { runner, input } = await createForegroundRunner(f, {
+          wait: async () => {
+            waits += 1
+          },
+        })
+        expect(
+          await runner.run({
+            ...input,
+            fundingPoll: { attempts: 1, intervalMs: 1 },
+          })
+        ).toEqual({ status: "paused", reason: "step_limit" })
+        const pending = structuredClone(
+          (await f.loadState()).state.treasuryFinalization!
+        )
+        expect(pending.status).toBe("ambiguous")
+        expect(pending.intent).not.toBeNull()
+        expect(pending.providerTransferId).toBe(
+          f.control.nativeSnapshot().transfers[0]!.id
+        )
+        expect(pending.finalDebitSats).toBeNull()
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+        expect(waits).toBe(0)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+        // Later exact receiver evidence can complete this same saved intent;
+        // exhausting an observation budget never authorizes another send.
+        f.control.setNativeCompletion(true)
+        expect(await runner.run(input)).toEqual({ status: "complete" })
+        const completed = (await f.loadState()).state.treasuryFinalization!
+        expect(completed.intent).toEqual(pending.intent)
+        expect(completed.providerTransferId).toBe(pending.providerTransferId)
         expect(completed.status).toBe("paid")
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)

@@ -14,6 +14,8 @@ import {
   parseCheckoutSparkMerchantProgressRumor,
   prepareCheckoutSparkNativeTreasury,
   recordCheckoutSparkNativeTreasuryStatus,
+  startMerchantCheckoutSparkReconciliation,
+  type MerchantCheckoutSparkReconciliationSummary,
   type CheckoutSparkMerchantProgressPayload,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
@@ -26,6 +28,7 @@ import {
   proveMerchantCheckoutSparkNativeCommerce,
   type MerchantSparkRecoveryWallet,
 } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
+import { advanceMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
 import { plainTestSigner } from "./helpers/plain-signer"
 import {
   AT,
@@ -53,6 +56,7 @@ async function fixture(
     ackFailure?: number
     ambiguous?: boolean
     preflight?: "ready" | "fee_over_cap" | "unavailable"
+    pendingUntilReceiverClaimed?: boolean
   } = {}
 ) {
   const f = nativeTreasuryFixture(undefined, undefined, MERCHANT)
@@ -127,6 +131,8 @@ async function fixture(
   const progress: CheckoutSparkMerchantProgressPayload[] = []
   let sends = 0
   let publishes = 0
+  let nativeInspections = 0
+  let receiverClaimed = !options.pendingUntilReceiverClaimed
   let clock = f.plan.takeoverAt + 1
   const wallet: MerchantSparkRecoveryWallet = {
     ensurePrivateReady: async () => {
@@ -141,8 +147,25 @@ async function fixture(
     nativeTreasury: {
       inspectCheckoutTreasury: async (request) => {
         calls.push("inspect")
+        nativeInspections += 1
         expect(request.nativeTreasury).toEqual(f.plan.nativeTreasury)
         expect(request.amountSats).toBe(112)
+        if (options.pendingUntilReceiverClaimed) {
+          return receiverClaimed
+            ? {
+                invoiceId: request.nativeTreasury.invoiceId,
+                status: "paid",
+                providerTransferId: "actual-native-provider-id",
+                finalFeeSats: 0,
+                finalDebitSats: 112,
+              }
+            : {
+                invoiceId: request.nativeTreasury.invoiceId,
+                status: "pending",
+                providerTransferId: "actual-native-provider-id",
+                pendingPhase: "receiver",
+              }
+        }
         return sends && !options.ambiguous
           ? {
               invoiceId: request.nativeTreasury.invoiceId,
@@ -269,6 +292,10 @@ async function fixture(
     calls,
     progress,
     sends: () => sends,
+    nativeInspections: () => nativeInspections,
+    claimNativeReceiver: () => {
+      receiverClaimed = true
+    },
     run: () =>
       continueMerchantCheckoutSparkNativeTreasury(
         MERCHANT,
@@ -278,7 +305,201 @@ async function fixture(
   }
 }
 
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+async function flush() {
+  for (let step = 0; step < 12; step += 1) await Promise.resolve()
+}
+
+function fakeClock(start: number) {
+  let time = start
+  const timers: Array<{
+    at: number
+    callback: () => void
+    cancelled: boolean
+  }> = []
+  return {
+    now: () => time,
+    schedule(callback: () => void, delayMs: number) {
+      const timer = { at: time + delayMs, callback, cancelled: false }
+      timers.push(timer)
+      return () => {
+        timer.cancelled = true
+      }
+    },
+    nextDelay() {
+      const next = timers
+        .filter((timer) => !timer.cancelled)
+        .sort((left, right) => left.at - right.at)[0]
+      return next ? next.at - time : null
+    },
+    async advance(ms: number) {
+      const end = time + ms
+      for (;;) {
+        const next = timers
+          .filter((timer) => !timer.cancelled && timer.at <= end)
+          .sort((left, right) => left.at - right.at)[0]
+        if (!next) break
+        time = next.at
+        next.cancelled = true
+        next.callback()
+        await flush()
+      }
+      time = end
+      await flush()
+    },
+  }
+}
+
 describe("Merchant native treasury continuation", () => {
+  it("automatically rechecks the same pending native fee until its receiver claims it", async () => {
+    const f = await fixture({
+      restoredStatus: "submitted",
+      pendingUntilReceiverClaimed: true,
+    })
+    const clock = fakeClock(f.plan.takeoverAt + 1)
+    const firstRun = deferred()
+    const secondRun = deferred()
+    const updates: MerchantCheckoutSparkReconciliationSummary[] = []
+    let completedRuns = 0
+    let rescans = 0
+    let fundingChecks = 0
+    let lightningPreparations = 0
+    let lightningContinuations = 0
+    const consumed = {
+      status: "consumed" as const,
+      coverage: "complete" as const,
+      discoveryCoverage: "complete" as const,
+      declarationState: "declared" as const,
+      candidate: f.selected,
+    }
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      reconcile: (candidate, assertCurrent) =>
+        advanceMerchantCheckoutSparkOrder(MERCHANT, candidate, assertCurrent, {
+          repository: f.repository,
+          now: clock.now,
+          notifySuppliers: () => {},
+          checkCredit: async () => {
+            fundingChecks += 1
+            throw new Error("Verified funding must not be repeated")
+          },
+          inspectPayouts: async () => ({
+            ...consumed,
+            candidate,
+            payoutHistory: {
+              status: "inspected" as const,
+              checkedLegs: 1,
+              newlyConfirmedLegs: 0,
+              unresolvedLegs: 0,
+              withoutIntentLegs: 0,
+              alreadyPaidLegs: 1,
+            },
+          }),
+          selectPayout: (principal, selected, guard, dependencies) =>
+            selectMerchantCheckoutSparkSignedNextPayout(
+              principal,
+              selected,
+              guard,
+              {
+                ...dependencies,
+                consumeRecovery: f.dependencies.consumeRecovery,
+              }
+            ),
+          preparePayout: async () => {
+            lightningPreparations += 1
+            throw new Error("Paid commerce must not be prepared again")
+          },
+          continuePayout: async () => {
+            lightningContinuations += 1
+            throw new Error("Paid commerce must not be sent again")
+          },
+          continueNativeTreasury: (principal, selected, dependencies) =>
+            continueMerchantCheckoutSparkNativeTreasury(principal, selected, {
+              ...f.dependencies,
+              ...dependencies,
+              repository: f.repository,
+              now: clock.now,
+            }),
+          requestRescan: () => {
+            rescans += 1
+          },
+        }),
+      onUpdate(summary) {
+        updates.push(summary)
+        if (summary.checking || summary.lastCheckedAt === null) return
+        completedRuns += 1
+        if (completedRuns === 1) firstRun.resolve()
+        if (completedRuns === 2) secondRun.resolve()
+      },
+    })
+    try {
+      worker.replaceCandidates([f.selected])
+      await clock.advance(0)
+      await firstRun.promise
+
+      const pending = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(
+        pending.status === "active" &&
+          pending.state.treasuryFinalization?.status
+      ).toBe("ambiguous")
+      expect(f.nativeInspections()).toBe(1)
+      expect(f.sends()).toBe(0)
+      expect(rescans).toBe(1)
+      expect(clock.nextDelay()).toBe(30_000)
+
+      f.claimNativeReceiver()
+      await clock.advance(30_000)
+      await secondRun.promise
+
+      const completed = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(
+        completed.status === "active" && completed.state.treasuryFinalization
+      ).toMatchObject({
+        status: "paid",
+        providerTransferId: "actual-native-provider-id",
+        finalFeeSats: 0,
+        finalDebitSats: 112,
+      })
+      expect(
+        await f.repository.loadMerchantSettlement(
+          MERCHANT,
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+      ).toMatchObject({
+        nativeTreasury: {
+          providerTransferId: "actual-native-provider-id",
+          finalFeeSats: 0,
+          finalDebitSats: 112,
+        },
+      })
+      expect(f.nativeInspections()).toBe(2)
+      expect(f.sends()).toBe(0)
+      expect(rescans).toBe(2)
+      expect(fundingChecks).toBe(0)
+      expect(lightningPreparations).toBe(0)
+      expect(lightningContinuations).toBe(0)
+      expect(updates.at(-1)?.counts.progress_pending).toBe(1)
+    } finally {
+      await worker.stopAndDrain()
+      await f.database.delete()
+    }
+  }, 15_000)
+
   it("keeps a restored prepared request query-only when terminal-state repair lacks exact readback", async () => {
     const f = await fixture({
       restoredStatus: "prepared",

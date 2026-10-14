@@ -1491,7 +1491,7 @@ describe("foreground settled shopper routing", () => {
       f.hooks.hidePayoutHistory = true
       expect(await runner.run({ ...f.input, fundingMode: "inspect" })).toEqual({
         status: "paused",
-        reason: "prior_possible_send",
+        reason: "step_limit",
       })
       const second = await f.repository.load(
         f.plan.checkoutId,

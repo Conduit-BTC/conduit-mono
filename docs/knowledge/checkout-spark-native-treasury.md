@@ -73,6 +73,16 @@ claim that its receiver is offline, or authorize retry, receipt or retirement.
 They are per-inspection diagnostics, not additional persisted recovery evidence.
 Unknown provider states retain the existing conflicting-evidence result.
 
+During an approved Buyer foreground activation, delayed native completion is
+reconciled automatically against that same request and transfer. An admitted
+transfer remains observable across Merchant takeover, but the five-minute
+checking window and bounded observation count are not renewed. Exhaustion is
+reported as a checking timeout or step limit, not as a new payment failure.
+An active Merchant recovery worker also requeues pending native observation
+and records an exact later claim without a manual per-leg continuation or
+another send. Neither path can perform the receiver's claim on its behalf;
+an accepted submission is not the claimed terminal receipt required above.
+
 Commerce remains paid if final fee collection needs attention. Recovery material
 is retained until all exact payments are independently verified and an
 authenticated complete zero-owned/available/pending inspection permits local

@@ -381,14 +381,21 @@ export function createCheckoutSparkSettledShopperRunner(
       // requires the original binding, objective authority and saved intent.
       // Conflicting, failed, expired-authority and fee-policy results stop here.
       if (
-        (result.step.reason === "provider_evidence_unavailable" ||
-          result.step.reason === "recovery_handoff_unavailable" ||
-          result.step.reason === "fee_unavailable" ||
-          result.step.reason === "prior_possible_send" ||
-          (result.step.outcome === "send_ambiguous" && !result.step.reason)) &&
-        (await waitForPendingObservation())
-      )
-        continue
+        result.step.reason === "provider_evidence_unavailable" ||
+        result.step.reason === "recovery_handoff_unavailable" ||
+        result.step.reason === "fee_unavailable" ||
+        result.step.reason === "prior_possible_send" ||
+        (result.step.outcome === "send_ambiguous" && !result.step.reason)
+      ) {
+        if (await waitForPendingObservation()) continue
+        return {
+          status: "paused",
+          reason:
+            now() >= reconciliationDeadline
+              ? "reconciliation_timeout"
+              : "step_limit",
+        }
+      }
       return {
         status: "paused",
         reason: result.step.reason ?? "prior_possible_send",
