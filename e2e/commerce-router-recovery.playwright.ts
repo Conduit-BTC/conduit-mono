@@ -1906,7 +1906,7 @@ async function rehearseRouter(
       expect(typeof buyerOrderId === "string" && buyerOrderId.length > 0).toBe(
         true
       )
-      setStage("native treasury sender commits before receiver claim")
+      setStage("native treasury pre-commit provider transfer matches")
       const beforeCommit = control().nativeSnapshot()
       expect(beforeCommit).toMatchObject({
         nativeSendInvocationCount: 1,
@@ -1918,10 +1918,13 @@ async function rehearseRouter(
           },
         ],
       })
+      setStage("native treasury sender commitment applied")
       control().setNativeSenderCommitment(true)
+      setStage("sender-committed payment status visible")
       await expect(
         page.getByText("Payment recorded", { exact: true })
       ).toBeVisible({ timeout: 30_000 })
+      setStage("sender-committed delivery separation visible")
       await expect(
         page.getByText(
           /Your payment is recorded\. Delivery confirmation is separate/
