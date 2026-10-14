@@ -1073,8 +1073,8 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   } catch (error) {
     try {
       const [
-        accountMenuCount,
-        addImageCount,
+        authReady,
+        addImagePresent,
         fallbackDisclosureVisible,
         uploadPendingVisible,
       ] = await Promise.all([
@@ -1227,8 +1227,8 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
         exact: true,
       })
       const [
-        authReady,
-        addImagePresent,
+        accountMenuCount,
+        addImageCount,
         fallbackDisclosureVisible,
         uploadPendingVisible,
         dialogCount,
