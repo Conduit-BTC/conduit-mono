@@ -264,6 +264,12 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         inboxPrompt: "boolean",
         invalidControls: "number",
         submitEnabled: "boolean",
+        submitState: ["publish", "uploading", "saving", "reconnect", "other"],
+        tagCount: "number",
+        tagDraftPresent: "boolean",
+        tagFocused: "boolean",
+        digitalSelected: "boolean",
+        insufficientTagsNotice: "boolean",
       },
     },
     "populated-audit": {
