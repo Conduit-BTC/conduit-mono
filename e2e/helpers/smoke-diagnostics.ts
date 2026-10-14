@@ -110,6 +110,18 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         observationAvailable: "boolean",
       },
     },
+    "wallet-retry": {
+      file: "e2e/wallet-registry-removal.playwright.ts",
+      fields: {
+        phase: ["open_details", "click_retry", "await_sync", "dismiss_details"],
+        observationAvailable: "boolean",
+        retryPresent: "boolean",
+        retryVisible: "boolean",
+        retryEnabled: "boolean",
+        recoveryDialogPresent: "boolean",
+        managePresent: "boolean",
+      },
+    },
     "merchant-image-reload": {
       file: "e2e/merchant-product-image-preview.playwright.ts",
       fields: {
@@ -514,6 +526,7 @@ export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
     | "wallet-foreground-open"
+    | "wallet-retry"
     | "merchant-image-reload"
     | "manual-checkout-stop"
     | "commerce-journey"
