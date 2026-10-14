@@ -73,6 +73,7 @@ export function createPlaywrightRouterConfig(
             environment.PLAYWRIGHT_SMOKE_RESULT_FILE ??
             "test-results/router-smoke-results.json",
           progressFile: environment.PLAYWRIGHT_SMOKE_PROGRESS_FILE,
+          evidenceFile: environment.PLAYWRIGHT_SMOKE_EVIDENCE_FILE,
         },
       ],
     ],
