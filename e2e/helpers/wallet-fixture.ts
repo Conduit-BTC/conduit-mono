@@ -217,9 +217,51 @@ export async function openWalletSetup(
 }
 
 /** Observe the real route controller without adding a production test API. */
-export async function observeWalletController(page: Page) {
+export async function observeWalletController(
+  page: Page,
+  onFetchError?: (diagnostic: {
+    routeFetchCategory: "closed" | "aborted" | "timeout" | "network" | "other"
+    routeFetchPageClosed: boolean
+    routeFetchNavigationRequest: boolean
+    routeFetchNavigations: number
+    routeFetchStarts: number
+    routeFetchCompletes: number
+  }) => void
+) {
+  let navigations = 0
+  let routeStarts = 0
+  let routeCompletes = 0
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) navigations++
+  })
   await page.route("**/src/routes/wallet.tsx*", async (route) => {
-    const response = await route.fetch()
+    routeStarts++
+    const navigationRequest = route.request().isNavigationRequest()
+    let response
+    try {
+      response = await route.fetch()
+      routeCompletes++
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      const category = /closed|disposed|destroyed/i.test(message)
+        ? "closed"
+        : /abort|cancel/i.test(message)
+          ? "aborted"
+          : /timeout/i.test(message)
+            ? "timeout"
+            : /net::|network/i.test(message)
+              ? "network"
+              : "other"
+      onFetchError?.({
+        routeFetchCategory: category,
+        routeFetchPageClosed: page.isClosed(),
+        routeFetchNavigationRequest: navigationRequest,
+        routeFetchNavigations: navigations,
+        routeFetchStarts: routeStarts,
+        routeFetchCompletes: routeCompletes,
+      })
+      throw error
+    }
     const body = await response.text()
     const marker = [
       "const wallets = useWallets();",

@@ -897,17 +897,20 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
     const started = performance.now()
     let passwordPresent = false
     let showEnabled = false
-    const phase = (value: string) =>
+    const phase = (value: string, details: Record<string, unknown> = {}) =>
       recordSmokeDiagnostic(test.info(), "wallet-migration", {
         passwordPresent,
         showEnabled,
         scenario: failure,
         phase: value,
         elapsedSeconds: (performance.now() - started) / 1000,
+        ...details,
       })
     phase("seed")
     await prepareControlledWallet(page)
-    await observeWalletController(page)
+    await observeWalletController(page, (diagnostic) =>
+      phase("route_fetch_failed", diagnostic)
+    )
     const identity = createRuntimeSignerIdentity()
     await installRealTestSigner(
       page,

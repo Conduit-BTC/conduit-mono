@@ -286,12 +286,37 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     await buyerPage
       .getByRole("button", { name: "Open messages", exact: true })
       .click()
+    const buyerDialogState = await buyerPage.evaluate(() => {
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
+      const input = dialog?.querySelector<HTMLInputElement>("input")
+      const send = dialog?.querySelector<HTMLButtonElement>(
+        'button[aria-label="Send message"]'
+      )
+      const visible = (element: HTMLElement | undefined | null) =>
+        !!element &&
+        element.getClientRects().length > 0 &&
+        getComputedStyle(element).visibility === "visible"
+      return {
+        dialogVisible: visible(dialog),
+        inputPresent: !!input,
+        inputVisible: visible(input),
+        inputEnabled: !!input && !input.disabled,
+        sendPresent: !!send,
+        focusWithinDialog: !!dialog?.contains(document.activeElement),
+      }
+    })
+    recordSmokeDiagnostic(testInfo, "order-reply", {
+      phase: "buyer_dialog",
+      ...buyerDialogState,
+    })
     const buyerMessages = buyerPage.getByRole("dialog", { name: "Messages" })
     const buyerReply = `Accepted buyer reply ${Date.now().toString(36)}`
     await buyerMessages
       .getByRole("textbox", { name: "Message" })
       .fill(buyerReply)
+    phase("buyer_input_filled")
     await buyerMessages.getByRole("button", { name: "Send message" }).click()
+    phase("buyer_send_clicked")
     await expect(
       buyerMessages.getByRole("status").filter({
         hasText:

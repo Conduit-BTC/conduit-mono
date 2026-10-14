@@ -406,7 +406,7 @@ describe("bounded smoke failure diagnostics", () => {
     ).toEqual([])
   })
 
-  it("limits migration diagnostics to fixed phases and scenario names", () => {
+  it("limits migration diagnostics to fixed phases and route failure categories", () => {
     const privateValue = crypto.randomUUID()
     const annotation = {
       type: "smoke:wallet-migration",
@@ -416,6 +416,13 @@ describe("bounded smoke failure diagnostics", () => {
         elapsedSeconds: 12,
         passwordPresent: true,
         showEnabled: false,
+        routeFetchCategory: "aborted",
+        routeFetchPageClosed: false,
+        routeFetchNavigationRequest: false,
+        routeFetchNavigations: 2,
+        routeFetchStarts: 3,
+        routeFetchCompletes: 2,
+        errorMessage: privateValue,
         mnemonic: privateValue,
         password: privateValue,
         walletId: privateValue,
@@ -431,6 +438,12 @@ describe("bounded smoke failure diagnostics", () => {
         elapsedSeconds: 12,
         passwordPresent: true,
         showEnabled: false,
+        routeFetchCategory: "aborted",
+        routeFetchPageClosed: false,
+        routeFetchNavigationRequest: false,
+        routeFetchNavigations: 2,
+        routeFetchStarts: 3,
+        routeFetchCompletes: 2,
       },
     ])
     expect(
@@ -835,6 +848,34 @@ describe("bounded smoke failure diagnostics", () => {
         ])
       ).toEqual([])
     }
+    expect(
+      safeSmokeDiagnostics("e2e/merchant-order-inbox.playwright.ts", [
+        {
+          type: "smoke:order-reply",
+          description: JSON.stringify({
+            phase: "buyer_dialog",
+            dialogVisible: true,
+            inputPresent: false,
+            inputVisible: false,
+            inputEnabled: false,
+            sendPresent: false,
+            focusWithinDialog: true,
+            message: "private-value",
+          }),
+        },
+      ])
+    ).toEqual([
+      {
+        kind: "order-reply",
+        phase: "buyer_dialog",
+        dialogVisible: true,
+        inputPresent: false,
+        inputVisible: false,
+        inputEnabled: false,
+        sendPresent: false,
+        focusWithinDialog: true,
+      },
+    ])
     expect(
       safeSmokeDiagnostics("e2e/merchant-product-image-preview.playwright.ts", [
         {
