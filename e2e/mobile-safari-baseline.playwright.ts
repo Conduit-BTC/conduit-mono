@@ -31,6 +31,11 @@ import {
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
+type MobileFooterProbeWindow = Window & {
+  __footerScrollProbe?: { count: number; last: number; delta: number }
+  __orderViewportScrollFinished?: boolean
+}
+
 test.setTimeout(60_000)
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
@@ -99,6 +104,7 @@ async function expectVisibleDisjointControls(
           }
           const rootStyle = getComputedStyle(document.documentElement)
           const widget = firstElement?.parentElement
+          const widgetStyle = widget ? getComputedStyle(widget) : undefined
           const footer = document.querySelector("footer")
           const translateY = (element: Element | null | undefined) => {
             if (!element) return 0
@@ -124,6 +130,21 @@ async function expectVisibleDisjointControls(
                 : 0,
               triggerTransformY: translateY(widget),
               footerTransformY: translateY(footer),
+              widgetHiddenShift: widgetStyle
+                ? Number.parseFloat(
+                    widgetStyle.getPropertyValue(
+                      "--order-messages-hidden-shift"
+                    )
+                  )
+                : undefined,
+              widgetBottomOffset: widgetStyle
+                ? Number.parseFloat(
+                    widgetStyle.getPropertyValue(
+                      "--order-messages-bottom-offset"
+                    )
+                  )
+                : undefined,
+              atomicFooterHeight: footer?.getBoundingClientRect().height,
             },
           }
         },
@@ -148,6 +169,27 @@ async function expectVisibleDisjointControls(
           scrollY: viewport.scrollY,
           measuredFooterHeight: viewport.measuredFooterHeight,
           footerHidden: viewport.footerHidden,
+          widgetMarginBottom: viewport.triggerMarginBottom,
+          widgetTransformY: viewport.triggerTransformY,
+          widgetHiddenShift: viewport.widgetHiddenShift,
+          widgetBottomOffset: viewport.widgetBottomOffset,
+          atomicTriggerY: firstBox?.y,
+          atomicTriggerBottom: firstBox
+            ? firstBox.y + firstBox.height
+            : undefined,
+          atomicFooterLinkTop: secondBox?.y,
+          atomicFooterHeight: viewport.atomicFooterHeight,
+          atomicLayout:
+            !firstBox || !secondBox
+              ? "missing"
+              : !(
+                    firstBox.x + firstBox.width <= secondBox.x ||
+                    secondBox.x + secondBox.width <= firstBox.x ||
+                    firstBox.y + firstBox.height <= secondBox.y ||
+                    secondBox.y + secondBox.height <= firstBox.y
+                  )
+                ? "intersecting"
+                : "disjoint",
           triggerMarginBottom: viewport.triggerMarginBottom,
           triggerTransformY: viewport.triggerTransformY,
           footerTransformY: viewport.footerTransformY,
@@ -920,11 +962,12 @@ test.describe("CND-162 mobile browser baseline", () => {
     try {
       await page.setViewportSize({ width: 320, height: 700 })
       await page.addInitScript(() => {
-        const probe = ((window as any).__footerScrollProbe = {
-          count: 0,
-          last: scrollY,
-          delta: 0,
-        })
+        const probe = ((window as MobileFooterProbeWindow).__footerScrollProbe =
+          {
+            count: 0,
+            last: scrollY,
+            delta: 0,
+          })
         window.addEventListener(
           "scroll",
           () => {
@@ -982,7 +1025,7 @@ test.describe("CND-162 mobile browser baseline", () => {
         .evaluate(() => {
           const footer = document.querySelector("footer")
           const cart = document.querySelector('[aria-label="Cart inventory"]')
-          const probe = (window as any).__footerScrollProbe
+          const probe = (window as MobileFooterProbeWindow).__footerScrollProbe
           return {
             footerTop: footer?.getBoundingClientRect().top ?? 0,
             cartBottom:
@@ -1018,7 +1061,8 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.addInitScript(() => {
       document.addEventListener("scrollend", (event) => {
         if (event.target === document)
-          (window as any).__orderViewportScrollFinished = true
+          (window as MobileFooterProbeWindow).__orderViewportScrollFinished =
+            true
       })
     })
     await page.setViewportSize({ width: 320, height: 700 })
@@ -1051,7 +1095,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     // the visible initial state. Its smooth animation can outlive the request.
     await expect
       .poll(() =>
-        page.evaluate(() => (window as any).__orderViewportScrollFinished)
+        page.evaluate(
+          () =>
+            (window as MobileFooterProbeWindow).__orderViewportScrollFinished
+        )
       )
       .toBe(true)
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))

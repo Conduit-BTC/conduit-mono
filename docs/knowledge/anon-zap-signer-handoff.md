@@ -78,6 +78,11 @@ rate quote, and forwards only the canonical public draft to the signer Worker.
 The browser supplies product coordinates and quantities, not an authoritative
 amount or comment.
 
+Quantum Router V1 does not use this boundary for routed public zaps. Ordinary
+non-routed checkout and project-tip authorization remain unchanged. No routed
+Merchant-net token, public-signing path or additional anonymous-signer setup is
+a V1 router acceptance dependency.
+
 The project-tip Pages route accepts only a whole-sat amount. It resolves the
 fixed Conduit.Market Lightning address and constructs the fixed-recipient,
 fixed-message draft. Its Worker authorization has the explicit `project_tip`

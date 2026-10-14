@@ -141,6 +141,11 @@ keeping TLS SNI and Host aligned. Cloudflare routes same-zone subrequests to
 the DNS origin rather than recursively invoking the Route. Do not replace this
 with a Worker Custom Domain or rely on overriding Host on a `breez.tips` URL.
 Validate the origin, TLS and receiving path before activating the Route.
+Receiving checks must cover metadata, the invoice callback and
+`/lnurlp/verify/<64-hex-payment-hash>` at the custom domain. The verifier GET
+and OPTIONS path needs public CORS and no-store behavior; an unknown hash must
+reach the provider's error response rather than the gateway's missing-route
+response. This path check does not establish invoice settlement.
 
 Production needs a dedicated D1 binding with real database ID and both migrations,
 exact application origins, Turnstile server validation for the request action,

@@ -299,6 +299,10 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
             type: "status_update",
             tags: [["status", "paid"]],
             payload: { status: "paid" },
+            paidInvoiceConfirmation: {
+              invoice: candidate.invoice,
+              amountMsats: candidate.expectedAmountMsats,
+            },
             delivery: candidate.delivery,
             signerInteraction: "background_external",
             authenticatedPubkey: signerConnected ? pubkey : null,

@@ -125,6 +125,9 @@ export function prepareCartFulfillment(
       ...canonicalizeShippingCost(option.price, option.currency),
       shippingOptionId: option.id,
       shippingOptionDTag: option.dTag,
+      // This is signed listing policy, not a prepared cost field. Preserve its
+      // exact false/undefined value for the later signed-product quote check.
+      shippingOptionLaunchUnsupported: item.shippingOptionLaunchUnsupported,
       shippingCountries: [...option.countries],
       shippingCountryRules: option.countryRules.map((rule) => ({
         ...rule,

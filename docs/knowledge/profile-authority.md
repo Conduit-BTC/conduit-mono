@@ -26,6 +26,13 @@ survive restart if persistence never succeeds.
 - Merchant invoice creation and automated payment verification consult the
   shared owner at the action point. Profile setup, cart preflight, checkout,
   and profile-edit forms use the selected context rather than display history.
+- Spark router recipient preflight accepts one currently observed, durably
+  selected, cryptographically valid kind-0 from an allowed relay. The exact
+  event must match the allocated recipient and selected frontier. Incomplete
+  relay-list discovery or profile coverage remains honestly degraded/capped,
+  but does not veto that positive evidence. Retained-only profiles, stronger
+  known frontiers, missing/invalid addresses, and session-only persistence do
+  not authorize a destination. This does not alter private recovery routing.
 - Query-cache publication updates keep context and projection together.
   Failed refetches preserve retained evidence without claiming fresh authority.
 

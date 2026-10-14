@@ -1404,6 +1404,7 @@ describe("SparkWalletManager", () => {
     }
     let createCalls = 0
     let reconcileCalls = 0
+    let historicalCalls = 0
     let checkoutRequest = request
     const manager = new SparkWalletManager({
       network: "mainnet",
@@ -1424,6 +1425,13 @@ describe("SparkWalletManager", () => {
               providerStatus: "INVOICE_CREATED",
               failureReason: null,
               funds,
+            }
+          },
+          async attestCheckoutReceiveHistory() {
+            historicalCalls += 1
+            return {
+              status: "completed" as const,
+              observedAt: funds.observedAt,
             }
           },
         }
@@ -1476,8 +1484,32 @@ describe("SparkWalletManager", () => {
         network: "regtest",
       })
     ).rejects.toThrow("different wallet or network")
+    const historicalTarget = {
+      walletId: request.walletId,
+      network: request.network,
+      requestId: request.id,
+      paymentRequest: request.paymentRequest,
+      paymentHash: request.paymentHash,
+      requiredNetSats: request.requiredNetSats,
+      grossFundingSats: request.grossFundingSats,
+      createdAt: request.createdAt,
+      expiresAt: request.expiresAt,
+    }
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-personal", historicalTarget)
+    ).resolves.toMatchObject({ status: "completed" })
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-other", historicalTarget)
+    ).rejects.toThrow("different wallet or network")
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-personal", {
+        ...historicalTarget,
+        network: "regtest",
+      })
+    ).rejects.toThrow("different wallet or network")
     expect(createCalls).toBe(3)
     expect(reconcileCalls).toBe(1)
+    expect(historicalCalls).toBe(1)
   })
 
   it("fails closed when a Spark adapter lacks checkout receive capabilities", async () => {
@@ -1504,6 +1536,19 @@ describe("SparkWalletManager", () => {
         expirySecs: 300,
       })
     ).rejects.toThrow("cannot create a recoverable checkout receive request")
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-personal", {
+        walletId: "wallet-personal",
+        network: "mainnet",
+        requestId: "receive-1",
+        paymentRequest: "lnbc1checkout",
+        paymentHash: "07".repeat(32),
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_000,
+        createdAt: 1_800_000_000_000,
+        expiresAt: 1_800_000_300_000,
+      })
+    ).rejects.toThrow("cannot attest checkout receive history")
   })
 
   it("keeps multiple Spark wallet clients isolated", async () => {

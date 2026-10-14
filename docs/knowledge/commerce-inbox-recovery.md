@@ -161,6 +161,14 @@ bytes. A proven zero-ACK failure remains eligible for retry. Background payment
 automation does not semantically resend an accepted update because its projection
 failed. Accepted notices remain scoped to the account and order; draft clearing
 also requires the initiating signer generation.
+For independently verified invoice settlement, Merchant automation also retains
+an exact invoice/amount confirmation intent in the initiating account's encrypted
+delivery storage before publication. Reload and later buyer proof reuse its
+original canonical rumor and the existing saved wrap/target/ACK job instead of
+constructing another paid update. Atomic selection preserves one local intent;
+conflicting or unreadable checkpoints pause. These checkpoint rows are not relay
+jobs or payment evidence, do not enter transport retries or pending counts, and
+never replace fresh account authority or exact provider settlement verification.
 Enrollment and handoff callers explicitly require a self-wrap as authenticated
 local recovery evidence before their persistence checkpoint; optional relay
 publication of that evidence still follows recipient delivery. Their existing

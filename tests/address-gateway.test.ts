@@ -952,6 +952,42 @@ describe("approved-name gateway", () => {
     expect(f.calls).toHaveLength(0)
     expect((await f.handle(make(), approved)).status).toBe(200)
   })
+  test("exact public verifier route forwards with CORS while malformed paths stay blocked", async () => {
+    const f = fixture()
+    const hash = "ab".repeat(32)
+    const path = `/lnurlp/verify/${hash}`
+    const origin = "https://ordinary-lightning-wallet.invalid"
+    const request = (path: string, method = "GET") =>
+      new Request(`https://conduit.cash${path}`, {
+        method,
+        headers: { Origin: origin },
+      })
+
+    const verified = await f.handle(request(path))
+    expect(verified.status).toBe(200)
+    expect(verified.headers.get("Access-Control-Allow-Origin")).toBe("*")
+    expect(verified.headers.get("Cache-Control")).toBe("no-store")
+    expect(f.calls.map((call) => call.path)).toEqual([path])
+
+    const preflight = await f.handle(request(path, "OPTIONS"))
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe("*")
+    expect(f.calls).toHaveLength(1)
+
+    for (const invalid of [
+      `/lnurlp/verify/${"a".repeat(63)}`,
+      `/lnurlp/verify/${hash}0`,
+      `/lnurlp/verify/${hash.toUpperCase()}`,
+      `${path}/extra`,
+    ]) {
+      const rejected = await f.handle(request(invalid))
+      expect(rejected.status).toBe(403)
+      expect(rejected.headers.get("Access-Control-Allow-Origin")).toBeNull()
+    }
+    expect((await f.handle(request(path, "POST"))).status).toBe(403)
+    expect(f.calls).toHaveLength(1)
+  })
+
   test("ordinary receiving is public while credentials remain on the proxy hop", async () => {
     const f = fixture(),
       request = new Request("https://conduit.cash/.well-known/lnurlp/alice", {

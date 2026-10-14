@@ -442,6 +442,148 @@ describe("commerce pricing", () => {
     }
   })
 
+  it("rejects fiat outside the new-commerce allowlist even when a conversion rate exists", () => {
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5, XYZ: 2 },
+    }
+    for (const currency of ["BGN", "XYZ"]) {
+      expect(normalizeCommercePrice(10, currency, rates)).toMatchObject({
+        status: "unsupported",
+        sats: null,
+      })
+      expect(getPriceSats({ price: 10, currency }, rates)).toBeNull()
+    }
+    expect(normalizeCommercePrice(10, "USD", rates)).toMatchObject({
+      status: "ok",
+      sats: 10_000,
+    })
+    expect(normalizeCommercePrice(10, "EUR", rates)).toMatchObject({
+      status: "ok",
+      sats: 12_000,
+    })
+  })
+
+  it("keeps historical fiat conversion explicit without changing new price admission", () => {
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5, XYZ: 2 },
+    }
+    for (const [currency, sats] of [
+      ["BGN", 5_000],
+      ["XYZ", 20_000],
+    ] as const) {
+      const price = { price: 10, currency }
+      expect(normalizeCommercePrice(10, currency, rates).status).toBe(
+        "unsupported"
+      )
+      expect(
+        normalizeCommercePrice(10, currency, rates, {
+          currencyPolicy: "historical",
+        })
+      ).toMatchObject({ status: "ok", sats, approximate: true })
+      expect(getPriceSats(price, rates)).toBeNull()
+      expect(
+        getPriceSats(price, rates, { currencyPolicy: "historical" })
+      ).toEqual({ sats, approximate: true })
+    }
+    expect(
+      normalizeCommercePrice(10, "BGN", null, {
+        currencyPolicy: "historical",
+      }).status
+    ).toBe("rate_required")
+    expect(
+      normalizeCommercePrice(10, "POINTS", rates, {
+        currencyPolicy: "historical",
+      }).status
+    ).toBe("unsupported")
+  })
+
+  it("does not admit retired source currencies through cached listing sats", () => {
+    const cachedPrice = {
+      price: 5_000,
+      currency: "SATS",
+      priceSats: 5_000,
+      sourcePrice: { amount: 10, currency: "BGN", normalizedCurrency: "BGN" },
+    }
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5 },
+    }
+    expect(getPriceSats(cachedPrice)).toBeNull()
+    expect(getPriceSats(cachedPrice, rates)).toBeNull()
+    expect(
+      getPriceSats(cachedPrice, rates, { currencyPolicy: "historical" })
+    ).toEqual({ sats: 5_000, approximate: true })
+    expect(
+      getPriceSats({ ...cachedPrice, currency: "BGN", price: 10 }, rates)
+    ).toBeNull()
+  })
+
+  it("rejects unsupported shipping before cached sats or zero cost can bypass admission", () => {
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5, XYZ: 2 },
+    }
+    for (const currency of ["BGN", "XYZ"]) {
+      const source = { amount: 10, currency, normalizedCurrency: currency }
+      expect(
+        getShippingCostSats(
+          { shippingCostSats: 5_000, sourceShippingCost: source },
+          rates
+        )
+      ).toBeNull()
+      const freeShipping = {
+        shippingCostSats: 0,
+        sourceShippingCost: { ...source, amount: 0 },
+      }
+      expect(getShippingCostSats(freeShipping, rates)).toBeNull()
+      expect(
+        getShippingCostSats(freeShipping, rates, {
+          currencyPolicy: "historical",
+        })
+      ).toEqual({ sats: 0, approximate: false })
+    }
+    expect(
+      getShippingCostSats(canonicalizeShippingCost(10, "BGN"), rates, {
+        currencyPolicy: "historical",
+      })
+    ).toEqual({ sats: 5_000, approximate: true })
+    expect(
+      getShippingCostSats(canonicalizeShippingCost(0, "USD"), rates)
+    ).toEqual({
+      sats: 0,
+      approximate: false,
+    })
+    expect(
+      getShippingCostSats(canonicalizeShippingCost(10, "EUR"), rates)
+    ).toEqual({
+      sats: 12_000,
+      approximate: true,
+    })
+  })
+
+  it("preserves exact native Bitcoin denominations under the bounded fiat policy", () => {
+    for (const [amount, currency] of [
+      [1_000, "SAT"],
+      [1_000, "SATS"],
+      [1_000_000, "MSAT"],
+      [1_000_000, "MSATS"],
+      [0.00001, "BTC"],
+      [0.00001, "XBT"],
+    ] as const) {
+      expect(normalizeCommercePrice(amount, currency)).toMatchObject({
+        status: "ok",
+        sats: 1_000,
+        approximate: false,
+      })
+      expect(getPriceSats({ price: amount, currency })).toEqual({
+        sats: 1_000,
+        approximate: false,
+      })
+    }
+  })
+
   it("canonicalizes shipping costs without assuming fiat amounts are sats", () => {
     expect(canonicalizeShippingCost(5, "USD")).toEqual({
       sourceShippingCost: {
@@ -704,6 +846,47 @@ describe("commerce pricing", () => {
       primary: "~ 12,000 sats",
       secondary: "€10.00 EUR",
     })
+  })
+
+  it("keeps a genuinely signed historical BGN listing readable without admitting a new purchase", async () => {
+    const product = parseProductEvent(
+      await signFixture({
+        created_at: 1_700_000_000,
+        content: "Historical fiat listing",
+        tags: [
+          ["d", "historical-bgn-listing"],
+          ["title", "Historical Fiat Listing"],
+          ["price", "10", "BGN"],
+          ["shipping_cost", "2", "BGN"],
+        ],
+      })
+    )
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5 },
+    }
+    expect(product.price).toBe(10)
+    expect(product.currency).toBe("BGN")
+    expect(product.sourcePrice).toEqual({
+      amount: 10,
+      currency: "BGN",
+      normalizedCurrency: "BGN",
+    })
+    expect(product.sourceShippingCost).toEqual({
+      amount: 2,
+      currency: "BGN",
+      normalizedCurrency: "BGN",
+    })
+    expect(getPriceSats(product, rates)).toBeNull()
+    expect(getShippingCostSats(product, rates)).toBeNull()
+    expect(
+      getPriceSats(product, rates, { currencyPolicy: "historical" })
+    ).toEqual({ sats: 5_000, approximate: true })
+    expect(
+      getShippingCostSats(product, rates, { currencyPolicy: "historical" })
+    ).toEqual({ sats: 1_000, approximate: true })
+    expect(getProductPriceDisplay(product, rates).primary).toBe("~ 5,000 sats")
+    expect(getProductPriceDisplay(product, rates).secondary).toContain("BGN")
   })
 
   it("labels fiat source quote currencies without double-estimating USD", () => {

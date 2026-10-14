@@ -217,23 +217,33 @@ export function planSparkRecoveryRelays(
 function clone<T>(value: T): T {
   return structuredClone(value)
 }
-function validatePlan(targets: SparkRecoveryRelay[]): SparkRecoveryRelay[] {
+function validatePlan(
+  targets: SparkRecoveryRelay[],
+  positiveUrls: Set<string>
+): SparkRecoveryRelay[] {
+  if (!Array.isArray(targets)) throw new SparkRecoveryError("invalid_record")
+  const count = targets.length
+  if (!Number.isSafeInteger(count) || count < 1 || count > 8)
+    throw new SparkRecoveryError("invalid_record")
+  const urls: string[] = []
+  for (let index = 0; index < count; index++) urls.push(targets[index].url)
   if (
-    !targets.length ||
-    targets.length > 8 ||
-    new Set(targets.map((t) => t.url)).size !== targets.length ||
-    targets.some(
-      (t) =>
-        t.url !== getConfiguredIsolatedE2eRelayUrl() &&
-        !normalizePublicWebSocketUrl(t.url)
-    )
+    new Set(urls).size !== count ||
+    urls.some((url) => {
+      if (typeof url !== "string") return true
+      if (url === getConfiguredIsolatedE2eRelayUrl()) return false
+      if (positiveUrls.has(url)) return false
+      if (!normalizePublicWebSocketUrl(url)) return true
+      positiveUrls.add(url)
+      return false
+    })
   )
     throw new SparkRecoveryError("invalid_record")
   // Caller-supplied labels cannot manufacture independently operated backups.
-  return targets.map((t) => ({
-    url: t.url,
+  return urls.map((url) => ({
+    url,
     operator:
-      SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === t.url)?.operator ?? null,
+      SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === url)?.operator ?? null,
   }))
 }
 export function validateSparkRecoveryState(
@@ -241,91 +251,156 @@ export function validateSparkRecoveryState(
   owner: string
 ): SparkRecoveryState {
   try {
+    const ownerPubkey = input.ownerPubkey
+    const unresolvedObserved = input.unresolvedObserved
+    const sourceRecords = input.records
+    const sourceRemoved = input.removedWalletIds
+    const sourceRegistryExcluded = input.registryExcludedWalletIds
+    const sourceAddressRequestSync = input.addressRequestSync
+    const addressRequestSync = sourceAddressRequestSync
+      ? structuredClone(sourceAddressRequestSync)
+      : undefined
+    const sourceWalletNameSync = input.walletNameSync
+    const walletNameSync = sourceWalletNameSync
+      ? structuredClone(sourceWalletNameSync)
+      : undefined
     if (
-      input.ownerPubkey !== owner ||
-      typeof input.unresolvedObserved !== "boolean" ||
-      input.records.length > MAX_JOURNAL_INPUT_RECORDS ||
-      (input.removedWalletIds !== undefined &&
-        (!Array.isArray(input.removedWalletIds) ||
-          input.removedWalletIds.length > MAX_RECORDS ||
-          new Set(input.removedWalletIds).size !==
-            input.removedWalletIds.length ||
-          input.removedWalletIds.some(
-            (id) => typeof id !== "string" || !id.length || id.length > 128
-          ))) ||
-      (input.registryExcludedWalletIds !== undefined &&
-        (!Array.isArray(input.registryExcludedWalletIds) ||
-          input.registryExcludedWalletIds.length > MAX_RECORDS ||
-          new Set(input.registryExcludedWalletIds).size !==
-            input.registryExcludedWalletIds.length ||
-          input.registryExcludedWalletIds.some(
-            (id) => typeof id !== "string" || !id.length || id.length > 128
-          )))
+      typeof ownerPubkey !== "string" ||
+      ownerPubkey !== owner ||
+      typeof unresolvedObserved !== "boolean" ||
+      !Array.isArray(sourceRecords)
     )
       throw new SparkRecoveryError("invalid_record")
-    const records = input.records.map((r) => {
-      const event = validateSparkRecoveryEvent(r.event, owner)
-      const targets = validatePlan(r.targets)
+    const recordCount = sourceRecords.length
+    if (
+      !Number.isSafeInteger(recordCount) ||
+      recordCount < 0 ||
+      recordCount > MAX_JOURNAL_INPUT_RECORDS
+    )
+      throw new SparkRecoveryError("invalid_record")
+    let removedWalletIds: string[] | undefined
+    if (sourceRemoved !== undefined) {
+      if (!Array.isArray(sourceRemoved))
+        throw new SparkRecoveryError("invalid_record")
+      const removedCount = sourceRemoved.length
       if (
-        typeof r.exported !== "boolean" ||
-        r.delivery.length !== targets.length ||
-        new Set(r.delivery.map((d) => d.url)).size !== targets.length ||
-        r.delivery.some(
-          (d) =>
-            !targets.some((t) => t.url === d.url) ||
-            typeof d.accepted !== "boolean" ||
-            typeof d.readBack !== "boolean" ||
-            !["not_queried", "present", "absent", "unavailable"].includes(
-              d.lastRead
-            ) ||
-            !Number.isSafeInteger(d.checkedAt) ||
-            d.checkedAt < 0 ||
-            ![
-              "pending",
-              "acked",
-              "rejected",
-              "timed_out",
-              "auth_required",
-              "cancelled",
-              "policy_blocked",
-              "error",
-            ].includes(d.status)
-        )
+        !Number.isSafeInteger(removedCount) ||
+        removedCount < 0 ||
+        removedCount > MAX_RECORDS
       )
         throw new SparkRecoveryError("invalid_record")
-      return {
+      removedWalletIds = []
+      for (let index = 0; index < removedCount; index++) {
+        const id = sourceRemoved[index]
+        if (typeof id !== "string" || !id.length || id.length > 128)
+          throw new SparkRecoveryError("invalid_record")
+        removedWalletIds.push(id)
+      }
+      if (new Set(removedWalletIds).size !== removedCount)
+        throw new SparkRecoveryError("invalid_record")
+    }
+    let registryExcludedWalletIds: string[] | undefined
+    if (sourceRegistryExcluded !== undefined) {
+      if (!Array.isArray(sourceRegistryExcluded))
+        throw new SparkRecoveryError("invalid_record")
+      const excludedCount = sourceRegistryExcluded.length
+      if (
+        !Number.isSafeInteger(excludedCount) ||
+        excludedCount < 0 ||
+        excludedCount > MAX_RECORDS
+      )
+        throw new SparkRecoveryError("invalid_record")
+      registryExcludedWalletIds = []
+      for (let index = 0; index < excludedCount; index++) {
+        const id = sourceRegistryExcluded[index]
+        if (typeof id !== "string" || !id.length || id.length > 128)
+          throw new SparkRecoveryError("invalid_record")
+        registryExcludedWalletIds.push(id)
+      }
+      if (new Set(registryExcludedWalletIds).size !== excludedCount)
+        throw new SparkRecoveryError("invalid_record")
+    }
+    // Reuse only pure lexical URL checks within this synchronous snapshot.
+    // Every record, operator binding and later read-back remains validated.
+    const positiveUrls = new Set<string>()
+    const records: SparkRecoveryRecord[] = []
+    for (let index = 0; index < recordCount; index++) {
+      const source = sourceRecords[index]
+      const sourceEvent = source.event
+      const sourceTargets = source.targets
+      const sourceDelivery = source.delivery
+      const exported = source.exported
+      const event = validateSparkRecoveryEvent(sourceEvent, owner)
+      const targets = validatePlan(sourceTargets, positiveUrls)
+      if (typeof exported !== "boolean" || !Array.isArray(sourceDelivery))
+        throw new SparkRecoveryError("invalid_record")
+      const deliveryCount = sourceDelivery.length
+      if (
+        !Number.isSafeInteger(deliveryCount) ||
+        deliveryCount !== targets.length
+      )
+        throw new SparkRecoveryError("invalid_record")
+      const delivery: SparkRecoveryDelivery[] = []
+      for (
+        let deliveryIndex = 0;
+        deliveryIndex < deliveryCount;
+        deliveryIndex++
+      ) {
+        const sourceEvidence = sourceDelivery[deliveryIndex]
+        const evidence = {
+          url: sourceEvidence.url,
+          status: sourceEvidence.status,
+          accepted: sourceEvidence.accepted,
+          readBack: sourceEvidence.readBack,
+          lastRead: sourceEvidence.lastRead,
+          checkedAt: sourceEvidence.checkedAt,
+        }
+        if (
+          !targets.some((target) => target.url === evidence.url) ||
+          typeof evidence.accepted !== "boolean" ||
+          typeof evidence.readBack !== "boolean" ||
+          !["not_queried", "present", "absent", "unavailable"].includes(
+            evidence.lastRead
+          ) ||
+          !Number.isSafeInteger(evidence.checkedAt) ||
+          evidence.checkedAt < 0 ||
+          ![
+            "pending",
+            "acked",
+            "rejected",
+            "timed_out",
+            "auth_required",
+            "cancelled",
+            "policy_blocked",
+            "error",
+          ].includes(evidence.status)
+        )
+          throw new SparkRecoveryError("invalid_record")
+        delivery.push(evidence)
+      }
+      if (
+        new Set(delivery.map((evidence) => evidence.url)).size !== deliveryCount
+      )
+        throw new SparkRecoveryError("invalid_record")
+      records.push({
         event,
         targets,
-        delivery: r.delivery.map((d) => ({
-          url: d.url,
-          status: d.status,
-          accepted: d.accepted,
-          readBack: d.readBack,
-          lastRead: d.lastRead,
-          checkedAt: d.checkedAt,
-        })),
-        exported: r.exported,
-      }
-    })
+        delivery,
+        exported,
+      })
+    }
     if (new Set(records.map((r) => r.event.id)).size !== records.length)
       throw new SparkRecoveryError("invalid_record")
     return {
-      ownerPubkey: owner,
-      // Optional name evidence is validated only by its own boundary. A damaged
-      // name journal must not invalidate otherwise valid recovery membership.
-      ...(input.walletNameSync
-        ? { walletNameSync: structuredClone(input.walletNameSync) }
-        : {}),
-      ...(input.addressRequestSync
-        ? { addressRequestSync: structuredClone(input.addressRequestSync) }
-        : {}),
+      ownerPubkey,
+      // Optional names retain their own validation boundary without mutable aliases.
+      ...(walletNameSync !== undefined ? { walletNameSync } : {}),
+      ...(addressRequestSync !== undefined ? { addressRequestSync } : {}),
       records: compactSparkRecoveryChoices(records),
-      unresolvedObserved: input.unresolvedObserved,
-      ...(input.removedWalletIds
-        ? { removedWalletIds: [...input.removedWalletIds] }
-        : {}),
-      ...(input.registryExcludedWalletIds
-        ? { registryExcludedWalletIds: [...input.registryExcludedWalletIds] }
+      unresolvedObserved,
+      ...(removedWalletIds !== undefined ? { removedWalletIds } : {}),
+      ...(registryExcludedWalletIds !== undefined
+        ? { registryExcludedWalletIds }
         : {}),
     }
   } catch {
@@ -337,15 +412,12 @@ export function mergeSparkRecoveryRecords(
   incoming: SparkRecoveryRecord[],
   unresolvedObserved = false
 ): SparkRecoveryState {
+  const saved = validateSparkRecoveryState(current, current.ownerPubkey)
   const next = validateSparkRecoveryState(
-    { ownerPubkey: current.ownerPubkey, records: incoming, unresolvedObserved },
-    current.ownerPubkey
+    { ownerPubkey: saved.ownerPubkey, records: incoming, unresolvedObserved },
+    saved.ownerPubkey
   )
-  const records = new Map(
-    validateSparkRecoveryState(current, current.ownerPubkey).records.map(
-      (r) => [r.event.id, r]
-    )
-  )
+  const records = new Map(saved.records.map((r) => [r.event.id, r]))
   for (const record of next.records) {
     const old = records.get(record.event.id)
     if (!old) {
@@ -370,22 +442,28 @@ export function mergeSparkRecoveryRecords(
       }),
     })
   }
-  return validateSparkRecoveryState(
-    {
-      ownerPubkey: current.ownerPubkey,
-      walletNameSync: current.walletNameSync,
-      addressRequestSync: current.addressRequestSync,
-      records: [...records.values()],
-      unresolvedObserved: current.unresolvedObserved || unresolvedObserved,
-      ...(current.removedWalletIds
-        ? { removedWalletIds: current.removedWalletIds }
-        : {}),
-      ...(current.registryExcludedWalletIds
-        ? { registryExcludedWalletIds: current.registryExcludedWalletIds }
-        : {}),
-    },
-    current.ownerPubkey
-  )
+  // Both inputs are fully validated owned snapshots. Construction above changes
+  // only checked delivery metadata; signatures and plans cannot acquire aliases.
+  // Preserve the aggregate bounds/choice frontier without another crypto scan.
+  if (records.size > MAX_JOURNAL_INPUT_RECORDS)
+    throw new SparkRecoveryError("invalid_record")
+  return {
+    ownerPubkey: saved.ownerPubkey,
+    ...(saved.walletNameSync !== undefined
+      ? { walletNameSync: saved.walletNameSync }
+      : {}),
+    ...(saved.addressRequestSync !== undefined
+      ? { addressRequestSync: saved.addressRequestSync }
+      : {}),
+    records: compactSparkRecoveryChoices([...records.values()]),
+    unresolvedObserved: saved.unresolvedObserved || next.unresolvedObserved,
+    ...(saved.removedWalletIds !== undefined
+      ? { removedWalletIds: saved.removedWalletIds }
+      : {}),
+    ...(saved.registryExcludedWalletIds !== undefined
+      ? { registryExcludedWalletIds: saved.registryExcludedWalletIds }
+      : {}),
+  }
 }
 
 export class SparkRecoveryService {

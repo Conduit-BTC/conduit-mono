@@ -370,3 +370,20 @@ it("keeps unabridged accessible and hover amounts behind compact visual labels",
   expect(html).toContain("Estimated conversion:")
   expect(html).not.toMatch(/[~≈]/)
 })
+
+it("retains fee context alongside compact estimated catalog labels", () => {
+  const html = renderToStaticMarkup(
+    <ProductCard
+      title="Coordinated purchase"
+      merchantName="Store"
+      images={[]}
+      primaryPrice={{ text: "~ 1.023 BTC", fullText: "~ 102,250,000 sats" }}
+      priceNote="Estimated total · shipping extra"
+    />
+  )
+  expect(html).toContain("Estimated total · shipping extra")
+  expect(html).toContain('<span aria-hidden="true">1.023 BTC</span>')
+  expect(html).toContain('<span class="sr-only">102,250,000 sats</span>')
+  expect(html).toContain('title="102,250,000 sats (estimated conversion)"')
+  expect(html).not.toMatch(/[~≈]/)
+})

@@ -3,7 +3,10 @@ import { nip19 } from "nostr-tools"
 import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-store"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
@@ -267,8 +270,10 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     expect(matchingWraps).toHaveLength(1)
 
     phase("buyer_reply")
+    recordSmokeFailureContext(testInfo, "buyer_account_ready")
     await buyerPage.reload()
     await expect(buyerPage.getByLabel("Open account menu")).toBeVisible()
+    recordSmokeFailureContext(testInfo, "buyer_account_ready", "met")
     await buyerPage.evaluate((principal) => {
       const provider = (
         window as unknown as {
@@ -283,9 +288,16 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         return encrypt(peer, text)
       }
     }, buyer.pubkey)
+    recordSmokeFailureContext(testInfo, "buyer_open_messages_click_completed")
     await buyerPage
       .getByRole("button", { name: "Open messages", exact: true })
       .click()
+    recordSmokeFailureContext(
+      testInfo,
+      "buyer_open_messages_click_completed",
+      "met"
+    )
+    recordSmokeFailureContext(testInfo, "buyer_dialog_ready")
     const buyerDialogState = await buyerPage.evaluate(() => {
       const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
       const input = dialog?.querySelector<HTMLInputElement>("input")
@@ -309,14 +321,26 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       phase: "buyer_dialog",
       ...buyerDialogState,
     })
+    recordSmokeFailureContext(
+      testInfo,
+      "buyer_dialog_ready",
+      buyerDialogState.dialogVisible && buyerDialogState.inputEnabled
+        ? "met"
+        : "unmet"
+    )
     const buyerMessages = buyerPage.getByRole("dialog", { name: "Messages" })
     const buyerReply = `Accepted buyer reply ${Date.now().toString(36)}`
+    recordSmokeFailureContext(testInfo, "buyer_input_filled")
     await buyerMessages
       .getByRole("textbox", { name: "Message" })
       .fill(buyerReply)
     phase("buyer_input_filled")
+    recordSmokeFailureContext(testInfo, "buyer_input_filled", "met")
+    recordSmokeFailureContext(testInfo, "buyer_send_clicked")
     await buyerMessages.getByRole("button", { name: "Send message" }).click()
     phase("buyer_send_clicked")
+    recordSmokeFailureContext(testInfo, "buyer_send_clicked", "met")
+    recordSmokeFailureContext(testInfo, "buyer_delivery_status_visible")
     await expect(
       buyerMessages.getByRole("status").filter({
         hasText:
@@ -324,11 +348,15 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       })
     ).toBeVisible({ timeout: 30_000 })
     phase("buyer_restore")
+    recordSmokeFailureContext(testInfo, "buyer_delivery_status_visible", "met")
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved")
     await expect
       .poll(() => saved(buyerPage, buyer.pubkey, buyerReply), {
         timeout: 30_000,
       })
       .toEqual({ matches: 1, encrypted: true })
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved", "met")
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved")
     await buyerPage.reload()
     await expect(buyerPage.getByLabel("Open account menu")).toBeVisible()
     await expect
@@ -336,7 +364,9 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         timeout: 30_000,
       })
       .toEqual({ matches: 1, encrypted: true })
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved", "met")
     phase("merchant_delivery")
+    recordSmokeFailureContext(testInfo, "buyer_reply_relay_observed")
     const merchantWraps = await readAuthenticatedGiftWraps(
       merchant,
       TEST_RELAY_URL
@@ -362,6 +392,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         )
       })
     ).toHaveLength(1)
+    recordSmokeFailureContext(testInfo, "buyer_reply_relay_observed", "met")
     phase("complete")
   } finally {
     await Promise.allSettled([buyerContext.close(), merchantContext.close()])

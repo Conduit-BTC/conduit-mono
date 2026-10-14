@@ -13,7 +13,6 @@ import {
   buildCheckoutSparkRecoveryRumor,
   createCheckoutSparkRecoveryPayload,
   freezeCheckoutSparkPlan,
-  getNdk,
   inspectCheckoutSparkRecoveryWrap,
   openCheckoutSparkRecoveryDelivery,
   openCheckoutSparkRecoveryWrap,
@@ -25,6 +24,7 @@ import {
   type CheckoutSparkRecoveryDeliveryProgress,
   type CheckoutSparkRecoveryDeliveryRecord,
 } from "@conduit/core"
+import { getNdk } from "@conduit/core/protocol/ndk"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const SENDER_SECRET = generateSecretKey()

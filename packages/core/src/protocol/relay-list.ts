@@ -22,7 +22,7 @@ import {
 } from "./verified-public-event"
 import {
   getGeneralReadRelayUrls,
-  normalizePublicRelayHints,
+  normalizePublicOrIsolatedE2eRelayHints,
   parseNip65RelayTags,
   tryNormalizeRelayUrl,
   type RelayPreference,
@@ -61,6 +61,8 @@ export interface RelayList {
 export interface RelayListLookupOptions {
   /** Skip cache check and fetch from network. */
   skipCache?: boolean
+  /** Require every requested relay, not only the admitted subset, to complete. */
+  requireAllRequestedRelays?: boolean
   /** Only consult the cache; do NOT issue a network fetch for missing entries. */
   cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
@@ -72,7 +74,8 @@ export interface RelayListLookupOptions {
   /**
    * Preserve local/private and ws:// relay URLs only when the requested
    * kind-10002 owner matches this authenticated pubkey. Third-party relay hints
-   * are limited to public-network wss:// destinations.
+   * are limited to public-network wss:// destinations, except the exact
+   * configured loopback relay in explicit isolated E2E mode.
    */
   allowInsecureRelayUrlsForPubkey?: string | null
   /** Account whose durable whole-relay exclusions govern this network lookup. */
@@ -175,7 +178,7 @@ function allowsInsecureRelayUrls(
 }
 
 function publicRelayHintUrls(urls: readonly string[]): string[] {
-  return normalizePublicRelayHints(urls)
+  return normalizePublicOrIsolatedE2eRelayHints(urls)
 }
 
 export function filterRelayListForContext(
@@ -703,7 +706,12 @@ export async function getRelayListsDetailed(
           },
       relayUrls
     )
-    const transportComplete = readEvidence.coverage === "complete"
+    const transportComplete =
+      readEvidence.coverage === "complete" &&
+      (!opts.requireAllRequestedRelays ||
+        readEvidence.sources.every(
+          (source) => source.availability === "complete"
+        ))
     const transportUsable =
       readEvidence.coverage === "partial" || transportComplete
 

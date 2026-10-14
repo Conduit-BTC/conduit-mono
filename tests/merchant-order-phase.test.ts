@@ -5,15 +5,22 @@ import type {
   OrderSummary,
   ParsedOrderMessage,
 } from "@conduit/core"
-import { orderItemSchema } from "@conduit/core"
+import {
+  getMerchantOrderActions,
+  isMerchantOrderPaid,
+  orderItemSchema,
+} from "@conduit/core"
 import {
   getMerchantConversationCommunication,
   getMerchantConversationQueue,
   getMerchantConversationPhase,
   getMerchantConversationStatusDisplay,
+  getMerchantConversationState,
   getMerchantOrderFulfillment,
   getMerchantOrderRequiresShipping,
   getMerchantOrderSummary,
+  getMerchantOrderSelection,
+  getMerchantOrderPlacedAt,
   isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   sortMerchantConversations,
@@ -198,6 +205,58 @@ const shippingUpdate = {
 } as ParsedOrderMessage
 
 describe("merchant order phase", () => {
+  it("preserves the selected order when incoming orders or sort changes reorder the list", () => {
+    const selected = sortableConversation({ id: "selected", latestAt: 10 })
+    const incoming = sortableConversation({ id: "incoming", latestAt: 20 })
+    const updated = sortMerchantConversations([selected, incoming], "newest")
+    expect(updated[0]!.id).toBe("incoming")
+    expect(getMerchantOrderSelection(updated, selected.id)).toBe(selected.id)
+    expect(getMerchantOrderSelection(updated, null)).toBe(incoming.id)
+    expect(
+      getMerchantOrderSelection(updated, selected.id, incoming.orderId)
+    ).toBe(incoming.id)
+  })
+
+  it("sorts newest orders by the original order rather than later activity or paid status", () => {
+    const olderPaid = sortableConversation({
+      id: "older-paid",
+      taskAt: 10,
+      latestAt: 100,
+      status: "paid",
+    })
+    const newerOrder = sortableConversation({
+      id: "newer-order",
+      latestAt: 20,
+    })
+
+    expect(
+      sortMerchantConversations([olderPaid, newerOrder], "newest").map(
+        (item) => item.id
+      )
+    ).toEqual(["newer-order", "older-paid"])
+    expect(
+      sortMerchantConversations([newerOrder, olderPaid], "recent").map(
+        (item) => item.id
+      )
+    ).toEqual(["older-paid", "newer-order"])
+  })
+
+  it("keeps unknown placed dates last and same-time orders deterministic without mutating input", () => {
+    const first = sortableConversation({ id: "a", latestAt: 20 })
+    const second = sortableConversation({ id: "b", latestAt: 20 })
+    const partial = {
+      ...sortableConversation({ id: "partial", latestAt: 100 }),
+      messages: [],
+    }
+    const input = [partial, second, first]
+    expect(getMerchantOrderPlacedAt(partial)).toBeNull()
+    expect(getMerchantOrderPlacedAt(first)).toBe(19)
+    expect(
+      sortMerchantConversations(input, "newest").map((item) => item.id)
+    ).toEqual(["a", "b", "partial"])
+    expect(input.map((item) => item.id)).toEqual(["partial", "b", "a"])
+  })
+
   it("recognizes only supported order queue search values", () => {
     expect(isOrderQueueTab("all")).toBe(true)
     expect(isOrderQueueTab("unpaid_review")).toBe(true)
@@ -488,6 +547,90 @@ describe("merchant order phase", () => {
     expect(getMerchantConversationStatusDisplay(confirmed).label).toBe("Paid")
     expect(getMerchantConversationQueue(confirmed)).toBe("paid_fulfill")
     expect(getMerchantOrderSummary(confirmed).accepted).toBe(true)
+  })
+
+  it("keeps a routed merchant-paid claim pending until all required provider legs settle", () => {
+    const routed = {
+      ...conversation,
+      status: "paid",
+      messages: [
+        {
+          ...order,
+          checkoutPaymentRoute: "spark_router_v1",
+        } as ParsedOrderMessage,
+        merchantStatus("paid", 3),
+      ],
+    }
+    const noSettlement = getMerchantConversationState(routed)
+    expect(isMerchantOrderPaid(noSettlement)).toBe(false)
+    expect(getMerchantConversationQueue(routed)).toBe("unpaid_review")
+    expect(getMerchantConversationStatusDisplay(routed).label).toBe(
+      "Awaiting checkout verification"
+    )
+    expect(
+      getMerchantOrderActions(noSettlement).some(({ action }) =>
+        ["complete", "record_shipment"].includes(action)
+      )
+    ).toBe(false)
+
+    const receiverOnly = {
+      creditVerified: false,
+      merchantVerified: false,
+      commerceVerified: false,
+      feePending: false,
+      receiverSettlementObserved: true,
+      receiverCommerceObserved: true,
+    }
+    expect(getMerchantConversationQueue(routed, receiverOnly)).not.toBe(
+      "paid_fulfill"
+    )
+    expect(
+      getMerchantConversationStatusDisplay(routed, receiverOnly).label
+    ).toBe("Recipient receipt observed — verifying checkout")
+    expect(isMerchantConversationActiveFulfillment(routed, receiverOnly)).toBe(
+      false
+    )
+    expect(
+      isMerchantOrderPaid(getMerchantConversationState(routed, receiverOnly))
+    ).toBe(false)
+
+    const merchantOnly = {
+      creditVerified: true,
+      merchantVerified: true,
+      commerceVerified: false,
+      feePending: true,
+    }
+    expect(getMerchantConversationQueue(routed, merchantOnly)).toBe(
+      "verify_payment"
+    )
+    expect(
+      getMerchantConversationStatusDisplay(routed, merchantOnly).label
+    ).toBe("Other payouts pending")
+    expect(isMerchantConversationActiveFulfillment(routed, merchantOnly)).toBe(
+      false
+    )
+
+    const commerceVerified = { ...merchantOnly, commerceVerified: true }
+    const recipientUnverified = {
+      ...merchantOnly,
+      merchantVerified: false,
+      recipientUnverified: true,
+    }
+    expect(
+      getMerchantConversationStatusDisplay(routed, recipientUnverified).label
+    ).toBe("Payout observed — recipient unverified")
+    expect(
+      isMerchantConversationActiveFulfillment(routed, recipientUnverified)
+    ).toBe(false)
+    expect(getMerchantConversationQueue(routed, commerceVerified)).toBe(
+      "paid_fulfill"
+    )
+    expect(
+      getMerchantConversationStatusDisplay(routed, commerceVerified).label
+    ).toBe("Paid")
+    expect(
+      isMerchantConversationActiveFulfillment(routed, commerceVerified)
+    ).toBe(true)
   })
 
   it("keeps accepted zero-cost pickup orders visible in the fulfillment queue", () => {

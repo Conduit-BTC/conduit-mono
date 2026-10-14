@@ -19,8 +19,8 @@ async function fixture(wrongIdentity = false) {
   // and the production adapter's binding/revocation logic execute unchanged.
   const module = await loadFirstPartySparkModule(async () => ({
     ...sdk,
-    SparkWallet: {
-      async initialize(
+    SparkWallet: class {
+      static async initialize(
         input: Parameters<typeof sdk.SparkWallet.initialize>[0]
       ) {
         walletSigner = input.signer as sdk.DefaultSparkSigner
@@ -44,7 +44,7 @@ async function fixture(wrongIdentity = false) {
             },
           },
         }
-      },
+      }
     } as unknown as typeof sdk.SparkWallet,
   }))
   return {

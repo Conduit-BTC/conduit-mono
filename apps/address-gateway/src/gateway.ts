@@ -575,6 +575,15 @@ async function management(
   }
   return result
 }
+function isPublicReceivingPath(pathname: string): boolean {
+  return (
+    /^\/\.well-known\/lnurlp\/[a-z0-9_.-]+$/.test(pathname) ||
+    /^\/lnurlp\/[a-z0-9_.-]+(?:\/(?:invoice|verify)(?:\/[a-f0-9]+)?)?$/.test(
+      pathname
+    ) ||
+    /^\/lnurlp\/verify\/[a-f0-9]{64}$/.test(pathname)
+  )
+}
 export async function handleAddressGateway(
   request: Request,
   env: AddressGatewayEnv,
@@ -583,19 +592,14 @@ export async function handleAddressGateway(
   now = Math.floor(Date.now() / 1000)
 ): Promise<Response> {
   const origin = request.headers.get("Origin")
+  const url = new URL(request.url)
   const publicReceiving =
     ["GET", "OPTIONS"].includes(request.method) &&
-    (/^\/\.well-known\/lnurlp\/[a-z0-9_.-]+$/.test(
-      new URL(request.url).pathname
-    ) ||
-      /^\/lnurlp\/[a-z0-9_.-]+(?:\/(?:invoice|verify)(?:\/[a-f0-9]+)?)?$/.test(
-        new URL(request.url).pathname
-      ))
+    isPublicReceivingPath(url.pathname)
   const allowed =
     publicReceiving ||
     !origin ||
     env.ALLOWED_ORIGINS.split(",").includes(origin)
-  const url = new URL(request.url)
   let result: Response
   try {
     validateApprovedNames(names)
@@ -613,13 +617,7 @@ export async function handleAddressGateway(
           : response({ status: "invalid" }, 405)
     } else if (url.pathname.startsWith("/lnurlpay/"))
       result = await management(request, env, names, fetcher, now)
-    else if (
-      request.method === "GET" &&
-      (/^\/\.well-known\/lnurlp\/[a-z0-9_.-]+$/.test(url.pathname) ||
-        /^\/lnurlp\/[a-z0-9_.-]+(?:\/(?:invoice|verify)(?:\/[a-f0-9]+)?)?$/.test(
-          url.pathname
-        ))
-    )
+    else if (request.method === "GET" && isPublicReceivingPath(url.pathname))
       result = await proxy(request, env, undefined, fetcher)
     else result = response("not found", 404)
   } catch {

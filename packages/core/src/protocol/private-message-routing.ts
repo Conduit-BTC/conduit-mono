@@ -92,6 +92,9 @@ export const MAX_COMPATIBILITY_ORDER_RELAYS = 3
 export const MAX_DECLARED_INBOX_WRITE_RELAYS = 3
 export const MAX_SHARED_INBOX_DISCOVERY_RELAYS = 5
 export const MAX_INBOX_DISCOVERY_RELAYS = 8
+// Preserve the former limit-one read's raw-event budget without a query limit
+// that makes every positive replaceable declaration look potentially capped.
+const MAX_INBOX_DECLARATION_READ_EVENTS = 256
 
 export interface PrivateMessageRelays {
   pubkey: string
@@ -1371,7 +1374,6 @@ export async function resolveInboxDeclaration(
       {
         kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
         authors: [key],
-        limit: 1,
       },
       {
         relayUrls,
@@ -1401,6 +1403,7 @@ export async function resolveInboxDeclaration(
         shouldContinue: options.shouldContinue,
         connectTimeoutMs: 3_000,
         fetchTimeoutMs: 6_000,
+        maxEventsPerRelay: MAX_INBOX_DECLARATION_READ_EVENTS,
         skipHealthFilter: true,
       }
     )
