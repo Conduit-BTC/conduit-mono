@@ -35,7 +35,10 @@ describe("ordinary routed checkout V1 CI acceptance", () => {
     expect(source).toContain('PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"')
     expect(source).toContain("playwright-router-receiver-setup-results.json")
     expect(source).toContain(
-      '"$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"'
+      '"$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"'
+    )
+    expect(source).toContain(
+      '"$PLAYWRIGHT_ROUTER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_MANIFEST"'
     )
     expect(source).not.toContain("PLAYWRIGHT_ROUTER_PUBLIC_ZAP_CASE")
     expect(source).not.toContain("run_playwright_anonymous_zap")
