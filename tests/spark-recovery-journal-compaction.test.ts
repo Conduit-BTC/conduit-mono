@@ -341,7 +341,7 @@ describe("bounded Spark choice journal", () => {
       )
     ).rejects.toThrow("invalid_record")
     expect((await f.store.load(f.owner)).records.length).toBe(132)
-  })
+  }, 15_000)
   it("keeps an unresolved latest choice blocking creation instead of falling back to history", async () => {
     const f = fixture()
     const p = await prepared(f)

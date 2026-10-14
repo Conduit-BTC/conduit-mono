@@ -11,17 +11,19 @@ import {
 /** Dedicated, account-scoped ciphertext journal; never a generic cache or plaintext credential store. */
 export class DexieSparkRecoveryStore implements SparkRecoveryStore {
   constructor(private readonly database: ConduitDB = db) {}
-  async load(owner: string): Promise<SparkRecoveryState> {
+  private async readStoredState(owner: string): Promise<SparkRecoveryState> {
     let state: SparkRecoveryState | undefined
     try {
       state = await this.database.sparkRecoveryEvidence.get(owner)
     } catch {
       throw new SparkRecoveryError("storage_unavailable")
     }
-    return validateSparkRecoveryState(
-      state ?? { ownerPubkey: owner, records: [], unresolvedObserved: false },
-      owner
+    return (
+      state ?? { ownerPubkey: owner, records: [], unresolvedObserved: false }
     )
+  }
+  async load(owner: string): Promise<SparkRecoveryState> {
+    return validateSparkRecoveryState(await this.readStoredState(owner), owner)
   }
   /** Shares the wallet-removal transaction; relay writes preserve these decisions. */
   async setDeviceRemoved(
@@ -88,7 +90,10 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
         "rw",
         this.database.sparkRecoveryEvidence,
         async () => {
-          const current = await this.load(owner)
+          const current = await this.readStoredState(owner)
+          // The merger validates the complete state, but against its own owner.
+          if (current.ownerPubkey !== owner)
+            throw new SparkRecoveryError("invalid_record")
           const next = mergeSparkRecoveryRecords(
             current,
             incoming.records,

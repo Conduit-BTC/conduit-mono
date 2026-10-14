@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   assertCheckoutSparkOutgoingInvoiceLifetime,
-  CHECKOUT_SPARK_PROVIDER_SEND_WINDOW_MS,
+  checkoutSparkProviderSendWindowEndsAt,
   hasCheckoutSparkProviderSendWindow,
 } from "@conduit/core"
 import {
@@ -76,20 +76,34 @@ describe("checkout Spark outgoing invoice windows", () => {
     ).toThrow("window is unsafe")
   })
 
-  it("requires strictly more than a provider-send window at the moment of send", () => {
-    const deadline = NOW + CHECKOUT_SPARK_PROVIDER_SEND_WINDOW_MS
+  it("uses the signed expiry without rejecting a fresh 59-second invoice", () => {
+    const deadline = NOW + 59_000
+    const paymentRequest = invoiceExpiringAt(deadline)
+    expect(checkoutSparkProviderSendWindowEndsAt(paymentRequest)).toBe(deadline)
     expect(
       hasCheckoutSparkProviderSendWindow({
-        paymentRequest: invoiceExpiringAt(deadline),
-        nowMs: NOW,
-      })
-    ).toBe(false)
-    expect(
-      hasCheckoutSparkProviderSendWindow({
-        paymentRequest: invoiceExpiringAt(deadline + 1_000),
+        paymentRequest,
         nowMs: NOW,
       })
     ).toBe(true)
+    expect(
+      hasCheckoutSparkProviderSendWindow({
+        paymentRequest,
+        nowMs: deadline - 1,
+      })
+    ).toBe(true)
+    for (const nowMs of [
+      deadline,
+      deadline + 1,
+      -1,
+      NaN,
+      Infinity,
+      NOW + 0.5,
+    ]) {
+      expect(
+        hasCheckoutSparkProviderSendWindow({ paymentRequest, nowMs })
+      ).toBe(false)
+    }
     expect(
       hasCheckoutSparkProviderSendWindow({
         paymentRequest: "lnbc-unsigned",

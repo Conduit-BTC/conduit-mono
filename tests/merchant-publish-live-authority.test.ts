@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 async function source(path: string): Promise<string> {
-  return await Bun.file(path).text()
+  return (await Bun.file(path).text()).replace(/\r\n/g, "\n")
 }
 
 describe("Merchant publish live account authority", () => {
@@ -17,19 +17,19 @@ describe("Merchant publish live account authority", () => {
       "authenticatedPubkey,\n            shouldContinue: () => isCurrentOrderAction(authority)"
     )
     expect(orders).toMatch(
-      /signAndPublishProductListing\(\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
+      /signAndPublishProductWriteBundle\(\{\s*merchantPubkey: pubkey,\s*authenticatedPubkey,\s*shouldContinue: \(\) => isCurrentOrderAction\(authority\),\s*assertCurrentWriteBaseline,/
     )
     expect(orders).toMatch(
-      /deliverSignedProductEvent\([\s\S]{0,220}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
+      /deliverQueuedProductListings\(queued\.id,\s*\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(products).toMatch(
       /signAndPublishProductWriteBundle\(\{[\s\S]{0,100}shouldContinue,/
     )
     expect(products).toMatch(
-      /deliverQueuedProductDeletion\([\s\S]{0,220}authenticatedPubkey: activeAuthenticatedPubkey,[\s\S]{0,40}shouldContinue,/
+      /deliverQueuedProductDeletion\(payload\.deliveryJobId,\s*\{\s*authenticatedPubkey: authStatus === "connected" \? pubkey : null,\s*shouldContinue: \(\) => authGenerationRef\.current === authGeneration,/
     )
     expect(products).toMatch(
-      /deliverQueuedProductDeletion\([\s\S]{0,220}authenticatedPubkey:[\s\S]{0,80}shouldContinue: \(\) =>/
+      /deleteProduct\(\s*payload\.merchantPubkey,\s*payload\.product,[\s\S]{0,1000}authStatus === "connected" \? pubkey : null,\s*\(\) => authGenerationRef\.current === authGeneration/
     )
     expect(enrollment).toContain("publishEventMarketEnrollment")
     expect(enrollment).toContain("retryEventMarketEnrollmentDelivery")
@@ -52,14 +52,28 @@ describe("Merchant publish live account authority", () => {
 
     expect(delivery).toContain("requiresAuthenticatedOwnerAuthority")
     expect(delivery).toContain("!normalizePublicWebSocketUrl(input.relayUrl)")
+    expect(delivery).toContain("status: await publishSignedEventToRelay({")
+    expect(delivery).toContain("relayTarget: input.relayTarget ?? undefined,")
+    expect(delivery).toContain("accountPubkey: input.accountPubkey,")
     expect(delivery).toMatch(
-      /publishSignedEventToRelay\(\{[\s\S]*?shouldContinue:/
+      /accountNetworkLocalStateRepository:\s*input\.accountNetworkLocalStateRepository,/
+    )
+    expect(delivery).toContain(
+      "ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,"
+    )
+    expect(delivery).toMatch(
+      /shouldContinue:\s*requiresAuthenticatedOwnerAuthority && authenticatedPubkey\s*\? \(\) =>\s*input\.isAuthenticatedPubkeyCurrent\?\.\(authenticatedPubkey\) !==\s*false/
     )
     expect(worker).toContain(
       'import { StrictMode, useLayoutEffect } from "react"'
     )
     expect(worker).toContain(
-      "useLayoutEffect(\n    () => startProductDeletionDeliveryWorker(authenticatedPubkey)"
+      "startProductListingDeliveryWorker(authenticatedPubkey)"
     )
+    expect(worker).toContain(
+      "startProductDeletionDeliveryWorker(authenticatedPubkey)"
+    )
+    expect(worker).toContain("stopListingWorker()")
+    expect(worker).toContain("stopDeletionWorker()")
   })
 })

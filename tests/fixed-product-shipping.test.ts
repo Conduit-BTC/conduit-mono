@@ -94,6 +94,114 @@ function shippingOption(
 }
 
 describe("canonical fixed product shipping", () => {
+  it.each(["BGN", "XYZ"])(
+    "rejects %s at both fixed shipping compile and direct writer boundaries",
+    (currency) => {
+      for (const amount of [0, 5]) {
+        expect(() =>
+          compileProductFulfillmentIntent({
+            format: "physical",
+            shippingPricingMode: "fixed",
+            amount,
+            currency,
+            destinations: [
+              {
+                code: "US",
+                name: "United States",
+                restrictTo: [],
+                exclude: [],
+              },
+            ],
+          })
+        ).toThrow("Fixed shipping currency is not supported for new commerce")
+        expect(() =>
+          buildFixedShippingOptionEventDraft({
+            productDTag: PRODUCT_D_TAG,
+            intent: {
+              kind: "fixed_standard",
+              amount,
+              currency,
+              countries: ["US"],
+            },
+          })
+        ).toThrow("Fixed shipping currency is not supported for new commerce")
+      }
+    }
+  )
+
+  it.each(["BGN", "XYZ"])(
+    "preserves historical %s fixed shipping evidence without republishing it",
+    async (currency) => {
+      const event = await signFixture({
+        kind: 30406,
+        created_at: 1,
+        content: "",
+        tags: [
+          ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+          ["title", "Standard Shipping"],
+          ["price", "5", currency],
+          ["country", "US"],
+          ["service", "standard"],
+        ],
+      })
+      const parsed = parseShippingOptionEvent(event)
+      expect(parsed).toMatchObject({
+        eventId: event.id,
+        pubkey: publicFixturePubkey,
+        currency,
+        price: 5,
+        launchUnsupportedTags: [],
+      })
+      expect(() =>
+        buildFixedShippingOptionEventDraft({
+          productDTag: PRODUCT_D_TAG,
+          intent: {
+            kind: "fixed_standard",
+            amount: parsed!.price!,
+            currency: parsed!.currency!,
+            countries: parsed!.countries,
+          },
+        })
+      ).toThrow("Fixed shipping currency is not supported for new commerce")
+    }
+  )
+
+  it("keeps supported fiat and native aliases usable for new fixed shipping", () => {
+    for (const currency of [
+      "USD",
+      "EUR",
+      "SAT",
+      "SATS",
+      "MSAT",
+      "MSATS",
+      "BTC",
+      "XBT",
+    ]) {
+      const intent = compileProductFulfillmentIntent({
+        format: "physical",
+        shippingPricingMode: "fixed",
+        amount: 5,
+        currency,
+        destinations: [
+          { code: "US", name: "United States", restrictTo: [], exclude: [] },
+        ],
+      })
+      expect(intent).toMatchObject({
+        kind: "fixed_standard",
+        currency,
+        amount: 5,
+      })
+      if (intent.kind !== "fixed_standard")
+        throw new Error("Expected fixed shipping")
+      expect(
+        buildFixedShippingOptionEventDraft({
+          productDTag: PRODUCT_D_TAG,
+          intent,
+        }).tags
+      ).toContainEqual(["price", "5", currency])
+    }
+  })
+
   it("compiles the three shared fulfillment intents", () => {
     expect(
       compileProductFulfillmentIntent({
@@ -1197,7 +1305,7 @@ describe("canonical fixed product shipping", () => {
 
     try {
       expect(await getShippingOptionsByCoordinates([coordinate])).toMatchObject(
-        [{ eventId: newer.id, price: 2 }]
+        [{ eventId: newer.id, price: 2, sourceEvent: newer.rawEvent() }]
       )
 
       visibleShippingEvents = [older]

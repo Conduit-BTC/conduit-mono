@@ -15,7 +15,9 @@ import {
 import {
   canonicalizeShippingCost,
   getShippingCostSats,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   type CommerceShippingCostLike,
   type PricingRateInput,
 } from "../pricing"
@@ -49,7 +51,7 @@ import {
 import {
   MERCHANT_SHIPPING_POLICY_D_TAG,
   SHIPPING_POLICY_EXTENSION_TAG,
-  parseShippingPolicyEventTags,
+  parsePrivateOrderShippingPolicyTags,
   shippingMinorUnitsToAmount,
   type ShippingPolicy,
   type ShippingPolicyQuote,
@@ -212,6 +214,9 @@ export function compileProductFulfillmentIntent(input: {
 
   const currency = normalizeCurrencyCode(input.currency)
   if (!currency) throw new Error("Fixed shipping currency is required")
+  if (!isSupportedCommercePriceCurrency(currency)) {
+    throw new Error("Fixed shipping currency is not supported for new commerce")
+  }
 
   const countries = Array.from(
     new Set(
@@ -258,6 +263,9 @@ export function buildFixedShippingOptionEventDraft(input: {
   intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
+  if (!isSupportedCommercePriceCurrency(input.intent.currency)) {
+    throw new Error("Fixed shipping currency is not supported for new commerce")
+  }
   let tags: string[][] = [
     ["d", getProductShippingOptionDTag(input.productDTag)],
     ["title", "Standard Shipping"],
@@ -381,6 +389,8 @@ export interface ShippingConfig {
 /** Parsed representation of a kind-30406 event */
 export interface ParsedShippingOption {
   eventId: string
+  /** Exact validated revision selected by the authoritative coordinate read. */
+  sourceEvent?: SignedPublicNostrEvent
   /** Addressable id: "30406:<pubkey>:<d>" */
   id: string
   pubkey: string
@@ -542,12 +552,20 @@ export function parseShippingOptionEvent(
     event.kind !== EVENT_KINDS.SHIPPING_OPTION
   )
     return null
+  return parseShippingOptionFieldsForPrivateOrder(event)
+}
+
+/** Internal historical terms only, after the private owner's signature check. */
+export function parseShippingOptionFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedShippingOption | null {
+  if (event.kind !== EVENT_KINDS.SHIPPING_OPTION) return null
   const tags = event.tags
   const hasPolicyMarker = tags.some(
     (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
   )
   const shippingPolicy = hasPolicyMarker
-    ? parseShippingPolicyEventTags(event)
+    ? parsePrivateOrderShippingPolicyTags(event.tags)
     : undefined
   if (hasPolicyMarker && !shippingPolicy) return null
 
@@ -2287,20 +2305,27 @@ async function readShippingOptionsByCoordinates(
   ])
   const deletionEvents =
     await getMergedShippingDeletionEvidence(deletionTargetIds)
+  const sources = new Map(shippingEvents.map((event) => [event.id, event]))
   return {
     options: selectLatestShippingOptions(
       shippingEvents.filter(isVerifiedNostrEvent),
       deletionEvents.filter(isVerifiedNostrEvent)
     )
       .filter((option) => requested.has(option.id))
-      .map((option) => ({
-        ...option,
-        readSource: observedIds.has(option.eventId)
-          ? ("relay" as const)
-          : ("retained" as const),
-        readCoverage: coverage,
-        optionReadSaturated: saturatedCoordinates.has(option.id),
-      })),
+      .map((option) => {
+        const event = sources.get(option.eventId)
+        return {
+          ...option,
+          readSource: observedIds.has(option.eventId)
+            ? ("relay" as const)
+            : ("retained" as const),
+          readCoverage: coverage,
+          optionReadSaturated: saturatedCoordinates.has(option.id),
+          ...(event && isVerifiedNostrEvent(event)
+            ? { sourceEvent: cloneSignedEvent(event) }
+            : {}),
+        }
+      }),
     coverage,
     signedEvents: shippingEvents,
     deletionEvents,
@@ -2400,14 +2425,14 @@ export function resolveProductFulfillment(
     }
   }
 
-  const productCurrency = normalizeCurrencyCode(
+  const productCurrency = normalizeCurrencyIdentity(
     product.sourcePrice?.normalizedCurrency ??
       product.sourcePrice?.currency ??
       product.currency
   )
   if (
     (!option.shippingPolicy || option.shippingPolicy.version === 1) &&
-    option.currency !== productCurrency
+    normalizeCurrencyIdentity(option.currency) !== productCurrency
   ) {
     return {
       intent: "fixed_standard",
@@ -2522,9 +2547,11 @@ export type ShippingDestinationEligibility =
   | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
   | { eligible: null; reason: "unknown" }
 
-export function getShippingDestinationEligibility(
+export function getShippingDestinationEligibility<
+  T extends Pick<ParsedShippingOption, "countryRules">,
+>(
   destination: { country: string; postalCode: string },
-  shippingOptions: ParsedShippingOption[]
+  shippingOptions: readonly T[]
 ): ShippingDestinationEligibility {
   if (shippingOptions.length === 0) {
     return { eligible: null, reason: "unknown" }

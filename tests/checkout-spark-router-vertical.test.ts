@@ -2,6 +2,7 @@ import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { describe, expect, it, mock } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { generateSecretKey } from "nostr-tools/pure"
 import { openCheckoutSparkRecoveryDelivery } from "@conduit/core"
 
 import {
@@ -29,7 +30,11 @@ const CREATED_AT = 1_800_000_000_000
 const RELAY = "wss://merchant.inbox.relay.dev"
 const MNEMONIC = generateSparkMnemonic()
 const BUYER = plainTestSigner(NDKPrivateKeySigner.generate())
-const MERCHANT = plainTestSigner(NDKPrivateKeySigner.generate())
+const MERCHANT_KEY = generateSecretKey()
+const MERCHANT = plainTestSigner(
+  new NDKPrivateKeySigner(Buffer.from(MERCHANT_KEY).toString("hex"))
+)
+const RECIPIENT_SIGNING_KEYS = new Map([[MERCHANT.pubkey, MERCHANT_KEY]])
 
 class MemoryStorage {
   readonly values = new Map<string, string>()
@@ -96,7 +101,11 @@ function input(storage: MemoryStorage) {
 }
 
 async function readyInput(storage: MemoryStorage) {
-  return withMockRouterInvoiceWitnesses(input(storage), CREATED_AT / 1_000)
+  return withMockRouterInvoiceWitnesses(
+    input(storage),
+    CREATED_AT / 1_000,
+    RECIPIENT_SIGNING_KEYS
+  )
 }
 
 function fundingReceive() {

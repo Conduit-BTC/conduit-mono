@@ -29,8 +29,161 @@ const evidence = {
 const reporterPath = resolve("scripts/ci/playwright_smoke_reporter.ts")
 const playwrightCli = require.resolve("@playwright/test/cli")
 const playwrightImport = require.resolve("@playwright/test")
+const smokeDiagnosticsImport = resolve("e2e/helpers/smoke-diagnostics.ts")
 
 describe("composed smoke evidence", () => {
+  it("keeps bounded expected conditions through controlled first-attempt failures", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-context-"))
+    const sentinel = "private-" + crypto.randomUUID()
+    try {
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        join(directory, "e2e/merchant-order-inbox.playwright.ts"),
+        [
+          `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
+          `import { recordSmokeDiagnostic, recordSmokeFailureContext } from ${JSON.stringify(smokeDiagnosticsImport)}`,
+          'for (const [expected, observed] of [["buyer_dialog_ready", "unmet"], ["buyer_send_clicked", "pending"], ["buyer_reply_relay_observed", "pending"], ["buyer_reply_saved", "unmet"]]) {',
+          "  test(`controlled ${expected} @commerce`, async ({}, info) => {",
+          "    test.setTimeout(500);",
+          "    recordSmokeFailureContext(info, expected, observed);",
+          `    recordSmokeDiagnostic(info, "order-reply", { phase: "buyer_reply", dialogVisible: false, privateValue: ${JSON.stringify(sentinel)} });`,
+          '    if (expected === "buyer_reply_relay_observed") await new Promise(() => {});',
+          `    expect(${JSON.stringify(sentinel)}).toBe("other");`,
+          "  });",
+          "}",
+        ].join("\n")
+      )
+      const config = join(directory, "playwright.config.ts")
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      const progress = join(directory, "progress.log")
+      writeFileSync(
+        config,
+        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "chromium" }] }`
+      )
+      const run = (args: string[]) =>
+        spawnSync(
+          process.execPath,
+          [playwrightCli, "test", "-c", config, ...args],
+          {
+            cwd: directory,
+            encoding: "utf8",
+            timeout: 15000,
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+          }
+        )
+      const discovery = run(["--list", "--reporter=json"])
+      if (discovery.status !== 0)
+        throw new Error(
+          JSON.stringify(JSON.parse(discovery.stdout).errors).replaceAll(
+            sentinel,
+            "redacted"
+          )
+        )
+      const manifest = buildPlaywrightSmokeManifest(
+        JSON.parse(discovery.stdout),
+        ["commerce"],
+        evidence
+      )
+      expect(manifest.selectedTestCount).toBe(4)
+      expect(run([]).status).toBe(1)
+      const report = JSON.parse(
+        readFileSync(output, "utf8")
+      ) as PlaywrightJsonReport
+      const retained = JSON.parse(readFileSync(artifact, "utf8"))
+      const combined = JSON.stringify(retained) + readFileSync(progress, "utf8")
+      expect(combined).not.toContain(sentinel)
+      expect(retained.status).toBe("failed")
+      expect(retained.timing.completedAttempts).toBe(4)
+      expect(
+        retained.tests.map(
+          (spec: { tests: Array<{ results: Array<{ status: string }> }> }) =>
+            spec.tests[0]!.results[0]!.status
+        )
+      ).toEqual(["failed", "failed", "timedOut", "failed"])
+      expect(
+        retained.tests.map(
+          (spec: {
+            tests: Array<{
+              results: Array<{ retry: number; failure: unknown }>
+            }>
+          }) => spec.tests[0]!.results[0]!.retry
+        )
+      ).toEqual([0, 0, 0, 0])
+      expect(
+        retained.tests.map(
+          (spec: {
+            tests: Array<{ results: Array<{ failure: { context: unknown } }> }>
+          }) => spec.tests[0]!.results[0]!.failure.context
+        )
+      ).toEqual([
+        {
+          boundary: "app-readiness",
+          expected: "buyer_dialog_ready",
+          observed: "unmet",
+        },
+        {
+          boundary: "user-action",
+          expected: "buyer_send_clicked",
+          observed: "pending",
+        },
+        {
+          boundary: "relay-provider",
+          expected: "buyer_reply_relay_observed",
+          observed: "pending",
+        },
+        {
+          boundary: "assertion",
+          expected: "buyer_reply_saved",
+          observed: "unmet",
+        },
+      ])
+      for (const spec of retained.tests) {
+        expect(spec.tests[0].results[0].diagnostics).toEqual([
+          { kind: "order-reply", phase: "buyer_reply", dialogVisible: false },
+        ])
+      }
+      expect(() =>
+        validatePlaywrightSmokeExecution(
+          report,
+          manifest,
+          ["commerce"],
+          evidence
+        )
+      ).toThrow("did not pass cleanly")
+      const injected = structuredClone(report)
+      injected.suites![0]!.specs![0]!.tests![0]!.results![0]!.diagnostics = [
+        { kind: "order-reply", phase: "buyer_reply", privateValue: sentinel },
+      ]
+      injected.suites![0]!.specs![0]!.tests![0]!.results![0]!.failure = {
+        category: "assertion",
+        context: {
+          boundary: "user-action",
+          expected: "buyer_dialog_ready",
+          observed: "unmet",
+          privateValue: sentinel,
+        },
+      }
+      let injectedMessage = ""
+      try {
+        validatePlaywrightSmokeExecution(
+          injected,
+          manifest,
+          ["commerce"],
+          evidence
+        )
+      } catch (error) {
+        injectedMessage = String(error)
+      }
+      expect(injectedMessage).toContain('"dialogVisible":false')
+      expect(injectedMessage).not.toContain(sentinel)
+      expect(injectedMessage).not.toContain("privateValue")
+      expect(injectedMessage).not.toContain('"expected":"buyer_dialog_ready"')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30000)
+
   it("reports distinct parameterized failures through the real runner without exposing values", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-evidence-"))
     const sentinel = "private-" + crypto.randomUUID()
@@ -280,7 +433,7 @@ describe("composed smoke evidence", () => {
           ["market"],
           evidence
         )
-      ).toThrow()
+      ).toThrow('"phase":"startup"')
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

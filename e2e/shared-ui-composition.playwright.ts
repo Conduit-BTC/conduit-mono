@@ -18,6 +18,7 @@ import {
   disposeRuntimeSignerIdentity,
   installRealTestSigner,
 } from "./helpers/real-nip07-signer"
+import { recordSmokeFailureContext } from "./helpers/smoke-diagnostics"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -85,14 +86,20 @@ for (const theme of ["day-market", "night-market"] as const) {
         name: "Import wallet",
         exact: true,
       })
+      recordSmokeFailureContext(info, "wallet_import_control_ready")
       await expect(trigger).toBeEnabled()
+      recordSmokeFailureContext(info, "wallet_import_control_ready", "met")
+      recordSmokeFailureContext(info, "wallet_import_click_completed")
       await trigger.click()
+      recordSmokeFailureContext(info, "wallet_import_click_completed", "met")
+      recordSmokeFailureContext(info, "wallet_import_dialog_ready")
       const dialog = page.getByRole("dialog", {
         name: "Import wallet",
         exact: true,
       })
       const phrase = dialog.getByLabel("Recovery phrase", { exact: true })
       const field = await expectSharedField(phrase)
+      recordSmokeFailureContext(info, "wallet_import_dialog_ready", "met")
       expect(field.description).toBeTruthy()
       await expect(page.locator(`[id="${field.description}"]`)).toContainText(
         "original wallet"

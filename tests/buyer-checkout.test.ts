@@ -3,6 +3,14 @@
  * LNURL helpers, and NWC URI parsing.
  */
 import { describe, expect, it, mock, afterEach } from "bun:test"
+import { finalizeEvent } from "nostr-tools/pure"
+import {
+  convertShippingMinor,
+  getMerchantShippingPolicyCoordinate,
+  parseShippingPolicy,
+  shippingMoneyToMinorUnits,
+  shippingPolicyQuoteSchema,
+} from "@conduit/core"
 import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import {
   buildShippingAddressFromForm,
@@ -75,7 +83,11 @@ import {
   paymentProofMessageSchema,
 } from "../packages/core/src/schemas"
 import { makeBoundBolt11Fixture } from "./support/bolt11-fixture"
-import { publicFixturePubkey, signFixture } from "./helpers/public-event"
+import {
+  publicFixturePubkey,
+  publicFixtureSecret,
+  signFixture,
+} from "./helpers/public-event"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
@@ -927,6 +939,134 @@ function cartItem(overrides: Partial<CartItem> = {}): CartItem {
   }
 }
 
+function retainedShippingQuote(
+  currency: string,
+  itemCurrency = "SATS",
+  withHandling = false
+) {
+  const policyCoordinate =
+    getMerchantShippingPolicyCoordinate(publicFixturePubkey)
+  const productId = `30402:${publicFixturePubkey}:retained-shipping`
+  const pricingRate = {
+    rate: 50_000,
+    fetchedAt: 1_700_000_000_000,
+    source: "mempool" as const,
+    fiatUsdRates: { EUR: 1.25, BGN: 0.5, XYZ: 2 },
+    fiatSource: "frankfurter" as const,
+  }
+  const policy = parseShippingPolicy({
+    version: 2,
+    title: "Retained table",
+    originCountry: "US",
+    currency,
+    domestic: {
+      rules: [
+        {
+          country: "US",
+          bands: [{ maxWeightGrams: 1_000, priceMinor: 100 }],
+        },
+      ],
+    },
+    international: null,
+  })
+  // These exact historical wire terms are signed directly: a new writer must
+  // not be used to manufacture publication permission for retired currencies.
+  const policyEvent = finalizeEvent(
+    {
+      kind: 30406,
+      created_at: 1,
+      content: "Retained shipping terms",
+      tags: [
+        ["d", "conduit-shipping-policy"],
+        ["title", policy.title],
+        ["country", "US"],
+        ["service", "standard"],
+        ["conduit_shipping_table", "2", JSON.stringify(policy)],
+      ],
+    },
+    publicFixtureSecret
+  )
+  const itemAmount = itemCurrency === "SATS" ? 1_000 : 10
+  const shippingHandling = withHandling
+    ? { amount: 1, currency: itemCurrency, normalizedCurrency: itemCurrency }
+    : undefined
+  const productEvent = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 2,
+      content: "Retained product terms",
+      tags: [
+        ["d", "retained-shipping"],
+        ["title", "Retained product"],
+        ["price", String(itemAmount), itemCurrency],
+        ["type", "simple", "physical"],
+        ["shipping_option", policyCoordinate],
+        ["weight", "200", "g"],
+        ...(shippingHandling
+          ? [
+              [
+                "conduit_shipping_adjustments",
+                "1",
+                JSON.stringify({ handling: shippingHandling }),
+              ],
+            ]
+          : []),
+      ],
+    },
+    publicFixtureSecret
+  )
+  const handlingMinor = shippingHandling
+    ? convertShippingMinor(
+        shippingMoneyToMinorUnits(shippingHandling.amount, itemCurrency),
+        itemCurrency,
+        currency,
+        pricingRate
+      )
+    : 0
+  const amountMinor = 100 + handlingMinor
+  return shippingPolicyQuoteSchema.parse({
+    version: 2,
+    merchantPubkey: publicFixturePubkey,
+    policyCoordinate,
+    policyEventId: policyEvent.id,
+    policyCreatedAt: policyEvent.created_at,
+    currency,
+    combinedWeightGrams: 200,
+    shippedSubtotalMinor: 0,
+    bandMaxWeightGrams: 1_000,
+    bandPriceMinor: 100,
+    handlingMinor,
+    freeShippingApplied: false,
+    amountMinor,
+    amountSats: convertShippingMinor(
+      amountMinor,
+      currency,
+      "SATS",
+      pricingRate
+    ),
+    pricingRate: currency === "SATS" && !shippingHandling ? null : pricingRate,
+    destination: { country: "US" },
+    rule: { country: "US" },
+    itemProductIds: [productId],
+    policyEvent,
+    items: [
+      {
+        productId,
+        productEventId: productEvent.id,
+        productCreatedAt: productEvent.created_at,
+        quantity: 1,
+        weightGrams: 200,
+        currency: itemCurrency,
+        subtotalMinor: shippingMoneyToMinorUnits(itemAmount, itemCurrency),
+        convertedSubtotalMinor: 0,
+        convertedHandlingMinor: handlingMinor,
+        ...(shippingHandling ? { shippingHandling } : {}),
+        productEvent,
+      },
+    ],
+  })
+}
+
 function emptyWalletBalance() {
   return {
     status: "unchecked" as const,
@@ -950,6 +1090,95 @@ function emptyWalletBudget() {
 }
 
 describe("checkout payment helpers", () => {
+  it.each(["BGN", "XYZ"])(
+    "rejects a cached historical %s shipping allocation for a new purchase",
+    (currency) => {
+      const quote = retainedShippingQuote(currency)
+      const item = cartItem({
+        productId: quote.itemProductIds[0]!,
+        merchantPubkey: publicFixturePubkey,
+        productEventId: quote.items[0]!.productEventId,
+        shippingWeightGrams: quote.items[0]!.weightGrams,
+        format: "physical",
+        canonicalShippingResolved: true,
+        shippingOptionId: quote.policyCoordinate,
+        shippingPolicyQuote: quote,
+        shippingAllocatedCostSats: quote.amountSats,
+        shippingCostSats: quote.amountSats,
+      })
+      // It remains valid recovery evidence, but cached sats are not admission.
+      expect(shippingPolicyQuoteSchema.parse(quote)).toEqual(quote)
+      expect(getCheckoutShippingCost([item], quote.pricingRate)).toMatchObject({
+        status: "priced",
+        totalSats: quote.amountSats,
+      })
+      expect(
+        buildCheckoutPricingIntent([item], quote.pricingRate, 1_700_000_000_000)
+      ).toMatchObject({ status: "error", code: "unpriced_items" })
+    }
+  )
+
+  it.each(["BGN", "XYZ"])(
+    "rejects %s item and handling terms hidden in a cached SATS table quote",
+    (currency) => {
+      for (const withHandling of [false, true]) {
+        const quote = retainedShippingQuote("SATS", currency, withHandling)
+        expect(shippingPolicyQuoteSchema.parse(quote)).toEqual(quote)
+        expect(
+          buildCheckoutPricingIntent(
+            [
+              cartItem({
+                productId: quote.itemProductIds[0]!,
+                merchantPubkey: publicFixturePubkey,
+                productEventId: quote.items[0]!.productEventId,
+                shippingWeightGrams: quote.items[0]!.weightGrams,
+                shippingHandling:
+                  "shippingHandling" in quote.items[0]!
+                    ? quote.items[0]!.shippingHandling
+                    : undefined,
+                canonicalShippingResolved: true,
+                shippingOptionId: quote.policyCoordinate,
+                shippingPolicyQuote: quote,
+                shippingAllocatedCostSats: quote.amountSats,
+              }),
+            ],
+            quote.pricingRate,
+            1_700_000_000_000
+          )
+        ).toMatchObject({ status: "error", code: "unpriced_items" })
+      }
+    }
+  )
+
+  it.each(["USD", "EUR"])(
+    "keeps a valid cached %s shipping quote available for new checkout",
+    (currency) => {
+      const quote = retainedShippingQuote(currency)
+      expect(
+        buildCheckoutPricingIntent(
+          [
+            cartItem({
+              productId: quote.itemProductIds[0]!,
+              merchantPubkey: publicFixturePubkey,
+              productEventId: quote.items[0]!.productEventId,
+              shippingWeightGrams: quote.items[0]!.weightGrams,
+              canonicalShippingResolved: true,
+              shippingOptionId: quote.policyCoordinate,
+              shippingPolicyQuote: quote,
+              shippingAllocatedCostSats: quote.amountSats,
+            }),
+          ],
+          quote.pricingRate,
+          1_700_000_000_000
+        )
+      ).toMatchObject({
+        status: "ok",
+        totalSats: 1_000 + quote.amountSats,
+        shippingCost: { status: "priced", totalSats: quote.amountSats },
+      })
+    }
+  )
+
   it("preserves the exact variation and specification snapshot in pricing", () => {
     const intent = buildCheckoutPricingIntent(
       [
@@ -2552,6 +2781,7 @@ describe("payCheckoutInvoice", () => {
       )
     ).resolves.toEqual({
       status: "retryable_failure",
+      phase: "before_publish",
       reason: "Spark payment was not approved.",
     })
     expect(weblnPay).toHaveBeenCalledTimes(0)
@@ -2632,7 +2862,10 @@ describe("payCheckoutInvoice", () => {
       }
     )
 
-    expect(result).toMatchObject({ status: "retryable_failure" })
+    expect(result).toMatchObject({
+      status: "retryable_failure",
+      phase: "before_publish",
+    })
     expect(nwcPay).toHaveBeenCalledTimes(1)
     expect(weblnPay).toHaveBeenCalledTimes(0)
     expect(telemetryResults).toEqual([
@@ -2764,6 +2997,7 @@ describe("payCheckoutInvoice", () => {
       )
     ).resolves.toEqual({
       status: "retryable_failure",
+      phase: "before_publish",
       reason: "The selected browser wallet is unavailable.",
     })
     expect(walletPay).toHaveBeenCalledTimes(0)
@@ -2967,7 +3201,11 @@ describe("payCheckoutInvoice", () => {
         }
       )
 
-      expect(result).toEqual({ status: "retryable_failure", reason })
+      expect(result).toEqual({
+        status: "retryable_failure",
+        phase: "before_publish",
+        reason,
+      })
       expect(telemetryResults).toEqual([
         {
           amountSats: 1,
