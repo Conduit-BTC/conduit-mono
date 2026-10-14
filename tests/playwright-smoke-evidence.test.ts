@@ -31,6 +31,62 @@ const playwrightCli = require.resolve("@playwright/test/cli")
 const playwrightImport = require.resolve("@playwright/test")
 
 describe("composed smoke evidence", () => {
+  it("retains only wallet import phase booleans after a controlled failure", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "conduit-wallet-menu-evidence-")
+    )
+    const privateValue = "private-" + crypto.randomUUID()
+    try {
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        join(directory, "e2e/shared-ui-composition.playwright.ts"),
+        [
+          `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
+          'test("controlled wallet menu failure @market", () => {',
+          `  test.info().annotations.push({ type: "smoke:wallet-import-menu", description: JSON.stringify({ phase: "trigger_clicked", observationAvailable: true, triggerVisible: true, triggerEnabled: true, importVisible: false, importEnabled: false, dialogVisible: false, loadingVisible: true, walletId: "${privateValue}" }) });`,
+          "  expect(false).toBe(true);",
+          "});",
+        ].join("\n")
+      )
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      writeFileSync(
+        join(directory, "playwright.config.ts"),
+        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
+      )
+      const run = spawnSync(
+        process.execPath,
+        [playwrightCli, "test", "-c", join(directory, "playwright.config.ts")],
+        {
+          cwd: directory,
+          encoding: "utf8",
+          timeout: 15000,
+          env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+        }
+      )
+      expect(run.status).toBe(1)
+      const serialized = readFileSync(artifact, "utf8")
+      expect(serialized).not.toContain(privateValue)
+      const report = JSON.parse(serialized)
+      expect(report.status).toBe("failed")
+      expect(report.tests[0].tests[0].results[0].diagnostics).toEqual([
+        {
+          kind: "wallet-import-menu",
+          phase: "trigger_clicked",
+          observationAvailable: true,
+          triggerVisible: true,
+          triggerEnabled: true,
+          importVisible: false,
+          importEnabled: false,
+          dialogVisible: false,
+          loadingVisible: true,
+        },
+      ])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("reports distinct parameterized failures through the real runner without exposing values", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-evidence-"))
     const sentinel = "private-" + crypto.randomUUID()
