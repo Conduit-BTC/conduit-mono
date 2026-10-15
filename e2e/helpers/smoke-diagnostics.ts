@@ -699,6 +699,27 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         textPersisted: "boolean",
       },
     },
+    "router-retirement": {
+      file: "e2e/commerce-router-recovery.playwright.ts",
+      fields: {
+        phase: [
+          "nonzero_observed",
+          "zero_applied",
+          "fresh_check_started",
+          "retirement_observed",
+          "failure",
+        ],
+        scoped: "boolean",
+        zeroFixtureApplied: "boolean",
+        observationAvailable: "boolean",
+        persistedState: ["absent", "active", "retired"],
+        availableZero: ["confirmed", "not_confirmed", "unobserved"],
+        ownedZero: ["confirmed", "not_confirmed", "unobserved"],
+        pendingEmpty: ["confirmed", "not_confirmed", "unobserved"],
+        progressPresent: "boolean",
+        cleanupComplete: "boolean",
+      },
+    },
     "commerce-buyer-status": {
       file: "e2e/commerce.playwright.ts",
       fields: {
@@ -1170,6 +1191,7 @@ export function recordSmokeDiagnostic(
     | "manual-checkout-stop"
     | "commerce-inbox-reconnect"
     | "commerce-inbox-self-copy"
+    | "router-retirement"
     | "commerce-journey"
     | "commerce-buyer-status"
     | "wallet-migration"

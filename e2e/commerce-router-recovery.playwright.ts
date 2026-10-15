@@ -48,6 +48,7 @@ import {
 } from "./helpers/hermetic-network"
 import { createHermeticSparkNative } from "./helpers/hermetic-spark-native"
 import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { viteFileModuleUrl } from "./helpers/vite-file-module-url"
 import {
   createHermeticSparkTransport,
@@ -490,6 +491,15 @@ async function rehearseRouter(
 ): Promise<void> {
   test.setTimeout(240_000)
   const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
+  type RetirementDiagnosticPhase =
+    | "nonzero_observed"
+    | "zero_applied"
+    | "fresh_check_started"
+    | "retirement_observed"
+    | "failure"
+  let retirementDiagnostic:
+    ((phase: RetirementDiagnosticPhase) => Promise<void>) | undefined
+  let zeroFixtureApplied = false
   const sharedClock = openPlaywrightRouterClock()
   sharedClock.reset()
   const productTitle = "Isolated supplier router download"
@@ -1356,6 +1366,64 @@ async function rehearseRouter(
         exact: true,
       })
       const recoveredOrder = recovery
+      retirementDiagnostic = async (phase) => {
+        const values: Record<string, unknown> = {
+          phase,
+          scoped: scopedRecovery,
+          zeroFixtureApplied,
+          observationAvailable: false,
+        }
+        try {
+          recordSmokeDiagnostic(test.info(), "router-retirement", values)
+        } catch {
+          return
+        }
+        // Ordinary markers never wait on browser or storage observations.
+        if (phase !== "failure") return
+        try {
+          const [persistedState, ui] = await Promise.all([
+            merchantWalletState(coldPage, orderId),
+            recovery.evaluate((region) => {
+              const result: Record<string, string | boolean> = {}
+              for (const field of [
+                "availableZero",
+                "ownedZero",
+                "pendingEmpty",
+              ]) {
+                const text = region.querySelector(
+                  `[data-retirement-check="${field}"]`
+                )?.textContent
+                result[field] =
+                  text === "Confirmed"
+                    ? "confirmed"
+                    : text === "Not confirmed"
+                      ? "not_confirmed"
+                      : "unobserved"
+              }
+              result.progressPresent = !!region.querySelector(
+                '[role="progressbar"]'
+              )
+              result.cleanupComplete = [...region.querySelectorAll("*")].some(
+                (element) =>
+                  element.children.length === 0 &&
+                  element.textContent === "Recovery cleanup complete"
+              )
+              return result
+            }),
+          ])
+          Object.assign(values, ui, {
+            persistedState,
+            observationAvailable: true,
+          })
+        } catch {
+          // Keep the original failure and unavailable observations explicit.
+        }
+        try {
+          recordSmokeDiagnostic(test.info(), "router-retirement", values)
+        } catch {
+          // A diagnostic rejection must not replace the original stage error.
+        }
+      }
       const assertScopedCleanupComplete = async () => {
         await expect(
           recovery.getByText("Recovery cleanup complete", { exact: true })
@@ -1868,12 +1936,28 @@ async function rehearseRouter(
           exact: false,
         })
       ).toBeVisible()
+      await retirementDiagnostic("nonzero_observed")
       setStage("cold Merchant retires only after fresh terminal zero evidence")
       control().setAdditionalOwnedSats(0)
-      if (!scopedRecovery) await coldPersistence.reload()
+      zeroFixtureApplied = true
+      await retirementDiagnostic("zero_applied")
+      // The nonzero observation completed a failed cleanup attempt. Its
+      // exponential retry delay can outlive this assertion. A fresh explicit
+      // scoped check preserves the paused URL and the untouched order.
+      await coldPersistence.reload()
+      if (scopedRecovery) {
+        const finishRecovery = recovery.getByRole("button", {
+          name: "Finish recovery",
+          exact: true,
+        })
+        await expect(finishRecovery).toBeVisible()
+        await finishRecovery.click()
+      }
+      await retirementDiagnostic("fresh_check_started")
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
+      await retirementDiagnostic("retirement_observed")
       if (scopedRecovery) await assertScopedCleanupComplete()
       const completed = control().snapshot()
       setStage(
@@ -2494,6 +2578,18 @@ async function rehearseRouter(
     bodyCompleted = true
   } catch {
     phaseRecorder.failed()
+    if (retirementDiagnostic) {
+      // Diagnostics must not turn a failed case into another unbounded wait.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        retirementDiagnostic("failure"),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 1_000)
+        }),
+      ])
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer))
+    }
     // Never serialize underlying assertions, DOM, invoices or generated keys.
     throw new Error(`Isolated router smoke failed during ${stage}.`)
   } finally {
