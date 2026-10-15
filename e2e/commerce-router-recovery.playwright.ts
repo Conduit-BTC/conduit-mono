@@ -277,6 +277,46 @@ async function merchantRecoveryAdmission(page: Page, orderId: string | null) {
   )
 }
 
+// Re-read the original Merchant recovery through its authenticated discovery
+// path. Optional outgoing progress is not a recovery or guest-receipt gate.
+// Only this exact-order availability boolean leaves the isolated page.
+async function hasRetainedMerchantRecovery(
+  page: Page,
+  orderId: string | null
+): Promise<boolean> {
+  const databasePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
+  const commercePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ databasePath, commercePath, orderId }) => {
+      const { db } = await import(/* @vite-ignore */ databasePath)
+      const bindings = await db.checkoutSparkPlanBindings.toArray()
+      const matching = bindings.filter(
+        (row: { orderWitness?: { orderId: string } }) =>
+          row.orderWitness?.orderId === orderId
+      )
+      if (matching.length !== 1) return false
+      const binding = matching[0]!
+      const { getMerchantCheckoutSparkRecoveryList } = await import(
+        /* @vite-ignore */ commercePath
+      )
+      const read = await getMerchantCheckoutSparkRecoveryList(
+        binding.orderWitness.merchantPubkey
+      )
+      return read.candidates.some(
+        (candidate: {
+          checkoutId: string
+          orderId: string
+          planDigest: string
+        }) =>
+          candidate.checkoutId === binding.checkoutId &&
+          candidate.orderId === orderId &&
+          candidate.planDigest === binding.planDigest
+      )
+    },
+    { databasePath, commercePath, orderId }
+  )
+}
+
 // Read-only terminal-state check: receipt truth must not strand a submitted
 // exact request behind the retirement gate. No provider or order data leaves
 // this isolated browser; the reporter emits only the fixed assertion phase.
@@ -873,6 +913,58 @@ async function rehearseRouter(
     await expect(catalogPrice).toBeVisible()
     await expect(catalogPrice).toHaveText("Estimated conversion: ₿1,113")
     await expect(product.getByText(/Estimated total/)).toBeVisible()
+    if (buyerMode === "guest") {
+      setStage("guest product detail navigation")
+      const revisions = await readTestRelayEvents({
+        kinds: [30_402],
+        authors: [merchant.pubkey],
+      })
+      const revision = revisions[0]!
+      const identifier = revision.tags.find(([key]) => key === "d")?.[1]
+      if (!identifier)
+        throw new Error("The public product reference is unavailable")
+      const reference = nip19.naddrEncode({
+        kind: 30_402,
+        pubkey: merchant.pubkey,
+        identifier,
+        relays: [TEST_RELAY_URL],
+      })
+      await page.goto(`${marketUrl}/products/${reference}`)
+      await expect(
+        page.getByRole("heading", { name: productTitle, exact: true, level: 1 })
+      ).toBeVisible()
+      const addFromDetail = page.getByRole("button", {
+        name: "Add 1 to cart",
+        exact: true,
+      })
+      await expect(addFromDetail).toBeEnabled()
+      setStage("guest product detail cart admission")
+      await addFromDetail.click()
+      const detailCart = page.getByRole("region", {
+        name: "Cart inventory",
+        exact: true,
+      })
+      await expect(
+        detailCart.getByRole("link", {
+          name: "Continue to checkout",
+          exact: true,
+        })
+      ).toBeVisible()
+      expect(walletInitializations).toBe(0)
+      expect(lnurl.snapshot().invoicesIssued).toBe(0)
+      // Keep the original guest catalog-card add and full-cart checkout below.
+      // The HUD opens automatically when its first item is added.
+      setStage("guest product detail cart reset")
+      await detailCart
+        .getByRole("button", {
+          name: `Decrease ${productTitle} quantity`,
+          exact: true,
+        })
+        .click()
+      await expect(detailCart).toHaveCount(0)
+      await page.goto(`${marketUrl}${catalogPath}`)
+      await expect(product).toBeVisible({ timeout: 30_000 })
+    }
     setStage("buyer add product to cart")
     await product
       .getByRole("button", { name: `Add ${productTitle} to cart`, exact: true })
@@ -1304,9 +1396,12 @@ async function rehearseRouter(
         exact: true,
       })
       const recoveredOrder = recovery
-      const assertScopedCleanupComplete = async () => {
+      const assertScopedPaymentsComplete = async () => {
         await expect(
-          recovery.getByText("Recovery cleanup complete", { exact: true })
+          recovery.getByText(
+            "Payment complete. The checkout wallet and recovery remain saved with this order.",
+            { exact: true }
+          )
         ).toBeVisible()
         await expect(
           recovery.getByRole("button", {
@@ -1668,6 +1763,7 @@ async function rehearseRouter(
           exact: true,
         })
       ).toBeVisible({ timeout: 30_000 })
+      setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
       await expect(
         recovery.getByText("Payment details", { exact: true })
@@ -1795,37 +1891,37 @@ async function rehearseRouter(
       )
       await expect.poll(supplierNoticeCount, { timeout: 30_000 }).toBe(1)
 
-      setStage("cold Merchant drains automatic recovery before retirement")
-      await expect(
-        recovery.getByText("Payment complete. Recovery remains saved.", {
-          exact: true,
-        })
-      ).toBeVisible()
-      await expect(recovery.getByRole("progressbar")).toHaveCount(0)
-      await expect(
-        recovery.getByRole("button", { name: "Pause", exact: true })
-      ).toHaveCount(0)
-      setStage("cold Merchant retires only after fresh terminal zero evidence")
+      setStage(
+        "cold Merchant completes payment while retaining checkout recovery"
+      )
+      await assertScopedPaymentsComplete()
+      setStage("cold Merchant keeps the completed checkout wallet active")
+      expect(await merchantWalletState(coldPage, orderId)).toBe("active")
+      setStage("cold Merchant retains original encrypted recovery")
+      expect(await hasRetainedMerchantRecovery(coldPage, orderId)).toBe(true)
       control().setAdditionalOwnedSats(0)
-      if (!scopedRecovery) await coldPersistence.reload()
-      await expect
-        .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
-        .toBe("retired")
-      if (scopedRecovery) await assertScopedCleanupComplete()
+      await coldPersistence.reload()
+      await assertScopedPaymentsComplete()
+      setStage("cold Merchant keeps the completed checkout wallet active")
+      expect(await merchantWalletState(coldPage, orderId)).toBe("active")
+      setStage("cold Merchant retains original encrypted recovery")
+      expect(await hasRetainedMerchantRecovery(coldPage, orderId)).toBe(true)
       const completed = control().snapshot()
       setStage(
         "cold Merchant reload automatically checks without replaying payouts"
       )
       await coldPersistence.reload()
-      setStage("cold Merchant retired recovery remains visible after reload")
+      setStage("cold Merchant retained recovery and paid state survive reload")
       await expect(recoveredOrder).toBeVisible({ timeout: 30_000 })
-      // The order row can be visible before the worker loads the persisted
-      // retirement tombstone. Wait for that read, not merely a mounted row.
-      setStage("cold Merchant retains retirement tombstone after reload")
-      await expect
-        .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
-        .toBe("retired")
-      setStage("cold Merchant retired reload does not replay payments")
+      await assertScopedPaymentsComplete()
+      setStage("cold Merchant keeps the completed checkout wallet active")
+      expect(await merchantWalletState(coldPage, orderId)).toBe("active")
+      setStage("cold Merchant retains original encrypted recovery")
+      expect(await hasRetainedMerchantRecovery(coldPage, orderId)).toBe(true)
+      await expect(
+        recovery.getByText("Recovery check details", { exact: true })
+      ).toHaveCount(0)
+      setStage("cold Merchant retained reload does not replay payments")
       expect(control().snapshot()).toEqual(completed)
       expect(completed.sendInvocationCount).toBe(2)
       expect(
@@ -1833,7 +1929,7 @@ async function rehearseRouter(
       ).toEqual(completedReceipt)
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
       if (scopedRecovery) {
-        await assertScopedCleanupComplete()
+        await assertScopedPaymentsComplete()
         expect(untouchedControl!.snapshot()).toEqual(untouchedSnapshot)
         expect(untouchedControl!.nativeSnapshot()).toEqual(
           untouchedNativeSnapshot
@@ -1995,25 +2091,11 @@ async function rehearseRouter(
         })
       ).toBeVisible()
 
-      setStage("unclaimed receiver keeps encrypted recovery active")
-      const cleanup = page.getByRole("button", {
-        name: "Check wallet cleanup",
-        exact: true,
-      })
-      await page.getByText("Checkout recovery details", { exact: true }).click()
-      await expect(cleanup).toBeEnabled()
-      await cleanup.click()
+      setStage("unclaimed receiver keeps encrypted checkout recovery saved")
       await expect(
-        page.getByText(
-          "Wallet cleanup is still pending. Saved recovery remains available.",
-          { exact: true }
-        )
-      ).toBeVisible()
-      await expect
-        .poll(() => merchantWalletState(page, buyerOrderId), {
-          timeout: 30_000,
-        })
-        .toBe("active")
+        page.getByRole("button", { name: "Check wallet cleanup", exact: true })
+      ).toHaveCount(0)
+      expect(await merchantWalletState(page, buyerOrderId)).toBe("active")
       expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
 
       setStage("sender-committed refresh does not replay native payment")
@@ -2028,7 +2110,9 @@ async function rehearseRouter(
       ).toBeVisible()
       expect(control().snapshot()).toEqual(committedPayments)
       expect(control().nativeSnapshot()).toEqual(committedNative)
-      await expect(cleanup).toBeEnabled()
+      await expect(
+        page.getByRole("button", { name: "Check wallet cleanup", exact: true })
+      ).toHaveCount(0)
       expect(await merchantWalletState(page, buyerOrderId)).toBe("active")
       expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
       bodyCompleted = true
@@ -2302,22 +2386,23 @@ async function rehearseRouter(
       expect(control().snapshot()).toEqual(settled)
     }
 
-    setStage("explicit buyer cleanup retains residual recovery")
+    setStage("paid checkout retains wallet and encrypted recovery")
+    const buyerOrderId = new URL(page.url()).searchParams.get("order")
     const cleanup = page.getByRole("button", {
       name: "Check wallet cleanup",
       exact: true,
     })
-    await page.getByText("Checkout recovery details", { exact: true }).click()
-    await expect(cleanup).toBeEnabled()
+    await expect(cleanup).toHaveCount(0)
+    expect(await merchantWalletState(page, buyerOrderId)).toBe("active")
+    expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
     if (capabilityRegression) {
       setStage("disabled execution preserves complete saved payment history")
       await setIsolatedRouterCapabilities(page, false, false)
       const walletOpensBeforeStop = nativeWalletOpenSuccesses
       await remountIsolatedSavedOrder(page)
-      await page.getByText("Checkout recovery details", { exact: true }).click()
       await refresh.click()
       await expect(refresh).toBeEnabled()
-      await expect(cleanup).toBeDisabled()
+      await expect(cleanup).toHaveCount(0)
       await expect(
         page.getByText("Payment recorded", { exact: true })
       ).toBeVisible()
@@ -2326,59 +2411,34 @@ async function rehearseRouter(
       expect(nativeWalletOpenSuccesses).toBe(walletOpensBeforeStop)
       await setIsolatedRouterCapabilities(page, false, true)
       await remountIsolatedSavedOrder(page)
-      await page.getByText("Checkout recovery details", { exact: true }).click()
       await refresh.click()
-      await expect(cleanup).toBeEnabled()
+      await expect(refresh).toBeEnabled()
     }
-    // The runner changes only native owned-funds evidence. It cannot manufacture
-    // an application retirement proof or change the persisted checkout state.
     control().setAdditionalOwnedSats(1)
-    await cleanup.click()
-    await expect(
-      page.getByText(
-        "Wallet cleanup is still pending. Saved recovery remains available.",
-        { exact: true }
-      )
-    ).toBeVisible()
-    await expect(cleanup).toBeEnabled()
-    await expect(
-      page.getByText("Payment complete", { exact: true })
-    ).toHaveCount(0)
     await refresh.click()
     await expect(refresh).toBeEnabled()
-    await expect(cleanup).toBeEnabled()
     await expect(
       page.getByText("Payment recorded", { exact: true })
     ).toBeVisible()
-    expect(control().snapshot()).toEqual(settled)
-
-    // Historical accounting must not claim fresh wallet balance: the extra
-    // native owned-funds observation changes cleanup, not recorded debit totals.
-    setStage("recorded receipt remains historical with additional owned funds")
     await assertRecordedReceipt()
-
-    setStage("explicit buyer cleanup verifies terminal zero funds")
-    control().setAdditionalOwnedSats(0)
-    await cleanup.click()
-    await expect(
-      page.getByText("Payment complete", { exact: true })
-    ).toBeVisible({ timeout: 30_000 })
+    expect(await merchantWalletState(page, buyerOrderId)).toBe("active")
+    expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
     expect(control().snapshot()).toEqual(settled)
-    setStage("retired buyer order survives reload without replay")
+    control().setAdditionalOwnedSats(0)
+    setStage("retained buyer order survives reload without replay")
     await buyerPersistence.reload()
     await expect(
-      page.getByText("Payment complete", { exact: true })
+      page.getByText("Payment recorded", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
     await expect(
       page.getByText("Order payment verified", { exact: true }).first()
     ).toBeVisible()
-    setStage("retired payout receipt survives reload")
     await assertRecordedReceipt()
+    await expect(cleanup).toHaveCount(0)
+    expect(await merchantWalletState(page, buyerOrderId)).toBe("active")
+    expect(await hasActiveEncryptedRecovery(page, buyerOrderId)).toBe(true)
     await refresh.click()
     await expect(refresh).toBeEnabled()
-    await expect(
-      page.getByText("Payment complete", { exact: true })
-    ).toBeVisible()
     expect(control().snapshot().sendInvocationCount).toBe(
       settled.sendInvocationCount
     )
@@ -2395,7 +2455,7 @@ async function rehearseRouter(
       await refresh.click()
       await expect(refresh).toBeEnabled()
       await expect(
-        page.getByText("Payment complete", { exact: true })
+        page.getByText("Payment recorded", { exact: true })
       ).toBeVisible()
       await assertRecordedReceipt()
       await selectIsolatedOrder(
@@ -2403,12 +2463,12 @@ async function rehearseRouter(
         await page.evaluate(() => crypto.randomUUID())
       )
       await expect(
-        page.getByText("Payment complete", { exact: true })
+        page.getByText("Payment recorded", { exact: true })
       ).toHaveCount(0)
       await expect(receipt).toHaveCount(0)
       await selectIsolatedOrder(page, originalOrderId)
       await expect(
-        page.getByText("Payment complete", { exact: true })
+        page.getByText("Payment recorded", { exact: true })
       ).toBeVisible({ timeout: 30_000 })
       await assertRecordedReceipt()
       await page
@@ -2418,7 +2478,7 @@ async function rehearseRouter(
         .getByRole("menuitem", { name: "Disconnect", exact: true })
         .click()
       await expect(
-        page.getByText("Payment complete", { exact: true })
+        page.getByText("Payment recorded", { exact: true })
       ).toHaveCount(0)
       await expect(receipt).toHaveCount(0)
       expect(control().snapshot()).toEqual(settled)
@@ -2461,7 +2521,7 @@ test("native router funding automatically reconciles commerce and the exact nati
   browser,
 }) => rehearseRouter(browser))
 
-test("native router records sender-committed treasury payment while receiver claim and retirement remain pending @commerce", async ({
+test("native router records sender-committed treasury payment while receiver claim remains pending and recovery stays saved @commerce", async ({
   browser,
 }) => rehearseRouter(browser, "buyer", "signed-in", null, false, false, true))
 

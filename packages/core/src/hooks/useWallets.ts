@@ -10,13 +10,11 @@ import {
 import { closeUnusedSparkWallets } from "../wallets/checkout-spark-router-wallet-retention"
 import { commitVerifiedSignerRecovery } from "../wallets/signer-recovery-commit"
 import {
-  ADDRESS_REQUEST_ORIGIN,
-  ADDRESS_REQUEST_PATH,
-  addressNameRequestPayload,
-  addressRequestHash,
-  decodeAddressNameRequestResponse,
-  type AddressNameRequestStatus,
-} from "../wallets/address-name-request"
+  accountAddressRequests,
+  restoreAddressRequests,
+} from "../wallets/account-address-request"
+import type { AddressRequestWorkflow } from "../wallets/address-request-workflow"
+import type { ConduitAppId } from "../protocol/nip89"
 import type { AccountSignerOperationOptions } from "../protocol/nostr-event-signer"
 import { SessionSignerError } from "../protocol/session-signer"
 import { DexieSparkRecoveryStore } from "../wallets/spark-recovery-store"
@@ -239,16 +237,7 @@ export interface UseWalletsReturn {
     username?: string,
     domain?: "breez.tips" | "conduit.cash"
   ): Promise<import("@conduit/core").BreezAddressState>
-  requestAddressName?(
-    walletId: string,
-    input: {
-      requestId: string
-      desiredName: string
-      note: string
-      token?: string
-      check?: boolean
-    }
-  ): Promise<AddressNameRequestStatus>
+  requestAddressName?: AddressRequestWorkflow
   receiveSparkLightning(walletId: string, amountSats?: number): Promise<string>
   getSparkAddress(walletId: string): Promise<string>
   listSparkPayments(walletId: string): Promise<SparkPaymentSummary[]>
@@ -285,13 +274,14 @@ function summarizeRecoveryDiscovery(
 const walletInitialization = new WalletInitializationCoordinator()
 
 export function useWallets(
-  options: { enabled?: boolean } = {}
+  options: { enabled?: boolean; appId?: ConduitAppId } = {}
 ): UseWalletsReturn {
   const auth = useAuth()
   const ownerRef = useRef(auth.accountPubkey)
   useLayoutEffect(() => {
     ownerRef.current = auth.accountPubkey
   }, [auth.accountPubkey])
+  const appId = options.appId ?? "market"
   const enabled = options.enabled ?? true
   const enabledRef = useRef(enabled)
   useLayoutEffect(() => {
@@ -1515,7 +1505,10 @@ export function useWallets(
       return
     // Sign-in discovers and restores; it never publishes device-only secrets.
     void runAccountWalletSetup(signer, () => synchronizeRecovery(signer)).then(
-      () => {
+      ({ discovery }) => {
+        void restoreAddressRequests(signer, discovery, appId).catch(() => {
+          /* Saved evidence remains intact; explicit request retry owns signer consent. */
+        })
         if (isWalletSignerCurrent(signer))
           setRecoverySyncAttempt({
             signer,
@@ -1534,6 +1527,7 @@ export function useWallets(
     )
   }, [
     enabled,
+    appId,
     auth.accountPubkey,
     auth.authGeneration,
     auth.signerReadiness,
@@ -1824,84 +1818,13 @@ export function useWallets(
     []
   )
 
-  const requestAddressName = useCallback(
-    async (
-      walletId: string,
-      input: {
-        requestId: string
-        desiredName: string
-        note: string
-        token?: string
-        check?: boolean
-      }
-    ): Promise<AddressNameRequestStatus> => {
-      const signer = requireWalletSigner()
-      const wallet = (await store.listVisible(signer.pubkey)).find(
-        (w) => w.id === walletId
-      )
-      if (!wallet || wallet.network !== "mainnet")
-        throw new Error("Choose an open mainnet wallet.")
-      const proof = await requireSparkManager().signAddressNameRequest(
-        walletId,
-        {
-          requestId: input.requestId,
-          desiredName: input.desiredName.trim().toLowerCase(),
-          note: input.note.trim(),
-          network: "mainnet",
-          ownerPubkey: signer.pubkey,
-          timestamp: Math.floor(Date.now() / 1000),
-        }
-      )
-      assertWalletSignerCurrent(signer)
-      const body = addressNameRequestPayload(proof)
-      const send = async (check: boolean): Promise<Response> => {
-        const path = ADDRESS_REQUEST_PATH + (check ? "/status" : "")
-        const event = await signer.signEvent({
-          kind: 27235,
-          pubkey: signer.pubkey,
-          created_at: Math.floor(Date.now() / 1000),
-          content: "",
-          tags: [
-            ["u", ADDRESS_REQUEST_ORIGIN + path],
-            ["method", "POST"],
-            ["payload", addressRequestHash(body)],
-          ],
-        })
-        assertWalletSignerCurrent(signer)
-        return fetch(ADDRESS_REQUEST_ORIGIN + path, {
-          method: "POST",
-          body,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Nostr ${btoa(JSON.stringify(event))}`,
-            ...(!check && input.token
-              ? { "X-Turnstile-Token": input.token }
-              : {}),
-          },
-          signal: AbortSignal.timeout(20_000),
-          credentials: "omit",
-          redirect: "error",
-          cache: "no-store",
-          referrerPolicy: "no-referrer",
-        })
-      }
-      try {
-        let result = await send(!!input.check)
-        if (!input.check && !result.ok) {
-          // A submit can commit before its response fails. Read status with the
-          // exact original wallet-signed payload before reporting uncertainty.
-          result = await send(true)
-        }
-        const status = await decodeAddressNameRequestResponse(result)
-        assertWalletSignerCurrent(signer)
-        return status
-      } catch {
-        assertWalletSignerCurrent(signer)
-        return "pending"
-      }
-    },
-    [store]
-  )
+  const addressRequestSigner = getAccountSigner()
+  const requestAddressName = useMemo(() => {
+    const signer = addressRequestSigner
+    return signer && auth.signerReadiness === "ready"
+      ? accountAddressRequests(signer, appId)
+      : undefined
+  }, [appId, addressRequestSigner, auth.signerReadiness])
 
   const getSparkAddress = useCallback(async (walletId: string) => {
     return requireSparkManager().getSparkAddress(walletId)

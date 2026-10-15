@@ -21,6 +21,9 @@ const routerSmokePhases = [
   "buyer catalog product load",
   "browser SDK module preload without wallet initialization",
   "buyer catalog product visibility",
+  "guest product detail navigation",
+  "guest product detail cart admission",
+  "guest product detail cart reset",
   "buyer add product to cart",
   "buyer continue to checkout",
   "buyer router prepare eligibility",
@@ -123,6 +126,15 @@ const routerSmokePhases = [
   "explicit buyer cleanup verifies terminal zero funds",
   "retired buyer order survives reload without replay",
   "retired payout receipt survives reload",
+  "cold Merchant completes payment while retaining checkout recovery",
+  "cold Merchant retains acknowledged encrypted recovery",
+  "cold Merchant retains original encrypted recovery",
+  "cold Merchant keeps the completed checkout wallet active",
+  "cold Merchant retained recovery and paid state survive reload",
+  "cold Merchant retained reload does not replay payments",
+  "unclaimed receiver keeps encrypted checkout recovery saved",
+  "paid checkout retains wallet and encrypted recovery",
+  "retained buyer order survives reload without replay",
 ] as const
 
 export type RouterSmokePhase = (typeof routerSmokePhases)[number]
@@ -135,6 +147,22 @@ export type RouterSmokeDiagnostic = {
 }
 
 const checkpointEvidence = {
+  "cold Merchant retains original encrypted recovery": {
+    expected: "merchant-recovery-retained",
+    category: "assertion",
+  },
+  "cold Merchant retains acknowledged encrypted recovery": {
+    expected: "merchant-recovery-retained",
+    category: "assertion",
+  },
+  "cold Merchant keeps the completed checkout wallet active": {
+    expected: "checkout-wallet-retained",
+    category: "assertion",
+  },
+  "guest product detail cart admission": {
+    expected: "guest-cart-item-present",
+    category: "app-readiness",
+  },
   "native treasury pre-commit provider transfer matches": {
     expected: "pending-sender-transfer",
     category: "provider-observation",

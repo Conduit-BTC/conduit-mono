@@ -7,7 +7,6 @@ import {
 import {
   inspectMerchantCheckoutSparkSettledPayoutHistory,
   reconcileMerchantCheckoutSparkSettledCredit,
-  retireMerchantCheckoutSparkSettledRecovery,
 } from "./checkout-spark-settled-recovery"
 import {
   continueMerchantCheckoutSparkSettledPayout,
@@ -272,10 +271,8 @@ async function inspectMerchantCheckoutSparkOrder(
     if (!projection.feePending) {
       // Provider receipt persistence precedes the terminal router-state save.
       // An interrupted save must reconcile that same native request before
-      // retirement, not loop on an unpaid local state or infer it paid here.
-      return nativeReceiptNeedsReconciliation
-        ? "progress_pending"
-        : "retirement_pending"
+      // completion, not loop on an unpaid local state or infer it paid here.
+      return nativeReceiptNeedsReconciliation ? "progress_pending" : "verified"
     }
   }
 
@@ -314,9 +311,7 @@ async function inspectMerchantCheckoutSparkOrder(
   if (projection?.commerceVerified) {
     if (!includeRouterPayouts) return "verified"
     if (!projection.feePending) {
-      return nativeReceiptNeedsReconciliation
-        ? "progress_pending"
-        : "retirement_pending"
+      return nativeReceiptNeedsReconciliation ? "progress_pending" : "verified"
     }
   }
   if (attributionUnavailable) return "unavailable"
@@ -333,13 +328,10 @@ async function inspectMerchantCheckoutSparkOrder(
 }
 
 interface AdvancementDependencies extends ReconciliationDependencies {
-  repository?: NonNullable<ReconciliationDependencies["repository"]> &
-    Pick<DexieCheckoutSparkSettledRepository, "retire">
   selectPayout?: typeof selectMerchantCheckoutSparkSignedNextPayout
   preparePayout?: typeof prepareNextMerchantCheckoutSparkSettledPayout
   continuePayout?: typeof continueMerchantCheckoutSparkSettledPayout
   continueNativeTreasury?: typeof continueMerchantCheckoutSparkNativeTreasury
-  retireWallet?: typeof retireMerchantCheckoutSparkSettledRecovery
   /** Queue discovery; never await or drain the worker calling this adapter. */
   requestRescan: () => void
 }
@@ -374,18 +366,6 @@ export async function advanceMerchantCheckoutSparkOrder(
     true
   )
   assertActive()
-  // Provider-attested all-paid is still not terminal wallet/claim/refund proof.
-  if (status === "retirement_pending") {
-    const result = await (
-      dependencies.retireWallet ?? retireMerchantCheckoutSparkSettledRecovery
-    )(principal, candidate, { repository, assertActive, now })
-    assertActive()
-    if (result.status !== "consumed") return "unavailable"
-    if (result.retirementStatus === "retired") return "retired"
-    return result.retirementStatus === "pending"
-      ? "retirement_pending"
-      : "unavailable"
-  }
   if (status !== "progress_pending") return status
   const selection = await (
     dependencies.selectPayout ?? selectMerchantCheckoutSparkSignedNextPayout

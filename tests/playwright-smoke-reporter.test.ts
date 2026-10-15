@@ -2066,6 +2066,22 @@ describe("wallet recovery and bounded control diagnostics", () => {
           textPersisted: false,
         },
       },
+      {
+        kind: "router-retirement",
+        file: "e2e/commerce-router-recovery.playwright.ts",
+        values: {
+          phase: "failure",
+          scoped: true,
+          zeroFixtureApplied: true,
+          observationAvailable: true,
+          persistedState: "active",
+          availableZero: "confirmed",
+          ownedZero: "not_confirmed",
+          pendingEmpty: "confirmed",
+          progressPresent: false,
+          cleanupComplete: false,
+        },
+      },
     ]) {
       const annotation = {
         type: `smoke:${sample.kind}`,

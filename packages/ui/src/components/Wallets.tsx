@@ -1510,24 +1510,17 @@ function WalletReceivingAddress({
         <WalletAddressActions address={state.address} showAddress={false} />
       )}
       {feedback && <p role="status">{feedback}</p>}
-      {ready &&
-        requestAddressName &&
-        accountPubkey &&
-        (state?.status === "registered" &&
-        state.publicLookup === "verified" &&
-        state.address.toLowerCase().endsWith("@conduit.cash") ? null : (
-          <AddressNameRequestForm
-            key={`${accountPubkey}:${walletId}`}
-            ownerPubkey={accountPubkey}
-            walletId={walletId}
-            submit={requestAddressName}
-            activate={async (name) => {
-              const value = await resolve(walletId, true, name, "conduit.cash")
-              setState(value)
-              return value
-            }}
-          />
-        ))}
+      {ready && requestAddressName && accountPubkey && (
+        <AddressNameRequestForm
+          key={`${accountPubkey}:${walletId}`}
+          ownerPubkey={accountPubkey}
+          walletId={walletId}
+          submit={requestAddressName}
+          onActivated={async () => {
+            setState(await resolve(walletId))
+          }}
+        />
+      )}
       {state?.status === "registered" && state.publicLookup !== "verified" && (
         <p className="text-xs">
           Receiving availability needs verification. Open Receive to retry.

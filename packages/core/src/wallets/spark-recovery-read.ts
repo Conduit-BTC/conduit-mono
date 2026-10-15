@@ -2,7 +2,10 @@ import {
   commerceRelayExecutor,
   type CommerceRelayExecutor,
 } from "../protocol/relay-executor"
-import { filterEligibleAccountRelayTargets } from "../protocol/account-network-local-state"
+import {
+  filterEligibleAccountRelayTargets,
+  type AccountNetworkLocalStateRepository,
+} from "../protocol/account-network-local-state"
 import { getProtectedReadAuthorization } from "../protocol/protected-read-authorization"
 import {
   SparkRecoveryError,
@@ -12,7 +15,8 @@ import { type SparkRecoveryTransport } from "./spark-recovery-service"
 
 /** Uses the existing bounded reader. Relay auth failures stay unavailable, never absence. */
 export function createSparkRecoveryReader(
-  executor: CommerceRelayExecutor = commerceRelayExecutor
+  executor: CommerceRelayExecutor = commerceRelayExecutor,
+  accountNetworkRepository?: Pick<AccountNetworkLocalStateRepository, "get">
 ): SparkRecoveryTransport["read"] {
   return async (url, owner, eventId, shouldContinue, dTag) => {
     if (!shouldContinue()) throw new SparkRecoveryError("transport_unavailable")
@@ -30,6 +34,7 @@ export function createSparkRecoveryReader(
           authenticatedPubkey: owner,
           targets,
           operation: "read",
+          repository: accountNetworkRepository,
         })
       ).some((target) => target.url === url)
     const authorization = getProtectedReadAuthorization(owner)

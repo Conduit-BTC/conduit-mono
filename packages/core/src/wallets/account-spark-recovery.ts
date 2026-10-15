@@ -1,5 +1,7 @@
 import { DexieWalletNameStore } from "./wallet-name-store"
 import { WalletNameService } from "./wallet-name-service"
+import { AddressRequestService } from "./address-request-service"
+import { DexieAddressRequestStore } from "./address-request-store"
 import type { WalletNameNetwork } from "./wallet-name-contract"
 import { getAccountSigner } from "../protocol/session-signer"
 import {
@@ -37,6 +39,21 @@ import type { SparkRecoveryBundle } from "./spark-recovery-contract"
 import type { WalletDescriptor, WalletRegistry } from "./index"
 
 const services = new WeakMap<AccountSigner, SparkRecoveryService>()
+const requestServices = new WeakMap<AccountSigner, AddressRequestService>()
+export function getAccountAddressRequestService(
+  signer: AccountSigner
+): AddressRequestService {
+  let service = requestServices.get(signer)
+  if (!service) {
+    service = new AddressRequestService({
+      signer,
+      store: new DexieAddressRequestStore(),
+      transport: createAccountWalletTransport(signer),
+    })
+    requestServices.set(signer, service)
+  }
+  return service
+}
 export function getAccountSparkRecovery(
   signer: AccountSigner
 ): SparkRecoveryService {
@@ -47,6 +64,12 @@ export function getAccountSparkRecovery(
     store: new DexieSparkRecoveryStore(),
     deriveIdentity: deriveSparkRecoveryIdentity,
     transport: createAccountWalletTransport(signer),
+    migrateLegacyRequests: (network, discovery, options) =>
+      getAccountAddressRequestService(signer).migrateLegacy(
+        network,
+        discovery,
+        options
+      ),
   })
   services.set(signer, service)
   return service

@@ -5,6 +5,7 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import { v2 } from "nostr-tools/nip44"
+import { addressRequestsDTag } from "../packages/core/src/wallets/spark-recovery-address"
 import {
   SPARK_RECOVERY_KIND,
   SPARK_RECOVERY_PREFIX,
@@ -96,6 +97,16 @@ describe("Spark recovery owned validation snapshots", () => {
         },
       },
     }
+    const requestEvent = f.record(addressRequestsDTag("mainnet")).event
+    current.addressRequestSync = {
+      mainnet: {
+        observed: requestEvent,
+        operation: {
+          event: structuredClone(requestEvent),
+          targets: ["wss://relay.conduit.market"],
+        },
+      },
+    }
     const incoming = [f.record()]
     const currentBefore = JSON.stringify(current)
     const incomingBefore = JSON.stringify(incoming)
@@ -103,6 +114,10 @@ describe("Spark recovery owned validation snapshots", () => {
     expect(
       JSON.stringify(result.walletNameSync) ===
         JSON.stringify(current.walletNameSync)
+    ).toBe(true)
+    expect(
+      JSON.stringify(result.addressRequestSync) ===
+        JSON.stringify(current.addressRequestSync)
     ).toBe(true)
     expect(JSON.stringify(current) === currentBefore).toBe(true)
     expect(JSON.stringify(incoming) === incomingBefore).toBe(true)
@@ -112,6 +127,9 @@ describe("Spark recovery owned validation snapshots", () => {
     current.registryExcludedWalletIds![0] = "changed"
     current.records[0].delivery[0].accepted = true
     current.walletNameSync.mainnet!.pending[walletId].name = "Changed label"
+    current.addressRequestSync.mainnet!.observed!.tags[0][1] = "changed"
+    current.addressRequestSync.mainnet!.operation!.targets[0] =
+      "wss://changed.invalid"
     incoming[0].targets[0].url = "wss://changed.invalid"
     incoming[0].delivery[0].readBack = true
     incoming[0].event.tags.length = 0

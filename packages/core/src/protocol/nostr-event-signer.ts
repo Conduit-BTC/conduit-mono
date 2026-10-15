@@ -59,6 +59,15 @@ export interface AccountSignerOperationOptions {
 
 /** Established account authority. Guest order keys never implement this grant. */
 export interface AccountSigner extends NostrKeySigner {
+  signEvent(
+    event: UnsignedNostrEvent,
+    options?: AccountSignerOperationOptions
+  ): Promise<SignedNostrEvent>
+  encryptNip44(
+    recipientPubkey: string,
+    plaintext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
   readonly revision: string
   readonly authMethod: AuthMethod
   readonly capabilities: AccountSignerCapabilities

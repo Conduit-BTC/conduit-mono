@@ -1,4 +1,5 @@
 import { type WalletNameStates } from "./wallet-name-contract"
+import { type AddressRequestStates } from "./address-request-metadata"
 import {
   NostrSignerError,
   type AccountSigner,
@@ -109,6 +110,8 @@ export interface SparkRecoveryState {
   registryExcludedWalletIds?: string[]
   /** Local display-name intents and their separate encrypted delivery evidence. */
   walletNameSync?: WalletNameStates
+  /** Local immutable request-progress delivery evidence. */
+  addressRequestSync?: AddressRequestStates
 }
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
@@ -253,6 +256,10 @@ export function validateSparkRecoveryState(
     const sourceRecords = input.records
     const sourceRemoved = input.removedWalletIds
     const sourceRegistryExcluded = input.registryExcludedWalletIds
+    const sourceAddressRequestSync = input.addressRequestSync
+    const addressRequestSync = sourceAddressRequestSync
+      ? structuredClone(sourceAddressRequestSync)
+      : undefined
     const sourceWalletNameSync = input.walletNameSync
     const walletNameSync = sourceWalletNameSync
       ? structuredClone(sourceWalletNameSync)
@@ -388,6 +395,7 @@ export function validateSparkRecoveryState(
       ownerPubkey,
       // Optional names retain their own validation boundary without mutable aliases.
       ...(walletNameSync !== undefined ? { walletNameSync } : {}),
+      ...(addressRequestSync !== undefined ? { addressRequestSync } : {}),
       records: compactSparkRecoveryChoices(records),
       unresolvedObserved,
       ...(removedWalletIds !== undefined ? { removedWalletIds } : {}),
@@ -444,6 +452,9 @@ export function mergeSparkRecoveryRecords(
     ...(saved.walletNameSync !== undefined
       ? { walletNameSync: saved.walletNameSync }
       : {}),
+    ...(saved.addressRequestSync !== undefined
+      ? { addressRequestSync: saved.addressRequestSync }
+      : {}),
     records: compactSparkRecoveryChoices([...records.values()]),
     unresolvedObserved: saved.unresolvedObserved || next.unresolvedObserved,
     ...(saved.removedWalletIds !== undefined
@@ -487,6 +498,11 @@ export class SparkRecoveryService {
       deriveIdentity: SparkIdentityDeriver
       currentSigner?: () => AccountSigner | undefined
       userRelayUrls?: readonly string[]
+      migrateLegacyRequests?: (
+        network: SparkRecoveryBundle["network"],
+        discovery: SparkRecoveryDiscovery,
+        options: AccountSignerOperationOptions
+      ) => Promise<void>
     }
   ) {
     this.current = input.currentSigner ?? getAccountSigner
@@ -567,28 +583,31 @@ export class SparkRecoveryService {
   private async sign(
     d: string,
     payload: object,
-    createdAt: number
+    createdAt: number,
+    options: AccountSignerOperationOptions = { priority: "foreground" }
   ): Promise<SignedNostrEvent> {
     this.scope.assertCurrent()
     const plaintext = JSON.stringify(payload)
     const content = await this.input.signer.encryptNip44(
       this.scope.owner,
-      plaintext
+      plaintext,
+      options
     )
     this.scope.assertCurrent()
     validateSparkCiphertext(content)
-    const event = await this.input.signer.signEvent({
-      kind: SPARK_RECOVERY_KIND,
-      pubkey: this.scope.owner,
-      created_at: createdAt,
-      tags: [["d", d]],
-      content,
-    })
+    const event = await this.input.signer.signEvent(
+      {
+        kind: SPARK_RECOVERY_KIND,
+        pubkey: this.scope.owner,
+        created_at: createdAt,
+        tags: [["d", d]],
+        content,
+      },
+      options
+    )
     this.scope.assertCurrent()
     const verified = validateSparkRecoveryEvent(event, this.scope.owner)
-    if (
-      (await this.decrypt(verified, { priority: "foreground" })) !== plaintext
-    )
+    if ((await this.decrypt(verified, options)) !== plaintext)
       throw new SparkRecoveryError("invalid_record")
     return verified
   }
@@ -735,11 +754,10 @@ export class SparkRecoveryService {
           replacementPayWalletId?: string
         }
       | { type: "main"; walletId: string },
-    commit?: (retain: () => Promise<void>) => Promise<void>
+    commit?: (retain: () => Promise<void>) => Promise<void>,
+    options: AccountSignerOperationOptions = { priority: "foreground" }
   ): Promise<string> {
-    const discovery = await this.discover(false, network, {
-      priority: "foreground",
-    })
+    const discovery = await this.discover(false, network, options)
     if (
       discovery.coverage !== "complete" ||
       discovery.invalidCount ||
@@ -768,7 +786,24 @@ export class SparkRecoveryService {
     const previous = discovery.registry
     if (change.type === "bootstrap" && previous)
       throw new SparkRecoveryError("conflict")
+    if (Object.keys(previous?.addressNameRequests ?? {}).length) {
+      if (!this.input.migrateLegacyRequests)
+        throw new SparkRecoveryError("conflict")
+      await this.input.migrateLegacyRequests(network, discovery, options)
+      this.scope.assertCurrent()
+    }
     if (previous && discovery.registryEventId) {
+      const head = local.records.find(
+        (record) => record.event.id === discovery.registryEventId
+      )
+      if (!head) throw new SparkRecoveryError("conflict")
+      const storedHead = parseSparkWalletRegistrySnapshot(
+        await this.decrypt(head.event, options),
+        head.event
+      )
+      const metadataNeedsRepair =
+        !!Object.keys(storedHead.addressNameRequests ?? {}).length ||
+        !!Object.keys(storedHead.walletNames ?? {}).length
       const applied =
         change.type === "remove"
           ? previous.removedWalletIds.includes(change.walletId) &&
@@ -781,6 +816,7 @@ export class SparkRecoveryService {
                 previous.receiveWalletId === change.walletId
       if (
         applied &&
+        !metadataNeedsRepair &&
         localRemoved.every((walletId) =>
           previous.removedWalletIds.includes(walletId)
         )
@@ -894,11 +930,8 @@ export class SparkRecoveryService {
       snapshot.removedWalletIds.length > MAX_RECORDS
     )
       throw new SparkRecoveryError("conflict")
-    const event = await this.sign(dTag, snapshot, createdAt)
-    parseSparkWalletRegistrySnapshot(
-      await this.decrypt(event, { priority: "foreground" }),
-      event
-    )
+    const event = await this.sign(dTag, snapshot, createdAt, options)
+    parseSparkWalletRegistrySnapshot(await this.decrypt(event, options), event)
     const retain = () => this.retain([this.record(event)])
     if (commit) await commit(retain)
     else await retain()

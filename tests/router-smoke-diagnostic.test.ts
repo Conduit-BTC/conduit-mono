@@ -191,63 +191,82 @@ describe("runner-owned router phase evidence", () => {
     )
   })
 
-  it("retains only the allowlisted failed checkpoint in a real runner artifact", () => {
-    const directory = mkdtempSync(join(tmpdir(), "conduit-router-evidence-"))
-    const sentinel = `private-${crypto.randomUUID()}`
-    try {
-      mkdirSync(join(directory, "e2e"))
-      const source = resolve("scripts/ci/router_smoke_diagnostic.ts")
-      const playwrightImport = require.resolve("@playwright/test")
-      const reporter = resolve("scripts/ci/playwright_smoke_reporter.ts")
-      const playwrightCli = require.resolve("@playwright/test/cli")
-      writeFileSync(
-        join(directory, "e2e/commerce-router-recovery.playwright.ts"),
-        [
-          `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
-          `import { createRouterSmokeRecorder } from ${JSON.stringify(source)}`,
-          'test("native router controlled failure @commerce", async ({}, info) => {',
-          "  const recorder = createRouterSmokeRecorder(info.annotations);",
-          '  recorder.phase("sender-committed payment status visible");',
-          `  try { expect(${JSON.stringify(sentinel)}).toBe("different"); } finally { recorder.failed(); }`,
-          "})",
-        ].join("\n")
-      )
-      const output = join(directory, "results.json")
-      const artifact = join(directory, "evidence.json")
-      const progress = join(directory, "progress.log")
-      const config = join(directory, "playwright.config.ts")
-      writeFileSync(
-        config,
-        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, reporter: [[${JSON.stringify(reporter)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)} }]], projects: [{ name: "chromium" }] }`
-      )
-      const run = spawnSync(
-        process.execPath,
-        [playwrightCli, "test", "-c", config],
-        {
-          cwd: directory,
-          encoding: "utf8",
-        }
-      )
-      expect(run.status).not.toBe(0)
-      const retained = readFileSync(artifact, "utf8")
-      const progressText = readFileSync(progress, "utf8")
-      expect(
-        retained + progressText + readFileSync(output, "utf8")
-      ).not.toContain(sentinel)
-      const evidence = JSON.parse(retained)
-      expect(evidence.status).toBe("failed")
-      expect(evidence.timing.completedAttempts).toBe(1)
-      const attempt = evidence.tests[0].tests[0].results[0]
-      expect(attempt.retry).toBe(0)
-      expect(attempt.router).toEqual({
-        phase: "sender-committed payment status visible",
-        lifecycle: "body",
-        body: "failed",
-        expected: "payment-recorded-visible",
-        category: "app-readiness",
-      })
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
+  it.each([
+    [
+      "sender-committed payment status visible",
+      "payment-recorded-visible",
+      "app-readiness",
+    ],
+    [
+      "cold Merchant retains original encrypted recovery",
+      "merchant-recovery-retained",
+      "assertion",
+    ],
+    [
+      "cold Merchant keeps the completed checkout wallet active",
+      "checkout-wallet-retained",
+      "assertion",
+    ],
+  ] as const)(
+    "retains the allowlisted %s checkpoint in a real runner artifact",
+    (phase, expected, category) => {
+      const directory = mkdtempSync(join(tmpdir(), "conduit-router-evidence-"))
+      const sentinel = `private-${crypto.randomUUID()}`
+      try {
+        mkdirSync(join(directory, "e2e"))
+        const source = resolve("scripts/ci/router_smoke_diagnostic.ts")
+        const playwrightImport = require.resolve("@playwright/test")
+        const reporter = resolve("scripts/ci/playwright_smoke_reporter.ts")
+        const playwrightCli = require.resolve("@playwright/test/cli")
+        writeFileSync(
+          join(directory, "e2e/commerce-router-recovery.playwright.ts"),
+          [
+            `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
+            `import { createRouterSmokeRecorder } from ${JSON.stringify(source)}`,
+            'test("native router controlled failure @commerce", async ({}, info) => {',
+            "  const recorder = createRouterSmokeRecorder(info.annotations);",
+            `  recorder.phase(${JSON.stringify(phase)});`,
+            `  try { expect(${JSON.stringify(sentinel)}).toBe("different"); } finally { recorder.failed(); }`,
+            "})",
+          ].join("\n")
+        )
+        const output = join(directory, "results.json")
+        const artifact = join(directory, "evidence.json")
+        const progress = join(directory, "progress.log")
+        const config = join(directory, "playwright.config.ts")
+        writeFileSync(
+          config,
+          `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, reporter: [[${JSON.stringify(reporter)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)} }]], projects: [{ name: "chromium" }] }`
+        )
+        const run = spawnSync(
+          process.execPath,
+          [playwrightCli, "test", "-c", config],
+          {
+            cwd: directory,
+            encoding: "utf8",
+          }
+        )
+        expect(run.status).not.toBe(0)
+        const retained = readFileSync(artifact, "utf8")
+        const progressText = readFileSync(progress, "utf8")
+        expect(
+          retained + progressText + readFileSync(output, "utf8")
+        ).not.toContain(sentinel)
+        const evidence = JSON.parse(retained)
+        expect(evidence.status).toBe("failed")
+        expect(evidence.timing.completedAttempts).toBe(1)
+        const attempt = evidence.tests[0].tests[0].results[0]
+        expect(attempt.retry).toBe(0)
+        expect(attempt.router).toEqual({
+          phase,
+          lifecycle: "body",
+          body: "failed",
+          expected,
+          category,
+        })
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
     }
-  })
+  )
 })

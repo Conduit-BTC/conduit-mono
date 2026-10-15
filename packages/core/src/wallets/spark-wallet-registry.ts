@@ -10,6 +10,13 @@ export {
   sparkWalletRegistryDTag,
 } from "./spark-recovery-address"
 
+import {
+  addressRequestRecordSchema,
+  mergeAddressRequestRecord,
+  requestEvidence,
+  type AddressRequestRecord,
+} from "./address-request-record"
+
 const id = z.uuid()
 const eventId = z.string().regex(/^[0-9a-f]{64}$/)
 const owner = eventId
@@ -17,8 +24,9 @@ const ids = z
   .array(id)
   .max(128)
   .refine((values) => new Set(values).size === values.length)
+export const sparkWalletNameSchema = z.string().trim().min(1).max(80)
 const snapshotSchema = z
-  .strictObject({
+  .looseObject({
     format: z.literal("conduit.spark.registry"),
     version: z.literal(1),
     ownerPubkey: owner,
@@ -29,16 +37,25 @@ const snapshotSchema = z
     removedWalletIds: ids,
     payInvoiceWalletId: id.nullable(),
     receiveWalletId: id.nullable(),
+    walletNames: z.record(id, sparkWalletNameSchema).optional(),
+    addressNameRequests: z.record(id, addressRequestRecordSchema).optional(),
     createdAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   })
   .refine((value) => {
     const active = new Set(value.activeWalletIds)
     const removed = new Set(value.removedWalletIds)
     return (
+      Object.entries(value.addressNameRequests ?? {}).every(
+        ([walletId, record]) =>
+          active.has(walletId) &&
+          requestEvidence(record).ownerPubkey === value.ownerPubkey &&
+          value.network === "mainnet"
+      ) &&
       value.activeWalletIds.every((id) => !removed.has(id)) &&
       [value.payInvoiceWalletId, value.receiveWalletId].every(
         (id) => id === null || active.has(id)
-      )
+      ) &&
+      Object.keys(value.walletNames ?? {}).every((id) => active.has(id))
     )
   })
 
@@ -93,6 +110,18 @@ export function resolveSparkWalletRegistry(
   const activeWalletIds = latest.snapshot.activeWalletIds.filter(
     (id) => !removed.has(id)
   )
+  const addressNameRequests: Record<string, AddressRequestRecord> = {}
+  for (const { snapshot } of ordered) {
+    for (const [walletId, record] of Object.entries(
+      snapshot.addressNameRequests ?? {}
+    )) {
+      if (removed.has(walletId)) continue
+      addressNameRequests[walletId] = mergeAddressRequestRecord(
+        addressNameRequests[walletId],
+        record
+      )
+    }
+  }
   const byId = new Map(ordered.map((item) => [item.event.id, item]))
   let ancestor = latest
   const lineage = new Set([latest.event.id])
@@ -107,6 +136,17 @@ export function resolveSparkWalletRegistry(
     lineage.add(parent.event.id)
     ancestor = parent
   }
+  // Preserve the display-name extension's established ancestry semantics.
+  const walletNames = Object.assign(
+    {},
+    ...ordered
+      .filter(({ event }) => lineage.has(event.id))
+      .reverse()
+      .map(({ snapshot }) => snapshot.walletNames ?? {})
+  ) as Record<string, string>
+  const activeIds = new Set(activeWalletIds)
+  for (const walletId of Object.keys(walletNames))
+    if (!activeIds.has(walletId)) delete walletNames[walletId]
   return {
     eventId: latest.event.id,
     conflict: ordered.some(
@@ -117,6 +157,12 @@ export function resolveSparkWalletRegistry(
     ),
     snapshot: {
       ...latest.snapshot,
+      ...(latest.snapshot.walletNames || Object.keys(walletNames).length
+        ? { walletNames }
+        : {}),
+      ...(Object.keys(addressNameRequests).length
+        ? { addressNameRequests }
+        : { addressNameRequests: undefined }),
       activeWalletIds,
       removedWalletIds: [...removed],
       payInvoiceWalletId: activeWalletIds.includes(

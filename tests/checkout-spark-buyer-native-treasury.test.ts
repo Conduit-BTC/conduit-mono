@@ -34,7 +34,6 @@ import {
   parseCheckoutSparkMerchantProgressRumor,
   proveCheckoutSparkSettledReturnedTransfer,
   renewCheckoutSparkSettledLeg,
-  collectCheckoutSparkNativeRetirementEvidence,
   type CheckoutSparkRecoveryDeliveryRecord,
   type CheckoutSparkNativeTreasuryTarget,
   type CheckoutSparkSettledOutgoingTarget,
@@ -51,7 +50,6 @@ import {
   inspectBuyerCheckoutSparkTreasuryCommerce,
   createBuyerCheckoutSparkNativeTreasuryProvider,
 } from "../apps/market/src/lib/checkout-spark-native-treasury"
-import { retireCheckoutSparkSettledShopper } from "../apps/market/src/lib/checkout-spark-settled-retirement"
 import {
   createCheckoutSparkSettledShopperRunner,
   type CheckoutSparkSettledShopperRunInput,
@@ -145,7 +143,14 @@ async function fixture(
     issueFundingInvoice: async ({ amountSats }) =>
       invoice(amountSats, 71).paymentRequest,
   })
-  const reads = { credit: 0, winner: 0, history: 0, cleaned: 0, closed: 0 }
+  const reads = {
+    credit: 0,
+    winner: 0,
+    history: 0,
+    cleaned: 0,
+    closed: 0,
+    retirementReaders: 0,
+  }
   const hooks: {
     fundingMissing?: boolean
     winnerMissing?: boolean
@@ -216,6 +221,7 @@ async function fixture(
                 return wallet.queryHTLC!(request)
               },
               async openRetirementReader() {
+                reads.retirementReaders++
                 const session = await native.openAuthenticatedRetirementReader({
                   mnemonic,
                   accountNumber: 0,
@@ -580,25 +586,6 @@ async function fixture(
       )
       await manager.openWithMnemonic({ walletId, mnemonic, accountNumber: 0 })
     },
-    retire: () =>
-      retireCheckoutSparkSettledShopper(
-        {
-          checkoutId: plan.checkoutId,
-          planDigest: plan.planDigest,
-          orderId: plan.orderId,
-          merchantPubkey: merchant.pubkey,
-          network: "mainnet",
-          buyerPubkey: buyer.pubkey,
-          currentBuyerPubkey: () => buyer.pubkey,
-          shouldContinue: () => true,
-        },
-        {
-          repository,
-          readOrder: (id) => database.orderLifecycles.get(id),
-          sparkManager: () => manager,
-          now: () => ++now,
-        }
-      ),
     async cleanup() {
       await manager.close(walletId)
       database.close()
@@ -760,7 +747,7 @@ function holdNativeSenderCommitment(f: Awaited<ReturnType<typeof fixture>>) {
 
 describe("Market native treasury composed provider evidence", () => {
   it(
-    "finishes routing on exact sender commitment while the native receiver remains offline, retaining recovery for later retirement",
+    "finishes routing on exact sender commitment while the native receiver remains offline, retaining recovery",
     async () =>
       runForeground(async (f) => {
         f.control.setNativeCompletion(false)
@@ -800,10 +787,28 @@ describe("Market native treasury composed provider evidence", () => {
         expect(waits).toBe(0)
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        const retirementReadersAfterCompletion = f.reads.retirementReaders
         expect(await runner.run(input)).toEqual({ status: "complete" })
+        expect(f.reads.retirementReaders).toBe(retirementReadersAfterCompletion)
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
-        // Routing completion is not wallet retirement or receiver claim.
+        // Routing completion preserves the active wallet and recovery state.
         expect((await f.loadState()).status).toBe("active")
+        expect(
+          (
+            await f.repository.loadBuyerSettlement(
+              f.plan.checkoutId,
+              f.plan.planDigest,
+              f.buyer.pubkey
+            )
+          ).status
+        ).toBe("active")
+        expect(
+          await f.database.orderLifecycles.get(f.plan.orderId)
+        ).toMatchObject({
+          paymentStatus: "paid",
+          phase: "in_progress",
+        })
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
       }, 120_000),
     15_000
   )
@@ -1536,7 +1541,7 @@ describe("Market native treasury composed provider evidence", () => {
     })
   )
   it(
-    "ACKs frozen prepared/submitted snapshots and performs exactly one native payment, then retires actual ID",
+    "ACKs frozen prepared/submitted snapshots, pays once, and retains active wallet recovery",
     async () =>
       run(async (f) => {
         const result = await f.step()
@@ -1561,27 +1566,36 @@ describe("Market native treasury composed provider evidence", () => {
           incomingSats: 0,
         })
         expect((await f.step()).outcome).toBe("already_paid")
-        expect(await f.retire()).toEqual({ status: "retired" })
-        const retired = await f.repository.loadBuyerSettlement(
+        const active = await f.repository.loadBuyerSettlement(
           f.plan.checkoutId,
           f.plan.planDigest,
           f.buyer.pubkey
         )
-        expect(retired.status).toBe("retired")
-        if (retired.status !== "retired") throw new Error("Expected retirement")
-        expect(retired.settlement.nativeTreasury).toMatchObject({
+        expect(active.status).toBe("active")
+        if (active.status !== "active")
+          throw new Error("Expected active wallet")
+        expect(active.state.treasuryFinalization).toMatchObject({
           providerTransferId: actualId,
+          status: "paid",
           finalFeeSats: 0,
         })
+        expect(active.buyerBinding?.walletId).toBe(f.plan.walletId)
         expect(
           await f.database.checkoutSparkReconciliations.get(f.plan.checkoutId)
-        ).toBeUndefined()
+        ).toBeDefined()
+        expect(
+          await f.database.orderLifecycles.get(f.plan.orderId)
+        ).toMatchObject({
+          paymentStatus: "paid",
+          phase: "in_progress",
+        })
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(await f.database.checkoutSparkRetirements.count()).toBe(0)
       }),
     15_000
   )
   it(
-    "records offline sender commitment without pretending receiver claim or retiring the wallet, and never resends after restart",
+    "records offline sender commitment and retains wallet recovery without resending after restart",
     async () =>
       run(async (f) => {
         f.control.setNativeCompletion(false)
@@ -1590,15 +1604,24 @@ describe("Market native treasury composed provider evidence", () => {
         expect(f.state().treasuryFinalization!.finalDebitSats).toBe(
           f.state().treasuryFinalization!.intent!.authorizedDebitSats
         )
-        expect(await f.retire()).toEqual({ status: "retirement_pending" })
+        expect(
+          (
+            await f.repository.loadBuyerSettlement(
+              f.plan.checkoutId,
+              f.plan.planDigest,
+              f.buyer.pubkey
+            )
+          ).status
+        ).toBe("active")
         await f.restart()
         expect((await f.step(true)).outcome).toBe("already_paid")
-        expect(await f.retire()).toEqual({ status: "retirement_pending" })
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         f.control.setNativeCompletion(true)
         expect((await f.step(true)).outcome).toBe("already_paid")
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
-        expect(await f.retire()).toEqual({ status: "retired" })
+        expect(
+          (await f.repository.load(f.plan.checkoutId, f.plan.planDigest)).status
+        ).toBe("active")
       }),
     15_000
   )
@@ -1932,114 +1955,8 @@ describe("Market native treasury composed provider evidence", () => {
       }),
     15_000
   )
-  // Each case composes signed recovery, two payments and retirement inspection.
-  // Bound the test harness separately from unchanged provider deadlines.
-  it.each(["owned", "pending", "unknown", "incomplete"])(
-    "cannot retire a paid native transfer with unsafe reader evidence: %s",
-    async (change) =>
-      run(async (f) => {
-        expect((await f.step()).outcome).toBe("paid")
-        if (change === "owned") f.control.setAdditionalOwnedSats(1)
-        if (change === "pending")
-          f.control.setPendingTransfers([
-            {
-              id: "pending-after-native",
-              type: 1,
-              status: 1,
-              network: 1,
-              totalValue: 1,
-            },
-          ])
-        if (change === "unknown")
-          f.control.setExtraHistory([
-            {
-              id: "unknown-after-native",
-              type: 1,
-              status: 5,
-              network: 1,
-              totalValue: 1,
-            },
-          ])
-        if (change === "incomplete") f.hooks.incompleteHistory = true
-        expect(await f.retire()).toEqual({ status: "retirement_pending" })
-        expect(
-          (await f.repository.load(f.plan.checkoutId, f.plan.planDigest)).status
-        ).toBe("active")
-        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
-      }),
-    15_000
-  )
-  it(
-    "includes exact old returned IDs after successor spending, without requiring still-available returned leaves",
-    async () =>
-      run(
-        async (f) => {
-          const inspected = await inspectBuyerCheckoutSparkTreasuryCommerce(
-            f.proofInput()
-          )
-          expect(inspected.closedReturnedProofs).toHaveLength(1)
-          expect(inspected.expectedTransferIds).toEqual([
-            f.state().credit!.transferId,
-            f.state().legs[0]!.intent!.transferId,
-          ])
-          expect((await f.step()).outcome).toBe("paid")
-          const before = f.reads.closed
-          expect(await f.retire()).toEqual({ status: "unavailable" })
-          const fresh = await inspectBuyerCheckoutSparkTreasuryCommerce(
-            f.proofInput()
-          )
-          const reader = await f
-            .manager()
-            .openCheckoutRetirementReader(f.plan.walletId, {
-              network: "mainnet",
-              receiverIdentityPublicKey:
-                f.plan.funding.receiverIdentityPublicKey,
-            })
-          try {
-            const saved = await f.loadState()
-            const evidence = await collectCheckoutSparkNativeRetirementEvidence(
-              {
-                authenticatedReader: reader.reader,
-                sparkAddress: reader.sparkAddress,
-                walletId: f.plan.walletId,
-                network: "mainnet",
-                stateUpdatedAt: saved.state.updatedAt,
-                expectedTransferIds: [
-                  ...fresh.expectedTransferIds,
-                  saved.state.treasuryFinalization!.providerTransferId!,
-                ],
-                closedReturnedProofs: fresh.closedReturnedProofs,
-                requireExactHistoryScope: true,
-                now: () => f.now() + 1,
-              }
-            )
-            expect(evidence).not.toBeNull()
-            if (!evidence) throw new Error("Expected exact zero-owned closure")
-            await f.repository.retire({
-              checkoutId: f.plan.checkoutId,
-              planDigest: f.plan.planDigest,
-              expectedRevision: saved.revision,
-              evidence,
-            })
-            expect(
-              (
-                await f.repository.loadBuyerSettlement(
-                  f.plan.checkoutId,
-                  f.plan.planDigest,
-                  f.buyer.pubkey
-                )
-              ).status
-            ).toBe("retired")
-          } finally {
-            await reader.cleanup()
-          }
-          expect(f.reads.closed).toBeGreaterThan(before)
-          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
-        },
-        { closed: true }
-      ),
-    15_000
-  )
+  // Retirement-only history cases remain covered by the legacy native collector
+  // and closed-return proof suites; this workflow keeps the funded wallet active.
   it(
     "round-trips v4/state5 recovery and merchant progress without promoting progress into provider authority",
     async () =>

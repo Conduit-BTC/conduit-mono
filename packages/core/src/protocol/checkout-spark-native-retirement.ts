@@ -113,6 +113,36 @@ export interface CollectCheckoutSparkNativeRetirementEvidenceInput {
   requireExactHistoryScope?: true
   now: () => number
   assertCurrent?: () => void
+  onObservation?: (
+    observation: CheckoutSparkNativeRetirementObservation
+  ) => unknown
+}
+
+export type CheckoutSparkNativeRetirementObservation = {
+  phase:
+    | "input_validation"
+    | "history_first_read"
+    | "funds_read"
+    | "history_second_read"
+    | "freshness"
+    | "complete"
+  status: "not_verified" | "verified"
+  availableZero?: boolean
+  ownedZero?: boolean
+  pendingEmpty?: boolean
+}
+
+function observeRetirement(
+  input: CollectCheckoutSparkNativeRetirementEvidenceInput,
+  observation: CheckoutSparkNativeRetirementObservation
+): void {
+  try {
+    const result = input.onObservation?.(observation)
+    if (result && typeof (result as PromiseLike<unknown>).then === "function")
+      void Promise.resolve(result).catch(() => {})
+  } catch {
+    // Display-only observers cannot change financial evidence or cleanup.
+  }
 }
 
 async function guardedRead<T>(
@@ -544,10 +574,14 @@ export async function proveCheckoutSparkNativeTreasuryHistory(
  * nor zero funds proves the absence of future activity. Truncation, ambiguity,
  * errors, and authority changes retain recovery by returning null.
  */
-export async function collectCheckoutSparkNativeRetirementEvidence(
+async function collectCheckoutSparkNativeRetirementEvidenceInternal(
   input: CollectCheckoutSparkNativeRetirementEvidenceInput
 ): Promise<CheckoutSparkRetirementEvidence | null> {
   try {
+    observeRetirement(input, {
+      phase: "input_validation",
+      status: "not_verified",
+    })
     if (
       !isIdentifier(input.walletId) ||
       !isIdentifier(input.sparkAddress) ||
@@ -592,17 +626,40 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
       return null
     const reader = input.authenticatedReader
+    observeRetirement(input, {
+      phase: "history_first_read",
+      status: "not_verified",
+    })
     const historyScope = await readStableHistoryScope(input, closedReturns)
     if (historyScope === null) return null
+    observeRetirement(input, { phase: "funds_read", status: "not_verified" })
     const available = await guardedRead(input, () =>
       reader.getAvailableBalance(input.sparkAddress)
     )
+    observeRetirement(input, {
+      phase: "funds_read",
+      status: "not_verified",
+      availableZero: available === 0n,
+    })
     const owned = await guardedRead(input, () =>
       reader.getOwnedBalance(input.sparkAddress)
     )
+    observeRetirement(input, {
+      phase: "funds_read",
+      status: "not_verified",
+      availableZero: available === 0n,
+      ownedZero: owned === 0n,
+    })
     const pending = await guardedRead(input, () =>
       reader.getPendingTransfers(input.sparkAddress)
     )
+    observeRetirement(input, {
+      phase: "funds_read",
+      status: "not_verified",
+      availableZero: available === 0n,
+      ownedZero: owned === 0n,
+      pendingEmpty: Array.isArray(pending) && pending.length === 0,
+    })
     if (
       available !== 0n ||
       owned !== 0n ||
@@ -613,8 +670,13 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     // Catch activity that completed between history and balance reads. This
     // remains a bounded observation, not an atomic provider closure or proof
     // that future deposits cannot arrive.
+    observeRetirement(input, {
+      phase: "history_second_read",
+      status: "not_verified",
+    })
     if ((await readStableHistoryScope(input, closedReturns)) !== historyScope)
       return null
+    observeRetirement(input, { phase: "freshness", status: "not_verified" })
     const observedAt = input.now()
     if (
       !Number.isSafeInteger(observedAt) ||
@@ -640,4 +702,38 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     // A failed provider read or revoked authority is not terminal evidence.
     return null
   }
+}
+
+/** Emits closed, display-only retirement progress without affecting evidence. */
+export async function collectCheckoutSparkNativeRetirementEvidence(
+  input: CollectCheckoutSparkNativeRetirementEvidenceInput
+): Promise<CheckoutSparkRetirementEvidence | null> {
+  let phase: CheckoutSparkNativeRetirementObservation["phase"] =
+    "input_validation"
+  let availableZero: boolean | undefined
+  let ownedZero: boolean | undefined
+  let pendingEmpty: boolean | undefined
+  const onObservation = (
+    observation: CheckoutSparkNativeRetirementObservation
+  ) => {
+    phase = observation.phase
+    if (observation.availableZero !== undefined)
+      availableZero = observation.availableZero
+    if (observation.ownedZero !== undefined) ownedZero = observation.ownedZero
+    if (observation.pendingEmpty !== undefined)
+      pendingEmpty = observation.pendingEmpty
+    observeRetirement(input, observation)
+  }
+  const result = await collectCheckoutSparkNativeRetirementEvidenceInternal({
+    ...input,
+    onObservation,
+  })
+  observeRetirement(input, {
+    phase: result ? "complete" : phase,
+    status: result ? "verified" : "not_verified",
+    ...(availableZero === undefined ? {} : { availableZero }),
+    ...(ownedZero === undefined ? {} : { ownedZero }),
+    ...(pendingEmpty === undefined ? {} : { pendingEmpty }),
+  })
+  return result
 }
