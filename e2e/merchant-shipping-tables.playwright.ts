@@ -12,6 +12,7 @@ import {
   TEST_RELAY_URL,
 } from "./helpers/auth"
 import {
+  classifyProductSubmitValidation,
   recordSmokeDiagnostic,
   recordSmokeFailureContext,
 } from "./helpers/smoke-diagnostics"
@@ -666,36 +667,42 @@ for (const [viewportName, width, height] of [
             )
           )
           const actionText = button?.textContent?.trim()
-          const status = Array.from(
-            element.querySelectorAll('[aria-live="polite"]')
+          const invalidNodes = Array.from(
+            element.querySelectorAll('[aria-invalid="true"], input:invalid')
           )
-            .map((node) => node.textContent ?? "")
-            .join(" ")
-          const validation = status.includes(
-            "Publish this product to add it to your store."
+          const invalidField = (selector: string) =>
+            invalidNodes.some((node) => node.matches(selector))
+          const imageFieldset = element
+            .querySelector("#product-image-file")
+            ?.closest("fieldset")
+          const invalidImages = invalidNodes.some(
+            (node) =>
+              imageInputs.includes(node as HTMLInputElement) ||
+              node === imageFieldset
           )
-            ? "ready"
-            : status.includes("Add a product title.")
-              ? "title"
-              : /image|Image/.test(status)
-                ? "images"
-                : /tag/.test(status)
-                  ? "tags"
-                  : /Price|price/.test(status)
-                    ? "price"
-                    : /stock|Stock/.test(status)
-                      ? "stock"
-                      : status.includes("Publish your shipping table")
-                        ? "shipping_table"
-                        : /weight|dimensions/.test(status)
-                          ? "measurements"
-                          : "other"
+          const invalidTitle = invalidField("#product-title")
+          const invalidPrice = invalidField("#product-price")
+          const invalidStock = invalidField("#product-stock")
+          const invalidShippingWeight = invalidField("#product-shipping-weight")
+          const invalidTags = invalidField("#product-tags")
           return {
             present: !!button,
             enabled: !!button && !button.disabled,
-            invalidControls: element.querySelectorAll(
-              '[aria-invalid="true"], input:invalid'
-            ).length,
+            invalidControls: invalidNodes.length,
+            invalidTitle,
+            invalidPrice,
+            invalidStock,
+            invalidShippingWeight,
+            invalidTags,
+            invalidImages,
+            invalidOther: invalidNodes.some(
+              (node) =>
+                node !== imageFieldset &&
+                !imageInputs.includes(node as HTMLInputElement) &&
+                !node.matches(
+                  "#product-title, #product-price, #product-stock, #product-shipping-weight, #product-tags"
+                )
+            ),
             imageRowCount: imageInputs.length,
             blankImageRows: imageInputs.filter((input) => !input.value.trim())
               .length,
@@ -717,15 +724,18 @@ for (const [viewportName, width, height] of [
                     : actionText === "Reconnect signer to continue"
                       ? "reconnect"
                       : "other",
-            validation,
           }
         }, expectedImageUrl)
+        const validation = await dialog.evaluate(
+          classifyProductSubmitValidation
+        )
         const signerAvailable = await page.evaluate(async (root) => {
           const { getAccountSigner } = await import(`${root}/session-signer.ts`)
           return !!getAccountSigner()
         }, `/@fs${process.cwd()}/packages/core/src/protocol`)
         recordSmokeDiagnostic(testInfo, "product-submit", {
           ...state,
+          validation,
           signerAvailable,
           phase: index === 1 ? "first_product" : "second_product",
         })
