@@ -206,29 +206,12 @@ export function selectSmokeMatrix(
       addFiles(owner.areas, owner.files)
       continue
     }
-    // The full discovered manifest is the owner for test-only changes. Helpers,
-    // new/deleted files and any missing ownership fall back to full coverage.
-    if (/^e2e\/[\w-]+\.playwright\.ts$/.test(path)) {
-      const tests = inventory.tests.filter((test) => test.file === path)
-      const areas = shardOrder.filter((area) =>
-        tests.some((test) => test.tags.includes(`@${area}`))
-      )
-      if (tests.length && areas.length) {
-        // Commerce profiles remain complete, including the isolated router.
-        if (areas.includes("commerce")) full.add("commerce")
-        addFiles(
-          areas.filter((area) => area !== "commerce"),
-          [path]
-        )
-        continue
-      }
-    }
     for (const area of selectSmokeShards([path])) full.add(area)
   }
   const result = shardOrder.flatMap<SmokeMatrixJob>((area) => {
     const selected = files.get(area)
-    // A large test-only edit must not turn a previously partitioned area into
-    // one slower runner. Small scopes fit the measured route-audit envelope.
+    // Keep measured source scopes bounded as the browser inventory grows.
+    // Case count is a size guard, not a prediction of execution time.
     const selectedCount = selected
       ? inventory.tests.filter(
           (test) => selected.has(test.file) && test.tags.includes(`@${area}`)
@@ -240,6 +223,26 @@ export function selectSmokeMatrix(
       : []
   })
   return result.length ? result : expandSmokeMatrix([])
+}
+
+// This preflight needs no installed dependencies. Full coverage and no-op
+// changes must not pay for browser discovery or depend on test compilation.
+export function smokeNeedsInventory(paths: readonly string[]): boolean {
+  const normalized = paths.map((path) => path.trim().replaceAll("\\", "/"))
+  const candidates = normalized.filter((path) =>
+    boundedSmokeOwners.some((owner) =>
+      (owner.paths as readonly string[]).includes(path)
+    )
+  )
+  const full = selectSmokeShards(
+    normalized.filter((path) => !candidates.includes(path))
+  )
+  return candidates.some((path) => {
+    const owner = boundedSmokeOwners.find((entry) =>
+      (entry.paths as readonly string[]).includes(path)
+    )
+    return (owner?.areas ?? shardOrder).some((area) => !full.includes(area))
+  })
 }
 
 export function expandSmokeMatrix(
@@ -321,6 +324,10 @@ if (import.meta.main) {
 
   const inventoryPath = readArgument("--inventory")
   const paths = all ? [] : collectChangedPaths(base!, head)
+  if (process.argv.includes("--needs-inventory")) {
+    process.stdout.write(JSON.stringify(!all && smokeNeedsInventory(paths)))
+    process.exit(0)
+  }
   const matrix = all
     ? expandSmokeMatrix(shardOrder)
     : inventoryPath

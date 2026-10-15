@@ -6,6 +6,8 @@ import {
   expandSmokeMatrix,
   parseChangedPaths,
   selectSmokeMatrix,
+  selectSmokeShards,
+  smokeNeedsInventory,
   type SmokeInventory,
 } from "../scripts/ci/select_smoke_shards"
 import {
@@ -64,25 +66,29 @@ describe("bounded smoke ownership", () => {
     ).toEqual(["market", "merchant"])
   })
 
-  it("uses discovered ownership for test-only changes without selecting unrelated apps", () => {
+  it("keeps test edits full even when current tags name only one owning area", () => {
     const selected = selectSmokeMatrix(
       ["e2e/avatar-fallback.playwright.ts"],
       inventory
     )
-    expect(selected).toEqual([
-      {
-        id: "market",
-        area: "market",
-        shard: "",
-        files: ["e2e/avatar-fallback.playwright.ts", ...baseline],
-      },
-    ])
+    expect(selected).toEqual(full)
     expect(
       selectSmokeMatrix(
         ["e2e/merchant-shipping-tables.playwright.ts"],
         inventory
-      ).map((job) => job.area)
-    ).toEqual(["merchant"])
+      )
+    ).toEqual(full)
+  })
+
+  it("does not lose former owning areas when a test is retagged or deleted", () => {
+    for (const tests of [
+      [{ file: "e2e/avatar-fallback.playwright.ts", tags: ["@merchant"] }],
+      [],
+    ]) {
+      expect(
+        selectSmokeMatrix(["e2e/avatar-fallback.playwright.ts"], { tests })
+      ).toEqual(full)
+    }
   })
 
   it("keeps mixed files conservative and commerce complete", () => {
@@ -90,13 +96,7 @@ describe("bounded smoke ownership", () => {
       ["e2e/event-market.playwright.ts"],
       inventory
     )
-    expect(selected.map((job) => job.area)).toEqual([
-      "market",
-      "merchant",
-      "commerce",
-    ])
-    expect(selected[2]).toEqual({ id: "commerce", area: "commerce", shard: "" })
-    expect(selected[0]!.files).toContain("e2e/event-market.playwright.ts")
+    expect(selected).toEqual(full)
   })
 
   it.each([
@@ -152,17 +152,66 @@ describe("bounded smoke ownership", () => {
     ])
   })
 
-  it("keeps large test-only edits partitioned instead of making one slow job", () => {
+  it("falls back to full partitions when a bounded source group grows", () => {
     const large = {
       tests: Array.from({ length: 151 }, () => ({
-        file: "e2e/avatar-fallback.playwright.ts",
+        file: "e2e/about-page.playwright.ts",
         tags: ["@market"],
       })),
     }
     expect(
-      selectSmokeMatrix(["e2e/avatar-fallback.playwright.ts"], large)
+      selectSmokeMatrix(["apps/market/src/routes/about.tsx"], large)
     ).toEqual(expandSmokeMatrix(["market"]))
   })
+
+  it("never collapses test edits into a serial runner, including mixed source edits", () => {
+    expect(
+      selectSmokeMatrix(
+        [
+          "apps/market/src/routes/about.tsx",
+          "e2e/avatar-fallback.playwright.ts",
+        ],
+        inventory
+      )
+    ).toEqual(full)
+  })
+
+  it.each([
+    [["README.md"], false],
+    [["apps/market/src/routes/__root.tsx"], false],
+    [["playwright.config.ts"], false],
+    [["apps/market/src/routes/about.tsx"], true],
+    [["e2e/avatar-fallback.playwright.ts"], false],
+    [["e2e/new.playwright.ts"], false],
+    [
+      [
+        "apps/market/src/routes/about.tsx",
+        "apps/market/src/routes/checkout.tsx",
+      ],
+      false,
+    ],
+    [
+      ["e2e/avatar-fallback.playwright.ts", "packages/core/src/index.ts"],
+      false,
+    ],
+    [
+      [
+        "packages/ui/src/components/AboutPagePanel.tsx",
+        "apps/market/src/routes/__root.tsx",
+      ],
+      true,
+    ],
+  ] as const)(
+    "discovers ownership only when it can narrow %j",
+    (paths, expected) => {
+      expect(smokeNeedsInventory(paths)).toBe(expected)
+      if (!expected) {
+        expect(selectSmokeMatrix(paths, inventory)).toEqual(
+          expandSmokeMatrix(selectSmokeShards(paths))
+        )
+      }
+    }
+  )
 
   it("rejects malformed, duplicated and path-like selections instead of hiding work", () => {
     for (const value of [

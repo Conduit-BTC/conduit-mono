@@ -140,9 +140,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
-      - run: bun install --frozen-lockfile
-      - name: Discover smoke ownership without starting services
-        run: bun run test:e2e:areas --manifest-output smoke-inventory.json > /dev/null
       - name: Select affected smoke shards
         id: select
         shell: bash
@@ -157,7 +154,14 @@ jobs:
             shards="$(bun scripts/ci/select_smoke_shards.ts --all)"
           else
             base_sha="$(git merge-base "$RAW_BASE_SHA" "$HEAD_SHA")"
-            shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA" --inventory smoke-inventory.json)"
+            needs_inventory="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA" --needs-inventory)"
+            if [[ "$needs_inventory" == "true" ]]; then
+              bun install --frozen-lockfile
+              bun run test:e2e:areas --manifest-output smoke-inventory.json > /dev/null
+              shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA" --inventory smoke-inventory.json)"
+            else
+              shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA")"
+            fi
           fi
 
           echo "Selected smoke shards: $shards"
