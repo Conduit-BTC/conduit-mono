@@ -1796,3 +1796,104 @@ describe("commerce inbox reconnect diagnostics", () => {
     }
   })
 })
+
+describe("wallet recovery and mobile menu diagnostics", () => {
+  const fixtures = [
+    {
+      kind: "wallet-background-refusal",
+      file: "e2e/wallet-cross-app.playwright.ts",
+      expected: "wallet_refusal_foreground_import_completed",
+      boundary: "user-action",
+      values: {
+        phase: "foreground_import",
+        syncObserved: true,
+        syncOutcome: "resolved",
+        foregroundImportSettled: false,
+        observationAvailable: true,
+        lockObservationAvailable: true,
+        heldReadInsideAccountSetupLock: false,
+      },
+    },
+    {
+      kind: "mobile-wallet-menu",
+      file: "e2e/mobile-safari-baseline.playwright.ts",
+      expected: "mobile_wallet_setup_item_ready",
+      boundary: "app-readiness",
+      values: {
+        attempt: "after_reload",
+        phase: "menu_removed",
+        observationAvailable: true,
+        triggerPresent: true,
+        triggerEnabled: true,
+        walletLoading: false,
+        menuMounted: true,
+        menuPresent: false,
+        menuOpen: false,
+        menuRemoved: true,
+        itemPresent: false,
+        itemVisible: false,
+        itemEnabled: false,
+        dialogPresent: false,
+        pointerDownOnTrigger: true,
+        triggerMovementDuringGesture: "stable",
+      },
+    },
+  ] as const
+  for (const fixture of fixtures) {
+    it(`retains only closed, file-bound ${fixture.kind} observations`, () => {
+      const privateValue = "private-" + crypto.randomUUID()
+      const annotation = {
+        type: `smoke:${fixture.kind}`,
+        description: JSON.stringify({
+          ...fixture.values,
+          walletId: privateValue,
+          recoveryPhrase: privateValue,
+          lockName: privateValue,
+          connectionString: privateValue,
+          walletBalance: privateValue,
+          errorMessage: privateValue,
+          pointerDownY: 120,
+        }),
+      }
+      const retained = safeSmokeDiagnostics(fixture.file, [annotation])
+      expect(retained).toEqual([{ kind: fixture.kind, ...fixture.values }])
+      expect(safeRetainedSmokeDiagnostics(fixture.file, retained)).toEqual(
+        retained
+      )
+      expect(JSON.stringify(retained)).not.toContain(privateValue)
+      expect(retained[0]).not.toHaveProperty("pointerDownY")
+      const other = fixtures.find((item) => item.file !== fixture.file)!
+      expect(safeSmokeDiagnostics(other.file, [annotation])).toEqual([])
+      expect(safeRetainedSmokeDiagnostics(other.file, retained)).toEqual([])
+      expect(
+        parseSmokeFailureContext(other.file, {
+          expected: fixture.expected,
+          observed: "pending",
+        })
+      ).toBeUndefined()
+      expect(
+        parseSmokeFailureContext(fixture.file, {
+          expected: fixture.expected,
+          observed: "pending",
+        })
+      ).toEqual({
+        boundary: fixture.boundary,
+        expected: fixture.expected,
+        observed: "pending",
+      })
+      for (const field of Object.keys(fixture.values)) {
+        const altered = safeSmokeDiagnostics(fixture.file, [
+          {
+            type: annotation.type,
+            description: JSON.stringify({
+              ...fixture.values,
+              [field]: privateValue,
+            }),
+          },
+        ])
+        expect(altered[0]).not.toHaveProperty(field)
+        expect(JSON.stringify(altered)).not.toContain(privateValue)
+      }
+    })
+  }
+})
