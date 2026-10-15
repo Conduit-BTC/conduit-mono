@@ -12,6 +12,7 @@ const workflow = Bun.YAML.parse(
   jobs: Record<
     string,
     {
+      needs?: string[]
       container?: { image: string; options: string }
       defaults?: { run: { shell: string } }
       steps: Array<{ name?: string; run?: string }>
@@ -34,6 +35,22 @@ describe("Playwright CI runtime", () => {
         `^\\$\\{\\{ matrix\\.job\\.area != 'none' && 'mcr\\.microsoft\\.com/playwright:v${playwrightPackage.version.replaceAll(".", "\\.")}-noble@sha256:[a-f0-9]{64}' \\|\\| '' \\}\\}$`
       )
     )
+  })
+
+  it("overlaps build with independent checks and keeps previews behind validated build", () => {
+    expect(workflow.jobs["build-mainnet"]!.needs ?? []).toEqual([])
+    expect(workflow.jobs["preview-links"]!.needs).toEqual(["build-mainnet"])
+    for (const check of [
+      "format",
+      "lint",
+      "typecheck",
+      "test",
+      "color-policy",
+      "telemetry-policy",
+      "e2e-smoke",
+    ]) {
+      expect(workflow.jobs[check]).toBeDefined()
+    }
   })
 
   it("uses Bash and preinstalled browsers without a per-shard package download", () => {

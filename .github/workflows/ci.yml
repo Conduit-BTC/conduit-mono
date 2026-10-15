@@ -140,6 +140,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Discover smoke ownership without starting services
+        run: bun run test:e2e:areas --manifest-output smoke-inventory.json > /dev/null
       - name: Select affected smoke shards
         id: select
         shell: bash
@@ -154,7 +157,7 @@ jobs:
             shards="$(bun scripts/ci/select_smoke_shards.ts --all)"
           else
             base_sha="$(git merge-base "$RAW_BASE_SHA" "$HEAD_SHA")"
-            shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA")"
+            shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA" --inventory smoke-inventory.json)"
           fi
 
           echo "Selected smoke shards: $shards"
@@ -179,6 +182,8 @@ jobs:
     # Commerce runs ordinary, native-router, and receiver lanes serially.
     # Individual test deadlines remain unchanged.
     timeout-minutes: ${{ matrix.job.area == 'commerce' && 25 || 20 }}
+    env:
+      PLAYWRIGHT_SMOKE_FILES: ${{ toJSON(matrix.job.files || fromJSON('[]')) }}
     steps:
       - name: No browser smoke needed
         if: matrix.job.area == 'none'
@@ -495,7 +500,6 @@ jobs:
   build-mainnet:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [format, lint, typecheck, test, color-policy, telemetry-policy]
     outputs:
       public-config-digest: ${{ steps.deployment-contract.outputs.public-config-digest }}
     env:
