@@ -1122,10 +1122,24 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         dialogRemoved: false,
         pointerDownOnTrigger: false,
         pointerUpOnTrigger: false,
+        pointerUpObserved: false,
+        pointerCancelObserved: false,
+        pointerType: "unavailable" as "mouse" | "touch" | "pen" | "unavailable",
+        triggerDetachedDuringGesture: false,
+        triggerReplacedDuringGesture: false,
         clickOnTrigger: false,
         triggerMovementDuringGesture: "unavailable" as
           "stable" | "moved" | "unavailable",
         gestureActive: false,
+      }
+      let triggerDownElement: HTMLButtonElement | null = null
+      const observeTriggerIdentity = () => {
+        if (!triggerDownElement) return
+        if (!triggerDownElement.isConnected)
+          observations.triggerDetachedDuringGesture = true
+        const current = currentTrigger()
+        if (current && current !== triggerDownElement)
+          observations.triggerReplacedDuringGesture = true
       }
       let triggerDownPosition: { x: number; y: number } | null = null
       const currentTrigger = () =>
@@ -1154,6 +1168,7 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         )
       }
       const observer = new MutationObserver((changes) => {
+        if (observations.gestureActive) observeTriggerIdentity()
         for (const change of changes) {
           if ([...change.addedNodes].some(containsMessagesDialog))
             observations.dialogMounted = true
@@ -1169,6 +1184,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
           if (!isOpenMessagesButton(event.target)) return
           observations.pointerDownOnTrigger = true
           observations.gestureActive = true
+          observations.pointerType = ["mouse", "touch", "pen"].includes(
+            event.pointerType
+          )
+            ? (event.pointerType as "mouse" | "touch" | "pen")
+            : "unavailable"
+          triggerDownElement = currentTrigger() ?? null
           const bounds = currentTrigger()?.getBoundingClientRect()
           triggerDownPosition = bounds ? { x: bounds.x, y: bounds.y } : null
         },
@@ -1179,6 +1200,8 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         (event) => {
           observations.pointerUpOnTrigger = isOpenMessagesButton(event.target)
           if (observations.gestureActive) {
+            observations.pointerUpObserved = true
+            observeTriggerIdentity()
             const bounds = currentTrigger()?.getBoundingClientRect()
             observations.triggerMovementDuringGesture =
               !triggerDownPosition || !bounds
@@ -1188,6 +1211,16 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
                   ? "moved"
                   : "stable"
           }
+          observations.gestureActive = false
+        },
+        { capture: true, signal: controller.signal }
+      )
+      document.addEventListener(
+        "pointercancel",
+        () => {
+          if (!observations.gestureActive) return
+          observations.pointerCancelObserved = true
+          observeTriggerIdentity()
           observations.gestureActive = false
         },
         { capture: true, signal: controller.signal }
@@ -1206,6 +1239,16 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
           dialogRemoved: observations.dialogRemoved,
           pointerDownOnTrigger: observations.pointerDownOnTrigger,
           pointerUpOnTrigger: observations.pointerUpOnTrigger,
+          pointerUpObserved: observations.pointerUpObserved,
+          pointerCancelObserved: observations.pointerCancelObserved,
+          pointerType: observations.pointerType,
+          triggerDetachedDuringGesture:
+            observations.triggerDetachedDuringGesture,
+          triggerReplacedDuringGesture:
+            observations.triggerReplacedDuringGesture,
+          documentVisible: document.visibilityState === "visible",
+          documentFocused: document.hasFocus(),
+          fontsLoaded: document.fonts.status === "loaded",
           clickOnTrigger: observations.clickOnTrigger,
           triggerMovementDuringGesture:
             observations.triggerMovementDuringGesture,
@@ -1260,6 +1303,14 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
           dialogRemoved: probe.dialogRemoved,
           pointerDownOnTrigger: probe.pointerDownOnTrigger,
           pointerUpOnTrigger: probe.pointerUpOnTrigger,
+          pointerUpObserved: probe.pointerUpObserved,
+          pointerCancelObserved: probe.pointerCancelObserved,
+          pointerType: probe.pointerType,
+          triggerDetachedDuringGesture: probe.triggerDetachedDuringGesture,
+          triggerReplacedDuringGesture: probe.triggerReplacedDuringGesture,
+          documentVisible: probe.documentVisible,
+          documentFocused: probe.documentFocused,
+          fontsLoaded: probe.fontsLoaded,
           clickOnTrigger: probe.clickOnTrigger,
           triggerMovementDuringGesture: probe.triggerMovementDuringGesture,
           dialogCount,
@@ -1310,9 +1361,14 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     let openMessagesClickCompleted = false
     let cleanupError: unknown
     try {
-      await buyerPage
-        .getByRole("button", { name: "Open messages", exact: true })
-        .click()
+      const openMessages = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      await buyerPage.evaluate(() => document.fonts.ready)
+      // Touch projects exercise the same touch path as the mobile baseline.
+      if (testInfo.project.use.hasTouch) await openMessages.tap()
+      else await openMessages.click()
       openMessagesClickCompleted = true
       const afterClick = await recordBuyerStatusDiagnostic("after_click")
       recordSmokeFailureContext(

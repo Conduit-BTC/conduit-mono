@@ -2354,10 +2354,12 @@ test("foreground wallet import stays ready after an older background opening is 
     )
     recordSmokeFailureContext(testInfo, "wallet_refusal_import_ready")
     try {
-      await expect(target.locator('[data-wallet-state="ready"]')).toHaveCount(1)
+      const restoredWallet = target.locator(`[data-wallet-id="${walletId}"]`)
+      await expect(restoredWallet).toHaveAttribute("data-wallet-state", "ready")
       await expect(
-        target.getByRole("button", { name: "Open wallet", exact: true })
-      ).toHaveCount(1)
+        restoredWallet.getByRole("button", { name: "Open wallet", exact: true })
+      ).toHaveCount(0)
+      await expect(target.locator("[data-wallet-id]")).toHaveCount(2)
     } catch (error) {
       readinessObservation = { readinessObservationAvailable: false }
       try {
@@ -2382,6 +2384,16 @@ test("foreground wallet import stays ready after an older background opening is 
               otherReadyWalletCount: others.filter(
                 (wallet) => controller.runtime[wallet.id]?.status === "ready"
               ).length,
+              otherConnectingWalletCount: others.filter(
+                (wallet) =>
+                  controller.runtime[wallet.id]?.status === "connecting"
+              ).length,
+              otherLockedWalletCount: others.filter(
+                (wallet) => controller.runtime[wallet.id]?.status === "locked"
+              ).length,
+              otherErrorWalletCount: others.filter(
+                (wallet) => controller.runtime[wallet.id]?.status === "error"
+              ).length,
               otherNativeOpenWalletCount: others.filter(
                 (wallet) => manager?.isOpen(wallet.id) === true
               ).length,
@@ -2400,6 +2412,9 @@ test("foreground wallet import stays ready after an older background opening is 
             .count(),
           openButtonCount: await target
             .getByRole("button", { name: "Open wallet", exact: true })
+            .count(),
+          openingButtonCount: await target
+            .getByRole("button", { name: "Opening…", exact: true })
             .count(),
         }
       } catch {
@@ -2449,10 +2464,12 @@ test("foreground wallet import stays ready after an older background opening is 
         { sparkSdk, walletId }
       )
     ).toBe(true)
-    await expect(target.locator('[data-wallet-state="ready"]')).toHaveCount(1)
+    const restoredWallet = target.locator(`[data-wallet-id="${walletId}"]`)
+    await expect(restoredWallet).toHaveAttribute("data-wallet-state", "ready")
     await expect(
-      target.getByRole("button", { name: "Open wallet", exact: true })
-    ).toHaveCount(1)
+      restoredWallet.getByRole("button", { name: "Open wallet", exact: true })
+    ).toHaveCount(0)
+    await expect(target.locator("[data-wallet-id]")).toHaveCount(2)
     checkpoint("complete")
     recordSmokeFailureContext(testInfo, "wallet_refusal_ready_preserved", "met")
   } finally {
