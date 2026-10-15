@@ -271,6 +271,26 @@ async function merchantRecoveryAdmission(page: Page, orderId: string | null) {
         sourcesValidated: binding?.sourceValidation != null,
         settlementPresent: binding?.merchantSettlement != null,
         creditPresent: binding?.merchantSettlement?.credit != null,
+        encryptedRecoveryRetained:
+          binding !== null &&
+          (binding.merchantProgressOutbox ?? []).some(
+            (entry: {
+              relayAccepted: boolean
+              record: {
+                checkoutId: string
+                planDigest: string
+                merchantPubkey: string
+                signedRecipientWrap: { kind: number; content: string }
+              }
+            }) =>
+              entry.relayAccepted &&
+              entry.record.checkoutId === binding.checkoutId &&
+              entry.record.planDigest === binding.planDigest &&
+              entry.record.merchantPubkey ===
+                binding.orderWitness.merchantPubkey &&
+              entry.record.signedRecipientWrap.kind === 1_059 &&
+              entry.record.signedRecipientWrap.content.length > 0
+          ),
       }
     },
     { modulePath, orderId }
@@ -1723,6 +1743,7 @@ async function rehearseRouter(
           exact: true,
         })
       ).toBeVisible({ timeout: 30_000 })
+      setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
       await expect(
         recovery.getByText("Payment details", { exact: true })
@@ -1854,13 +1875,21 @@ async function rehearseRouter(
         "cold Merchant completes payment while retaining checkout recovery"
       )
       await assertScopedPaymentsComplete()
+      setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      expect(await hasActiveEncryptedRecovery(coldPage, orderId)).toBe(true)
+      setStage("cold Merchant retains acknowledged encrypted recovery")
+      expect(await merchantRecoveryAdmission(coldPage, orderId)).toMatchObject({
+        encryptedRecoveryRetained: true,
+      })
       control().setAdditionalOwnedSats(0)
       await coldPersistence.reload()
       await assertScopedPaymentsComplete()
+      setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      expect(await hasActiveEncryptedRecovery(coldPage, orderId)).toBe(true)
+      setStage("cold Merchant retains acknowledged encrypted recovery")
+      expect(await merchantRecoveryAdmission(coldPage, orderId)).toMatchObject({
+        encryptedRecoveryRetained: true,
+      })
       const completed = control().snapshot()
       setStage(
         "cold Merchant reload automatically checks without replaying payouts"
@@ -1869,8 +1898,12 @@ async function rehearseRouter(
       setStage("cold Merchant retained recovery and paid state survive reload")
       await expect(recoveredOrder).toBeVisible({ timeout: 30_000 })
       await assertScopedPaymentsComplete()
+      setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      expect(await hasActiveEncryptedRecovery(coldPage, orderId)).toBe(true)
+      setStage("cold Merchant retains acknowledged encrypted recovery")
+      expect(await merchantRecoveryAdmission(coldPage, orderId)).toMatchObject({
+        encryptedRecoveryRetained: true,
+      })
       await expect(
         recovery.getByText("Recovery check details", { exact: true })
       ).toHaveCount(0)

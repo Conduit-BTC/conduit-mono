@@ -127,6 +127,8 @@ const routerSmokePhases = [
   "retired buyer order survives reload without replay",
   "retired payout receipt survives reload",
   "cold Merchant completes payment while retaining checkout recovery",
+  "cold Merchant retains acknowledged encrypted recovery",
+  "cold Merchant keeps the completed checkout wallet active",
   "cold Merchant retained recovery and paid state survive reload",
   "cold Merchant retained reload does not replay payments",
   "unclaimed receiver keeps encrypted checkout recovery saved",
@@ -144,6 +146,14 @@ export type RouterSmokeDiagnostic = {
 }
 
 const checkpointEvidence = {
+  "cold Merchant retains acknowledged encrypted recovery": {
+    expected: "merchant-encrypted-recovery-retained",
+    category: "assertion",
+  },
+  "cold Merchant keeps the completed checkout wallet active": {
+    expected: "checkout-wallet-retained",
+    category: "assertion",
+  },
   "guest product detail cart admission": {
     expected: "guest-cart-item-present",
     category: "app-readiness",
