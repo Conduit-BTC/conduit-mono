@@ -1964,6 +1964,143 @@ describe("commerce inbox reconnect diagnostics", () => {
 })
 
 describe("wallet recovery and bounded control diagnostics", () => {
+  it("writes self-copy timing through the existing artifact duration buckets", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-inbox-evidence-"))
+    try {
+      const sourceDirectory = join(directory, "e2e")
+      mkdirSync(sourceDirectory)
+      const sourceFile = join(sourceDirectory, "commerce-inbox.playwright.ts")
+      const title = "buyer retains self-copy delivery @commerce"
+      writeFileSync(
+        sourceFile,
+        `test(${JSON.stringify(title)}, async () => {})`
+      )
+      const evidenceFile = join(directory, "evidence.json")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile: join(directory, "results.json"),
+        evidenceFile,
+      })
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [1] } as unknown as Suite
+      )
+      reporter.onTestEnd(
+        {
+          id: "inbox-timing",
+          title,
+          location: { file: sourceFile, line: 1, column: 1 },
+          tags: ["@commerce"],
+          expectedStatus: "passed",
+          outcome: () => "unexpected",
+          ok: () => false,
+        } as unknown as TestCase,
+        {
+          status: "timedOut",
+          duration: 30_002,
+          retry: 0,
+          annotations: [
+            {
+              type: "smoke:commerce-inbox-self-copy",
+              description: JSON.stringify({
+                phase: "before_send",
+                principal: "seller",
+                elapsedSeconds: 28.1,
+                nearCaseDeadline: true,
+                caseDeadlinePassed: false,
+                clickStarted: true,
+                clickResolved: false,
+                observationAvailable: false,
+                elapsedBucket: "25_to_30s",
+                message: "private-message-must-not-leave",
+              }),
+            },
+          ],
+        } as TestResult
+      )
+      reporter.onEnd({ status: "timedout" } as FullResult)
+      const serialized = readFileSync(evidenceFile, "utf8")
+      const evidence = JSON.parse(serialized)
+      expect(evidence.tests[0].tests[0].results[0].diagnostics).toEqual([
+        {
+          kind: "commerce-inbox-self-copy",
+          phase: "before_send",
+          principal: "seller",
+          elapsedBucket: "15-30s",
+          nearCaseDeadline: true,
+          caseDeadlinePassed: false,
+          clickStarted: true,
+          clickResolved: false,
+          observationAvailable: false,
+        },
+      ])
+      expect(serialized).not.toContain("elapsedSeconds")
+      expect(serialized).not.toContain("25_to_30s")
+      expect(serialized).not.toContain("private-message")
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
+  it("retains fixed phase and state predicates without payloads or free-form labels", () => {
+    const privateValue = "private-" + crypto.randomUUID()
+    for (const sample of [
+      {
+        kind: "commerce-inbox-self-copy",
+        file: "e2e/commerce-inbox.playwright.ts",
+        values: {
+          phase: "before_send",
+          principal: "buyer",
+          nearCaseDeadline: true,
+          caseDeadlinePassed: false,
+          clickStarted: true,
+          clickResolved: false,
+          observationAvailable: true,
+          observationWhen: "send_pending",
+          sendVisible: true,
+          sendEnabled: false,
+          draftPresent: true,
+          sessionCurrent: true,
+          providerReady: true,
+          localPending: true,
+          localStorageFailed: false,
+          textPersisted: false,
+        },
+      },
+
+    ]) {
+      const annotation = {
+        type: `smoke:${sample.kind}`,
+        description: JSON.stringify({
+          ...sample.values,
+          invoice: privateValue,
+          pubkey: privateValue,
+          balance: 123,
+          error: privateValue,
+        }),
+      }
+      const safe = safeSmokeDiagnostics(sample.file, [annotation])
+      expect(safe).toEqual([{ kind: sample.kind, ...sample.values }])
+      expect(safeRetainedSmokeDiagnostics(sample.file, safe)).toEqual(safe)
+      expect(
+        safeSmokeDiagnostics("e2e/wallet-cross-app.playwright.ts", [annotation])
+      ).toEqual([])
+      expect(JSON.stringify(safe)).not.toContain(privateValue)
+      for (const field of Object.keys(sample.values)) {
+        const rejected = safeSmokeDiagnostics(sample.file, [
+          {
+            type: annotation.type,
+            description: JSON.stringify({
+              ...sample.values,
+              [field]: privateValue,
+            }),
+          },
+        ])
+        expect(rejected[0]).not.toHaveProperty(field)
+        expect(JSON.stringify(rejected)).not.toContain(privateValue)
+      }
+    }
+  })
+
   const fixtures = [
     {
       kind: "commerce-buyer-status",
@@ -1977,6 +2114,14 @@ describe("wallet recovery and bounded control diagnostics", () => {
         dialogRemoved: false,
         pointerDownOnTrigger: true,
         pointerUpOnTrigger: true,
+        pointerUpObserved: true,
+        pointerCancelObserved: false,
+        pointerType: "touch",
+        triggerDetachedDuringGesture: false,
+        triggerReplacedDuringGesture: false,
+        documentVisible: true,
+        documentFocused: true,
+        fontsLoaded: true,
         clickOnTrigger: true,
         triggerMovementDuringGesture: "stable",
         dialogCount: 1,
@@ -2014,6 +2159,10 @@ describe("wallet recovery and bounded control diagnostics", () => {
         targetRuntimeError: false,
         walletCount: 2,
         otherReadyWalletCount: 1,
+        otherConnectingWalletCount: 1,
+        otherLockedWalletCount: 0,
+        otherErrorWalletCount: 0,
+        openingButtonCount: 1,
         otherNativeOpenWalletCount: 1,
         readyTextCount: 2,
         readyStateCount: 0,
