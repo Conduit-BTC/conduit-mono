@@ -125,7 +125,8 @@ function getMarketProductShareUrl(
 
 function ProductPage() {
   const navigate = useNavigate({ from: Route.fullPath })
-  const { authGeneration, isAuthGenerationCurrent } = useAuth()
+  const { authGeneration, isAuthGenerationCurrent, isGuestGenerationCurrent } =
+    useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -546,7 +547,10 @@ function ProductPage() {
     setCartActionError("")
     const shouldContinue = () =>
       cartActionScopeRef.current === cartActionScope &&
-      isAuthGenerationCurrent(authGeneration)
+      authGenerationRef.current === authGeneration &&
+      (session.mode === "guest"
+        ? isGuestGenerationCurrent(authGeneration)
+        : isAuthGenerationCurrent(authGeneration))
     try {
       let candidate = productCartCandidate
       if (eventMarketReference && eventFulfillmentChoice === "shipping") {

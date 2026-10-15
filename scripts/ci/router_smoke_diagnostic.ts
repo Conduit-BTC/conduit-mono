@@ -21,6 +21,9 @@ const routerSmokePhases = [
   "buyer catalog product load",
   "browser SDK module preload without wallet initialization",
   "buyer catalog product visibility",
+  "guest product detail navigation",
+  "guest product detail cart admission",
+  "guest product detail cart reset",
   "buyer add product to cart",
   "buyer continue to checkout",
   "buyer router prepare eligibility",
@@ -135,6 +138,10 @@ export type RouterSmokeDiagnostic = {
 }
 
 const checkpointEvidence = {
+  "guest product detail cart admission": {
+    expected: "guest-cart-item-present",
+    category: "app-readiness",
+  },
   "native treasury pre-commit provider transfer matches": {
     expected: "pending-sender-transfer",
     category: "provider-observation",

@@ -873,6 +873,58 @@ async function rehearseRouter(
     await expect(catalogPrice).toBeVisible()
     await expect(catalogPrice).toHaveText("Estimated conversion: ₿1,113")
     await expect(product.getByText(/Estimated total/)).toBeVisible()
+    if (buyerMode === "guest") {
+      setStage("guest product detail navigation")
+      const revisions = await readTestRelayEvents({
+        kinds: [30_402],
+        authors: [merchant.pubkey],
+      })
+      const revision = revisions[0]!
+      const identifier = revision.tags.find(([key]) => key === "d")?.[1]
+      if (!identifier)
+        throw new Error("The public product reference is unavailable")
+      const reference = nip19.naddrEncode({
+        kind: 30_402,
+        pubkey: merchant.pubkey,
+        identifier,
+        relays: [TEST_RELAY_URL],
+      })
+      await page.goto(`${marketUrl}/products/${reference}`)
+      await expect(
+        page.getByRole("heading", { name: productTitle, exact: true, level: 1 })
+      ).toBeVisible()
+      const addFromDetail = page.getByRole("button", {
+        name: "Add 1 to cart",
+        exact: true,
+      })
+      await expect(addFromDetail).toBeEnabled()
+      setStage("guest product detail cart admission")
+      await addFromDetail.click()
+      const detailCart = page.getByRole("region", {
+        name: "Cart inventory",
+        exact: true,
+      })
+      await expect(
+        detailCart.getByRole("link", {
+          name: "Continue to checkout",
+          exact: true,
+        })
+      ).toBeVisible()
+      expect(walletInitializations).toBe(0)
+      expect(lnurl.snapshot().invoicesIssued).toBe(0)
+      // Keep the original guest catalog-card add and full-cart checkout below.
+      // The HUD opens automatically when its first item is added.
+      setStage("guest product detail cart reset")
+      await detailCart
+        .getByRole("button", {
+          name: `Decrease ${productTitle} quantity`,
+          exact: true,
+        })
+        .click()
+      await expect(detailCart).toHaveCount(0)
+      await page.goto(`${marketUrl}${catalogPath}`)
+      await expect(product).toBeVisible({ timeout: 30_000 })
+    }
     setStage("buyer add product to cart")
     await product
       .getByRole("button", { name: `Add ${productTitle} to cart`, exact: true })
