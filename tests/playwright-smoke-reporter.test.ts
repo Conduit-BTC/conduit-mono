@@ -1797,8 +1797,35 @@ describe("commerce inbox reconnect diagnostics", () => {
   })
 })
 
-describe("wallet recovery and mobile menu diagnostics", () => {
+describe("wallet recovery and bounded control diagnostics", () => {
   const fixtures = [
+    {
+      kind: "commerce-buyer-status",
+      file: "e2e/commerce.playwright.ts",
+      expected: "commerce_buyer_status_accepted_visible",
+      boundary: "assertion",
+      values: {
+        phase: "failure",
+        observationAvailable: true,
+        dialogMounted: true,
+        dialogRemoved: false,
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: true,
+        clickOnTrigger: true,
+        triggerMovementDuringGesture: "stable",
+        dialogCount: 1,
+        acceptedCount: 1,
+        visibleAcceptedCount: 0,
+        sessionCurrent: true,
+        providerReady: true,
+        localObservationAvailable: true,
+        localPending: false,
+        localStorageFailed: false,
+        localOrderCount: 2,
+        localAcceptedCount: 1,
+        localCoverage: "complete",
+      },
+    },
     {
       kind: "wallet-background-refusal",
       file: "e2e/wallet-cross-app.playwright.ts",
@@ -1852,6 +1879,10 @@ describe("wallet recovery and mobile menu diagnostics", () => {
           connectionString: privateValue,
           walletBalance: privateValue,
           errorMessage: privateValue,
+          orderId: privateValue,
+          pubkey: privateValue,
+          plaintext: privateValue,
+          ciphertext: privateValue,
           pointerDownY: 120,
         }),
       }

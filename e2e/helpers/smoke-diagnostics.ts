@@ -101,6 +101,10 @@ const failureConditions: Record<
   string,
   Readonly<Record<string, SmokeFailureBoundary>>
 > = {
+  "e2e/commerce.playwright.ts": {
+    commerce_buyer_status_dialog_opened: "user-action",
+    commerce_buyer_status_accepted_visible: "assertion",
+  },
   "e2e/merchant-order-inbox.playwright.ts": {
     buyer_account_ready: "app-readiness",
     buyer_open_messages_click_completed: "user-action",
@@ -491,6 +495,30 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         localReplyRetained: "boolean",
         localPending: "boolean",
         localStorageFailed: "boolean",
+      },
+    },
+    "commerce-buyer-status": {
+      file: "e2e/commerce.playwright.ts",
+      fields: {
+        phase: ["before_open", "after_click", "assertion_end", "failure"],
+        observationAvailable: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        triggerMovementDuringGesture: ["stable", "moved", "unavailable"],
+        dialogCount: "number",
+        acceptedCount: "number",
+        visibleAcceptedCount: "number",
+        sessionCurrent: "boolean",
+        providerReady: "boolean",
+        localObservationAvailable: "boolean",
+        localPending: "boolean",
+        localStorageFailed: "boolean",
+        localOrderCount: "number",
+        localAcceptedCount: "number",
+        localCoverage: ["complete", "partial", "unavailable"],
       },
     },
     "commerce-journey": {
@@ -891,6 +919,7 @@ export function recordSmokeDiagnostic(
     | "manual-checkout-stop"
     | "commerce-inbox-reconnect"
     | "commerce-journey"
+    | "commerce-buyer-status"
     | "wallet-migration"
     | "price-interaction"
     | "fallback-upload"
