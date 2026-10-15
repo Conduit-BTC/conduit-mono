@@ -4536,6 +4536,72 @@ test("new creation does not stage a plan while another tab owns the creation loc
   await expect(page).toHaveURL(/\/events\/naddr1/)
 })
 
+for (const series of [false, true])
+  test(`stale ${series ? "series" : "single-event"} form cannot recreate a plan completed by another tab @merchant`, async ({
+    page,
+  }) => {
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    await gotoAs(page, merchantUrl, "/events/new", "organizer")
+    const saved = savedCreationFixture("A valid public description")
+    await page.evaluate(
+      ({ creation, series }) => {
+        const key = series
+          ? `conduit:future-event-market-series-draft:1:${creation.organizerPubkey}`
+          : `conduit:future-event-market-creation:v1:${creation.organizerPubkey}`
+        const value = series
+          ? {
+              version: 1,
+              organizerPubkey: creation.organizerPubkey,
+              marketDTag: creation.dTag,
+              scheduleDTag: `${creation.dTag}-schedule`,
+              occurrenceDTags: [`${creation.dTag}-date-1`],
+              form: creation.form,
+              dateRows: [
+                {
+                  id: "first",
+                  start: creation.form.start,
+                  end: creation.form.end,
+                },
+              ],
+              signedEventIds: ["a".repeat(64)],
+            }
+          : { ...creation, calendarEventId: "a".repeat(64) }
+        localStorage.setItem(key, JSON.stringify(value))
+      },
+      { creation: saved, series }
+    )
+    await page.reload()
+    const retry = page.getByRole("button", {
+      name: series ? "Resume publishing" : "Retry saved event",
+      exact: true,
+    })
+    await expect(retry).toBeEnabled()
+    await page.evaluate(
+      ({ owner, series }) =>
+        localStorage.removeItem(
+          series
+            ? `conduit:future-event-market-series-draft:1:${owner}`
+            : `conduit:future-event-market-creation:v1:${owner}`
+        ),
+      { owner: ORGANIZER_PUBKEY, series }
+    )
+    await retry.click()
+    await expect(
+      page.getByText(
+        series
+          ? "The saved series changed in another tab. Reload before continuing."
+          : "The saved creation changed in another tab. Reload before continuing.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    expect(
+      uniquePublishedEvents(relay.publications).some((event) =>
+        [31923, 31924, 30409].includes(event.kind)
+      )
+    ).toBe(false)
+  })
+
 for (const legacyHistory of [false, true])
   test(`series with ${legacyHistory ? "unknown legacy history" : "pinned missing signatures"} cannot discard or sign replacements @merchant`, async ({
     page,

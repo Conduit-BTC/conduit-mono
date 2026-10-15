@@ -15,6 +15,11 @@ pointer saving, so a missing ID alone is not evidence that nothing was signed.
 Unreadable evidence, changed account/session, a stale tab, or a competing lock
 must leave the saved plan intact.
 
+Initial plan staging uses the same lock as series creation, signing and repair.
+Compare the visible plan with current storage before either resuming or creating
+one, including when a plan disappeared because another tab completed it. A stale
+Retry action must not become a new creation with a different identity.
+
 For a single event, correction preserves its market identity. Discard removes
 only a positively unsigned local plan. It never deletes retained signed events
 or publishes a NIP-09 deletion. Signed records may already be public: finish

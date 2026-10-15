@@ -518,7 +518,7 @@ function FutureEventMarketCreateForm({
           throw new Error(
             "Finish or discard the saved single event before creating a series."
           )
-        const expectedDraft = readFrozenSeriesDraft(organizerPubkey)
+        const expectedDraft = frozenDraft
         await withFutureEventMarketCreationLock(organizerPubkey, async () => {
           if (loadFutureEventMarketCreation(organizerPubkey))
             throw new Error(
@@ -741,9 +741,9 @@ function FutureEventMarketCreateForm({
               "Finish or discard the saved series before creating another event."
             )
           const current = loadFutureEventMarketCreation(organizerPubkey)
-          if (current && !creation)
+          if (JSON.stringify(current) !== JSON.stringify(creation))
             throw new Error(
-              "A saved creation appeared in another tab. Reload before continuing."
+              "The saved creation changed in another tab. Reload before continuing."
             )
           return (
             current ?? saveNewFutureEventMarketCreation(organizerPubkey, form)
