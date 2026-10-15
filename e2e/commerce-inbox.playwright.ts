@@ -24,8 +24,6 @@ test("buyer and seller retain conversations and files through self-copy failure,
   const startedAt = Date.now()
   type SelfCopyPhase =
     | "setup_complete"
-    | "before_disconnect"
-    | "disconnect_menu_ready"
     | "reconnect_complete"
     | "loop_enter"
     | "before_send"
@@ -312,125 +310,13 @@ test("buyer and seller retain conversations and files through self-copy failure,
     expect(safe).toEqual({ encrypted: true, oldPlaintext: 0 })
     // Reconnect the same principal without reloading: the hook must subscribe to
     // the new session owner rather than remain attached to the retired owner.
-    const menuGesture = await buyerPage.evaluateHandle(() => {
-      const trigger = document.querySelector('[aria-label="Open account menu"]')
-      let down = false,
-        up = false,
-        clicked = false,
-        moved = false,
-        movedHorizontally = false,
-        movedVertically = false,
-        scrollChanged = false,
-        viewportChanged = false
-      let downScroll = { x: 0, y: 0, width: 0, height: 0 }
-      let downRect: DOMRect | undefined
-      const onDown = (event: Event) => {
-        down = event.target instanceof Node && !!trigger?.contains(event.target)
-        if (down) {
-          downRect = trigger!.getBoundingClientRect()
-          downScroll = {
-            x: scrollX,
-            y: scrollY,
-            width: innerWidth,
-            height: innerHeight,
-          }
-        }
-      }
-      const onUp = (event: Event) => {
-        up = event.target instanceof Node && !!trigger?.contains(event.target)
-        const rect = trigger?.getBoundingClientRect()
-        movedHorizontally =
-          !!rect && !!downRect && Math.abs(rect.x - downRect.x) > 1
-        movedVertically =
-          !!rect && !!downRect && Math.abs(rect.y - downRect.y) > 1
-        moved = movedHorizontally || movedVertically
-        scrollChanged =
-          Math.abs(scrollX - downScroll.x) > 1 ||
-          Math.abs(scrollY - downScroll.y) > 1
-        viewportChanged =
-          innerWidth !== downScroll.width || innerHeight !== downScroll.height
-      }
-      const onClick = (event: Event) => {
-        clicked =
-          event.target instanceof Node && !!trigger?.contains(event.target)
-      }
-      document.addEventListener("pointerdown", onDown, true)
-      document.addEventListener("pointerup", onUp, true)
-      document.addEventListener("click", onClick, true)
-      return {
-        read: () => ({
-          documentFocused: document.hasFocus(),
-          triggerMounted: !!trigger?.isConnected,
-          pointerDownOnTrigger: down,
-          pointerUpOnTrigger: up,
-          clickOnTrigger: clicked,
-          triggerMovedDuringGesture: moved,
-          triggerMovedHorizontally: movedHorizontally,
-          triggerMovedVertically: movedVertically,
-          scrollChangedDuringGesture: scrollChanged,
-          viewportChangedDuringGesture: viewportChanged,
-        }),
-        dispose: () => {
-          document.removeEventListener("pointerdown", onDown, true)
-          document.removeEventListener("pointerup", onUp, true)
-          document.removeEventListener("click", onClick, true)
-        },
-      }
-    })
-    if (process.env.PLAYWRIGHT_POSITION_TRIGGER === "1") {
-      await buyerPage
-        .getByLabel("Open account menu")
-        .evaluate((element) =>
-          element.scrollIntoView({ behavior: "instant", block: "center" })
-        )
-    }
-    selfCopyCheckpoint(
-      "before_disconnect",
-      "buyer",
-      true,
-      false,
-      await menuGesture.evaluate((probe) => probe.read())
+    const accountMenu = buyerPage.getByLabel("Open account menu")
+    // Finish the programmatic scroll before the menu's pointer-down handler runs.
+    // A moving trigger can leave pointer-up and click on the page behind it.
+    await accountMenu.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
     )
-    await buyerPage.getByLabel("Open account menu").click()
-    const disconnectMenu = await buyerPage.evaluate(() => {
-      const trigger = document.querySelector('[aria-label="Open account menu"]')
-      const item = [
-        ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
-      ].find((node) => node.textContent?.trim() === "Disconnect")
-      const rect = item?.getBoundingClientRect()
-      const hit = rect
-        ? document.elementFromPoint(
-            rect.x + rect.width / 2,
-            rect.y + rect.height / 2
-          )
-        : null
-      return {
-        menuExpanded: trigger?.getAttribute("aria-expanded") === "true",
-        menuMounted: !!document.querySelector('[role="menu"]'),
-        disconnectMounted: !!item,
-        disconnectVisible:
-          !!rect &&
-          rect.width > 0 &&
-          rect.height > 0 &&
-          getComputedStyle(item!).visibility === "visible",
-        disconnectInViewport:
-          !!rect &&
-          rect.x >= 0 &&
-          rect.y >= 0 &&
-          rect.right <= innerWidth &&
-          rect.bottom <= innerHeight,
-        disconnectHitTarget: !!item && !!hit && item.contains(hit),
-      }
-    })
-    selfCopyCheckpoint("disconnect_menu_ready", "buyer", true, true, {
-      ...disconnectMenu,
-      ...(await menuGesture.evaluate((probe) => {
-        const value = probe.read()
-        probe.dispose()
-        return value
-      })),
-    })
-    await menuGesture.dispose()
+    await accountMenu.click()
     await buyerPage
       .getByRole("menuitem", { name: "Disconnect", exact: true })
       .click()

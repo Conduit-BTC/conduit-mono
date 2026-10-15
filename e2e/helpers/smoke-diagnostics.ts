@@ -674,6 +674,9 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         workspacePresent: "boolean",
         workspaceVisible: "boolean",
         authPending: "boolean",
+        pageCrashed: "boolean",
+        pageErrorObserved: "boolean",
+        renderLoopError: "boolean",
       },
     },
     "commerce-inbox-self-copy": {

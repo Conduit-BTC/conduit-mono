@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
-import { installTestSigner, TEST_BUYER_PUBKEY } from "./helpers/auth"
+import {
+  installLockedTestSigner,
+  installTestSigner,
+  seedStoredAuth,
+  TEST_BUYER_PUBKEY,
+  TEST_LOCKED_SIGNER_PUBKEY,
+  unlockTestSigner,
+} from "./helpers/auth"
 
 for (const app of ["market", "merchant"] as const) {
   const port =
@@ -165,6 +172,18 @@ for (const app of ["market", "merchant"] as const) {
 test("merchant signed-in missing page keeps workspace navigation @merchant", async ({
   page,
 }, testInfo) => {
+  let pageCrashed = false
+  let pageErrorObserved = false
+  let renderLoopError = false
+  page.on("crash", () => {
+    pageCrashed = true
+  })
+  page.on("pageerror", (error) => {
+    pageErrorObserved = true
+    renderLoopError ||= /maximum update depth|too many re-renders/i.test(
+      error.message
+    )
+  })
   await installTestSigner(page, TEST_BUYER_PUBKEY)
   await page.goto(
     `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
@@ -205,7 +224,12 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
   try {
     await expect(main).toBeVisible()
   } catch (error) {
-    await workspaceCheckpoint("workspace_missing")
+    recordSmokeDiagnostic(testInfo, "merchant-missing-workspace", {
+      phase: "workspace_missing",
+      pageCrashed,
+      pageErrorObserved,
+      renderLoopError,
+    })
     throw error
   }
   const scene = await page.locator(".network-not-found").boundingBox()
@@ -224,4 +248,30 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
   await expect(
     page.getByRole("heading", { name: "Sign in to Conduit" })
   ).toHaveCount(0)
+})
+
+// Exercise the public-to-workspace transition after media has actually started,
+// instead of relying on which of signer restoration and video loading wins.
+test("merchant missing page restores its workspace during video playback @merchant", async ({
+  page,
+}) => {
+  await installLockedTestSigner(page)
+  await seedStoredAuth(page, TEST_LOCKED_SIGNER_PUBKEY)
+  await page.goto(
+    `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
+  )
+  const video = page.locator(".network-not-found video")
+  await expect
+    .poll(() =>
+      video.evaluate((element: HTMLVideoElement) => element.currentTime)
+    )
+    .toBeGreaterThan(0)
+  await unlockTestSigner(page, TEST_LOCKED_SIGNER_PUBKEY)
+  await expect(page.locator("[data-merchant-main-scroll]")).toBeVisible()
+  await expect(page.getByLabel("Open merchant account menu")).toBeVisible()
+  await expect
+    .poll(() =>
+      video.evaluate((element: HTMLVideoElement) => element.currentTime)
+    )
+    .toBeGreaterThan(0)
 })
