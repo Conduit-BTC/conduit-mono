@@ -92,8 +92,10 @@ when supplied. Attachments are not fetched merely by opening a conversation.
 
 Shared codecs read Conduit named JSON histories and current Open Markets
 numeric-tag kind-16 messages and kind-17 receipts. Normal order operations retain
-the deployed named kind-16 JSON grammar. A numeric writer requires an accepted
-migration contract and explicit recipient capability evidence before activation.
+the deployed named kind-16 JSON grammar for newly created orders. The bounded
+[numeric order adapter](./open-markets-order-adapter.md) selects compatible
+replies only from a retained authenticated external order. Supported Lightning
+claims reach the existing independent verifier; missing terms remain unknown.
 The bounded `conduit` version-1 extension is read only when its identity agrees
 with the surrounding message. Unknown versions remain inspectable evidence.
 Kind 1327 is not a default writer.

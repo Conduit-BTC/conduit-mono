@@ -170,6 +170,7 @@ export function assertStagedOrderLifecycleMatchesRumor(
   const currencyTags = rumor.tags.filter((tag) => tag[0] === "currency")
   if (
     parsed.type !== "order" ||
+    parsed.wireFormat === "open_markets" ||
     rumor.kind !== EVENT_KINDS.ORDER ||
     orderTags.length !== 1 ||
     recipientTags.length !== 1 ||

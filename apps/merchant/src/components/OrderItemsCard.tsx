@@ -20,6 +20,8 @@ export interface OrderItemsCardProps {
   shippingCostStatus: OrderSummary["shippingCostStatus"]
   total: OrderSummary["subtotal"]
   currency: OrderSummary["currency"]
+  openMarkets?: OrderSummary["openMarkets"]
+  conflictingTerms?: boolean
 }
 
 function getShippingDisplay(
@@ -142,6 +144,8 @@ export function OrderItemsCard({
   shippingCostStatus,
   total,
   currency,
+  openMarkets,
+  conflictingTerms,
 }: OrderItemsCardProps) {
   const headingId = useId()
   const shippingDisplay = getShippingDisplay(
@@ -161,9 +165,11 @@ export function OrderItemsCard({
   ]
     .filter((detail): detail is string => Boolean(detail))
     .join(" ")
-  const totalLabel = crossCurrencyShipping
-    ? "Recorded total"
-    : shippingDisplay.totalLabel
+  const totalLabel = openMarkets
+    ? "Requested total"
+    : crossCurrencyShipping
+      ? "Recorded total"
+      : shippingDisplay.totalLabel
   const hasSatsBreakdown =
     isSatsCurrency(currency) &&
     items.every((item) => isSatsCurrency(item.currency)) &&
@@ -205,12 +211,48 @@ export function OrderItemsCard({
         Items
       </h3>
 
+      {conflictingTerms ? (
+        <p
+          role="alert"
+          className="mt-3 text-pretty text-sm text-[var(--error-text)]"
+        >
+          The buyer sent conflicting terms for this order. Agree on the terms in
+          Messages and ask the buyer to send a new order.
+        </p>
+      ) : null}
+
+      {openMarkets ? (
+        <div className="mt-3 space-y-2 text-pretty text-sm text-[var(--text-secondary)]">
+          <p>
+            Review the buyer's requested total and delivery details before
+            accepting or invoicing. Individual prices and the original listing
+            revision were not supplied.
+          </p>
+          {openMarkets.address ? (
+            <p className="whitespace-pre-wrap">
+              <span className="font-medium">
+                Delivery address supplied by buyer:
+              </span>
+              {"\n"}
+              {openMarkets.address}
+            </p>
+          ) : (
+            <p>Confirm delivery details with the buyer.</p>
+          )}
+          {openMarkets.email ? <p>Email: {openMarkets.email}</p> : null}
+          {openMarkets.phone ? <p>Phone: {openMarkets.phone}</p> : null}
+        </div>
+      ) : null}
+
       <ul className="mt-3 space-y-3">
         {keyedItems.map(({ item, key }) => {
           const match = productLookup.get(item.productId)
           const image = match?.imageUrl
           const title = item.title || match?.title || "Product"
-          const calculatedLineTotal = item.priceAtPurchase * item.quantity
+          const calculatedLineTotal =
+            item.priceAtPurchase === undefined
+              ? NaN
+              : item.priceAtPurchase * item.quantity
           const lineTotal =
             Number.isFinite(calculatedLineTotal) &&
             (!isSatsCurrency(item.currency) ||
@@ -246,11 +288,9 @@ export function OrderItemsCard({
                 ) : null}
                 <div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 tabular-nums">
                   <span className="text-xs text-[var(--text-secondary)]">
-                    {formatMerchantOrderAmount(
-                      item.priceAtPurchase,
-                      item.currency
-                    )}{" "}
-                    each × {item.quantity}
+                    {item.priceAtPurchase === undefined
+                      ? `Quantity ${item.quantity}. Unit price not supplied.`
+                      : `${formatMerchantOrderAmount(item.priceAtPurchase, item.currency)} each × ${item.quantity}`}
                   </span>
                   <span className="ml-auto whitespace-nowrap text-right font-medium text-[var(--text-primary)]">
                     <span className="mr-1 text-xs font-normal text-[var(--text-muted)]">

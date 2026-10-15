@@ -2,6 +2,8 @@
  * The extension carries existing signed listing/fulfillment terms without
  * inventing those fields for independent-client records that lack them.
  */
+import { openMarketsStatus } from "./open-markets-orders"
+
 const numericTypes: Record<string, string> = {
   order: "1",
   payment_request: "2",
@@ -71,7 +73,11 @@ export function decodeConduitCommerceExtension<T extends WireRumor>(
       ))
   )
     throw new Error("Commerce extension invoice mismatch")
-  if (type === "status_update" && payload.status !== tag("status"))
+  if (
+    type === "status_update" &&
+    payload.status !== tag("status") &&
+    openMarketsStatus(String(payload.status)) !== tag("status")
+  )
     throw new Error("Commerce extension status mismatch")
   if (
     type === "shipping_update" &&
@@ -83,7 +89,80 @@ export function decodeConduitCommerceExtension<T extends WireRumor>(
     ...rumor,
     tags: rumor.tags
       .filter((value) => !["type", "conduit"].includes(value[0] ?? ""))
+      .map((value) =>
+        type === "status_update" && value[0] === "status"
+          ? ["status", String(payload.status)]
+          : value
+      )
       .concat([["type", type]]),
     content: extension[3]!,
   }
+}
+
+/** A reply uses common numeric fields; the optional extension preserves our richer local history. */
+export function encodeOpenMarketsMerchantReply<T extends WireRumor>(
+  rumor: T,
+  wireOrderId: string
+): T {
+  const payload = JSON.parse(rumor.content) as Record<string, unknown>
+  const type = rumor.tags.find((tag) => tag[0] === "type")?.[1] ?? ""
+  const recipient = rumor.tags.find((tag) => tag[0] === "p")?.[1] ?? ""
+  const note = typeof payload.note === "string" ? payload.note : ""
+  if (type === "message" || type === "receipt") {
+    return {
+      ...rumor,
+      kind: 14,
+      tags: [
+        ["p", recipient],
+        ["subject", wireOrderId],
+        ["order", wireOrderId],
+      ],
+      content: note || "Order update",
+    }
+  }
+  if (!["payment_request", "status_update", "shipping_update"].includes(type))
+    throw new Error("Unsupported commerce reply")
+  const tags: string[][] = [
+    ["p", recipient],
+    ["subject", type],
+    ["type", numericTypes[type]!],
+    ["order", wireOrderId],
+  ]
+  if (type === "payment_request") {
+    if (
+      typeof payload.amount !== "number" ||
+      !Number.isSafeInteger(payload.amount) ||
+      payload.amount <= 0 ||
+      !["SAT", "SATS"].includes(String(payload.currency).toUpperCase()) ||
+      typeof payload.invoice !== "string"
+    )
+      throw new Error("Unsupported commerce invoice")
+    tags.push(
+      ["amount", String(payload.amount)],
+      ["payment", "lightning", payload.invoice]
+    )
+  } else if (type === "status_update") {
+    const status = openMarketsStatus(String(payload.status))
+    if (
+      ![
+        "pending",
+        "confirmed",
+        "processing",
+        "completed",
+        "cancelled",
+      ].includes(status)
+    )
+      throw new Error("Unsupported commerce status")
+    tags.push(["status", status])
+  } else {
+    tags.push(["status", "shipped"])
+    if (typeof payload.carrier === "string")
+      tags.push(["carrier", payload.carrier])
+    if (typeof payload.trackingNumber === "string")
+      tags.push(["tracking", payload.trackingNumber])
+  }
+  const extension = JSON.stringify({ ...payload, orderId: wireOrderId })
+  if (extension.length > 32_768) throw new Error("Commerce reply is too large")
+  tags.push(["conduit", "1", type, extension])
+  return { ...rumor, tags, content: note }
 }

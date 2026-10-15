@@ -7,7 +7,8 @@ import {
   type MerchantPendingInvoice,
 } from "../apps/merchant/src/lib/merchant-invoice"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
-import { getEventHash } from "nostr-tools"
+import { getEventHash, generateSecretKey, getPublicKey } from "nostr-tools"
+import { wrapEvent } from "nostr-tools/nip59"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { ConduitDB } from "../packages/core/src/db"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
@@ -74,6 +75,97 @@ function statusInput(merchantPubkey: string) {
 }
 
 describe("merchant order publish", () => {
+  it("selects numeric replies from the retained order and reuses one paid confirmation after reload", async () => {
+    const account = await createMerchantOwner()
+    const buyer = generateSecretKey()
+    const buyerPubkey = getPublicKey(buyer)
+    await account.owner.ingest(
+      wrapEvent(
+        {
+          kind: 16,
+          pubkey: buyerPubkey,
+          created_at: 1_800_000_000,
+          tags: [
+            ["p", account.pubkey],
+            ["subject", "Order"],
+            ["type", "1"],
+            ["order", "peer-order"],
+            ["amount", "200"],
+            ["item", `30402:${account.pubkey}:book`, "1"],
+          ],
+          content: "Please confirm delivery",
+        },
+        buyer,
+        account.pubkey
+      )
+    )
+    const snapshot = await account.owner.waitForDecode()
+    const orderId = snapshot.orderMessages[0]!.orderId
+    const getOwner = spyOn(commerceInbox, "getCommerceInbox").mockReturnValue(
+      account.owner
+    )
+    const rumors: messaging.PrivateMessageEvent[] = []
+    const publish = spyOn(
+      messaging,
+      "publishPrivateMessage"
+    ).mockImplementation(async (input) => {
+      rumors.push(structuredClone(input.rumor))
+      await input.onRecipientAccepted?.({
+        successfulRelayUrls: ["wss://fixture.example"],
+      } as never)
+      return { selfCopyError: null, deliveryRoute: "declared_inbox" } as never
+    })
+    try {
+      const input = {
+        ...statusInput(account.pubkey),
+        buyerPubkey,
+        orderId,
+        payload: { status: "paid" },
+        tags: [["status", "paid"]],
+        authenticatedPubkey: account.pubkey,
+        paidInvoiceConfirmation: {
+          invoice: "synthetic-checkpoint-invoice",
+          amountMsats: 200_000,
+        },
+      }
+      await publishMerchantOrderMessage(input)
+      account.owner.stop()
+      const reloaded = new CommerceInbox(
+        account.authorization,
+        account.lease,
+        new CommerceInboxStore(account.authorization, account.database)
+      )
+      owners.push(reloaded)
+      await reloaded.initialize()
+      getOwner.mockReturnValue(reloaded)
+      await publishMerchantOrderMessage(input)
+      expect(rumors.length).toBe(2)
+      expect(rumors[0]!.id === rumors[1]!.id).toBe(true)
+      expect(
+        rumors[0]!.tags.some((tag) => tag[0] === "type" && tag[1] === "3")
+      ).toBe(true)
+      expect(
+        rumors[0]!.tags.some(
+          (tag) => tag[0] === "status" && tag[1] === "confirmed"
+        )
+      ).toBe(true)
+      expect(
+        rumors[0]!.tags.some(
+          (tag) => tag[0] === "order" && tag[1] === "peer-order"
+        )
+      ).toBe(true)
+      expect(
+        reloaded
+          .getSnapshot()
+          .orderMessages.filter((message) => message.type === "status_update")
+          .length
+      ).toBe(1)
+    } finally {
+      publish.mockRestore()
+      getOwner.mockRestore()
+    }
+  })
+
   it("targets the merchant for a guest-only operational record", () => {
     const rumor = new NDKEvent()
     rumor.id = "guest-status-rumor"
@@ -352,6 +444,7 @@ it.each([
         merchantPubkey: pubkey,
         buyerPubkey: "b".repeat(64),
         orderId: "legacy-order",
+        ...{ wireOrderId: "caller-metadata-cannot-select-a-writer" },
         type,
         payload,
         delivery: "buyer_and_self",

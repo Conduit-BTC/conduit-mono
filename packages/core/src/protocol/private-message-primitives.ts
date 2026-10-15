@@ -308,7 +308,6 @@ export function createValidatedOrderRouteScope(input: {
   )
     .trim()
     .toLowerCase()
-  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
   const rumorRecipient = input.rumor.tags
     .find((tag) => tag[0] === "p")?.[1]
     ?.trim()
@@ -323,9 +322,9 @@ export function createValidatedOrderRouteScope(input: {
     rumorRecipient !== expectedRumorRecipient ||
     (expectedRumorRecipient !== recipientPubkey &&
       recipientPubkey !== senderPubkey) ||
-    rumorOrderId !== orderId ||
     decoded.category !== "commerce" ||
-    !decoded.parsedOrderMessage
+    !decoded.parsedOrderMessage ||
+    decoded.parsedOrderMessage.orderId !== orderId
   ) {
     throw new Error("Cannot authorize compatibility routing for this rumor.")
   }
@@ -740,6 +739,7 @@ export interface ParsedDirectMessage {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  subject?: string
   /** Present only for an exact canonical companion awaiting order evidence. */
   orderCompanionIdentity?: OrderCompanionNotificationIdentity
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
@@ -862,7 +862,11 @@ export function consumeValidatedOrderRouteScope(input: {
   const scope = input.scope
   if (!scope || !validatedOrderRouteScopes.has(scope)) return false
   validatedOrderRouteScopes.delete(scope)
-  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const decoded = decodeCommerceMessageRumor(input.rumor)
+  const rumorOrderId =
+    decoded.category === "commerce"
+      ? decoded.parsedOrderMessage?.orderId
+      : undefined
   return (
     input.rumor.kind === EVENT_KINDS.ORDER &&
     scope.rumorId === input.rumor.id &&

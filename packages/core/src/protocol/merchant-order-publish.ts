@@ -18,6 +18,14 @@ import {
   publishPrivateMessage,
 } from "./messaging"
 import type { PrivateMessageDeliveryRoute } from "./private-message-routing"
+import {
+  decodeConduitCommerceExtension,
+  encodeOpenMarketsMerchantReply,
+} from "./commerce-wire"
+import {
+  hasConflictingOpenMarketsOrders,
+  openMarketsLocalOrderId,
+} from "./open-markets-orders"
 
 export type MerchantOrderDelivery = "buyer_and_self" | "self_only"
 
@@ -44,6 +52,11 @@ export interface PublishMerchantOrderMessageInput {
   signerInteraction?: "external" | "background_external"
   /** Local replay binding after independent exact invoice settlement verification. */
   paidInvoiceConfirmation?: { invoice: string; amountMsats: number }
+}
+
+type PreparedMerchantOrderMessageInput = PublishMerchantOrderMessageInput & {
+  /** Derived only from a retained, authenticated inbound order. */
+  wireOrderId?: string
 }
 
 export function getMerchantOrderDeliveryRecipients(
@@ -118,21 +131,24 @@ export function getMerchantOrderPublishTarget(
   return {
     recipientPubkey,
     selfCopy: input.delivery === "buyer_and_self",
-    validatedOrderScope: createValidatedOrderRouteScope({
-      rumor,
-      orderId: input.orderId,
-      senderPubkey: input.merchantPubkey,
-      recipientPubkey,
-      rumorRecipientPubkey: input.buyerPubkey,
-    }),
+    validatedOrderScope:
+      rumor.kind === 16
+        ? createValidatedOrderRouteScope({
+            rumor,
+            orderId: input.orderId,
+            senderPubkey: input.merchantPubkey,
+            recipientPubkey,
+            rumorRecipientPubkey: input.buyerPubkey,
+          })
+        : undefined,
   }
 }
 
 function buildMerchantOrderRumor(
-  input: PublishMerchantOrderMessageInput
+  input: PreparedMerchantOrderMessageInput,
+  createdAt = Date.now()
 ): PrivateMessageEvent {
-  const createdAt = Date.now()
-  const rumor = {
+  let rumor = {
     id: "",
     pubkey: input.merchantPubkey,
     kind: EVENT_KINDS.ORDER,
@@ -146,13 +162,15 @@ function buildMerchantOrderRumor(
       createdAt,
     }),
   } as PrivateMessageEvent
+  if (input.wireOrderId)
+    rumor = encodeOpenMarketsMerchantReply(rumor, input.wireOrderId)
   prepareMerchantRumor(rumor, input.merchantPubkey)
   return rumor
 }
 
 /** Preserve one logical confirmation; the transport owner still stages/replays wraps. */
 async function getPaidInvoiceConfirmationRumor(
-  input: PublishMerchantOrderMessageInput,
+  input: PreparedMerchantOrderMessageInput,
   store: CommerceInboxStore,
   assertCurrent: () => void
 ): Promise<PrivateMessageEvent> {
@@ -238,7 +256,8 @@ async function getPaidInvoiceConfirmationRumor(
   assertCurrent()
   try {
     const rumor = saved.rumor
-    const payload = JSON.parse(rumor.content)
+    const payload = JSON.parse(decodeConduitCommerceExtension(rumor).content)
+    const expected = buildMerchantOrderRumor(input, payload.createdAt)
     if (
       saved.version !== 1 ||
       JSON.stringify(saved.intent) !== JSON.stringify(intent) ||
@@ -249,18 +268,10 @@ async function getPaidInvoiceConfirmationRumor(
       !Number.isSafeInteger(payload.createdAt) ||
       payload.createdAt < 0 ||
       rumor.created_at !== Math.floor(payload.createdAt / 1000) ||
-      JSON.stringify(rumor.tags) !==
-        JSON.stringify(buildMerchantOrderRumorTags(input)) ||
+      JSON.stringify(rumor.tags) !== JSON.stringify(expected.tags) ||
       rumor.id !==
         getEventHash({ ...rumor, kind: 16, created_at: rumor.created_at! }) ||
-      JSON.stringify(payload) !==
-        JSON.stringify({
-          ...input.payload,
-          orderId: input.orderId,
-          merchantPubkey: input.merchantPubkey,
-          buyerPubkey: input.buyerPubkey,
-          createdAt: payload.createdAt,
-        })
+      rumor.content !== expected.content
     )
       throw new Error("Invalid checkpoint")
     return rumor
@@ -282,6 +293,51 @@ export async function publishMerchantOrderMessage(
     // Recipient delivery remains available; local history is reported after ACK.
   }
 
+  let prepared: PreparedMerchantOrderMessageInput = {
+    ...input,
+    wireOrderId: undefined,
+  }
+  let retainedNamedOrder = false
+  if (accountOwner && input.orderId.startsWith("open-markets:")) {
+    await accountOwner.initialize()
+    if (
+      input.type !== "message" &&
+      hasConflictingOpenMarketsOrders(
+        accountOwner
+          .getSnapshot()
+          .orderMessages.filter((message) => message.orderId === input.orderId)
+      )
+    )
+      throw new Error("Conflicting order terms require review")
+    const order = accountOwner
+      .getSnapshot()
+      .orderMessages.find(
+        (message) =>
+          message.type === "order" &&
+          message.orderId === input.orderId &&
+          message.senderPubkey === input.buyerPubkey &&
+          message.recipientPubkey === input.merchantPubkey
+      )
+    retainedNamedOrder =
+      order?.type === "order" && order.wireFormat !== "open_markets"
+    if (
+      order?.wireFormat === "open_markets" &&
+      order.wireOrderId &&
+      openMarketsLocalOrderId(
+        order.wireOrderId,
+        input.buyerPubkey,
+        input.merchantPubkey
+      ) === input.orderId
+    )
+      prepared = { ...input, wireOrderId: order.wireOrderId }
+  }
+  if (
+    input.orderId.startsWith("open-markets:") &&
+    !prepared.wireOrderId &&
+    !retainedNamedOrder
+  )
+    throw new Error("Compatible order history is unavailable")
+
   const assertConfirmationAuthority = () => {
     if (
       !accountOwner ||
@@ -297,12 +353,26 @@ export async function publishMerchantOrderMessage(
   if (input.paidInvoiceConfirmation) {
     assertConfirmationAuthority()
     rumor = await getPaidInvoiceConfirmationRumor(
-      input,
+      prepared,
       accountOwner!.store,
       assertConfirmationAuthority
     )
-  } else rumor = buildMerchantOrderRumor(input)
-  const parsed = parseOrderMessageRumorEvent(rumor)
+  } else rumor = buildMerchantOrderRumor(prepared)
+  const parsed: ParsedOrderMessage =
+    rumor.kind === 14
+      ? {
+          id: rumor.id,
+          orderId: input.orderId,
+          type: "message",
+          createdAt: rumor.created_at! * 1000,
+          senderPubkey: input.merchantPubkey,
+          recipientPubkey: input.buyerPubkey,
+          rawContent: rumor.content,
+          wireFormat: "open_markets",
+          wireOrderId: prepared.wireOrderId,
+          payload: { note: rumor.content },
+        }
+      : parseOrderMessageRumorEvent(rumor)
   const checkpoint = createAcceptedInboxSendCheckpoint(async () => {
     if (!accountOwner) throw new Error("Local order history unavailable")
     if (!(await cachePublishedMerchantOrderMessage(parsed, accountOwner)))
@@ -323,7 +393,7 @@ export async function publishMerchantOrderMessage(
       : input.shouldContinue,
     recipientPubkey: target.recipientPubkey,
     signer,
-    rumorKind: EVENT_KINDS.ORDER,
+    rumorKind: rumor.kind === 14 ? 14 : 16,
     selfCopy: target.selfCopy,
     deliveryStore: accountOwner?.store,
     signerInteraction: input.signerInteraction ?? "background_external",

@@ -627,18 +627,23 @@ function OrderItemsSection({
           const image = product
             ? getProductImageCandidates(product)[0]
             : undefined
-          const price = formatPrice(
-            {
-              price: item.priceAtPurchase,
-              currency: item.currency,
-              priceSats:
-                item.currency === "SATS" ? item.priceAtPurchase : undefined,
-              sourcePrice: item.sourcePrice,
-            },
-            {
-              allowZero: item.fulfillment?.type === "event_market_pickup",
-            }
-          )
+          const price =
+            item.priceAtPurchase === undefined
+              ? { primary: "Unit price not supplied", secondary: undefined }
+              : formatPrice(
+                  {
+                    price: item.priceAtPurchase,
+                    currency: item.currency,
+                    priceSats:
+                      item.currency === "SATS"
+                        ? item.priceAtPurchase
+                        : undefined,
+                    sourcePrice: item.sourcePrice,
+                  },
+                  {
+                    allowZero: item.fulfillment?.type === "event_market_pickup",
+                  }
+                )
           return (
             <div
               key={`${item.productId}-${index}`}
@@ -1552,22 +1557,28 @@ function OrderDetail({
       id: row.orderId,
       buyerPubkey,
       merchantPubkey: row.merchantPubkey,
-      items: (row.lifecycle?.items ?? vm.items).map((item) => ({
-        productId: item.productId,
-        familyProductId: item.familyProductId,
-        selectedSpecifications: item.selectedSpecifications,
-        format: item.format ?? "physical",
-        quantity: item.quantity,
-        priceAtPurchase: item.priceAtPurchase,
-        currency: item.currency,
-        fulfillment:
-          item.fulfillment?.type === "event_market_pickup"
-            ? item.fulfillment
-            : undefined,
-        sourcePrice: item.sourcePrice,
-        shippingCostSats: item.shippingCostSats,
-        sourceShippingCost: item.sourceShippingCost,
-      })),
+      items: (row.lifecycle?.items ?? vm.items).map((item) => {
+        if (item.priceAtPurchase === undefined)
+          throw new Error(
+            "The original item prices are unavailable. Contact the merchant before retrying."
+          )
+        return {
+          productId: item.productId,
+          familyProductId: item.familyProductId,
+          selectedSpecifications: item.selectedSpecifications,
+          format: item.format ?? "physical",
+          quantity: item.quantity,
+          priceAtPurchase: item.priceAtPurchase,
+          currency: item.currency,
+          fulfillment:
+            item.fulfillment?.type === "event_market_pickup"
+              ? item.fulfillment
+              : undefined,
+          sourcePrice: item.sourcePrice,
+          shippingCostSats: item.shippingCostSats,
+          sourceShippingCost: item.sourceShippingCost,
+        }
+      }),
       subtotal: row.lifecycle?.totalSats ?? vm.totalSats ?? 0,
       currency: row.lifecycle?.currency ?? vm.currency,
       shippingCostSats: row.lifecycle?.shippingCostSats ?? 0,

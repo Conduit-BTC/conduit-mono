@@ -1,4 +1,4 @@
-import type { MerchantOrderAction, OrderSchema } from "@conduit/core"
+import type { MerchantOrderAction, ParsedOrderMessage } from "@conduit/core"
 
 export type MerchantOrderNextStep =
   "primary_action" | "invoice" | "shipping" | "out_of_band_payment" | null
@@ -72,7 +72,10 @@ export function resolveMerchantPaymentConfirmationSelection<
 }
 
 export interface ZeroCostPickupTermsInput {
-  order: Pick<OrderSchema, "items" | "subtotal" | "shippingCostSats"> | null
+  order: Pick<
+    Extract<ParsedOrderMessage, { type: "order" }>["payload"],
+    "items" | "subtotal" | "shippingCostSats"
+  > | null
   fulfillmentMode: "shipping" | "pickup" | "digital" | "unknown"
   requiresShipping: boolean
 }

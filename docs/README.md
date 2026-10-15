@@ -37,6 +37,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/knowledge/open-markets-order-adapter.md`: supported numeric order/reply
+  and Lightning receipt adapter; proposed compatibility lane, review/removal
+  gates, incomplete terms, exact identity and recovery
 - `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
   frozen payment authority, isolated-wallet Merchant recovery and historical
   order compatibility

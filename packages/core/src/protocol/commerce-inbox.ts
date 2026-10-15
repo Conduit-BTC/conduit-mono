@@ -1,4 +1,8 @@
 import type { RelayTarget } from "./relay-authority"
+import {
+  getOrderAdapterCounts,
+  openMarketsLocalOrderId,
+} from "./open-markets-orders"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -130,6 +134,7 @@ export interface CommerceInboxReadEvidence {
   unusable: number
 }
 export interface CommerceInboxDiagnostic {
+  orderAdapter?: ReturnType<typeof getOrderAdapterCounts>
   states: Partial<Record<InboxDecodeState, number>>
   transportStates: Record<
     "nip17" | "nip04",
@@ -210,6 +215,42 @@ function projectRetainedInboxRecords(
     )
       externalRecords.push(projection.record)
     if (row.read === 0) unreadIds.add(row.logicalId)
+  }
+  // Kind-14 notes stay in the direct inbox. Only an exact known external order
+  // between the same two parties gains an additional, non-authoritative preview.
+  const knownOrders = new Set(
+    orderMessages
+      .filter(
+        (message) =>
+          message.type === "order" && message.wireFormat === "open_markets"
+      )
+      .map((message) => message.orderId)
+  )
+  const orderMessageIds = new Set(orderMessages.map((message) => message.id))
+  for (const message of directMessages) {
+    if (
+      message.transport !== "nip17" ||
+      !message.subject ||
+      message.file ||
+      orderMessageIds.has(message.id) ||
+      (message.participants && message.participants.length !== 2)
+    )
+      continue
+    const orderId = openMarketsLocalOrderId(
+      message.subject,
+      message.senderPubkey,
+      message.recipientPubkey
+    )
+    if (knownOrders.has(orderId))
+      orderMessages.push({
+        ...message,
+        type: "message",
+        orderId,
+        rawContent: message.content,
+        wireFormat: "open_markets",
+        wireOrderId: message.subject,
+        payload: { note: message.content },
+      })
   }
   // Advisory companion is suppressed only by its exact authenticated order.
   const orders = new Set(
@@ -428,14 +469,16 @@ export class CommerceInbox {
       admissionRejected: range.admissionRejected,
       historyAttempted: range.historyAttempted,
     }))
+    const retained = projectRetainedInboxRecords(projections)
     this.snapshot = {
       ...this.snapshot,
       sourceRelays: this.sourceRelays(),
       decryptFailures,
       legacyDecryptFailures,
-      ...projectRetainedInboxRecords(projections),
+      ...retained,
       diagnostics: {
         ...this.snapshot.diagnostics,
+        orderAdapter: getOrderAdapterCounts(retained.orderMessages),
         states,
         transportStates,
         historyRanges,

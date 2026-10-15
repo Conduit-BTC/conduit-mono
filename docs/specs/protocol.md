@@ -787,9 +787,16 @@ content-free.
 
 ## Legacy Conduit Order Message Payload (CND-128)
 
-Current Conduit writers and readers use kind `16` with JSON `content` and
+New Conduit orders use kind `16` with JSON `content` and
 explicit `p`, named `type`, and `order` tags. There is no current Conduit kind
 `17` payment-proof writer and no proposed OMF kind-`1327` writer.
+
+The shared [numeric order adapter](../knowledge/open-markets-order-adapter.md)
+also reads validated Open Markets numeric orders into Merchant review, sends
+compatible numeric replies for those orders, and treats supported kind-17
+Lightning receipts as claims for the existing settlement verifier. Original
+wire IDs and encrypted originals are preserved; missing historical prices,
+listing revisions and destination terms remain unknown.
 
 This legacy format is not wire-compatible with the GammaMarkets order-message
 format. GammaMarkets uses numeric kind-16 `type` values, human-readable
@@ -804,14 +811,17 @@ orders, messages, or user-visible parse failures.
 
 ### Migration gate (CND-191)
 
-The OMF order-message proposal remains unaccepted. Conduit must preserve legacy
-writes and must not enable a new-kind writer or dual-write before acceptance.
-After acceptance, migration proceeds in this order:
+The versioned OMF proposal remains experimental. Implementation can proceed from
+a frozen contract using explicit supported-peer selection and Conduit-owned
+correctness, compatibility, cryptographic and recovery evidence. Upstream
+acceptance or another marketplace's adoption is not a universal implementation
+gate. The current numeric adapter enables no kind-1327 writer. Migration proceeds
+in this order:
 
-1. Add a codec for the accepted format.
-2. Add strict dual-read and semantic deduplication across accepted and legacy
+1. Add a codec for the selected format.
+2. Add strict dual-read and semantic deduplication across new and legacy
    representations.
-3. Enable the accepted writer only when peer capability is explicit.
+3. Select one supported representation with explicit capability or authenticated per-order evidence.
 4. Retire legacy writes after compatibility evidence is sufficient, while
    retaining bounded legacy reads for recovery.
 

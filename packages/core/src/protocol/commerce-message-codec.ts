@@ -69,7 +69,7 @@ export type DecodedCommerceMessage =
       fields: CommerceFields
       /** Human-authored content only. Conduit JSON and recovery data never enter here. */
       text?: string
-      /** Only validated Conduit messages can enter existing order actions. */
+      /** Validated supported payloads; domain actions retain separate authority. */
       parsedOrderMessage?: ParsedOrderMessage
     }
 
@@ -332,12 +332,10 @@ export function decodeCommerceMessageRumor(
       const fields = omfFields(tags, mappedType)
       let parsedOrderMessage: ParsedOrderMessage | undefined
       let extensionMalformed = false
-      if (values(tags, "conduit").length) {
-        try {
-          parsedOrderMessage = parseOrderMessageRumorEvent(rumor)
-        } catch {
-          extensionMalformed = true
-        }
+      try {
+        parsedOrderMessage = parseOrderMessageRumorEvent(rumor)
+      } catch {
+        extensionMalformed = values(tags, "conduit").length > 0
       }
       return {
         category: "commerce",
@@ -449,10 +447,17 @@ export function decodeCommerceMessageRumor(
           single(tags, "subject") === "order-receipt")))
   ) {
     const fields = omfFields(tags, "payment_receipt")
+    let parsedOrderMessage: ParsedOrderMessage | undefined
+    try {
+      parsedOrderMessage = parseOrderMessageRumorEvent(rumor)
+    } catch {
+      // Unsupported rails/claims remain inspectable; they confer no authority.
+    }
     return {
       category: "commerce",
       provenance: source,
       protocol: "open_markets",
+      parsedOrderMessage,
       status:
         values(tags, "version").length > 0
           ? "unsupported"

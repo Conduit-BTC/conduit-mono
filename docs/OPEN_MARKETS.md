@@ -70,10 +70,14 @@ The [Shop checkout](../apps/market/src/routes/checkout.tsx) emits product and
 shipping references in tags as well as its JSON payload. The
 [Sell publisher](../packages/core/src/protocol/merchant-order-publish.ts) and
 [order parser](../packages/core/src/protocol/orders.ts) use the Conduit schemas.
-A peer must implement that grammar or a reviewed adapter for order exchange;
-shared kind numbers, listing compatibility, or successful decryption alone do
-not prove order compatibility. Conduit payment proofs are kind-16 messages,
-not a claim of generic Open Markets kind-17 receipt support.
+The [numeric order adapter](knowledge/open-markets-order-adapter.md) supports
+independent buyer orders without Conduit's extension payload, merchant review,
+numeric invoice/status/shipping replies and kind-17 Lightning claims through the
+existing verifier. Missing historical line prices, listing revisions and
+structured destination details remain unknown. Other receipt rails remain
+inspectable without payment authority. This is client capability, not deployment
+or independent-client certification. New Shop orders and their payment proofs
+retain Conduit's named kind-16 grammar; no new default writer is enabled.
 
 Organizer handoff receipts, revocations, and acknowledgements are also Conduit
 private-commerce messages. They do not grant an organizer merchant authority

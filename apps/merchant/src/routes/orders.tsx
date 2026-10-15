@@ -665,7 +665,11 @@ function OrdersWorkspace() {
       current.signerReadiness === "ready"
     )
   }
-  const captureFreshOrderAuthority = (): OrderActionAuthority => {
+  const captureFreshOrderAuthority = (
+    conversationOnly = false
+  ): OrderActionAuthority => {
+    if (!conversationOnly && selectedOrderContextRef.current.conflictingTerms)
+      throw new Error("Conflicting order terms require review with the buyer.")
     const current = orderAuthorityRef.current
     if (
       !current.accountPubkey ||
@@ -1130,14 +1134,20 @@ function OrdersWorkspace() {
     merchantPubkey: pubkey,
     buyerPubkey: selected?.buyerPubkey,
     orderId: selected?.orderId,
+    conflictingTerms: selected
+      ? getMerchantOrderSummary(selected).conflictingTerms === true
+      : false,
   })
   useLayoutEffect(() => {
     selectedOrderContextRef.current = {
       merchantPubkey: pubkey,
       buyerPubkey: selected?.buyerPubkey,
       orderId: selected?.orderId,
+      conflictingTerms: selected
+        ? getMerchantOrderSummary(selected).conflictingTerms === true
+        : false,
     }
-  }, [pubkey, selected?.buyerPubkey, selected?.orderId])
+  }, [pubkey, selected])
   const isCurrentSelectedOrder = (
     merchantPubkey: string,
     buyerPubkey: string,
@@ -1178,11 +1188,16 @@ function OrdersWorkspace() {
   )
   const selectedOrder =
     selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload : null
-  const selectedFuturePickup = selectedOrder?.items.find(
+  const selectedConduitOrder =
+    selectedOrderMessage?.type === "order" &&
+    selectedOrderMessage.wireFormat !== "open_markets"
+      ? selectedOrderMessage.payload
+      : null
+  const selectedFuturePickup = selectedConduitOrder?.items.find(
     (item) => item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
   const selectedFutureOrganizerHandoff =
-    selectedOrder?.items.some(
+    selectedConduitOrder?.items.some(
       (item) =>
         item.fulfillment?.type === "event_market_pickup" &&
         item.fulfillment.mode === "organizer_handoff"
@@ -1229,7 +1244,7 @@ function OrdersWorkspace() {
       selectedFutureOrganizerHandoff,
     queryFn: ({ signal }) =>
       readFutureMarketMerchantClaim({
-        order: selectedOrder!,
+        order: selectedConduitOrder!,
         merchantPubkey: pubkey!,
         shouldContinue: () =>
           !signal.aborted &&
@@ -1476,9 +1491,9 @@ function OrdersWorkspace() {
         !signal.aborted &&
         !!pubkey &&
         isCurrentOrderOwner(pubkey, authGeneration)
-      return snapshottedOrderFulfillment.futureMarket && selectedOrder
+      return snapshottedOrderFulfillment.futureMarket && selectedConduitOrder
         ? await verifyFutureEventMarketOrderAuthorization({
-            order: selectedOrder,
+            order: selectedConduitOrder,
             merchantPubkey: pubkey!,
             authenticatedPubkey,
             shouldContinue,
@@ -1699,9 +1714,9 @@ function OrdersWorkspace() {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
     const result =
-      snapshottedOrderFulfillment.futureMarket && selectedOrder
+      snapshottedOrderFulfillment.futureMarket && selectedConduitOrder
         ? await verifyFutureEventMarketOrderAuthorization({
-            order: selectedOrder,
+            order: selectedConduitOrder,
             merchantPubkey: pubkey,
             authenticatedPubkey,
             shouldContinue: () => isCurrentOrderAction(authority),
@@ -1724,15 +1739,16 @@ function OrdersWorkspace() {
     }
     return result
   }
-  const orderActions = selected
-    ? getMerchantOrderActions(merchantOrderState).filter(
-        ({ action }) =>
-          !merchantOrderState.checkoutSparkRouted ||
-          (action !== "confirm_payment" &&
-            (merchantPaid ||
-              (action !== "record_shipment" && action !== "complete")))
-      )
-    : []
+  const orderActions =
+    selected && !orderSummary?.conflictingTerms
+      ? getMerchantOrderActions(merchantOrderState).filter(
+          ({ action }) =>
+            !merchantOrderState.checkoutSparkRouted ||
+            (action !== "confirm_payment" &&
+              (merchantPaid ||
+                (action !== "record_shipment" && action !== "complete")))
+        )
+      : []
   const reopenTransition = getMerchantOrderReopenTransition(merchantOrderState)
   const currentReopenInput: ReopenOrderMutationInput | null =
     pubkey && selected && reopenTransition
@@ -1748,11 +1764,13 @@ function OrdersWorkspace() {
   const selectedQueue = selected
     ? getMerchantConversationQueue(selected, getOrderSettlement(selected))
     : null
-  const canSendInvoice = canMerchantIssueOrderInvoice({
-    buyerInboxKnown,
-    queue: selectedQueue,
-    state: merchantOrderState,
-  })
+  const canSendInvoice =
+    !orderSummary?.conflictingTerms &&
+    canMerchantIssueOrderInvoice({
+      buyerInboxKnown,
+      queue: selectedQueue,
+      state: merchantOrderState,
+    })
   const selectedInvoiceScope =
     pubkey && selected
       ? {
@@ -1773,6 +1791,7 @@ function OrdersWorkspace() {
     },
   })
   const canRecordShipping =
+    !orderSummary?.conflictingTerms &&
     pickupFulfillmentActionsAuthorized &&
     selectedQueue === "paid_fulfill" &&
     merchantPaid &&
@@ -2656,7 +2675,7 @@ function OrdersWorkspace() {
         const authority = captureFreshOrderAuthority()
         if (
           !pubkey ||
-          !selectedOrder ||
+          !selectedConduitOrder ||
           !selectedFutureOrganizerHandoff ||
           futureHasRelease ||
           authority.accountPubkey !== pubkey
@@ -2666,7 +2685,7 @@ function OrdersWorkspace() {
           )
         assertPaidForFulfillment(true)
         const evidence = await readVerifiedFutureEventMarketOrderEvidence({
-          order: selectedOrder,
+          order: selectedConduitOrder,
           merchantPubkey: pubkey,
           authenticatedPubkey,
           shouldContinue: () => isCurrentOrderAction(authority),
@@ -2679,7 +2698,7 @@ function OrdersWorkspace() {
         const signer = getAccountSigner()
         if (!signer) throw new Error("Merchant signer is not connected.")
         const delivery = await publishFutureMarketReadyReceipt({
-          order: selectedOrder,
+          order: selectedConduitOrder,
           signedOrderEvidence: evidence.events,
           paymentAuthenticated: merchantPaid,
           releaseConfirmed: organizerReleaseConfirmed,
@@ -3149,7 +3168,7 @@ function OrdersWorkspace() {
 
   const noteMutation = useMutation({
     mutationFn: async (content: string) => {
-      const authority = captureFreshOrderAuthority()
+      const authority = captureFreshOrderAuthority(true)
       const actionConversation = selected
       if (
         !pubkey ||
@@ -3552,6 +3571,8 @@ function OrdersWorkspace() {
                     shippingCostStatus={orderSummary.shippingCostStatus}
                     total={orderSummary.subtotal}
                     currency={orderSummary.currency}
+                    openMarkets={orderSummary.openMarkets}
+                    conflictingTerms={orderSummary.conflictingTerms}
                   />
                 </div>
 
@@ -4264,6 +4285,8 @@ function OrdersWorkspace() {
                         shippingCostStatus={orderSummary.shippingCostStatus}
                         total={orderSummary.subtotal}
                         currency={orderSummary.currency}
+                        openMarkets={orderSummary.openMarkets}
+                        conflictingTerms={orderSummary.conflictingTerms}
                       />
                     </div>
 
@@ -4587,7 +4610,9 @@ function OrdersWorkspace() {
                         </section>
                       )}
 
-                    {selectedOrderMessage?.type === "order" && pubkey ? (
+                    {selectedOrderMessage?.type === "order" &&
+                    selectedOrderMessage.wireFormat !== "open_markets" &&
+                    pubkey ? (
                       <EventGuestReceiptVerifier
                         key={selectedOrderMessage.payload.id}
                         order={selectedOrderMessage.payload}
@@ -4966,7 +4991,7 @@ function OrdersWorkspace() {
                               paymentConfirmationSelection.buyerPubkey,
                             orderId: paymentConfirmationSelection.orderId,
                             delivery: operationalDelivery,
-                            order: selectedOrder,
+                            order: selectedConduitOrder,
                           })
                           setPaymentConfirmationTarget(null)
                         }}
