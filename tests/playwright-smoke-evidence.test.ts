@@ -533,6 +533,110 @@ describe("composed smoke evidence", () => {
     })
   })
 
+  it("retains long static conditions only in validated file-bound failure contexts", () => {
+    const context = {
+      boundary: "assertion",
+      expected: "commerce_buyer_status_accepted_visible",
+      observed: "unmet",
+    }
+    const artifact = (file: string, value: unknown) => ({
+      tests: [
+        { file, tests: [{ results: [{ failure: { context: value } }] }] },
+      ],
+    })
+    const valid = artifact("e2e/commerce.playwright.ts", context)
+    expect(JSON.parse(serializeSmokeEvidence(valid))).toEqual(valid)
+    for (const invalid of [
+      artifact("e2e/wallet-cross-app.playwright.ts", context),
+      artifact("e2e/commerce.playwright.ts", {
+        ...context,
+        boundary: "user-action",
+      }),
+      artifact("e2e/commerce.playwright.ts", {
+        ...context,
+        expected: "unknown_condition_" + "a".repeat(40),
+      }),
+      artifact("e2e/commerce.playwright.ts", {
+        ...context,
+        detail: "nsec1" + "a".repeat(60),
+      }),
+      { ...valid, extra: context.expected },
+      { context },
+      { ...valid, nested: { context: { ...context } } },
+    ]) {
+      expect(() => serializeSmokeEvidence(invalid)).toThrow("content-safety")
+    }
+  })
+
+  it("writes real-runner failure evidence for long approved condition names", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-long-context-"))
+    const conditions = [
+      ["commerce", "commerce_buyer_status_accepted_visible", "assertion"],
+      [
+        "wallet-cross-app",
+        "wallet_refusal_foreground_import_completed",
+        "user-action",
+      ],
+      [
+        "mobile-safari-baseline",
+        "mobile_wallet_setup_trigger_click_completed",
+        "user-action",
+      ],
+    ]
+    try {
+      mkdirSync(join(directory, "e2e"))
+      for (const [file, expected] of conditions) {
+        writeFileSync(
+          join(directory, `e2e/${file}.playwright.ts`),
+          [
+            `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
+            `import { recordSmokeFailureContext } from ${JSON.stringify(smokeDiagnosticsImport)}`,
+            'test("controlled failure @commerce", async ({}, info) => {',
+            `  recordSmokeFailureContext(info, ${JSON.stringify(expected)}, "unmet");`,
+            "  expect(false).toBe(true);",
+            "});",
+          ].join("\n")
+        )
+      }
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      const config = join(directory, "playwright.config.ts")
+      writeFileSync(
+        config,
+        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "chromium" }] }`
+      )
+      const run = spawnSync(
+        process.execPath,
+        [playwrightCli, "test", "-c", config],
+        {
+          cwd: directory,
+          encoding: "utf8",
+          timeout: 15000,
+          env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+        }
+      )
+      expect(run.status).toBe(1)
+      const retained = JSON.parse(readFileSync(artifact, "utf8"))
+      expect(retained.status).toBe("failed")
+      expect(retained.errors).toEqual([])
+      expect(retained.timing.completedAttempts).toBe(conditions.length)
+      expect(retained.tests).toHaveLength(conditions.length)
+      for (const [file, expected, boundary] of conditions) {
+        const spec = retained.tests.find(
+          (value: { file: string }) =>
+            value.file === `e2e/${file}.playwright.ts`
+        )
+        expect(spec.tests[0].results[0]).toMatchObject({
+          status: "failed",
+          retry: 0,
+          failure: { context: { boundary, expected, observed: "unmet" } },
+        })
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30000)
+
   it("uses fixed duration buckets and rejects exact retained timings", () => {
     expect(
       [
