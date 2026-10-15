@@ -241,6 +241,8 @@ const failureConditions: Record<
 > = {
   "e2e/commerce.playwright.ts": {
     commerce_store_navigation_completed: "app-readiness",
+    commerce_buyer_paid_visible: "app-readiness",
+    commerce_buyer_reloaded_paid_visible: "app-readiness",
     commerce_buyer_status_dialog_opened: "user-action",
     commerce_buyer_status_accepted_visible: "assertion",
   },
@@ -651,6 +653,7 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         buyerProofSent: "boolean",
         buyerPaidMessages: "number",
         buyerMessageDialogVisible: "boolean",
+        buyerReadAfterReload: "boolean",
         phase: commerceJourneyPhases,
         elapsedSeconds: "number",
         phaseSeconds: "number",

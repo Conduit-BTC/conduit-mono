@@ -1910,6 +1910,7 @@ describe("wallet recovery and bounded control diagnostics", () => {
         navigationCommitted: false,
         navigationPageClosed: false,
         navigationFailure: "navigation_interrupted",
+        buyerReadAfterReload: true,
       },
     },
     {
