@@ -86,7 +86,11 @@ identity. The preview cannot grant financial or fulfillment authority.
 
 A supported kind-17 receipt has one Lightning invoice/preimage proof. Its amount
 must match the invoice; SHA-256 of the preimage must match the payment hash.
-It remains an unverified claim. Automation additionally requires the exact
+Kind 17 never falls back to the kind-16 Conduit extension parser. A disguised
+order/status extension remains external evidence, including under an unknown
+version. Decode-rule version 4 reprocesses retained wrappers so a projection
+admitted by the earlier rules cannot retain order authority after recovery.
+The supported receipt remains an unverified claim. Automation additionally requires the exact
 authenticated merchant-issued invoice and the existing receiving-wallet
 settlement verifier. Wrong-party, wrong-invoice, unsupported or conflicting
 claims cannot confirm payment. Existing manual verification stays explicit.

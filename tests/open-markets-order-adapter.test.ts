@@ -498,6 +498,62 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
     expect(f.owner.getSnapshot().externalRecords.length).toBe(4)
   })
 
+  it("keeps kind-16 extensions disguised as kind-17 receipts outside order authority", async () => {
+    const f = fixture()
+    await receive(f, f.order)
+    const preimage = generateSecretKey()
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc2000n",
+      fields: [
+        bolt11PaymentHashField(sha256(preimage)),
+        bolt11PlainDescriptionField("Synthetic disguised receipt"),
+      ],
+    })
+    const payment = ["payment", "lightning", invoice, bytesToHex(preimage)]
+    const status = reply(f, "status_update", { status: "paid" })
+    await receive(
+      f,
+      {
+        ...status,
+        kind: 17,
+        tags: [...status.tags, ["amount", "200"], payment],
+      },
+      f.merchant
+    )
+    const order = f.owner
+      .getSnapshot()
+      .orderMessages.find((message) => message.type === "order")!
+    if (order.type !== "order") throw new Error("Expected order")
+    const payload = {
+      ...order.payload,
+      id: "external-order",
+      items: order.payload.items.map((item) => ({
+        ...item,
+        priceAtPurchase: 100,
+        format: "physical",
+      })),
+    }
+    const disguisedOrder = {
+      ...f.order,
+      kind: 17,
+      tags: [
+        ...f.order.tags,
+        payment,
+        ["conduit", "1", "order", JSON.stringify(payload)],
+      ],
+    }
+    await receive(f, disguisedOrder)
+    await receive(f, {
+      ...disguisedOrder,
+      tags: [...disguisedOrder.tags, ["version", "99"]],
+    })
+    expect(f.owner.getSnapshot().orderMessages.length).toBe(1)
+    expect(f.owner.getSnapshot().externalRecords.length).toBe(3)
+    expect(
+      extractOrderSummary(f.owner.getSnapshot().orderMessages).paymentConfirmed
+    ).toBe(false)
+  })
+
   it("flags conflicting terms instead of choosing the newest wrapped order", async () => {
     const f = fixture()
     await receive(f, f.order)
@@ -541,5 +597,61 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
       projectCommerceInbox(recovered.getSnapshot(), f.pubkey).merchant.data
         .length
     ).toBe(1)
+  })
+
+  it("reclassifies a prior kind-17 order projection from its retained wrapper", async () => {
+    const f = fixture()
+    await receive(f, f.order)
+    const status = reply(f, "status_update", { status: "paid" })
+    const disguised = createPrivateMessageRumor({
+      ...status,
+      kind: 17,
+      tags: [...status.tags, ["payment", "unsupported", "reference"]],
+    })
+    await receive(f, disguised, f.merchant)
+    f.owner.stop()
+    const previous = parseOrderMessageRumorEvent(status)
+    if (previous.type !== "status_update") throw new Error("Expected status")
+    await f.store.putProjection({
+      kind: "order",
+      message: {
+        ...previous,
+        id: disguised.id,
+        orderId: "external-order",
+        wireFormat: undefined,
+        wireOrderId: undefined,
+      },
+    })
+    await f.database.commerceInboxWrappers.toCollection().modify({
+      state: "opened",
+      rulesVersion: 3,
+    })
+    const originals = (await f.database.commerceInboxWrappers.toArray()).map(
+      (row) => row.event
+    )
+    expect(
+      (await f.store.projections()).filter(
+        (row) => row.projection.kind === "order"
+      ).length
+    ).toBe(2)
+    const recovered = new CommerceInbox(
+      getProtectedReadAuthorization(f.pubkey)!,
+      f.signer,
+      new CommerceInboxStore(
+        getProtectedReadAuthorization(f.pubkey)!,
+        f.database
+      )
+    )
+    owners.push(recovered)
+    await recovered.initialize()
+    await recovered.waitForDecode()
+    expect(recovered.getSnapshot().orderMessages.length).toBe(1)
+    expect(recovered.getSnapshot().externalRecords.length).toBe(1)
+    const retained = await f.database.commerceInboxWrappers.toArray()
+    expect(retained.every((row) => row.rulesVersion === 4)).toBe(true)
+    expect(
+      JSON.stringify(retained.map((row) => row.event)) ===
+        JSON.stringify(originals)
+    ).toBe(true)
   })
 })

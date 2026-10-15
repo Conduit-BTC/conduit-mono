@@ -565,7 +565,7 @@ function parseCheckoutOrderPaymentRoute(
 }
 
 /**
- * Parse an unwrapped kind-16 rumor into a typed order-conversation message.
+ * Parse an unwrapped kind-16 order rumor or supported kind-17 receipt claim.
  *
  * This parser is intentionally permissive for non-`order` message types so
  * MVP clients can handle mixed sender implementations while remaining
@@ -574,6 +574,12 @@ function parseCheckoutOrderPaymentRoute(
 export function parseOrderMessageRumorEvent(
   event: OrderRumorEvent
 ): ParsedOrderMessage {
+  if (event.kind === 17) {
+    const receipt = parseOpenMarketsOrderMessage(event)
+    if (receipt?.type !== "payment_proof")
+      throw new Error("Unsupported commerce receipt")
+    return receipt
+  }
   const numeric =
     event.kind === 16 && /^\d+$/.test(getTagValue(event.tags, "type") ?? "")
   if (numeric && event.tags.some((tag) => tag[0] === "conduit")) {
