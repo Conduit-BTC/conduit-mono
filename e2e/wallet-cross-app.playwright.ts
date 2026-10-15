@@ -30,7 +30,10 @@ import {
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
 import { publishTestRelayEvents } from "./helpers/auth"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 
 type WalletFixtureWindow = Window & {
   nostr: {
@@ -74,6 +77,10 @@ type WalletFixtureWindow = Window & {
   __restoreLateBackgroundRecoveryRead(): void
   __lateBackgroundOpen: Promise<string>
   __joinedLateBackgroundOpen: Promise<string>
+  __clickedRecoverySync?: Promise<"resolved" | "rejected">
+  __restoreClickedRecoverySync?: () => void
+  __observeControlledWalletController?: (wallets: UseWalletsReturn) => void
+  __watchClickedRecoverySync?: boolean
 }
 
 const core = "/@fs" + path.resolve("packages/core/src/index.ts")
@@ -2098,12 +2105,40 @@ test("stale unlock failure cannot replace a reopened wallet session @market", as
 
 test("foreground wallet import stays ready after an older background opening is refused @market @merchant", async ({
   browser,
-}) => {
+}, testInfo) => {
   const identity = createRuntimeSignerIdentity()
   const context = await browser.newContext()
   const source = await context.newPage()
   const target = await context.newPage()
   let denied = true
+  type RefusalPhase =
+    | "sync_click"
+    | "sync_settled"
+    | "background_read_held"
+    | "foreground_import"
+    | "foreground_import_settled"
+    | "background_released"
+    | "complete"
+  const diagnostic: {
+    phase: RefusalPhase
+    syncObserved: boolean
+    syncOutcome: "pending" | "resolved" | "rejected"
+    foregroundImportSettled: boolean
+    observationAvailable: boolean
+    lockObservationAvailable: boolean
+    heldReadInsideAccountSetupLock?: boolean
+  } = {
+    phase: "sync_click",
+    syncObserved: false,
+    syncOutcome: "pending",
+    foregroundImportSettled: false,
+    observationAvailable: true,
+    lockObservationAvailable: false,
+  }
+  const checkpoint = (phase: RefusalPhase) => {
+    diagnostic.phase = phase
+    recordSmokeDiagnostic(testInfo, "wallet-background-refusal", diagnostic)
+  }
   try {
     for (const page of [source, target]) await prepareControlledWallet(page)
     await observeWalletController(target)
@@ -2144,9 +2179,59 @@ test("foreground wallet import stays ready after an older background opening is 
       )
     ).toBeVisible()
     denied = false
+    checkpoint("sync_click")
+    recordSmokeFailureContext(
+      testInfo,
+      "wallet_refusal_sync_completed",
+      "pending"
+    )
+    await target.evaluate(() => {
+      const fixture = window as unknown as WalletFixtureWindow
+      const originals = new Map<
+        UseWalletsReturn,
+        UseWalletsReturn["retryRecovery"]
+      >()
+      const observe = (controller: UseWalletsReturn) => {
+        if (originals.has(controller)) return
+        const original = controller.retryRecovery
+        originals.set(controller, original)
+        controller.retryRecovery = () => {
+          const attempt = original.call(controller)
+          if (fixture.__watchClickedRecoverySync) {
+            fixture.__watchClickedRecoverySync = false
+            fixture.__clickedRecoverySync = attempt.then(
+              () => "resolved",
+              () => "rejected"
+            )
+          }
+          return attempt
+        }
+      }
+      fixture.__observeControlledWalletController = observe
+      observe(fixture.__controlledWalletController)
+      fixture.__restoreClickedRecoverySync = () => {
+        fixture.__watchClickedRecoverySync = false
+        delete fixture.__observeControlledWalletController
+        for (const [controller, original] of originals)
+          controller.retryRecovery = original
+        originals.clear()
+      }
+      fixture.__watchClickedRecoverySync = true
+    })
     await target
       .getByRole("button", { name: "Retry encrypted wallet sync", exact: true })
       .click()
+    const syncOutcome = await target.evaluate(async () => {
+      const fixture = window as unknown as WalletFixtureWindow
+      if (!fixture.__clickedRecoverySync) return "not_observed"
+      const outcome = await fixture.__clickedRecoverySync
+      fixture.__restoreClickedRecoverySync?.()
+      return outcome
+    })
+    diagnostic.syncObserved = syncOutcome !== "not_observed"
+    if (syncOutcome !== "not_observed") diagnostic.syncOutcome = syncOutcome
+    checkpoint("sync_settled")
+    expect(syncOutcome).toBe("resolved")
     await expect
       .poll(async () => (await wallets(target)).sort())
       .toEqual([...sourceWallets].sort())
@@ -2194,6 +2279,11 @@ test("foreground wallet import stays ready after an older background opening is 
       },
       { storage, walletId }
     )
+    recordSmokeFailureContext(
+      testInfo,
+      "wallet_refusal_background_read_held",
+      "pending"
+    )
     await expect
       .poll(() =>
         target.evaluate(
@@ -2204,6 +2294,39 @@ test("foreground wallet import stays ready after an older background opening is 
       )
       .toBe(true)
 
+    checkpoint("background_read_held")
+    const heldReadLock = await target
+      .evaluate(async (pubkey) => {
+        try {
+          const locks = await navigator.locks.query()
+          const name = `conduit:account-wallet-setup:${pubkey}`
+          return {
+            available: true,
+            held: locks.held?.some((lock) => lock.name === name) === true,
+          }
+        } catch {
+          return { available: false, held: false }
+        }
+      }, identity.pubkey)
+      .catch((error) => {
+        diagnostic.observationAvailable = false
+        checkpoint("background_read_held")
+        throw error
+      })
+    diagnostic.lockObservationAvailable = heldReadLock.available
+    diagnostic.observationAvailable = heldReadLock.available
+    if (heldReadLock.available)
+      diagnostic.heldReadInsideAccountSetupLock = heldReadLock.held
+    checkpoint("background_read_held")
+    expect(heldReadLock.available).toBe(true)
+    expect(heldReadLock.held).toBe(false)
+
+    checkpoint("foreground_import")
+    recordSmokeFailureContext(
+      testInfo,
+      "wallet_refusal_foreground_import_completed",
+      "pending"
+    )
     const restoredSameWallet = await target.evaluate(
       async ({ mnemonic, walletId }) => {
         const wallet = await (
@@ -2217,12 +2340,19 @@ test("foreground wallet import stays ready after an older background opening is 
       },
       { mnemonic, walletId }
     )
+    diagnostic.foregroundImportSettled = true
+    checkpoint("foreground_import_settled")
     expect(restoredSameWallet).toBe(true)
     await expect(target.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await expect(
       target.getByRole("button", { name: "Open wallet", exact: true })
     ).toHaveCount(1)
 
+    recordSmokeFailureContext(
+      testInfo,
+      "wallet_refusal_background_released",
+      "pending"
+    )
     const backgroundOutcome = await target.evaluate(async () => {
       const fixture = window as unknown as WalletFixtureWindow
       fixture.__releaseLateBackgroundRecoveryRead()
@@ -2233,6 +2363,12 @@ test("foreground wallet import stays ready after an older background opening is 
       fixture.__restoreLateBackgroundRecoveryRead()
       return outcome
     })
+    checkpoint("background_released")
+    recordSmokeFailureContext(
+      testInfo,
+      "wallet_refusal_ready_preserved",
+      "pending"
+    )
     expect(backgroundOutcome).toEqual({
       original: "background_paused",
       joined: "background_paused",
@@ -2250,12 +2386,15 @@ test("foreground wallet import stays ready after an older background opening is 
     await expect(
       target.getByRole("button", { name: "Open wallet", exact: true })
     ).toHaveCount(1)
+    checkpoint("complete")
+    recordSmokeFailureContext(testInfo, "wallet_refusal_ready_preserved", "met")
   } finally {
     await target
       .evaluate(() => {
         const fixture = window as unknown as WalletFixtureWindow
         fixture.__releaseLateBackgroundRecoveryRead?.()
         fixture.__restoreLateBackgroundRecoveryRead?.()
+        fixture.__restoreClickedRecoverySync?.()
       })
       .catch(() => undefined)
     await context.close()
