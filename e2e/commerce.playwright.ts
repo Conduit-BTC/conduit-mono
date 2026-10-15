@@ -30,6 +30,7 @@ import {
 import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import {
+  classifySmokeBrowserError,
   recordSmokeDiagnostic,
   recordSmokeFailureContext,
   type CommerceJourneyPhase,
@@ -631,10 +632,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
   let cleanupComplete = false
   let buyerPaidObservation: Record<string, number | boolean> = {}
   let foreignMenuObservation: Record<string, number | boolean> = {}
+  let navigationObservation: Record<string, number | boolean | string> = {}
   const recordJourney = () =>
     recordSmokeDiagnostic(testInfo, "commerce-journey", {
       ...buyerPaidObservation,
       ...foreignMenuObservation,
+      ...navigationObservation,
       phase: currentPhase,
       elapsedSeconds: (performance.now() - started) / 1000,
       phaseSeconds: (performance.now() - phaseStarted) / 1000,
@@ -967,7 +970,58 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       })
       .toBe(`/${merchantNpub}?q=${productTitle}`)
     phase("store_ready")
-    await buyerPage.goto(`${marketUrl}/${merchantNpub}`)
+    recordSmokeFailureContext(testInfo, "commerce_store_navigation_completed")
+    const storeUrl = `${marketUrl}/${merchantNpub}`
+    const navigationResponse = (
+      response: import("@playwright/test").Response
+    ) => {
+      if (
+        response.url() !== storeUrl ||
+        !response.request().isNavigationRequest()
+      )
+        return
+      navigationObservation.navigationResponseObserved = true
+      navigationObservation.navigationResponseStatus = response.status()
+    }
+    const navigationFailed = (request: import("@playwright/test").Request) => {
+      if (request.url() === storeUrl && request.isNavigationRequest())
+        navigationObservation.navigationRequestFailed = true
+    }
+    const navigationCommitted = (frame: import("@playwright/test").Frame) => {
+      if (frame === buyerPage.mainFrame() && frame.url() === storeUrl)
+        navigationObservation.navigationCommitted = true
+    }
+    navigationObservation = {
+      navigationObservationAvailable: true,
+      navigationResponseObserved: false,
+      navigationRequestFailed: false,
+      navigationCommitted: false,
+    }
+    buyerPage.on("response", navigationResponse)
+    buyerPage.on("requestfailed", navigationFailed)
+    buyerPage.on("framenavigated", navigationCommitted)
+    try {
+      await buyerPage.goto(storeUrl)
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_store_navigation_completed",
+        "met"
+      )
+    } catch (error) {
+      navigationObservation.navigationFailure = classifySmokeBrowserError(error)
+      navigationObservation.navigationPageClosed = buyerPage.isClosed()
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_store_navigation_completed",
+        "unmet"
+      )
+      recordJourney()
+      throw error
+    } finally {
+      buyerPage.off("response", navigationResponse)
+      buyerPage.off("requestfailed", navigationFailed)
+      buyerPage.off("framenavigated", navigationCommitted)
+    }
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
