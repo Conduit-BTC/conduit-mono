@@ -341,6 +341,7 @@ export function useWallets(
   )
   const [walletSubscriptionEpoch, setWalletSubscriptionEpoch] = useState(0)
   const initializationAttemptRef = useRef(0)
+  const balanceRefreshes = useRef(new Map<string, Promise<void>>())
 
   const reload = useCallback(
     async (shouldApply: () => boolean = () => true) => {
@@ -717,8 +718,13 @@ export function useWallets(
     let active = true
     const owner = ownerRef.current
     const signer = getAccountSigner()
+    const generation = auth.authGeneration
     const current = () =>
-      active && ownerRef.current === owner && getAccountSigner() === signer
+      active &&
+      enabledRef.current &&
+      ownerRef.current === owner &&
+      getAccountSigner() === signer &&
+      auth.isAuthGenerationCurrent(generation)
 
     for (const wallet of wallets) {
       if (wallet.providerId !== "nwc") {
@@ -726,7 +732,7 @@ export function useWallets(
       }
       const session = getBuyerNwcSession(wallet.id)
       const unsubscribe = session.subscribe((snapshot) => {
-        if (active) {
+        if (current()) {
           setNwcSnapshots((current) => ({
             ...current,
             [wallet.id]: snapshot,
@@ -741,12 +747,12 @@ export function useWallets(
       void store
         .getNwcCredential(wallet.id)
         .then(async (uri) => {
-          if (!active || !uri) {
+          if (!current() || !uri) {
             return
           }
           session.setConnection(parseNwcUri(uri))
           const snapshot = await session.ensureWarm(NWC_MOUNT_WARM_MAX_AGE_MS)
-          if (!active || !snapshot.info) {
+          if (!current() || !snapshot.info) {
             return
           }
           const changed = await reconcileNwcWalletRegistration({
@@ -756,12 +762,13 @@ export function useWallets(
             store,
             shouldContinue: current,
           })
-          if (changed && active) {
+          if (current()) await session.refreshBalance()
+          if (changed && current()) {
             await refreshAfterCommittedWalletMutation()
           }
         })
         .catch(() => {
-          if (active) {
+          if (current()) {
             setRuntime((current) => ({
               ...current,
               [wallet.id]: {
@@ -780,7 +787,14 @@ export function useWallets(
         unsubscribe()
       }
     }
-  }, [enabled, refreshAfterCommittedWalletMutation, store, wallets])
+  }, [
+    enabled,
+    refreshAfterCommittedWalletMutation,
+    store,
+    wallets,
+    auth.authGeneration,
+    auth.isAuthGenerationCurrent,
+  ])
 
   const ensureDefault = useCallback(
     async (wallet: WalletDescriptor) => {
@@ -1934,21 +1948,42 @@ export function useWallets(
   }, [])
 
   const refreshBalance = useCallback(
-    async (walletId: string) => {
-      const wallet = wallets.find((candidate) => candidate.id === walletId)
+    (walletId: string): Promise<void> => {
+      const owner = ownerRef.current
+      const generation = auth.authGeneration
+      const signer = getAccountSigner()
+      const key = `${owner}:${generation}:${walletId}`
+      const existing = balanceRefreshes.current.get(key)
+      if (existing) return existing
+      const wallet = walletsRef.current.find(
+        (candidate) => candidate.id === walletId
+      )
       if (!wallet) {
-        throw new Error("Wallet not found.")
+        return Promise.reject(new Error("Wallet not found."))
       }
-      if (wallet.providerId === "spark") {
-        const manager = requireSparkManager()
-        await refreshSparkBalance(walletId, manager, setRuntime)
-        return
-      }
-      if (wallet.providerId === "nwc") {
-        await getBuyerNwcSession(walletId).refreshBalance()
-      }
+      const current = () =>
+        enabledRef.current &&
+        ownerRef.current === owner &&
+        auth.isAuthGenerationCurrent(generation) &&
+        getAccountSigner() === signer &&
+        walletsRef.current.some((candidate) => candidate.id === walletId)
+      const operation = (async () => {
+        if (!current()) return
+        if (wallet.providerId === "spark") {
+          const manager = requireSparkManager()
+          await refreshSparkBalance(walletId, manager, (update) => {
+            if (current()) setRuntime(update)
+          })
+        } else if (wallet.providerId === "nwc") {
+          const session = getBuyerNwcSession(walletId)
+          await session.ensureWarm(NWC_MOUNT_WARM_MAX_AGE_MS)
+          if (current()) await session.refreshBalance()
+        }
+      })().finally(() => balanceRefreshes.current.delete(key))
+      balanceRefreshes.current.set(key, operation)
+      return operation
     },
-    [wallets]
+    [auth.authGeneration, auth.isAuthGenerationCurrent]
   )
 
   const setDefaultPaymentWallet = useCallback(
@@ -2405,6 +2440,61 @@ export function useWallets(
     removeWallet,
     retryInitialization,
   }
+}
+
+/** Automatic balance reads belong to the visible Wallets route, not every consumer. */
+export function useWalletBalanceUpdates(wallets: UseWalletsReturn): void {
+  const controller = useRef(wallets)
+  useLayoutEffect(() => {
+    controller.current = wallets
+  }, [wallets])
+  const balanceWalletIds = wallets.wallets
+    .filter(
+      (wallet) =>
+        wallet.providerId === "nwc" ||
+        (wallet.providerId === "spark" &&
+          getSparkWalletManager()?.isOpen(wallet.id))
+    )
+    .map((wallet) => wallet.id)
+    .join(",")
+  const refreshBalance = wallets.refreshBalance
+  const attemptedAt = useMemo(() => new Map<string, number>(), [refreshBalance])
+  useEffect(() => {
+    if (typeof document === "undefined") return
+    const ids = balanceWalletIds ? balanceWalletIds.split(",") : []
+    if (ids.length === 0) return
+    const update = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return
+      const visibleWallets = new Map(
+        controller.current.wallets.map((wallet) => [wallet.id, wallet])
+      )
+      for (const id of ids) {
+        const wallet = visibleWallets.get(id)
+        if (
+          !wallet ||
+          (wallet.providerId === "spark" &&
+            !getSparkWalletManager()?.isOpen(id))
+        )
+          continue
+        if (Date.now() - (attemptedAt.get(id) ?? 0) < 5_000) continue
+        attemptedAt.set(id, Date.now())
+        void refreshBalance(id).catch(() => {
+          // Provider/runtime state carries the error; no sensitive diagnostics.
+        })
+      }
+    }
+    update()
+    const interval = window.setInterval(update, 30_000)
+    window.addEventListener("focus", update)
+    window.addEventListener("online", update)
+    document.addEventListener("visibilitychange", update)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("focus", update)
+      window.removeEventListener("online", update)
+      document.removeEventListener("visibilitychange", update)
+    }
+  }, [balanceWalletIds, refreshBalance, attemptedAt])
 }
 
 function getNwcRuntimeState(snapshot: NwcSessionSnapshot): WalletRuntimeState {

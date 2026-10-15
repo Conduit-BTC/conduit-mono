@@ -384,6 +384,22 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "wallet-import-menu": {
+      file: "e2e/shared-ui-composition.playwright.ts",
+      fields: {
+        phase: ["before_trigger", "trigger_clicked", "import_clicked"],
+        observationAvailable: "boolean",
+        triggerVisible: "boolean",
+        triggerEnabled: "boolean",
+        importVisible: "boolean",
+        importEnabled: "boolean",
+        dialogVisible: "boolean",
+        loadingVisible: "boolean",
+        initializationErrorVisible: "boolean",
+        sparkUnavailableVisible: "boolean",
+        signerPromptVisible: "boolean",
+      },
+    },
     "wallet-background-refusal": {
       file: "e2e/wallet-cross-app.playwright.ts",
       fields: {
@@ -489,6 +505,21 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         signerDecryptCalls: "number",
         signerDecryptDenials: "number",
         observationAvailable: "boolean",
+      },
+    },
+    "wallet-retry": {
+      file: "e2e/wallet-registry-removal.playwright.ts",
+      fields: {
+        phase: ["open_details", "click_retry", "await_sync", "dismiss_details"],
+        observationAvailable: "boolean",
+        retryPresent: "boolean",
+        retryVisible: "boolean",
+        retryEnabled: "boolean",
+        recoveryDialogPresent: "boolean",
+        managePresent: "boolean",
+        syncCheckingVisible: "boolean",
+        recoveryBlockedVisible: "boolean",
+        walletCardCount: "number",
       },
     },
     "merchant-image-reload": {
@@ -1056,7 +1087,13 @@ export function safeSmokeDiagnostics(
 ): Array<Record<string, string | number | boolean>> {
   const diagnostics: Array<Record<string, string | number | boolean>> = []
   for (const [kind, schema] of Object.entries(schemas)) {
-    if (schema.file !== file) continue
+    if (
+      schema.file !== file &&
+      !(
+        kind === "wallet-retry" && file === "e2e/wallet-cross-app.playwright.ts"
+      )
+    )
+      continue
     const raw = annotations.find(
       (item) => item.type === `smoke:${kind}`
     )?.description
@@ -1122,7 +1159,9 @@ export function safeRetainedSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "wallet-import-menu"
     | "wallet-foreground-open"
+    | "wallet-retry"
     | "wallet-background-refusal"
     | "mobile-wallet-menu"
     | "wallet-balances"

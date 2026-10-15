@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import {
   expect,
   test,
@@ -726,20 +727,15 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("wallet_route")
     await merchantPage.goto(`${merchantUrl}/wallet`)
-    await merchantPage
-      .getByText("External wallet management", { exact: true })
-      .click()
     await expect(
-      merchantPage.getByRole("heading", { name: "My wallets", exact: true })
+      merchantPage.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
     // Retain an older mainnet default while this app creates testnet invoices.
     phase("foreign_wallet")
     await foreignWallet.configureMerchantConnection(
       async (connectionString) => {
         phase("foreign_open_dialog")
-        await merchantPage
-          .getByRole("button", { name: "Connect wallet", exact: true })
-          .click()
+        await openWalletSetup(merchantPage, "Connect wallet")
         phase("foreign_connection_form")
         await merchantPage
           .getByLabel("Wallet label", { exact: true })
@@ -807,14 +803,10 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .toBe(false)
     foreignMenuObservation.foreignRegistryRefreshObserved = true
     phase("foreign_manage")
-    const foreignPreferences = merchantPage
-      .getByRole("heading", { name: "Foreign NWC", exact: true })
-      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
-    await foreignPreferences
-      .getByText("Wallet preferences", { exact: true })
+    await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
       .click()
-    phase("foreign_select_default")
-    const foreignMenuItem = foreignPreferences.getByRole("button", {
+    const foreignMenuItem = merchantPage.getByRole("menuitem", {
       name: "Make default for merchant invoices",
       exact: true,
     })
@@ -837,18 +829,17 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     recordJourney()
     await foreignMenuItem.click()
     phase("foreign_default_committed")
+    await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
+      .click()
     await expect(
-      merchantPage
-        .getByRole("heading", { name: "Foreign NWC", exact: true })
-        .locator("..")
-        .getByText("Default for merchant invoices", { exact: true })
+      merchantPage.getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
+    await merchantPage.keyboard.press("Escape")
     phase("receiving_wallet")
     await wallet.configureMerchantConnection(async (connectionString) => {
       phase("receiving_open_dialog")
-      await merchantPage
-        .getByRole("button", { name: "Connect wallet", exact: true })
-        .click()
+      await openWalletSetup(merchantPage, "Connect wallet")
       phase("receiving_connection_form")
       await merchantPage
         .getByLabel("Wallet label", { exact: true })
@@ -868,16 +859,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       merchantPage.getByText("Connected via NWC", { exact: true })
     ).toHaveCount(2, { timeout: 20_000 })
+    await expect(merchantPage.getByRole("article")).toHaveCount(2)
     await expect(
-      merchantPage.getByText("Choose this wallet at checkout.", {
-        exact: true,
-      })
-    ).toHaveCount(2)
-    await expect(
-      merchantPage.getByText(`Current address: ${merchantLud16}`, {
-        exact: true,
-      })
-    ).toBeVisible()
+      merchantPage
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .locator("[data-wallet-address]")
+    ).toHaveText(merchantLud16)
     await expect(
       merchantPage.getByText(
         "Payments are checked automatically against the original invoice in its receiving wallet.",
@@ -885,27 +872,24 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       )
     ).toBeVisible({ timeout: 20_000 })
     phase("receiving_manage")
-    const receivingPreferences = merchantPage
-      .getByRole("heading", { name: "Commerce NWC", exact: true })
-      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
-    await receivingPreferences
-      .getByText("Wallet preferences", { exact: true })
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
       .click()
     phase("receiving_select_default")
-    await receivingPreferences
-      .getByRole("button", {
+    await merchantPage
+      .getByRole("menuitem", {
         name: "Make default for merchant invoices",
         exact: true,
       })
       .click()
     phase("receiving_default_committed")
-    // Confirm the asynchronous default commit before a full-page navigation.
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
+      .click()
     await expect(
-      merchantPage
-        .getByRole("heading", { name: "Commerce NWC", exact: true })
-        .locator("..")
-        .getByText("Default for merchant invoices", { exact: true })
+      merchantPage.getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
+    await merchantPage.keyboard.press("Escape")
 
     phase("publish_product")
     await publishProduct(merchantPage, productTitle, testInfo)
@@ -1055,17 +1039,18 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       name: "Cart inventory",
       exact: true,
     })
+    await expect(cartHud).toBeVisible()
+    // Mobile keyboard/viewport changes can collapse the dock after a search.
+    // Verify the add committed, then explicitly open this purchase for checkout.
+    const purchase = cartHud.getByRole("button", {
+      name: new RegExp(`^${merchantName}, 1 cart item,`),
+    })
+    await expect(purchase).toBeVisible()
+    await purchase.click()
     const checkout = cartHud.getByRole("link", {
       name: "Continue to checkout",
       exact: true,
     })
-    // Scrolling may legitimately collapse the dock after Add. Open this
-    // purchase explicitly; HUD tests own automatic expansion/scroll behavior.
-    const purchase = cartHud
-      .getByRole("group", { name: "Cart purchases", exact: true })
-      .getByRole("button")
-    await expect(purchase).toHaveCount(1)
-    await purchase.click()
     await expect(checkout).toBeVisible()
     await checkout.click()
     await expect(
@@ -1574,40 +1559,59 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("buyer_paid")
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    recordSmokeFailureContext(testInfo, "commerce_buyer_paid_visible")
-    try {
+    const openPaidMessages = async () => {
+      await buyerPage.evaluate(() => document.fonts.ready)
+      const trigger = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      if (testInfo.project.use.isMobile) await trigger.tap()
+      else await trigger.click()
       await expect(
-        buyerPage.getByText("Status: Paid", { exact: true })
-      ).toBeVisible({ timeout: 30_000 })
-    } catch (error) {
-      try {
-        const completion = await readBuyerLifecycleCompletion(
-          buyerPage,
-          orderId
-        )
-        buyerPaidObservation = {
-          buyerReadAfterReload: false,
-          buyerObservationAvailable: true,
-          buyerLifecyclePaid: completion.paymentPaid,
-          buyerProofSent: completion.proofSent,
-          buyerPaidMessages: await buyerPage
-            .getByText("Status: Paid", { exact: true })
-            .count(),
-          buyerMessageDialogVisible: await buyerPage
-            .getByRole("dialog", { name: "Messages", exact: true })
-            .isVisible(),
-        }
-      } catch {
-        // Diagnostic reads must not replace the original assertion failure.
-        buyerPaidObservation = { buyerObservationAvailable: false }
-      }
-      recordJourney()
-      throw error
+        buyerPage.getByRole("dialog", { name: "Messages", exact: true })
+      ).toBeVisible()
     }
-    recordSmokeFailureContext(testInfo, "commerce_buyer_paid_visible", "met")
+    const expectPaidMessages = async (afterReload = false) => {
+      const condition = afterReload
+        ? "commerce_buyer_reloaded_paid_visible"
+        : "commerce_buyer_paid_visible"
+      recordSmokeFailureContext(testInfo, condition)
+      try {
+        await expect(
+          buyerPage.getByText("Status: Paid", { exact: true })
+        ).toBeVisible({ timeout: 30_000 })
+      } catch (error) {
+        try {
+          const completion = await readBuyerLifecycleCompletion(
+            buyerPage,
+            orderId
+          )
+          buyerPaidObservation = {
+            buyerReadAfterReload: afterReload,
+            buyerObservationAvailable: true,
+            buyerLifecyclePaid: completion.paymentPaid,
+            buyerProofSent: completion.proofSent,
+            buyerPaidMessages: await buyerPage
+              .getByText("Status: Paid", { exact: true })
+              .count(),
+            buyerMessageDialogVisible: await buyerPage
+              .getByRole("dialog", { name: "Messages", exact: true })
+              .isVisible(),
+          }
+        } catch {
+          // Diagnostic reads must not replace the original assertion failure.
+          buyerPaidObservation = {
+            buyerReadAfterReload: afterReload,
+            buyerObservationAvailable: false,
+          }
+        }
+        recordJourney()
+        throw error
+      }
+      recordSmokeFailureContext(testInfo, condition, "met")
+    }
+    await openPaidMessages()
+    await expectPaidMessages()
 
     phase("reload")
     await Promise.all([merchantPage.reload(), buyerPage.reload()])
@@ -1616,46 +1620,8 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         .getByRole("list", { name: "Order progress" })
         .getByText("Payment confirmed", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    recordSmokeFailureContext(testInfo, "commerce_buyer_reloaded_paid_visible")
-    try {
-      await expect(
-        buyerPage.getByText("Status: Paid", { exact: true })
-      ).toBeVisible({ timeout: 30_000 })
-    } catch (error) {
-      try {
-        const completion = await readBuyerLifecycleCompletion(
-          buyerPage,
-          orderId
-        )
-        buyerPaidObservation = {
-          buyerReadAfterReload: true,
-          buyerObservationAvailable: true,
-          buyerLifecyclePaid: completion.paymentPaid,
-          buyerProofSent: completion.proofSent,
-          buyerPaidMessages: await buyerPage
-            .getByText("Status: Paid", { exact: true })
-            .count(),
-          buyerMessageDialogVisible: await buyerPage
-            .getByRole("dialog", { name: "Messages", exact: true })
-            .isVisible(),
-        }
-      } catch {
-        buyerPaidObservation = {
-          buyerReadAfterReload: true,
-          buyerObservationAvailable: false,
-        }
-      }
-      recordJourney()
-      throw error
-    }
-    recordSmokeFailureContext(
-      testInfo,
-      "commerce_buyer_reloaded_paid_visible",
-      "met"
-    )
+    await openPaidMessages()
+    await expectPaidMessages(true)
     await expect
       .poll(() => readBuyerLifecycleCompletion(buyerPage, orderId), {
         timeout: 30_000,

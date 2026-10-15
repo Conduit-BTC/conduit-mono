@@ -1,4 +1,8 @@
 import {
+  retryWalletRecovery,
+  walletRetryControlSettled,
+} from "./helpers/wallet-fixture"
+import {
   openWalletSetup,
   closeDefaultWalletSession,
   observeWalletController,
@@ -126,8 +130,7 @@ test("wallet names follow encrypted account recovery across apps and reloads @ma
   const market = await context.newPage()
   const merchant = await context.newPage()
   const rename = async (page: Page, name: string, waitForSync = true) => {
-    await page.getByRole("button", { name: /^Manage / }).click()
-    await page.getByRole("menuitem", { name: "Rename", exact: true }).click()
+    await page.getByRole("button", { name: /^Rename / }).click()
     const dialog = page.getByRole("dialog", { name: "Rename wallet" })
     await dialog.getByLabel("Wallet name", { exact: true }).fill(name)
     await dialog.getByRole("button", { name: "Save name", exact: true }).click()
@@ -284,14 +287,13 @@ for (const app of ["market", "merchant"] as const) {
       await expect(dialog.getByLabel("Conduit address name")).toHaveCount(0)
       await saved(page)
       await expect(
-        page.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("current@wallet.example")
-      await page
-        .getByRole("button", { name: "Keep the current address", exact: true })
-        .click()
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("current@wallet.example")
       await page
         .getByRole("button", {
-          name: "Set as public Lightning address",
+          name: "Use this address",
           exact: true,
         })
         .click()
@@ -307,8 +309,10 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Use this wallet’s address", exact: true })
         .click()
       await expect(
-        page.getByLabel("Lightning address", { exact: true })
-      ).toHaveValue("wallet1@breez.tips")
+        page
+          .getByRole("region", { name: "Nostr profile receiving address" })
+          .locator("[data-wallet-address]")
+      ).toHaveText("wallet1@breez.tips")
       const metadata = await page.evaluate(async (core) => {
         const { fetchProfileContext, getAccountSigner } = await import(core)
         const owner = getAccountSigner().pubkey
@@ -327,10 +331,10 @@ for (const app of ["market", "merchant"] as const) {
         about: "Competing ordinary edit",
         custom: { retain: true },
       })
+      await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
       await expect(
         page.getByText("Default for merchant invoices", { exact: true })
       ).toBeVisible()
-      await page.getByRole("button", { name: /^Manage Conduit Wallet/ }).click()
       await closeDefaultWalletSession(page)
       await expect(
         page.getByRole("button", { name: "Open wallet", exact: true })
@@ -378,7 +382,7 @@ for (const app of ["market", "merchant"] as const) {
       await page.evaluate(() =>
         (window as unknown as WalletFixtureWindow).__walletSignerGate.release()
       )
-      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
       expect(
         await page.evaluate(
           () => (window as unknown as WalletFixtureWindow).__walletProbe.opens
@@ -451,6 +455,8 @@ for (const from of ["market", "merchant"] as const) {
       const context = await browser.newContext()
       const source = await context.newPage()
       const target = await context.newPage()
+      source.setDefaultTimeout(10_000)
+      target.setDefaultTimeout(10_000)
       const to = from === "market" ? "merchant" : "market"
       let denyTargetRecovery = recoveryMode === "foreground"
       let explicitlyReopenedAccount: number | undefined
@@ -483,8 +489,10 @@ for (const from of ["market", "merchant"] as const) {
         await openWalletSetup(source, "Create wallet")
         await saved(source)
         await expect(
-          source.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@breez.tips")
+          source
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .locator("[data-wallet-address]")
+        ).toHaveText("wallet1@breez.tips")
         const first = (await wallets(source))[0]
         await openWalletSetup(source, "Import wallet")
         await source
@@ -505,12 +513,6 @@ for (const from of ["market", "merchant"] as const) {
           .getByRole("button", { name: "Import wallet", exact: true })
           .click()
         await saved(source, false)
-        await source
-          .getByRole("button", {
-            name: "Keep the current address",
-            exact: true,
-          })
-          .click()
         const ids = await wallets(source)
         expect(ids).toHaveLength(2)
         const selected = ids.find((id) => id !== first)!
@@ -555,8 +557,10 @@ for (const from of ["market", "merchant"] as const) {
           )
           .toEqual(["pay_invoice", "receive"])
         await expect(
-          source.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@breez.tips")
+          source
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .locator("[data-wallet-address]")
+        ).toHaveText("wallet1@breez.tips")
         await target.goto(apps[to] + "/wallet")
         await installControlledWallet(target, false, "support@conduit.cash")
         if (recoveryMode === "foreground") {
@@ -585,11 +589,15 @@ for (const from of ["market", "merchant"] as const) {
               await openWalletDuringDescriptorReload(target)
           // Background consent remains paused; explicitly open the other
           // restored wallet instead of assuming automatic consent resumed.
+          const closedChoice = target.locator(
+            'article[data-wallet-state]:not([data-wallet-state="ready"]):not([data-wallet-state="connecting"])'
+          )
           const openWallet = target.getByRole("button", {
             name: "Open wallet",
             exact: true,
           })
           try {
+            await expect(closedChoice).toHaveCount(1)
             await expect(openWallet).toHaveCount(1)
           } catch (error) {
             const safe = {
@@ -649,7 +657,7 @@ for (const from of ["market", "merchant"] as const) {
                   .getByRole("button", { name: "Opening…", exact: true })
                   .count(),
                 readyCount: await target
-                  .getByText("Ready", { exact: true })
+                  .locator('[data-wallet-state="ready"]')
                   .count(),
                 recoveryNotice: (await target
                   .getByText(
@@ -729,23 +737,45 @@ for (const from of ["market", "merchant"] as const) {
         expect(state.registrations).toBe(0)
         expect((await wallets(target)).sort()).toEqual(ids.sort())
         await expect(
-          target.getByLabel("Lightning address", { exact: true })
-        ).toHaveValue("wallet1@breez.tips")
+          target
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .locator("[data-wallet-address]")
+        ).toHaveText("wallet1@breez.tips")
+        await target
+          .locator(`[data-wallet-id="${selected}"]`)
+          .getByRole("button", { name: /^Manage / })
+          .click()
         await expect(
           target.getByText("Default for merchant invoices", { exact: true })
         ).toBeVisible()
+        await target.keyboard.press("Escape")
         await expect(
           target.getByRole("button", { name: "Open wallet", exact: true })
         ).toHaveCount(0)
         await expect(target.getByRole("dialog")).toHaveCount(0)
-        await expect(target.getByText("Ready", { exact: true })).toHaveCount(2)
+        await expect(target.locator('[data-wallet-state="ready"]')).toHaveCount(
+          2
+        )
         // All recovered signer-backed wallets open, independent of main selection.
         await expect(
-          target.getByText("Receiving address: support@conduit.cash", {
+          target.getByText("support@conduit.cash", {
             exact: true,
           })
         ).toHaveCount(2)
+      } catch (error) {
+        // Only source locations, never assertion values or wallet material.
+        const locations =
+          error instanceof Error
+            ? (error.stack?.match(
+                /wallet-cross-app\.playwright\.ts:\d+:\d+/g
+              ) ?? [])
+            : []
+        process.stderr.write(
+          `Wallet regression failed at ${locations.join(", ") || "unknown source location"}\n`
+        )
+        throw error
       } finally {
+        await Promise.all([source.close(), target.close()])
         await context.close()
         disposeRuntimeSignerIdentity(identity)
       }
@@ -803,9 +833,7 @@ for (const app of ["market", "merchant"] as const) {
       expect((await journal()).unresolved).toBe(false)
 
       denied = false
-      await target
-        .getByRole("button", { name: "Sync wallet recovery", exact: true })
-        .click()
+      await retryWalletRecovery(target)
       await expect.poll(() => wallets(target)).toEqual(originalWallets)
       await expect(blocked).toHaveCount(0)
       expect((await journal()).unresolved).toBe(false)
@@ -827,7 +855,7 @@ for (const app of ["market", "merchant"] as const) {
       await target
         .getByRole("button", { name: "Open wallet", exact: true })
         .click()
-      await expect(target.getByText("Ready", { exact: true })).toBeVisible()
+      await expect(target.locator('[data-wallet-state="ready"]')).toBeVisible()
       expect(
         await target.evaluate(
           () => (window as unknown as WalletFixtureWindow).__walletProbe.opens
@@ -873,7 +901,7 @@ test("foreground Open does not inherit a paused background wallet open @merchant
       )
     ).toBeVisible()
     denied = false
-    await target.getByRole("button", { name: "Sync wallet recovery" }).click()
+    await retryWalletRecovery(target)
     await expect.poll(() => wallets(target)).toEqual(originalWallets)
     await expect(
       target.getByRole("button", { name: "Open wallet", exact: true })
@@ -950,7 +978,7 @@ test("foreground Open does not inherit a paused background wallet open @merchant
       secondForeground: "resolved",
       nativeOpens: 1,
     })
-    await expect(target.getByText("Ready", { exact: true })).toBeVisible()
+    await expect(target.locator('[data-wallet-state="ready"]')).toBeVisible()
     expect(await wallets(target)).toEqual(originalWallets)
     expect(
       await target.evaluate(async (moduleUrl) => {
@@ -1002,7 +1030,11 @@ for (const size of [
           }
           await source.goto(apps[from] + "/wallet")
           await expect(
-            source.getByRole("heading", { name: "My wallets", exact: true })
+            source.getByRole("heading", {
+              name: "Wallets",
+              level: 1,
+              exact: true,
+            })
           ).toBeVisible()
           await installControlledWallet(source)
           await expect(
@@ -1023,13 +1055,10 @@ for (const size of [
           expect(sourceIds).toHaveLength(1)
 
           await target.goto(apps[to] + "/wallet")
-
-          await target
-            .getByText("External wallet management", { exact: true })
-            .click()
           await expect(
             target.getByRole("heading", {
-              name: "External wallets",
+              name: "Wallets",
+              level: 1,
               exact: true,
             })
           ).toBeVisible()
@@ -1100,7 +1129,11 @@ for (const size of [
           }
           await source.goto(apps[from] + "/wallet")
           await expect(
-            source.getByRole("heading", { name: "My wallets", exact: true })
+            source.getByRole("heading", {
+              name: "Wallets",
+              level: 1,
+              exact: true,
+            })
           ).toBeVisible()
           await installControlledWallet(source)
           await openWalletSetup(source, "Import wallet")
@@ -1118,19 +1151,18 @@ for (const size of [
             .click()
           await saved(source)
           await expect(
-            source.getByLabel("Lightning address", { exact: true })
-          ).toHaveValue("")
+            source
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .locator("[data-wallet-address]")
+          ).toHaveText("No address set")
           const sourceIds = await wallets(source)
           expect(sourceIds).toHaveLength(1)
 
           await target.goto(apps[to] + "/wallet")
-
-          await target
-            .getByText("External wallet management", { exact: true })
-            .click()
           await expect(
             target.getByRole("heading", {
-              name: "External wallets",
+              name: "Wallets",
+              level: 1,
               exact: true,
             })
           ).toBeVisible()
@@ -1158,8 +1190,10 @@ for (const size of [
             )
           ).toBe(true)
           await expect(
-            target.getByLabel("Lightning address", { exact: true })
-          ).toHaveValue("")
+            target
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .locator("[data-wallet-address]")
+          ).toHaveText("No address set")
           await target.screenshot({
             path:
               "/tmp/635-" + to + "-" + size.name + "-import-shared-wallet.png",
@@ -1194,7 +1228,7 @@ test("controlled recovery transport retains concurrent signed branches and block
       await installRealTestSigner(page, identity, relay)
       await page.goto((index ? apps.merchant : apps.market) + "/wallet")
       await expect(
-        page.getByRole("heading", { name: "My wallets", exact: true })
+        page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
       ).toBeVisible()
       await installControlledWallet(page)
       // Partition recovery transport so both origins sign independent registry
@@ -1250,9 +1284,7 @@ test("controlled recovery transport retains concurrent signed branches and block
       )
     }
     await Promise.all(
-      pages.map((page) =>
-        page.getByRole("button", { name: "Add a wallet", exact: true }).click()
-      )
+      pages.map((page) => openWalletSetup(page, "Create wallet"))
     )
     await Promise.all(pages.map((page) => saved(page, false)))
     const snapshots = await Promise.all(
@@ -1323,9 +1355,7 @@ test("controlled recovery transport retains concurrent signed branches and block
     for (const ids of originalWallets) expect(ids).toHaveLength(1)
     expect(new Set(originalWallets.flat()).size).toBe(2)
     for (const [index, page] of pages.entries()) {
-      await page
-        .getByRole("button", { name: "Sync wallet recovery", exact: true })
-        .click()
+      await retryWalletRecovery(page)
       await expect(
         page.getByText(
           "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
@@ -1396,7 +1426,7 @@ for (const app of ["market", "merchant"] as const) {
         await installRealTestSigner(page, identity, relay)
         await page.goto(apps[app] + "/wallet")
         await expect(
-          page.getByRole("heading", { name: "My wallets", exact: true })
+          page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
         ).toBeVisible()
         await installControlledWallet(page)
         await page.evaluate(() => {
@@ -1418,10 +1448,9 @@ for (const app of ["market", "merchant"] as const) {
         await openWalletSetup(page, "Create wallet")
         await saved(page)
         await expect(
-          page.getByText(
-            "Receiving address: Lightning addresses are not enabled in this build.",
-            { exact: true }
-          )
+          page.getByText("Lightning addresses are not enabled in this build.", {
+            exact: true,
+          })
         ).toBeVisible()
         await expect(
           page.getByRole("button", { name: "Retry address setup", exact: true })
@@ -1469,6 +1498,10 @@ for (const app of ["market", "merchant"] as const) {
           await installRealTestSigner(page, identity, relay)
           await page.goto(apps[app] + "/wallet")
           await installControlledWallet(page)
+          await page
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .getByRole("button", { name: "Edit", exact: true })
+            .click()
           const address = page.getByLabel("Lightning address", { exact: true })
           await expect(address).toHaveValue(
             "https://wallet.example/LNURL/Token"
@@ -1509,7 +1542,17 @@ for (const app of ["market", "merchant"] as const) {
               ...completeMetadata,
               lud16: "new@wallet.example",
             })
-            await expect(address).toHaveValue("new@wallet.example")
+            await expect(
+              page
+                .getByRole("region", {
+                  name: "Nostr profile receiving address",
+                })
+                .locator("[data-wallet-address]")
+            ).toHaveText("new@wallet.example")
+            await page
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .getByRole("button", { name: "Edit", exact: true })
+              .click()
           }
           await address.fill("")
           await page
@@ -1520,12 +1563,16 @@ for (const app of ["market", "merchant"] as const) {
             .click()
           await expect.poll(retained).toEqual(completeMetadata)
           await page.reload()
-          await expect(address).toHaveValue("")
           await expect(
-            page.getByText("Current address: None", {
-              exact: true,
-            })
-          ).toBeVisible()
+            page
+              .getByRole("region", { name: "Nostr profile receiving address" })
+              .locator("[data-wallet-address]")
+          ).toHaveText("No address set")
+          await page
+            .getByRole("region", { name: "Nostr profile receiving address" })
+            .getByRole("button", { name: "Edit", exact: true })
+            .click()
+          await expect(address).toHaveValue("")
           expect(await retained()).toEqual(completeMetadata)
         } finally {
           disposeRuntimeSignerIdentity(identity)
@@ -1548,7 +1595,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
     await installControlledWallet(page)
     await openWalletSetup(page, "Create wallet")
     await saved(page)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page.evaluate(
       async ({ core, managerUrl }) => {
         const { db } = await import(core)
@@ -1602,7 +1649,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
       page.getByLabel("Manage Reload gated wallet", { exact: true })
     ).toBeVisible()
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(0)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(0)
   } finally {
     disposeRuntimeSignerIdentity(identity)
   }
@@ -1621,7 +1668,7 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
     await installControlledWallet(page)
     await openWalletSetup(page, "Create wallet")
     await saved(page)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page
       .getByRole("button", { name: /^Manage / })
       .first()
@@ -1664,14 +1711,14 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
       )
       .toBe(true)
     await page.getByRole("button", { name: "Open wallet", exact: true }).click()
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page.evaluate(() =>
       (window as unknown as WalletFixtureWindow).__walletProbe.releaseReload()
     )
     await expect(
       page.getByLabel("Manage Reload gated wallet", { exact: true })
     ).toBeVisible()
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(0)
   } finally {
     disposeRuntimeSignerIdentity(identity)
@@ -1691,7 +1738,7 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
     await installControlledWallet(page)
     await openWalletSetup(page, "Create wallet")
     await saved(page)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page
       .getByRole("button", { name: /^Manage / })
       .first()
@@ -1791,7 +1838,7 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
       await expect(
         page.getByRole("button", { name: "Opening…", exact: true })
       ).toHaveCount(0)
-      await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+      await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
       await expect(
         page.getByText("Balance unavailable", { exact: true })
       ).toBeVisible()
@@ -1800,7 +1847,7 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
         (window as unknown as WalletRaceWindow).__walletProbe.releaseBalance()
       )
     }
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
   } finally {
     disposeRuntimeSignerIdentity(identity)
   }
@@ -1819,7 +1866,7 @@ test("stale balance failure cannot replace a reopened wallet session @market", a
     await installControlledWallet(page)
     await openWalletSetup(page, "Create wallet")
     await saved(page)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
 
     await page.evaluate(
       async (managerUrl) => {
@@ -1871,7 +1918,7 @@ test("stale balance failure cannot replace a reopened wallet session @market", a
       await controller.lockSpark(walletId)
       await controller.unlockSpark(walletId)
     })
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page.evaluate(() =>
       (window as unknown as WalletRaceWindow).__walletProbe.releaseBalance()
     )
@@ -1884,7 +1931,7 @@ test("stale balance failure cannot replace a reopened wallet session @market", a
         )
       )
       .toBe(true)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await expect(
       page.getByRole("button", { name: "Open wallet", exact: true })
     ).toHaveCount(0)
@@ -1897,7 +1944,7 @@ test("stale balance failure cannot replace a reopened wallet session @market", a
         .refreshBalance(controller.portableWallets[0].id)
         .catch(() => undefined)
     })
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(0)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(0)
     await expect(
       page.getByRole("button", { name: "Open wallet", exact: true })
     ).toHaveCount(1)
@@ -1919,7 +1966,7 @@ test("stale unlock failure cannot replace a reopened wallet session @market", as
     await installControlledWallet(page)
     await openWalletSetup(page, "Create wallet")
     await saved(page)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page
       .getByRole("button", { name: /^Manage / })
       .first()
@@ -1990,7 +2037,7 @@ test("stale unlock failure cannot replace a reopened wallet session @market", as
       })
       await controller.refreshBalance(walletId)
     }, sparkSdk)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(1)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page.evaluate(() =>
       (
         window as unknown as Window & { __unlockRace: { release(): void } }
@@ -2047,7 +2094,7 @@ test("stale unlock failure cannot replace a reopened wallet session @market", as
       }
       await controller.unlockSpark(walletId).catch(() => undefined)
     }, storage)
-    await expect(page.getByText("Ready", { exact: true })).toHaveCount(0)
+    await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(0)
     await expect(
       page.getByRole("button", { name: "Open wallet", exact: true })
     ).toHaveCount(1)
@@ -2175,7 +2222,9 @@ test("foreground wallet import stays ready after an older background opening is 
       }
       fixture.__watchClickedRecoverySync = true
     })
-    await target.getByRole("button", { name: "Sync wallet recovery" }).click()
+    await target
+      .getByRole("button", { name: "Retry encrypted wallet sync", exact: true })
+      .click()
     const syncOutcome = await target.evaluate(async () => {
       const fixture = window as unknown as WalletFixtureWindow
       if (!fixture.__clickedRecoverySync) return "not_observed"
@@ -2435,4 +2484,68 @@ test("foreground wallet import stays ready after an older background opening is 
     await context.close()
     disposeRuntimeSignerIdentity(identity)
   }
+})
+
+test("wallet retry accepts a button removed during readiness observation @market @merchant", async ({
+  page,
+}) => {
+  await page.setContent(`
+    <button id="retry" aria-label="Retry encrypted wallet sync"
+      onclick="this.disabled = true">Retry</button>
+  `)
+  const getByRole = page.getByRole.bind(page)
+  let countReads = 0
+  let removedOnRead = false
+  const removeRetry = async () => {
+    if (removedOnRead) return
+    await page.locator("#retry").evaluate((button) => button.remove())
+    removedOnRead = true
+  }
+  page.getByRole = ((role, options) => {
+    const locator = getByRole(role, options)
+    if (role === "button" && options?.name === "Retry encrypted wallet sync") {
+      const count = locator.count.bind(locator)
+      locator.count = async () => {
+        const observed = await count()
+        countReads++
+        if (countReads === 2 && observed === 1) {
+          await removeRetry()
+        }
+        return observed
+      }
+      const evaluateAll = locator.evaluateAll.bind(locator)
+      locator.evaluateAll = (async (
+        ...args: Parameters<typeof locator.evaluateAll>
+      ) => {
+        await removeRetry()
+        return evaluateAll(...args)
+      }) as typeof locator.evaluateAll
+    }
+    return locator
+  }) as Page["getByRole"]
+
+  await retryWalletRecovery(page)
+  expect(removedOnRead).toBe(true)
+  expect(countReads).toBe(1)
+  const retry = getByRole("button", {
+    name: "Retry encrypted wallet sync",
+    exact: true,
+  })
+  expect(await walletRetryControlSettled(retry)).toBe(true)
+  await page.setContent(
+    '<button aria-label="Retry encrypted wallet sync" disabled>Retry</button>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(false)
+  await page.setContent(
+    '<div aria-disabled="true"><button aria-label="Retry encrypted wallet sync">Retry</button></div>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(false)
+  await page.setContent(
+    '<button aria-label="Retry encrypted wallet sync">Retry</button>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(true)
+  await page.setContent(
+    '<button aria-label="Retry encrypted wallet sync">Retry</button><button aria-label="Retry encrypted wallet sync">Retry</button>'
+  )
+  expect(await walletRetryControlSettled(retry)).toBe(false)
 })

@@ -134,6 +134,7 @@ export class BuyerNwcSession {
   private connectionKey: string | null = null
   private client: NwcSessionClientLike | null = null
   private warmPromise: Promise<NwcSessionSnapshot> | null = null
+  private balancePromise: Promise<NwcSessionSnapshot> | null = null
   private listeners = new Set<NwcSessionListener>()
   private snapshot: NwcSessionSnapshot = disconnectedSnapshot()
   private version = 0
@@ -149,6 +150,7 @@ export class BuyerNwcSession {
 
     this.resetClient()
     this.warmPromise = null
+    this.balancePromise = null
     this.connection = connection
     this.connectionKey = nextKey
     this.version += 1
@@ -354,6 +356,7 @@ export class BuyerNwcSession {
     this.connection = null
     this.connectionKey = null
     this.warmPromise = null
+    this.balancePromise = null
     this.version += 1
     this.balanceRefreshVersion += 1
     this.budgetRefreshVersion += 1
@@ -361,7 +364,16 @@ export class BuyerNwcSession {
     this.notify()
   }
 
-  async refreshBalance(): Promise<NwcSessionSnapshot> {
+  refreshBalance(): Promise<NwcSessionSnapshot> {
+    if (this.balancePromise) return this.balancePromise
+    const operation = this.readBalance().finally(() => {
+      if (this.balancePromise === operation) this.balancePromise = null
+    })
+    this.balancePromise = operation
+    return operation
+  }
+
+  private async readBalance(): Promise<NwcSessionSnapshot> {
     const connection = this.connection
     if (!connection) {
       this.snapshot = disconnectedSnapshot()

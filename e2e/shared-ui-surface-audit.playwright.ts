@@ -209,7 +209,7 @@ for (const area of ["market", "merchant"] as const) {
               `${area === "market" ? marketUrl : merchantUrl}/wallet`
             )
             await expect(
-              page.getByRole("button", { name: "Add a wallet", exact: true })
+              page.getByRole("button", { name: "Add wallet", exact: true })
             ).toBeVisible()
           }
           await page.locator("#root").waitFor({ state: "visible" })
@@ -358,7 +358,7 @@ test("Merchant legacy Payments opens Wallets before the next route navigation @m
     })
     await expect(page).toHaveURL(`${merchantUrl}/wallet`)
     await expect(
-      page.getByRole("button", { name: "Add a wallet", exact: true })
+      page.getByRole("button", { name: "Add wallet", exact: true })
     ).toBeVisible()
     await expect(page).toHaveTitle(/Wallets/)
     await page.goto(`${merchantUrl}/shipping`, {

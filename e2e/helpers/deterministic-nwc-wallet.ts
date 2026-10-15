@@ -47,6 +47,7 @@ type StoredInvoice = {
 
 export type DeterministicNwcWalletSnapshot = {
   counters: WalletCounters
+  balanceReads: number
   invoiceState: "none" | "pending" | "settled"
 }
 
@@ -85,6 +86,8 @@ export type DeterministicNwcWalletOptions = {
   lud16?: string
   nowSeconds?: () => number
   claimUnissuedSettled?: boolean
+  methods?: Nip47GetInfoResponse["methods"]
+  getBalanceMsats?(): Promise<number> | number
 }
 
 function runtimeNwcKeyPair(): { pubkey: string; secret: string } {
@@ -264,6 +267,7 @@ export function createDeterministicNwcWallet(
     lookupInvoice: 0,
   }
   let invoice: StoredInvoice | null = null
+  let balanceReads = 0
   let unsubscribeMerchant: (() => void) | null = null
   let unsubscribeBuyer: (() => void) | null = null
   let started = false
@@ -276,7 +280,7 @@ export function createDeterministicNwcWallet(
     network: options.network ?? "testnet",
     block_height: 0,
     block_hash: "0".repeat(64),
-    methods: [
+    methods: options.methods ?? [
       "get_info",
       "get_balance",
       "make_invoice",
@@ -292,8 +296,13 @@ export function createDeterministicNwcWallet(
       return { result: info(), error: undefined }
     },
     async getBalance() {
+      balanceReads++
       return {
-        result: { balance: TEST_WALLET_BALANCE_MSATS },
+        result: {
+          balance: options.getBalanceMsats
+            ? await options.getBalanceMsats()
+            : TEST_WALLET_BALANCE_MSATS,
+        },
         error: undefined,
       }
     },
@@ -441,6 +450,7 @@ export function createDeterministicNwcWallet(
     snapshot() {
       return {
         counters: { ...counters },
+        balanceReads,
         invoiceState:
           invoice === null
             ? "none"

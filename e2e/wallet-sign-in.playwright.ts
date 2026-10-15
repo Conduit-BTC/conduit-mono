@@ -31,7 +31,7 @@ async function enterWallets(page: Page) {
   await page.getByLabel("Open account menu").click()
   await page.getByRole("menuitem", { name: "Wallets", exact: true }).click()
   await expect(
-    page.getByRole("heading", { name: "My wallets", exact: true })
+    page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
   ).toBeVisible()
 }
 async function existingProfile(page: Page) {
@@ -173,7 +173,7 @@ test("cached signer wallet stays isolated across two identities and returns unch
     await replaceRealTestSigner(page, second)
     await connect()
     await expect(
-      page.getByRole("heading", { name: "My wallets", exact: true })
+      page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
     ).toBeVisible()
     await expect(
       page.getByRole("button", { name: "Receive", exact: true })
@@ -300,9 +300,7 @@ test("locally saved recovery can finish while relay sync remains pending @market
       .check()
     await dialog.getByRole("button", { name: "Done", exact: true }).click()
     await expect(dialog).toHaveCount(0)
-    await page
-      .getByRole("button", { name: "Add a wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Create wallet")
     await expect(
       dialog.getByRole("status").filter({ hasText: "still syncing" })
     ).toBeVisible()
@@ -693,11 +691,8 @@ for (const size of [
       await existingProfile(page)
       await installControlledWallet(page)
       await enterWallets(page)
-      await page
-        .getByText("External wallet management", { exact: true })
-        .click()
       await expect(
-        page.getByRole("heading", { name: "External wallets" })
+        page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
       ).toBeVisible()
       await expect(page.getByLabel("Local wallet password")).toHaveCount(0)
       expect(
@@ -713,9 +708,6 @@ for (const size of [
       await openWalletSetup(page, "Create wallet")
       await saveRecovery(page)
       expect(await publicAddress(page)).toBe("current@wallet.example")
-      await page
-        .getByRole("button", { name: "Keep the current address" })
-        .click()
       await expect(
         page.getByRole("button", { name: "Receive", exact: true })
       ).toBeVisible()
@@ -723,14 +715,17 @@ for (const size of [
         page.getByRole("button", { name: "Send", exact: true })
       ).toBeVisible()
       await expect(
-        page.getByText("Receiving address: wallet1@breez.tips", {
+        page.getByText("wallet1@breez.tips", {
           exact: true,
         })
       ).toBeVisible()
       await page.evaluate(() => window.scrollTo(0, 0))
       await page.screenshot({
         path: `/tmp/635-wallet-${size.name}-ready.png`,
-        mask: [page.getByLabel("Open account menu")],
+        mask: [
+          page.getByLabel("Open account menu"),
+          page.locator("[data-wallet-balance], [data-wallet-address]"),
+        ],
       })
       // The saved recovery and credential remain encrypted and contain the
       // account/network needed to reopen the same native wallet.
@@ -776,16 +771,18 @@ for (const size of [
         .getByRole("dialog")
         .getByRole("button", { name: "Import wallet", exact: true })
         .click()
-      await saveRecovery(page)
       await expect(
-        page.getByText(
-          "Payments to its existing address continue reaching the recovered wallet.",
-          { exact: false }
-        )
+        page
+          .getByRole("dialog")
+          .getByText(
+            "Payments to an existing address continue reaching this recovered wallet.",
+            { exact: false }
+          )
       ).toBeVisible()
+      await saveRecovery(page)
       expect(await publicAddress(page)).toBe("current@wallet.example")
       await expect(
-        page.getByText("Receiving address: support@conduit.cash", {
+        page.getByText("support@conduit.cash", {
           exact: true,
         })
       ).toBeVisible()
@@ -794,6 +791,16 @@ for (const size of [
         account: (window as any).__walletProbe.lastAccount,
       }))
       expect(recovered).toEqual({ registrations: 1, account: 7 })
+      await page
+        .getByRole("article")
+        .filter({
+          has: page
+            .locator("[data-wallet-address]")
+            .filter({ hasText: "support@conduit.cash" }),
+        })
+        .locator("..")
+        .getByRole("button", { name: "Use this address", exact: true })
+        .click()
       await page
         .getByRole("button", { name: "Use the Conduit address" })
         .click()
@@ -1082,7 +1089,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       }
       phase("credential")
       await expect(page.getByRole("dialog")).toHaveCount(0)
-      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
       expect(
         await page.evaluate(() => (window as any).__walletProbe.migrationWrites)
       ).toBe(1)
@@ -1181,7 +1188,9 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
             .getByRole("button", { name: "Unlock", exact: true })
             .click()
           await expect(unlock).toHaveCount(0)
-          await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+          await expect(
+            page.locator('[data-wallet-state="ready"]')
+          ).toBeVisible()
           expect(
             await page.evaluate(() => (window as any).__walletProbe.lastAccount)
           ).toBe(7)
@@ -1240,7 +1249,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       recordSmokeFailureContext(test.info(), "migration_wallet_opened")
       await installControlledWallet(page, false, "wallet1@breez.tips")
       await enterWallets(page)
-      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
       recordSmokeFailureContext(test.info(), "migration_wallet_opened", "met")
       expect(
         await page.evaluate(
@@ -1259,7 +1268,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       // Dialog removal precedes its queued focus restoration. Finish that
       // handoff before opening a menu that outside focus would dismiss.
       await expect(
-        page.getByRole("button", { name: "Add a wallet", exact: true })
+        page.getByRole("button", { name: "Add wallet", exact: true })
       ).toBeFocused()
       phase("legacy_recovery")
       const legacyMenu = page.getByLabel("Manage Legacy wallet")

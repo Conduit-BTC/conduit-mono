@@ -927,6 +927,62 @@ describe("browser process diagnostics", () => {
 })
 
 describe("bounded smoke failure diagnostics", () => {
+  it("retains only fixed wallet import menu phases and visible readiness state", () => {
+    const privateValue = crypto.randomUUID()
+    const annotation = {
+      type: "smoke:wallet-import-menu",
+      description: JSON.stringify({
+        phase: "trigger_clicked",
+        observationAvailable: true,
+        triggerVisible: true,
+        triggerEnabled: true,
+        importVisible: false,
+        importEnabled: false,
+        dialogVisible: false,
+        loadingVisible: true,
+        initializationErrorVisible: false,
+        sparkUnavailableVisible: false,
+        signerPromptVisible: true,
+        walletId: privateValue,
+        error: privateValue,
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-composition.playwright.ts", [
+        annotation,
+      ])
+    ).toEqual([
+      {
+        kind: "wallet-import-menu",
+        phase: "trigger_clicked",
+        observationAvailable: true,
+        triggerVisible: true,
+        triggerEnabled: true,
+        importVisible: false,
+        importEnabled: false,
+        dialogVisible: false,
+        loadingVisible: true,
+        initializationErrorVisible: false,
+        sparkUnavailableVisible: false,
+        signerPromptVisible: true,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-sign-in.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics("e2e/shared-ui-composition.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            phase: privateValue,
+            walletId: privateValue,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("retains only bounded foreground wallet state counts and availability", () => {
     const privateValue = crypto.randomUUID()
     const annotation = {
@@ -1107,6 +1163,45 @@ describe("bounded smoke failure diagnostics", () => {
       ])
     ).toEqual([])
   })
+  it("retains only content-free wallet retry diagnostics for its two owning cases", () => {
+    const annotation = {
+      type: "smoke:wallet-retry",
+      description: JSON.stringify({
+        phase: "await_sync",
+        observationAvailable: true,
+        retryPresent: true,
+        retryEnabled: false,
+        recoveryDialogPresent: true,
+        managePresent: true,
+        syncCheckingVisible: true,
+        recoveryBlockedVisible: false,
+        walletCardCount: 0,
+        walletId: "private-value",
+      }),
+    }
+    const expected = {
+      kind: "wallet-retry",
+      phase: "await_sync",
+      observationAvailable: true,
+      retryPresent: true,
+      retryEnabled: false,
+      recoveryDialogPresent: true,
+      managePresent: true,
+      syncCheckingVisible: true,
+      recoveryBlockedVisible: false,
+      walletCardCount: 0,
+    }
+    for (const file of [
+      "e2e/wallet-registry-removal.playwright.ts",
+      "e2e/wallet-cross-app.playwright.ts",
+    ]) {
+      expect(safeSmokeDiagnostics(file, [annotation])).toEqual([expected])
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+  })
+
   it("exports only allowlisted scalar observations from the matching fixture", () => {
     const annotation = {
       type: "smoke:footer-layout",

@@ -1,10 +1,101 @@
 import path from "node:path"
 import type { WalletDescriptor } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { expect, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
+import { recordSmokeDiagnostic } from "./smoke-diagnostics"
+
+async function walletRetryControlState(retry: Locator) {
+  return retry.evaluateAll((buttons) => {
+    const button =
+      buttons.length === 1 && buttons[0] instanceof HTMLButtonElement
+        ? buttons[0]
+        : null
+    return {
+      count: buttons.length,
+      enabled:
+        button !== null &&
+        !button.matches(":disabled") &&
+        !button.closest('[aria-disabled="true"]'),
+    }
+  })
+}
+
+/** One non-waiting DOM observation; an absent retry control means the sync UI settled. */
+export async function walletRetryControlSettled(
+  retry: Locator
+): Promise<boolean> {
+  const state = await walletRetryControlState(retry)
+  return state.count === 0 || (state.count === 1 && state.enabled)
+}
+
+export async function retryWalletRecovery(page: Page) {
+  const retry = page.getByRole("button", {
+    name: "Retry encrypted wallet sync",
+    exact: true,
+  })
+  const recoveryDialog = page.getByRole("dialog", { name: /^Recovery for / })
+  let phase = "open_details"
+  try {
+    if (!(await retry.count())) {
+      await page
+        .getByRole("button", { name: /^Manage / })
+        .first()
+        .click()
+      await page
+        .getByRole("menuitem", { name: "Recovery details", exact: true })
+        .click()
+    }
+    phase = "click_retry"
+    await retry.click()
+    phase = "await_sync"
+    await expect.poll(() => walletRetryControlSettled(retry)).toBe(true)
+    phase = "dismiss_details"
+    if (await recoveryDialog.count()) await page.keyboard.press("Escape")
+  } catch (error) {
+    const controlState = await walletRetryControlState(retry).catch(() => null)
+    const observed = await Promise.all([
+      retry.count(),
+      recoveryDialog.count(),
+      page.getByRole("button", { name: /^Manage / }).count(),
+    ]).catch(() => null)
+    recordSmokeDiagnostic(test.info(), "wallet-retry", {
+      phase,
+      observationAvailable: observed !== null,
+      retryPresent: !!observed?.[0],
+      retryVisible:
+        observed?.[0] === 1 && (await retry.isVisible().catch(() => false)),
+      retryEnabled:
+        observed?.[0] === 1 &&
+        controlState?.count === 1 &&
+        controlState.enabled,
+      recoveryDialogPresent: !!observed?.[1],
+      managePresent: !!observed?.[2],
+      syncCheckingVisible: await page
+        .getByText("Checking encrypted wallet recovery…", { exact: true })
+        .isVisible()
+        .catch(() => false),
+      recoveryBlockedVisible: await page
+        .getByText(
+          "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+          { exact: true }
+        )
+        .isVisible()
+        .catch(() => false),
+      walletCardCount: await page
+        .locator("[data-wallet-group]")
+        .count()
+        .catch(() => 0),
+    })
+    throw error
+  }
+}
 
 export async function saveWalletRecovery(page: Page, makeMain = true) {
-  const dialog = page.getByRole("dialog")
+  const dialog = page.getByRole("dialog").filter({
+    has: page.getByRole("heading", {
+      name: /^(Wallet imported|Save your recovery details)$/,
+    }),
+  })
   await expect(
     dialog.getByRole("heading", {
       name: /^(Wallet imported|Save your recovery details)$/,
@@ -39,9 +130,13 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
     exact: true,
   })
   if (await chooser.count()) await chooser.click()
-  await dialog
-    .getByLabel("Make this my main wallet", { exact: true })
-    .setChecked(makeMain)
+  const mainChoice = dialog.getByLabel("Make this my main wallet", {
+    exact: true,
+  })
+  // An already-unchecked control does not wait for actionability in setChecked.
+  // Ordinary setup helpers must finish setup; early dismissal has dedicated tests.
+  await expect(mainChoice).toBeEnabled()
+  await mainChoice.setChecked(makeMain)
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
   await expect(dialog).toHaveCount(0)
 }
@@ -107,9 +202,14 @@ export async function prepareControlledWallet(page: Page) {
             probe.disconnects++
           },
           async getInfo() {
+            probe.balanceReads = (probe.balanceReads ?? 0) + 1
+            if (probe.delayBalance)
+              await new Promise<void>((resolve) => {
+                probe.releaseBalance = resolve
+              })
             if (probe.infoBarrier) await probe.infoBarrier()
             if (probe.failBalance) throw new Error("Injected post-open failure")
-            return { balanceSats: 0 }
+            return { balanceSats: probe.balanceSats ?? 0 }
           },
           async listPayments() {
             return { payments: [] }
@@ -202,18 +302,29 @@ export async function installControlledWallet(
   )
 }
 
-/** Use the visible wallet actions and secondary external-wallet controls. */
+/** Open the shared Add wallet menu without changing setup behavior. */
 export async function openWalletSetup(
   page: Page,
-  name: "Create wallet" | "Import wallet" | "Connect wallet"
+  name: "Create wallet" | "Import wallet" | "Connect wallet",
+  diagnostic?: (
+    phase: "before_trigger" | "trigger_clicked" | "import_clicked"
+  ) => Promise<void>
 ) {
-  const button = page.getByRole("button", {
-    name: name === "Create wallet" ? "Add a wallet" : name,
-    exact: true,
-  })
-  if (name === "Connect wallet" && !(await button.isVisible()))
-    await page.getByText("External wallet management", { exact: true }).click()
-  await button.click()
+  await diagnostic?.("before_trigger")
+  await page.getByRole("button", { name: "Add wallet", exact: true }).click()
+  await diagnostic?.("trigger_clicked")
+  await page
+    .getByRole("menuitem", {
+      name:
+        name === "Create wallet"
+          ? "Create a wallet"
+          : name === "Import wallet"
+            ? "Import an existing wallet"
+            : "Connect an external wallet",
+      exact: true,
+    })
+    .click()
+  await diagnostic?.("import_clicked")
 }
 
 /** Observe the real route controller without adding a production test API. */
