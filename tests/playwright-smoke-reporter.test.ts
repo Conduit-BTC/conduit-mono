@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "bun:test"
-import { chromium } from "@playwright/test"
+import { chromium, expect as browserExpect } from "@playwright/test"
 
 import type {
   FullConfig,
@@ -22,6 +22,8 @@ import type {
 
 import {
   classifyProductSubmitValidation,
+  classifySmokeBrowserError,
+  observeMessagesDialogTrigger,
   parseSmokeFailureContext,
   safeRetainedSmokeDiagnostics,
   safeRetainedSmokeFailureContext,
@@ -39,6 +41,74 @@ describe("privacy-safe Playwright smoke reporter", () => {
   // The regular unit job does not install browser binaries. Run this bounded
   // DOM control in a Playwright-capable environment with CONDUIT_DOM_CONTROL=1.
   const browserIt = process.env.CONDUIT_DOM_CONTROL === "1" ? it : it.skip
+  browserIt(
+    "retains a delivered gesture when its dialog immediately unmounts",
+    async () => {
+      const browser = await chromium.launch()
+      try {
+        const page = await browser.newPage()
+        await page.setContent(
+          '<button aria-label="Open messages"><svg aria-hidden="true"></svg></button>'
+        )
+        await page.evaluate(() => {
+          document.querySelector("button")!.onclick = () => {
+            const dialog = document.createElement("div")
+            dialog.setAttribute("role", "dialog")
+            dialog.textContent = "Private message must not leave the page"
+            document.body.append(dialog)
+            setTimeout(() => dialog.remove(), 0)
+          }
+        })
+        const probe = await observeMessagesDialogTrigger(page)
+        try {
+          await page.getByRole("button", { name: "Open messages" }).click()
+          await browserExpect
+            .poll(() => probe.evaluate((value) => value.read().dialogRemoved))
+            .toBe(true)
+          const observation = await probe.evaluate((value) => value.read())
+          expect(observation).toMatchObject({
+            triggerCount: 1,
+            pointerDownOnTrigger: true,
+            pointerUpOnTrigger: true,
+            clickOnTrigger: true,
+            dialogMounted: true,
+            dialogRemoved: true,
+            dialogCount: 0,
+            visibleDialogCount: 0,
+          })
+          expect(JSON.stringify(observation)).not.toContain("Private message")
+        } finally {
+          await probe.evaluate((value) => value.dispose())
+          await probe.dispose()
+        }
+      } finally {
+        await browser.close()
+      }
+    }
+  )
+
+  it("classifies browser failures without retaining error text or URLs", () => {
+    const privateText = "private-" + crypto.randomUUID()
+    for (const [message, expected] of [
+      [
+        `Navigation to ${privateText} interrupted by another navigation`,
+        "navigation_interrupted",
+      ],
+      [`net::ERR_CONNECTION_REFUSED at ${privateText}`, "connection_refused"],
+      [`net::ERR_CONNECTION_RESET ${privateText}`, "connection_reset"],
+      [`net::ERR_NAME_NOT_RESOLVED ${privateText}`, "name_resolution"],
+      [`Target page closed ${privateText}`, "target_closed"],
+      [privateText, "unknown"],
+    ]) {
+      const category = classifySmokeBrowserError(new Error(message))
+      expect(category).toBe(expected)
+      expect(category).not.toContain(privateText)
+    }
+    const timeout = new Error(privateText)
+    timeout.name = "TimeoutError"
+    expect(classifySmokeBrowserError(timeout)).toBe("timeout")
+    expect(classifySmokeBrowserError({ message: privateText })).toBe("unknown")
+  })
   browserIt(
     "uses the nested form status when an image announcement persists",
     async () => {
@@ -1801,8 +1871,8 @@ describe("wallet recovery and bounded control diagnostics", () => {
     {
       kind: "wallet-background-refusal",
       file: "e2e/wallet-cross-app.playwright.ts",
-      expected: "wallet_refusal_foreground_import_completed",
-      boundary: "user-action",
+      expected: "wallet_refusal_import_ready",
+      boundary: "app-readiness",
       values: {
         phase: "foreground_import",
         syncObserved: true,
@@ -1811,6 +1881,57 @@ describe("wallet recovery and bounded control diagnostics", () => {
         observationAvailable: true,
         lockObservationAvailable: true,
         heldReadInsideAccountSetupLock: false,
+        readinessObservationAvailable: true,
+        nativeSessionOpen: true,
+        targetRuntimeReady: true,
+        targetRuntimeConnecting: false,
+        targetRuntimeLocked: false,
+        targetRuntimeUnavailable: false,
+        targetRuntimeError: false,
+        walletCount: 2,
+        otherReadyWalletCount: 1,
+        otherNativeOpenWalletCount: 1,
+        readyTextCount: 2,
+        readyStateCount: 0,
+        openButtonCount: 0,
+      },
+    },
+    {
+      kind: "commerce-journey",
+      file: "e2e/commerce.playwright.ts",
+      expected: "commerce_store_navigation_completed",
+      boundary: "app-readiness",
+      values: {
+        phase: "store_ready",
+        navigationObservationAvailable: true,
+        navigationResponseObserved: true,
+        navigationResponseStatus: 200,
+        navigationRequestFailed: true,
+        navigationCommitted: false,
+        navigationPageClosed: false,
+        navigationFailure: "navigation_interrupted",
+        buyerReadAfterReload: true,
+      },
+    },
+    {
+      kind: "order-reply",
+      file: "e2e/merchant-order-inbox.playwright.ts",
+      expected: "merchant_messages_dialog_ready",
+      boundary: "app-readiness",
+      values: {
+        phase: "merchant_reply",
+        observationAvailable: true,
+        triggerCount: 1,
+        triggerVisible: true,
+        triggerEnabled: true,
+        triggerHitTarget: true,
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: true,
+        clickOnTrigger: true,
+        dialogCount: 0,
+        visibleDialogCount: 0,
+        dialogMounted: true,
+        dialogRemoved: true,
       },
     },
     {

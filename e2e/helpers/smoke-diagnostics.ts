@@ -1,4 +1,109 @@
-import type { TestInfo } from "@playwright/test"
+import type { Page, TestInfo } from "@playwright/test"
+
+export function classifySmokeBrowserError(error: unknown): string {
+  const message = error instanceof Error ? error.message : ""
+  if (
+    /navigation.*interrupted|interrupted by another navigation/i.test(message)
+  )
+    return "navigation_interrupted"
+  if (/ERR_CONNECTION_REFUSED|connection refused/i.test(message))
+    return "connection_refused"
+  if (/ERR_CONNECTION_RESET|connection reset/i.test(message))
+    return "connection_reset"
+  if (/ERR_NAME_NOT_RESOLVED|could not resolve|name resolution/i.test(message))
+    return "name_resolution"
+  if (/Target.*closed|page.*closed|browser.*closed/i.test(message))
+    return "target_closed"
+  if (error instanceof Error && error.name === "TimeoutError") return "timeout"
+  return "unknown"
+}
+
+// Observe the original gesture and dialog lifetime without changing either.
+// No labels, message contents, identifiers, or coordinates leave the page.
+export async function observeMessagesDialogTrigger(page: Page) {
+  return page.evaluateHandle(() => {
+    let pointerDownOnTrigger = false
+    let pointerUpOnTrigger = false
+    let clickOnTrigger = false
+    let dialogMounted = false
+    let dialogRemoved = false
+    const triggers = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (button) =>
+          ["Open messages", "Close messages"].includes(
+            button.getAttribute("aria-label") ??
+              button.textContent?.trim() ??
+              ""
+          )
+      )
+    const isTrigger = (event: Event) =>
+      event.target instanceof Node &&
+      triggers().some((button) => button.contains(event.target as Node))
+    const onDown = (event: Event) => {
+      if (isTrigger(event)) pointerDownOnTrigger = true
+    }
+    const onUp = (event: Event) => {
+      if (isTrigger(event)) pointerUpOnTrigger = true
+    }
+    const onClick = (event: Event) => {
+      if (isTrigger(event)) clickOnTrigger = true
+    }
+    const observeDialog = () => {
+      const present = !!document.querySelector('[role="dialog"]')
+      if (dialogMounted && !present) dialogRemoved = true
+      if (present) dialogMounted = true
+    }
+    const observer = new MutationObserver(observeDialog)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    })
+    observeDialog()
+    document.addEventListener("pointerdown", onDown, true)
+    document.addEventListener("pointerup", onUp, true)
+    document.addEventListener("click", onClick, true)
+    const visible = (element: HTMLElement) =>
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility === "visible"
+    return {
+      read() {
+        observeDialog()
+        const buttons = triggers()
+        const trigger = buttons[0]
+        const rect = trigger?.getBoundingClientRect()
+        const hit = rect
+          ? document.elementFromPoint(
+              rect.x + rect.width / 2,
+              rect.y + rect.height / 2
+            )
+          : null
+        const dialogs = [
+          ...document.querySelectorAll<HTMLElement>('[role="dialog"]'),
+        ]
+        return {
+          observationAvailable: true,
+          triggerCount: buttons.length,
+          triggerVisible: !!trigger && visible(trigger),
+          triggerEnabled: !!trigger && !trigger.disabled,
+          triggerHitTarget: !!trigger && !!hit && trigger.contains(hit),
+          pointerDownOnTrigger,
+          pointerUpOnTrigger,
+          clickOnTrigger,
+          dialogCount: dialogs.length,
+          visibleDialogCount: dialogs.filter(visible).length,
+          dialogMounted,
+          dialogRemoved,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", onDown, true)
+        document.removeEventListener("pointerup", onUp, true)
+        document.removeEventListener("click", onClick, true)
+      },
+    }
+  })
+}
 
 export const commerceJourneyPhases = [
   "seed_profiles",
@@ -135,10 +240,15 @@ const failureConditions: Record<
   Readonly<Record<string, SmokeFailureBoundary>>
 > = {
   "e2e/commerce.playwright.ts": {
+    commerce_store_navigation_completed: "app-readiness",
+    commerce_buyer_paid_visible: "app-readiness",
+    commerce_buyer_reloaded_paid_visible: "app-readiness",
     commerce_buyer_status_dialog_opened: "user-action",
     commerce_buyer_status_accepted_visible: "assertion",
   },
   "e2e/merchant-order-inbox.playwright.ts": {
+    merchant_open_messages_click_completed: "user-action",
+    merchant_messages_dialog_ready: "app-readiness",
     buyer_account_ready: "app-readiness",
     buyer_open_messages_click_completed: "user-action",
     buyer_dialog_ready: "app-readiness",
@@ -171,6 +281,7 @@ const failureConditions: Record<
     wallet_refusal_sync_completed: "app-readiness",
     wallet_refusal_background_read_held: "assertion",
     wallet_refusal_foreground_import_completed: "user-action",
+    wallet_refusal_import_ready: "app-readiness",
     wallet_refusal_background_released: "user-action",
     wallet_refusal_ready_preserved: "assertion",
   },
@@ -285,6 +396,19 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         observationAvailable: "boolean",
         lockObservationAvailable: "boolean",
         heldReadInsideAccountSetupLock: "boolean",
+        readinessObservationAvailable: "boolean",
+        nativeSessionOpen: "boolean",
+        targetRuntimeReady: "boolean",
+        targetRuntimeConnecting: "boolean",
+        targetRuntimeLocked: "boolean",
+        targetRuntimeUnavailable: "boolean",
+        targetRuntimeError: "boolean",
+        walletCount: "number",
+        otherReadyWalletCount: "number",
+        otherNativeOpenWalletCount: "number",
+        readyTextCount: "number",
+        readyStateCount: "number",
+        openButtonCount: "number",
       },
     },
     "mobile-wallet-menu": {
@@ -531,6 +655,7 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         buyerProofSent: "boolean",
         buyerPaidMessages: "number",
         buyerMessageDialogVisible: "boolean",
+        buyerReadAfterReload: "boolean",
         phase: commerceJourneyPhases,
         elapsedSeconds: "number",
         phaseSeconds: "number",
@@ -548,6 +673,21 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         foreignMenuVisibleBeforeClick: "boolean",
         foreignMenuEnabledBeforeClick: "boolean",
         foreignMenuHitTargetBeforeClick: "boolean",
+        navigationObservationAvailable: "boolean",
+        navigationResponseObserved: "boolean",
+        navigationResponseStatus: "number",
+        navigationRequestFailed: "boolean",
+        navigationCommitted: "boolean",
+        navigationPageClosed: "boolean",
+        navigationFailure: [
+          "navigation_interrupted",
+          "connection_refused",
+          "connection_reset",
+          "name_resolution",
+          "target_closed",
+          "timeout",
+          "unknown",
+        ],
       },
     },
     "price-interaction": {
@@ -684,6 +824,18 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         inputEnabled: "boolean",
         sendPresent: "boolean",
         focusWithinDialog: "boolean",
+        observationAvailable: "boolean",
+        triggerCount: "number",
+        triggerVisible: "boolean",
+        triggerEnabled: "boolean",
+        triggerHitTarget: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        dialogCount: "number",
+        visibleDialogCount: "number",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
       },
     },
     "fallback-recovery": {
