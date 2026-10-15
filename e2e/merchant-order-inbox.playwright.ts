@@ -331,54 +331,82 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         return encrypt(peer, text)
       }
     }, buyer.pubkey)
-    recordSmokeFailureContext(testInfo, "buyer_open_messages_click_completed")
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    recordSmokeFailureContext(
-      testInfo,
-      "buyer_open_messages_click_completed",
-      "met"
-    )
-    recordSmokeFailureContext(testInfo, "buyer_dialog_ready")
-    const buyerDialogState = await buyerPage.evaluate(() => {
-      const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
-      const input = dialog?.querySelector<HTMLInputElement>("input")
-      const send = dialog?.querySelector<HTMLButtonElement>(
-        'button[aria-label="Send message"]'
-      )
-      const visible = (element: HTMLElement | undefined | null) =>
-        !!element &&
-        element.getClientRects().length > 0 &&
-        getComputedStyle(element).visibility === "visible"
-      return {
-        dialogVisible: visible(dialog),
-        inputPresent: !!input,
-        inputVisible: visible(input),
-        inputEnabled: !!input && !input.disabled,
-        sendPresent: !!send,
-        focusWithinDialog: !!dialog?.contains(document.activeElement),
-      }
-    })
-    recordSmokeDiagnostic(testInfo, "order-reply", {
-      phase: "buyer_dialog",
-      ...buyerDialogState,
-    })
-    recordSmokeFailureContext(
-      testInfo,
-      "buyer_dialog_ready",
-      buyerDialogState.dialogVisible && buyerDialogState.inputEnabled
-        ? "met"
-        : "unmet"
-    )
     const buyerMessages = buyerPage.getByRole("dialog", { name: "Messages" })
     const buyerReply = `Accepted buyer reply ${Date.now().toString(36)}`
-    recordSmokeFailureContext(testInfo, "buyer_input_filled")
-    await buyerMessages
-      .getByRole("textbox", { name: "Message" })
-      .fill(buyerReply)
-    phase("buyer_input_filled")
-    recordSmokeFailureContext(testInfo, "buyer_input_filled", "met")
+    const buyerTriggerProbe = await observeMessagesDialogTrigger(
+      buyerPage
+    ).catch(() => null)
+    try {
+      recordSmokeFailureContext(testInfo, "buyer_open_messages_click_completed")
+      await buyerPage
+        .getByRole("button", { name: "Open messages", exact: true })
+        .click()
+      recordSmokeFailureContext(
+        testInfo,
+        "buyer_open_messages_click_completed",
+        "met"
+      )
+      recordSmokeFailureContext(testInfo, "buyer_dialog_ready")
+      await expect(buyerMessages).toBeVisible()
+      const buyerDialogState = await buyerPage.evaluate(() => {
+        const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
+        const input = dialog?.querySelector<HTMLInputElement>("input")
+        const send = dialog?.querySelector<HTMLButtonElement>(
+          'button[aria-label="Send message"]'
+        )
+        const visible = (element: HTMLElement | undefined | null) =>
+          !!element &&
+          element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility === "visible"
+        return {
+          dialogVisible: visible(dialog),
+          inputPresent: !!input,
+          inputVisible: visible(input),
+          inputEnabled: !!input && !input.disabled,
+          sendPresent: !!send,
+          focusWithinDialog: !!dialog?.contains(document.activeElement),
+        }
+      })
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "buyer_dialog",
+        ...buyerDialogState,
+      })
+      recordSmokeFailureContext(
+        testInfo,
+        "buyer_dialog_ready",
+        buyerDialogState.dialogVisible && buyerDialogState.inputEnabled
+          ? "met"
+          : "unmet"
+      )
+      recordSmokeFailureContext(testInfo, "buyer_input_filled")
+      await buyerMessages
+        .getByRole("textbox", { name: "Message" })
+        .fill(buyerReply)
+      phase("buyer_input_filled")
+      recordSmokeFailureContext(testInfo, "buyer_input_filled", "met")
+    } catch (error) {
+      let observation: Record<string, number | boolean> = {
+        observationAvailable: false,
+      }
+      try {
+        if (buyerTriggerProbe)
+          observation = await buyerTriggerProbe.evaluate((probe) =>
+            probe.read()
+          )
+      } catch {
+        // A diagnostic must not replace the original action/assertion failure.
+      }
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "buyer_dialog",
+        ...observation,
+      })
+      throw error
+    } finally {
+      await buyerTriggerProbe
+        ?.evaluate((probe) => probe.dispose())
+        .catch(() => undefined)
+      await buyerTriggerProbe?.dispose().catch(() => undefined)
+    }
     recordSmokeFailureContext(testInfo, "buyer_send_clicked")
     await buyerMessages.getByRole("button", { name: "Send message" }).click()
     phase("buyer_send_clicked")
