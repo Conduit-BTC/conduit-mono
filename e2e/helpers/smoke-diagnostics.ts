@@ -275,6 +275,33 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         ],
       },
     },
+    "merchant-image-dialog-open": {
+      file: "e2e/merchant-product-image-preview.playwright.ts",
+      fields: {
+        pointerDownObserved: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpObserved: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickObserved: "boolean",
+        clickOnTrigger: "boolean",
+        dialogMounted: "boolean",
+        dialogRemoved: "boolean",
+        dialogPresent: "boolean",
+        triggerConnected: "boolean",
+        triggerEnabledAtDown: "boolean",
+        triggerEnabledAtClick: "boolean",
+        triggerEnabledAfter: "boolean",
+        triggerMovementDuringGesture: ["stable", "moved", "unavailable"],
+        triggerCountBefore: ["none", "one", "multiple"],
+        triggerCountAfter: ["none", "one", "multiple"],
+        fontsAtDown: ["loading", "loaded", "unknown"],
+        fontsAtClick: ["loading", "loaded", "unknown"],
+        resumeDraftPresentBefore: "boolean",
+        draftKeyStateBefore: ["absent", "one", "multiple", "unavailable"],
+        resumeDraftPresent: "boolean",
+        draftKeyState: ["absent", "one", "multiple", "unavailable"],
+      },
+    },
     "manual-checkout-stop": {
       file: "e2e/manual-checkout-invoice.playwright.ts",
       fields: {
@@ -347,6 +374,30 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         routeFetchNavigations: "number",
         routeFetchStarts: "number",
         routeFetchCompletes: "number",
+      },
+    },
+    "commerce-inbox-reconnect": {
+      file: "e2e/commerce-inbox.playwright.ts",
+      fields: {
+        observationAvailable: "boolean",
+        controlCount: "number",
+        controlVisible: "boolean",
+        dialogCount: "number",
+        composerVisible: "boolean",
+        bodyMatchCount: "number",
+        visibleBodyMatchCount: "number",
+        loadingHistoryVisible: "boolean",
+        emptyHistoryVisible: "boolean",
+        unavailableHistoryVisible: "boolean",
+        buyerDirectCountReachedThreeBeforeReconnect: "boolean",
+        sessionCurrent: "boolean",
+        providerReady: "boolean",
+        localObservationAvailable: "boolean",
+        localCoverage: ["complete", "partial", "unavailable"],
+        localDirectCount: "number",
+        localReplyRetained: "boolean",
+        localPending: "boolean",
+        localStorageFailed: "boolean",
       },
     },
     "commerce-journey": {
@@ -733,7 +784,9 @@ export function recordSmokeDiagnostic(
     | "wallet-foreground-open"
     | "wallet-balances"
     | "merchant-image-reload"
+    | "merchant-image-dialog-open"
     | "manual-checkout-stop"
+    | "commerce-inbox-reconnect"
     | "commerce-journey"
     | "wallet-migration"
     | "price-interaction"

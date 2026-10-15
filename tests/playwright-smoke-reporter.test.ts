@@ -1347,6 +1347,67 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 
+  it("retains only coarse image-dialog delivery state for its fixture", () => {
+    const file = "e2e/merchant-product-image-preview.playwright.ts"
+    const kind = "merchant-image-dialog-open"
+    const observation = {
+      pointerDownObserved: true,
+      pointerDownOnTrigger: true,
+      pointerUpObserved: true,
+      pointerUpOnTrigger: false,
+      clickObserved: true,
+      clickOnTrigger: false,
+      dialogMounted: false,
+      dialogRemoved: false,
+      dialogPresent: false,
+      triggerConnected: true,
+      triggerEnabledAtDown: true,
+      triggerEnabledAtClick: true,
+      triggerEnabledAfter: true,
+      triggerMovementDuringGesture: "moved",
+      triggerCountBefore: "one",
+      triggerCountAfter: "multiple",
+      fontsAtDown: "loaded",
+      fontsAtClick: "unknown",
+      resumeDraftPresentBefore: true,
+      draftKeyStateBefore: "one",
+      resumeDraftPresent: true,
+      draftKeyState: "one",
+    }
+    const annotation = {
+      type: `smoke:${kind}`,
+      description: JSON.stringify({
+        ...observation,
+        triggerX: 102.453,
+        triggerY: 384,
+        pubkey: "private-sentinel",
+        invoice: "private-sentinel",
+      }),
+    }
+    expect(safeSmokeDiagnostics(file, [annotation])).toEqual([
+      { kind, ...observation },
+    ])
+    expect(
+      safeRetainedSmokeDiagnostics(file, [
+        { kind, ...observation, rawDom: "private-sentinel" },
+      ])
+    ).toEqual([{ kind, ...observation }])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics(file, [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            triggerMovementDuringGesture: "private-sentinel",
+            triggerCountAfter: "private-sentinel",
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("keeps stalled-journey phases file-bound and strips unapproved values", () => {
     for (const fixture of [
       {
@@ -1575,6 +1636,66 @@ describe("wallet balance route diagnostics", () => {
           },
         ]
       )
+      expect(altered[0]).not.toHaveProperty(field)
+      expect(JSON.stringify(altered)).not.toContain(privateValue)
+    }
+  })
+})
+
+describe("commerce inbox reconnect diagnostics", () => {
+  it("retains only bounded observations from the owning inbox case", () => {
+    const privateValue = "private-" + crypto.randomUUID()
+    const values = {
+      observationAvailable: true,
+      controlCount: 1,
+      controlVisible: true,
+      dialogCount: 0,
+      composerVisible: true,
+      bodyMatchCount: 2,
+      visibleBodyMatchCount: 1,
+      loadingHistoryVisible: false,
+      emptyHistoryVisible: false,
+      unavailableHistoryVisible: false,
+      buyerDirectCountReachedThreeBeforeReconnect: true,
+      sessionCurrent: true,
+      providerReady: true,
+      localObservationAvailable: true,
+      localCoverage: "partial",
+      localDirectCount: 5,
+      localReplyRetained: true,
+      localPending: false,
+      localStorageFailed: false,
+    }
+    const annotation = {
+      type: "smoke:commerce-inbox-reconnect",
+      description: JSON.stringify({ ...values, message: privateValue }),
+    }
+    const retained = safeSmokeDiagnostics("e2e/commerce-inbox.playwright.ts", [
+      annotation,
+    ])
+    expect(retained).toEqual([{ kind: "commerce-inbox-reconnect", ...values }])
+    expect(JSON.stringify(retained)).not.toContain(privateValue)
+    expect(
+      safeRetainedSmokeDiagnostics("e2e/commerce-inbox.playwright.ts", retained)
+    ).toEqual(retained)
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeRetainedSmokeDiagnostics("e2e/commerce.playwright.ts", retained)
+    ).toEqual([])
+    for (const [field, value] of [
+      ["controlCount", privateValue],
+      ["controlCount", 32_769],
+      ["providerReady", privateValue],
+      ["localCoverage", privateValue],
+    ] as const) {
+      const altered = safeSmokeDiagnostics("e2e/commerce-inbox.playwright.ts", [
+        {
+          type: annotation.type,
+          description: JSON.stringify({ ...values, [field]: value }),
+        },
+      ])
       expect(altered[0]).not.toHaveProperty(field)
       expect(JSON.stringify(altered)).not.toContain(privateValue)
     }

@@ -32,6 +32,7 @@
     "shared-ui-surface-audit.playwright.ts",
     "merchant-invoice-source.playwright.ts",
     "commerce.playwright.ts",
+    "commerce-inbox.playwright.ts",
     "merchant-product-image-preview.playwright.ts"
   ]
 }
