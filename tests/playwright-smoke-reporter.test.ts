@@ -75,6 +75,8 @@ describe("privacy-safe Playwright smoke reporter", () => {
             dialogRemoved: true,
             dialogCount: 0,
             visibleDialogCount: 0,
+            documentVisible: true,
+            fontsLoaded: true,
           })
           expect(JSON.stringify(observation)).not.toContain("Private message")
         } finally {
@@ -1952,6 +1954,9 @@ describe("wallet recovery and bounded control diagnostics", () => {
         triggerVisible: true,
         triggerEnabled: true,
         triggerHitTarget: true,
+        documentVisible: false,
+        documentFocused: false,
+        fontsLoaded: false,
         pointerDownOnTrigger: true,
         pointerUpOnTrigger: true,
         clickOnTrigger: true,
