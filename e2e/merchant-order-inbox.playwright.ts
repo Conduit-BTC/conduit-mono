@@ -4,6 +4,7 @@ import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-stor
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import {
+  observeMessagesDialogTrigger,
   recordSmokeDiagnostic,
   recordSmokeFailureContext,
 } from "./helpers/smoke-diagnostics"
@@ -179,11 +180,53 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       }
     }, merchant.pubkey)
 
-    await merchantPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
     const messages = merchantPage.getByRole("dialog", { name: "Messages" })
-    await expect(messages).toBeVisible()
+    const merchantTriggerProbe = await observeMessagesDialogTrigger(
+      merchantPage
+    ).catch(() => null)
+    try {
+      recordSmokeFailureContext(
+        testInfo,
+        "merchant_open_messages_click_completed"
+      )
+      await merchantPage
+        .getByRole("button", { name: "Open messages", exact: true })
+        .click()
+      recordSmokeFailureContext(
+        testInfo,
+        "merchant_open_messages_click_completed",
+        "met"
+      )
+      recordSmokeFailureContext(testInfo, "merchant_messages_dialog_ready")
+      await expect(messages).toBeVisible()
+      recordSmokeFailureContext(
+        testInfo,
+        "merchant_messages_dialog_ready",
+        "met"
+      )
+    } catch (error) {
+      let observation: Record<string, number | boolean> = {
+        observationAvailable: false,
+      }
+      try {
+        if (merchantTriggerProbe)
+          observation = await merchantTriggerProbe.evaluate((probe) =>
+            probe.read()
+          )
+      } catch {
+        // A diagnostic must not replace the original action/assertion failure.
+      }
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "merchant_reply",
+        ...observation,
+      })
+      throw error
+    } finally {
+      await merchantTriggerProbe
+        ?.evaluate((probe) => probe.dispose())
+        .catch(() => undefined)
+      await merchantTriggerProbe?.dispose().catch(() => undefined)
+    }
     await inspectCommerceUi(
       merchantPage,
       testInfo,
