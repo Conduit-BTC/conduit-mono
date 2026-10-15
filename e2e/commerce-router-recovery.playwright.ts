@@ -271,29 +271,49 @@ async function merchantRecoveryAdmission(page: Page, orderId: string | null) {
         sourcesValidated: binding?.sourceValidation != null,
         settlementPresent: binding?.merchantSettlement != null,
         creditPresent: binding?.merchantSettlement?.credit != null,
-        encryptedRecoveryRetained:
-          binding !== null &&
-          (binding.merchantProgressOutbox ?? []).some(
-            (entry: {
-              relayAccepted: boolean
-              record: {
-                checkoutId: string
-                planDigest: string
-                merchantPubkey: string
-                signedRecipientWrap: { kind: number; content: string }
-              }
-            }) =>
-              entry.relayAccepted &&
-              entry.record.checkoutId === binding.checkoutId &&
-              entry.record.planDigest === binding.planDigest &&
-              entry.record.merchantPubkey ===
-                binding.orderWitness.merchantPubkey &&
-              entry.record.signedRecipientWrap.kind === 1_059 &&
-              entry.record.signedRecipientWrap.content.length > 0
-          ),
       }
     },
     { modulePath, orderId }
+  )
+}
+
+// Re-read the original Merchant recovery through its authenticated discovery
+// path. Optional outgoing progress is not a recovery or guest-receipt gate.
+// Only this exact-order availability boolean leaves the isolated page.
+async function hasRetainedMerchantRecovery(
+  page: Page,
+  orderId: string | null
+): Promise<boolean> {
+  const databasePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
+  const commercePath = `/@fs/${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url)).replaceAll("\\", "/")}`
+  return page.evaluate(
+    async ({ databasePath, commercePath, orderId }) => {
+      const { db } = await import(/* @vite-ignore */ databasePath)
+      const bindings = await db.checkoutSparkPlanBindings.toArray()
+      const matching = bindings.filter(
+        (row: { orderWitness?: { orderId: string } }) =>
+          row.orderWitness?.orderId === orderId
+      )
+      if (matching.length !== 1) return false
+      const binding = matching[0]!
+      const { getMerchantCheckoutSparkRecoveryList } = await import(
+        /* @vite-ignore */ commercePath
+      )
+      const read = await getMerchantCheckoutSparkRecoveryList(
+        binding.orderWitness.merchantPubkey
+      )
+      return read.candidates.some(
+        (candidate: {
+          checkoutId: string
+          orderId: string
+          planDigest: string
+        }) =>
+          candidate.checkoutId === binding.checkoutId &&
+          candidate.orderId === orderId &&
+          candidate.planDigest === binding.planDigest
+      )
+    },
+    { databasePath, commercePath, orderId }
   )
 }
 
@@ -1877,19 +1897,15 @@ async function rehearseRouter(
       await assertScopedPaymentsComplete()
       setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      setStage("cold Merchant retains acknowledged encrypted recovery")
-      expect(await merchantRecoveryAdmission(coldPage, orderId)).toMatchObject({
-        encryptedRecoveryRetained: true,
-      })
+      setStage("cold Merchant retains original encrypted recovery")
+      expect(await hasRetainedMerchantRecovery(coldPage, orderId)).toBe(true)
       control().setAdditionalOwnedSats(0)
       await coldPersistence.reload()
       await assertScopedPaymentsComplete()
       setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      setStage("cold Merchant retains acknowledged encrypted recovery")
-      expect(await merchantRecoveryAdmission(coldPage, orderId)).toMatchObject({
-        encryptedRecoveryRetained: true,
-      })
+      setStage("cold Merchant retains original encrypted recovery")
+      expect(await hasRetainedMerchantRecovery(coldPage, orderId)).toBe(true)
       const completed = control().snapshot()
       setStage(
         "cold Merchant reload automatically checks without replaying payouts"
@@ -1900,10 +1916,8 @@ async function rehearseRouter(
       await assertScopedPaymentsComplete()
       setStage("cold Merchant keeps the completed checkout wallet active")
       expect(await merchantWalletState(coldPage, orderId)).toBe("active")
-      setStage("cold Merchant retains acknowledged encrypted recovery")
-      expect(await merchantRecoveryAdmission(coldPage, orderId)).toMatchObject({
-        encryptedRecoveryRetained: true,
-      })
+      setStage("cold Merchant retains original encrypted recovery")
+      expect(await hasRetainedMerchantRecovery(coldPage, orderId)).toBe(true)
       await expect(
         recovery.getByText("Recovery check details", { exact: true })
       ).toHaveCount(0)
