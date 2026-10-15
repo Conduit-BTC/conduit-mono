@@ -1971,7 +1971,6 @@ describe("wallet recovery and bounded control diagnostics", () => {
           textPersisted: false,
         },
       },
-
     ]) {
       const annotation = {
         type: `smoke:${sample.kind}`,
