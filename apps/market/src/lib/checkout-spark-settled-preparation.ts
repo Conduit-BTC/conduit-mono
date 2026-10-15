@@ -136,14 +136,36 @@ export interface CheckoutSparkSettledPreparationRepository {
   loadBuyerSettlement?: DexieCheckoutSparkSettledRepository["loadBuyerSettlement"]
 }
 
+const preparationStepDescriptions = {
+  wallet_setup: "opening the temporary checkout wallet",
+  funding_invoice: "creating its funding invoice",
+  funding_validation: "validating its fixed funding terms",
+  fee_request: "preparing the Conduit fee request",
+  plan_validation: "validating its signed payment plan",
+  local_save: "saving the checkout locally",
+  order_save: "saving its private order draft",
+  recovery_handoff: "preparing encrypted recovery",
+  unknown: "preparing checkout",
+} as const
+
+type PreparationStep = keyof typeof preparationStepDescriptions
+
 /** Positive local cleanup, not a timeout or inferred absence of payment. */
 export class CheckoutSparkSettledPreparationAbandonedError extends Error {
-  constructor(cause: unknown) {
+  readonly preparationStep: PreparationStep
+  readonly preparationStepDescription: string
+
+  constructor(cause: unknown, step: PreparationStep = "unknown") {
     super(
       "The unfunded checkout preparation was safely closed. Retry checkout.",
       { cause }
     )
     this.name = "CheckoutSparkSettledPreparationAbandonedError"
+    this.preparationStep = Object.hasOwn(preparationStepDescriptions, step)
+      ? step
+      : "unknown"
+    this.preparationStepDescription =
+      preparationStepDescriptions[this.preparationStep]
   }
 }
 
@@ -698,6 +720,7 @@ export async function prepareCheckoutSparkSettledFunding(
   let handoffPersisted = false
   let preparedPlan: CheckoutSparkSettledPlan | null = null
   let recoveryStarted = false
+  let preparationStep: PreparationStep = "wallet_setup"
   try {
     assertCurrent()
     assertUnprepared()
@@ -707,6 +730,7 @@ export async function prepareCheckoutSparkSettledFunding(
     }
     await openWallet(wallet)
     assertCurrent()
+    preparationStep = "funding_invoice"
     const receive = await createReceive(wallet, {
       description: "Conduit checkout funding",
       requiredNetSats: grossFundingSats,
@@ -715,6 +739,7 @@ export async function prepareCheckoutSparkSettledFunding(
       receiveMode: "ordinary_settled_v3",
     })
     assertCurrent()
+    preparationStep = "funding_validation"
     if (
       receive.walletId !== wallet.walletId ||
       receive.network !== wallet.network ||
@@ -755,6 +780,7 @@ export async function prepareCheckoutSparkSettledFunding(
       receive,
       nowMs: now(),
     })
+    preparationStep = "fee_request"
     const nativeTreasury = treasuryDestination
       ? await (
           dependencies.prepareTreasuryRequest ??
@@ -776,6 +802,7 @@ export async function prepareCheckoutSparkSettledFunding(
         })
       : null
     assertCurrent()
+    preparationStep = "plan_validation"
     const plan = nativeTreasury
       ? freezeCheckoutSparkSettledTreasuryPlan({ ...planInput, nativeTreasury })
       : freezeCheckoutSparkSettledPlan(planInput)
@@ -785,6 +812,7 @@ export async function prepareCheckoutSparkSettledFunding(
       sourceEvents
     )
     assertCurrent()
+    preparationStep = "local_save"
     // Persist the unexposed claim before an asynchronous create can become
     // ambiguous. A failed/conflicting create must not make this cart look new.
     const initial = saveCheckoutSparkSettledPreparation(
@@ -809,8 +837,10 @@ export async function prepareCheckoutSparkSettledFunding(
     ) {
       throw new Error("Settled checkout plan was not durably recorded.")
     }
+    preparationStep = "order_save"
     await input.onPlanPrepared?.({ plan, sourceEvents: canonicalSources })
     assertCurrent()
+    preparationStep = "recovery_handoff"
     recoveryStarted = true
     const handoff = await publishRecovery({
       state: createCheckoutSparkSettledReconciliation(plan),
@@ -940,14 +970,20 @@ export async function prepareCheckoutSparkSettledFunding(
           }
         )
         if (getCheckoutSparkSettledPreparation(checkoutId, storage)) throw error
-        throw new CheckoutSparkSettledPreparationAbandonedError(error)
+        throw new CheckoutSparkSettledPreparationAbandonedError(
+          error,
+          preparationStep
+        )
       }
       // There is no saved plan yet, so there is no CAS-backed financial state
       // to abandon. A close still requires positive pre-transport evidence.
       if (!preparedPlan) {
         await closeUnexposed()
         if (getCheckoutSparkSettledPreparation(checkoutId, storage)) throw error
-        throw new CheckoutSparkSettledPreparationAbandonedError(error)
+        throw new CheckoutSparkSettledPreparationAbandonedError(
+          error,
+          preparationStep
+        )
       }
     }
     throw error

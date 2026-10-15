@@ -3184,7 +3184,7 @@ function CheckoutPage() {
           if (guestIdentity) clearSessionGuestOrderSigningIdentity(orderId)
           setError(
             cause instanceof CheckoutSparkSettledPreparationAbandonedError
-              ? "The unfunded preparation was safely closed before any recovery publication or funding exposure. You can retry this purchase."
+              ? `The unfunded preparation was safely closed before any recovery publication or funding exposure. Setup stopped while ${cause.preparationStepDescription}. You can retry this purchase.`
               : preparationStarted
                 ? "A required recipient's payout setup could not be verified. No checkout wallet or order was created; retry after their profile, payment endpoint, or network is ready. " +
                   message

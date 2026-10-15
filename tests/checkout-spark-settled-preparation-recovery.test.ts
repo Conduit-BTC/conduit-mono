@@ -318,6 +318,79 @@ function entryRequest(input: PrepareCheckoutSparkSettledFundingInput) {
 }
 
 describe("settled preparation phase recovery", () => {
+  it.each(["wallet_setup", "funding_invoice", "recovery_handoff"] as const)(
+    "retains the exact stopped setup step after positive unfunded cleanup: %s",
+    async (step) => {
+      const database = new ConduitDB(
+        `preparation-step-${crypto.randomUUID()}`,
+        { indexedDB, IDBKeyRange }
+      )
+      const privateCause = new Error("private-" + crypto.randomUUID())
+      try {
+        const repository = new DexieCheckoutSparkSettledRepository(database)
+        const storage = new MemoryStorage()
+        const f = fixture(storage)
+        if (step === "recovery_handoff")
+          f.signer.signEvent = async () => {
+            throw privateCause
+          }
+        let stopped: unknown
+        try {
+          await prepareCheckoutSparkSettledFunding(f.input, {
+            ...f.options,
+            repository,
+            ...(step === "wallet_setup"
+              ? {
+                  openWallet: async () => {
+                    throw privateCause
+                  },
+                }
+              : {}),
+            ...(step === "funding_invoice"
+              ? {
+                  createFundingReceive: async () => {
+                    throw privateCause
+                  },
+                }
+              : {}),
+          })
+        } catch (error) {
+          stopped = error
+        }
+        expect(stopped).toBeInstanceOf(
+          CheckoutSparkSettledPreparationAbandonedError
+        )
+        const error = stopped as CheckoutSparkSettledPreparationAbandonedError
+        expect(error.preparationStep).toBe(step)
+        expect(error.preparationStepDescription.length).toBeGreaterThan(0)
+        expect(error.message).not.toContain(privateCause.message)
+        expect(error.preparationStepDescription).not.toContain(
+          privateCause.message
+        )
+        if (step !== "recovery_handoff") expect(error.cause).toBe(privateCause)
+        expect(f.calls.close).toBe(1)
+        expect(f.calls.transport).toBe(0)
+        expect(listCheckoutSparkSettledPreparations(storage)).toHaveLength(0)
+        expect(await database.checkoutSparkReconciliations.count()).toBe(0)
+      } finally {
+        database.close()
+        await database.delete()
+      }
+    }
+  )
+
+  it("uses only a fixed setup description for an untrusted step or cause", () => {
+    const privateValue = "private-" + crypto.randomUUID()
+    const error = new CheckoutSparkSettledPreparationAbandonedError(
+      new Error(privateValue),
+      privateValue as never
+    )
+    expect(error.preparationStep).toBe("unknown")
+    expect(error.preparationStepDescription).toBe("preparing checkout")
+    expect(error.message).not.toContain(privateValue)
+    expect(error.preparationStepDescription).not.toContain(privateValue)
+  })
+
   it.each([
     "before_write",
     "after_write",
