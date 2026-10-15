@@ -184,7 +184,12 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
       error.message
     )
   })
-  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  if (process.env.PLAYWRIGHT_WORKSPACE_PROBE === "without-video") {
+    await page.emulateMedia({ reducedMotion: "reduce" })
+  }
+  await installTestSigner(page, TEST_BUYER_PUBKEY, {
+    nip44: process.env.PLAYWRIGHT_WORKSPACE_PROBE !== "without-nip44",
+  })
   await page.goto(
     `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
   )
