@@ -1904,6 +1904,45 @@ describe("wallet balance route diagnostics", () => {
 })
 
 describe("commerce inbox reconnect diagnostics", () => {
+  it("keeps menu and workspace probes content-free and bound to their source files", () => {
+    const privateValue = "private-" + crypto.randomUUID()
+    for (const [file, kind, values] of [
+      [
+        "e2e/commerce-inbox.playwright.ts",
+        "commerce-inbox-self-copy",
+        {
+          phase: "disconnect_menu_ready",
+          menuExpanded: true,
+          disconnectHitTarget: false,
+        },
+      ],
+      [
+        "e2e/not-found.playwright.ts",
+        "merchant-missing-workspace",
+        {
+          phase: "workspace_missing",
+          retainedAuth: true,
+          workspaceVisible: false,
+        },
+      ],
+    ] as const) {
+      const annotation = {
+        type: `smoke:${kind}`,
+        description: JSON.stringify({
+          ...values,
+          message: privateValue,
+          authPending: privateValue,
+        }),
+      }
+      const retained = safeSmokeDiagnostics(file, [annotation])
+      expect(retained).toEqual([{ kind, ...values }])
+      expect(safeRetainedSmokeDiagnostics(file, retained)).toEqual(retained)
+      expect(JSON.stringify(retained)).not.toContain(privateValue)
+      expect(
+        safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+      ).toEqual([])
+    }
+  })
   it("retains only bounded observations from the owning inbox case", () => {
     const privateValue = "private-" + crypto.randomUUID()
     const values = {

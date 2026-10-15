@@ -24,6 +24,8 @@ test("buyer and seller retain conversations and files through self-copy failure,
   const startedAt = Date.now()
   type SelfCopyPhase =
     | "setup_complete"
+    | "before_disconnect"
+    | "disconnect_menu_ready"
     | "reconnect_complete"
     | "loop_enter"
     | "before_send"
@@ -310,7 +312,45 @@ test("buyer and seller retain conversations and files through self-copy failure,
     expect(safe).toEqual({ encrypted: true, oldPlaintext: 0 })
     // Reconnect the same principal without reloading: the hook must subscribe to
     // the new session owner rather than remain attached to the retired owner.
+    selfCopyCheckpoint("before_disconnect", "buyer", true, false)
     await buyerPage.getByLabel("Open account menu").click()
+    const disconnectMenu = await buyerPage.evaluate(() => {
+      const trigger = document.querySelector('[aria-label="Open account menu"]')
+      const item = [
+        ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+      ].find((node) => node.textContent?.trim() === "Disconnect")
+      const rect = item?.getBoundingClientRect()
+      const hit = rect
+        ? document.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2
+          )
+        : null
+      return {
+        menuExpanded: trigger?.getAttribute("aria-expanded") === "true",
+        menuMounted: !!document.querySelector('[role="menu"]'),
+        disconnectMounted: !!item,
+        disconnectVisible:
+          !!rect &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          getComputedStyle(item!).visibility === "visible",
+        disconnectInViewport:
+          !!rect &&
+          rect.x >= 0 &&
+          rect.y >= 0 &&
+          rect.right <= innerWidth &&
+          rect.bottom <= innerHeight,
+        disconnectHitTarget: !!item && !!hit && item.contains(hit),
+      }
+    })
+    selfCopyCheckpoint(
+      "disconnect_menu_ready",
+      "buyer",
+      true,
+      true,
+      disconnectMenu
+    )
     await buyerPage
       .getByRole("menuitem", { name: "Disconnect", exact: true })
       .click()

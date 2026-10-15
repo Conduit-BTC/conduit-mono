@@ -664,11 +664,25 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         localStorageFailed: "boolean",
       },
     },
+    "merchant-missing-workspace": {
+      file: "e2e/not-found.playwright.ts",
+      fields: {
+        phase: ["before_workspace", "workspace_missing"],
+        observationAvailable: "boolean",
+        retainedAuth: "boolean",
+        accountMenuPresent: "boolean",
+        workspacePresent: "boolean",
+        workspaceVisible: "boolean",
+        authPending: "boolean",
+      },
+    },
     "commerce-inbox-self-copy": {
       file: "e2e/commerce-inbox.playwright.ts",
       fields: {
         phase: [
           "setup_complete",
+          "before_disconnect",
+          "disconnect_menu_ready",
           "reconnect_complete",
           "loop_enter",
           "before_send",
@@ -697,6 +711,12 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         localPending: "boolean",
         localStorageFailed: "boolean",
         textPersisted: "boolean",
+        menuExpanded: "boolean",
+        menuMounted: "boolean",
+        disconnectMounted: "boolean",
+        disconnectVisible: "boolean",
+        disconnectInViewport: "boolean",
+        disconnectHitTarget: "boolean",
       },
     },
     "router-retirement": {
@@ -1191,6 +1211,7 @@ export function recordSmokeDiagnostic(
     | "manual-checkout-stop"
     | "commerce-inbox-reconnect"
     | "commerce-inbox-self-copy"
+    | "merchant-missing-workspace"
     | "router-retirement"
     | "commerce-journey"
     | "commerce-buyer-status"

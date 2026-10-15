@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { installTestSigner, TEST_BUYER_PUBKEY } from "./helpers/auth"
 
 for (const app of ["market", "merchant"] as const) {
@@ -163,7 +164,7 @@ for (const app of ["market", "merchant"] as const) {
 
 test("merchant signed-in missing page keeps workspace navigation @merchant", async ({
   page,
-}) => {
+}, testInfo) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
   await page.goto(
     `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
@@ -172,7 +173,41 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
     page.getByRole("heading", { name: "You have left the network." })
   ).toBeVisible()
   const main = page.locator("[data-merchant-main-scroll]")
-  await expect(main).toBeVisible()
+  const workspaceCheckpoint = async (
+    phase: "before_workspace" | "workspace_missing"
+  ) => {
+    const observation = await page.evaluate(() => {
+      const workspace = document.querySelector<HTMLElement>(
+        "[data-merchant-main-scroll]"
+      )
+      const rect = workspace?.getBoundingClientRect()
+      return {
+        observationAvailable: true,
+        retainedAuth: !!localStorage.getItem("conduit:auth"),
+        accountMenuPresent: !!document.querySelector(
+          '[aria-label="Open merchant account menu"]'
+        ),
+        workspacePresent: !!workspace,
+        workspaceVisible:
+          !!rect &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          getComputedStyle(workspace!).visibility === "visible",
+        authPending: !!document.querySelector('button[aria-busy="true"]'),
+      }
+    })
+    recordSmokeDiagnostic(testInfo, "merchant-missing-workspace", {
+      phase,
+      ...observation,
+    })
+  }
+  await workspaceCheckpoint("before_workspace")
+  try {
+    await expect(main).toBeVisible()
+  } catch (error) {
+    await workspaceCheckpoint("workspace_missing")
+    throw error
+  }
   const scene = await page.locator(".network-not-found").boundingBox()
   const workspace = await main.boundingBox()
   expect(scene!.x).toBe(workspace!.x)
