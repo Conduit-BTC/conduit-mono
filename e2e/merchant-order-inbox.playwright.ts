@@ -189,9 +189,13 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         testInfo,
         "merchant_open_messages_click_completed"
       )
-      await merchantPage
-        .getByRole("button", { name: "Open messages", exact: true })
-        .click()
+      const openMessages = merchantPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      await merchantPage.evaluate(() => document.fonts.ready)
+      if (testInfo.project.use.hasTouch) await openMessages.tap()
+      else await openMessages.click()
       recordSmokeFailureContext(
         testInfo,
         "merchant_open_messages_click_completed",
@@ -338,9 +342,13 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     ).catch(() => null)
     try {
       recordSmokeFailureContext(testInfo, "buyer_open_messages_click_completed")
-      await buyerPage
-        .getByRole("button", { name: "Open messages", exact: true })
-        .click()
+      const openMessages = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      await buyerPage.evaluate(() => document.fonts.ready)
+      if (testInfo.project.use.hasTouch) await openMessages.tap()
+      else await openMessages.click()
       recordSmokeFailureContext(
         testInfo,
         "buyer_open_messages_click_completed",
