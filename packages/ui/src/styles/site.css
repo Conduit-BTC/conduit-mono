@@ -1,3 +1,6 @@
+/* Establish Tailwind layer precedence before shared imports create layers. */
+@layer properties, theme, base, components, utilities;
+
 @import "./reset.css";
 @import "./setup.css";
 @import "./theme.css";
