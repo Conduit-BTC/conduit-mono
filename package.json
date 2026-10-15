@@ -81,7 +81,7 @@
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.64.0",
     "@tanstack/router-generator": "^1.167.40",
     "dexie": "^4.4.6",
     "eslint": "^10.11.0",
