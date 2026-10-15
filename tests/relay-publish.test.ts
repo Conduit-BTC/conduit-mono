@@ -415,6 +415,168 @@ describe("planPublishRelays", () => {
     ).toMatchObject({ primaryRelayUrls: [] })
   })
 
+  for (const coordinate of [
+    "conduit:spark:primary:v1",
+    "conduit:spark:main:v1",
+    ...["mainnet", "testnet", "signet", "regtest"].flatMap((network) => [
+      `conduit:spark:primary:v1:${network}`,
+      `conduit:spark:main:v1:${network}`,
+      `conduit:spark:registry:v1:${network}`,
+      `conduit:wallet-names:v1:${network}`,
+    ]),
+  ]) {
+    it(`carries author intent into an exact owned ${coordinate} recovery write`, async () => {
+      const relayUrl = "wss://auth.nostr1.com"
+      const event = signedTestEvent({
+        kind: 30078,
+        tags: [["d", coordinate]],
+        publish: async () => {
+          throw new Error("Use exact authenticated writer")
+        },
+      })
+      const fixture = await authenticatedPublishInput([relayUrl], { event })
+      fixture.input.intent = "author_event"
+      fixture.input.recipientPubkeys = []
+      let writes = 0
+      __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: async (input) => {
+          writes++
+          expect(input.authorization?.expectedPubkey).toBe(AUTHOR_PUBKEY)
+          return "acked"
+        },
+      })
+      expect(
+        (await publishWithPlanner(event, fixture.input)).successfulRelayUrls
+      ).toEqual([relayUrl])
+      expect(writes).toBe(1)
+    })
+  }
+
+  for (const coordinate of [
+    "conduit:spark:primary:v1:unknown",
+    "conduit:spark:main:v1:mainnet:extra",
+    "conduit:spark:registry:v1:unknown",
+    "conduit:spark:registry:v1:mainnet:extra",
+    "conduit:wallet-names:v1:unknown",
+    "conduit:wallet-names:v1:mainnet:extra",
+  ]) {
+    it(`rejects unsupported recovery coordinates at the authenticated writer: ${coordinate}`, async () => {
+      const event = signedTestEvent({ kind: 30078, tags: [["d", coordinate]] })
+      const fixture = await authenticatedPublishInput(
+        ["wss://auth.nostr1.com"],
+        { event }
+      )
+      fixture.input.intent = "author_event"
+      fixture.input.recipientPubkeys = []
+      let writes = 0
+      __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: async () => {
+          writes++
+          return "acked"
+        },
+      })
+      await expect(publishWithPlanner(event, fixture.input)).rejects.toThrow(
+        "Relay authentication requires"
+      )
+      expect(writes).toBe(0)
+    })
+  }
+
+  it("publishes only exact owned address-request coordinates through the authenticated WebSocket writer", async () => {
+    const relayUrl = "wss://request-write.fixture.conduit.market"
+    const socket = installRelayPublishWebSocket()
+    try {
+      const fixture = await authenticatedPublishInput([relayUrl])
+      const input: PublishWithPlannerInput = {
+        ...fixture.input,
+        intent: "author_event",
+        recipientPubkeys: [],
+      }
+      __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: undefined,
+      })
+
+      const signedEvents = ["mainnet", "testnet", "signet", "regtest"].map(
+        (network) =>
+          signedRawTestEvent({
+            kind: 30078,
+            tags: [["d", `conduit:address-requests:v1:${network}`]],
+            content: `opaque-request-${network}`,
+          })
+      )
+      for (const event of signedEvents) {
+        const result = await publishWithPlanner(event, input)
+        expect(result.attemptedRelayUrls).toEqual([relayUrl])
+        expect(result.successfulRelayUrls).toEqual([relayUrl])
+      }
+      expect(socket.openedUrls).toEqual(signedEvents.map(() => relayUrl))
+      expect(
+        socket.sentEvents.map((event) => JSON.parse(JSON.stringify(event)))
+      ).toEqual(signedEvents.map((event) => JSON.parse(JSON.stringify(event))))
+
+      for (const coordinate of [
+        "conduit:address-requests:v1:unknown",
+        "conduit:address-requests:v1:mainnet:extra",
+      ]) {
+        await expect(
+          publishWithPlanner(
+            signedRawTestEvent({ kind: 30078, tags: [["d", coordinate]] }),
+            input
+          )
+        ).rejects.toThrow("Relay authentication requires")
+      }
+      await expect(
+        publishWithPlanner(
+          signedRawTestEvent({
+            kind: 30078,
+            tags: [
+              ["d", "conduit:address-requests:v1:mainnet"],
+              ["d", "conduit:address-requests:v1:testnet"],
+            ],
+          }),
+          input
+        )
+      ).rejects.toThrow("Relay authentication requires")
+      await expect(
+        publishWithPlanner(
+          finalizeEvent(
+            {
+              kind: 30078,
+              created_at: 1_700_000_000,
+              tags: [["d", "conduit:address-requests:v1:mainnet"]],
+              content: "opaque-other-owner",
+            },
+            OTHER_AUTHOR_SECRET
+          ),
+          input
+        )
+      ).rejects.toThrow("different account")
+      await expect(
+        publishWithPlanner(signedEvents[0]!, {
+          ...input,
+          authenticatedPubkey: OTHER_AUTHOR_PUBKEY,
+        })
+      ).rejects.toThrow("active foreground account")
+      await expect(
+        publishWithPlanner(signedEvents[0]!, {
+          ...input,
+          ownerRelayListEvidenceRepository: undefined,
+          relayTargets: relayTargetsFromUrls([relayUrl], {
+            kind: "owner_nip65",
+            operation: "write",
+            ownerPubkey: OTHER_AUTHOR_PUBKEY,
+            selection: "write",
+          }),
+        })
+      ).rejects.toThrow("Relay no longer eligible")
+      expect(
+        socket.sentEvents.map((event) => JSON.parse(JSON.stringify(event)))
+      ).toEqual(signedEvents.map((event) => JSON.parse(JSON.stringify(event))))
+    } finally {
+      socket.restore()
+    }
+  })
+
   it("uses one foreground NIP-42 writer for an exclusive gift-wrap publish", async () => {
     const relayUrl = "wss://auth.nostr1.com"
     let ndkPublishCalls = 0
@@ -1670,7 +1832,7 @@ describe("planPublishRelays", () => {
 
       refreshNdkRelaySettings("merchant:replacement")
 
-      await expect(publish).resolves.toBe("acked")
+      expect(await publish).toBe("acked")
       await new Promise((resolve) => setTimeout(resolve, 0))
       expect(fakeWebSocket.counters).toEqual({ opened: 1, closed: 1 })
     } finally {

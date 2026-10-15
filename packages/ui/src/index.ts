@@ -12,5 +12,11 @@ export * from "./theme"
 
 // Utils
 export { cn } from "./utils"
+export { shuffleLoadingMessages } from "./checkout-loading-messages"
 
 export * from "./event-timeline-presentation"
+
+export { Wallets } from "./components/Wallets"
+export { ProfileLightningAddressEditor } from "./components/ProfileLightningAddressEditor"
+export { SparkLightningAddress } from "./components/SparkLightningAddress"
+export { SparkRecoveryBundleDetails } from "./components/SparkRecoveryBundleDetails"

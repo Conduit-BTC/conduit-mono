@@ -383,7 +383,7 @@ function MerchantEventTimelineSection({
       className="space-y-4"
     >
       <h2>
-        <CollapsibleTrigger className="group flex w-full items-center gap-3 rounded-lg py-2 text-left text-xl font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+        <CollapsibleTrigger className="group flex w-full items-center gap-3 rounded-[var(--radius-md)] py-2 text-left text-xl font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
           <ChevronDown
             className="size-5 shrink-0 group-data-[state=closed]:-rotate-90"
             aria-hidden="true"
@@ -496,7 +496,7 @@ export function MerchantEventTimelineEmptyState({
           ? "Create an event to get started."
           : "Events available through your relays will appear here."
   return (
-    <div className="rounded-xl border border-dashed border-[var(--border)] px-6 py-10 text-center">
+    <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] px-6 py-10 text-center">
       <CalendarDays
         className="mx-auto size-8 text-[var(--text-muted)]"
         aria-hidden="true"

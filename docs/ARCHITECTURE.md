@@ -89,6 +89,7 @@ anchors so navigation re-enters that boot boundary.
 | `14`    | Private direct message       | NIP-17                            |
 | `16`    | Order message payload        | Conduit payload wrapped in NIP-17 |
 | `1059`  | Gift wrap                    | NIP-17                            |
+| `3841`  | Event merchant authorization | Experimental Open Markets profile |
 | `9734`  | Zap request                  | NIP-57                            |
 | `9735`  | Zap receipt                  | NIP-57                            |
 | `10002` | Relay list                   | NIP-65                            |
@@ -96,8 +97,10 @@ anchors so navigation re-enters that boot boundary.
 | `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
 | `30405` | Product collection           | Open Markets / Gamma market-spec  |
 | `30406` | Shipping or pickup option    | Open Markets / Gamma market-spec  |
+| `30409` | Event Market                 | Experimental Open Markets profile |
 | `31922` | Date-based calendar event    | NIP-52                            |
 | `31923` | Time-based calendar event    | NIP-52                            |
+| `31924` | Calendar                     | NIP-52; finite market schedule    |
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
@@ -130,12 +133,15 @@ unlock or hardware-backed at-rest guarantee. Browsing and external signers stay
 available; installed mode is a UX gate.
 
 Guest checkout may create a temporary order-scoped browser key, and an NIP-46
-connection may use an encrypted browser-local client key; neither is a Conduit-custodied user account
-key. The only approved server-side private-key exception is the Anon Conduit
-Shopper public zap signer described in `docs/specs/protocol.md`; it is limited
+connection may use an encrypted browser-local client key; neither is a
+Conduit-custodied user account key. The approved server-side signing exceptions
+in `docs/specs/protocol.md` are the Anon Conduit Shopper public zap signer and a
+separate pricing-only live-rate attestation signer. The former is limited
 to authenticated, merchant-authorized checkout zap requests and fixed-scope
 Conduit.Market project tip zap requests created by the trusted server boundary.
-It does not authorize user key custody or general-purpose event signing.
+The latter signs currency-rate snapshots only; it cannot sign Nostr events or
+authorize payments. Neither permits user key custody or general-purpose signing,
+and the pricing exception does not itself authorize key creation or deployment.
 
 ### Product Discovery
 
@@ -156,18 +162,15 @@ eligibility, checkout, and order persistence. See
 
 ### Event Markets And Pickup
 
-Organizer-authored event catalogs compose a NIP-52 `31922`/`31923` calendar
-event, an organizer-owned `30405` collection, and an optional organizer-authored
-Open Markets `30406` pickup standing offer. Products remain merchant-authored
-`30402` events and may instead select merchant-authored booth pickup. The
-organizer collection is authoritative for catalog membership; a product
-reference to the collection is only a discoverability claim or request. Pickup
-authorship plus the exact two-sided graph determines whether the merchant or
-organizer performs handoff; there is no booth registry event.
-
-Shared parsing, publishing, evidence resolution, coordinate/`naddr` handling,
-and deletion semantics belong in `@conduit/core`. Market and Merchant routes
-compose those prepared states. See `docs/specs/event-markets.md`.
+Current Event Markets use an experimental Open Markets profile: organizer-signed
+kind `30409` markets and kind `3841` merchant authorization, with merchant-owned
+kind `30402` products. Shared parsing, publishing, evidence resolution,
+coordinate/`naddr` handling, and deletion semantics belong in `@conduit/core`;
+Market and Merchant routes compose those prepared states. See
+[Open Markets implementation guidance](OPEN_MARKETS.md#experimental-event-markets)
+and the [Event Market contract](specs/event-markets.md) for schedule membership,
+authorization ancestry, checkout evidence, and retirement of collection-based
+event commerce.
 
 The buyer's encrypted order remains buyer-to-merchant. Organizer handoff uses a
 separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
@@ -345,17 +348,24 @@ authentication follows the signer boundary above; a Portable Wallet provider may
 create or restore a wallet seed only inside its isolated client-side storage.
 Non-secret registry metadata lives in Dexie. See `docs/specs/wallets.md`.
 
-Wallet ownership is device-local rather than Nostr-account-scoped. Market keeps
-`/wallet` available while signed out so a user can create, restore, unlock,
-receive with, or remove a device-owned Portable Wallet without connecting an
-identity signer. A shared browser profile therefore shares its local wallet
-registry; signing out does not delete or switch those wallets.
+Market and Merchant share the Wallets surface, with My wallets and External
+wallets. Generated Conduit Wallet names describe the product experience, not
+custody: Spark remains the single wallet provider and signer runtime.
 
-Each Spark wallet uses a user-chosen local password to encrypt its BIP39
-mnemonic in the device-local credential store. The password is an unlock
-credential for that browser profile, not portable recovery material. The BIP39
-mnemonic, explicit Spark account number, and network form the portable
-cross-application recovery bundle.
+New Spark wallets are scoped to the Nostr account and use verified signer-backed
+NIP-44 recovery encryption without a separate wallet password. The independently
+generated Spark seed is never derived from a Nostr key; apps never receive nsec.
+Logout or account replacement closes and hides signer-owned sessions without
+removing encrypted recovery or funds. Discovered signer-owned wallets on the
+configured network open through the signer on Wallets without a Conduit unlock
+dialog. External signer consent may still be required; a deliberate lock or
+denied opening retains a direct Open action.
+
+Legacy password-encrypted device wallets retain signed-out access and explicit
+migration. Migration verifies signer encryption/read-back and keeps the old
+encrypted envelope as a password fallback. The BIP39 phrase, actual Spark account
+number and network remain the independent recovery bundle. See
+`docs/knowledge/breez-lightning-addresses.md` for shared recovery and address flows.
 
 Current payment model:
 

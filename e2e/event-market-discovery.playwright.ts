@@ -119,7 +119,7 @@ for (const audience of ["guest", "following"] as const) {
             }
           })
       )
-      expect(cache.schemaVersion).toBe(260)
+      expect(cache.schemaVersion).toBe(270)
       expect(cache.records).toBeGreaterThanOrEqual(2)
       expect(cache.records).toBeLessThanOrEqual(2_048)
       expect(cache.bytes).toBeLessThanOrEqual(8 * 1_024 * 1_024)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { BrowserSparkDirectTransferSafetyStore } from "../apps/market/src/lib/spark-direct-transfer-safety"
+import { BrowserSparkDirectTransferSafetyStore } from "@conduit/core/wallets/spark-direct-transfer-safety"
 
 describe("Spark direct-transfer safety storage", () => {
   it("persists only the content-free attempt marker", () => {

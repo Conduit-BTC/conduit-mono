@@ -109,7 +109,7 @@ export function EventBannerField({
         <img
           src={value}
           alt={`${title || "Event"} banner preview`}
-          className="aspect-[3/1] w-full rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
+          className="aspect-[3/1] w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] object-contain"
         />
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
@@ -228,7 +228,7 @@ export function EventBannerField({
       ) : null}
       {error ? (
         <div className="space-y-2">
-          <p role="alert" className="text-sm text-[var(--destructive)]">
+          <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
           </p>
           {failedFile ? (

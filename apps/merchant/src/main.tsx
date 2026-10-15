@@ -13,6 +13,7 @@ import { isProductLegalPath } from "@conduit/ui"
 import { initializeTheme } from "@conduit/ui/theme"
 import { routeTree } from "./routeTree.gen"
 import { startProductDeletionDeliveryWorker } from "./lib/product-deletion-delivery"
+import { startProductListingDeliveryWorker } from "./lib/product-listing-delivery"
 import { isMerchantPublicAboutPath } from "./lib/publicRoutes"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
@@ -34,14 +35,20 @@ declare module "@tanstack/react-router" {
   }
 }
 
-function ProductDeletionDeliveryWorker(): null {
+function ProductDeliveryWorkers(): null {
   const { pubkey, status } = useAuth()
   const authenticatedPubkey = status === "connected" ? pubkey : null
 
-  useLayoutEffect(
-    () => startProductDeletionDeliveryWorker(authenticatedPubkey),
-    [authenticatedPubkey]
-  )
+  useLayoutEffect(() => {
+    const stopListingWorker =
+      startProductListingDeliveryWorker(authenticatedPubkey)
+    const stopDeletionWorker =
+      startProductDeletionDeliveryWorker(authenticatedPubkey)
+    return () => {
+      stopListingWorker()
+      stopDeletionWorker()
+    }
+  }, [authenticatedPubkey])
   return null
 }
 
@@ -60,7 +67,7 @@ if (isPublicEntry) {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <AuthProvider signerClientIcon="/merchant-icon-192.png">
-          <ProductDeletionDeliveryWorker />
+          <ProductDeliveryWorkers />
           <ConduitSessionProvider appId="merchant" allowGuest={false}>
             <RouterProvider router={router} />
           </ConduitSessionProvider>

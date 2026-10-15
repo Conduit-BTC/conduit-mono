@@ -94,7 +94,7 @@ export function SparkFeeApprovalDialog({
           </DialogDescription>
         </DialogHeader>
         {quote && (
-          <dl className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm">
+          <dl className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm">
             {walletLabel && (
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-[var(--text-secondary)]">Wallet</dt>

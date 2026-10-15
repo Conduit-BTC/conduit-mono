@@ -62,6 +62,11 @@ bun run dev:store-builder
 
 ## Local Development Setup
 
+For shared UI authoring, run `bun run dev:ui` and open `http://127.0.0.1:7003`.
+The [UI workbench](packages/ui/workbench/README.md) contains real shared components,
+state examples and the baseline review report. It has a separate local entry
+point and is not part of the product app builds.
+
 ### 1. Local Relay
 
 A local relay keeps your dev environment isolated from public relays. Both modes expose `ws://127.0.0.1:7777`.

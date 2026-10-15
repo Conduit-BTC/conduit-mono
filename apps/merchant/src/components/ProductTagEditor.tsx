@@ -240,10 +240,11 @@ export function ProductTagEditor({
               {tags.map((tag, index) => (
                 <span
                   key={`${tag}-${index}`}
-                  className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+                  className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-primary)] "
                   title={tag}
                 >
                   <span className="max-w-[12rem] truncate">{tag}</span>
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <button
                     type="button"
                     className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--surface)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
@@ -257,6 +258,7 @@ export function ProductTagEditor({
                   </button>
                 </span>
               ))}
+              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
               <input
                 id={id}
                 ref={inputRef}
@@ -374,13 +376,17 @@ export function ProductTagEditor({
       {feedback && (
         <div
           id={feedbackId}
-          className="text-xs leading-5 text-[var(--warning)]"
+          className="text-xs leading-5 text-[var(--warning-text)]"
         >
           {feedback}
         </div>
       )}
       {errorMessage && (
-        <div id={errorId} role="alert" className="text-xs leading-5 text-error">
+        <div
+          id={errorId}
+          role="alert"
+          className="text-xs leading-5 text-[var(--error-text)]"
+        >
           {errorMessage}
         </div>
       )}

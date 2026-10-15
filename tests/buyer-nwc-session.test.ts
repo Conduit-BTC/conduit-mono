@@ -260,53 +260,34 @@ describe("BuyerNwcSession", () => {
     })
   })
 
-  it("keeps the newest balance refresh when same-wallet requests overlap", async () => {
-    const firstBalance = deferred<{ balance: number }>()
-    const secondBalance = deferred<{ balance: number }>()
+  it("coalesces overlapping balance reads and releases the gate after settlement", async () => {
+    const balance = deferred<{ balance: number }>()
     let balanceCalls = 0
-
     __buyerNwcSessionTestInternals.__setClientFactory(() =>
       fakeClient({
         getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
         getBalance: () => {
-          balanceCalls += 1
+          balanceCalls++
           return balanceCalls === 1
-            ? firstBalance.promise
-            : secondBalance.promise
+            ? balance.promise
+            : Promise.resolve({ balance: 20_000 })
         },
       })
     )
-
     const session = new BuyerNwcSession()
     session.setConnection(connection)
-
     await session.warm()
+    const first = session.refreshBalance()
     await flushPromises()
-    expect(balanceCalls).toBe(0)
-
-    const firstRefresh = session.refreshBalance()
-    await flushPromises()
+    const second = session.refreshBalance()
+    expect(second).toBe(first)
     expect(balanceCalls).toBe(1)
-
-    const secondRefresh = session.refreshBalance()
-    await flushPromises()
+    balance.resolve({ balance: 30_000 })
+    await Promise.all([first, second])
+    expect(session.getSnapshot().balance.balanceMsats).toBe(30_000)
+    await session.refreshBalance()
     expect(balanceCalls).toBe(2)
-
-    secondBalance.resolve({ balance: 20_000 })
-    await secondRefresh
-    expect(session.getSnapshot().balance).toMatchObject({
-      status: "available",
-      balanceMsats: 20_000,
-    })
-
-    firstBalance.resolve({ balance: 30_000 })
-    await firstRefresh
-    await flushPromises()
-
-    expect(session.getSnapshot().balance).toMatchObject({
-      status: "available",
-      balanceMsats: 20_000,
-    })
+    expect(session.getSnapshot().balance.balanceMsats).toBe(20_000)
   })
 
   it("clears balance state when the wallet disconnects", async () => {
@@ -594,6 +575,33 @@ describe("BuyerNwcSession", () => {
     })
 
     expect(clients.length).toBe(2)
+  })
+
+  it("warms a receiving-only grant without requesting spending permissions", async () => {
+    let payCalls = 0
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["make_invoice", "lookup_invoice"] }),
+        payInvoice: async () => {
+          payCalls++
+          return { preimage: "must-not-pay" }
+        },
+      })
+    )
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+    expect((await session.warm()).status).toBe("reachable")
+    expect(
+      (
+        await session.payInvoice({
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          timeoutMs: 100,
+          appId: "market",
+        })
+      ).status
+    ).toBe("pre_publish_failed")
+    expect(payCalls).toBe(0)
   })
 
   it("does not publish payment when fresh wallet info says pay_invoice is unsupported", async () => {

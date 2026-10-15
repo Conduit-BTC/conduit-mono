@@ -624,7 +624,7 @@ function FutureEventMarketCreateForm({
               required
             />
           </div>
-          <div className="space-y-1">
+          <div className="grid gap-1 [&>p]:mt-1">
             <Label htmlFor="future-summary">Description · Required</Label>
             <Textarea
               id="future-summary"
@@ -633,14 +633,14 @@ function FutureEventMarketCreateForm({
               value={form.summary}
               onChange={(event) => update("summary", event.target.value)}
             />
+            <p
+              id="future-summary-help"
+              className="text-xs text-[var(--text-muted)]"
+            >
+              Tell visitors what to expect and where to meet. This description
+              is public.
+            </p>
           </div>
-          <p
-            id="future-summary-help"
-            className="text-xs text-[var(--text-muted)]"
-          >
-            Tell visitors what to expect and where to meet. This description is
-            public.
-          </p>
           <EventBannerField
             id="future-image"
             value={form.imageUrl}
@@ -688,7 +688,7 @@ function FutureEventMarketCreateForm({
           </ul>
         ) : null}
         {error ? (
-          <p role="alert" className="text-sm text-[var(--destructive)]">
+          <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
           </p>
         ) : null}

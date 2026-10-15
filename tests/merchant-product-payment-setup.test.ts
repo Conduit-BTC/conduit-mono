@@ -67,7 +67,7 @@ describe("merchant product payment setup guidance", () => {
       "getProfilePaymentAddress(profileQuery.profileContext)"
     )
     expect(notice).toContain('evidenceScope: "payment"')
-    expect(notice).toContain('<Link to="/payments">Set up payments</Link>')
+    expect(notice).toContain('<Link to="/wallet">Manage in Wallets</Link>')
     expect(notice).not.toContain("disabled")
   })
 })

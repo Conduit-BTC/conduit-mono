@@ -12,7 +12,7 @@ function LegacyProfileRedirect() {
   const search = Route.useSearch()
   if (!resolveProfileReference(profileRef)) {
     return (
-      <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8">
+      <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8">
         <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
           Identity not found
         </h1>

@@ -1,3 +1,4 @@
+import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 import { nip44, nip59 } from "nostr-tools"
 import {
@@ -16,8 +17,10 @@ import {
   bolt11PaymentHashField,
   makeBolt11Fixture,
 } from "../tests/support/bolt11-fixture"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+const core = "/@fs" + path.resolve("packages/core/src/index.ts")
 
 async function readCanonicalCartLines(
   page: Page
@@ -83,6 +86,9 @@ for (const scenario of scenarios) {
     const lnurlMetadata = JSON.stringify([["text/plain", "Synthetic merchant"]])
     let invalidReceiptId = ""
     let invalidReceiptDeliveries = 0
+    let stopEventId = ""
+    let stopRelayAccepted = false
+    let stopRelayDelivered = false
 
     // Only the isolated relay may carry fixture events. No external wallet is
     // connected; a payment invocation is a test failure, not a payment attempt.
@@ -96,6 +102,9 @@ for (const scenario of scenarios) {
         const frame = JSON.parse(message.toString())
         if (frame[0] === "EVENT" && frame[2]?.id === invalidReceiptId) {
           invalidReceiptDeliveries += 1
+        }
+        if (frame[0] === "EVENT" && frame[2]?.id === stopEventId) {
+          stopRelayDelivered = true
         }
         socket.send(message)
       })
@@ -459,12 +468,66 @@ for (const scenario of scenarios) {
         merchantSecret,
         buyerPubkey
       )
+      stopEventId = stopEvent.id
       await publishTestRelayEvents([stopEvent])
+      stopRelayAccepted = true
       await page.getByRole("button", { name: "Refresh", exact: true }).click()
-      const expectStoppedInvoice = async () => {
-        await expect(
-          page.getByText("Order no longer accepts payment", { exact: true })
-        ).toBeVisible()
+      const expectStoppedInvoice = async (
+        phase: "after_refresh" | "after_reload"
+      ) => {
+        const warning = page.getByText("Order no longer accepts payment", {
+          exact: true,
+        })
+        try {
+          await expect(warning).toBeVisible()
+        } catch (error) {
+          if (scenario.legacyPublicZap && stopStatus === "cancelled") {
+            const safe = {
+              phase,
+              relayAccepted: stopRelayAccepted,
+              relayDelivered: stopRelayDelivered,
+              observationAvailable: false,
+            } as Record<string, string | boolean>
+            try {
+              const inbox = await page.evaluate(
+                async ({ core, owner, eventId }) => {
+                  const { db, getAccountSigner } = await import(
+                    /* @vite-ignore */ core
+                  )
+                  const [wrapper, records] = await Promise.all([
+                    db.commerceInboxWrappers.get(`${owner}:${eventId}`),
+                    db.commerceInboxRecords
+                      .where("accountPubkey")
+                      .equals(owner)
+                      .toArray(),
+                  ])
+                  return {
+                    wrapperState: wrapper?.state ?? "missing",
+                    projectionStored: records.some(
+                      (record: { wrapId?: string }) => record.wrapId === eventId
+                    ),
+                    signerPresent: Boolean(getAccountSigner()),
+                  }
+                },
+                { core, owner: buyerPubkey, eventId: stopEvent.id }
+              )
+              Object.assign(safe, inbox, {
+                observationAvailable: true,
+                paymentViewVisible: await page
+                  .getByRole("heading", {
+                    name: "Complete payment",
+                    exact: true,
+                  })
+                  .isVisible(),
+                warningVisible: await warning.isVisible(),
+              })
+            } catch {
+              // Preserve the original assertion and mark the probe unavailable.
+            }
+            recordSmokeDiagnostic(test.info(), "manual-checkout-stop", safe)
+          }
+          throw error
+        }
         await expect(
           page.getByRole("button", { name: "Copy invoice", exact: true })
         ).toHaveCount(0)
@@ -481,7 +544,7 @@ for (const scenario of scenarios) {
         expect(callbackRequests).toBe(1)
         expect(walletSendCalls).toBe(0)
       }
-      await expectStoppedInvoice()
+      await expectStoppedInvoice("after_refresh")
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
@@ -489,7 +552,7 @@ for (const scenario of scenarios) {
       await expect(
         page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
-      await expectStoppedInvoice()
+      await expectStoppedInvoice("after_reload")
       await page
         .getByRole("button", {
           name: "Report a payment already made",

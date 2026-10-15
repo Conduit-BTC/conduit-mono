@@ -1,0 +1,45 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "conduit-checkout-pricing",
+  "main": "src/checkout-pricing-authority.ts",
+  "compatibility_date": "2026-07-01",
+  // Unactivated source configuration. No URL or custom domain is enabled here.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "ratelimits": [
+    {
+      "name": "CHECKOUT_SPARK_PRICING_RATE_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+  "observability": { "enabled": false },
+  // Require explicit origins, a dedicated public trust ring, and the private
+  // CHECKOUT_SPARK_PRICING_PRIVATE_KEY_HEX secret before the handler can sign.
+  "vars": {
+    "CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS": "",
+    "CHECKOUT_SPARK_PRICING_KEY_ID": "",
+    "CHECKOUT_SPARK_PRICING_PUBLIC_KEYS": "",
+  },
+  "env": {
+    "preview": {
+      "name": "conduit-checkout-pricing-preview",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [],
+      "ratelimits": [
+        {
+          "name": "CHECKOUT_SPARK_PRICING_RATE_LIMITER",
+          "namespace_id": "2004",
+          "simple": { "limit": 120, "period": 60 },
+        },
+      ],
+      "vars": {
+        "CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS": "",
+        "CHECKOUT_SPARK_PRICING_KEY_ID": "",
+        "CHECKOUT_SPARK_PRICING_PUBLIC_KEYS": "",
+      },
+    },
+  },
+}

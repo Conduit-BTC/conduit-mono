@@ -40,8 +40,8 @@ function getStateMeta(state: SignedActionStatusState) {
     case "dirty":
       return {
         Icon: PencilLine,
-        className: "text-[var(--warning)]",
-        iconClassName: "text-[var(--warning)]",
+        className: "text-[var(--warning-text)]",
+        iconClassName: "text-[var(--warning-text)]",
       }
     case "awaiting_signature":
       return {
@@ -58,15 +58,15 @@ function getStateMeta(state: SignedActionStatusState) {
     case "success":
       return {
         Icon: CheckCircle2,
-        className: "text-[var(--success)]",
-        iconClassName: "text-[var(--success)]",
+        className: "text-[var(--success-text)]",
+        iconClassName: "text-[var(--success-text)]",
       }
     case "partial":
     case "confirmation_pending":
       return {
         Icon: TriangleAlert,
-        className: "text-[var(--warning)]",
-        iconClassName: "text-[var(--warning)]",
+        className: "text-[var(--warning-text)]",
+        iconClassName: "text-[var(--warning-text)]",
       }
     case "cancelled":
       return {
@@ -77,8 +77,8 @@ function getStateMeta(state: SignedActionStatusState) {
     case "error":
       return {
         Icon: AlertCircle,
-        className: "text-[var(--error)]",
-        iconClassName: "text-[var(--error)]",
+        className: "text-[var(--error-text)]",
+        iconClassName: "text-[var(--error-text)]",
       }
     default:
       return null

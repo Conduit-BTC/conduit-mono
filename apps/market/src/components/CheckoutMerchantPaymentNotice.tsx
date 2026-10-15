@@ -32,13 +32,13 @@ export function CheckoutMerchantPaymentNotice({
   return (
     <div
       role="status"
-      className="rounded-2xl border border-warning/35 bg-warning/10 p-4 text-sm"
+      className="rounded-[var(--radius-md)] border border-warning/35 bg-warning/10 p-4 text-sm"
     >
       <div className="flex items-start gap-3">
         {checking ? (
-          <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-warning" />
+          <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--warning-text)]" />
         ) : (
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning-text)]" />
         )}
         <div>
           <div className="font-medium text-[var(--text-primary)]">{title}</div>

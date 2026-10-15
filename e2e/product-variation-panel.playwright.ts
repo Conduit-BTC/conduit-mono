@@ -288,23 +288,37 @@ test("market product variation panel preserves grid geometry across desktop mous
     name: "Peter No Taxation Without Representation Ruszkie Bitcorners",
   })
   await expect(merchantName).toBeVisible()
+  await expect(merchantName).toHaveAttribute(
+    "title",
+    "Peter No Taxation Without Representation Ruszkie Bitcorners"
+  )
   await expect
     .poll(() =>
       merchantName.evaluate((element) => {
         const style = getComputedStyle(element)
         return {
-          contained: element.scrollWidth > element.clientWidth,
-          overflow: style.overflow,
-          textOverflow: style.textOverflow,
+          // Truncated text may have a wider scroll width, but the visible
+          // merchant control must still stay inside its actual card.
+          contained: (() => {
+            const box = element.getBoundingClientRect()
+            const card = element
+              .closest('[role="link"]')!
+              .getBoundingClientRect()
+            return box.left >= card.left && box.right <= card.right
+          })(),
+          clipped: element.scrollHeight > element.clientHeight,
           whiteSpace: style.whiteSpace,
+          overflow: style.overflowX,
+          textOverflow: style.textOverflow,
         }
       })
     )
     .toEqual({
       contained: true,
+      clipped: false,
+      whiteSpace: "nowrap",
       overflow: "hidden",
       textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
     })
   await expect(chooseSize).toBeAttached()
   await variableCard.scrollIntoViewIfNeeded()
@@ -421,8 +435,10 @@ test("market product variation panel preserves grid geometry across desktop mous
 
   await variableItem.getByRole("button", { name: "Add" }).click()
   await expect(
-    variableItem.getByRole("button", { name: "In cart (1)" })
-  ).toBeDisabled()
+    variableItem.getByRole("button", {
+      name: "Remove one Conduit Shirt from cart",
+    })
+  ).toBeEnabled()
   await variableItem.hover()
   await expect(
     variableItem.getByRole("button", {

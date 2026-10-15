@@ -530,6 +530,15 @@ reconciliation. The sole business property is the best available positive
 whole-satoshi amount associated with the paid-order signal. These signals are
 OR gates for one logical per-order event, not separate events.
 
+For private routed checkout, paying the funding invoice is not a paid-commerce
+signal. Buyer Orders uses separate, exact order-bound provider observations of
+all required commerce payouts; a generic status or imported recovery-progress
+claim alone does not qualify. The optional Conduit payout is not a condition
+for paid commerce. The reported estimate is the commerce order value, not the
+gross router funding amount or net recipient receipts. This does not change
+the historical direct-payment signal policy or make the aggregate verified
+revenue.
+
 This event is a narrowly scoped first-party aggregate commerce measurement, not
 ordinary optional product analytics. It is not suppressed solely because GPC
 is enabled or the generic browser telemetry flag is disabled. GPC continues to

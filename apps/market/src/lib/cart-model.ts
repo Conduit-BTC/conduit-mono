@@ -795,6 +795,9 @@ function parseCartItem(value: unknown): CartItem | null {
       value.fulfillment
     )
     if (!fulfillmentResult.success) return null
+    // Historical signed orders retain this snapshot in Core, but an unpaid
+    // persisted cart cannot restart the retired collection-based pickup lane.
+    if (fulfillmentResult.data.type === "pickup") return null
     fulfillment = fulfillmentResult.data
   }
   const marketContext = isRecord(value.eventMarketContext)
