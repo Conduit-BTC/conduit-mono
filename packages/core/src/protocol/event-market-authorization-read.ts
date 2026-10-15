@@ -72,6 +72,7 @@ const defaults: EventMarketAuthorizationReadDependencies = {
 function options(
   plan: EventMarketReadPlan,
   input: {
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -81,7 +82,7 @@ function options(
     relayUrls: plan.candidateRelayUrls,
     relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,
-    accountPubkey: input.authenticatedPubkey,
+    accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
@@ -93,6 +94,7 @@ export async function readEventMarketAuthorization(
   input: {
     marketCoordinate: string
     merchantPubkey: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -154,6 +156,7 @@ export async function readEventMarketAuthorization(
   try {
     plan = await dependencies.plan({
       organizerPubkey: market.authorPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,

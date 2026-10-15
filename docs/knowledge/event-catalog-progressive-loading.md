@@ -14,6 +14,8 @@ empty Following list remains an empty audience. Established session identity own
 that audience even while a remote signer is recovering. Only a settled guest
 session uses author-free discovery and public-browsing messaging; signer readiness
 does not turn a retained account into a guest.
+Retained account scope does not admit owner-only relay grants. Those reads also
+require the matching connected signer and a current authority generation.
 
 Candidate reads run four at a time with a budget of 128 requests per pass.
 The relay planner's distinct admitted-source cap applies to the whole scan,
@@ -69,18 +71,36 @@ calendars and deletions together. Background discovery can retain at most 2,048
 records and 8 MiB of serialized UTF-8 rows across scans, audiences and accounts.
 The capacity check and writes share one IndexedDB transaction. At capacity,
 live browsing continues; failed retention yields partial coverage rather than
-claiming durable cache custody. The cache does not evict earlier observations,
-so quota pressure cannot erase a known withdrawal or deletion.
+claiming durable cache custody. A newly verified scoped deletion has priority
+over reconstructible discovery presentation. The transaction may remove cached
+calendars for a now-deleted market while keeping every roster witness, deletion
+and authorization record. It may also remove an entire empty initial open
+candidate with no history or durable evidence. Closed markets, multiple
+revisions, enrollment, negatives, malformed records and legacy/durable rows
+remain protected. Replacement and negative retention commit atomically; a
+failed write rolls back both. When no safe space remains, retention is explicitly
+incomplete rather than dropping protected evidence or expanding the budget.
 
 Organizer publication and consequential exact reads retain durable evidence.
+Verified scoped deletions of that evidence join the same durable custody,
+including when background discovery observes them at a full cache. This does
+not create durable coordinates from unrelated public candidates.
 Unclassified legacy rows are also treated as durable; discovery cannot demote
 or prune them. A durable write promotes a matching discovery record. These
 records are outside the background discovery budget and keep the existing
 2,048-record per-coordinate safety limit. This is an admission policy, not a
-retention guarantee for all browser storage. Dexie v26 adds an index for the
-optional discovery size field without rewriting retained rows; quota checks read
-size keys instead of loading every signed payload.
-An upgraded profile requires a build that retains the v26 schema. A rollback
+retention guarantee for all browser storage. Dexie v27 adds an index for the
+optional discovery size field without rewriting retained rows. Routine quota
+checks read size keys; negative-priority replacement inspects bounded cache rows.
+Main and discovery previews independently used v26. The fresh v27 schema
+preserves both lineages and the assignment preview's populated v25 stores.
+Dexie replays the installed version's schema during an upgrade, so the v25 union
+also names those stores to avoid deletion and recreation before v27. These
+declarations preserve data; they do not enable assignment or inventory behavior.
+Tests use exact frozen main and preview schemas, nonempty rows in every store,
+signed deletion rehydration, native browser reloads, and encrypted recovery
+journals. Structural preservation is separate from inventory/payment acceptance.
+An upgraded profile requires a build that retains the v27 schema. A rollback
 must preserve that schema and saved evidence, without resetting IndexedDB.
 
 ## Consequential actions

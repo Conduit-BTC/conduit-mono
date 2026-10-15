@@ -339,6 +339,7 @@ const defaultDependencies: RosterReadDependencies & {
 function fanoutOptions(
   plan: EventMarketReadPlan,
   input: {
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -348,7 +349,7 @@ function fanoutOptions(
     relayUrls: plan.candidateRelayUrls,
     relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,
-    accountPubkey: input.authenticatedPubkey,
+    accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
@@ -446,6 +447,7 @@ function scopedProductEvidence(
 export async function readEventMarketRoster(
   input: {
     reference: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -493,6 +495,7 @@ export async function readEventMarketRoster(
     plan = await dependencies.plan({
       organizerPubkey: decoded.authorPubkey,
       relayHints: decoded.relayHints,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,
@@ -1041,6 +1044,7 @@ export async function readEventMarketProduct(
   input: {
     marketRead: EventMarketRosterReadResult
     productCoordinate: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1083,6 +1087,7 @@ export async function readEventMarketProduct(
   const authorization = await readAuthorization({
     marketCoordinate: market.market.coordinate,
     merchantPubkey: product.authorPubkey,
+    accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
@@ -1127,6 +1132,7 @@ export async function readEventMarketProduct(
   try {
     plan = await dependencies.plan({
       organizerPubkey: product.authorPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,
@@ -1476,6 +1482,7 @@ export async function readEventMarketCatalog(
     limit?: number
     search?: string
     onProgress?: (result: EventMarketCatalogReadResult) => void
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1554,6 +1561,7 @@ export async function readEventMarketCatalog(
       discoveryPlan = await plan({
         organizerPubkey: decoded.authorPubkey,
         relayHints: decoded.relayHints,
+        accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         shouldContinue: input.shouldContinue,
         signal: input.signal,
@@ -1664,6 +1672,7 @@ export async function discoverFutureEventMarkets(
   input: {
     /** Undefined browses public relays; an empty list discovers no organizers. */
     organizerPubkeys?: readonly string[]
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     continuation?: EventMarketDiscoveryContinuation
     shouldContinue?: () => boolean
@@ -1777,6 +1786,7 @@ export async function discoverFutureEventMarkets(
         const result = await readEventMarketRoster(
           {
             reference: coordinate,
+            accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             shouldContinue: input.shouldContinue,
             signal: input.signal,
@@ -1843,6 +1853,7 @@ export async function discoverFutureEventMarkets(
         const preview = await readEventMarketRoster(
           {
             reference: coordinate,
+            accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             shouldContinue: input.shouldContinue,
             signal: input.signal,
@@ -1880,7 +1891,8 @@ export async function discoverFutureEventMarkets(
     )(input)
     assertCurrent()
     const scope = getEventMarketDiscoveryScope({
-      accountPubkey: input.authenticatedPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
       authors,
       plan,
     })
@@ -1891,7 +1903,8 @@ export async function discoverFutureEventMarkets(
       }
     const scan = await scanEventMarketCandidates({
       authors,
-      accountPubkey: input.authenticatedPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
       plan,
       options: fanoutOptions(plan, input),
       continuation: input.continuation,
@@ -1960,6 +1973,7 @@ export async function readEventMarketOrderEvidenceByIds(
     marketCoordinate: string
     merchantPubkey: string
     eventIds: readonly string[]
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -2005,6 +2019,7 @@ export async function readEventMarketOrderEvidenceByIds(
     try {
       const plan = await dependencies.plan({
         organizerPubkey: author,
+        accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         shouldContinue: input.shouldContinue,
         signal: input.signal,
@@ -2065,6 +2080,7 @@ export async function previewEventMarketMerchantProducts(
   input: {
     marketCoordinate: string
     merchantPubkey: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -2096,6 +2112,7 @@ export async function previewEventMarketMerchantProducts(
   try {
     plan = await dependencies.plan({
       organizerPubkey: input.merchantPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,

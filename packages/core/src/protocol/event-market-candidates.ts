@@ -26,10 +26,12 @@ export interface EventMarketDiscoveryContinuation {
 export function getEventMarketDiscoveryScope(input: {
   authors?: readonly string[]
   accountPubkey?: string | null
+  authenticatedPubkey?: string | null
   plan: EventMarketReadPlan
 }): string {
   return JSON.stringify([
     input.accountPubkey ?? null,
+    input.authenticatedPubkey ?? null,
     input.authors ?? null,
     input.plan.relayUrls,
     input.plan.maxRelayAttempts ?? null,
@@ -40,6 +42,7 @@ export function getEventMarketDiscoveryScope(input: {
 export async function scanEventMarketCandidates(input: {
   authors?: readonly string[]
   accountPubkey?: string | null
+  authenticatedPubkey?: string | null
   plan: EventMarketReadPlan
   options: PublicRelayReadOptions
   continuation?: EventMarketDiscoveryContinuation

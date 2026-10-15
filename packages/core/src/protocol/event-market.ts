@@ -1102,9 +1102,17 @@ export interface EventMarketReadPlan {
 
 /** One owner-scoped public plan for candidate discovery, without per-author lookups. */
 export async function getEventMarketDiscoveryReadPlan(input: {
+  accountPubkey?: string | null
   authenticatedPubkey?: string | null
 }): Promise<EventMarketReadPlan> {
-  const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)
+  const accountPubkey = normalizePubkey(
+    input.accountPubkey === undefined
+      ? input.authenticatedPubkey
+      : input.accountPubkey
+  )
+  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
+  const authenticatedPubkey =
+    requestedAuth === accountPubkey ? requestedAuth : null
   const snapshot = authenticatedPubkey
     ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
     : loadRelaySettingsPlanningSnapshot()
@@ -1147,14 +1155,20 @@ function relayListStateFromLegacyLookup(
 export async function getEventMarketReadPlan(input: {
   organizerPubkey: string
   relayHints?: readonly string[]
+  accountPubkey?: string | null
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketReadPlan> {
-  const authenticatedPubkey = input.authenticatedPubkey
-    ? normalizePubkey(input.authenticatedPubkey)
-    : null
+  const accountPubkey = normalizePubkey(
+    input.accountPubkey === undefined
+      ? input.authenticatedPubkey
+      : input.accountPubkey
+  )
+  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
+  const authenticatedPubkey =
+    requestedAuth === accountPubkey ? requestedAuth : null
   let ownerSettingsSnapshot: Awaited<
     ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
   > | null = null
@@ -1189,7 +1203,7 @@ export async function getEventMarketReadPlan(input: {
     relayUrls: relayListLookupPlan.candidateRelayUrls,
     relayTargets: relayListLookupPlan.relayTargets,
     maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
     ownerSelectedRelayUrls,
     appRelayUrls: relayListLookupPlan.appRelayUrls,

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test"
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
 import { buildEventMarketRosterDraft } from "@conduit/core/protocol/event-market-roster"
+import frozenDatabaseHistories from "../tests/fixtures/event-market-db-histories.json" with { type: "json" }
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import {
   createRuntimeSignerIdentity,
@@ -8,6 +9,12 @@ import {
   installRealTestSigner,
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
+import {
+  seedHistoricalEventMarketDatabase,
+  inspectUpgradedEventMarketDatabase,
+  type EventMarketDatabaseHistory,
+  type EventMarketUpgradeRows,
+} from "./helpers/event-market-upgrade"
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
@@ -145,3 +152,252 @@ for (const audience of ["guest", "following"] as const) {
     }
   })
 }
+
+const databaseHistories: EventMarketDatabaseHistory[] = [
+  ...frozenDatabaseHistories,
+  {
+    ...frozenDatabaseHistories[0]!,
+    name: "native schema-repaired main",
+    version: 26.1,
+    stores: {
+      ...frozenDatabaseHistories[0]!.stores,
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
+    },
+  },
+]
+
+for (const history of databaseHistories) {
+  test(`native ${history.name} v${history.version} upgrade preserves every table and signed deletion across reload @market`, async ({
+    page,
+  }) => {
+    const organizer = createRuntimeSignerIdentity()
+    const coordinate = `30409:${organizer.pubkey}:upgrade`
+    const calendar = signRuntimeTestEvent(organizer, {
+      ...buildEventMarketCalendarDraft({
+        kind: 31922,
+        dTag: "upgrade-date",
+        title: "Native migration fixture",
+        start: "2099-01-01",
+      }),
+      created_at: 100,
+    })
+    const roster = signRuntimeTestEvent(organizer, {
+      ...buildEventMarketRosterDraft({
+        organizerPubkey: organizer.pubkey,
+        dTag: "upgrade",
+        calendarCoordinate: `31922:${organizer.pubkey}:upgrade-date`,
+        state: "open",
+        merchants: [],
+      }),
+      created_at: 100,
+    })
+    const deletion = signRuntimeTestEvent(organizer, {
+      kind: 5,
+      created_at: 200,
+      tags: [["e", roster.id]],
+      content: "",
+    })
+    const rows: EventMarketUpgradeRows = Object.fromEntries(
+      Object.entries(history.stores).map(([name, schema]) => [
+        name,
+        [
+          {
+            [schema.split(",")[0]!.replace(/^[&*+]+/, "")]: `${name}-fixture`,
+            marker: "retained-before-upgrade",
+          },
+        ],
+      ])
+    )
+    rows.eventMarketRosterEvidence = [roster, calendar, deletion].map(
+      (signedEvent) => {
+        const row: Record<string, unknown> = {
+          id: `${coordinate}:${signedEvent.id}`,
+          marketCoordinate: coordinate,
+          signedEvent,
+          cachedAt: 1,
+        }
+        if (
+          history.stores.eventMarketRosterEvidence!.includes("discoveryBytes")
+        ) {
+          row.discoveryBytes = 0
+          row.discoveryBytes =
+            new TextEncoder().encode(JSON.stringify(row)).byteLength + 16
+        }
+        return row
+      }
+    )
+    let workaroundWarnings = 0
+    page.on("console", (message) => {
+      if (
+        message.type() === "warning" &&
+        /schema.*(?:extend|version)|(?:extend|version).*schema/i.test(
+          message.text()
+        )
+      )
+        workaroundWarnings++
+    })
+    try {
+      // The legal boot boundary does not open product providers or IndexedDB.
+      await page.goto(marketUrl + "/privacy-policy")
+      await seedHistoricalEventMarketDatabase(page, history, rows)
+      const expected = {
+        nativeVersion: 270,
+        preservedTables: Object.keys(history.stores).length,
+        discoveryIndex: true,
+        deleted: true,
+        inventoryStores: true,
+      }
+      expect(
+        await inspectUpgradedEventMarketDatabase(
+          page,
+          history,
+          rows,
+          coordinate
+        )
+      ).toEqual(expected)
+      await page.reload()
+      expect(
+        await inspectUpgradedEventMarketDatabase(
+          page,
+          history,
+          rows,
+          coordinate
+        )
+      ).toEqual(expected)
+      expect(workaroundWarnings).toBe(0)
+    } finally {
+      disposeRuntimeSignerIdentity(organizer)
+    }
+  })
+}
+
+test("native full discovery cache retains an exact-event deletion through reload @market", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const organizer = createRuntimeSignerIdentity()
+  const coordinate = `30409:${organizer.pubkey}:pressure`
+  const calendarCoordinate = `31922:${organizer.pubkey}:pressure-date`
+  try {
+    const calendar = signRuntimeTestEvent(organizer, {
+      ...buildEventMarketCalendarDraft({
+        kind: 31922,
+        dTag: "pressure-date",
+        title: "Pressure fixture",
+        start: "2099-01-01",
+      }),
+      created_at: 100,
+    })
+    const roster = signRuntimeTestEvent(organizer, {
+      ...buildEventMarketRosterDraft({
+        organizerPubkey: organizer.pubkey,
+        dTag: "pressure",
+        calendarCoordinate,
+        state: "open",
+        merchants: [],
+      }),
+      created_at: 100,
+    })
+    const deletion = signRuntimeTestEvent(organizer, {
+      kind: 5,
+      created_at: 200,
+      tags: [["e", roster.id]],
+      content: "",
+    })
+    const filler = Array.from({ length: 2046 }, (_, index) => {
+      const dTag = `budget-${index}`,
+        coordinate = `30409:${organizer.pubkey}:${dTag}`
+      return {
+        coordinate,
+        event: signRuntimeTestEvent(organizer, {
+          ...buildEventMarketRosterDraft({
+            organizerPubkey: organizer.pubkey,
+            dTag,
+            calendarCoordinate,
+            state: "open",
+            merchants: [],
+          }),
+          created_at: 100,
+        }),
+      }
+    })
+    await page.goto(marketUrl + "/privacy-policy")
+    const retained = await page.evaluate(
+      async ({ coordinate, roster, calendar, deletion, filler, root }) => {
+        const { ConduitDB } = await import(`${root}/db/index.ts`)
+        const { createEventMarketEvidenceStore } = await import(
+          `${root}/protocol/event-market-evidence-store.ts`
+        )
+        const { sameSignedPublicEvent } = await import(
+          `${root}/protocol/verified-public-event.ts`
+        )
+        const database = new ConduitDB("conduit")
+        try {
+          await database.open()
+          const store = createEventMarketEvidenceStore(database)
+          await store.retain(coordinate, [roster, calendar], "discovery")
+          const rows = filler.map(({ coordinate, event }) => {
+            const row = {
+              id: `${coordinate}:${event.id}`,
+              marketCoordinate: coordinate,
+              signedEvent: event,
+              cachedAt: 1,
+              discoveryBytes: 0,
+            }
+            row.discoveryBytes =
+              new TextEncoder().encode(JSON.stringify(row)).byteLength + 16
+            return row
+          })
+          await database.eventMarketRosterEvidence.bulkPut(rows)
+          const before = await database.eventMarketRosterEvidence.count()
+          await store.retain(coordinate, [deletion], "discovery")
+          const saved = await store.load(coordinate)
+          let bytes = 0
+          await database.eventMarketRosterEvidence
+            .where("discoveryBytes")
+            .aboveOrEqual(0)
+            .eachKey((key: unknown) => {
+              bytes += key as number
+            })
+          return {
+            before,
+            after: await database.eventMarketRosterEvidence.count(),
+            bytes,
+            witness: saved.some((event: unknown) =>
+              sameSignedPublicEvent(event, roster)
+            ),
+            deletion: saved.some((event: unknown) =>
+              sameSignedPublicEvent(event, deletion)
+            ),
+          }
+        } finally {
+          database.close()
+        }
+      },
+      {
+        coordinate,
+        roster,
+        calendar,
+        deletion,
+        filler,
+        root: `/@fs${process.cwd()}/packages/core/src`,
+      }
+    )
+    expect(retained.before).toBe(2048)
+    expect(retained.after).toBeLessThanOrEqual(2048)
+    expect(retained.bytes).toBeLessThanOrEqual(8 * 1024 * 1024)
+    expect(retained.witness && retained.deletion).toBe(true)
+    await page.reload()
+    const restored = await inspectUpgradedEventMarketDatabase(
+      page,
+      databaseHistories[0]!,
+      {},
+      coordinate
+    )
+    expect(restored.deleted).toBe(true)
+    expect(restored.nativeVersion).toBe(270)
+  } finally {
+    disposeRuntimeSignerIdentity(organizer)
+  }
+})

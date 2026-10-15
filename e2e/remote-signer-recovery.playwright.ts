@@ -19,6 +19,8 @@ import {
   publishTestRelayEvents,
 } from "./helpers/auth"
 
+test.use({ trace: "off", screenshot: "off", video: "off" })
+
 const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
 const remoteSignerVaultModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer-vault.ts`
@@ -764,6 +766,40 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
     ])
     await installSignerRelayAlias(page)
     await page.goto(marketUrl + "/events?source=following")
+    await page.evaluate(
+      async ({ marketModule, relayModule, owner }) => {
+        const { __setEventMarketTestOverrides } = await import(marketModule)
+        const { getRelayListsDetailed } = await import(relayModule)
+        const observed: Array<{ account: boolean; authenticated: boolean }> = []
+        ;(
+          window as typeof window & {
+            __conduitEventReadAuthority: typeof observed
+          }
+        ).__conduitEventReadAuthority = observed
+        __setEventMarketTestOverrides({
+          getRelayListsDetailed: async (
+            pubkeys: string[],
+            options: {
+              accountPubkey?: string
+              authenticatedPubkey?: string
+              shouldContinue?: () => boolean
+            }
+          ) => {
+            if (options.shouldContinue?.() !== false)
+              observed.push({
+                account: options.accountPubkey === owner,
+                authenticated: options.authenticatedPubkey === owner,
+              })
+            return getRelayListsDetailed(pubkeys, options)
+          },
+        })
+      },
+      {
+        marketModule: `/@fs${process.cwd()}/packages/core/src/protocol/event-market.ts`,
+        relayModule: `/@fs${process.cwd()}/packages/core/src/protocol/relay-list.ts`,
+        owner: buyerPubkey,
+      }
+    )
     await page.getByRole("button", { name: "Connect", exact: true }).click()
     await connectRemoteSigner(page, getPublicKey(remoteSignerSecret))
     await expect(page.getByText(title, { exact: true })).toBeVisible({
@@ -773,7 +809,19 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
       page.getByRole("button", { name: "Refresh events", exact: true })
     ).toBeEnabled()
     recoveryStarted = true
+    expect(
+      await page.evaluate(() =>
+        (
+          window as typeof window & {
+            __conduitEventReadAuthority: Array<{ authenticated: boolean }>
+          }
+        ).__conduitEventReadAuthority.some((item) => item.authenticated)
+      )
+    ).toBe(true)
     const retainedSession = await page.evaluate(() => {
+      ;(
+        window as typeof window & { __conduitEventReadAuthority: unknown[] }
+      ).__conduitEventReadAuthority.length = 0
       const raw = localStorage.getItem("conduit:auth")
       if (!raw) throw new Error("Missing retained remote account")
       const oldValue = localStorage.getItem("conduit:auth:revision")
@@ -807,6 +855,21 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
       page.getByText("Browsing public events from your selected relays.")
     ).toHaveCount(0)
     expect(requests.length).toBeGreaterThan(0)
+    const authority = await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __conduitEventReadAuthority: Array<{
+              account: boolean
+              authenticated: boolean
+            }>
+          }
+        ).__conduitEventReadAuthority
+    )
+    expect(authority.length).toBeGreaterThan(0)
+    expect(authority.every((item) => item.account && !item.authenticated)).toBe(
+      true
+    )
     expect(
       requests.every((authors) => authors?.includes(organizerPubkey))
     ).toBe(true)

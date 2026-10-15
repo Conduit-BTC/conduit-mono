@@ -6,12 +6,25 @@ import { finalizeEvent } from "nostr-tools/pure"
 import { ConduitDB } from "../packages/core/src/db"
 import { createEventMarketEvidenceStore } from "../packages/core/src/protocol/event-market-evidence-store"
 import { readEventMarketRoster } from "../packages/core/src/protocol/event-market-roster-read"
-import histories from "./fixtures/event-market-db-histories.json"
+import frozenHistories from "./fixtures/event-market-db-histories.json"
 import { fixture } from "./helpers/future-market-discovery-fixture"
 
 // Exact cumulative schemas extracted from the frozen source heads in the fixture.
 // Generic rows prove table/key preservation; signed rows also exercise rehydration.
 describe("Event Market schema lineage upgrades", () => {
+  const histories = [
+    ...frozenHistories,
+    {
+      ...frozenHistories[0]!,
+      name: "native schema-repaired main",
+      version: 26.1,
+      stores: {
+        ...frozenHistories[0]!.stores,
+        eventMarketRosterEvidence:
+          "id, marketCoordinate, cachedAt, discoveryBytes",
+      },
+    },
+  ]
   for (const history of histories) {
     it(`preserves every ${history.name} v${history.version} table and signed deletion at a fresh version`, async () => {
       const options = { indexedDB: new IDBFactory(), IDBKeyRange }
@@ -39,12 +52,28 @@ describe("Event Market schema lineage upgrades", () => {
       }
       retained.set(
         "eventMarketRosterEvidence",
-        [record.roster, record.calendar, deletion].map((signedEvent) => ({
-          id: `${record.coordinate}:${signedEvent.id}`,
-          marketCoordinate: record.coordinate,
-          signedEvent,
-          cachedAt: 1,
-        }))
+        [record.roster, record.calendar, deletion].map((signedEvent) => {
+          const row: {
+            id: string
+            marketCoordinate: string
+            signedEvent: typeof signedEvent
+            cachedAt: number
+            discoveryBytes?: number
+          } = {
+            id: `${record.coordinate}:${signedEvent.id}`,
+            marketCoordinate: record.coordinate,
+            signedEvent,
+            cachedAt: 1,
+          }
+          if (
+            history.stores.eventMarketRosterEvidence.includes("discoveryBytes")
+          ) {
+            row.discoveryBytes = 0
+            row.discoveryBytes =
+              new TextEncoder().encode(JSON.stringify(row)).byteLength + 16
+          }
+          return row
+        })
       )
       await old.open()
       for (const [table, rows] of retained) await old.table(table).bulkPut(rows)
@@ -70,7 +99,7 @@ describe("Event Market schema lineage upgrades", () => {
             const value = await upgraded
               .table(table)
               .get((row as Record<string, string>)[primary]!)
-            if (!isDeepStrictEqual(value, JSON.parse(JSON.stringify(row))))
+            if (!isDeepStrictEqual(value, structuredClone(row)))
               throw new Error(`Upgrade changed a retained ${table} row.`)
           }
         }

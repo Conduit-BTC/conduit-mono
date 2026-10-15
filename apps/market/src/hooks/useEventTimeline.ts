@@ -51,7 +51,17 @@ function uniquePubkeys(pubkeys: readonly string[] | undefined): string[] {
 export function useEventTimeline(
   requestedSource: ProductCatalogSourceMode
 ): EventTimelineDiscoveryResult {
-  const { status, authGeneration } = useAuth()
+  const {
+    status,
+    authGeneration,
+    accountPubkey,
+    pubkey,
+    signer,
+    capabilities,
+    isAuthGenerationCurrent,
+    isAccountIdentityCurrent,
+    isGuestGenerationCurrent,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -62,11 +72,24 @@ export function useEventTimeline(
     session.mode === "guest" &&
     (status === "disconnected" || status === "error")
   const effectiveSource = signedIn ? requestedSource : "conduit"
-  // This reader's existing account hint remains scoped during signer recovery;
-  // the shared protected-read boundary still requires actual signer authority.
-  const authenticatedPubkey = signedIn ? session.pubkey : null
+  // Retained account scope keeps the audience, never live relay authority.
+  const authenticatedPubkey =
+    signedIn &&
+    status === "connected" &&
+    accountPubkey === session.pubkey &&
+    pubkey === session.pubkey &&
+    !!signer &&
+    capabilities.signEvent
+      ? session.pubkey
+      : null
   const perspectivePubkey = signedIn ? session.pubkey : null
   const normalizedPerspectivePubkey = normalizePubkey(perspectivePubkey)
+  const isReadScopeCurrent = () =>
+    authGenerationRef.current === authGeneration &&
+    (perspectivePubkey
+      ? isAccountIdentityCurrent(perspectivePubkey)
+      : isGuestGenerationCurrent(authGeneration)) &&
+    (!authenticatedPubkey || isAuthGenerationCurrent(authGeneration))
   const firstDegreeDiscoveryEnabled =
     session.relaySettingsReady &&
     signedIn &&
@@ -81,9 +104,9 @@ export function useEventTimeline(
     queryFn: ({ signal }) =>
       getFollowPubkeys({
         pubkey: normalizedPerspectivePubkey!,
+        accountPubkey: perspectivePubkey,
         authenticatedPubkey,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
+        shouldContinue: () => !signal.aborted && isReadScopeCurrent(),
       }),
     enabled: firstDegreeDiscoveryEnabled,
     staleTime: 60_000,
@@ -245,8 +268,9 @@ export function useEventTimeline(
     queryKey: ["future-market-event-timeline", ...discoveryQueryKey],
     discoveryInput: {
       organizerPubkeys: publicAudience ? undefined : (organizerPubkeys ?? []),
+      accountPubkey: perspectivePubkey,
       authenticatedPubkey,
-      shouldContinue: () => authGenerationRef.current === authGeneration,
+      shouldContinue: isReadScopeCurrent,
     },
     enabled:
       session.relaySettingsReady &&
