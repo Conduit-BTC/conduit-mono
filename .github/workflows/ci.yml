@@ -466,6 +466,90 @@ jobs:
           rm -f -- "$PLAYWRIGHT_ROUTER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_MANIFEST"
           rm -f -- "$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"
           rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
+  webkit-upgrade-probe:
+    name: webkit-probe / ${{ matrix.probe.name }}
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        probe:
+          - {
+              name: menu-background,
+              area: commerce,
+              source: "e2e/commerce-inbox.playwright.ts:21",
+              focus: "0",
+            }
+          - {
+              name: menu-foreground,
+              area: commerce,
+              source: "e2e/commerce-inbox.playwright.ts:21",
+              focus: "1",
+            }
+          - {
+              name: workspace,
+              area: merchant,
+              source: "e2e/not-found.playwright.ts",
+              focus: "0",
+            }
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
+      options: --init --shm-size=1g
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Bun and checkout ownership
+        run: |
+          set -euo pipefail
+          # The Playwright image has no unzip. Fetch Bun's pinned native archive
+          # directly so npm registry resolution cannot consume the smoke budget.
+          [[ "$(uname -m)" == "x86_64" ]]
+          timeout 90s apt-get update -qq
+          timeout 90s apt-get install -y -qq --no-install-recommends unzip
+          bun_archive_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$bun_archive_dir"' EXIT
+          curl --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 90 --retry 0 \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-linux-x64.zip \
+            -o "$bun_archive_dir/bun-linux-x64.zip"
+          printf '%s  %s\n' \
+            '7051d86a924aefea3e0b96213b5fd8f79c0793f9cae6534233e627e5c3db4669' \
+            "$bun_archive_dir/bun-linux-x64.zip" | sha256sum --check --status
+          unzip -q "$bun_archive_dir/bun-linux-x64.zip" -d "$bun_archive_dir"
+          install -m 0755 "$bun_archive_dir/bun-linux-x64/bun" /usr/local/bin/bun
+          ln -s /usr/local/bin/bun /usr/local/bin/bunx
+          bun --version
+          bunx --version
+          # GitHub mounts the checkout with a different owner inside the image.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: bun install --frozen-lockfile
+      - name: Run frozen WebKit probe without retries
+        env:
+          CI: "true"
+          PLAYWRIGHT_NO_COPY_PROMPT: "1"
+          PLAYWRIGHT_ACTOR_FOCUS: ${{ matrix.probe.focus }}
+          PLAYWRIGHT_SMOKE_AREA: ${{ matrix.probe.area }}
+          PROBE_SOURCE: ${{ matrix.probe.source }}
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/webkit-probe-results.json
+          PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/webkit-probe-progress.log
+        run: |
+          set +e
+          bun run test:e2e "$PROBE_SOURCE" --project=mobile-webkit --workers=1 --retries=0 --repeat-each=3 >/dev/null 2>&1
+          probe_status=$?
+          set -e
+          if [[ -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" ]]; then
+            cat "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          fi
+          exit "$probe_status"
+      - name: Remove raw browser output
+        if: always()
+        run: rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
+
   e2e-smoke:
     name: e2e-smoke
     if: always()

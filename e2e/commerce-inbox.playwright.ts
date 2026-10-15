@@ -312,7 +312,58 @@ test("buyer and seller retain conversations and files through self-copy failure,
     expect(safe).toEqual({ encrypted: true, oldPlaintext: 0 })
     // Reconnect the same principal without reloading: the hook must subscribe to
     // the new session owner rather than remain attached to the retired owner.
-    selfCopyCheckpoint("before_disconnect", "buyer", true, false)
+    const menuGesture = await buyerPage.evaluateHandle(() => {
+      const trigger = document.querySelector('[aria-label="Open account menu"]')
+      let down = false,
+        up = false,
+        clicked = false,
+        moved = false
+      let downRect: DOMRect | undefined
+      const onDown = (event: Event) => {
+        down = event.target instanceof Node && !!trigger?.contains(event.target)
+        if (down) downRect = trigger!.getBoundingClientRect()
+      }
+      const onUp = (event: Event) => {
+        up = event.target instanceof Node && !!trigger?.contains(event.target)
+        const rect = trigger?.getBoundingClientRect()
+        moved =
+          !!rect &&
+          !!downRect &&
+          (Math.abs(rect.x - downRect.x) > 1 ||
+            Math.abs(rect.y - downRect.y) > 1)
+      }
+      const onClick = (event: Event) => {
+        clicked =
+          event.target instanceof Node && !!trigger?.contains(event.target)
+      }
+      document.addEventListener("pointerdown", onDown, true)
+      document.addEventListener("pointerup", onUp, true)
+      document.addEventListener("click", onClick, true)
+      return {
+        read: () => ({
+          documentFocused: document.hasFocus(),
+          triggerMounted: !!trigger?.isConnected,
+          pointerDownOnTrigger: down,
+          pointerUpOnTrigger: up,
+          clickOnTrigger: clicked,
+          triggerMovedDuringGesture: moved,
+        }),
+        dispose: () => {
+          document.removeEventListener("pointerdown", onDown, true)
+          document.removeEventListener("pointerup", onUp, true)
+          document.removeEventListener("click", onClick, true)
+        },
+      }
+    })
+    if (process.env.PLAYWRIGHT_ACTOR_FOCUS === "1")
+      await buyerPage.bringToFront()
+    selfCopyCheckpoint(
+      "before_disconnect",
+      "buyer",
+      true,
+      false,
+      await menuGesture.evaluate((probe) => probe.read())
+    )
     await buyerPage.getByLabel("Open account menu").click()
     const disconnectMenu = await buyerPage.evaluate(() => {
       const trigger = document.querySelector('[aria-label="Open account menu"]')
@@ -344,13 +395,15 @@ test("buyer and seller retain conversations and files through self-copy failure,
         disconnectHitTarget: !!item && !!hit && item.contains(hit),
       }
     })
-    selfCopyCheckpoint(
-      "disconnect_menu_ready",
-      "buyer",
-      true,
-      true,
-      disconnectMenu
-    )
+    selfCopyCheckpoint("disconnect_menu_ready", "buyer", true, true, {
+      ...disconnectMenu,
+      ...(await menuGesture.evaluate((probe) => {
+        const value = probe.read()
+        probe.dispose()
+        return value
+      })),
+    })
+    await menuGesture.dispose()
     await buyerPage
       .getByRole("menuitem", { name: "Disconnect", exact: true })
       .click()
