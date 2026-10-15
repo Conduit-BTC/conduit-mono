@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { type BreezAddressState } from "@conduit/core"
-import {
-  ADDRESS_REQUEST_ACTION,
-  type AddressNameRequestStatus,
-} from "@conduit/core/wallets/address-name-request"
+import { ADDRESS_REQUEST_ACTION } from "@conduit/core/wallets/address-name-request"
+import { requestEvidence } from "@conduit/core/wallets/address-request-record"
+import type {
+  AddressRequestSyncDiagnosis,
+  AddressRequestSyncReason,
+} from "@conduit/core/wallets/address-request-service"
+import type { AddressRequestView } from "@conduit/core/wallets/address-request-workflow"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { Button, Input } from "../index"
 
@@ -12,6 +14,49 @@ interface ChallengeApi {
   remove(id: string): void
 }
 type ChallengeWindow = Window & { turnstile?: ChallengeApi }
+const syncReasonText: Record<AddressRequestSyncReason, string> = {
+  recovery_unconfirmed: "Wallet recovery evidence is not fully confirmed.",
+  membership_unconfirmed: "Wallet membership is not confirmed on all relays.",
+  request_read_unavailable:
+    "The saved request could not be read from every relay.",
+  request_heads_disagree: "Relays disagree about the saved request.",
+  local_event_pending:
+    "A signed request record is still pending on this device.",
+  legacy_registry_only: "Request progress was found only in older wallet data.",
+  request_event_missing: "The request record has not been found on relays.",
+  request_contents_unconfirmed:
+    "The relay record does not yet contain the latest request progress.",
+  membership_read_unavailable:
+    "Current wallet membership could not be checked on a relay.",
+  membership_head_mismatch:
+    "A relay's wallet membership record did not match the confirmed one.",
+  relay_write_failed: "A relay did not accept the encrypted request record.",
+  readback_unavailable: "A relay could not confirm the encrypted record.",
+  readback_absent: "A relay did not return the encrypted record after writing.",
+  readback_different: "A relay returned a different encrypted record.",
+}
+const syncSourceText: Record<
+  NonNullable<AddressRequestSyncDiagnosis["eventSource"]>,
+  string
+> = {
+  legacy: "Source: older wallet data.",
+  pending: "Source: signed record retained on this device.",
+  observed: "Source: previously observed signed record.",
+  new: "Source: newly saved signed record.",
+  relay: "Source: relay record.",
+}
+const writeStatusText: Record<
+  NonNullable<AddressRequestSyncDiagnosis["writeStatus"]>,
+  string
+> = {
+  acked: "accepted",
+  rejected: "rejected",
+  timed_out: "timed out",
+  auth_required: "authentication required",
+  cancelled: "interrupted",
+  policy_blocked: "blocked by relay policy",
+  error: "failed",
+}
 let loading: Promise<ChallengeApi> | undefined
 function loadChallenge(): Promise<ChallengeApi> {
   const existing = (window as ChallengeWindow).turnstile
@@ -146,85 +191,101 @@ export function AddressNameRequestForm({
   walletId,
   ownerPubkey,
   submit,
-  activate,
+  onActivated,
   siteKey = import.meta.env?.VITE_ADDRESS_REQUEST_TURNSTILE_SITE_KEY ?? "",
 }: {
   walletId: string
   ownerPubkey: string
   submit: NonNullable<UseWalletsReturn["requestAddressName"]>
-  activate(name: string): Promise<BreezAddressState>
+  onActivated(): Promise<void>
   siteKey?: string
 }) {
-  const storageKey = `conduit:address-request:v1:${ownerPubkey}:${walletId}`
   const [name, setName] = useState("")
-  const [status, setStatus] = useState<AddressNameRequestStatus | null>(null)
+  const [view, setView] = useState<AddressRequestView>()
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState("")
-  const [activationStatus, setActivationStatus] = useState("")
   const [pending, setPending] = useState(false)
   const [token, setToken] = useState("")
   const [challengeRevision, setChallengeRevision] = useState(0)
-  const requestId = useRef<string | null>(null)
   const current = useRef(true)
   useEffect(() => {
     current.current = true
-    try {
-      const saved = JSON.parse(
-        sessionStorage.getItem(storageKey) ?? "null"
-      ) as { requestId?: string; name?: string } | null
-      if (saved?.requestId && saved.name) {
-        requestId.current = saved.requestId
-        setName(saved.name)
-        setStatus("pending")
+    let active = true
+    setLoaded(false)
+    void submit.load(walletId).then(
+      (saved) => {
+        if (!active) return
+        setView(saved)
+        setName(saved ? requestEvidence(saved.record).desiredName : "")
+        setLoaded(true)
+      },
+      () => {
+        if (active)
+          setError(
+            "Saved request could not be checked. Retry wallet sync before requesting a name."
+          )
       }
-    } catch {
-      setError(
-        "Saved request status is unavailable. Check your request before submitting again."
-      )
-    }
+    )
     return () => {
+      active = false
       current.current = false
     }
-  }, [storageKey])
+  }, [submit, walletId, ownerPubkey])
   const onToken = useCallback((value: string) => setToken(value), [])
-  const run = async (check: boolean) => {
+  const apply = (saved: AddressRequestView | undefined) => {
+    if (!current.current) return
+    setView(saved)
+    if (saved) setName(requestEvidence(saved.record).desiredName)
+    setLoaded(true)
+  }
+  const run = async (action: "submit" | "check" | "activate") => {
     if (pending) return
-    const desiredName = name.trim().toLowerCase()
     if (
-      !/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/.test(desiredName) ||
-      desiredName.length < 3 ||
-      desiredName.length > 64
+      action === "submit" &&
+      !view &&
+      (!/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/.test(name.trim().toLowerCase()) ||
+        name.trim().length < 3 ||
+        name.trim().length > 64)
     ) {
       setError(
         "Use 3–64 lowercase letters, numbers, dots, hyphens or underscores."
       )
       return
     }
-    requestId.current ??= crypto.randomUUID()
-    setName(desiredName)
     setPending(true)
     setError("")
-    setStatus("pending")
     try {
-      sessionStorage.setItem(
-        storageKey,
-        JSON.stringify({ requestId: requestId.current, name: desiredName })
+      apply(
+        action === "activate"
+          ? await submit.activate(walletId)
+          : action === "check"
+            ? await submit.check(walletId)
+            : await submit.submit(walletId, { desiredName: name, token })
       )
-      const next = await submit(walletId, {
-        requestId: requestId.current,
-        desiredName,
-        note: "",
-        token,
-        check,
-      })
-      if (current.current) setStatus(next)
-    } catch {
-      if (current.current) {
-        setStatus("pending")
+    } catch (caught) {
+      if (current.current)
         setError(
-          "Submission status is uncertain. Check request status before retrying."
+          caught instanceof Error
+            ? caught.message
+            : "Progress is uncertain. Retry using this saved request."
         )
+      // Recover any locally retained progress, including successful registration.
+      try {
+        apply(await submit.load(walletId))
+      } catch {
+        /* Keep the stronger visible checkpoint. */
       }
     } finally {
+      if (action === "activate") {
+        try {
+          await onActivated()
+        } catch {
+          if (current.current)
+            setError(
+              "Address display could not refresh. Saved progress is retained."
+            )
+        }
+      }
       if (current.current) {
         setPending(false)
         setToken("")
@@ -232,64 +293,64 @@ export function AddressNameRequestForm({
       }
     }
   }
-  const messages: Record<AddressNameRequestStatus, string> = {
-    not_received:
-      "No submission was found. Retry the same request to send it for review.",
-    received:
-      "Request received. It is awaiting manual review. Submission is not approval.",
-    pending:
-      "Submission is not confirmed. Check status before submitting again.",
-    approved: "Name approved for this wallet. Activate it when you are ready.",
-    declined:
-      "This name request was declined. Your existing receiving address still works.",
-    unavailable:
-      "Requests are temporarily unavailable. Your wallet remains usable.",
-  }
+  const writesEnabled = submit.writesEnabled !== false
+  const phase = view?.record.phase
+  const unresolved = phase === "pending" || phase === "received"
+  const retry =
+    unresolved &&
+    (view?.status === "not_received" || view?.publication === "local")
+  const message = !loaded
+    ? "Restoring your saved request…"
+    : view?.publication === "local"
+      ? "Progress saved on this device. Relay sync is not confirmed."
+      : phase === "complete"
+        ? "Your address is activated and your public profile is updated."
+        : phase === "registered"
+          ? "Address activated. Finish updating your public profile."
+          : phase === "activating"
+            ? "Activation needs confirmation. Resume to check and finish."
+            : phase === "approved"
+              ? "Name approved. Activate it when you are ready."
+              : phase === "declined"
+                ? "Request declined. Your existing receiving address still works."
+                : phase === "received"
+                  ? "Pending approval. Your existing receiving address still works."
+                  : phase === "pending"
+                    ? view?.status === "not_received"
+                      ? "No submission found. Retry the same saved request."
+                      : "Submission is uncertain. Your saved request will be checked again."
+                    : !siteKey || !writesEnabled
+                      ? "Name requests are temporarily unavailable."
+                      : "Requests do not reserve or approve names."
   return (
     <form
       className="grid min-w-0 gap-2"
       aria-busy={pending}
       onSubmit={(event) => {
         event.preventDefault()
-        void run(false)
+        void run("submit")
       }}
     >
-      <p className="text-pretty text-sm text-[var(--text-secondary)]">
-        Get your own @conduit.cash address. Names require approval.
-      </p>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <AddressRequestFields
           walletId={walletId}
           name={name}
-          disabled={pending || (status !== null && status !== "not_received")}
-          onName={(value) => {
-            if (
-              status === "not_received" &&
-              value.trim().toLowerCase() !== name.trim().toLowerCase()
-            ) {
-              requestId.current = null
-              try {
-                sessionStorage.removeItem(storageKey)
-              } catch {
-                setError(
-                  "Saved request status is unavailable. Check your request before submitting again."
-                )
-              }
-            }
-            setName(value)
-          }}
+          disabled={pending || !loaded || !!view}
+          onName={setName}
         />
-        {(!status || status === "not_received") && (
+        {(!view || retry) && (
           <Button
             size="sm"
             type="submit"
-            disabled={pending || !token || !name.trim()}
+            disabled={
+              pending || !loaded || !writesEnabled || !token || !name.trim()
+            }
           >
-            Request name
+            {view ? "Retry same request" : "Request name"}
           </Button>
         )}
       </div>
-      {(!status || status === "not_received") && siteKey && (
+      {writesEnabled && (!view || retry) && siteKey && (
         <AddressChallenge
           key={challengeRevision}
           siteKey={siteKey}
@@ -302,19 +363,17 @@ export function AddressNameRequestForm({
         id={`address-request-status-${walletId}`}
         className="text-pretty text-sm"
       >
-        {pending
-          ? "Checking your signed request…"
-          : status
-            ? messages[status]
-            : !siteKey
-              ? import.meta.env?.VITE_DEPLOYMENT_PROFILE === "production"
-                ? "Name requests are temporarily unavailable."
-                : "Preview: requests open after release."
-              : "Requests do not reserve names."}
+        {pending ? "Saving and checking your request…" : message}
       </p>
-      {activationStatus && (
-        <p role="status" className="text-sm">
-          {activationStatus}
+      {!pending && view?.publication === "local" && view.sync && (
+        <p className="text-pretty text-xs text-[var(--text-secondary)]">
+          Sync detail: {syncReasonText[view.sync.reason]}{" "}
+          {view.sync.eventSource && syncSourceText[view.sync.eventSource]}{" "}
+          {view.sync.writeStatus &&
+            `Relay write ${writeStatusText[view.sync.writeStatus]}. `}
+          {view.sync.confirmedTargets !== undefined &&
+            view.sync.targetCount !== undefined &&
+            `This attempt confirmed ${view.sync.confirmedTargets}/${view.sync.targetCount} exact relay readbacks.`}
         </p>
       )}
       {error && (
@@ -322,50 +381,33 @@ export function AddressNameRequestForm({
           {error}
         </p>
       )}
-      {status && (
-        <div className="flex flex-wrap gap-2">
-          {status && (
-            <Button
-              size="sm"
-              type="button"
-              variant="outline"
-              disabled={pending}
-              onClick={() => void run(true)}
-            >
-              Check request status
-            </Button>
-          )}
-          {status === "approved" && (
-            <Button
-              size="sm"
-              type="button"
-              disabled={pending}
-              onClick={async () => {
-                setPending(true)
-                setError("")
-                try {
-                  const result = await activate(name)
-                  if (current.current)
-                    setActivationStatus(
-                      result.status === "registered" && result.username === name
-                        ? "Your approved address is ready."
-                        : "Your existing address is preserved. Address activation needs attention."
-                    )
-                } catch {
-                  if (current.current)
-                    setError(
-                      "Address activation is pending. Retry on this wallet."
-                    )
-                } finally {
-                  if (current.current) setPending(false)
-                }
-              }}
-            >
-              Activate approved address
-            </Button>
-          )}
-        </div>
+      {(unresolved || !loaded) && (
+        <Button
+          size="sm"
+          type="button"
+          variant="outline"
+          disabled={pending}
+          onClick={() => void run("check")}
+        >
+          Check request status
+        </Button>
       )}
+      {phase &&
+        (["approved", "activating", "registered"].includes(phase) ||
+          (phase === "complete" && view?.publication === "local")) && (
+          <Button
+            size="sm"
+            type="button"
+            disabled={pending || !writesEnabled}
+            onClick={() => void run("activate")}
+          >
+            {phase === "complete"
+              ? "Finish syncing address"
+              : phase === "registered"
+                ? "Finish profile update"
+                : "Activate and use address"}
+          </Button>
+        )}
     </form>
   )
 }

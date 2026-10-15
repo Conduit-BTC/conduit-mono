@@ -3,7 +3,10 @@ import {
   observeWalletController,
   closeDefaultWalletSession,
 } from "./helpers/wallet-fixture"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 import {
   prepareControlledWallet,
   installControlledWallet,
@@ -28,7 +31,7 @@ async function enterWallets(page: Page) {
   await page.getByLabel("Open account menu").click()
   await page.getByRole("menuitem", { name: "Wallets", exact: true }).click()
   await expect(
-    page.getByRole("heading", { name: "My wallets", exact: true })
+    page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
   ).toBeVisible()
 }
 async function existingProfile(page: Page) {
@@ -170,7 +173,7 @@ test("cached signer wallet stays isolated across two identities and returns unch
     await replaceRealTestSigner(page, second)
     await connect()
     await expect(
-      page.getByRole("heading", { name: "My wallets", exact: true })
+      page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
     ).toBeVisible()
     await expect(
       page.getByRole("button", { name: "Receive", exact: true })
@@ -297,9 +300,7 @@ test("locally saved recovery can finish while relay sync remains pending @market
       .check()
     await dialog.getByRole("button", { name: "Done", exact: true }).click()
     await expect(dialog).toHaveCount(0)
-    await page
-      .getByRole("button", { name: "Add a wallet", exact: true })
-      .click()
+    await openWalletSetup(page, "Create wallet")
     await expect(
       dialog.getByRole("status").filter({ hasText: "still syncing" })
     ).toBeVisible()
@@ -340,270 +341,203 @@ for (const size of [
   { name: "desktop", width: 1280, height: 1000 },
   { name: "mobile", width: 320, height: 844 },
 ]) {
-  test(`${size.name} custom-name form distinguishes uncertain submission, receipt and manual approval @market`, async ({
+  test(`${size.name} custom-name form restores saved progress and resumes profile publication @market`, async ({
     page,
   }) => {
     await page.setViewportSize(size)
-    const identity = createRuntimeSignerIdentity()
-    try {
-      await page.goto(`${market}/wallet`)
-      await page.evaluate(
-        async ({ url, owner }) => {
-          const reactModule = "/@id/react",
-            domModule = "/@id/react-dom/client"
-          const React = (await import(reactModule)).default
-          const ReactDOM = (await import(domModule)).default
-          const { AddressNameRequestForm } = await import(url)
-          const host = document.createElement("div")
-          host.id = "address-request-ui-test"
-          document.body.replaceChildren(host)
-          const challengeContainers = new Map<string, HTMLElement>()
-          Object.assign(window, {
-            turnstile: {
-              render(_node: HTMLElement, options: any) {
-                const ui = (window as any).__addressRequestUi
-                ui.challenge = {
-                  size: options.size,
-                  appearance: options.appearance,
-                }
-                const widget = document.createElement("div")
-                widget.dataset.widgetSize = options.size
-                widget.dataset.appearance = options.appearance
-                widget.style.width =
-                  options.size === "compact" ? "150px" : "300px"
-                widget.style.height =
-                  options.size === "compact" ? "140px" : "65px"
-                _node.append(widget)
-                challengeContainers.set("controlled", _node)
-                queueMicrotask(() => options.callback("controlled-challenge"))
-                return "controlled"
-              },
-              remove(id: string) {
-                challengeContainers.get(id)?.replaceChildren()
-                challengeContainers.delete(id)
-              },
+    await page.goto(`${market}/wallet`)
+    await page.evaluate(
+      async ({ url }) => {
+        const reactModule = "/@id/react",
+          domModule = "/@id/react-dom/client"
+        const React = (await import(reactModule)).default
+        const ReactDOM = (await import(domModule)).default
+        const { AddressNameRequestForm } = await import(url)
+        const host = document.createElement("div")
+        document.body.replaceChildren(host)
+        let saved:
+            | {
+                record: { payload: string; accountProof: string; phase: string }
+                publication: string
+                status?: string
+              }
+            | undefined,
+          checks = 0,
+          registrations = 0,
+          publications = 0,
+          loads = 0,
+          revision = 0
+        Object.assign(window, {
+          turnstile: {
+            render(
+              node: HTMLElement,
+              options: { size: string; callback(token: string): void }
+            ) {
+              const widget = document.createElement("div")
+              widget.dataset.widgetSize = options.size
+              widget.style.width = "150px"
+              node.append(widget)
+              queueMicrotask(() => options.callback("controlled-challenge"))
+              return "controlled"
             },
-          })
-          const requests: Array<{
-            requestId: string
-            desiredName: string
-            note: string
-            check: boolean
-          }> = []
-          let approvals = 0
-          Object.assign(window, {
-            __addressRequestUi: {
-              requests,
-              challenge: null,
-              get approvals() {
-                return approvals
+            remove() {},
+          },
+        })
+        const api = {
+          writesEnabled: true,
+          async load() {
+            loads++
+            return saved
+          },
+          async submit(_id: string, input: { desiredName: string }) {
+            saved ??= {
+              record: {
+                payload: JSON.stringify({
+                  requestId: "stable-controlled-id",
+                  desiredName: input.desiredName.toLowerCase(),
+                }),
+                accountProof: "controlled",
+                phase: "pending",
               },
-            },
-          })
-          ReactDOM.createRoot(host).render(
+              publication: "confirmed",
+            }
+            return saved
+          },
+          async check() {
+            checks++
+            saved =
+              checks === 1
+                ? { ...saved!, status: "not_received" }
+                : checks === 2
+                  ? {
+                      ...saved!,
+                      record: { ...saved!.record, phase: "received" },
+                      status: "awaiting_review",
+                    }
+                  : {
+                      ...saved!,
+                      record: { ...saved!.record, phase: "approved" },
+                      status: "approved",
+                    }
+            return saved
+          },
+          async activate() {
+            if (saved!.record.phase !== "registered") registrations++
+            saved = {
+              ...saved!,
+              record: { ...saved!.record, phase: "registered" },
+            }
+            publications++
+            if (publications === 1)
+              throw new Error("Profile publication unavailable")
+            saved = {
+              ...saved!,
+              record: { ...saved!.record, phase: "complete" },
+            }
+            return saved
+          },
+        }
+        const root = ReactDOM.createRoot(host)
+        const mount = () =>
+          root.render(
             React.createElement(AddressNameRequestForm, {
+              key: ++revision,
               walletId: "controlled-wallet",
-              ownerPubkey: owner,
-              siteKey: "controlled-public-site-key",
-              async submit(
-                _id: string,
-                value: {
-                  requestId: string
-                  desiredName: string
-                  note: string
-                  check?: boolean
-                }
-              ) {
-                requests.push({ ...value, check: value.check === true })
-                if (requests.length === 1)
-                  throw new Error("controlled transport failure")
-                if (value.check) {
-                  const checks = requests.filter(
-                    (request) => request.check
-                  ).length
-                  return checks < 3 ? "not_received" : "approved"
-                }
-                const submissions = requests.filter(
-                  (request) => !request.check
-                ).length
-                return submissions === 2 ? "unavailable" : "received"
-              },
-              async activate(name: string) {
-                approvals++
-                return {
-                  status: "registered",
-                  username: name,
-                  address: `${name}@conduit.cash`,
-                }
-              },
+              ownerPubkey: "controlled-owner",
+              submit: api,
+              onActivated: async () => {},
+              siteKey: "controlled-site-key",
             })
           )
-        },
-        {
-          url:
-            "/@fs" +
-            path.resolve(
-              "packages/ui/src/components/AddressNameRequestForm.tsx"
-            ),
-          owner: identity.pubkey,
-        }
-      )
-      await page.getByLabel("Desired name", { exact: true }).fill("Review-Name")
-      await expect(
-        page.getByLabel("Connected public identity", { exact: true })
-      ).toHaveCount(0)
-      await expect(
-        page.getByLabel("Note for the review team (optional)")
-      ).toHaveCount(0)
-      await expect
-        .poll(() =>
-          page.evaluate(() => {
-            const ui = (window as any).__addressRequestUi
-            const widget = document.querySelector(
-              "[data-widget-size]"
-            ) as HTMLElement | null
-            return {
-              size: widget?.dataset.widgetSize,
-              appearance: widget?.dataset.appearance,
-              width: widget?.getBoundingClientRect().width,
-              height: widget?.getBoundingClientRect().height,
-              widgetFits: widget
-                ? widget.getBoundingClientRect().right <= innerWidth
-                : false,
-              formFits: document.documentElement.scrollWidth <= innerWidth,
-              challenge: ui.challenge,
-            }
-          })
-        )
-        .toEqual({
-          size: "compact",
-          appearance: "interaction-only",
-          width: 150,
-          height: 140,
-          widgetFits: true,
-          formFits: true,
-          challenge: { size: "compact", appearance: "interaction-only" },
+        Object.assign(window, {
+          __addressRequestUi: {
+            mount,
+            setWritesEnabled(value: boolean) {
+              api.writesEnabled = value
+              mount()
+            },
+            get registrations() {
+              return registrations
+            },
+            get publications() {
+              return publications
+            },
+            get checks() {
+              return checks
+            },
+            get loads() {
+              return loads
+            },
+          },
         })
-      await page
-        .getByRole("button", { name: "Request name", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText(
-        "Submission is not confirmed"
-      )
-      await expect(page.getByRole("alert")).toContainText(
-        "Submission status is uncertain"
-      )
-      await expect(
-        page.getByLabel("Desired name", { exact: true })
-      ).toBeDisabled()
-      await expect(
-        page.getByRole("button", {
-          name: "Activate approved address",
-          exact: true,
-        })
-      ).toHaveCount(0)
-      await page
-        .getByRole("button", { name: "Check request status", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText(
-        "No submission was found"
-      )
-      await expect(
-        page.getByLabel("Desired name", { exact: true })
-      ).toBeEnabled()
-      await page
-        .getByRole("button", { name: "Request name", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText(
-        "Requests are temporarily unavailable"
-      )
-      await expect(
-        page.getByLabel("Desired name", { exact: true })
-      ).toBeDisabled()
-      await page
-        .getByRole("button", { name: "Check request status", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText(
-        "No submission was found"
-      )
-      await expect(
-        page.getByLabel("Desired name", { exact: true })
-      ).toBeEnabled()
-      await page
-        .getByLabel("Desired name", { exact: true })
-        .fill("Followup-Name")
-      await page
-        .getByRole("button", { name: "Request name", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText("Request received")
-      await expect(page.getByRole("status")).toContainText(
-        "Submission is not approval"
-      )
-      await expect(
-        page.getByRole("button", {
-          name: "Activate approved address",
-          exact: true,
-        })
-      ).toHaveCount(0)
-      await page
-        .getByRole("button", { name: "Check request status", exact: true })
-        .click()
-      await expect(page.getByRole("status")).toContainText(
-        "Name approved for this wallet"
-      )
-      await page
-        .getByRole("button", { name: "Activate approved address", exact: true })
-        .click()
-      await expect(
-        page
-          .getByRole("status")
-          .filter({ hasText: "Your approved address is ready" })
-      ).toBeVisible()
-      expect(
-        await page.evaluate(() => {
-          const ui = (window as any).__addressRequestUi
-          const requests = ui.requests
-          return {
-            firstStatusCheckReusesPayload:
-              requests[0].requestId === requests[1].requestId &&
-              requests[0].desiredName === requests[1].desiredName,
-            immutableSubmissionRetryReusesPayload:
-              requests[0].requestId === requests[2].requestId &&
-              requests[0].desiredName === requests[2].desiredName &&
-              requests[2].check === false,
-            unavailableStatusCheckReusesPayload:
-              requests[2].requestId === requests[3].requestId &&
-              requests[2].desiredName === requests[3].desiredName,
-            verifiedAbsenceAllowsEditWithNewRequestId:
-              requests[4].requestId !== requests[2].requestId &&
-              requests[4].desiredName !== requests[2].desiredName,
-            approvalCheckReusesSubmission:
-              requests[4].requestId === requests[5].requestId &&
-              requests[4].desiredName === requests[5].desiredName,
-            notesRemainEmpty: requests.every(
-              (request: any) => request.note === ""
-            ),
-            activations: ui.approvals,
-            fits: document.documentElement.scrollWidth <= innerWidth,
-          }
-        })
-      ).toEqual({
-        firstStatusCheckReusesPayload: true,
-        immutableSubmissionRetryReusesPayload: true,
-        unavailableStatusCheckReusesPayload: true,
-        verifiedAbsenceAllowsEditWithNewRequestId: true,
-        approvalCheckReusesSubmission: true,
-        notesRemainEmpty: true,
-        activations: 1,
-        fits: true,
-      })
-      await page.screenshot({
-        path: `/private/tmp/wallet-name-form-${size.name}.png`,
-        mask: [page.getByLabel("Desired name")],
-      })
-    } finally {
-      disposeRuntimeSignerIdentity(identity)
-    }
+        mount()
+      },
+      {
+        url:
+          "/@fs" +
+          path.resolve("packages/ui/src/components/AddressNameRequestForm.tsx"),
+      }
+    )
+    await page.evaluate(() =>
+      Reflect.get(window, "__addressRequestUi").setWritesEnabled(false)
+    )
+    await expect(
+      page.getByRole("button", { name: "Request name", exact: true })
+    ).toBeDisabled()
+    await expect(page.getByRole("status")).toContainText(
+      "Name requests are temporarily unavailable."
+    )
+    await page.evaluate(() =>
+      Reflect.get(window, "__addressRequestUi").setWritesEnabled(true)
+    )
+    await expect(page.getByRole("dialog")).toHaveCount(0)
+    await page.getByLabel("Desired name", { exact: true }).fill("Review-Name")
+    await expect(
+      page.getByLabel("Connected public identity", { exact: true })
+    ).toHaveCount(0)
+    await expect(page.getByRole("textbox")).toHaveCount(1)
+    await page
+      .getByRole("button", { name: "Request name", exact: true })
+      .click()
+    await expect(page.getByRole("status")).toContainText(
+      "Submission is uncertain"
+    )
+    await expect(page.getByLabel("Desired name")).toBeDisabled()
+    await page.evaluate(() => Reflect.get(window, "__addressRequestUi").mount())
+    await expect(page.getByLabel("Desired name")).toHaveValue("review-name")
+    await page.getByRole("button", { name: "Check request status" }).click()
+    await expect(page.getByRole("status")).toContainText("No submission found")
+    await expect(page.getByLabel("Desired name")).toBeDisabled()
+    await page.getByRole("button", { name: "Retry same request" }).click()
+    await page.getByRole("button", { name: "Check request status" }).click()
+    await expect(page.getByRole("status")).toContainText("Pending approval")
+    await expect(
+      page.getByRole("button", { name: "Activate and use address" })
+    ).toHaveCount(0)
+    await page.getByRole("button", { name: "Check request status" }).click()
+    await expect(
+      page.getByRole("button", { name: "Check request status" })
+    ).toHaveCount(0)
+    await page.getByRole("button", { name: "Activate and use address" }).click()
+    await expect(page.getByRole("status")).toContainText(
+      "Finish updating your public profile"
+    )
+    await page.evaluate(() => Reflect.get(window, "__addressRequestUi").mount())
+    await page.getByRole("button", { name: "Finish profile update" }).click()
+    await expect(page.getByRole("status")).toContainText(
+      "public profile is updated"
+    )
+    expect(
+      await page.evaluate(() => ({
+        registrations: Reflect.get(window, "__addressRequestUi").registrations,
+        publications: Reflect.get(window, "__addressRequestUi").publications,
+        fits: document.documentElement.scrollWidth <= innerWidth,
+      }))
+    ).toEqual({ registrations: 1, publications: 2, fits: true })
+    await page.screenshot({
+      path: `/private/tmp/wallet-name-form-${size.name}.png`,
+      mask: [page.getByLabel("Desired name")],
+    })
   })
   test(`${size.name} creation shows activity and an accurate pending stage without a false signer approval prompt @market`, async ({
     page,
@@ -690,11 +624,8 @@ for (const size of [
       await existingProfile(page)
       await installControlledWallet(page)
       await enterWallets(page)
-      await page
-        .getByText("External wallet management", { exact: true })
-        .click()
       await expect(
-        page.getByRole("heading", { name: "External wallets" })
+        page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
       ).toBeVisible()
       await expect(page.getByLabel("Local wallet password")).toHaveCount(0)
       expect(
@@ -710,9 +641,6 @@ for (const size of [
       await openWalletSetup(page, "Create wallet")
       await saveRecovery(page)
       expect(await publicAddress(page)).toBe("current@wallet.example")
-      await page
-        .getByRole("button", { name: "Keep the current address" })
-        .click()
       await expect(
         page.getByRole("button", { name: "Receive", exact: true })
       ).toBeVisible()
@@ -720,14 +648,17 @@ for (const size of [
         page.getByRole("button", { name: "Send", exact: true })
       ).toBeVisible()
       await expect(
-        page.getByText("Receiving address: wallet1@breez.tips", {
+        page.getByText("wallet1@breez.tips", {
           exact: true,
         })
       ).toBeVisible()
       await page.evaluate(() => window.scrollTo(0, 0))
       await page.screenshot({
         path: `/tmp/635-wallet-${size.name}-ready.png`,
-        mask: [page.getByLabel("Open account menu")],
+        mask: [
+          page.getByLabel("Open account menu"),
+          page.locator("[data-wallet-balance], [data-wallet-address]"),
+        ],
       })
       // The saved recovery and credential remain encrypted and contain the
       // account/network needed to reopen the same native wallet.
@@ -773,16 +704,18 @@ for (const size of [
         .getByRole("dialog")
         .getByRole("button", { name: "Import wallet", exact: true })
         .click()
-      await saveRecovery(page)
       await expect(
-        page.getByText(
-          "Payments to its existing address continue reaching the recovered wallet.",
-          { exact: false }
-        )
+        page
+          .getByRole("dialog")
+          .getByText(
+            "Payments to an existing address continue reaching this recovered wallet.",
+            { exact: false }
+          )
       ).toBeVisible()
+      await saveRecovery(page)
       expect(await publicAddress(page)).toBe("current@wallet.example")
       await expect(
-        page.getByText("Receiving address: support@conduit.cash", {
+        page.getByText("support@conduit.cash", {
           exact: true,
         })
       ).toBeVisible()
@@ -791,6 +724,16 @@ for (const size of [
         account: (window as any).__walletProbe.lastAccount,
       }))
       expect(recovered).toEqual({ registrations: 1, account: 7 })
+      await page
+        .getByRole("article")
+        .filter({
+          has: page
+            .locator("[data-wallet-address]")
+            .filter({ hasText: "support@conduit.cash" }),
+        })
+        .locator("..")
+        .getByRole("button", { name: "Use this address", exact: true })
+        .click()
       await page
         .getByRole("button", { name: "Use the Conduit address" })
         .click()
@@ -897,17 +840,20 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
     const started = performance.now()
     let passwordPresent = false
     let showEnabled = false
-    const phase = (value: string) =>
+    const phase = (value: string, details: Record<string, unknown> = {}) =>
       recordSmokeDiagnostic(test.info(), "wallet-migration", {
         passwordPresent,
         showEnabled,
         scenario: failure,
         phase: value,
         elapsedSeconds: (performance.now() - started) / 1000,
+        ...details,
       })
     phase("seed")
     await prepareControlledWallet(page)
-    await observeWalletController(page)
+    await observeWalletController(page, (diagnostic) =>
+      phase("route_fetch_failed", diagnostic)
+    )
     const identity = createRuntimeSignerIdentity()
     await installRealTestSigner(
       page,
@@ -1076,7 +1022,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       }
       phase("credential")
       await expect(page.getByRole("dialog")).toHaveCount(0)
-      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
       expect(
         await page.evaluate(() => (window as any).__walletProbe.migrationWrites)
       ).toBe(1)
@@ -1175,7 +1121,9 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
             .getByRole("button", { name: "Unlock", exact: true })
             .click()
           await expect(unlock).toHaveCount(0)
-          await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+          await expect(
+            page.locator('[data-wallet-state="ready"]')
+          ).toBeVisible()
           expect(
             await page.evaluate(() => (window as any).__walletProbe.lastAccount)
           ).toBe(7)
@@ -1227,11 +1175,15 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       phase("fresh_signin")
       // A new document gets a fresh account session and the same encrypted local
       // wallet. The fixture controls the network layer before initialization.
+      recordSmokeFailureContext(test.info(), "migration_route_ready")
       await page.goto(`${market}/products`)
       await expect(page.getByLabel("Open account menu")).toBeVisible()
+      recordSmokeFailureContext(test.info(), "migration_route_ready", "met")
+      recordSmokeFailureContext(test.info(), "migration_wallet_opened")
       await installControlledWallet(page, false, "wallet1@breez.tips")
       await enterWallets(page)
-      await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      await expect(page.locator('[data-wallet-state="ready"]')).toBeVisible()
+      recordSmokeFailureContext(test.info(), "migration_wallet_opened", "met")
       expect(
         await page.evaluate(
           async (moduleUrl) => ({
@@ -1249,7 +1201,7 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       // Dialog removal precedes its queued focus restoration. Finish that
       // handoff before opening a menu that outside focus would dismiss.
       await expect(
-        page.getByRole("button", { name: "Add a wallet", exact: true })
+        page.getByRole("button", { name: "Add wallet", exact: true })
       ).toBeFocused()
       phase("legacy_recovery")
       const legacyMenu = page.getByLabel("Manage Legacy wallet")

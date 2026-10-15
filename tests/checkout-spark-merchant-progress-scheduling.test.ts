@@ -3,6 +3,7 @@ import {
   startMerchantCheckoutSparkReconciliation,
   type CheckoutSparkMerchantSettlementRecord,
   type MerchantCheckoutSparkRecoveryCandidate,
+  type MerchantCheckoutSparkReconciliationStatus,
 } from "@conduit/core"
 import { advanceMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
 import { startMerchantCheckoutSparkDiscovery } from "../apps/merchant/src/lib/checkout-spark-discovery-controller"
@@ -106,7 +107,8 @@ async function runScenario(progressPaid: boolean, discoverFresh: boolean) {
   const timer = clock()
   let settlement = record([merchantLeg])
   const starts: number[] = []
-  const retirements: number[] = []
+  const outcomes: MerchantCheckoutSparkReconciliationStatus[] = []
+  let retirementCalls = 0
   let continuations = 0
   let rescans = 0
   let pages = 0
@@ -133,6 +135,10 @@ async function runScenario(progressPaid: boolean, discoverFresh: boolean) {
     },
     async loadMerchantSettlement() {
       return settlement
+    },
+    async retire() {
+      retirementCalls += 1
+      throw new Error("Completed payment recovery must remain retained.")
     },
   } as unknown as Repository
   const consumed = (candidate: MerchantCheckoutSparkRecoveryCandidate) => ({
@@ -167,7 +173,7 @@ async function runScenario(progressPaid: boolean, discoverFresh: boolean) {
       concurrent += 1
       maximumConcurrent = Math.max(maximumConcurrent, concurrent)
       try {
-        return await advanceMerchantCheckoutSparkOrder(
+        const outcome = await advanceMerchantCheckoutSparkOrder(
           merchant,
           candidate,
           assertCurrent,
@@ -203,17 +209,14 @@ async function runScenario(progressPaid: boolean, discoverFresh: boolean) {
                     },
               }
             },
-            retireWallet: async (_principal, current, options) => {
-              options?.assertActive?.()
-              retirements.push(timer.now())
-              return { ...consumed(current), retirementStatus: "retired" }
-            },
             requestRescan: () => {
               rescans += 1
               discovery.requestRescan()
             },
           }
         )
+        outcomes.push(outcome)
+        return outcome
       } finally {
         concurrent -= 1
       }
@@ -244,12 +247,13 @@ async function runScenario(progressPaid: boolean, discoverFresh: boolean) {
   })
   await timer.advance(0)
   await timer.advance(750)
-  const early = { starts: [...starts], retirements: [...retirements], pages }
+  const early = { starts: [...starts], outcomes: [...outcomes], pages }
   await timer.advance(29_250)
   const measured = {
     early,
     starts,
-    retirements,
+    outcomes,
+    retirementCalls,
     continuations,
     rescans,
     maximumConcurrent,
@@ -264,20 +268,24 @@ describe("Merchant successful payment scheduling", () => {
     const result = await runScenario(false, false)
     expect(result.early.starts).toEqual([0])
     expect(result.starts).toEqual([0, 30_000])
-    expect(result.retirements).toEqual([])
+    expect(result.outcomes).toEqual(["progress_pending", "progress_pending"])
+    expect(result.retirementCalls).toBe(0)
     expect(result.maximumConcurrent).toBe(1)
   })
   it("already wakes at 750ms when rescan selects fresh signed progress", async () => {
     const result = await runScenario(true, true)
     expect(result.starts).toEqual([0, 750])
-    expect(result.retirements).toEqual([750])
+    expect(result.outcomes).toEqual(["progress_pending", "verified"])
+    expect(result.retirementCalls).toBe(0)
     expect(result.continuations).toBe(1)
     expect(result.maximumConcurrent).toBe(1)
   })
-  it("checks retirement promptly after paid progress with an unchanged signed discovery candidate", async () => {
+  it("confirms completion promptly after paid progress while retaining the wallet and unchanged signed discovery candidate", async () => {
     const result = await runScenario(true, false)
+    expect(result.starts).toEqual([0, 750])
+    expect(result.outcomes).toEqual(["progress_pending", "verified"])
     expect(result.continuations).toBe(1)
     expect(result.maximumConcurrent).toBe(1)
-    expect(result.retirements[0]).toBeLessThanOrEqual(750)
+    expect(result.retirementCalls).toBe(0)
   })
 })

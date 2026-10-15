@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
   finalizeEvent,
@@ -5,7 +6,10 @@ import {
   getPublicKey,
   verifyEvent,
 } from "nostr-tools/pure"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 
 import {
   buildEventMarketCalendarDraft,
@@ -1625,6 +1629,286 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("market wallet route keeps mobile-safe input and recoverable validation @market", async ({
     page,
   }) => {
+    const info = test.info()
+    type MenuPhase =
+      | "before_trigger"
+      | "menu_mounted"
+      | "trigger_clicked"
+      | "menu_removed"
+      | "item_clicked"
+    type MenuState = {
+      observationAvailable: boolean
+      triggerPresent: boolean
+      triggerEnabled: boolean
+      walletLoading: boolean
+      menuMounted: boolean
+      menuRemoved: boolean
+      menuPresent: boolean
+      menuOpen: boolean
+      itemPresent: boolean
+      itemVisible: boolean
+      itemEnabled: boolean
+      dialogPresent: boolean
+      pointerDownOnTrigger: boolean
+      triggerMovementDuringGesture: "stable" | "moved" | "unavailable"
+    }
+    let pendingItemSelection = false
+    let activeAttempt: "first" | "after_reload" = "first"
+    let observerFailure: unknown
+    const recordMenuState = (
+      attempt: "first" | "after_reload",
+      phase: MenuPhase,
+      state: MenuState
+    ) => {
+      // The reporter has an exact-file allowlist for these fixed fields.
+      recordSmokeDiagnostic(info, "mobile-wallet-menu", {
+        attempt,
+        phase,
+        observationAvailable: state.observationAvailable === true,
+        triggerPresent: state.triggerPresent === true,
+        triggerEnabled: state.triggerEnabled === true,
+        walletLoading: state.walletLoading === true,
+        menuMounted: state.menuMounted === true,
+        menuRemoved: state.menuRemoved === true,
+        menuPresent: state.menuPresent === true,
+        menuOpen: state.menuOpen === true,
+        itemPresent: state.itemPresent === true,
+        itemVisible: state.itemVisible === true,
+        itemEnabled: state.itemEnabled === true,
+        dialogPresent: state.dialogPresent === true,
+        pointerDownOnTrigger: state.pointerDownOnTrigger === true,
+        triggerMovementDuringGesture:
+          state.triggerMovementDuringGesture === "stable" ||
+          state.triggerMovementDuringGesture === "moved"
+            ? state.triggerMovementDuringGesture
+            : "unavailable",
+      })
+    }
+    await page.exposeFunction(
+      "__recordMobileWalletMenuTransition",
+      (
+        attempt: "first" | "after_reload",
+        phase: MenuPhase,
+        state: MenuState
+      ) => {
+        if (
+          !pendingItemSelection ||
+          attempt !== activeAttempt ||
+          (phase !== "menu_mounted" && phase !== "menu_removed")
+        )
+          return
+        try {
+          recordMenuState(attempt, phase, state)
+          if (phase === "menu_removed")
+            recordSmokeFailureContext(
+              info,
+              "mobile_wallet_setup_item_ready",
+              "unmet"
+            )
+        } catch (error) {
+          observerFailure ??= error
+        }
+      }
+    )
+    const installMenuProbe = async (attempt: "first" | "after_reload") => {
+      await page.evaluate((attempt) => {
+        const findTrigger = () =>
+          Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "Add wallet"
+          )
+        const gesture = {
+          pointerDownOnTrigger: false,
+          triggerMovementDuringGesture: "unavailable" as
+            "stable" | "moved" | "unavailable",
+          menuMounted: false,
+          menuRemoved: false,
+        }
+        let downY: number | null = null
+        let triggerGestureComplete = false
+        let bindingFailed = false
+        const listenerController = new AbortController()
+        document.addEventListener(
+          "pointerdown",
+          (event) => {
+            if (triggerGestureComplete) return
+            const trigger = findTrigger()
+            gesture.pointerDownOnTrigger =
+              !!trigger &&
+              event.target instanceof Node &&
+              trigger.contains(event.target)
+            downY = trigger?.getBoundingClientRect().y ?? null
+          },
+          { capture: true, signal: listenerController.signal }
+        )
+        document.addEventListener(
+          "pointerup",
+          () => {
+            if (triggerGestureComplete) return
+            const trigger = findTrigger()
+            gesture.triggerMovementDuringGesture =
+              downY === null || !trigger
+                ? "unavailable"
+                : Math.abs(trigger.getBoundingClientRect().y - downY) > 8
+                  ? "moved"
+                  : "stable"
+            triggerGestureComplete = true
+          },
+          { capture: true, signal: listenerController.signal }
+        )
+        const snapshot = () => {
+          const menu = document.querySelector('[role="menu"]')
+          const item = Array.from(
+            document.querySelectorAll('[role="menuitem"]')
+          ).find(
+            (entry) =>
+              entry.textContent?.trim() === "Connect an external wallet"
+          )
+          const currentTrigger = findTrigger()
+          return {
+            observationAvailable: true,
+            triggerPresent: !!currentTrigger,
+            triggerEnabled:
+              !!currentTrigger &&
+              !currentTrigger.matches(":disabled") &&
+              currentTrigger.getAttribute("aria-disabled") !== "true",
+            walletLoading: !!Array.from(document.querySelectorAll("span")).find(
+              (entry) => entry.textContent?.trim() === "Loading saved wallets"
+            ),
+            menuMounted: gesture.menuMounted,
+            menuRemoved: gesture.menuRemoved,
+            menuPresent: !!menu,
+            menuOpen: menu?.getAttribute("data-state") === "open",
+            itemPresent: !!item,
+            itemVisible: !!item && item.getClientRects().length > 0,
+            itemEnabled:
+              !!item &&
+              !item.matches(":disabled") &&
+              item.getAttribute("aria-disabled") !== "true",
+            dialogPresent: !!document.querySelector('[role="dialog"]'),
+            pointerDownOnTrigger: gesture.pointerDownOnTrigger,
+            triggerMovementDuringGesture: gesture.triggerMovementDuringGesture,
+          }
+        }
+        const containsMenu = (node: Node) =>
+          node instanceof Element &&
+          (node.matches('[role="menu"]') ||
+            !!node.querySelector('[role="menu"]'))
+        const observer = new MutationObserver((changes) => {
+          const mounted = changes.some((change) =>
+            [...change.addedNodes].some(containsMenu)
+          )
+          const removed = changes.some((change) =>
+            [...change.removedNodes].some(containsMenu)
+          )
+          if (!mounted && !removed) return
+          if (mounted) gesture.menuMounted = true
+          if (removed) gesture.menuRemoved = true
+          const phase = removed ? "menu_removed" : "menu_mounted"
+          void (
+            window as unknown as {
+              __recordMobileWalletMenuTransition: (
+                attempt: "first" | "after_reload",
+                phase: "menu_mounted" | "menu_removed",
+                state: ReturnType<typeof snapshot>
+              ) => Promise<void>
+            }
+          )
+            .__recordMobileWalletMenuTransition(attempt, phase, snapshot())
+            .catch(() => {
+              bindingFailed = true
+            })
+        })
+        observer.observe(document, { childList: true, subtree: true })
+        ;(
+          window as unknown as {
+            __mobileWalletMenuSnapshot: typeof snapshot
+            __mobileWalletMenuDispose: () => boolean
+          }
+        ).__mobileWalletMenuSnapshot = snapshot
+        ;(
+          window as unknown as { __mobileWalletMenuDispose: () => boolean }
+        ).__mobileWalletMenuDispose = () => {
+          observer.disconnect()
+          listenerController.abort()
+          return bindingFailed
+        }
+      }, attempt)
+    }
+    const disposeMenuProbe = async () => {
+      const bindingFailed = await page.evaluate(() =>
+        (
+          window as unknown as {
+            __mobileWalletMenuDispose?: () => boolean
+          }
+        ).__mobileWalletMenuDispose?.()
+      )
+      if (bindingFailed || observerFailure)
+        throw new Error("Mobile wallet menu diagnostic failed")
+    }
+    const menuDiagnostic =
+      (attempt: "first" | "after_reload") =>
+      async (
+        phase: "before_trigger" | "trigger_clicked" | "import_clicked"
+      ) => {
+        const state = await page.evaluate(() =>
+          (
+            window as unknown as {
+              __mobileWalletMenuSnapshot: () => MenuState
+            }
+          ).__mobileWalletMenuSnapshot()
+        )
+        const menuPhase = phase === "import_clicked" ? "item_clicked" : phase
+        recordMenuState(attempt, menuPhase, state)
+        if (phase === "before_trigger") {
+          activeAttempt = attempt
+          pendingItemSelection = true
+          recordSmokeFailureContext(
+            info,
+            "mobile_wallet_setup_trigger_click_completed",
+            "pending"
+          )
+        } else if (phase === "trigger_clicked") {
+          if (state.itemPresent && state.itemVisible && state.itemEnabled)
+            recordSmokeFailureContext(
+              info,
+              "mobile_wallet_setup_item_click_completed",
+              "pending"
+            )
+          else
+            recordSmokeFailureContext(
+              info,
+              "mobile_wallet_setup_item_ready",
+              "unmet"
+            )
+        } else {
+          pendingItemSelection = false
+          recordSmokeFailureContext(
+            info,
+            "mobile_wallet_setup_dialog_ready",
+            state.dialogPresent ? "met" : "pending"
+          )
+        }
+      }
+    const openObservedWalletSetup = async (
+      attempt: "first" | "after_reload"
+    ) => {
+      await installMenuProbe(attempt)
+      let cleanupFailure: unknown
+      try {
+        await openWalletSetup(page, "Connect wallet", menuDiagnostic(attempt))
+      } finally {
+        pendingItemSelection = false
+        if (!page.isClosed()) {
+          try {
+            await disposeMenuProbe()
+          } catch (error) {
+            // An open failure stays primary; a completed open reports cleanup.
+            if (!page.isClosed()) cleanupFailure = error
+          }
+        }
+      }
+      if (cleanupFailure !== undefined) throw cleanupFailure
+    }
     await installTestSigner(page, TEST_BUYER_PUBKEY)
     await page.goto(`${marketUrl}/wallet`)
 
@@ -1633,8 +1917,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await assertMobileViewport(page)
 
-    await page.getByText("External wallet management", { exact: true }).tap()
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    await openObservedWalletSetup("first")
     const dialog = page.getByRole("dialog", { name: "Connect wallet" })
     const connectionString = dialog.getByPlaceholder(
       "nostr+walletconnect://..."
@@ -1651,8 +1934,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
-    await page.getByText("External wallet management", { exact: true }).tap()
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    await openObservedWalletSetup("after_reload")
     await expect(connectionString).toBeVisible()
   })
 

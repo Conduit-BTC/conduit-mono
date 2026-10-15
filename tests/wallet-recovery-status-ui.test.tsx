@@ -3,11 +3,16 @@ import { renderToStaticMarkup } from "react-dom/server"
 import type { WalletDescriptor } from "@conduit/core/wallets"
 import type { AuthContextValue } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { Wallets } from "../packages/ui/src/components/Wallets"
+import type { WalletAddressController } from "@conduit/core/hooks/useWalletAddress"
+import {
+  Wallets,
+  WalletRecoveryNotice,
+} from "../packages/ui/src/components/Wallets"
 
 function surface(
   recoverySync: UseWalletsReturn["recoverySync"],
-  hasWallet = true
+  hasWallet = true,
+  recoveryDetails = true
 ) {
   const wallet: WalletDescriptor = {
     id: "wallet",
@@ -21,10 +26,35 @@ function surface(
     createdAt: 1,
     updatedAt: 1,
   }
+  const walletDiagnosis: UseWalletsReturn["recoveryDiagnosisByWallet"][string] =
+    {
+      backup: {
+        ready: recoverySync !== "pending",
+        confirmedTargets: 0,
+        targetCount: recoverySync === "pending" ? 1 : 0,
+        independentCopies: 0,
+        issues: recoverySync === "pending" ? ["awaiting_publish"] : [],
+      },
+      primary: {
+        ready: true,
+        confirmedTargets: 0,
+        targetCount: 0,
+        independentCopies: 0,
+        issues: [],
+      },
+    }
   const wallets = {
+    wallets: hasWallet ? [wallet] : [],
     portableWallets: hasWallet ? [wallet] : [],
     connectedWallets: [],
     runtime: {},
+    recoverySyncByWallet: hasWallet
+      ? { wallet: recoverySync === "ready" ? "ready" : "pending" }
+      : {},
+    recoveryDiagnosisByWallet: hasWallet ? { wallet: walletDiagnosis } : {},
+    mainWalletSync: null,
+    mainWalletDiagnosis: null,
+    recoveryDiscoveryDiagnosis: null,
     nwcSnapshots: {},
     loading: false,
     initializationError: null,
@@ -39,15 +69,36 @@ function surface(
     authGeneration: 1,
   } as AuthContextValue
   return renderToStaticMarkup(
-    <Wallets
-      auth={auth}
-      wallets={wallets}
-      formatSats={String}
-      renderAddressEditor={() => null}
-    />
+    recoveryDetails ? (
+      <WalletRecoveryNotice wallets={wallets} />
+    ) : (
+      <Wallets
+        auth={auth}
+        wallets={wallets}
+        formatSats={String}
+        addressController={
+          {
+            owner: null,
+            existing: "",
+            confirmed: false,
+            saved: false,
+            scopedSuggestion: null,
+          } as unknown as WalletAddressController
+        }
+        onSuggestAddress={() => undefined}
+      />
+    )
   )
 }
 describe("shared Wallets recovery delivery wording", () => {
+  it("keeps routine backup disclosure in recovery details rather than the wallet card", () => {
+    const markup = surface("ready", true, false)
+    expect(markup).not.toContain("Encrypted relay recovery is confirmed.")
+    expect(markup).not.toContain("Save your phrase, account number and network")
+    expect(markup).toContain("Refresh Conduit Wallet balance")
+    expect(markup).not.toContain("Sync encrypted wallet recovery")
+    expect(markup).toContain("Balance unavailable")
+  })
   for (const status of ["idle", "checking", "pending", "blocked"] as const) {
     it(`${status} never claims confirmed relay storage`, () => {
       const markup = surface(status)

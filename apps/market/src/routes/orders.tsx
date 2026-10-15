@@ -225,7 +225,6 @@ import {
   createCheckoutSparkSettledShopperRunner,
   type CheckoutSparkSettledShopperProgress,
 } from "../lib/checkout-spark-settled-shopper-runner"
-import { retireCheckoutSparkSettledShopper } from "../lib/checkout-spark-settled-retirement"
 import type { CheckoutSparkExternalFundingInvoice } from "../lib/checkout-spark-settled-funding"
 import { getSparkWalletManager } from "../lib/spark-sdk"
 import {
@@ -1210,89 +1209,6 @@ function OrderDetail({
       orderId: vm.orderId,
       view: currentViewRef.current,
     })
-  }
-
-  function canContinueRouterCleanupSession(): boolean {
-    const current = currentViewRef.current
-    return (
-      isQuantumRouterExecutionEnabled() &&
-      viewMountedRef.current &&
-      actionsReady &&
-      authGenerationRef.current === authGeneration &&
-      (guestIdentity
-        ? getCurrentRouterGuestIdentity() !== null
-        : authenticatedPubkey === buyerPubkey &&
-          isAuthGenerationCurrent(authGeneration)) &&
-      current.orderId === vm.orderId &&
-      current.merchantPubkey === row.merchantPubkey &&
-      current.phase !== "cancelled" &&
-      current.merchantStatus !== "cancelled" &&
-      current.merchantStatus !== "refund_requested" &&
-      // Completed/paid presentation permits inspection, never another send.
-      current.checkoutSparkRouted === true
-    )
-  }
-
-  async function checkSettledRouterCleanup(): Promise<void> {
-    if (routerActionInFlightRef.current) return
-    routerActionInFlightRef.current = true
-    setSettledRouterOutcome(null)
-    try {
-      if (!canContinueRouterCleanupSession()) {
-        throw new Error(
-          "The original buyer session must be active to check wallet cleanup."
-        )
-      }
-      const current = await readSettledRouterControl()
-      const displayed = settledRouterControl
-      if (
-        !canContinueRouterCleanupSession() ||
-        current.status !== "complete" ||
-        !current.retirement ||
-        displayed?.status !== "complete" ||
-        !displayed.retirement ||
-        current.retirement.checkoutId !== displayed.retirement.checkoutId ||
-        current.retirement.planDigest !== displayed.retirement.planDigest ||
-        current.retirement.network !== displayed.retirement.network ||
-        current.retirement.checkoutId !== routerBinding?.checkoutId ||
-        current.retirement.planDigest !== routerBinding.planDigest
-      ) {
-        throw new Error(
-          "Saved wallet cleanup eligibility changed. Refresh this order before checking again."
-        )
-      }
-      const currentGuestIdentity = getCurrentRouterGuestIdentity()
-      const result = await retireCheckoutSparkSettledShopper({
-        ...current.retirement,
-        orderId: vm.orderId,
-        merchantPubkey: row.merchantPubkey,
-        buyerPubkey,
-        guestIdentity: currentGuestIdentity,
-        currentGuestIdentity: getCurrentRouterGuestIdentity,
-        currentBuyerPubkey: () =>
-          !guestIdentity && canContinueRouterCleanupSession()
-            ? buyerPubkey
-            : null,
-        shouldContinue: canContinueRouterCleanupSession,
-      })
-      if (canContinueRouterCleanupSession()) {
-        setSettledRouterOutcome(
-          result.status === "retired"
-            ? null
-            : result.status === "retirement_pending"
-              ? "Wallet cleanup is still pending. Saved recovery remains available."
-              : "Wallet cleanup could not be verified. Saved recovery remains available."
-        )
-      }
-    } finally {
-      routerActionInFlightRef.current = false
-      await Promise.all([
-        settledRouterQuery.refetch(),
-        queryClient.invalidateQueries({
-          queryKey: [BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY, buyerPubkey],
-        }),
-      ])
-    }
   }
 
   function canUseRouterExternalInvoice(
@@ -2550,33 +2466,10 @@ function OrderDetail({
                 Your payment is recorded. Delivery confirmation is separate;
                 check the order status for the latest confirmation.
               </p>
-              <details className="text-xs leading-5 text-[var(--text-secondary)]">
-                <summary className="cursor-pointer">
-                  Checkout recovery details
-                </summary>
-                <p className="my-2">
-                  Keep recovery details until the checkout wallet can be safely
-                  retired.
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-11 px-4 text-sm"
-                  disabled={
-                    busy ||
-                    settledRouterQuery.isFetching ||
-                    !settledRouterControl.retirement ||
-                    !canContinueRouterCleanupSession()
-                  }
-                  onClick={() => void withBusy(checkSettledRouterCleanup)}
-                >
-                  Check wallet cleanup
-                </Button>
-                <p className="text-xs text-[var(--text-secondary)]">
-                  Checks whether the checkout wallet is safe to retire. Sends no
-                  funds.
-                </p>
-              </details>
+              <p className="text-xs text-[var(--text-secondary)]">
+                The checkout wallet and saved recovery stay attached to this
+                order.
+              </p>
             </div>
           ) : settledRouterControl?.status === "retired" ? (
             <p className="text-sm text-[var(--text-secondary)]">
@@ -3656,29 +3549,34 @@ function OrdersPage() {
   })
   const inbox = useCommerceInbox(activeBuyerPubkey, signerConnected)
   const messagesQuery = inbox.buyer
+  const { syncRecent } = inbox
 
-  const refetchAll = useCallback(async () => {
-    const refreshes: Promise<unknown>[] = [
-      lifecyclesQuery.refetch(),
-      queryClient.invalidateQueries({
-        queryKey: [
-          BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY,
-          activeBuyerPubkey ?? "none",
-        ],
-      }),
+  const refetchAll = useCallback(
+    async (fresh = true) => {
+      const refreshes: Promise<unknown>[] = [
+        lifecyclesQuery.refetch(),
+        queryClient.invalidateQueries({
+          queryKey: [
+            BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY,
+            activeBuyerPubkey ?? "none",
+          ],
+        }),
+      ]
+      if (signerConnected && activeBuyerPubkey) {
+        clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+        refreshes.push(fresh ? messagesQuery.refetch() : syncRecent())
+      }
+      await Promise.all(refreshes)
+    },
+    [
+      activeBuyerPubkey,
+      lifecyclesQuery,
+      messagesQuery,
+      queryClient,
+      syncRecent,
+      signerConnected,
     ]
-    if (signerConnected && activeBuyerPubkey) {
-      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
-      refreshes.push(messagesQuery.refetch())
-    }
-    await Promise.all(refreshes)
-  }, [
-    activeBuyerPubkey,
-    lifecyclesQuery,
-    messagesQuery,
-    queryClient,
-    signerConnected,
-  ])
+  )
 
   const reconnectSigner = useCallback(async () => {
     setSignerReconnectPending(true)
@@ -3692,7 +3590,8 @@ function OrdersPage() {
   useEffect(() => {
     const refetchAfterResume = () => {
       if (document.visibilityState === "hidden") return
-      void refetchAll()
+      // Automatic resume joins an active read; only explicit Refresh queues one.
+      void refetchAll(false)
     }
 
     window.addEventListener("focus", refetchAfterResume)

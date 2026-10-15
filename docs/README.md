@@ -92,6 +92,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 - `docs/knowledge/breez-lightning-addresses.md`: same-identity hosted address integration, configuration, retry and live enablement evidence.
 
+- `docs/knowledge/address-gateway-release.md`: original request verification, PR-based approved names, provider admission qualification and receiving-preserving release gates.
+
 ### Active Compatibility Exceptions
 
 - `docs/knowledge/checkout-spark-recipient-verification-compat.md`: provider-neutral

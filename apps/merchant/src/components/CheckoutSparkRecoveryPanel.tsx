@@ -432,7 +432,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                 throw new Error("Merchant notification session changed.")
               }
             }
-            if (isCurrent()) setCheckingDigest(candidate.planDigest)
+            if (isCurrent()) {
+              setCheckingDigest(candidate.planDigest)
+            }
             try {
               let outcome: MerchantCheckoutSparkReconciliationStatus
               if (automaticDispatch) {
@@ -1184,7 +1186,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const selectedAutomaticAuthority =
     automaticPayouts &&
     merchantCheckoutSparkAutomaticScopeIncludes(automaticScope, selectedOrderId)
-  const recoveryPending = candidate !== null && outcome !== "retired"
+  const recoveryPending =
+    candidate !== null &&
+    outcome !== "retired" &&
+    !(
+      projection?.commerceVerified &&
+      !projection.feePending &&
+      !projection.recipientUnverified
+    )
   const card = (
     <>
       <CheckoutSparkMerchantPaymentCard
@@ -1206,9 +1215,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           automaticPayouts && automaticScope?.kind === "all" ? "all" : "order"
         }
         recoveryPending={recoveryPending}
-        recoveryStatusRefreshing={
-          candidate !== null && retirement[candidate.planDigest] === undefined
-        }
         automaticProcessing={selectedAutomaticAuthority && recoveryPending}
         transitioning={busy || automaticTransition !== null}
         handoffAt={candidate?.takeoverAt ?? 0}

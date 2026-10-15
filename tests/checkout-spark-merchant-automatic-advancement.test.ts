@@ -134,7 +134,6 @@ function fixture() {
   }
   let selectionOverride: Selection | null = null
   const preparationAuthorizations: boolean[] = []
-  let retirementStatus: "retired" | "pending" | null = "pending"
   let intercept: ((stage: string) => void | Promise<void>) | undefined
   const calls: string[] = []
   const repositoryArguments: unknown[][] = []
@@ -269,15 +268,6 @@ function fixture() {
         payout: { outcome: "paid", sendAttempted: true },
       }
     },
-    retireWallet: async (principal, selected, dependencies) => {
-      expect(principal).toBe(merchant)
-      expect(dependencies?.repository).toBe(repository)
-      expect(dependencies?.assertActive).toBe(assertActive)
-      dependencies?.assertActive?.()
-      observeCandidate(selected)
-      await stage("retirement")
-      return { ...consumed(selected), retirementStatus }
-    },
     requestRescan: () => {
       calls.push("rescan")
     },
@@ -321,9 +311,6 @@ function fixture() {
     },
     setSelection(value: Selection) {
       selectionOverride = value
-    },
-    setRetirementStatus(value: typeof retirementStatus) {
-      retirementStatus = value
     },
     intercept(value: typeof intercept) {
       intercept = value
@@ -473,60 +460,33 @@ describe("automatic Merchant checkout one-phase advancement", () => {
     expect(context.calls).not.toContain("rescan")
   })
 
-  it("retires provider-verified commerce and fee without selecting or sending another payout", async () => {
+  it("completes provider-verified commerce and fee with the checkout wallet retained", async () => {
     const context = fixture()
     context.setRecord(providerRecord([merchantLeg, supplierLeg, feeLeg]))
-    context.setRetirementStatus("retired")
-    expect(await context.run(freshCandidate)).toBe("retired")
-    expect(context.calls).toEqual([
-      "witness",
-      "state",
-      "settlement:1",
-      "retirement",
-    ])
-    expect(context.observedCandidates).toEqual([freshCandidate])
+    expect(await context.run(freshCandidate)).toBe("verified")
+    expect(context.calls).toEqual(["witness", "state", "settlement:1"])
+    expect(context.observedCandidates).toEqual([])
+    expect(await context.run(freshCandidate)).toBe("verified")
+    expect(context.calls).not.toContain("selection")
+    expect(context.calls).not.toContain("continuation")
   })
 
-  it.each(["pending", null] as const)(
-    "does not claim terminal retirement from a consumed %s observation",
-    async (status) => {
-      const context = fixture()
-      context.setRecord(providerRecord([merchantLeg, supplierLeg, feeLeg]))
-      context.setRetirementStatus(status)
-      expect(await context.run(freshCandidate)).toBe(
-        status === "pending" ? "retirement_pending" : "unavailable"
-      )
-      expect(context.calls).toEqual([
-        "witness",
-        "state",
-        "settlement:1",
-        "retirement",
-      ])
-    }
-  )
-
   it.each(["missing", "incomplete"] as const)(
-    "reports %s retirement authority as unavailable without another payout",
-    async (status) => {
+    "does not require a new %s cleanup read after exact payment completion",
+    async () => {
       const context = fixture()
       context.setRecord(providerRecord([merchantLeg, supplierLeg, feeLeg]))
-      context.options.retireWallet = async () => ({
-        status,
-        coverage: "partial",
-        discoveryCoverage: "partial",
-        declarationState: "unavailable",
-        candidate: null,
-        retirementStatus: null,
-      })
-      expect(await context.run(freshCandidate)).toBe("unavailable")
+      context.options.inspectPayouts = async () => {
+        throw new Error("Completed payments must not reopen provider cleanup")
+      }
+      expect(await context.run(freshCandidate)).toBe("verified")
       expect(context.calls).toEqual(["witness", "state", "settlement:1"])
     }
   )
 
-  it("keeps read-only reconciliation separate from retirement", async () => {
+  it("keeps completed reconciliation read-only", async () => {
     const context = fixture()
     context.setRecord(providerRecord([merchantLeg, supplierLeg, feeLeg]))
-    context.setRetirementStatus("retired")
     expect(
       await reconcileMerchantCheckoutSparkOrder(
         merchant,
@@ -538,14 +498,13 @@ describe("automatic Merchant checkout one-phase advancement", () => {
     expect(context.calls).toEqual(["witness", "state", "settlement:1"])
   })
 
-  it("invalidates a held retirement observation when the Merchant session changes", async () => {
+  it("invalidates a held paid observation when the Merchant session changes", async () => {
     const context = fixture()
     context.setRecord(providerRecord([merchantLeg, supplierLeg, feeLeg]))
-    context.setRetirementStatus("retired")
     const entered = deferred()
     const release = deferred()
     context.intercept(async (stage) => {
-      if (stage !== "retirement") return
+      if (stage !== "settlement:1") return
       entered.resolve()
       await release.promise
     })
@@ -554,12 +513,7 @@ describe("automatic Merchant checkout one-phase advancement", () => {
     context.setActive(false)
     release.resolve()
     await expect(advancing).rejects.toThrow("Active Merchant session changed")
-    expect(context.calls).toEqual([
-      "witness",
-      "state",
-      "settlement:1",
-      "retirement",
-    ])
+    expect(context.calls).toEqual(["witness", "state", "settlement:1"])
   })
 
   it("prepares and continues only in separate calls with fresh signed selection", async () => {
@@ -632,7 +586,7 @@ describe("automatic Merchant checkout one-phase advancement", () => {
   )
 
   it.each(["already recorded", "after exact history"] as const)(
-    "checks wallet retirement for provider-attested all-paid %s",
+    "retains the wallet for provider-attested all-paid %s",
     async (when) => {
       const context = fixture()
       if (when === "already recorded") {
@@ -646,10 +600,10 @@ describe("automatic Merchant checkout one-phase advancement", () => {
           }
         })
       }
-      expect(await context.run(freshCandidate)).toBe("retirement_pending")
+      expect(await context.run(freshCandidate)).toBe("verified")
       expect(
         context.calls.filter((call) => call === "retirement")
-      ).toHaveLength(1)
+      ).toHaveLength(0)
       expect(context.calls).not.toContain("selection")
       expect(context.calls).not.toContain("preparation")
       expect(context.calls).not.toContain("continuation")

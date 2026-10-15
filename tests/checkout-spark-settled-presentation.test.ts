@@ -119,7 +119,7 @@ describe("settled router buyer presentation", () => {
       "pause processing; a submitted payment cannot be cancelled."
     )
     expect(visibleCopy).toContain(
-      "Keep recovery details until the checkout wallet can be safely retired."
+      "The checkout wallet and saved recovery stay attached to this order."
     )
     expect(ordersRoute).not.toContain("takeover still needs funded validation")
     expect(ordersRoute).toContain(
@@ -132,7 +132,11 @@ describe("settled router buyer presentation", () => {
       ordersRoute.indexOf("function canContinueRouterSession()"),
       ordersRoute.indexOf("async function continueSettledRouterCheckout(")
     )
-    expect(routerSession).toContain("current.checkoutSparkRouted === true")
+    expect(routerSession).toContain(
+      "return canContinueCheckoutSparkSettledRouteSession({"
+    )
+    expect(routerSession).toContain("orderId: vm.orderId")
+    expect(routerSession).toContain("view: currentViewRef.current")
     expect(routerSession).not.toContain("isBuyerOrderPaid")
     expect(ordersRoute).toContain(
       "checkoutSparkSettlement: buyerSettlements.get(orderId)"

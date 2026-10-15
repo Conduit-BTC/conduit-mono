@@ -83,15 +83,25 @@ in-flight/delayed history, and external mobile payment followed by Safari
 termination while Merchant is offline, then cold Merchant restore and completion.
 No synthetic test or source inspection waives this gate.
 
-The managed preview qualifies the ordinary-private `https://breez.tips`
-pay-request, callback and `/lnurlp/verify/` contract only. Its metadata identifies
-the selected address; private invoices bind that metadata, and historical invoice
-records retain the original receiving account separately from current name
-assignment. Qualification uses the provider implementation together with deployed
-issuance and exact verification/CORS observations. It does not establish paid
-receipt, spendable receiver credit, or physical-device recovery acceptance.
-Production and staging routing remain disabled. No other origin or public-zap
-mode inherits this preview qualification.
+The managed preview qualifies the ordinary-private `https://breez.tips` and
+`https://conduit.cash` pay-request, callback and `/lnurlp/verify/` contracts.
+Metadata identifies the selected address; private invoices bind that metadata,
+and provider invoice records retain the original receiving account separately
+from current name assignment. The custom-domain gateway preserves that provider
+contract through exact public verifier forwarding, with public CORS and no-store.
+Qualification combines the provider implementation with deployed issuance,
+exact invoice/hash/amount/preimage verification and a fresh-reader paid result
+for the static approved receiver. Those checks establish this bounded receiving
+contract; they do not establish native sender debit, spendable receiver credit,
+full routed checkout or physical-device recovery acceptance.
+
+Public LUD-21 does not expose the historical Spark recipient identity. This
+private metadata-hash contract retains the recipient's signed address choice as
+account authority. Same-name transfer and name removal during an outstanding
+routed attempt are outside the static qualification. Renaming or removing the
+lookup can leave historical verification unavailable; that state must not
+trigger another payout. Production and staging routing remain disabled. No
+other origin or public-zap mode inherits this preview qualification.
 
 ## Public references
 

@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import path from "node:path"
 import { expect, test } from "@playwright/test"
 import {
@@ -95,7 +96,7 @@ test("superseded wallet reload cannot close a new native session @market", async
     await expect
       .poll(() => page.evaluate(() => (window as any).__staleReloadWalletCount))
       .toBe(0)
-    await page.getByRole("button", { name: "Add a wallet" }).click()
+    await openWalletSetup(page, "Create wallet")
     await expect
       .poll(() => page.evaluate(() => (window as any).__balanceHeld === true))
       .toBe(true)

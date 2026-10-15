@@ -84,7 +84,7 @@ describe("content-free checkout operation observation", () => {
       let now = 5
       await observeCheckoutSparkOperation({
         app: "merchant",
-        step: "router_retirement",
+        step: "router_merchant_recovery",
         now: () => now,
         observe: (value) => observations.push(value),
         operation: async () => {

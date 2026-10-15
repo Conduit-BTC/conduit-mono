@@ -11,7 +11,11 @@ import {
   seedTestRelayIdentity,
   TEST_RELAY_URL,
 } from "./helpers/auth"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  classifyProductSubmitValidation,
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -398,8 +402,14 @@ for (const [viewportName, width, height] of [
   }, testInfo) => {
     test.setTimeout(180_000)
     page.setDefaultTimeout(25_000)
-    const activate = (control: Locator) =>
-      testInfo.project.use.hasTouch ? control.tap() : control.click()
+    const activate = async (control: Locator) => {
+      await control.evaluate(async (element) => {
+        await document.fonts.ready
+        element.scrollIntoView({ behavior: "instant", block: "center" })
+      })
+      if (testInfo.project.use.hasTouch) await control.tap()
+      else await control.click()
+    }
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     await seedTestRelayIdentity(secretKey)
@@ -561,17 +571,28 @@ for (const [viewportName, width, height] of [
       fullPage: true,
     })
 
-    await page.goto(`${merchantUrl}/products`)
+    await prepareEmptyMerchantCatalog(page, `${merchantUrl}/products`)
     // Wait for the independently read public policy before opening a new draft.
     await expect(page.locator('aside a[href="/shipping"]')).toHaveText(
       "Shipping",
       { timeout: 20_000 }
     )
+    await expect(
+      page.getByText("No listings yet", { exact: true })
+    ).toBeVisible()
     for (const [index, weight] of [
       [1, "250"],
       [2, "400"],
     ] as const) {
-      await activate(page.getByRole("button", { name: "Add product" }).first())
+      const addProduct = page
+        .getByRole("button", { name: "Add product" })
+        .first()
+      // A native touch click can arrive after focus starts smooth scrolling.
+      // Settle the target first, as in the digital-draft journey above.
+      await addProduct.evaluate((element) =>
+        element.scrollIntoView({ behavior: "instant", block: "center" })
+      )
+      await activate(addProduct)
       const dialog = page.getByRole("dialog", { name: "Add product" })
       await expect(dialog).toBeVisible()
       await dialog
@@ -609,9 +630,8 @@ for (const [viewportName, width, height] of [
         .getByLabel("Handling per item", { exact: true })
         .fill(index === 1 ? "25" : "1.25")
       await dialog.getByRole("button", { name: "Add by URL" }).click()
-      await dialog
-        .getByLabel("Primary image URL")
-        .fill(`https://media.conduit.market/shipping-table-${index}.png`)
+      const expectedImageUrl = `https://media.conduit.market/shipping-table-${index}.png`
+      await dialog.getByLabel("Primary image URL").fill(expectedImageUrl)
       const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
       await tags.fill("shipping, table, test")
       await tags.press("Tab")
@@ -633,43 +653,67 @@ for (const [viewportName, width, height] of [
         exact: true,
       })
       try {
+        recordSmokeFailureContext(testInfo, "product_publish_enabled")
         await expect(submit).toBeEnabled()
+        recordSmokeFailureContext(testInfo, "product_publish_enabled", "met")
       } catch (error) {
-        const state = await dialog.evaluate((element) => {
+        const state = await dialog.evaluate((element, expectedImageUrl) => {
           const button = element.querySelector<HTMLButtonElement>(
             'button[type="submit"]'
           )
+          const imageInputs = Array.from(
+            element.querySelectorAll<HTMLInputElement>(
+              'input[type="url"][id^="product-image-"]'
+            )
+          )
           const actionText = button?.textContent?.trim()
-          const status = Array.from(
-            element.querySelectorAll('[aria-live="polite"]')
+          const invalidNodes = Array.from(
+            element.querySelectorAll('[aria-invalid="true"], input:invalid')
           )
-            .map((node) => node.textContent ?? "")
-            .join(" ")
-          const validation = status.includes(
-            "Publish this product to add it to your store."
+          const invalidField = (selector: string) =>
+            invalidNodes.some((node) => node.matches(selector))
+          const imageFieldset = element
+            .querySelector("#product-image-file")
+            ?.closest("fieldset")
+          const invalidImages = invalidNodes.some(
+            (node) =>
+              imageInputs.includes(node as HTMLInputElement) ||
+              node === imageFieldset
           )
-            ? "ready"
-            : status.includes("Add a product title.")
-              ? "title"
-              : /image|Image/.test(status)
-                ? "images"
-                : /tag/.test(status)
-                  ? "tags"
-                  : /Price|price/.test(status)
-                    ? "price"
-                    : /stock|Stock/.test(status)
-                      ? "stock"
-                      : status.includes("Publish your shipping table")
-                        ? "shipping_table"
-                        : /weight|dimensions/.test(status)
-                          ? "measurements"
-                          : "other"
+          const invalidTitle = invalidField("#product-title")
+          const invalidPrice = invalidField("#product-price")
+          const invalidStock = invalidField("#product-stock")
+          const invalidShippingWeight = invalidField("#product-shipping-weight")
+          const invalidTags = invalidField("#product-tags")
           return {
             present: !!button,
             enabled: !!button && !button.disabled,
-            invalidControls: element.querySelectorAll(
-              '[aria-invalid="true"], input:invalid'
+            invalidControls: invalidNodes.length,
+            invalidTitle,
+            invalidPrice,
+            invalidStock,
+            invalidShippingWeight,
+            invalidTags,
+            invalidImages,
+            invalidOther: invalidNodes.some(
+              (node) =>
+                node !== imageFieldset &&
+                !imageInputs.includes(node as HTMLInputElement) &&
+                !node.matches(
+                  "#product-title, #product-price, #product-stock, #product-shipping-weight, #product-tags"
+                )
+            ),
+            imageRowCount: imageInputs.length,
+            blankImageRows: imageInputs.filter((input) => !input.value.trim())
+              .length,
+            invalidImageRows: imageInputs.filter(
+              (input) => input.getAttribute("aria-invalid") === "true"
             ).length,
+            primaryImageMatchesExpected:
+              imageInputs[0]?.value === expectedImageUrl,
+            expectedImagePresent: imageInputs.some(
+              (input) => input.value === expectedImageUrl
+            ),
             action:
               actionText === "Publish product"
                 ? "publish"
@@ -680,24 +724,44 @@ for (const [viewportName, width, height] of [
                     : actionText === "Reconnect signer to continue"
                       ? "reconnect"
                       : "other",
-            validation,
           }
-        })
+        }, expectedImageUrl)
+        const validation = await dialog.evaluate(
+          classifyProductSubmitValidation
+        )
         const signerAvailable = await page.evaluate(async (root) => {
           const { getAccountSigner } = await import(`${root}/session-signer.ts`)
           return !!getAccountSigner()
         }, `/@fs${process.cwd()}/packages/core/src/protocol`)
         recordSmokeDiagnostic(testInfo, "product-submit", {
           ...state,
+          validation,
           signerAvailable,
           phase: index === 1 ? "first_product" : "second_product",
         })
+        recordSmokeFailureContext(
+          testInfo,
+          "product_publish_enabled",
+          state.enabled ? "met" : "unmet"
+        )
         throw error
       }
+      recordSmokeFailureContext(testInfo, "product_publish_click_completed")
       await dialog
         .getByRole("button", { name: "Publish product", exact: true })
         .click()
+      recordSmokeFailureContext(
+        testInfo,
+        "product_publish_click_completed",
+        "met"
+      )
+      recordSmokeFailureContext(testInfo, "product_publish_dialog_closed")
       await expect(dialog).not.toBeVisible({ timeout: 30_000 })
+      recordSmokeFailureContext(
+        testInfo,
+        "product_publish_dialog_closed",
+        "met"
+      )
       await expect
         .poll(
           async () =>
@@ -706,6 +770,9 @@ for (const [viewportName, width, height] of [
           { timeout: 20_000 }
         )
         .toBe(index)
+      await expect(
+        page.getByText(`Table product ${index}`, { exact: true })
+      ).toBeVisible()
     }
     const products = await readTestRelayEvents({
       kinds: [30402],
@@ -753,11 +820,17 @@ for (const [viewportName, width, height] of [
     await expect(
       measurements.getByLabel("Shipping weight", { exact: true })
     ).toBeEnabled()
-    await measurements.getByLabel("Weight unit", { exact: true }).click()
+    const weightUnit = measurements.getByLabel("Weight unit", { exact: true })
+    await weightUnit.click()
     await page.getByRole("option", { name: "Grams", exact: true }).click()
-    await measurements
-      .getByLabel("Shipping weight", { exact: true })
-      .fill("450")
+    // Select restores focus asynchronously; finish that handoff before typing.
+    await expect(weightUnit).toBeFocused()
+    await expect(weightUnit).toHaveText("Grams")
+    const shippingWeight = measurements.getByLabel("Shipping weight", {
+      exact: true,
+    })
+    await shippingWeight.fill("450")
+    await expect(shippingWeight).toHaveValue("450")
     await measurements
       .getByText("Packing and dimensions", { exact: true })
       .click()

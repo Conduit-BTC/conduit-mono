@@ -8,7 +8,12 @@ import {
 import { createHash } from "node:crypto"
 
 import ts from "typescript"
-import { safeSmokeDiagnostics } from "../../e2e/helpers/smoke-diagnostics"
+import {
+  safeRetainedSmokeFailureContext,
+  safeSmokeDiagnostics,
+  smokeFailureContextFromAnnotations,
+  type SmokeFailureContext,
+} from "../../e2e/helpers/smoke-diagnostics"
 
 import type {
   FullConfig,
@@ -29,6 +34,7 @@ import {
 } from "../../e2e/helpers/hermetic-network"
 import {
   formatRouterSmokeDiagnostic,
+  parseRouterSmokeDiagnostic,
   routerSmokeDiagnosticFromAnnotations,
   type RouterSmokeDiagnostic,
 } from "./router_smoke_diagnostic"
@@ -62,6 +68,7 @@ type SafeResult = {
   status: TestResult["status"]
   failure?: {
     category: "timeout" | "assertion" | "interrupted" | "unknown"
+    context?: SmokeFailureContext
     failedStep?: SafeStep
     lastCompletedStep?: SafeStep
   }
@@ -141,6 +148,10 @@ const unsafeTitlePatterns = [
 ] as const
 
 const allowlistedDynamicTitles: Readonly<Record<string, readonly RegExp[]>> = {
+  "e2e/shared-ui-surface-audit.playwright.ts": [
+    /^market surface audit in (?:day-market|night-market): \/(?:products|merchants|sellers|zapouts|events|cart|checkout|orders|messages|profile|preferences|wallet|network|about|terms-of-service|privacy-policy)? @market$/,
+    /^merchant surface audit in (?:day-market|night-market): \/(?:products|events(?:\/new)?|orders|messages|profile|wallet|shipping|network|about|terms-of-service|privacy-policy)? @merchant$/,
+  ],
   "e2e/about-page.playwright.ts": [
     /^(market|merchant) signed-out About renders visitor content in the public app shell @\1$/,
     /^(market|merchant) signed-out About remains usable at a mobile viewport @\1$/,
@@ -370,7 +381,8 @@ function safeHermeticNetworkDiagnostic(
 }
 
 export function safePlaywrightFailure(
-  value: unknown
+  value: unknown,
+  file?: string
 ): SafeResult["failure"] | undefined {
   if (
     !isRecord(value) ||
@@ -404,11 +416,30 @@ export function safePlaywrightFailure(
   }
   const failedStep = step(value.failedStep)
   const lastCompletedStep = step(value.lastCompletedStep)
+  const context = file
+    ? safeRetainedSmokeFailureContext(file, value.context)
+    : undefined
   return {
     category: value.category as NonNullable<SafeResult["failure"]>["category"],
+    ...(context ? { context } : {}),
     ...(failedStep ? { failedStep } : {}),
     ...(lastCompletedStep ? { lastCompletedStep } : {}),
   }
+}
+
+export function safePlaywrightRunnerError(
+  value: unknown
+):
+  | { phase: "startup" | "runner"; category: "web-server" | "unknown" }
+  | undefined {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 2 ||
+    (value.phase !== "startup" && value.phase !== "runner") ||
+    (value.category !== "web-server" && value.category !== "unknown")
+  )
+    return undefined
+  return { phase: value.phase, category: value.category }
 }
 
 const durationBuckets = [
@@ -455,8 +486,30 @@ function retainedDiagnostic(
 }
 
 export function serializeSmokeEvidence(evidence: unknown): string {
-  // Only opaque case hashes and commit identities may contain long hex values.
-  const scanned = JSON.stringify(evidence, (key, value) => {
+  const approvedContexts = new WeakSet<object>()
+  if (isRecord(evidence) && Array.isArray(evidence.tests)) {
+    for (const spec of evidence.tests) {
+      if (
+        !isRecord(spec) ||
+        typeof spec.file !== "string" ||
+        !Array.isArray(spec.tests)
+      )
+        continue
+      for (const test of spec.tests) {
+        if (!isRecord(test) || !Array.isArray(test.results)) continue
+        for (const result of test.results) {
+          if (!isRecord(result) || !isRecord(result.failure)) continue
+          const context = result.failure.context
+          if (safeRetainedSmokeFailureContext(spec.file, context))
+            approvedContexts.add(context as object)
+        }
+      }
+    }
+  }
+  // Mask only validated identities and file-bound static condition names during
+  // scanning. Retain their original values in the artifact; all other strings
+  // still pass through the unchanged privacy scan.
+  const scanned = JSON.stringify(evidence, function (key, value) {
     if (
       key === "duration" ||
       /(?:Ms|Seconds)$/.test(key) ||
@@ -476,6 +529,7 @@ export function serializeSmokeEvidence(evidence: unknown): string {
       /^[0-9a-f]{64}$/.test(value)
     )
       return "case"
+    if (key === "expected" && approvedContexts.has(this)) return "condition"
     return value
   })
   if (
@@ -674,6 +728,10 @@ export class PrivacySafeSmokeReporter implements Reporter {
         .find(({ step }) => !propagatedParents.has(step))
       const failedStep = failed ? safeStep(failed.step) : state?.active?.value
       const completed = failed ? failed.completed : state?.completed
+      const context = smokeFailureContextFromAnnotations(
+        file,
+        result.annotations
+      )
       safeResult.failure = {
         category:
           result.status === "timedOut"
@@ -683,6 +741,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
               : failedStep?.category === "assertion"
                 ? "assertion"
                 : "unknown",
+        ...(context ? { context } : {}),
         ...(failedStep ? { failedStep } : {}),
         ...(completed ? { lastCompletedStep: completed } : {}),
       }
@@ -790,6 +849,11 @@ export class PrivacySafeSmokeReporter implements Reporter {
               status: attempt.status,
               ...(attempt.error ? { error: attempt.error } : {}),
               ...(attempt.failure ? { failure: attempt.failure } : {}),
+              ...(spec.file === "e2e/commerce-router-recovery.playwright.ts" &&
+              attempt.router &&
+              parseRouterSmokeDiagnostic(attempt.router)
+                ? { router: parseRouterSmokeDiagnostic(attempt.router) }
+                : {}),
               ...(attempt.diagnostics
                 ? {
                     diagnostics: attempt.diagnostics.map(retainedDiagnostic),

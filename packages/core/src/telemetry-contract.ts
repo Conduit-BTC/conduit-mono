@@ -128,7 +128,6 @@ export const checkoutSparkOperationSteps = [
   "router_outgoing_observation",
   "router_native_commitment",
   "router_merchant_recovery",
-  "router_retirement",
 ] as const
 
 /**

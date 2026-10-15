@@ -51,9 +51,6 @@ import { prepareNextMerchantCheckoutSparkSettledPayout } from "../apps/merchant/
 import { advanceMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
 import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
-  inspectMerchantCheckoutSparkSettledPayoutHistory,
-  reconcileMerchantCheckoutSparkSettledCredit,
-  retireMerchantCheckoutSparkSettledRecovery,
   type MerchantSparkRecoveryWallet,
 } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import {
@@ -258,6 +255,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
       const calls = {
         opens: 0,
         cleanups: 0,
+        retirementReaders: 0,
         receives: 0,
         resolutions: [] as string[],
         sends: [] as string[],
@@ -544,26 +542,10 @@ describe("offline cold Merchant guest supplier recovery", () => {
           },
           getLightningSendRequest: async (id) =>
             [...sent.values()].find((request) => request.id === id) ?? null,
-          openRetirementReader: async () => ({
-            sparkAddress: "synthetic-owned-address",
-            reader: {
-              getTransfers: async () => ({
-                transfers: ["cold-merchant-credit", ...sent.keys()].map(
-                  (id) => ({
-                    id,
-                    status: 5,
-                    type: 1,
-                    network: 1,
-                    totalValue: grossSats,
-                  })
-                ),
-                offset: -1,
-              }),
-              getAvailableBalance: async () => BigInt(availableSats),
-              getOwnedBalance: async () => BigInt(availableSats),
-              getPendingTransfers: async () => [],
-            },
-          }),
+          async openRetirementReader() {
+            calls.retirementReaders += 1
+            throw new Error("Retirement reader must remain unused")
+          },
           estimateLightningFee: async () => 1,
           cleanup: async () => {
             calls.cleanups += 1
@@ -802,101 +784,66 @@ describe("offline cold Merchant guest supplier recovery", () => {
         expect(await database.checkoutSparkRetirements.count()).toBe(0)
         expect(await database.orderLifecycles.count()).toBe(0)
         expect(await database.wallets.count()).toBe(0)
-        // Zero balance alone does not establish complete claim/refund terminality.
         now += 1_000
-        const incompleteHistory =
-          await retireMerchantCheckoutSparkSettledRecovery(
-            plan.merchantPubkey,
-            await discover(),
-            {
-              ...dependencies,
-              openWallet: async (input) => ({
-                ...(await dependencies.openWallet(input)),
-                getLightningSendRequest: async () => null,
-              }),
-            }
-          )
-        expect(incompleteHistory.status).toBe("consumed")
-        expect(incompleteHistory.retirementStatus).toBe("pending")
+        const completedCandidate = await discover()
+        const advanceDependencies = {
+          ...dependencies,
+          requestRescan: () => {
+            throw new Error(
+              "Verified settlement must not request another phase"
+            )
+          },
+        }
+        const completed = await advanceMerchantCheckoutSparkOrder(
+          plan.merchantPubkey,
+          completedCandidate,
+          () => {},
+          advanceDependencies
+        )
+        expect(completed).toBe("verified")
         expect(
           (await repository.load(plan.checkoutId, plan.planDigest)).status
         ).toBe("active")
-        expect(calls.sends).toHaveLength(3)
-        now += 1_000
-        const retireCandidate = await discover()
-        const offlineChecks = {
-          checkCredit: (
-            ...args: Parameters<
-              typeof reconcileMerchantCheckoutSparkSettledCredit
-            >
-          ) =>
-            reconcileMerchantCheckoutSparkSettledCredit(args[0], args[1], {
-              ...dependencies,
-              ...args[2],
-            }),
-          inspectPayouts: (
-            ...args: Parameters<
-              typeof inspectMerchantCheckoutSparkSettledPayoutHistory
-            >
-          ) =>
-            inspectMerchantCheckoutSparkSettledPayoutHistory(args[0], args[1], {
-              ...dependencies,
-              ...args[2],
-            }),
-          notifySuppliers: () => {},
-        }
-        const retired = await advanceMerchantCheckoutSparkOrder(
-          plan.merchantPubkey,
-          retireCandidate,
-          () => {},
-          {
-            ...offlineChecks,
-            repository,
-            now: () => now,
-            requestRescan: () => {
-              throw new Error("Retirement must not start another phase")
-            },
-            retireWallet: (principal, selected, options) =>
-              retireMerchantCheckoutSparkSettledRecovery(principal, selected, {
-                ...dependencies,
-                ...options,
-              }),
-          }
-        )
-        expect(retired).toBe("retired")
-        expect(
-          (await repository.load(plan.checkoutId, plan.planDigest)).status
-        ).toBe("retired")
         const retained = await repository.loadMerchantSettlement(
           plan.merchantPubkey,
           plan.checkoutId,
           plan.planDigest
         )
-        expect(
-          projectCheckoutSparkMerchantSettlement(retained!).commerceVerified
-        ).toBe(true)
+        expect(projectCheckoutSparkMerchantSettlement(retained!)).toMatchObject(
+          {
+            creditVerified: true,
+            commerceVerified: true,
+            feePending: false,
+            recipientUnverified: false,
+          }
+        )
+        expect(retained!.paidLegs.every((leg) => leg.recipientVerified)).toBe(
+          true
+        )
         expect(calls.sends).toHaveLength(3)
         expect(calls.opens).toBe(calls.cleanups)
-        const opensAfterRetirement = calls.opens
+        expect(calls.retirementReaders).toBe(0)
+        expect(
+          await progressStore.list(
+            plan.merchantPubkey,
+            plan.checkoutId,
+            plan.planDigest
+          )
+        ).not.toHaveLength(0)
+        const sendsAfterCompletion = [...calls.sends]
         expect(
           await advanceMerchantCheckoutSparkOrder(
             plan.merchantPubkey,
-            retireCandidate,
+            await discover(),
             () => {},
-            {
-              ...offlineChecks,
-              repository,
-              now: () => now,
-              requestRescan: () => {
-                throw new Error("Retired checkout cannot request execution")
-              },
-              retireWallet: async () => {
-                throw new Error("Retired checkout cannot reopen its wallet")
-              },
-            }
+            advanceDependencies
           )
-        ).toBe("retired")
-        expect(calls.opens).toBe(opensAfterRetirement)
+        ).toBe("verified")
+        expect(calls.sends).toEqual(sendsAfterCompletion)
+        expect(calls.retirementReaders).toBe(0)
+        expect(
+          (await repository.load(plan.checkoutId, plan.planDigest)).status
+        ).toBe("active")
       } finally {
         followupDiscovery?.dispose()
         inboxOwner?.stop()
@@ -907,6 +854,6 @@ describe("offline cold Merchant guest supplier recovery", () => {
         database.close()
         await database.delete()
       }
-    }, 90_000) // about 35s per case alone; retain bounded headroom under full-suite load. // Multiple full signed recovery, payout, replay and retirement loops take
+    }, 90_000) // about 35s per case alone; retain bounded headroom under full-suite load.
   }
 })

@@ -31,7 +31,6 @@ import {
 import {
   createBuyerCheckoutSparkNativeTreasuryProvider,
   proveBuyerCheckoutSparkTreasuryCommerce,
-  inspectBuyerCheckoutSparkTreasuryCommerce,
   type CheckoutSparkTreasuryManager,
   type CheckoutSparkTreasuryRepository,
 } from "../../apps/market/src/lib/checkout-spark-native-treasury"
@@ -129,7 +128,6 @@ async function createFixture(count: number) {
     })
   let revision = 1
   let nativePaid = false
-  let retired = false
   const calls: Record<string, number> = {}
   const hit = (key: string) => {
     calls[key] = (calls[key] ?? 0) + 1
@@ -155,10 +153,11 @@ async function createFixture(count: number) {
       recipientVerified: true,
     })),
   }
-  const snapshot = (): CheckoutSparkSettledRepositorySnapshot =>
-    retired
-      ? { status: "retired", planDigest: plan.planDigest, retiredAt: now() }
-      : { status: "active", state: structuredClone(state), revision }
+  const snapshot = (): CheckoutSparkSettledRepositorySnapshot => ({
+    status: "active",
+    state: structuredClone(state),
+    revision,
+  })
   const save = async (next: typeof state, expected: number) => {
     if (revision !== expected) throw new Error("Synthetic CAS conflict")
     state = restoreCheckoutSparkSettledReconciliation(next)
@@ -371,7 +370,6 @@ async function createFixture(count: number) {
   async function runSample(): Promise<PhaseSample[]> {
     state = createCheckoutSparkSettledReconciliation(plan)
     revision = 1
-    retired = false
     nativePaid = false
     sent.clear()
     clock = AT + 100
@@ -471,53 +469,58 @@ async function createFixture(count: number) {
       if (result.status !== "outgoing_step" || result.step.outcome !== "paid")
         throw new Error("Synthetic native finalization did not pay")
     })
-    // Align to the frozen Merchant boundary without counting it as provider work.
-    clock = plan.takeoverAt + 1
-    await phase("core-terminal-retirement-inspection", async () => {
+    // Completion retains the wallet and exact recovery state. A repeat may
+    // re-attest saved commerce, but cannot send again or invoke retirement.
+    const nativeSendsAtCompletion = calls.nativeSend
+    const commerceSendsAtCompletion = calls.send
+    await phase("completed-state-reconciliation", async () => {
       const result = await runCheckoutSparkFinancialWorkflow(
         {
           checkoutId: plan.checkoutId,
           planDigest: plan.planDigest,
-          actor: "merchant",
-          mode: "retire",
+          actor: "shopper",
+          mode: "advance",
         },
         {
           store,
           assertCurrent: authority,
           now,
-          acknowledgeRecoverySnapshot: async () => {},
-          retirement: {
-            proveSettlement: async (fresh) => {
-              const inspection =
-                await inspectBuyerCheckoutSparkTreasuryCommerce({
-                  state: fresh,
-                  manager: manager as unknown as CheckoutSparkTreasuryManager,
-                  repository:
-                    repository as unknown as CheckoutSparkTreasuryRepository,
-                  assertAuthority: authority,
-                  assertCurrent: () => {},
-                  now,
-                })
-              const native = await manager.inspectCheckoutTreasury()
-              if (native.status !== "paid") return null
-              return {
-                expectedTransferIds: [
-                  ...inspection.expectedTransferIds,
-                  native.providerTransferId,
-                ],
-                closedReturnedProofs: inspection.closedReturnedProofs,
-              }
+          outgoing: {
+            reconcile: async (target) =>
+              classifyCheckoutSparkSettledExactOutgoingHistory(
+                target,
+                await history(plan.walletId, target.intent)
+              ),
+            preflight: async () => {
+              throw new Error(
+                "Completed obligations cannot prepare another send"
+              )
             },
-            openReader: () => manager.openCheckoutRetirementReader(),
-            commit: async () => {
-              hit("retirementCommit")
-              retired = true
+            send: async () => {
+              throw new Error("Completed obligations cannot send again")
             },
+          },
+          recordPaid: async () => {
+            hit("paidFactCallback")
+          },
+          acknowledgeRecoverySnapshot: async () => {
+            throw new Error(
+              "Completed unchanged state needs no new recovery ACK"
+            )
           },
         }
       )
-      if (result.status !== "retired")
-        throw new Error("Synthetic retirement did not complete")
+      if (
+        result.status !== "outgoing_step" ||
+        result.step.outcome !== "already_paid" ||
+        result.step.sendAttempted ||
+        !result.step.state.legs.every((leg) => leg.status === "paid") ||
+        result.step.state.treasuryFinalization?.status !== "paid" ||
+        snapshot().status !== "active" ||
+        calls.nativeSend !== nativeSendsAtCompletion ||
+        calls.send !== commerceSendsAtCompletion
+      )
+        throw new Error("Synthetic completion did not retain paid state")
     })
     return phases
   }
@@ -553,7 +556,7 @@ for (const commerceLegs of [1, 3, 8]) {
     console.log(
       JSON.stringify({
         scenario: "controlled-workflow-phase-sampler",
-        outcome: "retired",
+        outcome: "completed_wallet_retained",
         commerceLegs,
         sessionModel,
         injectedProviderDelayMs: PROVIDER_DELAY_MS,

@@ -173,7 +173,7 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
   it.each([
     "pending",
     "progress_pending",
-    "retirement_pending",
+    "unavailable",
     "renewal_wait",
   ] as const)(
     "gives other due candidates a turn and backs off %s to five minutes",
@@ -216,7 +216,7 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
     }
   )
 
-  it.each(["progress_pending", "retirement_pending"] as const)(
+  it.each(["progress_pending", "unavailable"] as const)(
     "invalidates held %s on visibility, account, and disposal changes without overlap",
     async (status) => {
       for (const transition of ["hidden", "account", "disposed"] as const) {
@@ -642,7 +642,7 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
   it.each([
     "pending",
     "unavailable",
-    "retirement_pending",
+    "needs_attention",
     "renewal_wait",
   ] as const)(
     "does not fast-wake a marked operation that finishes %s instead of progress_pending",

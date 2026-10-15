@@ -200,7 +200,10 @@ export class SessionSigner implements AccountSigner {
     }
   }
 
-  async signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent> {
+  async signEvent(
+    event: UnsignedNostrEvent,
+    options: { priority?: "foreground" | "background" } = {}
+  ): Promise<SignedNostrEvent> {
     // Snapshot before queueing: neither caller nor provider may change consent.
     try {
       if (
@@ -229,33 +232,37 @@ export class SessionSigner implements AccountSigner {
       }
       this.assertAuthority()
       this.assertExpectedPubkey(expected.pubkey)
-      return await this.runOperation("signEvent", async () => {
-        const draft = {
-          ...expected,
-          tags: expected.tags.map((tag) => [...tag]),
-        }
-        const signed = await this.signer.signEvent(draft)
-        this.assertAuthority()
-        if (!isValidSignedPublicNostrEvent(signed)) {
-          this.reject(
-            "invalid_response",
-            "The signer returned an invalid signature. Reconnect the intended account and try again."
-          )
-        }
-        if (
-          signed.pubkey !== expected.pubkey ||
-          signed.kind !== expected.kind ||
-          signed.created_at !== expected.created_at ||
-          signed.content !== expected.content ||
-          JSON.stringify(signed.tags) !== JSON.stringify(expected.tags)
-        ) {
-          this.reject(
-            "invalid_response",
-            "The signer changed the event. Reconnect the intended account and try again."
-          )
-        }
-        return { ...expected, id: signed.id, sig: signed.sig }
-      })
+      return await this.runOperation(
+        "signEvent",
+        async () => {
+          const draft = {
+            ...expected,
+            tags: expected.tags.map((tag) => [...tag]),
+          }
+          const signed = await this.signer.signEvent(draft)
+          this.assertAuthority()
+          if (!isValidSignedPublicNostrEvent(signed)) {
+            this.reject(
+              "invalid_response",
+              "The signer returned an invalid signature. Reconnect the intended account and try again."
+            )
+          }
+          if (
+            signed.pubkey !== expected.pubkey ||
+            signed.kind !== expected.kind ||
+            signed.created_at !== expected.created_at ||
+            signed.content !== expected.content ||
+            JSON.stringify(signed.tags) !== JSON.stringify(expected.tags)
+          ) {
+            this.reject(
+              "invalid_response",
+              "The signer changed the event. Reconnect the intended account and try again."
+            )
+          }
+          return { ...expected, id: signed.id, sig: signed.sig }
+        },
+        options.priority ?? "foreground"
+      )
     } catch (error) {
       throw publicSignerFailure(error)
     }
@@ -263,9 +270,16 @@ export class SessionSigner implements AccountSigner {
 
   async encryptNip44(
     recipientPubkey: string,
-    plaintext: string
+    plaintext: string,
+    options: { priority?: "foreground" | "background" } = {}
   ): Promise<string> {
-    return this.runKeyOperation("encrypt", recipientPubkey, plaintext, "nip44")
+    return this.runKeyOperation(
+      "encrypt",
+      recipientPubkey,
+      plaintext,
+      "nip44",
+      options.priority ?? "foreground"
+    )
   }
 
   async decryptNip44(

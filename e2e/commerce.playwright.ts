@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import {
   expect,
   test,
@@ -30,7 +31,9 @@ import {
 import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import {
+  classifySmokeBrowserError,
   recordSmokeDiagnostic,
+  recordSmokeFailureContext,
   type CommerceJourneyPhase,
 } from "./helpers/smoke-diagnostics"
 
@@ -50,6 +53,74 @@ type BuyerLifecycleCompletion = {
   lifecycleFound: boolean
   paymentPaid: boolean
   proofSent: boolean
+}
+
+async function readBuyerStatusLocalObservation(
+  page: Page,
+  principal: string,
+  orderId: string
+) {
+  return page.evaluate(
+    async ({ root, expectedPrincipal, expectedOrderId }) => {
+      const unavailable = {
+        observationAvailable: false,
+        sessionCurrent: false,
+        providerReady: false,
+        localObservationAvailable: false,
+        localPending: false,
+        localStorageFailed: false,
+        localOrderCount: 0,
+        localAcceptedCount: 0,
+      }
+      try {
+        const { readAuthSession } = await import(`${root}/auth-session.ts`)
+        const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
+        let session: ReturnType<typeof readAuthSession> | null = null
+        let localStorageFailed = false
+        try {
+          session = readAuthSession()
+        } catch {
+          localStorageFailed = true
+        }
+        const sessionCurrent =
+          session?.userPubkey === expectedPrincipal && !localStorageFailed
+        const providerReady = typeof window.nostr?.nip44?.decrypt === "function"
+        Object.assign(unavailable, {
+          observationAvailable: true,
+          sessionCurrent,
+          providerReady,
+          localStorageFailed,
+        })
+        if (!sessionCurrent) return unavailable
+        const snapshot = getCommerceInbox(expectedPrincipal).getSnapshot()
+        const orderMessages = snapshot.orderMessages.filter(
+          (message: { orderId: string }) => message.orderId === expectedOrderId
+        )
+        return {
+          observationAvailable: true,
+          sessionCurrent,
+          providerReady,
+          localObservationAvailable: true,
+          localPending: snapshot.pending,
+          localStorageFailed: snapshot.diagnostics.storageUnavailable,
+          localOrderCount: orderMessages.length,
+          localAcceptedCount: orderMessages.filter(
+            (message: { type: string; payload?: { status?: string } }) =>
+              message.type === "status_update" &&
+              message.payload?.status === "accepted"
+          ).length,
+          localCoverage: snapshot.diagnostics.coverage,
+        }
+      } catch {
+        return unavailable
+      }
+    },
+    {
+      root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+      expectedPrincipal: principal,
+      expectedOrderId: orderId,
+    }
+  )
 }
 
 async function readBuyerLifecycleCompletion(
@@ -562,10 +633,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
   let cleanupComplete = false
   let buyerPaidObservation: Record<string, number | boolean> = {}
   let foreignMenuObservation: Record<string, number | boolean> = {}
+  let navigationObservation: Record<string, number | boolean | string> = {}
   const recordJourney = () =>
     recordSmokeDiagnostic(testInfo, "commerce-journey", {
       ...buyerPaidObservation,
       ...foreignMenuObservation,
+      ...navigationObservation,
       phase: currentPhase,
       elapsedSeconds: (performance.now() - started) / 1000,
       phaseSeconds: (performance.now() - phaseStarted) / 1000,
@@ -654,20 +727,15 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("wallet_route")
     await merchantPage.goto(`${merchantUrl}/wallet`)
-    await merchantPage
-      .getByText("External wallet management", { exact: true })
-      .click()
     await expect(
-      merchantPage.getByRole("heading", { name: "My wallets", exact: true })
+      merchantPage.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
     // Retain an older mainnet default while this app creates testnet invoices.
     phase("foreign_wallet")
     await foreignWallet.configureMerchantConnection(
       async (connectionString) => {
         phase("foreign_open_dialog")
-        await merchantPage
-          .getByRole("button", { name: "Connect wallet", exact: true })
-          .click()
+        await openWalletSetup(merchantPage, "Connect wallet")
         phase("foreign_connection_form")
         await merchantPage
           .getByLabel("Wallet label", { exact: true })
@@ -735,14 +803,10 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .toBe(false)
     foreignMenuObservation.foreignRegistryRefreshObserved = true
     phase("foreign_manage")
-    const foreignPreferences = merchantPage
-      .getByRole("heading", { name: "Foreign NWC", exact: true })
-      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
-    await foreignPreferences
-      .getByText("Wallet preferences", { exact: true })
+    await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
       .click()
-    phase("foreign_select_default")
-    const foreignMenuItem = foreignPreferences.getByRole("button", {
+    const foreignMenuItem = merchantPage.getByRole("menuitem", {
       name: "Make default for merchant invoices",
       exact: true,
     })
@@ -765,18 +829,17 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     recordJourney()
     await foreignMenuItem.click()
     phase("foreign_default_committed")
+    await merchantPage
+      .getByRole("button", { name: "Manage Foreign NWC", exact: true })
+      .click()
     await expect(
-      merchantPage
-        .getByRole("heading", { name: "Foreign NWC", exact: true })
-        .locator("..")
-        .getByText("Default for merchant invoices", { exact: true })
+      merchantPage.getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
+    await merchantPage.keyboard.press("Escape")
     phase("receiving_wallet")
     await wallet.configureMerchantConnection(async (connectionString) => {
       phase("receiving_open_dialog")
-      await merchantPage
-        .getByRole("button", { name: "Connect wallet", exact: true })
-        .click()
+      await openWalletSetup(merchantPage, "Connect wallet")
       phase("receiving_connection_form")
       await merchantPage
         .getByLabel("Wallet label", { exact: true })
@@ -796,16 +859,12 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       merchantPage.getByText("Connected via NWC", { exact: true })
     ).toHaveCount(2, { timeout: 20_000 })
+    await expect(merchantPage.getByRole("article")).toHaveCount(2)
     await expect(
-      merchantPage.getByText("Choose this wallet at checkout.", {
-        exact: true,
-      })
-    ).toHaveCount(2)
-    await expect(
-      merchantPage.getByText(`Current address: ${merchantLud16}`, {
-        exact: true,
-      })
-    ).toBeVisible()
+      merchantPage
+        .getByRole("region", { name: "Nostr profile receiving address" })
+        .locator("[data-wallet-address]")
+    ).toHaveText(merchantLud16)
     await expect(
       merchantPage.getByText(
         "Payments are checked automatically against the original invoice in its receiving wallet.",
@@ -813,27 +872,24 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       )
     ).toBeVisible({ timeout: 20_000 })
     phase("receiving_manage")
-    const receivingPreferences = merchantPage
-      .getByRole("heading", { name: "Commerce NWC", exact: true })
-      .locator("xpath=ancestor::div[contains(@class, 'grid')][1]")
-    await receivingPreferences
-      .getByText("Wallet preferences", { exact: true })
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
       .click()
     phase("receiving_select_default")
-    await receivingPreferences
-      .getByRole("button", {
+    await merchantPage
+      .getByRole("menuitem", {
         name: "Make default for merchant invoices",
         exact: true,
       })
       .click()
     phase("receiving_default_committed")
-    // Confirm the asynchronous default commit before a full-page navigation.
+    await merchantPage
+      .getByRole("button", { name: "Manage Commerce NWC", exact: true })
+      .click()
     await expect(
-      merchantPage
-        .getByRole("heading", { name: "Commerce NWC", exact: true })
-        .locator("..")
-        .getByText("Default for merchant invoices", { exact: true })
+      merchantPage.getByText("Default for merchant invoices", { exact: true })
     ).toBeVisible()
+    await merchantPage.keyboard.press("Escape")
 
     phase("publish_product")
     await publishProduct(merchantPage, productTitle, testInfo)
@@ -898,7 +954,58 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       })
       .toBe(`/${merchantNpub}?q=${productTitle}`)
     phase("store_ready")
-    await buyerPage.goto(`${marketUrl}/${merchantNpub}`)
+    recordSmokeFailureContext(testInfo, "commerce_store_navigation_completed")
+    const storeUrl = `${marketUrl}/${merchantNpub}`
+    const navigationResponse = (
+      response: import("@playwright/test").Response
+    ) => {
+      if (
+        response.url() !== storeUrl ||
+        !response.request().isNavigationRequest()
+      )
+        return
+      navigationObservation.navigationResponseObserved = true
+      navigationObservation.navigationResponseStatus = response.status()
+    }
+    const navigationFailed = (request: import("@playwright/test").Request) => {
+      if (request.url() === storeUrl && request.isNavigationRequest())
+        navigationObservation.navigationRequestFailed = true
+    }
+    const navigationCommitted = (frame: import("@playwright/test").Frame) => {
+      if (frame === buyerPage.mainFrame() && frame.url() === storeUrl)
+        navigationObservation.navigationCommitted = true
+    }
+    navigationObservation = {
+      navigationObservationAvailable: true,
+      navigationResponseObserved: false,
+      navigationRequestFailed: false,
+      navigationCommitted: false,
+    }
+    buyerPage.on("response", navigationResponse)
+    buyerPage.on("requestfailed", navigationFailed)
+    buyerPage.on("framenavigated", navigationCommitted)
+    try {
+      await buyerPage.goto(storeUrl)
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_store_navigation_completed",
+        "met"
+      )
+    } catch (error) {
+      navigationObservation.navigationFailure = classifySmokeBrowserError(error)
+      navigationObservation.navigationPageClosed = buyerPage.isClosed()
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_store_navigation_completed",
+        "unmet"
+      )
+      recordJourney()
+      throw error
+    } finally {
+      buyerPage.off("response", navigationResponse)
+      buyerPage.off("requestfailed", navigationFailed)
+      buyerPage.off("framenavigated", navigationCommitted)
+    }
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
@@ -932,6 +1039,14 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       name: "Cart inventory",
       exact: true,
     })
+    await expect(cartHud).toBeVisible()
+    // Mobile keyboard/viewport changes can collapse the dock after a search.
+    // Verify the add committed, then explicitly open this purchase for checkout.
+    const purchase = cartHud.getByRole("button", {
+      name: new RegExp(`^${merchantName}, 1 cart item,`),
+    })
+    await expect(purchase).toBeVisible()
+    await purchase.click()
     const checkout = cartHud.getByRole("link", {
       name: "Continue to checkout",
       exact: true,
@@ -1001,12 +1116,320 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("buyer_status")
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    await expect(
-      buyerPage.getByText("Status: Accepted", { exact: true })
-    ).toBeVisible({ timeout: 30_000 })
+    const buyerStatusProbe = await buyerPage.evaluateHandle(() => {
+      const observations = {
+        dialogMounted: false,
+        dialogRemoved: false,
+        pointerDownOnTrigger: false,
+        pointerUpOnTrigger: false,
+        pointerUpObserved: false,
+        pointerCancelObserved: false,
+        pointerType: "unavailable" as "mouse" | "touch" | "pen" | "unavailable",
+        triggerDetachedDuringGesture: false,
+        triggerReplacedDuringGesture: false,
+        clickOnTrigger: false,
+        triggerMovementDuringGesture: "unavailable" as
+          "stable" | "moved" | "unavailable",
+        gestureActive: false,
+      }
+      let triggerDownElement: HTMLButtonElement | null = null
+      const observeTriggerIdentity = () => {
+        if (!triggerDownElement) return
+        if (!triggerDownElement.isConnected)
+          observations.triggerDetachedDuringGesture = true
+        const current = currentTrigger()
+        if (current && current !== triggerDownElement)
+          observations.triggerReplacedDuringGesture = true
+      }
+      let triggerDownPosition: { x: number; y: number } | null = null
+      const currentTrigger = () =>
+        [...document.querySelectorAll("button")].find(
+          (button) => button.getAttribute("aria-label") === "Open messages"
+        )
+      const isOpenMessagesButton = (target: EventTarget | null) => {
+        const button =
+          target instanceof Element ? target.closest("button") : null
+        if (!button) return false
+        return (
+          button.getAttribute("aria-label") === "Open messages" ||
+          button.textContent?.trim() === "Open messages"
+        )
+      }
+      const containsMessagesDialog = (node: Node): boolean => {
+        if (!(node instanceof Element)) return false
+        const isMessagesDialog = (element: Element) =>
+          element.getAttribute("role") === "dialog" &&
+          [...element.querySelectorAll('[role="heading"], h1, h2, h3')].some(
+            (heading) => heading.textContent?.trim() === "Messages"
+          )
+        return (
+          isMessagesDialog(node) ||
+          [...node.querySelectorAll('[role="dialog"]')].some(isMessagesDialog)
+        )
+      }
+      const observer = new MutationObserver((changes) => {
+        if (observations.gestureActive) observeTriggerIdentity()
+        for (const change of changes) {
+          if ([...change.addedNodes].some(containsMessagesDialog))
+            observations.dialogMounted = true
+          if ([...change.removedNodes].some(containsMessagesDialog))
+            observations.dialogRemoved = true
+        }
+      })
+      observer.observe(document, { childList: true, subtree: true })
+      const controller = new AbortController()
+      document.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (!isOpenMessagesButton(event.target)) return
+          observations.pointerDownOnTrigger = true
+          observations.gestureActive = true
+          observations.pointerType = ["mouse", "touch", "pen"].includes(
+            event.pointerType
+          )
+            ? (event.pointerType as "mouse" | "touch" | "pen")
+            : "unavailable"
+          triggerDownElement = currentTrigger() ?? null
+          const bounds = currentTrigger()?.getBoundingClientRect()
+          triggerDownPosition = bounds ? { x: bounds.x, y: bounds.y } : null
+        },
+        { capture: true, signal: controller.signal }
+      )
+      document.addEventListener(
+        "pointerup",
+        (event) => {
+          observations.pointerUpOnTrigger = isOpenMessagesButton(event.target)
+          if (observations.gestureActive) {
+            observations.pointerUpObserved = true
+            observeTriggerIdentity()
+            const bounds = currentTrigger()?.getBoundingClientRect()
+            observations.triggerMovementDuringGesture =
+              !triggerDownPosition || !bounds
+                ? "unavailable"
+                : Math.abs(bounds.x - triggerDownPosition.x) > 8 ||
+                    Math.abs(bounds.y - triggerDownPosition.y) > 8
+                  ? "moved"
+                  : "stable"
+          }
+          observations.gestureActive = false
+        },
+        { capture: true, signal: controller.signal }
+      )
+      document.addEventListener(
+        "pointercancel",
+        () => {
+          if (!observations.gestureActive) return
+          observations.pointerCancelObserved = true
+          observeTriggerIdentity()
+          observations.gestureActive = false
+        },
+        { capture: true, signal: controller.signal }
+      )
+      document.addEventListener(
+        "click",
+        (event) => {
+          if (isOpenMessagesButton(event.target))
+            observations.clickOnTrigger = true
+        },
+        { capture: true, signal: controller.signal }
+      )
+      return {
+        read: () => ({
+          dialogMounted: observations.dialogMounted,
+          dialogRemoved: observations.dialogRemoved,
+          pointerDownOnTrigger: observations.pointerDownOnTrigger,
+          pointerUpOnTrigger: observations.pointerUpOnTrigger,
+          pointerUpObserved: observations.pointerUpObserved,
+          pointerCancelObserved: observations.pointerCancelObserved,
+          pointerType: observations.pointerType,
+          triggerDetachedDuringGesture:
+            observations.triggerDetachedDuringGesture,
+          triggerReplacedDuringGesture:
+            observations.triggerReplacedDuringGesture,
+          documentVisible: document.visibilityState === "visible",
+          documentFocused: document.hasFocus(),
+          fontsLoaded: document.fonts.status === "loaded",
+          clickOnTrigger: observations.clickOnTrigger,
+          triggerMovementDuringGesture:
+            observations.triggerMovementDuringGesture,
+          dialogCount: [...document.querySelectorAll('[role="dialog"]')].filter(
+            (dialog) => containsMessagesDialog(dialog)
+          ).length,
+        }),
+        dispose: () => {
+          observer.disconnect()
+          controller.abort()
+        },
+      }
+    })
+    const acceptedStatus = buyerPage.getByText("Status: Accepted", {
+      exact: true,
+    })
+    const recordBuyerStatusDiagnostic = async (
+      diagnosticPhase:
+        "before_open" | "after_click" | "assertion_end" | "failure"
+    ) => {
+      try {
+        const probe = await buyerStatusProbe.evaluate((value) => value.read())
+        const local = await readBuyerStatusLocalObservation(
+          buyerPage,
+          buyer.pubkey,
+          orderId
+        )
+        const { acceptedCount, visibleAcceptedCount } =
+          await acceptedStatus.evaluateAll((nodes) => ({
+            acceptedCount: nodes.length,
+            visibleAcceptedCount: nodes.filter((node) => {
+              const style = getComputedStyle(node)
+              const bounds = node.getBoundingClientRect()
+              return (
+                bounds.width > 0 &&
+                bounds.height > 0 &&
+                style.visibility !== "hidden" &&
+                style.visibility !== "collapse" &&
+                style.display !== "none"
+              )
+            }).length,
+          }))
+        const messagesDialog = buyerPage.getByRole("dialog", {
+          name: "Messages",
+          exact: true,
+        })
+        const dialogCount = await messagesDialog.count()
+        recordSmokeDiagnostic(testInfo, "commerce-buyer-status", {
+          phase: diagnosticPhase,
+          observationAvailable: true,
+          dialogMounted: probe.dialogMounted,
+          dialogRemoved: probe.dialogRemoved,
+          pointerDownOnTrigger: probe.pointerDownOnTrigger,
+          pointerUpOnTrigger: probe.pointerUpOnTrigger,
+          pointerUpObserved: probe.pointerUpObserved,
+          pointerCancelObserved: probe.pointerCancelObserved,
+          pointerType: probe.pointerType,
+          triggerDetachedDuringGesture: probe.triggerDetachedDuringGesture,
+          triggerReplacedDuringGesture: probe.triggerReplacedDuringGesture,
+          documentVisible: probe.documentVisible,
+          documentFocused: probe.documentFocused,
+          fontsLoaded: probe.fontsLoaded,
+          clickOnTrigger: probe.clickOnTrigger,
+          triggerMovementDuringGesture: probe.triggerMovementDuringGesture,
+          dialogCount,
+          acceptedCount,
+          visibleAcceptedCount,
+          sessionCurrent: local.sessionCurrent,
+          providerReady: local.providerReady,
+          localObservationAvailable: local.localObservationAvailable,
+          localPending: local.localPending,
+          localStorageFailed: local.localStorageFailed,
+          localOrderCount: local.localOrderCount,
+          localAcceptedCount: local.localAcceptedCount,
+          ...("localCoverage" in local && local.localCoverage
+            ? { localCoverage: local.localCoverage }
+            : {}),
+        })
+        return { dialogCount }
+      } catch {
+        try {
+          recordSmokeDiagnostic(testInfo, "commerce-buyer-status", {
+            phase: diagnosticPhase,
+            observationAvailable: false,
+            dialogMounted: false,
+            dialogRemoved: false,
+            pointerDownOnTrigger: false,
+            pointerUpOnTrigger: false,
+            clickOnTrigger: false,
+            triggerMovementDuringGesture: "unavailable",
+            dialogCount: 0,
+            acceptedCount: 0,
+            visibleAcceptedCount: 0,
+            sessionCurrent: false,
+            providerReady: false,
+            localObservationAvailable: false,
+            localPending: false,
+            localStorageFailed: false,
+            localOrderCount: 0,
+            localAcceptedCount: 0,
+          })
+        } catch {
+          // Diagnostic collection must not replace the original test result.
+        }
+      }
+    }
+    recordSmokeFailureContext(testInfo, "commerce_buyer_status_dialog_opened")
+    await recordBuyerStatusDiagnostic("before_open")
+    let acceptedAssertionStarted = false
+    let openMessagesClickCompleted = false
+    let cleanupError: unknown
+    try {
+      const openMessages = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      await buyerPage.evaluate(() => document.fonts.ready)
+      // Touch projects exercise the same touch path as the mobile baseline.
+      if (testInfo.project.use.hasTouch) await openMessages.tap()
+      else await openMessages.click()
+      openMessagesClickCompleted = true
+      const afterClick = await recordBuyerStatusDiagnostic("after_click")
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_buyer_status_dialog_opened",
+        afterClick
+          ? afterClick.dialogCount > 0
+            ? "met"
+            : "unmet"
+          : "unavailable"
+      )
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_buyer_status_accepted_visible"
+      )
+      acceptedAssertionStarted = true
+      await expect(acceptedStatus).toBeVisible({ timeout: 30_000 })
+      recordSmokeFailureContext(
+        testInfo,
+        "commerce_buyer_status_accepted_visible",
+        "met"
+      )
+      await recordBuyerStatusDiagnostic("assertion_end")
+    } catch (error) {
+      try {
+        const atFailure = await recordBuyerStatusDiagnostic("failure")
+        if (atFailure?.dialogCount === 0)
+          recordSmokeFailureContext(
+            testInfo,
+            "commerce_buyer_status_dialog_opened",
+            "unmet"
+          )
+        else if (acceptedAssertionStarted)
+          recordSmokeFailureContext(
+            testInfo,
+            "commerce_buyer_status_accepted_visible",
+            "unmet"
+          )
+        else if (!openMessagesClickCompleted)
+          recordSmokeFailureContext(
+            testInfo,
+            "commerce_buyer_status_dialog_opened",
+            atFailure?.dialogCount ? "met" : "unavailable"
+          )
+      } catch {
+        // Keep the click or assertion failure as the primary result.
+      }
+      throw error
+    } finally {
+      try {
+        await buyerStatusProbe.evaluate((probe) => probe.dispose())
+      } catch (error) {
+        cleanupError = error
+      }
+      try {
+        await buyerStatusProbe.dispose()
+      } catch (error) {
+        cleanupError ??= error
+      }
+    }
+    if (cleanupError) throw cleanupError
     await buyerPage
       .getByRole("dialog", { name: "Messages", exact: true })
       .getByRole("button", { name: "Close", exact: true })
@@ -1136,37 +1559,59 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
 
     phase("buyer_paid")
     await buyerPage.goto(`${marketUrl}${buyerOrderPath}`)
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    try {
+    const openPaidMessages = async () => {
+      await buyerPage.evaluate(() => document.fonts.ready)
+      const trigger = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      if (testInfo.project.use.isMobile) await trigger.tap()
+      else await trigger.click()
       await expect(
-        buyerPage.getByText("Status: Paid", { exact: true })
-      ).toBeVisible({ timeout: 30_000 })
-    } catch (error) {
-      try {
-        const completion = await readBuyerLifecycleCompletion(
-          buyerPage,
-          orderId
-        )
-        buyerPaidObservation = {
-          buyerObservationAvailable: true,
-          buyerLifecyclePaid: completion.paymentPaid,
-          buyerProofSent: completion.proofSent,
-          buyerPaidMessages: await buyerPage
-            .getByText("Status: Paid", { exact: true })
-            .count(),
-          buyerMessageDialogVisible: await buyerPage
-            .getByRole("dialog", { name: "Messages", exact: true })
-            .isVisible(),
-        }
-      } catch {
-        // Diagnostic reads must not replace the original assertion failure.
-        buyerPaidObservation = { buyerObservationAvailable: false }
-      }
-      recordJourney()
-      throw error
+        buyerPage.getByRole("dialog", { name: "Messages", exact: true })
+      ).toBeVisible()
     }
+    const expectPaidMessages = async (afterReload = false) => {
+      const condition = afterReload
+        ? "commerce_buyer_reloaded_paid_visible"
+        : "commerce_buyer_paid_visible"
+      recordSmokeFailureContext(testInfo, condition)
+      try {
+        await expect(
+          buyerPage.getByText("Status: Paid", { exact: true })
+        ).toBeVisible({ timeout: 30_000 })
+      } catch (error) {
+        try {
+          const completion = await readBuyerLifecycleCompletion(
+            buyerPage,
+            orderId
+          )
+          buyerPaidObservation = {
+            buyerReadAfterReload: afterReload,
+            buyerObservationAvailable: true,
+            buyerLifecyclePaid: completion.paymentPaid,
+            buyerProofSent: completion.proofSent,
+            buyerPaidMessages: await buyerPage
+              .getByText("Status: Paid", { exact: true })
+              .count(),
+            buyerMessageDialogVisible: await buyerPage
+              .getByRole("dialog", { name: "Messages", exact: true })
+              .isVisible(),
+          }
+        } catch {
+          // Diagnostic reads must not replace the original assertion failure.
+          buyerPaidObservation = {
+            buyerReadAfterReload: afterReload,
+            buyerObservationAvailable: false,
+          }
+        }
+        recordJourney()
+        throw error
+      }
+      recordSmokeFailureContext(testInfo, condition, "met")
+    }
+    await openPaidMessages()
+    await expectPaidMessages()
 
     phase("reload")
     await Promise.all([merchantPage.reload(), buyerPage.reload()])
@@ -1175,12 +1620,8 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         .getByRole("list", { name: "Order progress" })
         .getByText("Payment confirmed", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
-    await expect(
-      buyerPage.getByText("Status: Paid", { exact: true })
-    ).toBeVisible({ timeout: 30_000 })
+    await openPaidMessages()
+    await expectPaidMessages(true)
     await expect
       .poll(() => readBuyerLifecycleCompletion(buyerPage, orderId), {
         timeout: 30_000,

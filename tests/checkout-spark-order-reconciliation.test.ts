@@ -581,7 +581,7 @@ describe("automatic checkout Spark order reconciliation adapter", () => {
   })
 
   it.each(["submitted", "ambiguous"] as const)(
-    "repairs an interrupted %s native terminal save against the same request before retirement",
+    "repairs an interrupted %s native terminal save against the same request without retiring the checkout wallet",
     async (status) => {
       const context = interruptedNativeFixture(status)
       expect(await context.run()).toBe("progress_pending")
@@ -593,8 +593,8 @@ describe("automatic checkout Spark order reconciliation adapter", () => {
         retirementChecks: 0,
         rescans: 1,
       })
-      expect(await context.run()).toBe("retired")
-      expect(context.counts().retirementChecks).toBe(1)
+      expect(await context.run()).toBe("verified")
+      expect(context.counts().retirementChecks).toBe(0)
       expect(context.counts().sends).toBe(0)
     }
   )

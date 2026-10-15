@@ -306,8 +306,8 @@ Optional aggregate operational timing for routed checkout and Merchant recovery.
 `step` is restricted to the shared fixed router-operation labels: full order
 preparation, funding preparation,
 recipient profile reads, individual recipient metadata reads, funding observation,
-commerce verification, outgoing observation, native commitment, Merchant recovery
-and retirement. One completed operation contributes `count_bucket=1`; results
+commerce verification, outgoing observation, native commitment and Merchant
+recovery. One completed operation contributes `count_bucket=1`; results
 can count operations, not shoppers, orders, transfers or verified payments.
 `status=success|failure` means the observed function returned or threw, not that
 funding, settlement, receiver claim or retirement succeeded. Pending provider

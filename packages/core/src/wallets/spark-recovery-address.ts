@@ -48,3 +48,22 @@ export function parseSparkRecoveryChoiceAddress(
     if (parsed.success) return { type, network: parsed.data }
   }
 }
+
+/** Optional metadata deliberately outside the deployed recovery namespace. */
+export function walletNamesDTag(network: WalletNetwork): string {
+  return `conduit:wallet-names:v1:${network}`
+}
+/** Optional request progress has its own NIP-78 coordinate. */
+export function addressRequestsDTag(network: WalletNetwork): string {
+  return `conduit:address-requests:v1:${network}`
+}
+export function isWalletNamesDTag(value: string): boolean {
+  return ["mainnet", "testnet", "signet", "regtest"].some(
+    (network) => value === walletNamesDTag(network as WalletNetwork)
+  )
+}
+export function isAddressRequestsDTag(value: string): boolean {
+  return ["mainnet", "testnet", "signet", "regtest"].some(
+    (network) => value === addressRequestsDTag(network as WalletNetwork)
+  )
+}

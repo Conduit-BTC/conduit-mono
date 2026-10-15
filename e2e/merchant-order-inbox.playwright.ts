@@ -3,7 +3,11 @@ import { nip19 } from "nostr-tools"
 import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-store"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  observeMessagesDialogTrigger,
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
@@ -176,11 +180,57 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       }
     }, merchant.pubkey)
 
-    await merchantPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
     const messages = merchantPage.getByRole("dialog", { name: "Messages" })
-    await expect(messages).toBeVisible()
+    const merchantTriggerProbe = await observeMessagesDialogTrigger(
+      merchantPage
+    ).catch(() => null)
+    try {
+      recordSmokeFailureContext(
+        testInfo,
+        "merchant_open_messages_click_completed"
+      )
+      const openMessages = merchantPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      await merchantPage.evaluate(() => document.fonts.ready)
+      if (testInfo.project.use.hasTouch) await openMessages.tap()
+      else await openMessages.click()
+      recordSmokeFailureContext(
+        testInfo,
+        "merchant_open_messages_click_completed",
+        "met"
+      )
+      recordSmokeFailureContext(testInfo, "merchant_messages_dialog_ready")
+      await expect(messages).toBeVisible()
+      recordSmokeFailureContext(
+        testInfo,
+        "merchant_messages_dialog_ready",
+        "met"
+      )
+    } catch (error) {
+      let observation: Record<string, number | boolean> = {
+        observationAvailable: false,
+      }
+      try {
+        if (merchantTriggerProbe)
+          observation = await merchantTriggerProbe.evaluate((probe) =>
+            probe.read()
+          )
+      } catch {
+        // A diagnostic must not replace the original action/assertion failure.
+      }
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "merchant_reply",
+        ...observation,
+      })
+      throw error
+    } finally {
+      await merchantTriggerProbe
+        ?.evaluate((probe) => probe.dispose())
+        .catch(() => undefined)
+      await merchantTriggerProbe?.dispose().catch(() => undefined)
+    }
     await inspectCommerceUi(
       merchantPage,
       testInfo,
@@ -267,8 +317,10 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     expect(matchingWraps).toHaveLength(1)
 
     phase("buyer_reply")
+    recordSmokeFailureContext(testInfo, "buyer_account_ready")
     await buyerPage.reload()
     await expect(buyerPage.getByLabel("Open account menu")).toBeVisible()
+    recordSmokeFailureContext(testInfo, "buyer_account_ready", "met")
     await buyerPage.evaluate((principal) => {
       const provider = (
         window as unknown as {
@@ -283,15 +335,91 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         return encrypt(peer, text)
       }
     }, buyer.pubkey)
-    await buyerPage
-      .getByRole("button", { name: "Open messages", exact: true })
-      .click()
     const buyerMessages = buyerPage.getByRole("dialog", { name: "Messages" })
     const buyerReply = `Accepted buyer reply ${Date.now().toString(36)}`
-    await buyerMessages
-      .getByRole("textbox", { name: "Message" })
-      .fill(buyerReply)
+    const buyerTriggerProbe = await observeMessagesDialogTrigger(
+      buyerPage
+    ).catch(() => null)
+    try {
+      recordSmokeFailureContext(testInfo, "buyer_open_messages_click_completed")
+      const openMessages = buyerPage.getByRole("button", {
+        name: "Open messages",
+        exact: true,
+      })
+      await buyerPage.evaluate(() => document.fonts.ready)
+      if (testInfo.project.use.hasTouch) await openMessages.tap()
+      else await openMessages.click()
+      recordSmokeFailureContext(
+        testInfo,
+        "buyer_open_messages_click_completed",
+        "met"
+      )
+      recordSmokeFailureContext(testInfo, "buyer_dialog_ready")
+      await expect(buyerMessages).toBeVisible()
+      const buyerDialogState = await buyerPage.evaluate(() => {
+        const dialog = document.querySelector<HTMLElement>('[role="dialog"]')
+        const input = dialog?.querySelector<HTMLInputElement>("input")
+        const send = dialog?.querySelector<HTMLButtonElement>(
+          'button[aria-label="Send message"]'
+        )
+        const visible = (element: HTMLElement | undefined | null) =>
+          !!element &&
+          element.getClientRects().length > 0 &&
+          getComputedStyle(element).visibility === "visible"
+        return {
+          dialogVisible: visible(dialog),
+          inputPresent: !!input,
+          inputVisible: visible(input),
+          inputEnabled: !!input && !input.disabled,
+          sendPresent: !!send,
+          focusWithinDialog: !!dialog?.contains(document.activeElement),
+        }
+      })
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "buyer_dialog",
+        ...buyerDialogState,
+      })
+      recordSmokeFailureContext(
+        testInfo,
+        "buyer_dialog_ready",
+        buyerDialogState.dialogVisible && buyerDialogState.inputEnabled
+          ? "met"
+          : "unmet"
+      )
+      recordSmokeFailureContext(testInfo, "buyer_input_filled")
+      await buyerMessages
+        .getByRole("textbox", { name: "Message" })
+        .fill(buyerReply)
+      phase("buyer_input_filled")
+      recordSmokeFailureContext(testInfo, "buyer_input_filled", "met")
+    } catch (error) {
+      let observation: Record<string, number | boolean> = {
+        observationAvailable: false,
+      }
+      try {
+        if (buyerTriggerProbe)
+          observation = await buyerTriggerProbe.evaluate((probe) =>
+            probe.read()
+          )
+      } catch {
+        // A diagnostic must not replace the original action/assertion failure.
+      }
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "buyer_dialog",
+        ...observation,
+      })
+      throw error
+    } finally {
+      await buyerTriggerProbe
+        ?.evaluate((probe) => probe.dispose())
+        .catch(() => undefined)
+      await buyerTriggerProbe?.dispose().catch(() => undefined)
+    }
+    recordSmokeFailureContext(testInfo, "buyer_send_clicked")
     await buyerMessages.getByRole("button", { name: "Send message" }).click()
+    phase("buyer_send_clicked")
+    recordSmokeFailureContext(testInfo, "buyer_send_clicked", "met")
+    recordSmokeFailureContext(testInfo, "buyer_delivery_status_visible")
     await expect(
       buyerMessages.getByRole("status").filter({
         hasText:
@@ -299,11 +427,15 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       })
     ).toBeVisible({ timeout: 30_000 })
     phase("buyer_restore")
+    recordSmokeFailureContext(testInfo, "buyer_delivery_status_visible", "met")
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved")
     await expect
       .poll(() => saved(buyerPage, buyer.pubkey, buyerReply), {
         timeout: 30_000,
       })
       .toEqual({ matches: 1, encrypted: true })
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved", "met")
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved")
     await buyerPage.reload()
     await expect(buyerPage.getByLabel("Open account menu")).toBeVisible()
     await expect
@@ -311,7 +443,9 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         timeout: 30_000,
       })
       .toEqual({ matches: 1, encrypted: true })
+    recordSmokeFailureContext(testInfo, "buyer_reply_saved", "met")
     phase("merchant_delivery")
+    recordSmokeFailureContext(testInfo, "buyer_reply_relay_observed")
     const merchantWraps = await readAuthenticatedGiftWraps(
       merchant,
       TEST_RELAY_URL
@@ -337,6 +471,7 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         )
       })
     ).toHaveLength(1)
+    recordSmokeFailureContext(testInfo, "buyer_reply_relay_observed", "met")
     phase("complete")
   } finally {
     await Promise.allSettled([buyerContext.close(), merchantContext.close()])

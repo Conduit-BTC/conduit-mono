@@ -430,11 +430,18 @@ describe("Playwright smoke area validation", () => {
         with?: Record<string, string>
       }>
     ).filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
-    expect(uploads).toHaveLength(1)
-    expect(uploads[0]?.with?.path).toBe(
-      "${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json"
+    expect(uploads).toHaveLength(3)
+    expect(uploads.map((step) => step.with?.path).sort()).toEqual(
+      [
+        "${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json",
+        "${{ runner.temp }}/playwright-router-smoke-evidence.json",
+        "${{ runner.temp }}/playwright-router-receiver-setup-evidence.json",
+      ].sort()
     )
-    expect(uploads[0]?.with?.["if-no-files-found"]).toBe("error")
+    for (const upload of uploads) {
+      expect(upload.with?.["if-no-files-found"]).toBe("error")
+      expect(upload.with?.["retention-days"]).toBe(7)
+    }
     expect(playwrightConfig).toContain("retries: 0")
     expect(smokeAreaValidator).not.toContain("result.stderr.trim()")
     expect(smokeAreaValidator).not.toContain("result.stdout.trim()")

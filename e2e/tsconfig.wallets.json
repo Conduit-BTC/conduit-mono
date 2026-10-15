@@ -22,6 +22,8 @@
   },
   "include": [
     "wallet-sign-in.playwright.ts",
+    "wallet-layout.playwright.ts",
+    "wallet-balances.playwright.ts",
     "wallet-addy-bootstrap.playwright.ts",
     "wallet-cross-app.playwright.ts",
     "wallet-reload.playwright.ts",
@@ -32,6 +34,7 @@
     "shared-ui-surface-audit.playwright.ts",
     "merchant-invoice-source.playwright.ts",
     "commerce.playwright.ts",
+    "commerce-inbox.playwright.ts",
     "merchant-product-image-preview.playwright.ts"
   ]
 }

@@ -1,7 +1,9 @@
+import { cn } from "../utils"
 import { walletAddressStatus } from "./wallet-address-status"
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  ArrowRight,
   Check,
   Copy,
   ExternalLink,
@@ -9,6 +11,7 @@ import {
   Link2,
   Loader2,
   MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
 } from "lucide-react"
@@ -46,6 +49,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
   Input,
   Label,
@@ -58,7 +63,11 @@ import {
   Textarea,
 } from "../index"
 
-import type { WalletAddressSuggestion } from "@conduit/core/hooks/useWalletAddress"
+import type {
+  WalletAddressController,
+  WalletAddressSuggestion,
+} from "@conduit/core/hooks/useWalletAddress"
+import { ProfileLightningAddressEditor } from "./ProfileLightningAddressEditor"
 import { SparkLightningAddress } from "./SparkLightningAddress"
 import { SparkRecoveryBundleDetails } from "./SparkRecoveryBundleDetails"
 import { AddressNameRequestForm } from "./AddressNameRequestForm"
@@ -97,33 +106,32 @@ const SPARK_HISTORY_LOAD_TIMEOUT_MS = 15_000
 export function Wallets({
   auth,
   wallets,
-  renderAddressEditor,
+  addressController,
+  onSuggestAddress,
   formatSats = (sats: number) => formatBitcoinBaseUnits(sats, "sats"),
   footer,
 }: {
   auth: AuthContextValue
   wallets: UseWalletsReturn
-  renderAddressEditor(
-    suggestion: WalletAddressSuggestion | null,
-    onDismiss: () => void
-  ): React.ReactNode
+  addressController: WalletAddressController
+  onSuggestAddress(suggestion: WalletAddressSuggestion): void
   formatSats?: (sats: number) => string
   footer?: React.ReactNode
 }) {
   const [setupMode, setSetupMode] = useState<PortableWalletMode>("create")
-  const [suggestion, setSuggestion] = useState<WalletAddressSuggestion | null>(
-    null
-  )
+  const [syncError, setSyncError] = useState<string | null>(null)
+  const [profileReviewOpen, setProfileReviewOpen] = useState(false)
+  const profileAddress = addressController.confirmed
+    ? addressController.existing
+    : null
   const [renameWallet, setRenameWallet] = useState<WalletDescriptor | null>(
     null
   )
-  const addressEditorRef = useRef<HTMLDivElement>(null)
-  const suggestAddress = (value: WalletAddressSuggestion) => {
-    setSuggestion(value)
-    requestAnimationFrame(() => {
-      addressEditorRef.current?.scrollIntoView({ block: "center" })
-      addressEditorRef.current?.focus()
-    })
+  const addWalletTriggerRef = useRef<HTMLButtonElement>(null)
+  const profileTriggerRef = useRef<HTMLElement>(null)
+  const suggestAddress = (suggestion: WalletAddressSuggestion) => {
+    profileTriggerRef.current = addWalletTriggerRef.current
+    onSuggestAddress(suggestion)
   }
   const walletsHeadingRef = useRef<HTMLHeadingElement>(null)
   const dialogTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -156,10 +164,12 @@ export function Wallets({
       account: auth.accountPubkey,
       generation: auth.authGeneration,
     }
-    setSuggestion(null)
+    setSyncError(null)
+    setProfileReviewOpen(false)
     setPortableOpen(false)
     setConnectedOpen(false)
     dialogTriggerRef.current = null
+    profileTriggerRef.current = null
     setUnlockWallet(null)
     setRecoveryWallet(null)
     setReceiveWallet(null)
@@ -215,24 +225,137 @@ export function Wallets({
   }
 
   return (
-    <PageLayout className="max-w-4xl px-0 py-2 sm:px-0 sm:py-6">
+    <PageLayout className="max-w-6xl px-0 py-2 sm:px-0 sm:py-6">
       <div className="space-y-6">
         <section className="min-w-0">
-          <div className="border-b border-[var(--border)] p-5 sm:p-8">
-            <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h1
-                  ref={walletsHeadingRef}
-                  tabIndex={-1}
-                  className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl"
-                >
-                  Wallets
-                </h1>
-              </div>
+          <div className="flex items-center justify-between gap-4 px-0 pt-5 sm:px-8 sm:pt-8">
+            <h1
+              ref={walletsHeadingRef}
+              tabIndex={-1}
+              className="text-balance font-heading text-3xl font-semibold text-[var(--text-primary)]"
+            >
+              Wallets
+            </h1>
+            <div className="flex items-center gap-1">
+              {wallets.portableWallets.length === 0 &&
+                wallets.recoverySync !== "idle" && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-label={
+                      wallets.recoverySync === "checking"
+                        ? "Syncing encrypted wallet recovery"
+                        : wallets.recoverySync === "ready"
+                          ? "Sync encrypted wallet recovery"
+                          : "Retry encrypted wallet sync"
+                    }
+                    disabled={
+                      !signerReady || wallets.recoverySync === "checking"
+                    }
+                    className={cn(
+                      "relative",
+                      wallets.recoverySync !== "ready" &&
+                        wallets.recoverySync !== "checking" &&
+                        "text-[var(--warning-text)]"
+                    )}
+                    onClick={() => {
+                      const scope = authScopeRef.current
+                      setSyncError(null)
+                      void wallets.retryRecovery().catch((error) => {
+                        if (authScopeRef.current === scope)
+                          setSyncError(
+                            getErrorMessage(error, "Wallet sync failed.")
+                          )
+                      })
+                    }}
+                  >
+                    <RefreshCw
+                      className={cn(
+                        "size-4",
+                        wallets.recoverySync === "checking" &&
+                          "motion-safe:animate-spin"
+                      )}
+                      aria-hidden="true"
+                    />
+                    {wallets.recoverySync !== "ready" &&
+                      wallets.recoverySync !== "checking" && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute right-1 top-1 text-xs font-semibold"
+                        >
+                          !
+                        </span>
+                      )}
+                  </Button>
+                )}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    ref={addWalletTriggerRef}
+                    variant="outline"
+                    disabled={wallets.loading || !!wallets.initializationError}
+                  >
+                    <Plus className="size-4" aria-hidden="true" />
+                    Add wallet
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    disabled={
+                      wallets.sparkAvailability.status !== "ready" ||
+                      !signerReady
+                    }
+                    onSelect={() => {
+                      dialogTriggerRef.current = addWalletTriggerRef.current
+                      setSetupMode("create")
+                      setPortableOpen(true)
+                    }}
+                  >
+                    <Plus className="mr-2 size-4" aria-hidden="true" />
+                    Create a wallet
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={
+                      wallets.sparkAvailability.status !== "ready" ||
+                      !signerReady
+                    }
+                    onSelect={() => {
+                      dialogTriggerRef.current = addWalletTriggerRef.current
+                      setSetupMode("restore")
+                      setPortableOpen(true)
+                    }}
+                  >
+                    <ArrowDownToLine
+                      className="mr-2 size-4"
+                      aria-hidden="true"
+                    />
+                    Import an existing wallet
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      dialogTriggerRef.current = addWalletTriggerRef.current
+                      setConnectedOpen(true)
+                    }}
+                  >
+                    <Link2 className="mr-2 size-4" aria-hidden="true" />
+                    Connect an external wallet
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
-
-          <div className="space-y-8 p-5 sm:p-8">
+          <div className="space-y-8 py-5 sm:p-8">
+            <WalletNameSyncNotice wallets={wallets} />
+            {syncError && (
+              <p role="alert" className="text-sm text-[var(--error-text)]">
+                {syncError}
+              </p>
+            )}
+            {((wallets.portableWallets.length === 0 &&
+              wallets.recoverySync !== "idle") ||
+              wallets.recoverySync === "blocked") && (
+              <RecoverySyncNotice wallets={wallets} />
+            )}
             {wallets.initializationError ? (
               <div
                 role="alert"
@@ -269,18 +392,21 @@ export function Wallets({
             {!wallets.initializationError && (
               <>
                 <WalletSection
-                  title="My wallets"
-                  recoverySyncByWallet={wallets.recoverySyncByWallet}
+                  title="Wallet list"
+                  profileAddress={profileAddress}
                   onPublicAddress={
                     auth.accountPubkey
-                      ? (address) =>
-                          suggestAddress({
+                      ? (address, trigger) => {
+                          profileTriggerRef.current = trigger
+                          setProfileReviewOpen(true)
+                          onSuggestAddress({
                             address,
                             ownerPubkey: auth.accountPubkey!,
                             authGeneration: auth.authGeneration,
                             firstWallet: false,
                             imported: false,
                           })
+                        }
                       : undefined
                   }
                   description={
@@ -289,40 +415,6 @@ export function Wallets({
                       : "Self-custodial. Connect a Nostr signer with NIP-44 encryption to create or import a wallet."
                   }
                   empty="Create or import your first wallet."
-                  actions={
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        disabled={
-                          wallets.loading ||
-                          wallets.sparkAvailability.status !== "ready" ||
-                          !signerReady
-                        }
-                        onClick={(event) => {
-                          dialogTriggerRef.current = event.currentTarget
-                          setSetupMode("create")
-                          setPortableOpen(true)
-                        }}
-                      >
-                        <Plus className="size-4" />
-                        Add a wallet
-                      </Button>
-                      <Button
-                        variant="outline"
-                        disabled={
-                          wallets.loading ||
-                          wallets.sparkAvailability.status !== "ready" ||
-                          !signerReady
-                        }
-                        onClick={(event) => {
-                          dialogTriggerRef.current = event.currentTarget
-                          setSetupMode("restore")
-                          setPortableOpen(true)
-                        }}
-                      >
-                        Import wallet
-                      </Button>
-                    </div>
-                  }
                   addressResolver={wallets.getSparkLightningAddress}
                   requestAddressName={wallets.requestAddressName}
                   getSparkRecoveryType={wallets.getSparkRecoveryType}
@@ -331,7 +423,10 @@ export function Wallets({
                     openWalletDialog(setRenameWallet, wallet, trigger)
                   }
                   loading={wallets.loading}
-                  wallets={wallets.portableWallets}
+                  wallets={[
+                    ...wallets.portableWallets,
+                    ...wallets.connectedWallets,
+                  ]}
                   runtime={wallets.runtime}
                   nwcSnapshots={wallets.nwcSnapshots}
                   providerActionsDisabled={
@@ -359,99 +454,21 @@ export function Wallets({
                     openWalletDialog(setRemoveWallet, wallet, trigger)
                   }
                 />
-
-                <details>
-                  <summary className="cursor-pointer py-3 text-sm">
-                    External wallet management
-                  </summary>
-                  <WalletSection
-                    title="External wallets"
-                    actions={
-                      <Button
-                        variant="outline"
-                        disabled={wallets.loading}
-                        onClick={(event) => {
-                          dialogTriggerRef.current = event.currentTarget
-                          setConnectedOpen(true)
-                        }}
-                      >
-                        <Link2 className="size-4" />
-                        Connect wallet
-                      </Button>
-                    }
-                    onRename={(wallet, trigger) =>
-                      openWalletDialog(setRenameWallet, wallet, trigger)
-                    }
-                    getSparkRecoveryType={wallets.getSparkRecoveryType}
-                    description="External wallets authorized through Nostr Wallet Connect."
-                    empty="No external wallets connected."
-                    loading={wallets.loading}
-                    wallets={wallets.connectedWallets}
-                    runtime={wallets.runtime}
-                    nwcSnapshots={wallets.nwcSnapshots}
-                    formatSats={formatSats}
-                    onDefault={wallets.setDefaultPaymentWallet}
-                    onReceiving={wallets.setReceivingWallet}
-                    onRefresh={wallets.refreshBalance}
-                    onUnlock={openWallet}
-                    onRecovery={(wallet, trigger) =>
-                      openWalletDialog(setRecoveryWallet, wallet, trigger)
-                    }
-                    onReceive={(wallet, trigger) =>
-                      openWalletDialog(setReceiveWallet, wallet, trigger)
-                    }
-                    onSend={(wallet, trigger) =>
-                      openWalletDialog(setSendWallet, wallet, trigger)
-                    }
-                    onHistory={(wallet, trigger) =>
-                      openWalletDialog(setHistoryWallet, wallet, trigger)
-                    }
-                    onRemove={(wallet, trigger) =>
-                      openWalletDialog(setRemoveWallet, wallet, trigger)
-                    }
-                  />
-                </details>
               </>
             )}
           </div>
         </section>
 
-        <RecoverySyncNotice wallets={wallets} />
-        <div ref={addressEditorRef} tabIndex={-1}>
-          {renderAddressEditor(suggestion, () => setSuggestion(null))}
+        <div className="px-0 sm:px-8">
+          <ProfileLightningAddressEditor
+            key={`${auth.accountPubkey}:${auth.authGeneration}`}
+            controller={addressController}
+            returnFocusRef={profileTriggerRef}
+            reviewOpen={profileReviewOpen}
+            onReviewOpenChange={setProfileReviewOpen}
+          />
         </div>
         {footer}
-
-        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
-          <div className="flex items-start gap-3">
-            <KeyRound className="mt-1 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
-            <p>
-              New wallet recovery is encrypted to your Nostr identity.
-              {wallets.recoverySync === "ready" &&
-              wallets.portableWallets.some(
-                (wallet) => wallet.providerId === "spark"
-              )
-                ? " Encrypted relay recovery is confirmed."
-                : " Relay recovery is not confirmed yet."}{" "}
-              Save your phrase, account number and network to recover elsewhere.
-              Your Nostr signer can see the recovery details when encrypting or
-              opening the wallet. External wallet authorizations are stored on
-              this device. Copying a recovery phrase puts it on your system
-              clipboard, where other apps or sync services may retain it. Never
-              include wallet secrets in support reports, telemetry, screenshots,
-              or public issues.
-            </p>
-          </div>
-          <a
-            href="https://docs.spark.money/wallets/identity-key-derivation"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-3 inline-flex items-center gap-1 text-sm underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
-          >
-            About wallet recovery
-            <ExternalLink className="h-3 w-3" />
-          </a>
-        </div>
       </div>
 
       <PortableWalletDialog
@@ -574,66 +591,234 @@ type WalletDialogAction = (
   trigger: HTMLButtonElement
 ) => void | Promise<void>
 
-function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
+const recoveryIssueText: Record<
+  NonNullable<
+    UseWalletsReturn["mainWalletDiagnosis"]
+  >["choice"]["issues"][number],
+  string
+> = {
+  missing_local_record: "no local signed record",
+  awaiting_publish: "relay acceptance pending",
+  auth_required: "relay authentication required",
+  rejected: "relay rejected the write",
+  timed_out: "relay write timed out",
+  policy_blocked: "relay policy blocked the write",
+  cancelled: "write was interrupted",
+  publish_error: "relay write failed",
+  read_not_queried: "exact readback has not run",
+  read_absent: "exact readback did not find the record",
+  read_unavailable: "exact readback was unavailable",
+  readback_stale: "last confirmed readback is stale",
+  insufficient_copies: "not enough confirmed copies",
+}
+const recoveryCoverageText: Record<
+  NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>["coverage"],
+  string
+> = {
+  complete: "all selected relays answered",
+  partial: "some relay checks did not complete",
+  unavailable: "relay checks were unavailable",
+}
+const recoveryStateText: Record<
+  NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>["state"],
+  string
+> = {
+  absent_within_scope: "no matching backup was found in this check",
+  recoverable: "a matching backup was found",
+  conflict: "recovery records conflict",
+  unresolved: "recovery evidence is incomplete",
+}
+
+function RecoveryDeliveryDetail({
+  label,
+  diagnosis,
+}: {
+  label: string
+  diagnosis: NonNullable<UseWalletsReturn["mainWalletDiagnosis"]>["choice"]
+}) {
+  if (diagnosis.ready) return null
   return (
-    <>
-      {wallets.mainWalletSync === "pending" && (
-        <div
-          role="status"
-          className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] p-5 text-sm"
-        >
+    <li>
+      {label}:{" "}
+      {diagnosis.issues.map((issue) => recoveryIssueText[issue]).join("; ")}
+      {diagnosis.targetCount > 0 &&
+        ` (${diagnosis.confirmedTargets}/${diagnosis.targetCount} fresh target readbacks; ${diagnosis.independentCopies} independent copies)`}
+    </li>
+  )
+}
+
+function RecoveryDiagnosisDetails({ wallets }: { wallets: UseWalletsReturn }) {
+  const pendingWallets = wallets.wallets
+    .filter((wallet) => wallet.providerId === "spark")
+    .map((wallet) => wallets.recoveryDiagnosisByWallet[wallet.id])
+    .filter((diagnosis) => diagnosis && !diagnosis.backup.ready)
+  const primary = Object.values(wallets.recoveryDiagnosisByWallet)[0]?.primary
+  const main = wallets.mainWalletDiagnosis
+  const discovery = wallets.recoveryDiscoveryDiagnosis
+  if (
+    !pendingWallets.length &&
+    (primary?.ready ?? true) &&
+    (main?.choice.ready ?? true) &&
+    (main?.registry?.ready ?? true) &&
+    wallets.recoverySync !== "pending" &&
+    wallets.recoverySync !== "blocked"
+  )
+    return null
+  return (
+    <details className="text-sm text-[var(--text-secondary)]">
+      <summary className="cursor-pointer">Recovery sync details</summary>
+      <div className="grid gap-2 pt-2">
+        {discovery && (
           <p>
-            Main-wallet choice sync is pending. This device uses your choice;
-            other apps need to discover it.
+            Relay checks: {recoveryCoverageText[discovery.coverage]}. Result:{" "}
+            {recoveryStateText[discovery.state]}.
+            {discovery.invalidEvidence &&
+              " Some signed recovery evidence could not be interpreted."}
+            {!discovery.registryMembershipReady &&
+              " Account membership is not confirmed."}
           </p>
-          <Button
-            className="justify-self-start"
-            variant="outline"
-            disabled={wallets.recoverySync === "checking"}
-            onClick={() => void wallets.retryRecovery().catch(() => undefined)}
-          >
-            Sync main-wallet choice
-          </Button>
-        </div>
+        )}
+        <ul className="list-disc pl-5">
+          {pendingWallets.map((diagnosis, index) => (
+            <RecoveryDeliveryDetail
+              key={index}
+              label={`Wallet ${index + 1} backup`}
+              diagnosis={diagnosis.backup}
+            />
+          ))}
+          {primary && (
+            <RecoveryDeliveryDetail
+              label="Primary choice"
+              diagnosis={primary}
+            />
+          )}
+          {main && (
+            <RecoveryDeliveryDetail
+              label="Main choice"
+              diagnosis={main.choice}
+            />
+          )}
+          {main?.registry && (
+            <RecoveryDeliveryDetail
+              label="Account membership"
+              diagnosis={main.registry}
+            />
+          )}
+        </ul>
+      </div>
+    </details>
+  )
+}
+
+export function WalletRecoveryNotice({
+  wallets,
+}: {
+  wallets: UseWalletsReturn
+}) {
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-6 text-[var(--text-secondary)]">
+      <div className="flex items-start gap-3">
+        <KeyRound className="mt-1 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+        <p>
+          New wallet recovery is encrypted to your Nostr identity.
+          {wallets.recoverySync === "ready" &&
+          wallets.portableWallets.some(
+            (wallet) => wallet.providerId === "spark"
+          )
+            ? " Encrypted relay recovery is confirmed."
+            : " Relay recovery is not confirmed yet."}{" "}
+          Save your phrase, account number and network to recover elsewhere.
+          Your Nostr signer can see recovery details and account-backed wallet
+          names when encrypting or opening them. Account-backed names sync
+          across your devices; other names stay on this device. External wallet
+          authorizations are stored on this device. Copying a recovery phrase
+          puts it on your system clipboard, where other apps or sync services
+          may retain it. Never include wallet secrets in support reports,
+          telemetry, screenshots, or public issues.
+        </p>
+      </div>
+      <a
+        href="https://docs.spark.money/wallets/identity-key-derivation"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-3 inline-flex items-center gap-1 text-sm underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
+      >
+        About wallet recovery
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </div>
+  )
+}
+
+function WalletNameSyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
+  if (wallets.nameSync !== "pending" && wallets.nameSync !== "checking")
+    return null
+  return (
+    <section role="status" className="grid gap-3 text-sm">
+      <p>Wallet names saved on this device. Name sync is pending.</p>
+      <Button
+        className="justify-self-start"
+        variant="outline"
+        disabled={wallets.nameSync === "checking"}
+        onClick={() => void wallets.retryWalletNames().catch(() => undefined)}
+      >
+        {wallets.nameSync === "checking"
+          ? "Syncing wallet names…"
+          : "Sync wallet names"}
+      </Button>
+    </section>
+  )
+}
+
+function RecoverySyncNotice({
+  wallets,
+  compactBlocked = false,
+}: {
+  wallets: UseWalletsReturn
+  compactBlocked?: boolean
+}) {
+  return (
+    <div
+      className="grid gap-2 text-pretty text-sm text-[var(--text-secondary)]"
+      role="status"
+    >
+      {wallets.mainWalletSync === "pending" && (
+        <p>
+          Main-wallet choice sync is pending. This device uses your choice;
+          other apps may not see it yet.
+        </p>
       )}
       {wallets.recoverySync !== "idle" && wallets.recoverySync !== "ready" && (
-        <section
-          role="status"
-          className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-5"
-        >
+        <>
           <p>
             {wallets.recoverySync === "checking"
               ? "Checking encrypted wallet recovery…"
               : wallets.recoverySync === "blocked"
-                ? "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet."
-                : "Recovery sync is pending. Save your recovery details before switching apps."}
+                ? compactBlocked
+                  ? "Wallet recovery needs attention."
+                  : "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet."
+                : "Recovery sync is pending. Wait for confirmed recovery before relying on it in another app."}
           </p>
           {wallets.hasPasswordWallets && (
-            <p className="text-sm">
+            <p>
               Older wallets stay on this device until you open them and choose
               Nostr sign-in.
             </p>
           )}
-          <p className="text-sm text-[var(--text-secondary)]">
+          <p>
             Sync requests relay storage of recovery encrypted to your Nostr
-            identity. Wait for confirmed recovery before relying on it in
-            another app.
+            identity.
           </p>
-          <Button
-            variant="outline"
-            disabled={wallets.recoverySync === "checking"}
-            onClick={() => void wallets.retryRecovery().catch(() => undefined)}
-          >
-            Sync wallet recovery
-          </Button>
-        </section>
+        </>
       )}
-    </>
+      <RecoveryDiagnosisDetails wallets={wallets} />
+    </div>
   )
 }
 
 function WalletSection({
   title,
+  profileAddress,
   description,
   empty,
   loading,
@@ -641,7 +826,6 @@ function WalletSection({
   runtime,
   nwcSnapshots,
   providerActionsDisabled = false,
-  actions,
   addressResolver,
   requestAddressName,
   getSparkRecoveryType,
@@ -659,11 +843,10 @@ function WalletSection({
   onHistory,
   onRemove,
   onPublicAddress,
-  recoverySyncByWallet,
 }: {
-  onPublicAddress?: (address: string) => void
-  recoverySyncByWallet?: UseWalletsReturn["recoverySyncByWallet"]
+  onPublicAddress?: (address: string, trigger: HTMLElement) => void
   title: string
+  profileAddress: string | null
   description: string
   empty: string
   loading: boolean
@@ -671,7 +854,6 @@ function WalletSection({
   runtime: Record<string, WalletRuntimeState>
   nwcSnapshots: Record<string, NwcSessionSnapshot>
   providerActionsDisabled?: boolean
-  actions?: React.ReactNode
   requestAddressName?: UseWalletsReturn["requestAddressName"]
   getSparkRecoveryType: UseWalletsReturn["getSparkRecoveryType"]
   accountPubkey?: string | null
@@ -690,67 +872,49 @@ function WalletSection({
   onRemove: WalletDialogAction
 }) {
   const displayLabels = getWalletDisplayLabels(wallets)
+  const row = (wallet: WalletDescriptor) => (
+    <WalletRow
+      key={wallet.id}
+      wallet={wallet}
+      profileAddress={profileAddress}
+      displayLabel={displayLabels.get(wallet.id) ?? wallet.label}
+      runtime={runtime[wallet.id] ?? lockedRuntime()}
+      nwcSnapshot={nwcSnapshots[wallet.id]}
+      providerActionsDisabled={
+        wallet.providerId === "spark" && providerActionsDisabled
+      }
+      formatSats={formatSats}
+      addressResolver={addressResolver}
+      requestAddressName={requestAddressName}
+      getSparkRecoveryType={getSparkRecoveryType}
+      accountPubkey={accountPubkey}
+      onPublicAddress={onPublicAddress}
+      onRename={onRename}
+      onDefault={onDefault}
+      onReceiving={onReceiving}
+      onMain={onMain}
+      onRefresh={onRefresh}
+      onUnlock={onUnlock}
+      onRecovery={onRecovery}
+      onReceive={onReceive}
+      onSend={onSend}
+      onHistory={onHistory}
+      onRemove={onRemove}
+    />
+  )
   return (
-    <section>
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-            {title}
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-            {description}
-          </p>
+    <section aria-label={title}>
+      <h2 className="sr-only">{title}</h2>
+      {loading ? (
+        <WalletSectionLoading title={title} />
+      ) : wallets.length === 0 ? (
+        <div className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-pretty text-sm">
+          <p>{empty}</p>
+          <p className="text-[var(--text-secondary)]">{description}</p>
         </div>
-        <span className="shrink-0 whitespace-nowrap text-xs text-[var(--text-muted)]">
-          {loading
-            ? "Loading"
-            : `${wallets.length} ${
-                wallets.length === 1 ? "wallet" : "wallets"
-              }`}
-        </span>
-      </div>
-
-      <div className="mt-3 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
-        {loading ? (
-          <WalletSectionLoading title={title} />
-        ) : wallets.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-[var(--text-muted)]">
-            {empty}
-          </div>
-        ) : (
-          <div className="divide-y divide-[var(--border)]">
-            {wallets.map((wallet) => (
-              <WalletRow
-                key={wallet.id}
-                wallet={wallet}
-                displayLabel={displayLabels.get(wallet.id) ?? wallet.label}
-                runtime={runtime[wallet.id] ?? lockedRuntime()}
-                nwcSnapshot={nwcSnapshots[wallet.id]}
-                providerActionsDisabled={providerActionsDisabled}
-                formatSats={formatSats}
-                addressResolver={addressResolver}
-                requestAddressName={requestAddressName}
-                getSparkRecoveryType={getSparkRecoveryType}
-                accountPubkey={accountPubkey}
-                onPublicAddress={onPublicAddress}
-                recoverySync={recoverySyncByWallet?.[wallet.id]}
-                onRename={onRename}
-                onDefault={onDefault}
-                onReceiving={onReceiving}
-                onMain={onMain}
-                onRefresh={onRefresh}
-                onUnlock={onUnlock}
-                onRecovery={onRecovery}
-                onReceive={onReceive}
-                onSend={onSend}
-                onHistory={onHistory}
-                onRemove={onRemove}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="mt-3">{actions}</div>
+      ) : (
+        <div className="grid min-w-0 gap-8">{wallets.map(row)}</div>
+      )}
     </section>
   )
 }
@@ -778,6 +942,7 @@ function WalletSectionLoading({ title }: { title: string }) {
 
 function WalletRow({
   wallet,
+  profileAddress,
   displayLabel,
   runtime,
   nwcSnapshot,
@@ -799,11 +964,10 @@ function WalletRow({
   getSparkRecoveryType,
   accountPubkey,
   onPublicAddress,
-  recoverySync,
 }: {
-  onPublicAddress?: (address: string) => void
-  recoverySync?: "ready" | "pending"
+  onPublicAddress?: (address: string, trigger: HTMLElement) => void
   wallet: WalletDescriptor
+  profileAddress: string | null
   displayLabel: string
   runtime: WalletRuntimeState
   nwcSnapshot?: NwcSessionSnapshot
@@ -827,6 +991,10 @@ function WalletRow({
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [addressState, setAddressState] = useState<BreezAddressState | null>(
+    null
+  )
   const menuTrigger = useRef<HTMLButtonElement>(null)
   const isSpark = wallet.providerId === "spark"
   const recoveryState = useSparkRecoveryState(
@@ -858,215 +1026,430 @@ function WalletRow({
   const dialog = (action: WalletDialogAction) => {
     if (menuTrigger.current) action(wallet, menuTrigger.current)
   }
+  useEffect(() => {
+    if (!isSpark || !ready || !addressResolver) return
+    let active = true
+    void addressResolver(wallet.id)
+      .then((state) => {
+        if (active) setAddressState(state)
+      })
+      .catch(() => {
+        if (active)
+          setAddressState({
+            status: "unavailable",
+            reason: "provider_unavailable",
+          })
+      })
+    return () => {
+      active = false
+    }
+  }, [isSpark, ready, addressResolver, wallet.id, runtime])
+  const receivingAddress = isSpark
+    ? ready
+      ? addressState?.status === "registered"
+        ? addressState.address
+        : null
+      : null
+    : (nwcSnapshot?.info?.lud16 ?? nwcSnapshot?.connection?.lud16 ?? null)
+  const inUse =
+    !!receivingAddress &&
+    profileAddress?.toLowerCase() === receivingAddress.toLowerCase()
+  const balanceSupported =
+    isSpark || !!nwcSnapshot?.info?.methods.includes("get_balance")
+  const balanceChecking =
+    refreshing || nwcSnapshot?.balance.status === "checking"
+  const balanceNeedsAttention =
+    balanceSupported &&
+    (nwcSnapshot?.balance.status === "error" || runtime.status === "error")
+  const balanceLabel = `${balanceChecking ? "Refreshing" : "Refresh"} ${displayLabel} balance`
+  const formattedBalance =
+    runtime.balanceMsats === null
+      ? null
+      : formatSats(Math.floor(runtime.balanceMsats / 1000))
   return (
-    <div className="grid gap-3 p-4 sm:p-5">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate font-medium">{displayLabel}</h3>
-            {isDefault && (
-              <StatusPill variant="info">Default for spending</StatusPill>
+    <div className="min-w-0" data-wallet-group>
+      <article
+        data-wallet-state={runtime.status}
+        data-wallet-id={wallet.id}
+        aria-label={`${displayLabel} wallet`}
+        className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-7"
+      >
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3
+              aria-label={displayLabel}
+              className="text-balance text-xl font-semibold sm:text-2xl"
+            >
+              <Button
+                variant="ghost"
+                className="justify-start gap-2 p-0 text-left text-xl font-semibold sm:text-2xl"
+                aria-label={`Rename ${displayLabel}`}
+                disabled={pending}
+                onClick={(event) => onRename(wallet, event.currentTarget)}
+              >
+                <span className="min-w-0 break-words">{displayLabel}</span>
+                <Pencil
+                  className="size-4 shrink-0 text-[var(--text-secondary)]"
+                  aria-hidden="true"
+                />
+              </Button>
+            </h3>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              {isSpark
+                ? "Spark · Self-custodial"
+                : getWalletProviderDescription(wallet)}
+            </p>
+            {runtime.status !== "ready" && (
+              <div className="mt-2">
+                <WalletRuntimePill runtime={runtime} />
+              </div>
             )}
-            {receivesByDefault && (
-              <StatusPill variant="info">
-                Default for merchant invoices
-              </StatusPill>
-            )}
-            <WalletRuntimePill runtime={runtime} />
+            <span className="sr-only">
+              {runtime.status === "ready" ? "Ready" : ""}
+            </span>
           </div>
-          <p className="mt-1 text-sm tabular-nums">
-            {runtime.balanceMsats === null
-              ? "Balance unavailable"
-              : formatSats(Math.floor(runtime.balanceMsats / 1000))}
-          </p>
-          {isSpark && (
-            <p className="text-xs text-[var(--text-muted)]" role="status">
-              Encrypted recovery:{" "}
-              {recoverySync === "ready"
-                ? "Synced"
-                : "Sync pending — keep your saved recovery details."}
-            </p>
-          )}
-          {!isSpark && (
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              {getWalletProviderDescription(wallet)}
-            </p>
-          )}
-        </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              ref={menuTrigger}
-              size="icon"
-              variant="ghost"
-              aria-label={`Manage ${displayLabel}`}
-              disabled={pending}
-            >
-              <MoreHorizontal className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => dialog(onRename)}>
-              Rename
-            </DropdownMenuItem>
-            {wallet.capabilities.includes("pay_invoice") && !isDefault && (
-              <DropdownMenuItem
-                onSelect={() => void run(() => onDefault(wallet.id))}
+          <div className="flex shrink-0 items-center gap-1">
+            {balanceSupported && (
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label={balanceLabel}
+                title={balanceLabel}
+                aria-description={
+                  balanceNeedsAttention
+                    ? "The last balance check failed. Try again."
+                    : "Balances update automatically while this page is visible."
+                }
+                disabled={
+                  pending ||
+                  balanceChecking ||
+                  providerActionsDisabled ||
+                  runtime.status === "locked" ||
+                  runtime.status === "connecting"
+                }
+                className={cn(
+                  "relative",
+                  balanceNeedsAttention &&
+                    "bg-[color-mix(in_srgb,var(--warning)_9%,transparent)] text-[var(--warning-text)]"
+                )}
+                onClick={() => {
+                  setRefreshing(true)
+                  void run(() => onRefresh(wallet.id)).finally(() =>
+                    setRefreshing(false)
+                  )
+                }}
               >
-                Make default for spending
-              </DropdownMenuItem>
+                <RefreshCw
+                  className={cn(
+                    "size-4",
+                    balanceChecking && "motion-safe:animate-spin"
+                  )}
+                  aria-hidden="true"
+                />
+                {balanceNeedsAttention && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute right-1 top-1 text-xs font-semibold"
+                  >
+                    !
+                  </span>
+                )}
+              </Button>
             )}
-            {wallet.capabilities.includes("receive") && !receivesByDefault && (
-              <DropdownMenuItem
-                onSelect={() => void run(() => onReceiving(wallet.id))}
-              >
-                Make default for merchant invoices
-              </DropdownMenuItem>
-            )}
-            {isSpark &&
-              onMain &&
-              recoveryState.status === "ready" &&
-              recoveryState.method === "signer" && (
-                <DropdownMenuItem
-                  onSelect={() => void run(() => onMain(wallet.id))}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  ref={menuTrigger}
+                  size="icon"
+                  variant="ghost"
+                  aria-label={`Manage ${displayLabel}`}
+                  disabled={pending}
                 >
-                  Make main wallet across apps
+                  <MoreHorizontal className="size-4" aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="max-w-[calc(100vw-2rem)]"
+              >
+                {isDefault && (
+                  <DropdownMenuLabel>Default for spending</DropdownMenuLabel>
+                )}
+                {receivesByDefault && (
+                  <DropdownMenuLabel>
+                    Default for merchant invoices
+                  </DropdownMenuLabel>
+                )}
+                {wallet.capabilities.includes("pay_invoice") && !isDefault && (
+                  <DropdownMenuItem
+                    onSelect={() => void run(() => onDefault(wallet.id))}
+                  >
+                    Make default for spending
+                  </DropdownMenuItem>
+                )}
+                {wallet.capabilities.includes("receive") &&
+                  !receivesByDefault && (
+                    <DropdownMenuItem
+                      onSelect={() => void run(() => onReceiving(wallet.id))}
+                    >
+                      Make default for merchant invoices
+                    </DropdownMenuItem>
+                  )}
+                {isSpark &&
+                  onMain &&
+                  recoveryState.status === "ready" &&
+                  recoveryState.method === "signer" && (
+                    <DropdownMenuItem
+                      onSelect={() => void run(() => onMain(wallet.id))}
+                    >
+                      Make main wallet across apps
+                    </DropdownMenuItem>
+                  )}
+                {isSpark && (
+                  <DropdownMenuItem onSelect={() => dialog(onRecovery)}>
+                    <KeyRound className="mr-2 size-4" aria-hidden="true" />
+                    Recovery details
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-[var(--error-text)] focus:text-[var(--error-text)]"
+                  disabled={removalUnavailable}
+                  onSelect={() => dialog(onRemove)}
+                >
+                  {removeLabel}
                 </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+        <div
+          className={cn(
+            "mt-6 grid min-w-0 gap-6",
+            (isSpark || receivingAddress) && "md:grid-cols-2 md:gap-7"
+          )}
+        >
+          <div className="min-w-0">
+            <p className="text-sm text-[var(--text-secondary)]">Balance</p>
+            <p
+              data-wallet-balance
+              className={cn(
+                "mt-2 break-words tabular-nums",
+                runtime.balanceMsats === null
+                  ? "text-lg text-[var(--text-secondary)]"
+                  : "font-heading text-5xl font-semibold sm:text-6xl"
               )}
-            {isSpark && (
-              <DropdownMenuItem onSelect={() => dialog(onRecovery)}>
-                Recovery details
-              </DropdownMenuItem>
-            )}
-            {ready && runtime.balanceMsats === null && (
-              <DropdownMenuItem
-                onSelect={() => void run(() => onRefresh(wallet.id))}
-              >
-                Retry balance
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem
-              disabled={removalUnavailable}
-              onSelect={() => dialog(onRemove)}
             >
-              {removeLabel}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-      {isSpark && addressResolver && (
-        <WalletReceivingAddress
-          onPublicAddress={onPublicAddress}
-          walletId={wallet.id}
-          runtime={runtime}
-          onPendingChange={setPending}
-          ready={ready}
-          resolve={addressResolver}
-          requestAddressName={requestAddressName}
-          accountPubkey={accountPubkey}
-        />
-      )}
-      {!isSpark && (
-        <p className="text-sm text-[var(--text-secondary)]">
-          {nwcSnapshot?.info?.lud16
-            ? `Receiving address: ${nwcSnapshot.info.lud16}. `
-            : ""}
-          Choose this wallet at checkout.
-        </p>
-      )}
-      <div className="flex flex-wrap gap-2">
-        {isSpark && !ready ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={
-              pending ||
-              providerActionsDisabled ||
-              runtime.status === "connecting"
-            }
-            onClick={(event) => {
-              const trigger = event.currentTarget
-              void run(async () => {
-                await onUnlock(wallet, trigger)
-              })
-            }}
-          >
-            {runtime.status === "connecting" || pending
-              ? "Opening…"
-              : "Open wallet"}
-          </Button>
-        ) : (
-          <>
-            {isSpark && (
+              {runtime.balanceMsats === null ? (
+                runtime.status === "connecting" ||
+                nwcSnapshot?.balance.status === "checking" ? (
+                  "Loading balance…"
+                ) : nwcSnapshot?.balance.status === "unavailable" ? (
+                  "Balance not shared"
+                ) : (
+                  "Balance unavailable"
+                )
+              ) : formattedBalance?.endsWith(" sats") ? (
+                <>
+                  {formattedBalance.slice(0, -5)}
+                  <span className="text-xl font-normal text-[var(--text-secondary)]">
+                    {" "}
+                    sats
+                  </span>
+                </>
+              ) : (
+                formattedBalance
+              )}
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              {isSpark && !ready ? (
+                <Button
+                  disabled={
+                    pending ||
+                    providerActionsDisabled ||
+                    runtime.status === "connecting"
+                  }
+                  onClick={(event) => {
+                    const trigger = event.currentTarget
+                    void run(async () => {
+                      await onUnlock(wallet, trigger)
+                    })
+                  }}
+                >
+                  {runtime.status === "connecting" || pending
+                    ? "Opening…"
+                    : "Open wallet"}
+                </Button>
+              ) : isSpark ? (
+                <>
+                  <Button
+                    disabled={!ready || pending}
+                    onClick={(event) => onReceive(wallet, event.currentTarget)}
+                  >
+                    <ArrowDownToLine className="size-4" aria-hidden="true" />
+                    Receive
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={!ready || pending}
+                    onClick={(event) => onSend(wallet, event.currentTarget)}
+                  >
+                    <ArrowUpFromLine className="size-4" aria-hidden="true" />
+                    Send
+                  </Button>
+                </>
+              ) : wallet.capabilities.includes("pay_invoice") ? (
+                isDefault ? (
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    Used for spending at checkout
+                  </p>
+                ) : (
+                  <Button
+                    variant="outline"
+                    disabled={pending || !ready}
+                    onClick={() => void run(() => onDefault(wallet.id))}
+                  >
+                    Use for spending
+                  </Button>
+                )
+              ) : (
+                <p className="text-sm text-[var(--text-secondary)]">
+                  Receiving connection
+                </p>
+              )}
+            </div>
+            {isSpark && ready && (
               <Button
-                size="sm"
-                variant="outline"
-                disabled={!ready || pending}
-                onClick={(event) => onReceive(wallet, event.currentTarget)}
-              >
-                <ArrowDownToLine className="size-4" />
-                Receive
-              </Button>
-            )}
-            {isSpark && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!ready || pending}
-                onClick={(event) => onSend(wallet, event.currentTarget)}
-              >
-                <ArrowUpFromLine className="size-4" />
-                Send
-              </Button>
-            )}
-            {isSpark && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!ready || pending}
+                variant="ghost"
+                className="mt-4 justify-start px-0 text-[var(--text-secondary)]"
+                disabled={pending}
                 onClick={(event) => onHistory(wallet, event.currentTarget)}
               >
                 History
+                <ArrowRight className="size-4" aria-hidden="true" />
               </Button>
             )}
-          </>
+          </div>
+          {isSpark && addressResolver && (
+            <div className="min-w-0 border-t border-[var(--border)] pt-6 md:border-l md:border-t-0 md:pl-7 md:pt-0">
+              <WalletReceivingAddress
+                state={addressState}
+                setState={setAddressState}
+                walletId={wallet.id}
+                onPendingChange={setPending}
+                ready={ready}
+                resolve={addressResolver}
+                requestAddressName={requestAddressName}
+                accountPubkey={accountPubkey}
+              />
+            </div>
+          )}
+          {!isSpark && receivingAddress && (
+            <div className="min-w-0 border-t border-[var(--border)] pt-6 md:border-l md:border-t-0 md:pl-7 md:pt-0">
+              <h4 className="text-base font-semibold">Lightning address</h4>
+              <WalletAddressActions address={receivingAddress} />
+            </div>
+          )}
+        </div>
+        {(error || runtime.error) && (
+          <p
+            role="alert"
+            className="mt-4 text-pretty text-sm text-[var(--error-text)]"
+          >
+            {error ?? runtime.error}
+          </p>
         )}
-      </div>
-      <details className="text-sm">
-        <summary className="cursor-pointer py-2">Wallet preferences</summary>
-        <p className="text-pretty text-xs text-[var(--text-muted)]">
-          Default changes apply to future actions. Existing invoices and public
-          addresses stay unchanged.
-        </p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {!isDefault && wallet.capabilities.includes("pay_invoice") && (
+      </article>
+      {receivingAddress && onPublicAddress && (
+        <div
+          data-wallet-profile-row
+          tabIndex={-1}
+          className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 pt-3 text-sm sm:px-7"
+        >
+          <span className="text-[var(--text-secondary)]">
+            {inUse ? "Receiving sats on Nostr" : "Receive sats on Nostr"}
+          </span>
+          {inUse ? (
+            <span className="inline-flex items-center gap-1 text-[var(--success-text)]">
+              <Check className="size-4" aria-hidden="true" />
+              In use
+            </span>
+          ) : (
             <Button
-              size="sm"
-              variant="outline"
-              disabled={pending}
-              onClick={() => void run(() => onDefault(wallet.id))}
+              variant="ghost"
+              className="px-0"
+              onClick={(event) => {
+                const row = event.currentTarget.closest(
+                  "[data-wallet-profile-row]"
+                )
+                onPublicAddress(
+                  receivingAddress,
+                  row instanceof HTMLElement ? row : event.currentTarget
+                )
+              }}
             >
-              Make default for spending
+              Use this address{" "}
+              <ArrowRight className="size-4" aria-hidden="true" />
             </Button>
           )}
-          {wallet.capabilities.includes("receive") &&
-            !wallet.defaultIntents.includes("receive") && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={pending}
-                onClick={() => void run(() => onReceiving(wallet.id))}
-              >
-                Make default for merchant invoices
-              </Button>
-            )}
         </div>
-      </details>
-      {(error || runtime.error) && (
-        <p role="alert" className="text-sm">
-          {error ?? runtime.error}
+      )}
+    </div>
+  )
+}
+
+function WalletAddressActions({
+  address,
+  showAddress = true,
+}: {
+  address: string
+  showAddress?: boolean
+}) {
+  const [feedback, setFeedback] = useState("")
+  return (
+    <div className="grid min-w-0 gap-3 text-sm">
+      {showAddress && (
+        <p data-wallet-address className="mt-3 break-all text-base">
+          {address}
         </p>
       )}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(address)
+              setFeedback("Address copied.")
+            } catch {
+              setFeedback("Could not copy. Select the address to copy it.")
+            }
+          }}
+        >
+          Copy address
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={async () => {
+            try {
+              if (navigator.share) await navigator.share({ text: address })
+              else {
+                await navigator.clipboard.writeText(address)
+                setFeedback("Address copied for sharing.")
+              }
+            } catch (error) {
+              if (!(
+                error instanceof DOMException && error.name === "AbortError"
+              ))
+                setFeedback("Could not share the address.")
+            }
+          }}
+        >
+          Share address
+        </Button>
+      </div>
+      {feedback && <p role="status">{feedback}</p>}
     </div>
   )
 }
@@ -1074,43 +1457,30 @@ function WalletRow({
 function WalletReceivingAddress({
   walletId,
   onPendingChange,
-  runtime,
   ready,
   resolve,
-  onPublicAddress,
+  state,
+  setState,
   requestAddressName,
   accountPubkey,
 }: {
   requestAddressName?: UseWalletsReturn["requestAddressName"]
   accountPubkey?: string | null
-  onPublicAddress?: (address: string) => void
+  state: BreezAddressState | null
+  setState(state: BreezAddressState): void
   walletId: string
-  runtime: WalletRuntimeState
   onPendingChange(pending: boolean): void
   ready: boolean
   resolve: UseWalletsReturn["getSparkLightningAddress"]
 }) {
   const [feedback, setFeedback] = useState("")
-  const [state, setState] = useState<BreezAddressState | null>(null)
-  useEffect(() => {
-    if (!ready) return
-    let active = true
-    void resolve(walletId)
-      .then((value) => {
-        if (active) setState(value)
-      })
-      .catch(() => {
-        if (active)
-          setState({ status: "unavailable", reason: "provider_unavailable" })
-      })
-    return () => {
-      active = false
-    }
-  }, [ready, resolve, walletId, runtime])
   return (
-    <div className="grid gap-1 text-sm">
-      <p className="break-all text-[var(--text-secondary)]">
-        Receiving address:{" "}
+    <div className="grid min-w-0 gap-3 text-sm">
+      <h4 className="text-pretty text-base font-semibold">Lightning address</h4>
+      <p
+        data-wallet-address
+        className="break-all text-base text-[var(--text-primary)]"
+      >
         {state?.status === "registered"
           ? state.address
           : ready
@@ -1137,43 +1507,7 @@ function WalletReceivingAddress({
           </Button>
         )}
       {state?.status === "registered" && (
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(state.address)
-                setFeedback("Address copied.")
-              } catch {
-                setFeedback("Could not copy. Select the address to copy it.")
-              }
-            }}
-          >
-            Copy address
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={async () => {
-              try {
-                if (navigator.share)
-                  await navigator.share({ text: state.address })
-                else {
-                  await navigator.clipboard.writeText(state.address)
-                  setFeedback("Address copied for sharing.")
-                }
-              } catch (error) {
-                if (!(
-                  error instanceof DOMException && error.name === "AbortError"
-                ))
-                  setFeedback("Could not share the address.")
-              }
-            }}
-          >
-            Share address
-          </Button>
-        </div>
+        <WalletAddressActions address={state.address} showAddress={false} />
       )}
       {feedback && <p role="status">{feedback}</p>}
       {ready && requestAddressName && accountPubkey && (
@@ -1182,22 +1516,10 @@ function WalletReceivingAddress({
           ownerPubkey={accountPubkey}
           walletId={walletId}
           submit={requestAddressName}
-          activate={async (name) => {
-            const value = await resolve(walletId, true, name, "conduit.cash")
-            setState(value)
-            return value
+          onActivated={async () => {
+            setState(await resolve(walletId))
           }}
         />
-      )}
-      {state?.status === "registered" && onPublicAddress && (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="justify-self-start"
-          onClick={() => onPublicAddress(state.address)}
-        >
-          Set as public Lightning address
-        </Button>
       )}
       {state?.status === "registered" && state.publicLookup !== "verified" && (
         <p className="text-xs">
@@ -1225,6 +1547,10 @@ function RenameWalletDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Rename wallet</DialogTitle>
+          <DialogDescription>
+            Saved on this device immediately. Names for account-backed wallets
+            also sync across your devices through your Nostr signer.
+          </DialogDescription>
         </DialogHeader>
         <Label htmlFor="wallet-name">Wallet name</Label>
         <Input
@@ -3352,6 +3678,34 @@ function RecoveryWalletDialog({
             </DialogFooter>
           </>
         )}
+        <RecoverySyncNotice wallets={wallets} compactBlocked />
+        {(wallets.recoverySync === "pending" ||
+          wallets.recoverySync === "blocked" ||
+          wallets.mainWalletSync === "pending" ||
+          (wallet &&
+            wallets.recoverySyncByWallet[wallet.id] === "pending")) && (
+          <Button
+            variant="outline"
+            disabled={
+              pending ||
+              wallets.recoverySync === "checking" ||
+              !wallets.signerUnlockSupported
+            }
+            onClick={() => {
+              setPending(true)
+              setError(null)
+              void wallets
+                .retryRecovery()
+                .catch((caught) =>
+                  setError(getErrorMessage(caught, "Wallet sync failed."))
+                )
+                .finally(() => setPending(false))
+            }}
+          >
+            Retry encrypted wallet sync
+          </Button>
+        )}
+        <WalletRecoveryNotice wallets={wallets} />
       </DialogContent>
     </Dialog>
   )

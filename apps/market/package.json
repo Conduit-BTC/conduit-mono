@@ -23,7 +23,7 @@
     "@scure/bip39": "2.4.0",
     "@tanstack/react-query": "^5.104.1",
     "@tanstack/react-router": "^1.170.41",
-    "lucide-react": "^1.50.0",
+    "lucide-react": "^1.55.0",
     "nostr-tools": "2.25.2",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.8",
@@ -43,9 +43,9 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react-swc": "^4.3.3",
-    "postcss": "^8.5.28",
+    "postcss": "^8.5.30",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vite": "^8.3.2"
+    "vite": "^8.3.4"
   }
 }

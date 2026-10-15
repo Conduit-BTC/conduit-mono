@@ -1064,7 +1064,7 @@ describe("settled Spark buyer order control", () => {
     ).toBe("blocked")
   })
 
-  it("offers inspection-only cleanup after every payout is recorded paid", () => {
+  it("completes every recorded payout without requesting wallet cleanup", () => {
     const { plan, input } = fixture()
     let state = recordCheckoutSparkSettledCredit(input.snapshot.state, {
       requestId: plan.funding.requestId,
@@ -1110,11 +1110,6 @@ describe("settled Spark buyer order control", () => {
       status: "complete",
       paidLegs: 2,
       totalLegs: 2,
-      retirement: {
-        checkoutId: plan.checkoutId,
-        planDigest: plan.planDigest,
-        network: plan.network,
-      },
     })
     expect(
       matchesCheckoutSparkSettledOrderControl({
@@ -1151,7 +1146,6 @@ describe("settled Spark buyer order control", () => {
         priceSummary:
           "priceSummary" in result ? result.priceSummary : undefined,
         nativeTreasury: null,
-        retirement: null,
       })
     }
     for (const change of [

@@ -14,8 +14,14 @@ import {
   seedTestRelayIdentity,
 } from "./helpers/auth"
 import { interceptBlossom } from "./helpers/blossom"
-import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  prepareEmptyMerchantCatalog,
+  waitForEmptyMerchantCatalog,
+} from "./helpers/merchant-catalog"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 
 const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
@@ -175,14 +181,17 @@ test.afterEach(async ({ page }, info) => {
   const existing = info.annotations.find(
     (entry) => entry.type === "smoke:fallback-upload"
   )
-  const { phase } = JSON.parse(existing?.description ?? "{}") as {
+  const { phase, tagOrdinal } = JSON.parse(existing?.description ?? "{}") as {
     phase?: string
+    tagOrdinal?: number
   }
-  let observations: Record<string, number | boolean>
+  let observations: Record<string, string | number | boolean>
   try {
     observations = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]')
       const submit = dialog?.querySelector('button[type="submit"]')
+      const tags = dialog?.querySelector<HTMLInputElement>("#product-tags")
+      const submitText = submit?.textContent?.trim()
       return {
         observationAvailable: true,
         dialogCount: document.querySelectorAll('[role="dialog"]').length,
@@ -191,13 +200,39 @@ test.afterEach(async ({ page }, info) => {
           dialog?.querySelectorAll(':invalid,[aria-invalid="true"]').length ??
           0,
         submitEnabled: !!submit && !submit.hasAttribute("disabled"),
+        submitState:
+          submitText === "Publish product"
+            ? "publish"
+            : submitText === "Uploading images..."
+              ? "uploading"
+              : submitText === "Waiting for signer..."
+                ? "saving"
+                : submitText === "Reconnect signer to continue"
+                  ? "reconnect"
+                  : "other",
+        tagCount:
+          tags?.parentElement?.querySelectorAll(
+            'button[aria-label^="Remove "][aria-label$=" tag"]'
+          ).length ?? 0,
+        tagDraftPresent: !!tags?.value.trim(),
+        tagFocused: document.activeElement === tags,
+        digitalSelected:
+          dialog?.querySelector("#product-fulfillment")?.textContent?.trim() ===
+          "Digital",
+        insufficientTagsNotice:
+          dialog?.textContent?.includes("Add at least 3 distinct tags.") ??
+          false,
       }
     })
   } catch {
     // Preserve the original failure when timeout teardown has closed the page.
     observations = { observationAvailable: false }
   }
-  recordSmokeDiagnostic(info, "fallback-upload", { phase, ...observations })
+  recordSmokeDiagnostic(info, "fallback-upload", {
+    phase,
+    tagOrdinal,
+    ...observations,
+  })
 })
 
 test("loaded product preview stays visible while its title changes @merchant", async ({
@@ -745,15 +780,47 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await freshDialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital" }).click()
   const tags = freshDialog.getByRole("combobox", { name: "Tags" })
-  for (const tag of ["fallback", "storage", "guardrail"]) {
+  for (const [index, tag] of ["fallback", "storage", "guardrail"].entries()) {
+    recordSmokeDiagnostic(info, "fallback-upload", {
+      phase: "tag_entry",
+      tagOrdinal: index + 1,
+    })
+    recordSmokeFailureContext(info, "fallback_tag_input_filled")
     await tags.fill(tag)
+    recordSmokeFailureContext(info, "fallback_tag_input_filled", "met")
+    recordSmokeFailureContext(info, "fallback_tag_enter_completed")
     await tags.press("Enter")
+    recordSmokeFailureContext(info, "fallback_tag_enter_completed", "met")
+    recordSmokeFailureContext(info, "fallback_tag_committed")
+    await expect(
+      freshDialog.getByRole("button", {
+        name: `Remove ${tag} tag`,
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(tags).toHaveValue("")
+    recordSmokeFailureContext(info, "fallback_tag_committed", "met")
   }
   phase("publish")
-  await freshDialog
-    .getByRole("button", { name: "Publish product", exact: true })
-    .click()
+  await expect(
+    freshDialog
+      .locator("#product-tags")
+      .locator("..")
+      .getByRole("button", { name: /^Remove .* tag$/ })
+  ).toHaveCount(3)
+  const publish = freshDialog.getByRole("button", {
+    name: "Publish product",
+    exact: true,
+  })
+  recordSmokeFailureContext(info, "fallback_publish_enabled")
+  await expect(publish).toBeEnabled()
+  recordSmokeFailureContext(info, "fallback_publish_enabled", "met")
+  recordSmokeFailureContext(info, "fallback_publish_click_completed")
+  await publish.click()
+  recordSmokeFailureContext(info, "fallback_publish_click_completed", "met")
+  recordSmokeFailureContext(info, "fallback_dialog_closed")
   await expect(freshDialog).toBeHidden({ timeout: 15_000 })
+  recordSmokeFailureContext(info, "fallback_dialog_closed", "met")
   await expect(
     page.getByText("Fallback image listing", { exact: true }).first()
   ).toBeVisible({ timeout: 15_000 })
@@ -813,8 +880,14 @@ test("fallback destination persistence fails before signing and survives draft r
   page,
 }, testInfo) => {
   test.setTimeout(90_000)
-  const phase = (phase: string) =>
-    recordSmokeDiagnostic(testInfo, "fallback-recovery", { phase })
+  const diagnostic: Record<string, string | number | boolean> = {}
+  const phase = (
+    nextPhase: string,
+    observations: Record<string, number | boolean> = {}
+  ) => {
+    Object.assign(diagnostic, observations, { phase: nextPhase })
+    recordSmokeDiagnostic(testInfo, "fallback-recovery", diagnostic)
+  }
   phase("setup")
   await page.addInitScript(
     ({ allowKey, claimPrefix }) => {
@@ -851,24 +924,65 @@ test("fallback destination persistence fails before signing and survives draft r
   )
   await dialog.getByLabel("Title").fill("Destination-guarded fallback")
   await dialog.getByLabel("Price").fill("7")
-  await dialog.locator("#product-fulfillment").click()
+  const fulfillment = dialog.locator("#product-fulfillment")
+  await fulfillment.click()
   await page.getByRole("option", { name: "Digital" }).click()
+  phase("fulfillment_selected", {
+    fulfillmentFocusedAtSelection: await fulfillment.evaluate(
+      (element) => document.activeElement === element
+    ),
+  })
+  // Select restores focus after closing; finish that handoff before tag entry.
+  await expect(fulfillment).toBeFocused()
+  await expect(fulfillment).toHaveText("Digital")
   const tags = dialog.getByRole("combobox", { name: "Tags" })
+  const committedTags = dialog.getByRole("button", {
+    name: /^Remove .+ tag$/,
+  })
+  phase("tag_entry", { committedTagCount: await committedTags.count() })
   for (const tag of ["fallback", "destination", "guardrail"]) {
     await tags.fill(tag)
+    phase("tag_entry", {
+      tagInputFocused: await tags.evaluate(
+        (element) => document.activeElement === element
+      ),
+      committedTagCount: await committedTags.count(),
+    })
     await tags.press("Enter")
+    phase("tag_entry", {
+      tagInputFocused: await tags.evaluate(
+        (element) => document.activeElement === element
+      ),
+      committedTagCount: await committedTags.count(),
+    })
+    await expect(
+      dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+    ).toBeVisible()
+    await expect(tags).toHaveValue("")
   }
 
+  const publish = dialog.getByRole("button", {
+    name: "Publish product",
+    exact: true,
+  })
+  phase("publish_ready", {
+    committedTagCount: await committedTags.count(),
+    publishEnabled: await publish.isEnabled(),
+  })
+  recordSmokeFailureContext(testInfo, "fallback_publish_enabled")
+  await expect(publish).toBeEnabled()
+  recordSmokeFailureContext(testInfo, "fallback_publish_enabled", "met")
   phase("guard_publish")
-  await dialog
-    .getByRole("button", { name: "Publish product", exact: true })
-    .click()
+  recordSmokeFailureContext(testInfo, "fallback_publish_click_completed")
+  await publish.click()
+  recordSmokeFailureContext(testInfo, "fallback_publish_click_completed", "met")
   await expect(
     dialog.getByText(
       "The public fallback could not preserve retry safety on this device.",
       { exact: false }
     )
   ).toBeVisible()
+  phase("guard_rejected")
   await expect(dialog).toBeVisible()
   expect(
     await page.evaluate(
@@ -922,7 +1036,13 @@ test("fallback destination persistence fails before signing and survives draft r
   await expect(resumed).toBeHidden({ timeout: 15_000 })
   await expect(publishedListing).toBeVisible({ timeout: 15_000 })
   phase("listing_edit")
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const edit = page.getByRole("button", { name: "Edit", exact: true }).first()
+  // Keep the trigger stationary through the delayed click generated by touch.
+  await edit.evaluate((element) =>
+    element.scrollIntoView({ behavior: "instant", block: "center" })
+  )
+  if (testInfo.project.use.hasTouch) await edit.tap()
+  else await edit.click()
   const editDialog = page.getByRole("dialog", { name: "Edit listing" })
   await expect(editDialog).toBeVisible()
   await expect(
@@ -934,6 +1054,121 @@ test("fallback destination persistence fails before signing and survives draft r
   expect(state.putCount).toBe(1)
   phase("complete")
 })
+
+async function installProductDialogDeliveryProbe(page: Page) {
+  const dialogProbe = await page
+    .getByRole("button", { name: "Add product" })
+    .first()
+    .evaluateHandle((element) => {
+      const countTriggers = () =>
+        Array.from(document.querySelectorAll("button")).filter(
+          (button) => button.textContent?.trim() === "Add product"
+        ).length
+      const bucket = (count: number) =>
+        count === 0 ? "none" : count === 1 ? "one" : "multiple"
+      const readDraftKeyState = () => {
+        try {
+          return bucket(
+            Object.keys(localStorage).filter((key) =>
+              key.startsWith("conduit:merchant:product_draft:v1")
+            ).length
+          )
+        } catch {
+          return "unavailable"
+        }
+      }
+      const resumeDraftPresent = () =>
+        Array.from(document.querySelectorAll("button")).some(
+          (button) => button.textContent?.trim() === "Resume product draft"
+        )
+      const observations = {
+        pointerDownObserved: false,
+        pointerDownOnTrigger: false,
+        pointerUpObserved: false,
+        pointerUpOnTrigger: false,
+        clickObserved: false,
+        clickOnTrigger: false,
+        dialogMounted: false,
+        dialogRemoved: false,
+        triggerEnabledAtDown: false,
+        triggerEnabledAtClick: false,
+        fontsAtDown: "unknown",
+        fontsAtClick: "unknown",
+        triggerCountBefore: bucket(countTriggers()),
+        resumeDraftPresentBefore: resumeDraftPresent(),
+        draftKeyStateBefore: readDraftKeyState(),
+      }
+      let downY: number | null = null
+      let upY: number | null = null
+      const listeners = (["pointerdown", "pointerup", "click"] as const).map(
+        (type) => {
+          const listener = (event: Event) => {
+            const onTrigger =
+              event.target instanceof Node && element.contains(event.target)
+            if (type === "pointerdown") {
+              observations.pointerDownObserved = true
+              observations.pointerDownOnTrigger = onTrigger
+              observations.triggerEnabledAtDown =
+                !element.hasAttribute("disabled")
+              observations.fontsAtDown = document.fonts.status
+              downY = element.getBoundingClientRect().y
+            } else if (type === "pointerup") {
+              observations.pointerUpObserved = true
+              observations.pointerUpOnTrigger = onTrigger
+              upY = element.getBoundingClientRect().y
+            } else {
+              observations.clickObserved = true
+              observations.clickOnTrigger = onTrigger
+              observations.triggerEnabledAtClick =
+                !element.hasAttribute("disabled")
+              observations.fontsAtClick = document.fonts.status
+            }
+          }
+          document.addEventListener(type, listener, true)
+          return { type, listener }
+        }
+      )
+      const containsDialog = (node: Node) =>
+        node instanceof Element &&
+        (node.matches('[role="dialog"]') ||
+          !!node.querySelector('[role="dialog"]'))
+      const observer = new MutationObserver((changes) => {
+        for (const change of changes) {
+          if ([...change.addedNodes].some(containsDialog))
+            observations.dialogMounted = true
+          if ([...change.removedNodes].some(containsDialog))
+            observations.dialogRemoved = true
+        }
+      })
+      observer.observe(document, { childList: true, subtree: true })
+      return {
+        read() {
+          return {
+            ...observations,
+            dialogPresent: !!document.querySelector('[role="dialog"]'),
+            triggerConnected: element.isConnected,
+            triggerEnabledAfter:
+              element.isConnected && !element.hasAttribute("disabled"),
+            triggerMovementDuringGesture:
+              downY === null || upY === null
+                ? "unavailable"
+                : Math.abs(upY - downY) > 8
+                  ? "moved"
+                  : "stable",
+            triggerCountAfter: bucket(countTriggers()),
+            resumeDraftPresent: resumeDraftPresent(),
+            draftKeyState: readDraftKeyState(),
+          }
+        },
+        dispose() {
+          observer.disconnect()
+          for (const { type, listener } of listeners)
+            document.removeEventListener(type, listener, true)
+        },
+      }
+    })
+  return dialogProbe
+}
 
 test("fallback rejection clears the durable claim across reload @merchant", async ({
   page,
@@ -966,16 +1201,28 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   mark("navigate")
   await page.reload()
   mark("open_dialog")
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  const dialogProbe = await installProductDialogDeliveryProbe(page)
   const resumed = page.getByRole("dialog", { name: "Add product" })
-  mark("dialog_visible")
   const addImage = resumed.getByRole("button", {
     name: "Add image",
     exact: true,
   })
   try {
+    const addProduct = await waitForEmptyMerchantCatalog(page)
+    await addProduct.click()
+    mark("dialog_visible")
     await expect(addImage).toBeEnabled()
   } catch (error) {
+    try {
+      if ((await resumed.count()) === 0)
+        recordSmokeDiagnostic(
+          test.info(),
+          "merchant-image-dialog-open",
+          await dialogProbe.evaluate((probe) => probe.read())
+        )
+    } catch {
+      // Teardown may close the page; preserve the original action or assertion.
+    }
     try {
       const [
         authReady,
@@ -1028,6 +1275,11 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
       // Teardown may close the page; preserve the original assertion failure.
     }
     throw error
+  } finally {
+    await dialogProbe
+      .evaluate((probe) => probe.dispose())
+      .catch(() => undefined)
+    await dialogProbe.dispose().catch(() => undefined)
   }
   mark("fresh_file")
   await resumed.locator("#product-image-file").setInputFiles(image512)
@@ -1112,11 +1364,103 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   )
   await expect(accountMenu).toBeVisible()
   mark("open_dialog")
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  const dialogProbe = await installProductDialogDeliveryProbe(page)
   const resumed = page.getByRole("dialog", { name: "Add product" })
-  await expect(
-    resumed.getByText("Choose the same image to retry", { exact: false })
-  ).toBeVisible()
+  let dialogOpened = false
+  try {
+    const addProduct = await waitForEmptyMerchantCatalog(page)
+    await addProduct.click()
+    await expect(resumed).toBeVisible()
+    dialogOpened = true
+    // The media preference read has a 4s relay connect bound followed by a
+    // 6s fetch bound. Wait for its fallback target to render before checking
+    // the retry-specific guidance; keep that assertion's own timeout intact.
+    await expect(
+      resumed.getByText(fallbackDisclosureText, { exact: false })
+    ).toBeVisible({ timeout: 15_000 })
+    await expect(
+      resumed.getByText("Choose the same image to retry", { exact: false })
+    ).toBeVisible()
+  } catch (error) {
+    if (!dialogOpened) {
+      try {
+        recordSmokeDiagnostic(
+          test.info(),
+          "merchant-image-dialog-open",
+          await dialogProbe.evaluate((probe) => probe.read())
+        )
+      } catch {
+        // Keep the original action or dialog failure if the page closed.
+      }
+    }
+    try {
+      const addImage = resumed.getByRole("button", {
+        name: "Add image",
+        exact: true,
+      })
+      const [
+        accountMenuCount,
+        addImageCount,
+        fallbackDisclosureVisible,
+        uploadPendingVisible,
+        dialogCount,
+      ] = await Promise.all([
+        accountMenu.count(),
+        addImage.count(),
+        resumed.getByText(fallbackDisclosureText, { exact: false }).isVisible(),
+        resumed
+          .getByText("Checking your media server settings.", { exact: false })
+          .isVisible(),
+        page.getByRole("dialog").count(),
+      ])
+      const claimState = await page.evaluate(() => {
+        try {
+          const keys = Object.keys(localStorage).filter((key) =>
+            key.startsWith("conduit:merchant:product_image_fallback:v1")
+          )
+          if (keys.length === 0) return "absent"
+          if (keys.length !== 1) return "malformed"
+          const value: unknown = JSON.parse(
+            localStorage.getItem(keys[0]!) ?? ""
+          )
+          return value &&
+            typeof value === "object" &&
+            "state" in value &&
+            (value.state === "retry_same_hash" || value.state === "consumed")
+            ? value.state
+            : "malformed"
+        } catch {
+          return "unavailable"
+        }
+      })
+      recordSmokeDiagnostic(test.info(), "fallback-upload", {
+        phase: "open_dialog",
+        dialogCount,
+      })
+      recordSmokeDiagnostic(test.info(), "merchant-image-reload", {
+        authReady: accountMenuCount > 0,
+        addImagePresent: addImageCount > 0,
+        addImageEnabled: await addImage.evaluateAll(
+          (buttons) =>
+            buttons.length === 1 &&
+            buttons[0] instanceof HTMLButtonElement &&
+            !buttons[0].matches(":disabled") &&
+            !buttons[0].closest('[aria-disabled="true"]')
+        ),
+        fallbackDisclosureVisible,
+        uploadPendingVisible,
+        claimState,
+      })
+    } catch {
+      // Teardown may close the page; preserve the original assertion failure.
+    }
+    throw error
+  } finally {
+    await dialogProbe
+      .evaluate((probe) => probe.dispose())
+      .catch(() => undefined)
+    await dialogProbe.dispose().catch(() => undefined)
+  }
   await expect(
     resumed.getByRole("button", { name: "Add image", exact: true })
   ).toBeEnabled()

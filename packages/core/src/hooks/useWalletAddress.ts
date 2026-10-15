@@ -78,31 +78,33 @@ export function useWalletAddress({
     setSaved(false)
   }, [existing, owner, generation])
   const save = async (address: string) => {
-    if (!owner || !current() || publisher.isPending) return
+    if (!owner || !current() || publisher.isPending) return false
     address = address.trim().toLowerCase()
     setSaved(false)
     if (address && !isValidLud16Address(address)) {
       setError("Enter a Lightning address, such as name@conduit.cash.")
-      return
+      return false
     }
     const expectedScope = scope
     setError(null)
     setSaved(false)
     try {
       await publisher.mutateAsync({ lud16: address })
-      if (viewScope.current !== expectedScope || !current()) return
+      if (viewScope.current !== expectedScope || !current()) return false
       setDraft(address)
       setSaved(true)
       onDismiss()
       await profile.refetch()
+      return true
     } catch (caught) {
-      if (viewScope.current !== expectedScope || !current()) return
+      if (viewScope.current !== expectedScope || !current()) return false
       setError(
         caught instanceof Error
           ? caught.message
           : "Could not update your public address."
       )
       await profile.refetch()
+      return false
     }
   }
   // Only the first newly created wallet may supply the disclosed empty-profile

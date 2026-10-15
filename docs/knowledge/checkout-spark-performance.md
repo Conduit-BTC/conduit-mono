@@ -55,9 +55,11 @@ For each 1/3/8-commerce-leg case, it runs three fresh synthetic-port fixtures,
 then three samples reusing one synthetic manager/repository-port fixture. The
 reused fixture resets its fake provider/store state between samples; this is
 repeat-path isolation, not production payment replay or real warm SDK evidence.
-Each complete sample proves credit admission, settles all commerce, commits the
-native leg and completes the Core terminal inspection. Failure throws instead
-of reporting a successful sample.
+Each complete sample proves credit admission, settles all commerce and commits
+the native leg. A subsequent shared-workflow invocation re-attests the exact
+saved commerce, reports `already_paid` without another send, and retains the
+active wallet/recovery state. Failure throws instead of reporting a successful
+sample. Automatic wallet retirement is not part of the current completion path.
 
 The script reports sample count, median and maximum for each phase. Virtual
 provider/transport time and actual local fixture-execution wall time are separate
@@ -82,13 +84,15 @@ prediction for live checkout.
 | Exact funding observation and Core credit admission |             10 |              10 |              10 |
 | Preprepared Core commerce completion                |             70 |             270 |            1120 |
 | Buyer native commitment                             |            380 |             500 |             800 |
-| Core terminal retirement inspection                 |            100 |             120 |             170 |
+| Completed-state reconciliation                      |             10 |              30 |              80 |
 
-The retirement phase uses the shared retirement engine, fresh Buyer commerce
-inspection and exact native inspection, four full-history scans and zero-funds
-checks. Aligning its fake clock to the frozen Merchant takeover happens outside
-the measured phase; it is not shortened handoff or elapsed provider work. The
-fixture does not compose the Merchant claim-capable recovery adapter.
+The final phase repeats the shared workflow against its retained all-paid
+state. It performs 1/3/8 exact commerce-history reads and paid-fact callbacks,
+with zero new sends, preflights, recovery acknowledgements or wallet-inspection
+opens. This is not a fresh receiver claim or a safe-retirement measurement.
+The earlier native-commitment phase independently proves its own exact payment;
+the repeat does not manufacture or replace that proof. The fixture does not
+compose the Merchant claim-capable recovery adapter.
 
 ### First native finalization after all commerce is paid
 
@@ -136,7 +140,7 @@ does not use the commerce app/SDK send adapter. All commerce settles exactly onc
 
 This fixture exposes repeated sibling observations, including paid intents.
 It is not a complete end-to-end checkout cost: sequential invoice preparation,
-the concrete SDK adapter, receiver binding, renewals and retirement add other
+the concrete SDK adapter, receiver binding and renewals add other
 work. Do not combine the two tables into an estimated live latency.
 
 ## Nested Buyer observation measurements
@@ -185,8 +189,8 @@ external user payment wait or evidence supporting a shorter safety deadline.
 ## Merchant wallet-open lifecycle
 
 The separate composed Merchant census exercises actual advancement, credit,
-history, signed selection, preparation, continuation, recipient proofs and
-retirement helpers with typed device-local storage. It measures the supported
+history, signed selection, preparation, continuation and recipient proofs with
+typed device-local storage. It measures the supported
 historical **ordinary Lightning Conduit fee leg** (`lightning_fee_leg`), not
 schema-four native treasury wallet lifetimes.
 
@@ -201,15 +205,17 @@ bun test tests/checkout-spark-merchant-lifecycle-measurement.test.ts
 | Payout history wallet opens                |              3 |               7 |              17 |
 | Preparation wallet opens                   |              2 |               4 |               9 |
 | Continuation wallet opens                  |              2 |               4 |               9 |
-| Retirement wallet opens                    |              1 |               1 |               1 |
-| Total opens / cleanups                     |          9 / 9 |         17 / 17 |         37 / 37 |
+| Total opens / cleanups                     |          8 / 8 |         16 / 16 |         36 / 36 |
 | Sends, including the Lightning fee         |              2 |               4 |               9 |
 | Advancement invocations                    |              5 |               9 |              19 |
-| Controlled initialization contribution, ms |            900 |            1700 |            3700 |
+| Controlled initialization contribution, ms |            800 |            1600 |            3600 |
 
 Each case is one complete offline sequence. The fixed 100 ms per open is a
 sensitivity-model input, not measured native initialization. Maximum concurrent
-wallets remain one; terminal replay adds zero opens and zero sends. The harness
+wallets remain one. All-paid advancement returns `verified`, retaining the
+active exact payment/recovery state; a repeated completed invocation adds zero
+opens and zero sends and leaves that saved state unchanged. Automatic wallet
+retirement is neither invoked nor measured. The harness
 limits its module substitution to the recovery credential transport; wallet and
 provider ports are controlled fixtures. It runs that mock in an isolated
 subprocess so it cannot affect other tests. Exact typed progress
@@ -267,12 +273,12 @@ describe technical follow-up, not release approval.
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 2. Repeated commerce re-attestation | Defer broad reuse. The native census measures 6/18/48 exact-history reads; several repeats cross durable state, recovery ACK and send-admission boundaries, where freshness is intentional.                                                | Shared financial-workflow maintainer                          | Evaluate concurrency or observation sharing only within one guarded unchanged-revision phase; count qualified receiver requests separately and retain every later fresh pre-send/uncertain-send check.                                     |
 | 4. Nested Buyer observation waits   | Defer a polling-policy change. Controlled SDK/runner cases now demonstrate the nested waiting and admitted-read drain; 60 seconds is a ceiling, not unavoidable paid latency, and fewer checks alone do not establish safe admission.      | Wallet-adapter and Buyer foreground-runner maintainers        | Compare a single-observation adapter whose runner owns waiting against the measured pending cases, preserving the five-minute admission bound, handoff, exact reconciliation and no replay. Events may wake checks, never prove payment.   |
-| 5. Merchant wallet lifetimes        | Defer lifetime pooling. The historical Lightning-plan census measures 9/17/37 bounded open/cleanup pairs and 900/1700/3700 ms only under the injected 100 ms/open model; real cold/warm cost and native-treasury lifetimes remain unknown. | Merchant recovery and wallet-lifecycle maintainers            | Measure real initialization plus native-path lifetimes, then assess bounded same-order reuse with exact identity, local locking, query-only/claim-capable separation, revocation and drained-cleanup negatives; no broad credential cache. |
+| 5. Merchant wallet lifetimes        | Defer lifetime pooling. The historical Lightning-plan census measures 8/16/36 bounded open/cleanup pairs and 800/1600/3600 ms only under the injected 100 ms/open model; real cold/warm cost and native-treasury lifetimes remain unknown. | Merchant recovery and wallet-lifecycle maintainers            | Measure real initialization plus native-path lifetimes, then assess bounded same-order reuse with exact identity, local locking, query-only/claim-capable separation, revocation and drained-cleanup negatives; no broad credential cache. |
 | 6. Startup/SDK loading              | Defer import/startup changes. Initial static closures are now measured at approximately 5.1/4.8 million raw bytes; bytes do not identify evaluation cost or the effect of already-dynamic SDK loading.                                     | Frontend performance maintainer, with wallet-lifecycle review | Profile a managed build's cold-cache and same-context repeat transfer/evaluation/first-usable UI with external networking blocked, then repeat on a physical phone before moving imports or wallet initialization.                         |
 
 Together the fixtures now cover controlled preparation-to-ready, funding
 observation, commerce completion, native commitment and a separate composed
-Merchant recovery-to-retirement lifecycle. They are complementary measurements,
+Merchant recovery-to-verified-completion lifecycle with retained wallets. They are complementary measurements,
 not one deployed end-to-end trace or a measured latency distribution. Real SDK
 cold/warm initialization, native-path Merchant lifetimes, qualified receiving
 service latency, mobile behavior and external user funding waits remain
@@ -280,6 +286,8 @@ unsampled. Do not relabel behavior-only tests or computed bundle bytes as those
 timings.
 
 No deadline shortening, ACK skipping, receiver-proof relaxation, optimistic paid
-projection, possible-send replay or wallet-retirement shortcut is part of the
-performance improvement. Synthetic checks cannot close the existing funded,
+projection or possible-send replay is part of the performance improvement.
+The samplers follow the existing retained-wallet completion behavior; they do
+not restore automatic retirement or equate a payment with safe wallet deletion.
+Synthetic checks cannot close the existing funded,
 mobile-lifecycle, receiving-provider or maintainer-owned release-validation gaps.

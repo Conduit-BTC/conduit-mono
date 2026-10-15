@@ -30,7 +30,8 @@ import {
 // This covers the historical Lightning Conduit-last fee plan, not a schema-4
 // native-treasury lifetime measurement. Both retain their production guards.
 // Only the credential transport is substituted; production advancement, credit,
-// history, preparation, continuation, recipient proof, and retirement execute.
+// history, preparation, continuation, and recipient proof execute. Completion
+// retains the active wallet/recovery state; automatic retirement is not run.
 // The module mock is isolated in this script's subprocess, never a test import.
 let networkAttempts = 0
 globalThis.fetch = async () => {
@@ -59,7 +60,6 @@ const { advanceMerchantCheckoutSparkOrder } =
 const {
   reconcileMerchantCheckoutSparkSettledCredit,
   inspectMerchantCheckoutSparkSettledPayoutHistory,
-  retireMerchantCheckoutSparkSettledRecovery,
 } = await import("../../apps/merchant/src/lib/checkout-spark-settled-recovery")
 const {
   selectMerchantCheckoutSparkSignedNextPayout,
@@ -445,7 +445,6 @@ async function measure(commerceLegs: number) {
     accountNumber: number
     network: "mainnet" | "regtest"
     outgoing?: true
-    retirement?: true
   }): Promise<MerchantSparkRecoveryWallet> => {
     expect(input.mnemonic).toBe(mnemonic)
     expect(input.accountNumber).toBe(0)
@@ -594,13 +593,6 @@ async function measure(commerceLegs: number) {
             { ...common, ...options }
           )
         ),
-      retireWallet: (principal, selected, options) =>
-        inPhase("retire", () =>
-          retireMerchantCheckoutSparkSettledRecovery(principal, selected, {
-            ...common,
-            ...options,
-          })
-        ),
       verifyRecipients: (input) =>
         verifySavedMerchantCheckoutSparkRecipients({
           ...input,
@@ -646,12 +638,16 @@ async function measure(commerceLegs: number) {
         virtualInitMs: initializedMs - before.initializedMs,
       })
       expect(activeWallets).toBe(0)
-      if (status === "retired") break
+      if (status === "verified") break
       expect(status).toBe("progress_pending")
     }
-    expect(
-      (await repository.load(plan.checkoutId, plan.planDigest)).status
-    ).toBe("retired")
+    const completed = await repository.load(plan.checkoutId, plan.planDigest)
+    expect(completed.status).toBe("active")
+    if (completed.status !== "active")
+      throw new Error("Completed wallet recovery state was not retained")
+    expect(completed.state.legs.every((leg) => leg.status === "paid")).toBe(
+      true
+    )
     expect(counts.sends).toBe(commerceLegs + 1)
     expect(sendOrder).toEqual(
       plan.recipients.map((recipient) => recipient.legId)
@@ -659,8 +655,8 @@ async function measure(commerceLegs: number) {
     expect(counts.opens).toBe(counts.cleanups)
     expect(maxActiveWallets).toBe(1)
     expect(availableSats).toBe(0)
-    const opensAtRetirement = counts.opens
-    const sendsAtRetirement = counts.sends
+    const opensAtCompletion = counts.opens
+    const sendsAtCompletion = counts.sends
     expect(
       await advanceMerchantCheckoutSparkOrder(
         MERCHANT,
@@ -668,9 +664,12 @@ async function measure(commerceLegs: number) {
         () => {},
         dependencies
       )
-    ).toBe("retired")
-    expect(counts.opens).toBe(opensAtRetirement)
-    expect(counts.sends).toBe(sendsAtRetirement)
+    ).toBe("verified")
+    expect(counts.opens).toBe(opensAtCompletion)
+    expect(counts.sends).toBe(sendsAtCompletion)
+    expect(await repository.load(plan.checkoutId, plan.planDigest)).toEqual(
+      completed
+    )
     return {
       commerceLegs,
       conduitLegs: 1,
@@ -681,8 +680,8 @@ async function measure(commerceLegs: number) {
       maxActiveWallets,
       advancementInvocations: phaseRows.length,
       phaseWalletOpens: phaseOpens,
-      terminalReplayOpens: counts.opens - opensAtRetirement,
-      terminalReplaySends: counts.sends - sendsAtRetirement,
+      completedRepeatOpens: counts.opens - opensAtCompletion,
+      completedRepeatSends: counts.sends - sendsAtCompletion,
     }
   } finally {
     database.close()
@@ -702,6 +701,7 @@ try {
       schemaVersion: 1,
       measurement: "merchant_wallet_open_lifecycle",
       finalCollection: "lightning_fee_leg",
+      outcome: "verified_wallet_retained",
       environment: "offline_fixture",
       timing: "controlled_virtual_wallet_open_cost",
       initCostMs: INIT_COST_MS,

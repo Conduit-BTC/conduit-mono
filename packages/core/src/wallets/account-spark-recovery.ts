@@ -1,3 +1,8 @@
+import { DexieWalletNameStore } from "./wallet-name-store"
+import { WalletNameService } from "./wallet-name-service"
+import { AddressRequestService } from "./address-request-service"
+import { DexieAddressRequestStore } from "./address-request-store"
+import type { WalletNameNetwork } from "./wallet-name-contract"
 import { getAccountSigner } from "../protocol/session-signer"
 import {
   type AccountSigner,
@@ -14,6 +19,7 @@ import {
   SparkRecoveryService,
   type SparkRecoveryDiscovery,
   type SparkRecoveryCandidate,
+  type SparkRecoveryTransport,
 } from "./spark-recovery-service"
 import { DexieSparkRecoveryStore } from "./spark-recovery-store"
 import { createSparkRecoveryReader } from "./spark-recovery-read"
@@ -33,6 +39,21 @@ import type { SparkRecoveryBundle } from "./spark-recovery-contract"
 import type { WalletDescriptor, WalletRegistry } from "./index"
 
 const services = new WeakMap<AccountSigner, SparkRecoveryService>()
+const requestServices = new WeakMap<AccountSigner, AddressRequestService>()
+export function getAccountAddressRequestService(
+  signer: AccountSigner
+): AddressRequestService {
+  let service = requestServices.get(signer)
+  if (!service) {
+    service = new AddressRequestService({
+      signer,
+      store: new DexieAddressRequestStore(),
+      transport: createAccountWalletTransport(signer),
+    })
+    requestServices.set(signer, service)
+  }
+  return service
+}
 export function getAccountSparkRecovery(
   signer: AccountSigner
 ): SparkRecoveryService {
@@ -42,58 +63,70 @@ export function getAccountSparkRecovery(
     signer,
     store: new DexieSparkRecoveryStore(),
     deriveIdentity: deriveSparkRecoveryIdentity,
-    transport: {
-      read: createSparkRecoveryReader(),
-      async publish(url, event, shouldContinue) {
-        if (!shouldContinue()) return "cancelled"
-        if (
-          !getProtectedReadAuthorization(signer.pubkey) ||
-          getAccountSigner() !== signer
-        )
-          return "auth_required"
-        try {
-          const result = await publishWithPlanner(event, {
-            intent: "author_event",
-            authorPubkey: signer.pubkey,
-            authenticatedPubkey: signer.pubkey,
-            accountPubkey: signer.pubkey,
-            exclusiveRelayUrls: [url],
-            relayTargets: [
-              {
-                url,
-                grants: [{ kind: "source_delivery", operation: "write" }],
-              },
-            ],
-            deliveryMode: "critical",
-            shouldContinue,
-            relayAuthentication: {
-              expectedPubkey: signer.pubkey,
-              signer,
-              sessionScope: signer,
-            },
-          })
-          return getRelayPublishTargetStatus(result, url) === "acked"
-            ? "acked"
-            : "error"
-        } catch (error) {
-          if (!shouldContinue()) return "cancelled"
-          if (error instanceof RelayPublishDiagnosticsError) {
-            const status = getRelayPublishTargetStatus(error.diagnostics, url)
-            if (
-              status === "rejected" ||
-              status === "timed_out" ||
-              status === "auth_required" ||
-              status === "policy_blocked"
-            )
-              return status
-          }
-          return "error"
-        }
-      },
-    },
+    transport: createAccountWalletTransport(signer),
+    migrateLegacyRequests: (network, discovery, options) =>
+      getAccountAddressRequestService(signer).migrateLegacy(
+        network,
+        discovery,
+        options
+      ),
   })
   services.set(signer, service)
   return service
+}
+
+function createAccountWalletTransport(
+  signer: AccountSigner
+): SparkRecoveryTransport {
+  return {
+    read: createSparkRecoveryReader(),
+    async publish(url, event, shouldContinue) {
+      if (!shouldContinue()) return "cancelled"
+      if (
+        !getProtectedReadAuthorization(signer.pubkey) ||
+        getAccountSigner() !== signer
+      )
+        return "auth_required"
+      try {
+        const result = await publishWithPlanner(event, {
+          intent: "author_event",
+          authorPubkey: signer.pubkey,
+          authenticatedPubkey: signer.pubkey,
+          accountPubkey: signer.pubkey,
+          exclusiveRelayUrls: [url],
+          relayTargets: [
+            {
+              url,
+              grants: [{ kind: "source_delivery", operation: "write" }],
+            },
+          ],
+          deliveryMode: "critical",
+          shouldContinue,
+          relayAuthentication: {
+            expectedPubkey: signer.pubkey,
+            signer,
+            sessionScope: signer,
+          },
+        })
+        return getRelayPublishTargetStatus(result, url) === "acked"
+          ? "acked"
+          : "error"
+      } catch (error) {
+        if (!shouldContinue()) return "cancelled"
+        if (error instanceof RelayPublishDiagnosticsError) {
+          const status = getRelayPublishTargetStatus(error.diagnostics, url)
+          if (
+            status === "rejected" ||
+            status === "timed_out" ||
+            status === "auth_required" ||
+            status === "policy_blocked"
+          )
+            return status
+        }
+        return "error"
+      }
+    },
+  }
 }
 
 /** Origin-local serialization only; independent origins retain conflicting signed candidates. */
@@ -342,6 +375,113 @@ export async function applyAccountWalletRegistryDefaults(input: {
   })
 }
 
+interface AccountWalletNameSyncInput {
+  signer: AccountSigner
+  network: WalletNameNetwork
+  store: Pick<
+    MarketWalletStore,
+    "listVisible" | "getSparkRecovery" | "rename" | "transaction"
+  >
+  names?: DexieWalletNameStore
+  service?: WalletNameService
+  options?: AccountSignerOperationOptions
+  seedExisting?: boolean
+}
+
+/** Recovery writes may advance membership. Never reuse their pre-write snapshot. */
+export async function synchronizeAccountWalletNamesAfterRecovery(
+  input: AccountWalletNameSyncInput & {
+    recoveryService?: Pick<SparkRecoveryService, "discover">
+  }
+): Promise<{ discovery: SparkRecoveryDiscovery; ready: boolean }> {
+  assertWalletSignerCurrent(input.signer)
+  const recovery =
+    input.recoveryService ?? getAccountSparkRecovery(input.signer)
+  const discovery = await recovery.discover(false, input.network, input.options)
+  assertWalletSignerCurrent(input.signer)
+  const ready = await synchronizeAccountWalletNames({ ...input, discovery })
+  return { discovery, ready }
+}
+
+/** Optional name synchronization cannot invalidate otherwise usable wallet recovery. */
+export async function synchronizeAccountWalletNames(
+  input: AccountWalletNameSyncInput & { discovery: SparkRecoveryDiscovery }
+): Promise<boolean> {
+  const { signer, discovery, network, store, options = {} } = input
+  const names = input.names ?? new DexieWalletNameStore()
+  if (!isCompleteAccountRegistryDiscovery(discovery)) return false
+  const service =
+    input.service ??
+    new WalletNameService({
+      signer,
+      store: names,
+      transport: createAccountWalletTransport(signer),
+    })
+  try {
+    let result = await service.sync(network, discovery, options)
+    assertWalletSignerCurrent(signer)
+    if (input.seedExisting && result.ready) {
+      const active = new Set(discovery.registry?.activeWalletIds)
+      const missing = (await store.listVisible(signer.pubkey)).filter(
+        (wallet) =>
+          wallet.providerId === "spark" &&
+          wallet.network === network &&
+          active.has(wallet.id) &&
+          !result.names[wallet.id]
+      )
+      const eligible = await Promise.all(
+        missing.map(async (wallet) => {
+          const recovery = await store.getSparkRecovery(wallet.id)
+          return recovery?.type === "signer" &&
+            recovery.ownerPubkey === signer.pubkey
+            ? wallet
+            : undefined
+        })
+      )
+      assertWalletSignerCurrent(signer)
+      await names.update(signer.pubkey, network, (current) => {
+        const pending = { ...current.pending }
+        for (const wallet of eligible)
+          if (wallet && !pending[wallet.id])
+            pending[wallet.id] = {
+              name: wallet.label,
+              token: crypto.randomUUID(),
+            }
+        return { ...current, pending }
+      })
+      result = await service.sync(network, discovery, options)
+    }
+    if (!result.ready) return false
+    await store.transaction(async () => {
+      const pending = (await names.load(signer.pubkey, network)).pending
+      for (const wallet of await store.listVisible(signer.pubkey)) {
+        const name = result.names[wallet.id]
+        if (
+          !name ||
+          pending[wallet.id] ||
+          name === wallet.label ||
+          wallet.providerId !== "spark" ||
+          wallet.network !== network
+        )
+          continue
+        const recovery = await store.getSparkRecovery(wallet.id)
+        if (
+          recovery?.type !== "signer" ||
+          recovery.ownerPubkey !== signer.pubkey
+        )
+          continue
+        assertWalletSignerCurrent(signer)
+        await store.rename(wallet.id, name)
+      }
+      assertWalletSignerCurrent(signer)
+    })
+    return true
+  } catch {
+    assertWalletSignerCurrent(signer)
+    return false
+  }
+}
+
 export async function restoreAccountSparkWallets(
   signer: AccountSigner,
   discovery: SparkRecoveryDiscovery,
@@ -491,9 +631,18 @@ export async function backUpAccountSparkWallet(
     type: "add",
     walletId,
   })
-  return (
+  const ready =
     (await service.deliver(registryEventId, options)).ready &&
     backup.ready &&
     primary.ready
-  )
+  if (ready)
+    await synchronizeAccountWalletNames({
+      signer,
+      discovery: await service.discover(false, bundle.network, options),
+      network: bundle.network,
+      store: getMarketWalletStore(),
+      options,
+      seedExisting: true,
+    })
+  return ready
 }

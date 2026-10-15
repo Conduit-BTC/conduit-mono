@@ -4,7 +4,6 @@ export type MerchantCheckoutSparkReconciliationStatus =
   | "verified"
   | "pending"
   | "progress_pending"
-  | "retirement_pending"
   | "needs_attention"
   | "renewal_wait"
   | "recipient_unverified"
@@ -16,7 +15,6 @@ const STATUSES: readonly MerchantCheckoutSparkReconciliationStatus[] = [
   "verified",
   "pending",
   "progress_pending",
-  "retirement_pending",
   "needs_attention",
   "renewal_wait",
   "recipient_unverified",
@@ -140,7 +138,6 @@ export function startMerchantCheckoutSparkReconciliation(
       verified: 0,
       pending: 0,
       progress_pending: 0,
-      retirement_pending: 0,
       needs_attention: 0,
       renewal_wait: 0,
       recipient_unverified: 0,
