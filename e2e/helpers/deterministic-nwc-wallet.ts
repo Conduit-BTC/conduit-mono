@@ -198,6 +198,42 @@ function requestMatchesInvoice(
   )
 }
 
+/** Track SDK callbacks and fire-and-forget publishes before closing its pool. */
+export function trackNwcServiceWork(service: NWCWalletService) {
+  const pending = new Set<Promise<unknown>>()
+  let failed = false
+  const track = (value: unknown) => {
+    const work = Promise.resolve(value)
+    pending.add(work)
+    void work.then(
+      () => pending.delete(work),
+      () => {
+        pending.delete(work)
+        failed = true
+      }
+    )
+  }
+  const subscribe = service.pool.subscribe.bind(service.pool)
+  service.pool.subscribe = (relays, filter, params) =>
+    subscribe(relays, filter, {
+      ...params,
+      onevent: params.onevent
+        ? (event) => track(params.onevent!(event))
+        : undefined,
+    })
+  const publish = service.pool.publish.bind(service.pool)
+  service.pool.publish = (...args) => {
+    const publications = publish(...args)
+    publications.forEach(track)
+    return publications
+  }
+  return async () => {
+    // A callback can enqueue a publication while the current batch drains.
+    while (pending.size) await Promise.allSettled([...pending])
+    if (failed) throw new DeterministicNwcOperationError("wallet_close")
+  }
+}
+
 function toTransaction(invoice: StoredInvoice): Nip47Transaction {
   return {
     type: "incoming",
@@ -261,6 +297,7 @@ export function createDeterministicNwcWallet(
     relayUrls: [options.relayUrl],
     logger: { debug() {} },
   })
+  const drainServiceWork = trackNwcServiceWork(service)
   const counters: WalletCounters = {
     makeInvoice: 0,
     payInvoice: 0,
@@ -390,19 +427,18 @@ export function createDeterministicNwcWallet(
     },
     async close() {
       if (closed) return
-      // The SDK intentionally publishes responses without awaiting relay ACKs.
-      // Give those local publishes one turn to settle before closing the pool,
-      // otherwise teardown can turn a successful response into an unhandled
-      // rejected publication promise.
       try {
         await runContentFreeNwcOperation("wallet_close", async () => {
-          await new Promise((resolve) => setTimeout(resolve, 25))
           unsubscribeMerchant?.()
           unsubscribeBuyer?.()
           unsubscribeMerchant = null
           unsubscribeBuyer = null
-          service.close()
-          started = false
+          try {
+            await drainServiceWork()
+          } finally {
+            service.close()
+            started = false
+          }
         })
       } finally {
         merchantKeyPair.walletSecret = ""
