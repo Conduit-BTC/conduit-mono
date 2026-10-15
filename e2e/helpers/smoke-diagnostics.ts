@@ -130,6 +130,19 @@ const failureConditions: Record<
     migration_route_ready: "app-readiness",
     migration_wallet_opened: "app-readiness",
   },
+  "e2e/wallet-cross-app.playwright.ts": {
+    wallet_refusal_sync_completed: "app-readiness",
+    wallet_refusal_background_read_held: "assertion",
+    wallet_refusal_foreground_import_completed: "user-action",
+    wallet_refusal_background_released: "user-action",
+    wallet_refusal_ready_preserved: "assertion",
+  },
+  "e2e/mobile-safari-baseline.playwright.ts": {
+    mobile_wallet_setup_trigger_click_completed: "user-action",
+    mobile_wallet_setup_item_ready: "app-readiness",
+    mobile_wallet_setup_item_click_completed: "user-action",
+    mobile_wallet_setup_dialog_ready: "app-readiness",
+  },
 }
 
 export function parseSmokeFailureContext(
@@ -217,6 +230,53 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "wallet-background-refusal": {
+      file: "e2e/wallet-cross-app.playwright.ts",
+      fields: {
+        phase: [
+          "sync_click",
+          "sync_settled",
+          "background_read_held",
+          "foreground_import",
+          "foreground_import_settled",
+          "background_released",
+          "complete",
+        ],
+        syncObserved: "boolean",
+        syncOutcome: ["pending", "resolved", "rejected"],
+        foregroundImportSettled: "boolean",
+        observationAvailable: "boolean",
+        lockObservationAvailable: "boolean",
+        heldReadInsideAccountSetupLock: "boolean",
+      },
+    },
+    "mobile-wallet-menu": {
+      file: "e2e/mobile-safari-baseline.playwright.ts",
+      fields: {
+        attempt: ["first", "after_reload"],
+        phase: [
+          "before_trigger",
+          "menu_mounted",
+          "trigger_clicked",
+          "menu_removed",
+          "item_clicked",
+        ],
+        observationAvailable: "boolean",
+        triggerPresent: "boolean",
+        triggerEnabled: "boolean",
+        walletLoading: "boolean",
+        menuMounted: "boolean",
+        menuPresent: "boolean",
+        menuOpen: "boolean",
+        menuRemoved: "boolean",
+        itemPresent: "boolean",
+        itemVisible: "boolean",
+        itemEnabled: "boolean",
+        dialogPresent: "boolean",
+        pointerDownOnTrigger: "boolean",
+        triggerMovementDuringGesture: ["stable", "moved", "unavailable"],
+      },
+    },
     "wallet-balances": {
       file: "e2e/wallet-balances.playwright.ts",
       fields: {
@@ -784,6 +844,8 @@ export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
     | "wallet-foreground-open"
+    | "wallet-background-refusal"
+    | "mobile-wallet-menu"
     | "wallet-balances"
     | "merchant-image-reload"
     | "merchant-image-dialog-open"

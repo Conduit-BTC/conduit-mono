@@ -299,7 +299,8 @@ export async function observeWalletController(
       response,
       body: body.replace(
         marker,
-        marker + "window.__controlledWalletController = wallets;"
+        marker +
+          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);"
       ),
     })
   })
