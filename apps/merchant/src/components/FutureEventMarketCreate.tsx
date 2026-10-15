@@ -29,6 +29,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  DialogTrigger,
   Input,
   Label,
 } from "@conduit/ui"
@@ -913,14 +914,15 @@ function FutureEventMarketCreateForm({
               </Button>
             ) : null}
             <AlertDialog open={discardOpen} onOpenChange={setDiscardOpen}>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={pending || bannerBusy}
-                onClick={() => setDiscardOpen(true)}
-              >
-                Discard draft and start new event
-              </Button>
+              <DialogTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending || bannerBusy}
+                >
+                  Discard draft and start new event
+                </Button>
+              </DialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>

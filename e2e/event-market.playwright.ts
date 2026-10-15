@@ -4234,6 +4234,12 @@ test("unsigned creation can be discarded after reload before starting a new even
     })
     .click()
   await page.getByRole("button", { name: "Keep draft", exact: true }).click()
+  await expect(
+    page.getByRole("button", {
+      name: "Discard draft and start new event",
+      exact: true,
+    })
+  ).toBeFocused()
   await expect(page.getByLabel("Event title")).toHaveValue(
     "Saved community fair"
   )
