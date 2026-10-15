@@ -1030,6 +1030,121 @@ test("fallback destination persistence fails before signing and survives draft r
   phase("complete")
 })
 
+async function installProductDialogDeliveryProbe(page: Page) {
+  const dialogProbe = await page
+    .getByRole("button", { name: "Add product" })
+    .first()
+    .evaluateHandle((element) => {
+      const countTriggers = () =>
+        Array.from(document.querySelectorAll("button")).filter(
+          (button) => button.textContent?.trim() === "Add product"
+        ).length
+      const bucket = (count: number) =>
+        count === 0 ? "none" : count === 1 ? "one" : "multiple"
+      const readDraftKeyState = () => {
+        try {
+          return bucket(
+            Object.keys(localStorage).filter((key) =>
+              key.startsWith("conduit:merchant:product_draft:v1")
+            ).length
+          )
+        } catch {
+          return "unavailable"
+        }
+      }
+      const resumeDraftPresent = () =>
+        Array.from(document.querySelectorAll("button")).some(
+          (button) => button.textContent?.trim() === "Resume product draft"
+        )
+      const observations = {
+        pointerDownObserved: false,
+        pointerDownOnTrigger: false,
+        pointerUpObserved: false,
+        pointerUpOnTrigger: false,
+        clickObserved: false,
+        clickOnTrigger: false,
+        dialogMounted: false,
+        dialogRemoved: false,
+        triggerEnabledAtDown: false,
+        triggerEnabledAtClick: false,
+        fontsAtDown: "unknown",
+        fontsAtClick: "unknown",
+        triggerCountBefore: bucket(countTriggers()),
+        resumeDraftPresentBefore: resumeDraftPresent(),
+        draftKeyStateBefore: readDraftKeyState(),
+      }
+      let downY: number | null = null
+      let upY: number | null = null
+      const listeners = (["pointerdown", "pointerup", "click"] as const).map(
+        (type) => {
+          const listener = (event: Event) => {
+            const onTrigger =
+              event.target instanceof Node && element.contains(event.target)
+            if (type === "pointerdown") {
+              observations.pointerDownObserved = true
+              observations.pointerDownOnTrigger = onTrigger
+              observations.triggerEnabledAtDown =
+                !element.hasAttribute("disabled")
+              observations.fontsAtDown = document.fonts.status
+              downY = element.getBoundingClientRect().y
+            } else if (type === "pointerup") {
+              observations.pointerUpObserved = true
+              observations.pointerUpOnTrigger = onTrigger
+              upY = element.getBoundingClientRect().y
+            } else {
+              observations.clickObserved = true
+              observations.clickOnTrigger = onTrigger
+              observations.triggerEnabledAtClick =
+                !element.hasAttribute("disabled")
+              observations.fontsAtClick = document.fonts.status
+            }
+          }
+          document.addEventListener(type, listener, true)
+          return { type, listener }
+        }
+      )
+      const containsDialog = (node: Node) =>
+        node instanceof Element &&
+        (node.matches('[role="dialog"]') ||
+          !!node.querySelector('[role="dialog"]'))
+      const observer = new MutationObserver((changes) => {
+        for (const change of changes) {
+          if ([...change.addedNodes].some(containsDialog))
+            observations.dialogMounted = true
+          if ([...change.removedNodes].some(containsDialog))
+            observations.dialogRemoved = true
+        }
+      })
+      observer.observe(document, { childList: true, subtree: true })
+      return {
+        read() {
+          return {
+            ...observations,
+            dialogPresent: !!document.querySelector('[role="dialog"]'),
+            triggerConnected: element.isConnected,
+            triggerEnabledAfter:
+              element.isConnected && !element.hasAttribute("disabled"),
+            triggerMovementDuringGesture:
+              downY === null || upY === null
+                ? "unavailable"
+                : Math.abs(upY - downY) > 8
+                  ? "moved"
+                  : "stable",
+            triggerCountAfter: bucket(countTriggers()),
+            resumeDraftPresent: resumeDraftPresent(),
+            draftKeyState: readDraftKeyState(),
+          }
+        },
+        dispose() {
+          observer.disconnect()
+          for (const { type, listener } of listeners)
+            document.removeEventListener(type, listener, true)
+        },
+      }
+    })
+  return dialogProbe
+}
+
 test("fallback rejection clears the durable claim across reload @merchant", async ({
   page,
 }) => {
@@ -1061,16 +1176,27 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
   mark("navigate")
   await page.reload()
   mark("open_dialog")
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  const dialogProbe = await installProductDialogDeliveryProbe(page)
   const resumed = page.getByRole("dialog", { name: "Add product" })
-  mark("dialog_visible")
   const addImage = resumed.getByRole("button", {
     name: "Add image",
     exact: true,
   })
   try {
+    await page.getByRole("button", { name: "Add product" }).first().click()
+    mark("dialog_visible")
     await expect(addImage).toBeEnabled()
   } catch (error) {
+    try {
+      if ((await resumed.count()) === 0)
+        recordSmokeDiagnostic(
+          test.info(),
+          "merchant-image-dialog-open",
+          await dialogProbe.evaluate((probe) => probe.read())
+        )
+    } catch {
+      // Teardown may close the page; preserve the original action or assertion.
+    }
     try {
       const [
         authReady,
@@ -1123,6 +1249,11 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
       // Teardown may close the page; preserve the original assertion failure.
     }
     throw error
+  } finally {
+    await dialogProbe
+      .evaluate((probe) => probe.dispose())
+      .catch(() => undefined)
+    await dialogProbe.dispose().catch(() => undefined)
   }
   mark("fresh_file")
   await resumed.locator("#product-image-file").setInputFiles(image512)
@@ -1207,10 +1338,14 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   )
   await expect(accountMenu).toBeVisible()
   mark("open_dialog")
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  const addProduct = page.getByRole("button", { name: "Add product" }).first()
+  const dialogProbe = await installProductDialogDeliveryProbe(page)
   const resumed = page.getByRole("dialog", { name: "Add product" })
+  let dialogOpened = false
   try {
+    await addProduct.click()
     await expect(resumed).toBeVisible()
+    dialogOpened = true
     // The media preference read has a 4s relay connect bound followed by a
     // 6s fetch bound. Wait for its fallback target to render before checking
     // the retry-specific guidance; keep that assertion's own timeout intact.
@@ -1221,6 +1356,17 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
       resumed.getByText("Choose the same image to retry", { exact: false })
     ).toBeVisible()
   } catch (error) {
+    if (!dialogOpened) {
+      try {
+        recordSmokeDiagnostic(
+          test.info(),
+          "merchant-image-dialog-open",
+          await dialogProbe.evaluate((probe) => probe.read())
+        )
+      } catch {
+        // Keep the original action or dialog failure if the page closed.
+      }
+    }
     try {
       const addImage = resumed.getByRole("button", {
         name: "Add image",
@@ -1283,6 +1429,11 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
       // Teardown may close the page; preserve the original assertion failure.
     }
     throw error
+  } finally {
+    await dialogProbe
+      .evaluate((probe) => probe.dispose())
+      .catch(() => undefined)
+    await dialogProbe.dispose().catch(() => undefined)
   }
   await expect(
     resumed.getByRole("button", { name: "Add image", exact: true })

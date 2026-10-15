@@ -14,6 +14,7 @@ import {
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
 import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
@@ -294,9 +295,128 @@ test("buyer and seller retain conversations and files through self-copy failure,
       .first()
     await expect(restoredConversation).toBeVisible({ timeout: 30_000 })
     await restoredConversation.click()
-    await expect(
-      buyerPage.getByText("synthetic external reply", { exact: true }).last()
-    ).toBeVisible()
+    const externalReply = buyerPage.getByText("synthetic external reply", {
+      exact: true,
+    })
+    try {
+      await expect(externalReply.last()).toBeVisible()
+    } catch (error) {
+      try {
+        const visibleCount = (elements: Element[]) =>
+          elements.filter((element) => {
+            const bounds = element.getBoundingClientRect()
+            return (
+              bounds.width > 0 &&
+              bounds.height > 0 &&
+              getComputedStyle(element).visibility === "visible"
+            )
+          }).length
+        const [
+          controlCount,
+          controlVisible,
+          dialogCount,
+          composerVisible,
+          bodyMatchCount,
+          visibleBodyMatchCount,
+          loadingHistoryCount,
+          emptyHistoryCount,
+          unavailableHistoryCount,
+          local,
+        ] = await Promise.all([
+          buyerPage
+            .getByRole("button")
+            .filter({
+              hasText: /synthetic (buyer response|external reply|seller reply)/,
+            })
+            .count(),
+          restoredConversation.isVisible(),
+          buyerPage.getByRole("dialog").count(),
+          buyerPage
+            .getByRole("textbox", { name: "Message" })
+            .first()
+            .isVisible(),
+          externalReply.count(),
+          externalReply.evaluateAll(visibleCount),
+          buyerPage
+            .getByText("Loading message history…", { exact: true })
+            .evaluateAll(visibleCount),
+          buyerPage
+            .getByText("No messages yet. Say hello.", { exact: true })
+            .evaluateAll(visibleCount),
+          buyerPage
+            .getByText(
+              "Message history is unavailable. Retry the protected read before relying on an empty thread.",
+              { exact: true }
+            )
+            .evaluateAll(visibleCount),
+          buyerPage.evaluate(
+            async ({ root, buyerPubkey }) => {
+              try {
+                const { readAuthSession } = await import(
+                  `${root}/auth-session.ts`
+                )
+                const { getCommerceInbox } = await import(
+                  `${root}/commerce-inbox.ts`
+                )
+                const session = readAuthSession()
+                const current = session?.userPubkey === buyerPubkey
+                const provider = (
+                  window as Window & {
+                    nostr?: { nip44?: { decrypt?: unknown } }
+                  }
+                ).nostr
+                const base = {
+                  sessionCurrent: current,
+                  providerReady: typeof provider?.nip44?.decrypt === "function",
+                }
+                if (!current)
+                  return { ...base, localObservationAvailable: false }
+                try {
+                  const snapshot = getCommerceInbox(buyerPubkey).getSnapshot()
+                  return {
+                    ...base,
+                    localObservationAvailable: true,
+                    localCoverage: snapshot.diagnostics.coverage,
+                    localDirectCount: snapshot.directMessages.length,
+                    localReplyRetained: snapshot.directMessages.some(
+                      (message: { content: string }) =>
+                        message.content === "synthetic external reply"
+                    ),
+                    localPending: snapshot.pending,
+                    localStorageFailed: snapshot.diagnostics.storageUnavailable,
+                  }
+                } catch {
+                  return { ...base, localObservationAvailable: false }
+                }
+              } catch {
+                return { localObservationAvailable: false }
+              }
+            },
+            { root, buyerPubkey: buyer.pubkey }
+          ),
+        ])
+        recordSmokeDiagnostic(testInfo, "commerce-inbox-reconnect", {
+          observationAvailable: true,
+          controlCount,
+          controlVisible,
+          dialogCount,
+          composerVisible,
+          bodyMatchCount,
+          visibleBodyMatchCount,
+          loadingHistoryVisible: loadingHistoryCount > 0,
+          emptyHistoryVisible: emptyHistoryCount > 0,
+          unavailableHistoryVisible: unavailableHistoryCount > 0,
+          buyerDirectCountReachedThreeBeforeReconnect: true,
+          ...local,
+        })
+      } catch {
+        recordSmokeDiagnostic(testInfo, "commerce-inbox-reconnect", {
+          observationAvailable: false,
+          buyerDirectCountReachedThreeBeforeReconnect: true,
+        })
+      }
+      throw error
+    }
     await sellerPage
       .getByRole("button")
       .filter({
@@ -668,14 +788,7 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
       timeout: 15_000,
     })
     const evidence = await page.evaluate(
-      async ({
-        root,
-        principal,
-        recipient,
-        relay,
-        senderDeclaration,
-        recipientDeclaration,
-      }) => {
+      async ({ root, principal, recipient, relay }) => {
         const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
         const { getAccountSigner } = await import(`${root}/session-signer.ts`)
         const { createParticipantMessageRumor, publishPrivateMessage } =
