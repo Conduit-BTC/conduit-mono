@@ -300,7 +300,11 @@ evaluates to an empty string. The Actions runner converts that definition to no
 job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
-`pipefail`. The existing 20-minute limit and strict execution evidence still apply.
+`pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
+25-minute limit for its serial ordinary, native-router, and receiver setup
+lanes, including setup, evidence upload, and cleanup. Individual test deadlines
+remain unchanged. Job cancellation still fails the aggregate gate, even when
+all test artifacts were uploaded successfully.
 
 A retry-dependent pass still fails the smoke gate. Required CI runs use zero
 automatic retries; a separate diagnostic rerun cannot turn a failed first
