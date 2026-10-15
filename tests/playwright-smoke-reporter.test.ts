@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "bun:test"
+import { chromium } from "@playwright/test"
 
 import type {
   FullConfig,
@@ -20,6 +21,7 @@ import type {
 } from "@playwright/test/reporter"
 
 import {
+  classifyProductSubmitValidation,
   parseSmokeFailureContext,
   safeRetainedSmokeDiagnostics,
   safeRetainedSmokeFailureContext,
@@ -34,6 +36,53 @@ import {
 } from "../scripts/ci/playwright_smoke_reporter"
 
 describe("privacy-safe Playwright smoke reporter", () => {
+  // The regular unit job does not install browser binaries. Run this bounded
+  // DOM control in a Playwright-capable environment with CONDUIT_DOM_CONTROL=1.
+  const browserIt = process.env.CONDUIT_DOM_CONTROL === "1" ? it : it.skip
+  browserIt(
+    "uses the nested form status when an image announcement persists",
+    async () => {
+      const browser = await chromium.launch()
+      try {
+        const page = await browser.newPage()
+        await page.setContent(`
+          <div role="dialog">
+            <form>
+              <fieldset>
+                <input id="product-shipping-weight" aria-invalid="true" />
+                <p aria-live="polite">Opened primary image URL entry.</p>
+              </fieldset>
+              <div aria-live="polite">Add the shipping weight in grams to use your shipping table.</div>
+            </form>
+          </div>
+        `)
+        const dialog = page.locator('[role="dialog"]')
+        expect(await dialog.evaluate(classifyProductSubmitValidation)).toBe(
+          "measurements"
+        )
+        await dialog
+          .locator('form > div[aria-live="polite"]')
+          .evaluate((node) => node.remove())
+        expect(await dialog.evaluate(classifyProductSubmitValidation)).toBe(
+          "unknown"
+        )
+      } finally {
+        await browser.close()
+      }
+    }
+  )
+
+  it("retains the historical other validation category", () => {
+    expect(
+      safeSmokeDiagnostics("e2e/merchant-shipping-tables.playwright.ts", [
+        {
+          type: "smoke:product-submit",
+          description: JSON.stringify({ validation: "other" }),
+        },
+      ])
+    ).toEqual([{ kind: "product-submit", validation: "other" }])
+  })
+
   it("rejects malformed, cross-file, and conflicting failure context", () => {
     const file = "e2e/merchant-order-inbox.playwright.ts"
     const privateValue = "private-" + crypto.randomUUID()
@@ -1534,8 +1583,18 @@ describe("bounded smoke failure diagnostics", () => {
               present: true,
               enabled: false,
               signerAvailable: true,
-              validation: "images",
+              validation: "measurements",
+              invalidControls: 1,
+              invalidTitle: false,
+              invalidPrice: false,
+              invalidStock: false,
+              invalidShippingWeight: true,
+              invalidTags: false,
+              invalidImages: false,
+              invalidOther: false,
               action: "publish",
+              invalidControlId: "private-value",
+              signedStatusText: "private-value",
               rawError: "private-value",
             }),
           },
@@ -1560,7 +1619,15 @@ describe("bounded smoke failure diagnostics", () => {
             present: true,
             enabled: false,
             signerAvailable: true,
-            validation: "images",
+            validation: "measurements",
+            invalidControls: 1,
+            invalidTitle: false,
+            invalidPrice: false,
+            invalidStock: false,
+            invalidShippingWeight: true,
+            invalidTags: false,
+            invalidImages: false,
+            invalidOther: false,
             action: "publish",
           },
         ]
