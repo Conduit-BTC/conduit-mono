@@ -86,6 +86,39 @@ export const populatedAuditPhases = [
 export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
 
 type Rule = "number" | "boolean" | readonly string[]
+
+// The evaluator receives DialogContent; the signed-action status is a direct
+// child of its form. Other live regions retain earlier announcements.
+export function classifyProductSubmitValidation(dialog: Element): string {
+  const status = dialog.querySelector(':scope > form > div[aria-live="polite"]')
+  const message = status?.textContent?.trim() ?? ""
+  if (message === "Publish this product to add it to your store.")
+    return "ready"
+  if (message === "Add a product title.") return "title"
+  if (
+    /^(Image URL|Add a URL for image|Use each image URL|Use \d+ images)/.test(
+      message
+    )
+  )
+    return "images"
+  if (
+    /^(Add at least \d+ distinct tags|Use \d+ tags|Keep each tag to)/.test(
+      message
+    )
+  )
+    return "tags"
+  if (
+    /^(Add the shipping weight|Check the shipping weight|Shipping weight|Shipping dimensions)/.test(
+      message
+    )
+  )
+    return "measurements"
+  if (message === "Publish your shipping table on the Shipping page first.")
+    return "shipping_table"
+  if (/^Price\b/.test(message)) return "price"
+  if (/^Stock\b/.test(message)) return "stock"
+  return "unknown"
+}
 export type SmokeFailureBoundary =
   "app-readiness" | "user-action" | "relay-provider" | "assertion"
 
@@ -771,6 +804,13 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         enabled: "boolean",
         signerAvailable: "boolean",
         invalidControls: "number",
+        invalidTitle: "boolean",
+        invalidPrice: "boolean",
+        invalidStock: "boolean",
+        invalidShippingWeight: "boolean",
+        invalidTags: "boolean",
+        invalidImages: "boolean",
+        invalidOther: "boolean",
         imageRowCount: "number",
         blankImageRows: "number",
         invalidImageRows: "number",
@@ -793,6 +833,7 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
           "measurements",
           "shipping_table",
           "other",
+          "unknown",
         ],
       },
     },
