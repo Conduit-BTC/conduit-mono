@@ -240,6 +240,28 @@ describe("privacy-safe Playwright smoke reporter", () => {
     ).toBeUndefined()
   })
 
+  it("keeps fallback tag commit conditions bound to the upload fixture", () => {
+    for (const [expected, boundary] of [
+      ["fallback_tag_input_filled", "user-action"],
+      ["fallback_tag_enter_completed", "user-action"],
+      ["fallback_tag_committed", "app-readiness"],
+    ]) {
+      const value = { expected, observed: "pending" }
+      expect(
+        parseSmokeFailureContext(
+          "e2e/merchant-product-image-preview.playwright.ts",
+          value
+        )
+      ).toEqual({ ...value, boundary })
+      expect(
+        parseSmokeFailureContext(
+          "e2e/merchant-order-inbox.playwright.ts",
+          value
+        )
+      ).toBeUndefined()
+    }
+  })
+
   it("retains a closed router phase and body timeout boundary without raw errors", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
     const outputFile = join(directory, "results.json")
@@ -1261,8 +1283,13 @@ describe("bounded smoke failure diagnostics", () => {
       [
         "fallback-upload",
         "e2e/merchant-product-image-preview.playwright.ts",
-        { phase: "publish", inboxPrompt: true },
-        { kind: "fallback-upload", phase: "publish", inboxPrompt: true },
+        { phase: "tag_entry", tagOrdinal: 2, inboxPrompt: true },
+        {
+          kind: "fallback-upload",
+          phase: "tag_entry",
+          tagOrdinal: 2,
+          inboxPrompt: true,
+        },
       ],
     ] as const) {
       const annotation = {
