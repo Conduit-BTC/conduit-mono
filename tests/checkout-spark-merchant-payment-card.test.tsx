@@ -17,33 +17,15 @@ const base = {
 }
 
 describe("Merchant order payment presentation", () => {
-  it.each([
-    ["progress_pending", "Saving final payment progress"],
-    ["retirement_pending", "Cleanup evidence pending"],
-    ["unavailable", "Check unavailable"],
-  ] as const)(
-    "keeps paid-order cleanup evidence visible when the worker reports %s",
-    (outcome, expected) => {
-      const observation = {
-        phase: "native_evidence",
-        status: "not_verified",
-        native: {
-          phase: "funds_read",
-          status: "not_verified",
-          availableZero: true,
-          ownedZero: false,
-          pendingEmpty: true,
-        },
-        rawError: "private-provider-value-must-not-be-rendered",
-      } as const
+  it.each(["progress_pending", "verified", "unavailable"] as const)(
+    "keeps verified payment complete without cleanup when the worker reports %s",
+    (outcome) => {
       const html = renderToStaticMarkup(
         <CheckoutSparkMerchantPaymentCard
           {...base}
           recoveryPending
           automaticProcessing
           outcome={outcome}
-          retirementObservation={observation}
-          lastCheckedAt={base.nowMs - 1_000}
           projection={{
             creditVerified: true,
             merchantVerified: true,
@@ -54,27 +36,22 @@ describe("Merchant order payment presentation", () => {
         />
       )
       expect(html).toContain("Payment verified")
-      expect(html).toContain("Recovery check details")
-      expect(html).toContain(expected)
-      expect(html).toContain("Terminal funds and pending transfers")
-      expect(html).toContain("Zero owned funds")
-      expect(html).toContain("Not confirmed")
-      expect(html).toContain("Within the last minute")
-      expect(html).not.toContain("private-provider-value")
+      expect(html).toContain("The checkout wallet and recovery remain saved")
+      expect(html).not.toContain("Recovery check details")
+      expect(html).not.toContain("Finish recovery")
       expect(html).not.toContain("Payment needs attention")
-      expect(html).not.toContain("Recovery cleanup complete")
+      expect(html).not.toContain('role="progressbar"')
       expect(html).not.toContain("Prepare next payout")
     }
   )
 
-  it("does not attribute a prior native check to a later unavailable worker attempt", () => {
+  it("does not restart a completed payment for an unavailable later worker check", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
         {...base}
         recoveryPending
         automaticProcessing
         outcome="unavailable"
-        lastCheckedAt={base.nowMs - 1_000}
         projection={{
           creditVerified: true,
           merchantVerified: true,
@@ -85,11 +62,11 @@ describe("Merchant order payment presentation", () => {
       />
     )
     expect(html).toContain("Payment verified")
-    expect(html).toContain("Check unavailable")
-    expect(html).toContain("Within the last minute")
+    expect(html).toContain("recovery remain saved")
     expect(html).not.toContain("Cleanup step")
     expect(html).not.toContain("Provider check")
     expect(html).not.toContain("Zero owned funds")
+    expect(html).not.toContain('role="progressbar"')
   })
 
   it("shows completed recovery without stale continue controls or resumed notices", () => {
@@ -111,7 +88,7 @@ describe("Merchant order payment presentation", () => {
         }}
       />
     )
-    expect(html).toContain("Recovery cleanup complete")
+    expect(html).toContain("recovery remain saved")
     expect(html).toContain("Payment verified")
     expect(html).toContain("Continue with fulfillment")
     expect(html).not.toContain("Finish recovery")
@@ -147,7 +124,7 @@ describe("Merchant order payment presentation", () => {
     expect(html).not.toContain("all loaded orders")
   })
 
-  it("offers only this order's remaining recovery after all its payments are verified", () => {
+  it("keeps this order recovery saved without offering more work after payment verification", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
         {...base}
@@ -165,22 +142,22 @@ describe("Merchant order payment presentation", () => {
     )
     expect(html).toContain("Payment verified")
     expect(html).toContain("Continue with fulfillment")
-    expect(html).toContain("Finish recovery")
-    expect(html).toContain("only this order")
+    expect(html).not.toContain("Finish recovery")
+    expect(html).not.toContain("only this order")
     expect(html).not.toContain("Resume")
     expect(html).not.toContain("all loaded orders")
     expect(html).not.toContain('role="progressbar"')
     expect(html).not.toContain("Payment needs attention")
   })
 
-  it("does not flash Finish recovery while checking an already-paid order's local cleanup status", () => {
+  it("does not flash processing controls while refreshing an already-paid order", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
         {...base}
         paused
         processingScope="order"
         recoveryPending
-        recoveryStatusRefreshing
+        checking
         projection={{
           creditVerified: true,
           merchantVerified: true,
@@ -191,7 +168,8 @@ describe("Merchant order payment presentation", () => {
       />
     )
     expect(html).toContain("Payment verified")
-    expect(html).toContain("Checking recovery cleanup…")
+    expect(html).toContain("recovery remain saved")
+    expect(html).not.toContain("Checking recovery cleanup")
     expect(html).not.toContain("Finish recovery")
     expect(html).not.toContain("Recovery cleanup complete")
     expect(html).not.toContain('role="progressbar"')
@@ -269,7 +247,9 @@ describe("Merchant order payment presentation", () => {
     )
     expect(html).toContain("Payment verified")
     expect(html).toContain("Continue with fulfillment")
-    expect(html).toContain("Payment complete. Recovery remains saved.")
+    expect(html).toContain(
+      "Payment complete. The checkout wallet and recovery remain saved"
+    )
     expect(html).not.toContain("Finishing recovery…")
     expect(html).not.toContain('role="progressbar"')
     expect(html).not.toContain(">Pause<")
@@ -341,7 +321,7 @@ describe("Merchant order payment presentation", () => {
     expect(html).not.toContain("Payment complete.")
   })
 
-  it("keeps manual cleanup feedback available without reopening completed payments", () => {
+  it("drops obsolete cleanup feedback without reopening completed payments", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
         {...base}
@@ -358,9 +338,11 @@ describe("Merchant order payment presentation", () => {
         }}
       />
     )
-    expect(html).toContain("Payment complete. Recovery remains saved.")
-    expect(html).toContain("Finish recovery")
-    expect(html).toContain("Recovery cleanup could not finish")
+    expect(html).toContain(
+      "Payment complete. The checkout wallet and recovery remain saved"
+    )
+    expect(html).not.toContain("Finish recovery")
+    expect(html).not.toContain("Recovery cleanup could not finish")
     expect(html).not.toContain('role="progressbar"')
     expect(html).not.toContain("Recovery cleanup complete")
     expect(html).not.toContain("Resume coordination fee")

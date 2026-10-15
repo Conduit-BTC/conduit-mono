@@ -126,6 +126,12 @@ const routerSmokePhases = [
   "explicit buyer cleanup verifies terminal zero funds",
   "retired buyer order survives reload without replay",
   "retired payout receipt survives reload",
+  "cold Merchant completes payment while retaining checkout recovery",
+  "cold Merchant retained recovery and paid state survive reload",
+  "cold Merchant retained reload does not replay payments",
+  "unclaimed receiver keeps encrypted checkout recovery saved",
+  "paid checkout retains wallet and encrypted recovery",
+  "retained buyer order survives reload without replay",
 ] as const
 
 export type RouterSmokePhase = (typeof routerSmokePhases)[number]

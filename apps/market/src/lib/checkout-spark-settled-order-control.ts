@@ -54,12 +54,6 @@ export type CheckoutSparkSettledOrderControlState =
       totalLegs: number
       priceSummary: CheckoutSparkBuyerPrice
       nativeTreasury: CheckoutSparkSettledNativeTreasuryReview | null
-      /** Eligibility to inspect only; this does not authorize retirement. */
-      retirement: {
-        checkoutId: string
-        planDigest: string
-        network: "mainnet" | "regtest"
-      } | null
     }
   | {
       status:
@@ -297,14 +291,6 @@ export function assessCheckoutSparkSettledOrderControl(input: {
       totalLegs,
       priceSummary,
       nativeTreasury,
-      retirement:
-        input.routerWalletOpen && now < plan.takeoverAt
-          ? {
-              checkoutId: plan.checkoutId,
-              planDigest: plan.planDigest,
-              network: plan.network,
-            }
-          : null,
     }
   }
   const nativeTreasuryPending =

@@ -11,7 +11,7 @@ enabled as well. Existing bound-plan actions use the separate compiled
 `isQuantumRouterExecutionEnabled()` capability. Disabling new admission need
 not stop recovery of an already approved plan; explicitly disabling execution
 pauses funding disclosure/payment, wallet claims, payout preparation/sending
-and retirement for that plan. Neither capability replaces its exact evidence,
+for that plan. Neither capability replaces its exact evidence,
 approval, current-session or frozen timing requirements. Preview enables both
 settings; production and Signet staging keep both false. The capabilities do
 not themselves establish successful funded or device acceptance.
@@ -71,9 +71,11 @@ the current session is active. A paused order also offers an explicit
 `Continue this order` action that authorizes only that selected order through
 the existing recovery worker. Changing the selection, pausing, or replacing
 the session revokes that scoped authority; it does not authorize other loaded
-orders. `Finish recovery` continues evidence-gated cleanup after payouts are
-verified. A query-only read of the exact saved retirement marker restores
-cleanup completion after reload; paid totals alone cannot establish retirement.
+orders. Once exact commerce and fee payments are verified and saved, processing
+is complete. The checkout-scoped wallet and encrypted recovery remain attached
+to the order; current clients do not request automatic retirement or delete
+those credentials. Historical retired records remain readable, and a retired
+marker alone is never evidence that recipients were paid.
 Buyer and Merchant use the same randomized, reduced-motion-aware
 loading presentation, without treating animation as payment evidence.
 
@@ -214,6 +216,10 @@ provider settlement, signer/device behavior or recovery liveness. Those remain
 maintainer-owned funded validation before release sign-off. The approved preview
 pricing trust and ordinary-private Breez and Conduit receiver descriptors are configured,
 and both hosted preview apps expose enabled routing and execution. Exact-head
-readback, real recipient settlement, claimed native collection, safe retirement
-and physical-device recovery remain separate acceptance evidence. Production
+readback, real recipient settlement, native collection and independent-browser
+recovery remain separate acceptance evidence. Guest checkout acceptance proves
+exact router funding and acknowledged encrypted Merchant handoff. Continued
+payout visibility is available while that guest session remains active; recovery
+after exit uses the submitted private contact or the applicable handout flow,
+without requiring an asynchronous receipt or a persistent guest identity. Production
 and Signet staging are not activated by these preview settings.

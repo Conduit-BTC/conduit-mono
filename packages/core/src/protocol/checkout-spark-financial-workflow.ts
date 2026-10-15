@@ -29,13 +29,6 @@ import {
   type CheckoutSparkSettledRepositorySnapshot,
 } from "./checkout-spark-settled-router-repository"
 import type { SparkCheckoutReceiveCreditProof } from "./checkout-spark-receive-credit"
-import {
-  collectCheckoutSparkNativeRetirementEvidence,
-  type CheckoutSparkNativeRetirementObservation,
-  type CheckoutSparkNativeRetirementReader,
-} from "./checkout-spark-native-retirement"
-import type { CheckoutSparkRetirementEvidence } from "./checkout-spark-reconciliation"
-import type { CheckoutSparkSettledClosedReturnedProof } from "./checkout-spark-settled-returned"
 
 type Active = Extract<
   CheckoutSparkSettledRepositorySnapshot,
@@ -43,28 +36,12 @@ type Active = Extract<
 >
 type Outgoing = CheckoutSparkSettledOutgoingStepInput["provider"]
 
-export type CheckoutSparkRetirementObservation = {
-  phase:
-    | "prerequisites"
-    | "recovery_access"
-    | "wallet_open"
-    | "wallet_cleanup"
-    | "settlement"
-    | "scope"
-    | "reader"
-    | "native_evidence"
-    | "commit"
-    | "complete"
-  status: "checking" | "not_verified" | "verified" | "unavailable"
-  native?: CheckoutSparkNativeRetirementObservation
-}
-
 export interface CheckoutSparkFinancialWorkflowInput {
   checkoutId: string
   planDigest: string
   /** Time policy only. The adapter must authenticate its actual session. */
   actor: "shopper" | "merchant"
-  mode: "credit" | "reconcile" | "prepare" | "advance" | "retire"
+  mode: "credit" | "reconcile" | "prepare" | "advance"
   /** A reviewed leg fences continuation; omission lets Core select the next. */
   legId?: string
   inspectionOnly?: boolean
@@ -106,28 +83,6 @@ export interface CheckoutSparkFinancialWorkflowPorts {
     state: CheckoutSparkSettledReconciliation
   ): Promise<void>
   proveRenewalReturn?: CheckoutSparkSettledOutgoingStepInput["proveRenewalReturn"]
-  /** Retry exact terminal cleanup only after loading a positive replay marker. */
-  cleanupTerminal?: () => Promise<void>
-  retirement?: {
-    observe?(observation: CheckoutSparkRetirementObservation): unknown
-    /** Exact authenticated credit, recipient and treasury proof, never labels. */
-    proveSettlement(state: CheckoutSparkSettledReconciliation): Promise<{
-      expectedTransferIds: string[]
-      closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[]
-    } | null>
-    openReader(state: CheckoutSparkSettledReconciliation): Promise<{
-      reader: CheckoutSparkNativeRetirementReader
-      sparkAddress: string
-      cleanup(): Promise<void>
-    }>
-    /** Atomic replay marker and encrypted-evidence retention; no provider I/O. */
-    commit(input: {
-      checkoutId: string
-      planDigest: string
-      expectedRevision: number
-      evidence: CheckoutSparkRetirementEvidence
-    }): Promise<unknown>
-  }
   /** Kept for isolated provider-contract tests; production uses the Core engine. */
   outgoingStep?: typeof runCheckoutSparkSettledOutgoingStep
   treasuryStep?: typeof runCheckoutSparkNativeTreasuryStep
@@ -189,31 +144,10 @@ function assertExactObservation(
  * Conduit collection. Transport, wallet ownership and session authority stay
  * in the adapters. Query-only settlement observation does not enter this seam.
  */
-type RetirementProgress = {
-  phase: CheckoutSparkRetirementObservation["phase"]
-  emit(observation: CheckoutSparkRetirementObservation): void
-}
-
-async function runCheckoutSparkFinancialWorkflowInternal(
+export async function runCheckoutSparkFinancialWorkflow(
   input: CheckoutSparkFinancialWorkflowInput,
-  ports: CheckoutSparkFinancialWorkflowPorts,
-  retirementProgress: RetirementProgress
+  ports: CheckoutSparkFinancialWorkflowPorts
 ): Promise<CheckoutSparkFinancialWorkflowResult> {
-  const retirementObservation = (
-    phase: CheckoutSparkRetirementObservation["phase"],
-    status: CheckoutSparkRetirementObservation["status"],
-    native?: CheckoutSparkNativeRetirementObservation
-  ) => {
-    retirementProgress.phase = phase
-    retirementProgress.emit({
-      phase,
-      status,
-      ...(native ? { native } : {}),
-    })
-  }
-  const checkRetirementPhase = (
-    phase: CheckoutSparkRetirementObservation["phase"]
-  ) => retirementObservation(phase, "checking")
   const checked = async <T>(operation: () => Promise<T>): Promise<T> => {
     await ports.assertCurrent()
     const value = await operation()
@@ -249,19 +183,10 @@ async function runCheckoutSparkFinancialWorkflowInternal(
       checked(() => ports.store.load(checkoutId, planDigest)),
     save: (state, revision) => checked(() => ports.store.save(state, revision)),
   }
-  if (input.mode === "retire") checkRetirementPhase("prerequisites")
   const first = await store.load(input.checkoutId, input.planDigest)
   if (first.status === "retired") {
     if (first.planDigest !== input.planDigest)
       throw new CheckoutSparkSettledRepositoryConflictError()
-    if (ports.cleanupTerminal) {
-      try {
-        await checked(ports.cleanupTerminal)
-      } catch {
-        await ports.assertCurrent()
-      }
-    }
-    if (input.mode === "retire") retirementObservation("complete", "verified")
     return { status: "retired" }
   }
   let current = valid(first)
@@ -283,8 +208,6 @@ async function runCheckoutSparkFinancialWorkflowInternal(
   if (input.mode === "credit")
     return { status: "credited", state: current.state }
   if (!current.state.credit) {
-    if (input.mode === "retire")
-      retirementObservation("prerequisites", "not_verified")
     return {
       status: "outgoing_step",
       step: {
@@ -294,130 +217,6 @@ async function runCheckoutSparkFinancialWorkflowInternal(
       },
     }
   }
-  if (input.mode === "retire") {
-    if (
-      !ports.retirement ||
-      current.state.legs.some((leg) => leg.status !== "paid")
-    ) {
-      retirementObservation("prerequisites", "not_verified")
-      return waiting(current.state, "prerequisite_unpaid")
-    }
-    checkRetirementPhase("settlement")
-    const proved = await checked(() =>
-      ports.retirement!.proveSettlement(current.state)
-    )
-    if (!proved) {
-      retirementObservation("settlement", "not_verified")
-      return waiting(current.state, "provider_evidence_unavailable")
-    }
-    checkRetirementPhase("scope")
-    const expected = [
-      current.state.credit.transferId,
-      ...current.state.legs.map((leg) => {
-        const recipient = plan.recipients.find(
-          (row) => row.legId === leg.legId
-        )!
-        return plan.nativeTreasury && recipient.kind === "conduit"
-          ? current.state.treasuryFinalization?.providerTransferId
-          : leg.intent?.transferId
-      }),
-    ]
-    if (
-      expected.some((id) => !id) ||
-      new Set(proved.expectedTransferIds).size !== expected.length ||
-      expected.some((id) => !proved.expectedTransferIds.includes(id!))
-    ) {
-      retirementObservation("scope", "not_verified")
-      return waiting(current.state, "provider_evidence_conflicting")
-    }
-    const same = valid(await store.load(input.checkoutId, input.planDigest))
-    if (same.revision !== current.revision)
-      throw new CheckoutSparkSettledRepositoryConflictError()
-    await ports.assertCurrent()
-    checkRetirementPhase("reader")
-    const session = await ports.retirement.openReader(current.state)
-    let evidence: CheckoutSparkRetirementEvidence | null
-    let lastNativeObservation:
-      CheckoutSparkNativeRetirementObservation | undefined
-    try {
-      await ports.assertCurrent()
-      const reader: CheckoutSparkNativeRetirementReader = {
-        getTransfers: (request) =>
-          checked(() => session.reader.getTransfers(request)),
-        getPendingTransfers: (address) =>
-          checked(() => session.reader.getPendingTransfers(address)),
-        getAvailableBalance: (address) =>
-          checked(() => session.reader.getAvailableBalance(address)),
-        getOwnedBalance: (address) =>
-          checked(() => session.reader.getOwnedBalance(address)),
-        ...(session.reader.getInternalSwapEvidence
-          ? {
-              getInternalSwapEvidence: (request) =>
-                checked(() => session.reader.getInternalSwapEvidence!(request)),
-            }
-          : {}),
-      }
-      checkRetirementPhase("native_evidence")
-      evidence = await collectCheckoutSparkNativeRetirementEvidence({
-        authenticatedReader: reader,
-        sparkAddress: session.sparkAddress,
-        walletId: plan.walletId,
-        network: plan.network,
-        stateUpdatedAt: current.state.updatedAt,
-        expectedTransferIds: proved.expectedTransferIds,
-        closedReturnedProofs: proved.closedReturnedProofs,
-        ...(plan.nativeTreasury
-          ? { requireExactHistoryScope: true as const }
-          : {}),
-        now: ports.now,
-        onObservation: (native) => {
-          lastNativeObservation = native
-          retirementObservation("native_evidence", native.status, native)
-        },
-      })
-    } finally {
-      // Inspection handles close even after revocation, before the durable write.
-      await session.cleanup()
-    }
-    await ports.assertCurrent()
-    if (!evidence) {
-      retirementObservation(
-        "native_evidence",
-        "not_verified",
-        lastNativeObservation
-      )
-      return waiting(current.state, "provider_evidence_unavailable")
-    }
-    const fresh = valid(await store.load(input.checkoutId, input.planDigest))
-    if (fresh.revision !== current.revision)
-      throw new CheckoutSparkSettledRepositoryConflictError()
-    checkRetirementPhase("commit")
-    await checked(() =>
-      ports.retirement!.commit({
-        checkoutId: input.checkoutId,
-        planDigest: input.planDigest,
-        expectedRevision: fresh.revision,
-        evidence: evidence!,
-      })
-    )
-    const terminal = await store.load(input.checkoutId, input.planDigest)
-    if (
-      terminal.status !== "retired" ||
-      terminal.planDigest !== input.planDigest
-    )
-      throw new CheckoutSparkSettledRepositoryConflictError()
-    retirementObservation("complete", "verified")
-    // Cleanup failure never undoes a positive terminal replay marker.
-    if (ports.cleanupTerminal) {
-      try {
-        await checked(ports.cleanupTerminal)
-      } catch {
-        await ports.assertCurrent()
-      }
-    }
-    return { status: "retired" }
-  }
-
   const provider: Outgoing | undefined = ports.outgoing && {
     reconcile: async (target) => {
       const observation = await checked(() => ports.outgoing!.reconcile(target))
@@ -765,39 +564,4 @@ async function runCheckoutSparkFinancialWorkflowInternal(
   })
   await ports.assertCurrent()
   return { status: "outgoing_step", step }
-}
-
-export async function runCheckoutSparkFinancialWorkflow(
-  input: CheckoutSparkFinancialWorkflowInput,
-  ports: CheckoutSparkFinancialWorkflowPorts
-): Promise<CheckoutSparkFinancialWorkflowResult> {
-  const retirementProgress: RetirementProgress = {
-    phase: "prerequisites",
-    emit: (observation) => {
-      try {
-        const result = ports.retirement?.observe?.(observation)
-        if (
-          result &&
-          typeof (result as PromiseLike<unknown>).then === "function"
-        )
-          void Promise.resolve(result).catch(() => {})
-      } catch {
-        // Display-only observation cannot affect financial workflow results.
-      }
-    },
-  }
-  try {
-    return await runCheckoutSparkFinancialWorkflowInternal(
-      input,
-      ports,
-      retirementProgress
-    )
-  } catch (error) {
-    if (input.mode === "retire")
-      retirementProgress.emit({
-        phase: retirementProgress.phase,
-        status: "unavailable",
-      })
-    throw error
-  }
 }

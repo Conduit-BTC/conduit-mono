@@ -10,7 +10,6 @@ import {
   type MerchantCheckoutSparkRecoveryDiscoveryResult,
   type MerchantCheckoutSparkReconciliationSummary,
   type MerchantCheckoutSparkReconciliationStatus,
-  type CheckoutSparkRetirementObservation,
 } from "@conduit/core"
 import {
   Button,
@@ -240,10 +239,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const [retirement, setRetirement] = useState<
     Record<string, MerchantCheckoutSparkRetirementRead>
   >({})
-  const [retirementObservations, setRetirementObservations] = useState<
-    Record<string, CheckoutSparkRetirementObservation>
-  >({})
-  const [lastChecked, setLastChecked] = useState<Record<string, number>>({})
   const applySavedVerification = useCallback(
     (
       saved: Awaited<ReturnType<typeof readMerchantCheckoutSparkVerification>>
@@ -439,14 +434,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             }
             if (isCurrent()) {
               setCheckingDigest(candidate.planDigest)
-              setRetirementObservations((previous) => {
-                if (!Object.hasOwn(previous, candidate.planDigest))
-                  return previous
-                // Native evidence belongs only to the attempt that observed it.
-                const next = { ...previous }
-                delete next[candidate.planDigest]
-                return next
-              })
             }
             try {
               let outcome: MerchantCheckoutSparkReconciliationStatus
@@ -458,14 +445,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                   {
                     repository,
                     assertNotificationActive,
-                    observeRetirement(observation) {
-                      if (!isCurrent() || document.visibilityState === "hidden")
-                        return
-                      setRetirementObservations((previous) => ({
-                        ...previous,
-                        [candidate.planDigest]: observation,
-                      }))
-                    },
                     requestRescan: () => {
                       assertActive()
                       controller?.requestRescan()
@@ -504,10 +483,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               // Refresh that fact, without changing the outcome into unpaid.
               if (isCurrent() && document.visibilityState !== "hidden") {
                 setCheckingDigest(null)
-                setLastChecked((previous) => ({
-                  ...previous,
-                  [candidate.planDigest]: Date.now(),
-                }))
                 settlementChanged.current?.()
                 await refreshSaved([candidate])
               }
@@ -1207,7 +1182,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const selectedAutomaticAuthority =
     automaticPayouts &&
     merchantCheckoutSparkAutomaticScopeIncludes(automaticScope, selectedOrderId)
-  const recoveryPending = candidate !== null && outcome !== "retired"
+  const recoveryPending =
+    candidate !== null &&
+    outcome !== "retired" &&
+    !(
+      projection?.commerceVerified &&
+      !projection.feePending &&
+      !projection.recipientUnverified
+    )
   const card = (
     <>
       <CheckoutSparkMerchantPaymentCard
@@ -1229,15 +1211,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           automaticPayouts && automaticScope?.kind === "all" ? "all" : "order"
         }
         recoveryPending={recoveryPending}
-        retirementObservation={
-          candidate ? retirementObservations[candidate.planDigest] : undefined
-        }
-        lastCheckedAt={
-          candidate ? lastChecked[candidate.planDigest] : undefined
-        }
-        recoveryStatusRefreshing={
-          candidate !== null && retirement[candidate.planDigest] === undefined
-        }
         automaticProcessing={selectedAutomaticAuthority && recoveryPending}
         transitioning={busy || automaticTransition !== null}
         handoffAt={candidate?.takeoverAt ?? 0}

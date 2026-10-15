@@ -10,7 +10,6 @@ import {
   prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
   restoreCheckoutSparkSettledReconciliation,
-  retireCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
 } from "../packages/core/src/protocol/checkout-spark-settled-router"
 import {
@@ -186,6 +185,7 @@ function harness(
   let failAfterSave = false
   let ambiguous = false
   let rejectRecipient = false
+  let providerOperations = 0
   let afterLookup: (() => Promise<void>) | null = null
   let afterPreflight: (() => Promise<void>) | null = null
   const sent: string[] = []
@@ -235,6 +235,7 @@ function harness(
     },
     outgoing: {
       reconcile: async (target) => {
+        providerOperations++
         requireCheckoutSparkSettledExactOutgoingRequest(state.plan, target)
         await afterLookup?.()
         return observation(
@@ -243,10 +244,12 @@ function harness(
         )
       },
       preflight: async () => {
+        providerOperations++
         await afterPreflight?.()
         return "ready"
       },
       send: async (target) => {
+        providerOperations++
         assertCurrent()
         expect(
           state.legs.find((leg) => leg.legId === target.legId)?.status
@@ -269,12 +272,9 @@ function harness(
         `recovery:${next.legs.find((leg) => leg.status === "submitted")?.status ?? "prepared"}`
       )
     },
-    cleanupTerminal: async () => {
-      events.push("cleanup:terminal")
-    },
   }
   const run = (
-    mode: "credit" | "reconcile" | "advance" | "prepare" | "retire" = "advance",
+    mode: "credit" | "reconcile" | "advance" | "prepare" = "advance",
     legId?: string
   ) =>
     runCheckoutSparkFinancialWorkflow(
@@ -293,11 +293,12 @@ function harness(
     sent,
     facts,
     events,
+    providerOperations: () => providerOperations,
     state: () => state,
     revoke: () => {
       active = false
     },
-    retire: () => {
+    markRetired: () => {
       retired = true
     },
     failAfterSave: () => {
@@ -457,136 +458,23 @@ describe("shared checkout financial workflow", () => {
       expect(h.sent).toHaveLength(0)
       expect(h.state().legs[1]!.intent).toBeNull()
     })
-    it(`${actor} performs exact full-wallet evidence, reader closure, replay marker readback and retryable cleanup`, async () => {
+    it(`${actor} completes paid obligations without terminal wallet cleanup`, async () => {
       const h = harness(fixture().state, actor)
       for (const leg of h.state().legs) await h.run("advance", leg.legId)
-      const ids = [
-        h.state().credit!.transferId,
-        ...h.state().legs.map((leg) => leg.intent!.transferId),
-      ]
-      h.ports.now = () => NOW + 120_020
-      const observations: unknown[] = []
-      let observationCount = 0
-      let nativeOwned = 1n
-      h.ports.retirement = {
-        observe: (observation) => {
-          observations.push(observation)
-          observationCount++
-          if (observationCount % 2 === 1)
-            throw new Error("display observer failure")
-          return Promise.reject(new Error("display observer rejection"))
-        },
-        proveSettlement: async () => ({
-          expectedTransferIds: ids,
-          closedReturnedProofs: [],
-        }),
-        openReader: async () => {
-          h.events.push("reader:opened")
-          return {
-            sparkAddress: "exact-checkout-reader",
-            reader: {
-              getTransfers: async () => ({
-                transfers: ids.map((id) => ({
-                  id,
-                  type: 0,
-                  status: 5,
-                  network: 1,
-                  totalValue: 1,
-                })),
-                offset: -1,
-              }),
-              getPendingTransfers: async () => [],
-              getAvailableBalance: async () => 0n,
-              getOwnedBalance: async () => nativeOwned,
-            },
-            cleanup: async () => {
-              h.events.push("reader:closed")
-            },
-          }
-        },
-        commit: async ({ expectedRevision, evidence }) => {
-          expect(expectedRevision).toBeGreaterThan(1)
-          expect(
-            retireCheckoutSparkSettledReconciliation(h.state(), evidence)
-              .planDigest
-          ).toBe(h.state().plan.planDigest)
-          expect(h.events.at(-1)).toBe("reader:closed")
-          h.events.push("terminal:durable")
-          h.retire()
-        },
-      }
-      expect(await h.run("retire")).toMatchObject({
-        status: "outgoing_step",
-        step: { outcome: "wait", reason: "provider_evidence_unavailable" },
-      })
-      expect(observations.at(-1)).toEqual({
-        phase: "native_evidence",
-        status: "not_verified",
-        native: {
-          phase: "funds_read",
-          status: "not_verified",
-          availableZero: true,
-          ownedZero: false,
-          pendingEmpty: true,
-        },
-      })
-      nativeOwned = 0n
-      expect(await h.run("retire")).toEqual({ status: "retired" })
-      expect(h.events.slice(-3)).toEqual([
-        "reader:closed",
-        "terminal:durable",
-        "cleanup:terminal",
-      ])
-      expect(observations.at(-1)).toEqual({
-        phase: "complete",
-        status: "verified",
-      })
-      expect(
-        observations.some(
-          (value) => (value as { phase?: string }).phase === "native_evidence"
-        )
-      ).toBe(true)
-      expect(await h.run("retire")).toEqual({ status: "retired" })
-      expect(
-        h.events.filter((event) => event === "reader:opened")
-      ).toHaveLength(2)
+      expect((await h.run("reconcile")).status).toBe("reconciled")
+      expect(h.state().legs.every((leg) => leg.status === "paid")).toBe(true)
+      expect(h.events).not.toContain("cleanup:terminal")
       expect(h.sent).toHaveLength(3)
+      const operationsBeforeRepeat = h.providerOperations()
+      expect(await h.run()).toMatchObject({
+        status: "outgoing_step",
+        step: { outcome: "already_paid" },
+      })
+      expect(h.providerOperations()).toBe(operationsBeforeRepeat + 3)
+      expect(h.sent).toHaveLength(3)
+      expect(h.events).not.toContain("cleanup:terminal")
     })
   }
-  it("reports fail-closed settlement waiting and preserves the original error", async () => {
-    const h = harness(fixture().state, "merchant")
-    for (const leg of h.state().legs) await h.run("advance", leg.legId)
-    h.ports.now = () => NOW + 120_020
-    const observations: unknown[] = []
-    h.ports.retirement = {
-      observe: (observation) => observations.push(observation),
-      proveSettlement: async () => null,
-      openReader: async () => {
-        throw new Error("reader must not open")
-      },
-      commit: async () => {
-        throw new Error("commit must not run")
-      },
-    }
-    expect(await h.run("retire")).toMatchObject({
-      status: "outgoing_step",
-      step: { outcome: "wait", reason: "provider_evidence_unavailable" },
-    })
-    expect(observations.at(-1)).toEqual({
-      phase: "settlement",
-      status: "not_verified",
-    })
-
-    const original = new Error("settlement reader failure")
-    h.ports.retirement.proveSettlement = async () => {
-      throw original
-    }
-    await expect(h.run("retire")).rejects.toBe(original)
-    expect(observations.at(-1)).toEqual({
-      phase: "settlement",
-      status: "unavailable",
-    })
-  })
   it("historically imported short funding remains inspectable but cannot prepare or dispatch a haircut", async () => {
     const source = fixture()
     const divided = allocateCheckoutSparkSettledSats({
@@ -750,81 +638,13 @@ describe("shared checkout financial workflow", () => {
     expect(h.sent).toHaveLength(1)
     expect(h.sent[0]).toBe(source.state.legs[0]!.intent!.transferId)
   })
-  it("a durable terminal marker retries cleanup without wallet or provider work", async () => {
+  it("reads a historical retired snapshot without wallet or provider mutation", async () => {
     const h = harness(fixture().state, "shopper")
-    h.retire()
+    h.markRetired()
+    const providerOperations = h.providerOperations()
     expect(await h.run()).toEqual({ status: "retired" })
-    expect(h.events).toEqual(["cleanup:terminal"])
+    expect(h.events).toEqual([])
+    expect(h.providerOperations()).toBe(providerOperations)
     expect(h.sent).toHaveLength(0)
   })
-  it("a failed local terminal cleanup never reopens payment execution", async () => {
-    const h = harness(fixture().state, "shopper")
-    h.retire()
-    h.ports.cleanupTerminal = async () => {
-      throw new Error("Local storage temporarily unavailable")
-    }
-    expect(await h.run()).toEqual({ status: "retired" })
-    h.ports.cleanupTerminal = async () => {
-      h.events.push("cleanup:retried")
-    }
-    expect(await h.run()).toEqual({ status: "retired" })
-    expect(h.events).toEqual(["cleanup:retried"])
-    expect(h.sent).toHaveLength(0)
-  })
-  for (const fault of ["reader_revocation", "missing_tombstone"] as const) {
-    it(`retirement preserves execution evidence for ${fault} without terminal cleanup`, async () => {
-      const h = harness(fixture().state, "merchant")
-      for (const leg of h.state().legs) await h.run("advance", leg.legId)
-      const ids = [
-        h.state().credit!.transferId,
-        ...h.state().legs.map((leg) => leg.intent!.transferId),
-      ]
-      h.ports.now = () => NOW + 120_020
-      let commits = 0
-      let closes = 0
-      h.ports.retirement = {
-        proveSettlement: async () => ({
-          expectedTransferIds: ids,
-          closedReturnedProofs: [],
-        }),
-        openReader: async () => ({
-          sparkAddress: "exact-checkout-reader",
-          reader: {
-            getTransfers: async () => {
-              if (fault === "reader_revocation") h.revoke()
-              return {
-                transfers: ids.map((id) => ({
-                  id,
-                  type: 0,
-                  status: 5,
-                  network: 1,
-                  totalValue: 1,
-                })),
-                offset: -1,
-              }
-            },
-            getPendingTransfers: async () => [],
-            getAvailableBalance: async () => 0n,
-            getOwnedBalance: async () => 0n,
-          },
-          cleanup: async () => {
-            closes++
-          },
-        }),
-        commit: async () => {
-          commits++
-        },
-      }
-      await expect(h.run("retire")).rejects.toThrow(
-        fault === "reader_revocation"
-          ? "Actor session revoked"
-          : "settled state changed"
-      )
-      expect(closes).toBe(1)
-      expect(commits).toBe(fault === "reader_revocation" ? 0 : 1)
-      expect(h.events).not.toContain("cleanup:terminal")
-      expect(h.sent).toHaveLength(3)
-      expect(h.state().credit?.transferId).toBe(ids[0])
-    })
-  }
 })

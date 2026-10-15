@@ -2,10 +2,8 @@ import { useId, type ReactNode } from "react"
 import type {
   CheckoutSparkMerchantSettlementProjection,
   MerchantCheckoutSparkReconciliationStatus,
-  CheckoutSparkRetirementObservation,
 } from "@conduit/core"
 import { Button, CheckoutPaymentProgress } from "@conduit/ui"
-import { CheckoutSparkRecoveryCheckDetails } from "./CheckoutSparkRecoveryCheckDetails"
 
 interface CheckoutSparkMerchantPaymentCardProps {
   projection: CheckoutSparkMerchantSettlementProjection | null
@@ -17,9 +15,6 @@ interface CheckoutSparkMerchantPaymentCardProps {
   paused: boolean
   processingScope?: "order" | "all"
   recoveryPending?: boolean
-  retirementObservation?: CheckoutSparkRetirementObservation
-  lastCheckedAt?: number
-  recoveryStatusRefreshing?: boolean
   automaticProcessing?: boolean
   canContinue: boolean
   transitioning: boolean
@@ -43,9 +38,6 @@ export function CheckoutSparkMerchantPaymentCard({
   paused,
   processingScope = "all",
   recoveryPending = false,
-  retirementObservation,
-  lastCheckedAt,
-  recoveryStatusRefreshing = false,
   automaticProcessing = false,
   canContinue,
   transitioning,
@@ -62,7 +54,6 @@ export function CheckoutSparkMerchantPaymentCard({
   const renewalExplanation =
     "The saved payout invoice has expired. A replacement is allowed only after the exact previous attempt is closed and its funds are confirmed returned and spendable. Do not request another buyer payment."
   const paid = projection?.commerceVerified === true
-  const recoveryComplete = outcome === "retired"
   // A terminal invoice payment can still lack independent recipient attribution.
   // Keep that fee-only exception visible without revoking verified commerce.
   const coordinationFeeUnresolved =
@@ -73,6 +64,7 @@ export function CheckoutSparkMerchantPaymentCard({
     paid &&
     projection?.feePending === false &&
     projection?.recipientUnverified === false
+  const recoveryComplete = outcome === "retired" || paymentsComplete
   const attention =
     (!paid || coordinationFeeUnresolved) &&
     (settlementReadUnavailable ||
@@ -89,18 +81,8 @@ export function CheckoutSparkMerchantPaymentCard({
       (paused && (coordinationFeeUnresolved || (!paid && Boolean(children)))))
   const processingPending =
     !recoveryComplete && (!paid || coordinationFeeUnresolved || recoveryPending)
-  const checkingCleanup =
-    !recoveryComplete &&
-    paused &&
-    paid &&
-    !coordinationFeeUnresolved &&
-    recoveryPending &&
-    recoveryStatusRefreshing
   const showProcessingControls =
-    processingPending &&
-    canContinue &&
-    !checkingCleanup &&
-    (!paymentsComplete || paused)
+    processingPending && canContinue && (!paymentsComplete || paused)
   const showAutomaticProgress =
     automaticProcessing &&
     processingPending &&
@@ -180,37 +162,11 @@ export function CheckoutSparkMerchantPaymentCard({
           </Button>
         )}
       </div>
-      {recoveryComplete && (
+      {paymentsComplete && (
         <p role="status" className="mt-3 text-sm text-[var(--text-secondary)]">
-          Recovery cleanup complete
+          Payment complete. The checkout wallet and recovery remain saved with
+          this order.
         </p>
-      )}
-      {checkingCleanup && (
-        <p role="status" className="mt-3 text-sm text-[var(--text-muted)]">
-          Checking recovery cleanup…
-        </p>
-      )}
-      {paymentsComplete &&
-        recoveryPending &&
-        !recoveryComplete &&
-        !checkingCleanup && (
-          <p
-            role="status"
-            className="mt-3 text-sm text-[var(--text-secondary)]"
-          >
-            Payment complete. Recovery remains saved.
-          </p>
-        )}
-      {paymentsComplete && recoveryPending && !recoveryComplete && (
-        <CheckoutSparkRecoveryCheckDetails
-          outcome={outcome}
-          retirementObservation={retirementObservation}
-          lastCheckedAt={lastCheckedAt}
-          nowMs={nowMs}
-          checking={checking}
-          paused={paused}
-          automaticProcessing={automaticProcessing}
-        />
       )}
       {showProcessingControls && (
         <p

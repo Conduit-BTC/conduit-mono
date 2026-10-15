@@ -77,7 +77,6 @@ export {
   type CheckoutSparkFinancialWorkflowInput,
   type CheckoutSparkFinancialWorkflowPorts,
   type CheckoutSparkFinancialWorkflowResult,
-  type CheckoutSparkRetirementObservation,
 } from "./checkout-spark-financial-workflow"
 export * from "./checkout-spark-settled-outgoing"
 export * from "./checkout-spark-settled-outgoing-history"
