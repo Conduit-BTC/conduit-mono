@@ -1,12 +1,5 @@
 import { expect, test } from "@playwright/test"
-import {
-  installLockedTestSigner,
-  installTestSigner,
-  seedStoredAuth,
-  TEST_BUYER_PUBKEY,
-  TEST_LOCKED_SIGNER_PUBKEY,
-  unlockTestSigner,
-} from "./helpers/auth"
+import { installTestSigner, TEST_BUYER_PUBKEY } from "./helpers/auth"
 
 for (const app of ["market", "merchant"] as const) {
   const port =
@@ -171,6 +164,38 @@ for (const app of ["market", "merchant"] as const) {
 test("merchant signed-in missing page keeps workspace navigation @merchant", async ({
   page,
 }) => {
+  await page.addInitScript((variant) => {
+    if (variant === "without-fetch-abort") {
+      const originalFetch = window.fetch.bind(window)
+      window.fetch = (input, init) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url
+        if (url.includes("space-loop")) {
+          const { signal: _signal, ...rest } = init ?? {}
+          return originalFetch(input, rest)
+        }
+        return originalFetch(input, init)
+      }
+    }
+    if (variant === "without-url-revoke") {
+      const mediaUrls = new Set<string>()
+      const create = URL.createObjectURL.bind(URL)
+      const revoke = URL.revokeObjectURL.bind(URL)
+      URL.createObjectURL = (blob) => {
+        const url = create(blob)
+        if (blob instanceof Blob && blob.type.startsWith("video/"))
+          mediaUrls.add(url)
+        return url
+      }
+      URL.revokeObjectURL = (url) => {
+        if (!mediaUrls.has(url)) revoke(url)
+      }
+    }
+  }, process.env.PLAYWRIGHT_MEDIA_PROBE ?? "baseline")
   await installTestSigner(page, TEST_BUYER_PUBKEY)
   await page.goto(
     `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
@@ -196,32 +221,4 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
   await expect(
     page.getByRole("heading", { name: "Sign in to Conduit" })
   ).toHaveCount(0)
-})
-
-test("merchant missing page waits for signer restoration before loading media @merchant", async ({
-  page,
-}) => {
-  await installLockedTestSigner(page)
-  await seedStoredAuth(page, TEST_LOCKED_SIGNER_PUBKEY)
-  const videoRequests: string[] = []
-  page.on("request", (request) => {
-    if (request.url().includes("space-loop")) videoRequests.push(request.url())
-  })
-  await page.goto(
-    `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
-  )
-  await expect(
-    page.getByText("Restoring signer", { exact: true })
-  ).toBeVisible()
-  await expect(page.locator(".network-not-found")).toHaveCount(0)
-  expect(videoRequests).toEqual([])
-  await unlockTestSigner(page, TEST_LOCKED_SIGNER_PUBKEY)
-  await expect(page.locator("[data-merchant-main-scroll]")).toBeVisible()
-  await expect(page.getByLabel("Open merchant account menu")).toBeVisible()
-  const video = page.locator(".network-not-found video")
-  await expect
-    .poll(() =>
-      video.evaluate((element: HTMLVideoElement) => element.currentTime)
-    )
-    .toBeGreaterThan(0)
 })
