@@ -1,5 +1,4 @@
 import { expect, test } from "@playwright/test"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   installLockedTestSigner,
   installTestSigner,
@@ -171,25 +170,8 @@ for (const app of ["market", "merchant"] as const) {
 
 test("merchant signed-in missing page keeps workspace navigation @merchant", async ({
   page,
-}, testInfo) => {
-  let pageCrashed = false
-  let pageErrorObserved = false
-  let renderLoopError = false
-  page.on("crash", () => {
-    pageCrashed = true
-  })
-  page.on("pageerror", (error) => {
-    pageErrorObserved = true
-    renderLoopError ||= /maximum update depth|too many re-renders/i.test(
-      error.message
-    )
-  })
-  if (process.env.PLAYWRIGHT_WORKSPACE_PROBE === "without-video") {
-    await page.emulateMedia({ reducedMotion: "reduce" })
-  }
-  await installTestSigner(page, TEST_BUYER_PUBKEY, {
-    nip44: process.env.PLAYWRIGHT_WORKSPACE_PROBE !== "without-nip44",
-  })
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
   await page.goto(
     `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
   )
@@ -197,46 +179,7 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
     page.getByRole("heading", { name: "You have left the network." })
   ).toBeVisible()
   const main = page.locator("[data-merchant-main-scroll]")
-  const workspaceCheckpoint = async (
-    phase: "before_workspace" | "workspace_missing"
-  ) => {
-    const observation = await page.evaluate(() => {
-      const workspace = document.querySelector<HTMLElement>(
-        "[data-merchant-main-scroll]"
-      )
-      const rect = workspace?.getBoundingClientRect()
-      return {
-        observationAvailable: true,
-        retainedAuth: !!localStorage.getItem("conduit:auth"),
-        accountMenuPresent: !!document.querySelector(
-          '[aria-label="Open merchant account menu"]'
-        ),
-        workspacePresent: !!workspace,
-        workspaceVisible:
-          !!rect &&
-          rect.width > 0 &&
-          rect.height > 0 &&
-          getComputedStyle(workspace!).visibility === "visible",
-        authPending: !!document.querySelector('button[aria-busy="true"]'),
-      }
-    })
-    recordSmokeDiagnostic(testInfo, "merchant-missing-workspace", {
-      phase,
-      ...observation,
-    })
-  }
-  await workspaceCheckpoint("before_workspace")
-  try {
-    await expect(main).toBeVisible()
-  } catch (error) {
-    recordSmokeDiagnostic(testInfo, "merchant-missing-workspace", {
-      phase: "workspace_missing",
-      pageCrashed,
-      pageErrorObserved,
-      renderLoopError,
-    })
-    throw error
-  }
+  await expect(main).toBeVisible()
   const scene = await page.locator(".network-not-found").boundingBox()
   const workspace = await main.boundingBox()
   expect(scene!.x).toBe(workspace!.x)
@@ -255,25 +198,27 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
   ).toHaveCount(0)
 })
 
-// Exercise the public-to-workspace transition after media has actually started,
-// instead of relying on which of signer restoration and video loading wins.
-test("merchant missing page restores its workspace during video playback @merchant", async ({
+test("merchant missing page waits for signer restoration before loading media @merchant", async ({
   page,
 }) => {
   await installLockedTestSigner(page)
   await seedStoredAuth(page, TEST_LOCKED_SIGNER_PUBKEY)
+  const videoRequests: string[] = []
+  page.on("request", (request) => {
+    if (request.url().includes("space-loop")) videoRequests.push(request.url())
+  })
   await page.goto(
     `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
   )
-  const video = page.locator(".network-not-found video")
-  await expect
-    .poll(() =>
-      video.evaluate((element: HTMLVideoElement) => element.currentTime)
-    )
-    .toBeGreaterThan(0)
+  await expect(
+    page.getByText("Restoring signer", { exact: true })
+  ).toBeVisible()
+  await expect(page.locator(".network-not-found")).toHaveCount(0)
+  expect(videoRequests).toEqual([])
   await unlockTestSigner(page, TEST_LOCKED_SIGNER_PUBKEY)
   await expect(page.locator("[data-merchant-main-scroll]")).toBeVisible()
   await expect(page.getByLabel("Open merchant account menu")).toBeVisible()
+  const video = page.locator(".network-not-found video")
   await expect
     .poll(() =>
       video.evaluate((element: HTMLVideoElement) => element.currentTime)

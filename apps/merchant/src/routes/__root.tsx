@@ -226,7 +226,9 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 
   throwSyntheticClientErrorForTelemetryTest()
 
-  if (isNotFound && !signerWorkspaceAvailable) {
+  // Settle a saved signer before choosing the missing-page shell. Starting the
+  // public video only to unmount it during restore can stall WebKit media load.
+  if (isNotFound && !signerWorkspaceAvailable && !signerRestoring) {
     return (
       <MerchantPublicAboutShell pageTitle="Not Found" fullBleed>
         <Outlet />
