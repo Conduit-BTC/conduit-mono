@@ -465,7 +465,17 @@ describe("shared checkout financial workflow", () => {
         ...h.state().legs.map((leg) => leg.intent!.transferId),
       ]
       h.ports.now = () => NOW + 120_020
+      const observations: unknown[] = []
+      let observationCount = 0
+      let nativeOwned = 1n
       h.ports.retirement = {
+        observe: (observation) => {
+          observations.push(observation)
+          observationCount++
+          if (observationCount % 2 === 1)
+            throw new Error("display observer failure")
+          return Promise.reject(new Error("display observer rejection"))
+        },
         proveSettlement: async () => ({
           expectedTransferIds: ids,
           closedReturnedProofs: [],
@@ -487,7 +497,7 @@ describe("shared checkout financial workflow", () => {
               }),
               getPendingTransfers: async () => [],
               getAvailableBalance: async () => 0n,
-              getOwnedBalance: async () => 0n,
+              getOwnedBalance: async () => nativeOwned,
             },
             cleanup: async () => {
               h.events.push("reader:closed")
@@ -505,19 +515,78 @@ describe("shared checkout financial workflow", () => {
           h.retire()
         },
       }
+      expect(await h.run("retire")).toMatchObject({
+        status: "outgoing_step",
+        step: { outcome: "wait", reason: "provider_evidence_unavailable" },
+      })
+      expect(observations.at(-1)).toEqual({
+        phase: "native_evidence",
+        status: "not_verified",
+        native: {
+          phase: "funds_read",
+          status: "not_verified",
+          availableZero: true,
+          ownedZero: false,
+          pendingEmpty: true,
+        },
+      })
+      nativeOwned = 0n
       expect(await h.run("retire")).toEqual({ status: "retired" })
       expect(h.events.slice(-3)).toEqual([
         "reader:closed",
         "terminal:durable",
         "cleanup:terminal",
       ])
+      expect(observations.at(-1)).toEqual({
+        phase: "complete",
+        status: "verified",
+      })
+      expect(
+        observations.some(
+          (value) => (value as { phase?: string }).phase === "native_evidence"
+        )
+      ).toBe(true)
       expect(await h.run("retire")).toEqual({ status: "retired" })
       expect(
         h.events.filter((event) => event === "reader:opened")
-      ).toHaveLength(1)
+      ).toHaveLength(2)
       expect(h.sent).toHaveLength(3)
     })
   }
+  it("reports fail-closed settlement waiting and preserves the original error", async () => {
+    const h = harness(fixture().state, "merchant")
+    for (const leg of h.state().legs) await h.run("advance", leg.legId)
+    h.ports.now = () => NOW + 120_020
+    const observations: unknown[] = []
+    h.ports.retirement = {
+      observe: (observation) => observations.push(observation),
+      proveSettlement: async () => null,
+      openReader: async () => {
+        throw new Error("reader must not open")
+      },
+      commit: async () => {
+        throw new Error("commit must not run")
+      },
+    }
+    expect(await h.run("retire")).toMatchObject({
+      status: "outgoing_step",
+      step: { outcome: "wait", reason: "provider_evidence_unavailable" },
+    })
+    expect(observations.at(-1)).toEqual({
+      phase: "settlement",
+      status: "not_verified",
+    })
+
+    const original = new Error("settlement reader failure")
+    h.ports.retirement.proveSettlement = async () => {
+      throw original
+    }
+    await expect(h.run("retire")).rejects.toBe(original)
+    expect(observations.at(-1)).toEqual({
+      phase: "settlement",
+      status: "unavailable",
+    })
+  })
   it("historically imported short funding remains inspectable but cannot prepare or dispatch a haircut", async () => {
     const source = fixture()
     const divided = allocateCheckoutSparkSettledSats({

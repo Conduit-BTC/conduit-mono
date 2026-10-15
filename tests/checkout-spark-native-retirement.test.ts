@@ -50,20 +50,27 @@ function fixture() {
 describe("authenticated native successful-retirement evidence", () => {
   it("returns minimal terminal evidence only after native success history and fresh zero funds", async () => {
     const f = fixture()
-    expect(await collectCheckoutSparkNativeRetirementEvidence(f.input)).toEqual(
-      {
-        walletId: "checkout-wallet",
-        network: "mainnet",
-        observedAt: NOW,
-        availableSats: 0,
-        ownedSats: 0,
-        incomingSats: 0,
-        fundingReceiveTerminal: true,
-        sendHistoryTerminal: true,
-        claimsTerminal: true,
-        refundsTerminal: true,
-      }
-    )
+    const observations: unknown[] = []
+    expect(
+      await collectCheckoutSparkNativeRetirementEvidence({
+        ...f.input,
+        onObservation: (observation) => {
+          observations.push(observation)
+          return Promise.reject(new Error("display rejection"))
+        },
+      })
+    ).toEqual({
+      walletId: "checkout-wallet",
+      network: "mainnet",
+      observedAt: NOW,
+      availableSats: 0,
+      ownedSats: 0,
+      incomingSats: 0,
+      fundingReceiveTerminal: true,
+      sendHistoryTerminal: true,
+      claimsTerminal: true,
+      refundsTerminal: true,
+    })
     expect(f.calls).toEqual([
       "history",
       "history",
@@ -72,6 +79,58 @@ describe("authenticated native successful-retirement evidence", () => {
       "pending",
       "history",
       "history",
+    ])
+    expect(observations.at(-1)).toEqual({
+      phase: "complete",
+      status: "verified",
+      availableZero: true,
+      ownedZero: true,
+      pendingEmpty: true,
+    })
+    expect(
+      observations.every((observation) =>
+        Object.keys(observation as object).every((key) =>
+          [
+            "phase",
+            "status",
+            "availableZero",
+            "ownedZero",
+            "pendingEmpty",
+          ].includes(key)
+        )
+      )
+    ).toBe(true)
+  })
+
+  it("reports closed failed-funds observations and ignores observer failures", async () => {
+    const f = fixture()
+    f.reader.getAvailableBalance = async () => {
+      f.calls.push("available")
+      return 1n
+    }
+    const observations: unknown[] = []
+    expect(
+      await collectCheckoutSparkNativeRetirementEvidence({
+        ...f.input,
+        onObservation: (observation) => {
+          observations.push(observation)
+          throw new Error("display failure")
+        },
+      })
+    ).toBeNull()
+    expect(observations.at(-1)).toEqual({
+      phase: "funds_read",
+      status: "not_verified",
+      availableZero: false,
+      ownedZero: true,
+      pendingEmpty: true,
+    })
+    expect(f.calls).toEqual([
+      "history",
+      "history",
+      "available",
+      "owned",
+      "pending",
     ])
   })
 

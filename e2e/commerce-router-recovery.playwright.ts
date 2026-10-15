@@ -1857,6 +1857,17 @@ async function rehearseRouter(
       await expect(
         recovery.getByRole("button", { name: "Pause", exact: true })
       ).toHaveCount(0)
+      await recovery
+        .getByText("Recovery check details", { exact: true })
+        .click()
+      await expect(
+        recovery.locator('[data-retirement-check="ownedZero"]')
+      ).toHaveText("Not confirmed", { timeout: 45_000 })
+      await expect(
+        recovery.getByText("Terminal funds and pending transfers", {
+          exact: false,
+        })
+      ).toBeVisible()
       setStage("cold Merchant retires only after fresh terminal zero evidence")
       control().setAdditionalOwnedSats(0)
       if (!scopedRecovery) await coldPersistence.reload()
@@ -1877,6 +1888,9 @@ async function rehearseRouter(
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
+      await expect(
+        recovery.getByText("Recovery check details", { exact: true })
+      ).toHaveCount(0)
       setStage("cold Merchant retired reload does not replay payments")
       expect(control().snapshot()).toEqual(completed)
       expect(completed.sendInvocationCount).toBe(2)

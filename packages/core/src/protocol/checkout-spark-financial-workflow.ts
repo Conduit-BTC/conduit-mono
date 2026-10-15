@@ -31,6 +31,7 @@ import {
 import type { SparkCheckoutReceiveCreditProof } from "./checkout-spark-receive-credit"
 import {
   collectCheckoutSparkNativeRetirementEvidence,
+  type CheckoutSparkNativeRetirementObservation,
   type CheckoutSparkNativeRetirementReader,
 } from "./checkout-spark-native-retirement"
 import type { CheckoutSparkRetirementEvidence } from "./checkout-spark-reconciliation"
@@ -41,6 +42,22 @@ type Active = Extract<
   { status: "active" }
 >
 type Outgoing = CheckoutSparkSettledOutgoingStepInput["provider"]
+
+export type CheckoutSparkRetirementObservation = {
+  phase:
+    | "prerequisites"
+    | "recovery_access"
+    | "wallet_open"
+    | "wallet_cleanup"
+    | "settlement"
+    | "scope"
+    | "reader"
+    | "native_evidence"
+    | "commit"
+    | "complete"
+  status: "checking" | "not_verified" | "verified" | "unavailable"
+  native?: CheckoutSparkNativeRetirementObservation
+}
 
 export interface CheckoutSparkFinancialWorkflowInput {
   checkoutId: string
@@ -92,6 +109,7 @@ export interface CheckoutSparkFinancialWorkflowPorts {
   /** Retry exact terminal cleanup only after loading a positive replay marker. */
   cleanupTerminal?: () => Promise<void>
   retirement?: {
+    observe?(observation: CheckoutSparkRetirementObservation): unknown
     /** Exact authenticated credit, recipient and treasury proof, never labels. */
     proveSettlement(state: CheckoutSparkSettledReconciliation): Promise<{
       expectedTransferIds: string[]
@@ -171,10 +189,31 @@ function assertExactObservation(
  * Conduit collection. Transport, wallet ownership and session authority stay
  * in the adapters. Query-only settlement observation does not enter this seam.
  */
-export async function runCheckoutSparkFinancialWorkflow(
+type RetirementProgress = {
+  phase: CheckoutSparkRetirementObservation["phase"]
+  emit(observation: CheckoutSparkRetirementObservation): void
+}
+
+async function runCheckoutSparkFinancialWorkflowInternal(
   input: CheckoutSparkFinancialWorkflowInput,
-  ports: CheckoutSparkFinancialWorkflowPorts
+  ports: CheckoutSparkFinancialWorkflowPorts,
+  retirementProgress: RetirementProgress
 ): Promise<CheckoutSparkFinancialWorkflowResult> {
+  const retirementObservation = (
+    phase: CheckoutSparkRetirementObservation["phase"],
+    status: CheckoutSparkRetirementObservation["status"],
+    native?: CheckoutSparkNativeRetirementObservation
+  ) => {
+    retirementProgress.phase = phase
+    retirementProgress.emit({
+      phase,
+      status,
+      ...(native ? { native } : {}),
+    })
+  }
+  const checkRetirementPhase = (
+    phase: CheckoutSparkRetirementObservation["phase"]
+  ) => retirementObservation(phase, "checking")
   const checked = async <T>(operation: () => Promise<T>): Promise<T> => {
     await ports.assertCurrent()
     const value = await operation()
@@ -210,6 +249,7 @@ export async function runCheckoutSparkFinancialWorkflow(
       checked(() => ports.store.load(checkoutId, planDigest)),
     save: (state, revision) => checked(() => ports.store.save(state, revision)),
   }
+  if (input.mode === "retire") checkRetirementPhase("prerequisites")
   const first = await store.load(input.checkoutId, input.planDigest)
   if (first.status === "retired") {
     if (first.planDigest !== input.planDigest)
@@ -221,6 +261,7 @@ export async function runCheckoutSparkFinancialWorkflow(
         await ports.assertCurrent()
       }
     }
+    if (input.mode === "retire") retirementObservation("complete", "verified")
     return { status: "retired" }
   }
   let current = valid(first)
@@ -242,6 +283,8 @@ export async function runCheckoutSparkFinancialWorkflow(
   if (input.mode === "credit")
     return { status: "credited", state: current.state }
   if (!current.state.credit) {
+    if (input.mode === "retire")
+      retirementObservation("prerequisites", "not_verified")
     return {
       status: "outgoing_step",
       step: {
@@ -255,12 +298,19 @@ export async function runCheckoutSparkFinancialWorkflow(
     if (
       !ports.retirement ||
       current.state.legs.some((leg) => leg.status !== "paid")
-    )
+    ) {
+      retirementObservation("prerequisites", "not_verified")
       return waiting(current.state, "prerequisite_unpaid")
+    }
+    checkRetirementPhase("settlement")
     const proved = await checked(() =>
       ports.retirement!.proveSettlement(current.state)
     )
-    if (!proved) return waiting(current.state, "provider_evidence_unavailable")
+    if (!proved) {
+      retirementObservation("settlement", "not_verified")
+      return waiting(current.state, "provider_evidence_unavailable")
+    }
+    checkRetirementPhase("scope")
     const expected = [
       current.state.credit.transferId,
       ...current.state.legs.map((leg) => {
@@ -276,14 +326,19 @@ export async function runCheckoutSparkFinancialWorkflow(
       expected.some((id) => !id) ||
       new Set(proved.expectedTransferIds).size !== expected.length ||
       expected.some((id) => !proved.expectedTransferIds.includes(id!))
-    )
+    ) {
+      retirementObservation("scope", "not_verified")
       return waiting(current.state, "provider_evidence_conflicting")
+    }
     const same = valid(await store.load(input.checkoutId, input.planDigest))
     if (same.revision !== current.revision)
       throw new CheckoutSparkSettledRepositoryConflictError()
     await ports.assertCurrent()
+    checkRetirementPhase("reader")
     const session = await ports.retirement.openReader(current.state)
     let evidence: CheckoutSparkRetirementEvidence | null
+    let lastNativeObservation:
+      CheckoutSparkNativeRetirementObservation | undefined
     try {
       await ports.assertCurrent()
       const reader: CheckoutSparkNativeRetirementReader = {
@@ -302,6 +357,7 @@ export async function runCheckoutSparkFinancialWorkflow(
             }
           : {}),
       }
+      checkRetirementPhase("native_evidence")
       evidence = await collectCheckoutSparkNativeRetirementEvidence({
         authenticatedReader: reader,
         sparkAddress: session.sparkAddress,
@@ -314,17 +370,28 @@ export async function runCheckoutSparkFinancialWorkflow(
           ? { requireExactHistoryScope: true as const }
           : {}),
         now: ports.now,
+        onObservation: (native) => {
+          lastNativeObservation = native
+          retirementObservation("native_evidence", native.status, native)
+        },
       })
     } finally {
       // Inspection handles close even after revocation, before the durable write.
       await session.cleanup()
     }
     await ports.assertCurrent()
-    if (!evidence)
+    if (!evidence) {
+      retirementObservation(
+        "native_evidence",
+        "not_verified",
+        lastNativeObservation
+      )
       return waiting(current.state, "provider_evidence_unavailable")
+    }
     const fresh = valid(await store.load(input.checkoutId, input.planDigest))
     if (fresh.revision !== current.revision)
       throw new CheckoutSparkSettledRepositoryConflictError()
+    checkRetirementPhase("commit")
     await checked(() =>
       ports.retirement!.commit({
         checkoutId: input.checkoutId,
@@ -339,6 +406,7 @@ export async function runCheckoutSparkFinancialWorkflow(
       terminal.planDigest !== input.planDigest
     )
       throw new CheckoutSparkSettledRepositoryConflictError()
+    retirementObservation("complete", "verified")
     // Cleanup failure never undoes a positive terminal replay marker.
     if (ports.cleanupTerminal) {
       try {
@@ -697,4 +765,39 @@ export async function runCheckoutSparkFinancialWorkflow(
   })
   await ports.assertCurrent()
   return { status: "outgoing_step", step }
+}
+
+export async function runCheckoutSparkFinancialWorkflow(
+  input: CheckoutSparkFinancialWorkflowInput,
+  ports: CheckoutSparkFinancialWorkflowPorts
+): Promise<CheckoutSparkFinancialWorkflowResult> {
+  const retirementProgress: RetirementProgress = {
+    phase: "prerequisites",
+    emit: (observation) => {
+      try {
+        const result = ports.retirement?.observe?.(observation)
+        if (
+          result &&
+          typeof (result as PromiseLike<unknown>).then === "function"
+        )
+          void Promise.resolve(result).catch(() => {})
+      } catch {
+        // Display-only observation cannot affect financial workflow results.
+      }
+    },
+  }
+  try {
+    return await runCheckoutSparkFinancialWorkflowInternal(
+      input,
+      ports,
+      retirementProgress
+    )
+  } catch (error) {
+    if (input.mode === "retire")
+      retirementProgress.emit({
+        phase: retirementProgress.phase,
+        status: "unavailable",
+      })
+    throw error
+  }
 }

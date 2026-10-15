@@ -3,6 +3,7 @@ import {
   projectCheckoutSparkMerchantSettlement,
   type MerchantCheckoutSparkReconciliationStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
+  type CheckoutSparkRetirementObservation,
 } from "@conduit/core"
 import {
   inspectMerchantCheckoutSparkSettledPayoutHistory,
@@ -333,6 +334,9 @@ async function inspectMerchantCheckoutSparkOrder(
 }
 
 interface AdvancementDependencies extends ReconciliationDependencies {
+  observeRetirement?: (
+    observation: CheckoutSparkRetirementObservation
+  ) => unknown
   repository?: NonNullable<ReconciliationDependencies["repository"]> &
     Pick<DexieCheckoutSparkSettledRepository, "retire">
   selectPayout?: typeof selectMerchantCheckoutSparkSignedNextPayout
@@ -378,7 +382,12 @@ export async function advanceMerchantCheckoutSparkOrder(
   if (status === "retirement_pending") {
     const result = await (
       dependencies.retireWallet ?? retireMerchantCheckoutSparkSettledRecovery
-    )(principal, candidate, { repository, assertActive, now })
+    )(principal, candidate, {
+      repository,
+      assertActive,
+      now,
+      observeRetirement: dependencies.observeRetirement,
+    })
     assertActive()
     if (result.status !== "consumed") return "unavailable"
     if (result.retirementStatus === "retired") return "retired"

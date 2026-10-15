@@ -2,8 +2,10 @@ import { useId, type ReactNode } from "react"
 import type {
   CheckoutSparkMerchantSettlementProjection,
   MerchantCheckoutSparkReconciliationStatus,
+  CheckoutSparkRetirementObservation,
 } from "@conduit/core"
 import { Button, CheckoutPaymentProgress } from "@conduit/ui"
+import { CheckoutSparkRecoveryCheckDetails } from "./CheckoutSparkRecoveryCheckDetails"
 
 interface CheckoutSparkMerchantPaymentCardProps {
   projection: CheckoutSparkMerchantSettlementProjection | null
@@ -15,6 +17,8 @@ interface CheckoutSparkMerchantPaymentCardProps {
   paused: boolean
   processingScope?: "order" | "all"
   recoveryPending?: boolean
+  retirementObservation?: CheckoutSparkRetirementObservation
+  lastCheckedAt?: number
   recoveryStatusRefreshing?: boolean
   automaticProcessing?: boolean
   canContinue: boolean
@@ -39,6 +43,8 @@ export function CheckoutSparkMerchantPaymentCard({
   paused,
   processingScope = "all",
   recoveryPending = false,
+  retirementObservation,
+  lastCheckedAt,
   recoveryStatusRefreshing = false,
   automaticProcessing = false,
   canContinue,
@@ -195,6 +201,17 @@ export function CheckoutSparkMerchantPaymentCard({
             Payment complete. Recovery remains saved.
           </p>
         )}
+      {paymentsComplete && recoveryPending && !recoveryComplete && (
+        <CheckoutSparkRecoveryCheckDetails
+          outcome={outcome}
+          retirementObservation={retirementObservation}
+          lastCheckedAt={lastCheckedAt}
+          nowMs={nowMs}
+          checking={checking}
+          paused={paused}
+          automaticProcessing={automaticProcessing}
+        />
+      )}
       {showProcessingControls && (
         <p
           id={processingScopeId}

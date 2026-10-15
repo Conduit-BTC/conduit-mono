@@ -804,12 +804,18 @@ describe("offline cold Merchant guest supplier recovery", () => {
         expect(await database.wallets.count()).toBe(0)
         // Zero balance alone does not establish complete claim/refund terminality.
         now += 1_000
+        const retirementObservations: Array<{ phase: string; status: string }> =
+          []
         const incompleteHistory =
           await retireMerchantCheckoutSparkSettledRecovery(
             plan.merchantPubkey,
             await discover(),
             {
               ...dependencies,
+              observeRetirement(observation) {
+                retirementObservations.push(observation)
+                throw new Error("Synthetic display-only observer failure")
+              },
               openWallet: async (input) => ({
                 ...(await dependencies.openWallet(input)),
                 getLightningSendRequest: async () => null,
@@ -818,6 +824,10 @@ describe("offline cold Merchant guest supplier recovery", () => {
           )
         expect(incompleteHistory.status).toBe("consumed")
         expect(incompleteHistory.retirementStatus).toBe("pending")
+        expect(retirementObservations.at(-1)).toEqual({
+          phase: "settlement",
+          status: "not_verified",
+        })
         expect(
           (await repository.load(plan.checkoutId, plan.planDigest)).status
         ).toBe("active")
@@ -851,6 +861,8 @@ describe("offline cold Merchant guest supplier recovery", () => {
           () => {},
           {
             ...offlineChecks,
+            observeRetirement: (observation) =>
+              retirementObservations.push(observation),
             repository,
             now: () => now,
             requestRescan: () => {
@@ -864,6 +876,10 @@ describe("offline cold Merchant guest supplier recovery", () => {
           }
         )
         expect(retired).toBe("retired")
+        expect(retirementObservations.at(-1)).toEqual({
+          phase: "complete",
+          status: "verified",
+        })
         expect(
           (await repository.load(plan.checkoutId, plan.planDigest)).status
         ).toBe("retired")

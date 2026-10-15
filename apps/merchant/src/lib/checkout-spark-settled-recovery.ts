@@ -47,6 +47,7 @@ import {
   type SparkCheckoutLightningClosedReturnedInspectionInput,
   type CheckoutSparkMerchantSettlementRecord,
   type CheckoutSparkNativeTreasuryObservation,
+  type CheckoutSparkRetirementObservation,
 } from "@conduit/core"
 import merchantPackage from "../../package.json"
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
@@ -1329,6 +1330,9 @@ interface RecoveryRetirementDependencies extends Omit<
   RecoveryCreditDependencies,
   "repository"
 > {
+  observeRetirement?: (
+    observation: CheckoutSparkRetirementObservation
+  ) => unknown
   consumeRecovery?: typeof withMerchantCheckoutSparkRecovery
   repository?: NonNullable<RecoveryCreditDependencies["repository"]> &
     Pick<
@@ -1362,6 +1366,20 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
   const now = dependencies.now ?? Date.now
   let retirementStatus: MerchantCheckoutSparkRetirementResult["retirementStatus"] =
     null
+  let retirementPhase: CheckoutSparkRetirementObservation["phase"] =
+    "recovery_access"
+  const observeRetirement = (
+    observation: CheckoutSparkRetirementObservation
+  ) => {
+    retirementPhase = observation.phase
+    try {
+      void Promise.resolve(dependencies.observeRetirement?.(observation)).catch(
+        () => undefined
+      )
+    } catch {
+      // Display-only observations must never change a financial result.
+    }
+  }
   const consumeRecovery =
     dependencies.consumeRecovery ?? withMerchantCheckoutSparkRecovery
   const retire = async (
@@ -1369,6 +1387,7 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
     signed: CheckoutSparkSettledReconciliation,
     assertCurrent: () => void
   ) => {
+    observeRetirement({ phase: "prerequisites", status: "checking" })
     const assertEligible = () => {
       dependencies.assertActive?.()
       assertCurrent()
@@ -1394,6 +1413,10 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
     assertEligible()
     if (saved.status !== "active") {
       retirementStatus = saved.status === "retired" ? "retired" : "pending"
+      observeRetirement({
+        phase: saved.status === "retired" ? "complete" : "prerequisites",
+        status: saved.status === "retired" ? "verified" : "not_verified",
+      })
       return
     }
     const state = saved.state
@@ -1412,8 +1435,11 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
                 ?.kind === "conduit"
             ))
       )
-    )
+    ) {
+      observeRetirement({ phase: "prerequisites", status: "not_verified" })
       return
+    }
+    observeRetirement({ phase: "wallet_open", status: "checking" })
     const derivedIdentity = await deriveIdentity(
       initial.wallet.mnemonic,
       initial.wallet.accountNumber
@@ -1433,7 +1459,10 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
     })
     try {
       assertEligible()
-      if (!wallet.openRetirementReader) return
+      if (!wallet.openRetirementReader) {
+        observeRetirement({ phase: "reader", status: "not_verified" })
+        return
+      }
       await wallet.ensurePrivateReady()
       assertEligible()
       const observedWallet: MerchantSparkRecoveryWallet = {
@@ -1490,6 +1519,7 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
           },
           acknowledgeRecoverySnapshot: async () => {},
           retirement: {
+            observe: observeRetirement,
             proveSettlement: async (state) => {
               if (!state.credit) return null
               const identity = (
@@ -1661,7 +1691,10 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
       )
       if (completed.status === "retired") retirementStatus = "retired"
     } finally {
-      await wallet.cleanup()
+      await wallet.cleanup().catch((error) => {
+        observeRetirement({ phase: "wallet_cleanup", status: "unavailable" })
+        throw error
+      })
     }
   }
   dependencies.assertActive?.()
@@ -1669,30 +1702,42 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
     selected.planDigest,
     async () => {
       dependencies.assertActive?.()
-      const result = await consumeRecovery(principal, selected, {
-        async consume(initial, assertCurrent) {
-          if (initial.schemaVersion !== 2)
-            throw new Error(
-              "An older checkout recovery cannot retire a settled wallet."
-            )
-          await retire(initial, initial.state, assertCurrent)
-        },
-        async consumeSettled(initial, latest, assertCurrent) {
-          await retire(initial, latest.state, assertCurrent)
-        },
-        async consumeMerchantProgress(
-          initial,
-          _latestBuyer,
-          progress,
-          assertCurrent
-        ) {
-          await retire(initial, progress.state, assertCurrent)
-        },
-      })
-      return {
-        ...result,
-        retirementStatus:
-          result.status === "consumed" ? retirementStatus : null,
+      observeRetirement({ phase: "recovery_access", status: "checking" })
+      try {
+        const result = await consumeRecovery(principal, selected, {
+          async consume(initial, assertCurrent) {
+            if (initial.schemaVersion !== 2)
+              throw new Error(
+                "An older checkout recovery cannot retire a settled wallet."
+              )
+            await retire(initial, initial.state, assertCurrent)
+          },
+          async consumeSettled(initial, latest, assertCurrent) {
+            await retire(initial, latest.state, assertCurrent)
+          },
+          async consumeMerchantProgress(
+            initial,
+            _latestBuyer,
+            progress,
+            assertCurrent
+          ) {
+            await retire(initial, progress.state, assertCurrent)
+          },
+        })
+        if (result.status !== "consumed") {
+          observeRetirement({
+            phase: "recovery_access",
+            status: "not_verified",
+          })
+        }
+        return {
+          ...result,
+          retirementStatus:
+            result.status === "consumed" ? retirementStatus : null,
+        }
+      } catch (error) {
+        observeRetirement({ phase: retirementPhase, status: "unavailable" })
+        throw error
       }
     },
     dependencies.lockManager,
