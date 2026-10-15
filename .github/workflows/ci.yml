@@ -424,7 +424,7 @@ jobs:
             --tested-sha "$checkout_sha"
       - name: Retain sanitized isolated router evidence
         if: always() && matrix.job.area == 'commerce'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-evidence-router-${{ github.run_attempt }}
           path: ${{ runner.temp }}/playwright-router-smoke-evidence.json
@@ -432,7 +432,7 @@ jobs:
           retention-days: 7
       - name: Retain sanitized router receiver setup evidence
         if: always() && matrix.job.area == 'commerce'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-evidence-router-receiver-setup-${{ github.run_attempt }}
           path: ${{ runner.temp }}/playwright-router-receiver-setup-evidence.json
@@ -442,7 +442,7 @@ jobs:
       # A failed validation remains failed; this artifact never substitutes for it.
       - name: Retain sanitized smoke evidence
         if: always() && matrix.job.area != 'none'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-evidence-${{ matrix.job.id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json
