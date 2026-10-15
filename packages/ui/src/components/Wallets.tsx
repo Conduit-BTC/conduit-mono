@@ -1000,7 +1000,11 @@ function WalletRow({
     if (menuTrigger.current) action(wallet, menuTrigger.current)
   }
   return (
-    <div className="grid gap-3 p-4 sm:p-5">
+    <div
+      data-wallet-state={runtime.status}
+      data-wallet-id={wallet.id}
+      className="grid gap-3 p-4 sm:p-5"
+    >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
