@@ -181,8 +181,9 @@ test.afterEach(async ({ page }, info) => {
   const existing = info.annotations.find(
     (entry) => entry.type === "smoke:fallback-upload"
   )
-  const { phase } = JSON.parse(existing?.description ?? "{}") as {
+  const { phase, tagOrdinal } = JSON.parse(existing?.description ?? "{}") as {
     phase?: string
+    tagOrdinal?: number
   }
   let observations: Record<string, string | number | boolean>
   try {
@@ -227,7 +228,11 @@ test.afterEach(async ({ page }, info) => {
     // Preserve the original failure when timeout teardown has closed the page.
     observations = { observationAvailable: false }
   }
-  recordSmokeDiagnostic(info, "fallback-upload", { phase, ...observations })
+  recordSmokeDiagnostic(info, "fallback-upload", {
+    phase,
+    tagOrdinal,
+    ...observations,
+  })
 })
 
 test("loaded product preview stays visible while its title changes @merchant", async ({
@@ -775,9 +780,26 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await freshDialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital" }).click()
   const tags = freshDialog.getByRole("combobox", { name: "Tags" })
-  for (const tag of ["fallback", "storage", "guardrail"]) {
+  for (const [index, tag] of ["fallback", "storage", "guardrail"].entries()) {
+    recordSmokeDiagnostic(info, "fallback-upload", {
+      phase: "tag_entry",
+      tagOrdinal: index + 1,
+    })
+    recordSmokeFailureContext(info, "fallback_tag_input_filled")
     await tags.fill(tag)
+    recordSmokeFailureContext(info, "fallback_tag_input_filled", "met")
+    recordSmokeFailureContext(info, "fallback_tag_enter_completed")
     await tags.press("Enter")
+    recordSmokeFailureContext(info, "fallback_tag_enter_completed", "met")
+    recordSmokeFailureContext(info, "fallback_tag_committed")
+    await expect(
+      freshDialog.getByRole("button", {
+        name: `Remove ${tag} tag`,
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(tags).toHaveValue("")
+    recordSmokeFailureContext(info, "fallback_tag_committed", "met")
   }
   phase("publish")
   await expect(
