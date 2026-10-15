@@ -176,7 +176,9 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 20
+    # Commerce runs ordinary, native-router, and receiver lanes serially.
+    # Individual test deadlines remain unchanged.
+    timeout-minutes: ${{ matrix.job.area == 'commerce' && 25 || 20 }}
     steps:
       - name: No browser smoke needed
         if: matrix.job.area == 'none'
