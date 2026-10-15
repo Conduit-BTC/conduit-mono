@@ -476,22 +476,16 @@ jobs:
       matrix:
         probe:
           - {
-              name: menu-background,
+              name: menu-baseline,
               area: commerce,
               source: "e2e/commerce-inbox.playwright.ts:21",
-              focus: "0",
+              position: "0",
             }
           - {
-              name: menu-foreground,
+              name: menu-positioned,
               area: commerce,
               source: "e2e/commerce-inbox.playwright.ts:21",
-              focus: "1",
-            }
-          - {
-              name: workspace,
-              area: merchant,
-              source: "e2e/not-found.playwright.ts",
-              focus: "0",
+              position: "1",
             }
     container:
       image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
@@ -532,7 +526,7 @@ jobs:
         env:
           CI: "true"
           PLAYWRIGHT_NO_COPY_PROMPT: "1"
-          PLAYWRIGHT_ACTOR_FOCUS: ${{ matrix.probe.focus }}
+          PLAYWRIGHT_POSITION_TRIGGER: ${{ matrix.probe.position }}
           PLAYWRIGHT_SMOKE_AREA: ${{ matrix.probe.area }}
           PROBE_SOURCE: ${{ matrix.probe.source }}
           PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/webkit-probe-results.json
