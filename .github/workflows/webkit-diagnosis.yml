@@ -22,8 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         probe:
-          - { name: media-without-fetch-abort, variant: without-fetch-abort }
-          - { name: media-without-url-revoke, variant: without-url-revoke }
+          - { name: workspace-pending-owner }
     container:
       image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
       options: --init --shm-size=1g
@@ -64,8 +63,7 @@ jobs:
           CI: "true"
           PLAYWRIGHT_NO_COPY_PROMPT: "1"
           PLAYWRIGHT_SMOKE_AREA: merchant
-          PLAYWRIGHT_MEDIA_PROBE: ${{ matrix.probe.variant }}
-          PROBE_SOURCE: "e2e/not-found.playwright.ts:164"
+          PROBE_SOURCE: "e2e/not-found.playwright.ts"
           PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/webkit-probe-results.json
           PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/webkit-probe-progress.log
         run: |
