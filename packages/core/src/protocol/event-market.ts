@@ -30,6 +30,26 @@ import {
 const HEX_64 = /^[0-9a-f]{64}$/i
 
 const CONTROL_CHARACTER = /\p{Cc}/u
+function hasUnsupportedCalendarControl(value: string): boolean {
+  return CONTROL_CHARACTER.test(
+    value.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "")
+  )
+}
+
+export const EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH = 1_000
+
+/** Calendar prose may contain line breaks and tabs, but not other controls. */
+export function normalizeEventMarketCalendarSummary(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  if (normalized.length > EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH)
+    throw new Error("Description must be 1,000 characters or fewer.")
+  if (hasUnsupportedCalendarControl(normalized))
+    throw new Error("Description contains unsupported control characters.")
+  return normalized
+}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -485,7 +505,7 @@ export function buildEventMarketCalendarDraft(
     ["d", dTag],
     ["title", title],
   ]
-  const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
+  const summary = normalizeEventMarketCalendarSummary(input.summary)
   const image = normalizeOptionalText(input.image, "Image", 2_048)
   const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
   if (geohash && !GEOHASH.test(geohash)) throw new Error("Geohash is invalid.")
@@ -534,12 +554,19 @@ export function buildEventMarketCalendarDraft(
   if (input.clientAppId) tags = appendConduitClientTag(tags, input.clientAppId)
   return {
     kind: input.kind,
-    content:
-      normalizeOptionalText(input.content, "Calendar content", 10_000) ??
-      summary ??
-      "",
+    content: normalizeOptionalCalendarContent(input.content) ?? summary ?? "",
     tags,
   }
+}
+
+function normalizeOptionalCalendarContent(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  if (normalized.length > 10_000 || hasUnsupportedCalendarControl(normalized))
+    throw new Error("Calendar content is invalid.")
+  return normalized
 }
 
 function tagValues(

@@ -1,3 +1,5 @@
+import { normalizeEventMarketCalendarSummary } from "@conduit/core"
+
 export type OrganizerCalendarType = "timed" | "date"
 
 export const MAX_ORGANIZER_EVENT_DATES = 32
@@ -207,7 +209,9 @@ export function fromStoredOrganizerEventForm(
   return {
     ...form,
     end:
-      form.calendarType === "date"
+      form.calendarType === "date" &&
+      isValidCalendarDate(form.start) &&
+      (!form.end || isValidCalendarDate(form.end))
         ? getOrganizerInclusiveEndDate(form.start, form.end)
         : form.end,
   }
@@ -517,6 +521,15 @@ export function validateOrganizerEventMarketForm(
 
   if (!title) addError(errors, "title", "Add an event title.")
   if (!summary) addError(errors, "summary", "Add a public event summary.")
+  try {
+    normalizeEventMarketCalendarSummary(summary)
+  } catch (cause) {
+    addError(
+      errors,
+      "summary",
+      cause instanceof Error ? cause.message : "Check the event description."
+    )
+  }
   if (imageUrl && !/^https:\/\//i.test(imageUrl)) {
     addError(errors, "imageUrl", "Event image URL must start with https://.")
   }

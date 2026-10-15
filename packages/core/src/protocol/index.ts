@@ -257,6 +257,8 @@ export {
   encodeEventMarketNaddr,
   encodeEventMarketShareLink,
   buildEventMarketCalendarDraft,
+  EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH,
+  normalizeEventMarketCalendarSummary,
   parseEventMarketCalendarEvent,
   type EventMarketDeletionEvidence,
   isEventMarketAddressableRevisionDeleted,
