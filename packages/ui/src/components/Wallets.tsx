@@ -128,6 +128,8 @@ export function Wallets({
     null
   )
   const addWalletTriggerRef = useRef<HTMLButtonElement>(null)
+  const addWalletTouchRef = useRef(false)
+  const [addWalletMenuOpen, setAddWalletMenuOpen] = useState(false)
   const profileTriggerRef = useRef<HTMLElement>(null)
   const suggestAddress = (suggestion: WalletAddressSuggestion) => {
     profileTriggerRef.current = addWalletTriggerRef.current
@@ -288,10 +290,26 @@ export function Wallets({
                       )}
                   </Button>
                 )}
-              <DropdownMenu>
+              <DropdownMenu
+                open={addWalletMenuOpen}
+                onOpenChange={setAddWalletMenuOpen}
+              >
                 <DropdownMenuTrigger asChild>
                   <Button
                     ref={addWalletTriggerRef}
+                    onPointerDownCapture={(event) => {
+                      addWalletTouchRef.current = event.pointerType === "touch"
+                      // Let touch finish its native click before mounting a menu
+                      // that can move underneath the release. Keep mouse handling.
+                      if (addWalletTouchRef.current) event.stopPropagation()
+                    }}
+                    onClick={() => {
+                      if (addWalletTouchRef.current)
+                        setAddWalletMenuOpen((open) => !open)
+                    }}
+                    onKeyDownCapture={() => {
+                      addWalletTouchRef.current = false
+                    }}
                     variant="outline"
                     disabled={wallets.loading || !!wallets.initializationError}
                   >
