@@ -8,6 +8,52 @@ import { measureTextContrast } from "./helpers/rendered-contrast"
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
+for (const [area, appUrl] of [
+  ["market", marketUrl],
+  ["merchant", merchantUrl],
+] as const) {
+  test(`shared utility transforms override fallback defaults in ${area} @${area}`, async ({
+    page,
+  }) => {
+    await page.goto(`${appUrl}/about`)
+    await page.evaluate(() => {
+      const frame = document.createElement("div")
+      frame.style.cssText = "position:fixed;inset:0;pointer-events:none"
+      const probe = document.createElement("div")
+      probe.dataset.testid = "utility-cascade-probe"
+      probe.className = "translate-x-[-50%] translate-y-[-50%]"
+      probe.style.cssText =
+        "position:absolute;left:50%;top:50%;width:100px;height:100px"
+      frame.append(probe)
+      document.body.append(frame)
+    })
+    // Exercise Tailwind's property fallback on every browser, regardless of
+    // whether that engine currently matches its feature-detection condition.
+    await page.addStyleTag({
+      content: `@layer properties {
+        [data-testid="utility-cascade-probe"] {
+          --tw-translate-x: 0;
+          --tw-translate-y: 0;
+        }
+      }`,
+    })
+    const geometry = await page
+      .getByTestId("utility-cascade-probe")
+      .evaluate((element) => {
+        const box = element.getBoundingClientRect()
+        const frame = element.parentElement!.getBoundingClientRect()
+        return {
+          centerX: box.x + box.width / 2,
+          centerY: box.y + box.height / 2,
+          frameX: frame.x + frame.width / 2,
+          frameY: frame.y + frame.height / 2,
+        }
+      })
+    expect(Math.abs(geometry.centerX - geometry.frameX)).toBeLessThan(1)
+    expect(Math.abs(geometry.centerY - geometry.frameY)).toBeLessThan(1)
+  })
+}
+
 for (const theme of ["day-market", "night-market"]) {
   test(`catalog density and matching media radius in ${theme} @market`, async ({
     page,

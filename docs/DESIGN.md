@@ -47,6 +47,14 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 - `packages/ui/src/components/*`: reusable components built from those shared tokens
 - `apps/*`: route-level layout, composition, and app-specific presentation that does not redefine the shared system
 
+## CSS Layer Order
+
+The shared `site.css` entry declares `properties, theme, base, components, utilities`
+before its imports. Keep that declaration first: apps and the workbench load shared
+styles before Tailwind, and CSS layer precedence is fixed by the first occurrence.
+Tailwind's property fallback must stay below components and utilities so its reset
+values cannot override transforms, shadows, or other utility custom properties.
+
 ## Design Principles
 
 - Use a dark, high-contrast base with luminous brand accents.

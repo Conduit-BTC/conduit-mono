@@ -310,7 +310,13 @@ test("buyer and seller retain conversations and files through self-copy failure,
     expect(safe).toEqual({ encrypted: true, oldPlaintext: 0 })
     // Reconnect the same principal without reloading: the hook must subscribe to
     // the new session owner rather than remain attached to the retired owner.
-    await buyerPage.getByLabel("Open account menu").click()
+    const accountMenu = buyerPage.getByLabel("Open account menu")
+    // Finish the programmatic scroll before the menu's pointer-down handler runs.
+    // A moving trigger can leave pointer-up and click on the page behind it.
+    await accountMenu.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
+    )
+    await accountMenu.click()
     await buyerPage
       .getByRole("menuitem", { name: "Disconnect", exact: true })
       .click()
