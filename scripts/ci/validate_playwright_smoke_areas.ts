@@ -3,10 +3,12 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
+import { safeRetainedSmokeDiagnostics } from "../../e2e/helpers/smoke-diagnostics"
 import {
   safePlaywrightSmokeId,
   safePlaywrightSmokeTitle,
   safePlaywrightFailure,
+  safePlaywrightRunnerError,
 } from "./playwright_smoke_reporter"
 import {
   formatRouterSmokeDiagnostic,
@@ -31,6 +33,7 @@ type PlaywrightJsonSpec = {
 }
 
 type PlaywrightJsonResult = {
+  diagnostics?: unknown
   failure?: unknown
   duration?: number
   error?: PlaywrightJsonError
@@ -173,8 +176,13 @@ function firstAttemptDiagnostic(
       ? parseRouterSmokeDiagnostic(result?.router)
       : undefined
 
-  const failure = safePlaywrightFailure(result?.failure)
-  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}${router ? ` ${formatRouterSmokeDiagnostic(router)}` : ""}.${failure ? ` Boundary: ${JSON.stringify(failure)}.` : ""}`
+  const sourceFile = manifestFile(specFile)
+  const failure = safePlaywrightFailure(result?.failure, sourceFile)
+  const diagnostics = safeRetainedSmokeDiagnostics(
+    sourceFile,
+    result?.diagnostics
+  )
+  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}${router ? ` ${formatRouterSmokeDiagnostic(router)}` : ""}.${failure ? ` Boundary: ${JSON.stringify(failure)}.` : ""}${diagnostics.length ? ` Observed: ${JSON.stringify(diagnostics)}.` : ""}`
 }
 
 export function buildPlaywrightSmokeManifest(
@@ -311,6 +319,15 @@ export function validatePlaywrightSmokeExecution(
   selectedAreas: readonly SmokeArea[],
   evidence: PlaywrightSmokeEvidenceContext
 ): PlaywrightSmokeManifest {
+  const startupErrors = (report.errors ?? []).slice(0, 4).flatMap((value) => {
+    const safe = safePlaywrightRunnerError(value)
+    return safe?.phase === "startup" ? [safe] : []
+  })
+  if (startupErrors.length) {
+    throw new Error(
+      `Playwright smoke startup failed before execution could be verified: ${JSON.stringify(startupErrors)}.`
+    )
+  }
   validatePlaywrightSmokeAreas(report, selectedAreas)
   const executedManifest = buildPlaywrightSmokeManifest(
     report,
@@ -369,7 +386,13 @@ export function validatePlaywrightSmokeExecution(
   }
 
   if ((report.errors ?? []).length > 0) {
-    errors.push("Playwright reported top-level execution errors.")
+    const runnerErrors = (report.errors ?? []).slice(0, 4).flatMap((value) => {
+      const safe = safePlaywrightRunnerError(value)
+      return safe ? [safe] : []
+    })
+    errors.push(
+      `Playwright reported top-level execution errors${runnerErrors.length ? `: ${JSON.stringify(runnerErrors)}` : ""}.`
+    )
   }
   if ((report.stats?.skipped ?? 0) > 0) {
     errors.push("Playwright skipped selected smoke tests.")

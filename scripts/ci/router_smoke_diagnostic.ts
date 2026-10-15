@@ -102,6 +102,10 @@ const routerSmokePhases = [
   "automatic commerce payouts and pending native treasury transfer",
   "native treasury transfer not submitted after commerce",
   "native treasury sender commits before receiver claim",
+  "native treasury pre-commit provider transfer matches",
+  "native treasury sender commitment applied",
+  "sender-committed payment status visible",
+  "sender-committed delivery separation visible",
   "sender commitment completes routing without native replay",
   "sender-committed exact provider transfer matches",
   "sender-committed persisted obligations match",
@@ -126,7 +130,33 @@ export type RouterSmokeDiagnostic = {
   phase: RouterSmokePhase
   lifecycle: "body" | "teardown" | "complete"
   body: "running" | "completed" | "failed"
+  expected?: RouterSmokeExpectation
+  category?: RouterSmokeCategory
 }
+
+const checkpointEvidence = {
+  "native treasury pre-commit provider transfer matches": {
+    expected: "pending-sender-transfer",
+    category: "provider-observation",
+  },
+  "native treasury sender commitment applied": {
+    expected: "sender-commitment-applied",
+    category: "fixture-control",
+  },
+  "sender-committed payment status visible": {
+    expected: "payment-recorded-visible",
+    category: "app-readiness",
+  },
+  "sender-committed delivery separation visible": {
+    expected: "delivery-separation-visible",
+    category: "assertion",
+  },
+} as const
+
+type RouterSmokeExpectation =
+  (typeof checkpointEvidence)[keyof typeof checkpointEvidence]["expected"]
+type RouterSmokeCategory =
+  (typeof checkpointEvidence)[keyof typeof checkpointEvidence]["category"]
 
 export const ROUTER_SMOKE_DIAGNOSTIC_ANNOTATION = "router-phase"
 const approvedPhases = new Set<string>(routerSmokePhases)
@@ -138,7 +168,11 @@ export function parseRouterSmokeDiagnostic(
     return undefined
   const fields = value as Record<string, unknown>
   if (
-    Object.keys(fields).length !== 3 ||
+    ![3, 5].includes(Object.keys(fields).length) ||
+    Object.keys(fields).some(
+      (key) =>
+        !["phase", "lifecycle", "body", "expected", "category"].includes(key)
+    ) ||
     !["phase", "lifecycle", "body"].every((key) =>
       Object.hasOwn(fields, key)
     ) ||
@@ -152,10 +186,21 @@ export function parseRouterSmokeDiagnostic(
     (fields.lifecycle !== "body" && fields.body === "running")
   )
     return undefined
+  const checkpoint =
+    checkpointEvidence[fields.phase as keyof typeof checkpointEvidence]
+  if (
+    (checkpoint &&
+      (fields.expected !== checkpoint.expected ||
+        fields.category !== checkpoint.category)) ||
+    (!checkpoint &&
+      (Object.hasOwn(fields, "expected") || Object.hasOwn(fields, "category")))
+  )
+    return undefined
   return {
     phase: fields.phase as RouterSmokePhase,
     lifecycle: fields.lifecycle as RouterSmokeDiagnostic["lifecycle"],
     body: fields.body as RouterSmokeDiagnostic["body"],
+    ...(checkpoint ? checkpoint : {}),
   }
 }
 
@@ -177,7 +222,9 @@ export function routerSmokeDiagnosticFromAnnotations(
 export function formatRouterSmokeDiagnostic(
   value: RouterSmokeDiagnostic
 ): string {
-  return `router_phase=${JSON.stringify(value.phase)} router_lifecycle=${value.lifecycle} router_body=${value.body}`
+  const safe = parseRouterSmokeDiagnostic(value)
+  if (!safe) throw new Error("Invalid runner-authored router diagnostic.")
+  return `router_phase=${JSON.stringify(safe.phase)} router_lifecycle=${safe.lifecycle} router_body=${safe.body}${safe.expected ? ` router_expected=${safe.expected} router_category=${safe.category}` : ""}`
 }
 
 export function createRouterSmokeRecorder(
@@ -203,7 +250,14 @@ export function createRouterSmokeRecorder(
   }
   return {
     phase(phase: RouterSmokePhase) {
-      record({ ...current, phase })
+      const checkpoint =
+        checkpointEvidence[phase as keyof typeof checkpointEvidence]
+      record({
+        phase,
+        lifecycle: current.lifecycle,
+        body: current.body,
+        ...(checkpoint ? checkpoint : {}),
+      })
     },
     failed() {
       record({ ...current, body: "failed" })

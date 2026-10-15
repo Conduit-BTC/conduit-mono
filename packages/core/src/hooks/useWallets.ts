@@ -319,7 +319,10 @@ export function useWallets(
           const ownerPubkey = ownerRef.current
           const nextWallets = await store.listVisible(ownerPubkey)
           const sparkManager = getSparkWalletManager()
-          const openSparkRuntime = new Map<string, WalletRuntimeState>()
+          const openSparkRuntime = new Map<
+            string,
+            { state: WalletRuntimeState; isCurrent: () => boolean }
+          >()
 
           if (sparkManager) {
             // A superseded list can predate a newly registered/open wallet.
@@ -345,21 +348,28 @@ export function useWallets(
                 ) {
                   return
                 }
+                const isCurrent = sparkManager.captureSession(wallet.id)
                 try {
                   const balanceSats = await sparkManager.getBalance(wallet.id)
                   openSparkRuntime.set(wallet.id, {
-                    status: "ready",
-                    balanceMsats: balanceSats * 1_000,
-                    error: null,
+                    isCurrent,
+                    state: {
+                      status: "ready",
+                      balanceMsats: balanceSats * 1_000,
+                      error: null,
+                    },
                   })
                 } catch (error) {
                   openSparkRuntime.set(wallet.id, {
-                    status: "error",
-                    balanceMsats: null,
-                    error: getErrorMessage(
-                      error,
-                      "Could not refresh wallet balance."
-                    ),
+                    isCurrent,
+                    state: {
+                      status: "error",
+                      balanceMsats: null,
+                      error: getErrorMessage(
+                        error,
+                        "Could not refresh wallet balance."
+                      ),
+                    },
                   })
                 }
               })
@@ -491,9 +501,14 @@ export function useWallets(
                 // Recovery metadata reads can outlive a manager open/close.
                 // Apply the snapshot only while its wallet is still open, and
                 // retain a newer open state when the snapshot predates it.
+                // A locked state predating that open cannot describe the live
+                // session while its balance refresh is still pending.
+                const snapshot = openSparkRuntime.get(wallet.id)
                 next[wallet.id] = getSparkWalletManager()?.isOpen(wallet.id)
-                  ? (openSparkRuntime.get(wallet.id) ??
-                    current[wallet.id] ?? {
+                  ? ((snapshot?.isCurrent() ? snapshot.state : undefined) ??
+                    (current[wallet.id]?.status === "locked"
+                      ? undefined
+                      : current[wallet.id]) ?? {
                       status: "connecting",
                       balanceMsats: null,
                       error: null,
@@ -1460,6 +1475,9 @@ export function useWallets(
     ) => {
       const manager = requireSparkManager()
       const signer = !password && !migrate ? getAccountSigner() : undefined
+      let ownsOpenSession: (() => boolean) | undefined
+      const canReportOpenError = () =>
+        !manager.isOpen(walletId) || ownsOpenSession?.() === true
       const reportOpenFailure = (error: unknown) => {
         if (signer && !isWalletSignerCurrent(signer)) return
         if (
@@ -1474,14 +1492,22 @@ export function useWallets(
           // The refused attempt still rejects without resuming consent.
           return
         }
-        setRuntime((current) => ({
-          ...current,
-          [walletId]: {
-            status: "error",
-            balanceMsats: null,
-            error: getErrorMessage(error, "Could not unlock Portable Wallet."),
-          },
-        }))
+        if (!canReportOpenError()) return
+        setRuntime((current) =>
+          canReportOpenError() && (!signer || isWalletSignerCurrent(signer))
+            ? {
+                ...current,
+                [walletId]: {
+                  status: "error",
+                  balanceMsats: null,
+                  error: getErrorMessage(
+                    error,
+                    "Could not unlock Portable Wallet."
+                  ),
+                },
+              }
+            : current
+        )
       }
       let previous = signer && signerWalletOpens.get(signer)?.get(walletId)
       while (signer && previous) {
@@ -1535,7 +1561,13 @@ export function useWallets(
         try {
           await openRegisteredSparkWallet({
             walletId,
-            manager,
+            manager: {
+              openWithMnemonic: async (input) => {
+                await manager.openWithMnemonic(input)
+                ownsOpenSession = manager.captureSession(walletId)
+              },
+              close: (id) => manager.close(id),
+            },
             expectedNetwork: getSparkWalletNetwork(),
             listWallets: () =>
               signer ? store.listVisible(signer.pubkey) : registry.list(),
@@ -2310,41 +2342,56 @@ async function refreshSparkBalance(
   >
 ): Promise<void> {
   const locked = () =>
-    setRuntime((current) => ({
-      ...current,
-      [walletId]: { status: "locked", balanceMsats: null, error: null },
-    }))
+    setRuntime((current) =>
+      manager.isOpen(walletId)
+        ? current
+        : {
+            ...current,
+            [walletId]: { status: "locked", balanceMsats: null, error: null },
+          }
+    )
   if (!manager.isOpen(walletId)) {
     locked()
     return
   }
+  const isCurrent = manager.captureSession(walletId)
   try {
     const balanceSats = await manager.getBalance(walletId)
-    if (!manager.isOpen(walletId)) {
-      locked()
-      return
-    }
-    setRuntime((current) => ({
-      ...current,
-      [walletId]: {
-        status: "ready",
-        balanceMsats: balanceSats * 1_000,
-        error: null,
-      },
-    }))
+    if (!isCurrent()) return
+    setRuntime((current) =>
+      isCurrent()
+        ? {
+            ...current,
+            [walletId]: {
+              status: "ready",
+              balanceMsats: balanceSats * 1_000,
+              error: null,
+            },
+          }
+        : current
+    )
   } catch (error) {
     if (!manager.isOpen(walletId)) {
       locked()
       return
     }
-    setRuntime((current) => ({
-      ...current,
-      [walletId]: {
-        status: "error",
-        balanceMsats: null,
-        error: getErrorMessage(error, "Could not refresh wallet balance."),
-      },
-    }))
+    // A superseded read cannot fail a newer open operation either.
+    if (!isCurrent()) return
+    setRuntime((current) =>
+      isCurrent()
+        ? {
+            ...current,
+            [walletId]: {
+              status: "error",
+              balanceMsats: null,
+              error: getErrorMessage(
+                error,
+                "Could not refresh wallet balance."
+              ),
+            },
+          }
+        : current
+    )
     throw error
   }
 }

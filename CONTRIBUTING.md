@@ -300,7 +300,11 @@ evaluates to an empty string. The Actions runner converts that definition to no
 job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
-`pipefail`. The existing 20-minute limit and strict execution evidence still apply.
+`pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
+25-minute limit for its serial ordinary, native-router, and receiver setup
+lanes, including setup, evidence upload, and cleanup. Individual test deadlines
+remain unchanged. Job cancellation still fails the aggregate gate, even when
+all test artifacts were uploaded successfully.
 
 A retry-dependent pass still fails the smoke gate. Required CI runs use zero
 automatic retries; a separate diagnostic rerun cannot turn a failed first
@@ -319,6 +323,11 @@ locations, and allowlisted diagnostics. It is constructed from approved fields
 and scanned before writing. Raw reports, browser output, screenshots, traces,
 step titles, and attachments are never uploaded. An artifact records observed
 execution; the separate manifest/SHA/first-attempt verifier remains the gate.
+
+The isolated router and receiver setup lanes retain separate `smoke-evidence-router-<attempt>`
+and `smoke-evidence-router-receiver-setup-<attempt>` artifacts under the same policy.
+Each lane runs after an earlier lane fails only when its own setup and selection
+succeeded. A later passing lane does not replace an earlier failure.
 
 Schema version 2 retains timing only as fixed duration buckets: `under-1s`,
 `1-5s`, `5-15s`, `15-30s`, `30-60s`, `1-5m`, `5-15m`, and `15m-plus`.

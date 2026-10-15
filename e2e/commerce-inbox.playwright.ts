@@ -14,12 +14,54 @@ import {
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
 import { inspectCommerceUi } from "./helpers/shared-ui-evidence"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
 test("buyer and seller retain conversations and files through self-copy failure, reload and reconnect @commerce", async ({
   browser,
 }, testInfo) => {
+  const startedAt = Date.now()
+  type SelfCopyPhase =
+    | "setup_complete"
+    | "reconnect_complete"
+    | "loop_enter"
+    | "before_send"
+    | "send_completed"
+    | "status_visible"
+    | "text_persisted"
+    | "before_attachment"
+    | "attachment_completed"
+    | "attachment_status_visible"
+    | "file_persisted"
+    | "complete"
+  type SelfCopyPrincipal = "none" | "buyer" | "seller"
+  let selfCopyDiagnostic: Record<string, unknown> | undefined
+  const selfCopyCheckpoint = (
+    phase: SelfCopyPhase,
+    principal: SelfCopyPrincipal,
+    clickStarted = false,
+    clickResolved = false,
+    extra: Record<string, boolean> = {}
+  ) => {
+    const elapsedSeconds = Math.round((Date.now() - startedAt) / 100) / 10
+    selfCopyDiagnostic = {
+      phase,
+      principal,
+      elapsedSeconds,
+      nearCaseDeadline: elapsedSeconds >= 25,
+      caseDeadlinePassed: elapsedSeconds >= 30,
+      clickStarted,
+      clickResolved,
+      observationAvailable: false,
+      ...extra,
+    }
+    recordSmokeDiagnostic(
+      testInfo,
+      "commerce-inbox-self-copy",
+      selfCopyDiagnostic
+    )
+  }
   const buyer = createRuntimeSignerIdentity()
   const seller = createRuntimeSignerIdentity()
   const mediaServer = "https://cdn.conduit.market"
@@ -137,6 +179,7 @@ test("buyer and seller retain conversations and files through self-copy failure,
           compatibility: view.diagnostics.clientSealMetadataAccepted,
         }
       }, root)
+    selfCopyCheckpoint("setup_complete", "none")
     await sellerPage.goto(
       `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/messages`
     )
@@ -294,9 +337,129 @@ test("buyer and seller retain conversations and files through self-copy failure,
       .first()
     await expect(restoredConversation).toBeVisible({ timeout: 30_000 })
     await restoredConversation.click()
-    await expect(
-      buyerPage.getByText("synthetic external reply", { exact: true }).last()
-    ).toBeVisible()
+    const externalReply = buyerPage.getByText("synthetic external reply", {
+      exact: true,
+    })
+    try {
+      await expect(externalReply.last()).toBeVisible()
+    } catch (error) {
+      try {
+        const visibleCount = (elements: Element[]) =>
+          elements.filter((element) => {
+            const bounds = element.getBoundingClientRect()
+            return (
+              bounds.width > 0 &&
+              bounds.height > 0 &&
+              getComputedStyle(element).visibility === "visible"
+            )
+          }).length
+        const [
+          controlCount,
+          controlVisible,
+          dialogCount,
+          composerVisible,
+          bodyMatchCount,
+          visibleBodyMatchCount,
+          loadingHistoryCount,
+          emptyHistoryCount,
+          unavailableHistoryCount,
+          local,
+        ] = await Promise.all([
+          buyerPage
+            .getByRole("button")
+            .filter({
+              hasText: /synthetic (buyer response|external reply|seller reply)/,
+            })
+            .count(),
+          restoredConversation.isVisible(),
+          buyerPage.getByRole("dialog").count(),
+          buyerPage
+            .getByRole("textbox", { name: "Message" })
+            .first()
+            .isVisible(),
+          externalReply.count(),
+          externalReply.evaluateAll(visibleCount),
+          buyerPage
+            .getByText("Loading message history…", { exact: true })
+            .evaluateAll(visibleCount),
+          buyerPage
+            .getByText("No messages yet. Say hello.", { exact: true })
+            .evaluateAll(visibleCount),
+          buyerPage
+            .getByText(
+              "Message history is unavailable. Retry the protected read before relying on an empty thread.",
+              { exact: true }
+            )
+            .evaluateAll(visibleCount),
+          buyerPage.evaluate(
+            async ({ root, buyerPubkey }) => {
+              try {
+                const { readAuthSession } = await import(
+                  `${root}/auth-session.ts`
+                )
+                const { getCommerceInbox } = await import(
+                  `${root}/commerce-inbox.ts`
+                )
+                const session = readAuthSession()
+                const current = session?.userPubkey === buyerPubkey
+                const provider = (
+                  window as Window & {
+                    nostr?: { nip44?: { decrypt?: unknown } }
+                  }
+                ).nostr
+                const base = {
+                  sessionCurrent: current,
+                  providerReady: typeof provider?.nip44?.decrypt === "function",
+                }
+                if (!current)
+                  return { ...base, localObservationAvailable: false }
+                try {
+                  const snapshot = getCommerceInbox(buyerPubkey).getSnapshot()
+                  return {
+                    ...base,
+                    localObservationAvailable: true,
+                    localCoverage: snapshot.diagnostics.coverage,
+                    localDirectCount: snapshot.directMessages.length,
+                    localReplyRetained: snapshot.directMessages.some(
+                      (message: { content: string }) =>
+                        message.content === "synthetic external reply"
+                    ),
+                    localPending: snapshot.pending,
+                    localStorageFailed: snapshot.diagnostics.storageUnavailable,
+                  }
+                } catch {
+                  return { ...base, localObservationAvailable: false }
+                }
+              } catch {
+                return { localObservationAvailable: false }
+              }
+            },
+            { root, buyerPubkey: buyer.pubkey }
+          ),
+        ])
+        recordSmokeDiagnostic(testInfo, "commerce-inbox-reconnect", {
+          observationAvailable: true,
+          controlCount,
+          controlVisible,
+          dialogCount,
+          composerVisible,
+          bodyMatchCount,
+          visibleBodyMatchCount,
+          loadingHistoryVisible: loadingHistoryCount > 0,
+          emptyHistoryVisible: emptyHistoryCount > 0,
+          unavailableHistoryVisible: unavailableHistoryCount > 0,
+          buyerDirectCountReachedThreeBeforeReconnect: true,
+          ...local,
+        })
+      } catch {
+        recordSmokeDiagnostic(testInfo, "commerce-inbox-reconnect", {
+          observationAvailable: false,
+          buyerDirectCountReachedThreeBeforeReconnect: true,
+        })
+      }
+      throw error
+    }
+    selfCopyCheckpoint("reconnect_complete", "none")
     await sellerPage
       .getByRole("button")
       .filter({
@@ -308,6 +471,8 @@ test("buyer and seller retain conversations and files through self-copy failure,
       [buyerPage, buyer, seller],
       [sellerPage, seller, buyer],
     ] as const) {
+      const principal: SelfCopyPrincipal = sender === buyer ? "buyer" : "seller"
+      selfCopyCheckpoint("loop_enter", principal)
       // Reject only optional sender self encryption after real recipient delivery.
       await page.evaluate((principal) => {
         const provider = (
@@ -343,20 +508,115 @@ test("buyer and seller retain conversations and files through self-copy failure,
           { root, principal: sender.pubkey, text }
         )
       await page.getByRole("textbox", { name: "Message" }).fill(text)
+      selfCopyCheckpoint("before_send", principal, true)
+      // Observe the current controls and local owner without delaying Send.
+      // Only the fixed booleans below may enter the smoke annotation.
+      void page
+        .evaluate(
+          async ({ root, expectedPrincipal }) => {
+            const visible = (element: Element) => {
+              const bounds = element.getBoundingClientRect()
+              return (
+                bounds.width > 0 &&
+                bounds.height > 0 &&
+                getComputedStyle(element).visibility === "visible"
+              )
+            }
+            const sends = Array.from(
+              document.querySelectorAll<HTMLButtonElement>(
+                'button[aria-label="Send message"]'
+              )
+            )
+            const drafts = Array.from(
+              document.querySelectorAll<HTMLTextAreaElement>(
+                'textarea[aria-label="Message"]'
+              )
+            )
+            const send = sends.find(visible) ?? sends[0]
+            const draft = drafts.find(visible) ?? drafts[0]
+            const provider = (
+              window as Window & {
+                nostr?: { nip44?: { encrypt?: unknown } }
+              }
+            ).nostr
+            const observation: Record<string, boolean> = {
+              observationAvailable: true,
+              providerReady: typeof provider?.nip44?.encrypt === "function",
+            }
+            if (send) {
+              observation.sendVisible = visible(send)
+              observation.sendEnabled = !send.disabled
+            }
+            if (draft) observation.draftPresent = draft.value.trim().length > 0
+            try {
+              const { readAuthSession } = await import(
+                `${root}/auth-session.ts`
+              )
+              const sessionCurrent =
+                readAuthSession()?.userPubkey === expectedPrincipal
+              observation.sessionCurrent = sessionCurrent
+              if (sessionCurrent) {
+                const { getCommerceInbox } = await import(
+                  `${root}/commerce-inbox.ts`
+                )
+                const snapshot =
+                  getCommerceInbox(expectedPrincipal).getSnapshot()
+                observation.localPending = snapshot.pending
+                observation.localStorageFailed =
+                  snapshot.diagnostics.storageUnavailable
+              }
+            } catch {
+              // Leave unavailable local observations absent from the annotation.
+            }
+            return observation
+          },
+          { root, expectedPrincipal: sender.pubkey }
+        )
+        .then((observation) => {
+          if (
+            selfCopyDiagnostic?.phase !== "before_send" ||
+            selfCopyDiagnostic.principal !== principal
+          )
+            return
+          selfCopyDiagnostic = {
+            ...selfCopyDiagnostic,
+            ...observation,
+            observationWhen: "send_pending",
+          }
+          recordSmokeDiagnostic(
+            testInfo,
+            "commerce-inbox-self-copy",
+            selfCopyDiagnostic
+          )
+        })
+        .catch(() => {
+          // This optional probe must not replace an action or assertion failure.
+        })
       await page
         .getByRole("button", { name: "Send message", exact: true })
         .click()
+      selfCopyCheckpoint("send_completed", principal, true, true)
       await expect(
         page.getByRole("status").filter({
           hasText:
             "Reply sent and saved on this device. Sync to your other devices is incomplete.",
         })
       ).toBeVisible({ timeout: 30_000 })
+      selfCopyCheckpoint("status_visible", principal, true, true)
       await expect.poll(savedText).toBe(1)
+      selfCopyCheckpoint("text_persisted", principal, true, true, {
+        textPersisted: true,
+      })
+      selfCopyCheckpoint("before_attachment", principal, true, true, {
+        textPersisted: true,
+      })
       await page.getByLabel("Choose an encrypted attachment").setInputFiles({
         name: "synthetic.txt",
         mimeType: "text/plain",
         buffer: Buffer.from("synthetic encrypted attachment"),
+      })
+      selfCopyCheckpoint("attachment_completed", principal, true, true, {
+        textPersisted: true,
       })
       await expect(
         page.getByRole("status").filter({
@@ -364,6 +624,9 @@ test("buyer and seller retain conversations and files through self-copy failure,
             "Attachment sent and saved on this device. Sync to your other devices is incomplete.",
         })
       ).toBeVisible({ timeout: 30_000 })
+      selfCopyCheckpoint("attachment_status_visible", principal, true, true, {
+        textPersisted: true,
+      })
       const savedFile = async () =>
         page.evaluate(
           async ({ root, principal }) => {
@@ -413,6 +676,9 @@ test("buyer and seller retain conversations and files through self-copy failure,
           { root, principal: sender.pubkey }
         )
       await expect.poll(savedFile).toEqual({ count: 1, decrypts: true })
+      selfCopyCheckpoint("file_persisted", principal, true, true, {
+        textPersisted: true,
+      })
       await page.reload()
       await expect(
         page.getByLabel(
@@ -447,6 +713,7 @@ test("buyer and seller retain conversations and files through self-copy failure,
         ).length
       ).toBe(1)
     }
+    selfCopyCheckpoint("complete", "none")
   } finally {
     try {
       await Promise.all(contexts.map((context) => context.close()))
@@ -668,14 +935,7 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
       timeout: 15_000,
     })
     const evidence = await page.evaluate(
-      async ({
-        root,
-        principal,
-        recipient,
-        relay,
-        senderDeclaration,
-        recipientDeclaration,
-      }) => {
+      async ({ root, principal, recipient, relay }) => {
         const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
         const { getAccountSigner } = await import(`${root}/session-signer.ts`)
         const { createParticipantMessageRumor, publishPrivateMessage } =

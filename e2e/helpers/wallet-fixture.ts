@@ -209,9 +209,77 @@ export async function openWalletSetup(
 }
 
 /** Observe the real route controller without adding a production test API. */
-export async function observeWalletController(page: Page) {
+type WalletRouteFetchDiagnostic = {
+  routeFetchCategory: "closed" | "aborted" | "timeout" | "network" | "other"
+  routeFetchPageClosed: boolean
+  routeFetchNavigationRequest: boolean
+  routeFetchNavigations: number
+  routeFetchStarts: number
+  routeFetchCompletes: number
+}
+
+export type WalletRouteFetchDetail = WalletRouteFetchDiagnostic & {
+  routeFetchStartNavigations: number
+  routeFetchStartNavigationRequests: number
+  routeFetchFailureNavigationRequests: number
+  routeFetchNewNavigationRequested: boolean
+}
+
+export async function observeWalletController(
+  page: Page,
+  onFetchError?: (diagnostic: WalletRouteFetchDiagnostic) => void,
+  onFetchErrorDetail?: (diagnostic: WalletRouteFetchDetail) => void
+) {
+  let navigations = 0
+  let navigationRequests = 0
+  let routeStarts = 0
+  let routeCompletes = 0
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) navigations++
+  })
+  page.on("request", (request) => {
+    if (request.isNavigationRequest()) navigationRequests++
+  })
   await page.route("**/src/routes/wallet.tsx*", async (route) => {
-    const response = await route.fetch()
+    routeStarts++
+    const startedNavigations = navigations
+    const startedNavigationRequests = navigationRequests
+    const navigationRequest = route.request().isNavigationRequest()
+    let response
+    try {
+      response = await route.fetch()
+      routeCompletes++
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      const category = /closed|disposed|destroyed/i.test(message)
+        ? "closed"
+        : /abort|cancel/i.test(message)
+          ? "aborted"
+          : /timeout/i.test(message)
+            ? "timeout"
+            : /net::|network/i.test(message)
+              ? "network"
+              : "other"
+      const diagnostic: WalletRouteFetchDiagnostic = {
+        routeFetchCategory: category,
+        routeFetchPageClosed: page.isClosed(),
+        routeFetchNavigationRequest: navigationRequest,
+        routeFetchNavigations: navigations,
+        routeFetchStarts: routeStarts,
+        routeFetchCompletes: routeCompletes,
+      }
+      onFetchErrorDetail?.({
+        ...diagnostic,
+        routeFetchStartNavigations: startedNavigations,
+        routeFetchStartNavigationRequests: startedNavigationRequests,
+        routeFetchFailureNavigationRequests: navigationRequests,
+        routeFetchNewNavigationRequested:
+          navigationRequests > startedNavigationRequests ||
+          navigations > startedNavigations,
+      })
+      onFetchError?.(diagnostic)
+      throw error
+    }
     const body = await response.text()
     const marker = [
       "const wallets = useWallets();",
@@ -223,7 +291,8 @@ export async function observeWalletController(page: Page) {
       response,
       body: body.replace(
         marker,
-        marker + "window.__controlledWalletController = wallets;"
+        marker +
+          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);"
       ),
     })
   })

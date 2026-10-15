@@ -3,7 +3,11 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main]
+    branches:
+      - main
+      - test/smoke-route-scenarios
+      - feat/wallet-name-sync
+      - feat/wallet-ui-hierarchy
   push:
     branches: [main]
 
@@ -172,7 +176,9 @@ jobs:
     defaults:
       run:
         shell: bash
-    timeout-minutes: 20
+    # Commerce runs ordinary, native-router, and receiver lanes serially.
+    # Individual test deadlines remain unchanged.
+    timeout-minutes: ${{ matrix.job.area == 'commerce' && 25 || 20 }}
     steps:
       - name: No browser smoke needed
         if: matrix.job.area == 'none'
@@ -185,12 +191,29 @@ jobs:
         if: matrix.job.area != 'none'
         run: |
           set -euo pipefail
-          # The Playwright image has npm, but not setup-bun's unzip dependency.
-          npm install --global bun@1.3.5
+          # The Playwright image has no unzip. Fetch Bun's pinned native archive
+          # directly so npm registry resolution cannot consume the smoke budget.
+          [[ "$(uname -m)" == "x86_64" ]]
+          timeout 90s apt-get update -qq
+          timeout 90s apt-get install -y -qq --no-install-recommends unzip
+          bun_archive_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$bun_archive_dir"' EXIT
+          curl --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 90 --retry 0 \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-linux-x64.zip \
+            -o "$bun_archive_dir/bun-linux-x64.zip"
+          printf '%s  %s\n' \
+            '7051d86a924aefea3e0b96213b5fd8f79c0793f9cae6534233e627e5c3db4669' \
+            "$bun_archive_dir/bun-linux-x64.zip" | sha256sum --check --status
+          unzip -q "$bun_archive_dir/bun-linux-x64.zip" -d "$bun_archive_dir"
+          install -m 0755 "$bun_archive_dir/bun-linux-x64/bun" /usr/local/bin/bun
+          ln -s /usr/local/bin/bun /usr/local/bin/bunx
           bun --version
+          bunx --version
           # GitHub mounts the checkout with a different owner inside the image.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - if: matrix.job.area != 'none'
+      - id: smoke_dependencies
+        if: matrix.job.area != 'none'
         run: bun install --frozen-lockfile
       - name: Validate Playwright smoke area assignments
         if: matrix.job.area != 'none'
@@ -269,7 +292,8 @@ jobs:
       # The router uses a distinct isolated app/provider profile, not the
       # ordinary Commerce network lane. Both must pass the required aggregate.
       - name: Validate isolated router smoke selection
-        if: matrix.job.area == 'commerce'
+        id: router_selection
+        if: always() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success'
         env:
           PLAYWRIGHT_SMOKE_AREA: commerce
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -291,7 +315,7 @@ jobs:
             --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
             --tested-sha "$checkout_sha"
       - name: Run isolated router Playwright smoke tests
-        if: matrix.job.area == 'commerce'
+        if: always() && matrix.job.area == 'commerce' && steps.router_selection.outcome == 'success'
         env:
           PLAYWRIGHT_SMOKE_AREA: commerce
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -299,6 +323,7 @@ jobs:
           PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
           PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-router-smoke-results.json
           PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-smoke-progress.log
+          PLAYWRIGHT_SMOKE_EVIDENCE_FILE: ${{ runner.temp }}/playwright-router-smoke-evidence.json
         run: |
           set -euo pipefail
           umask 077
@@ -331,7 +356,8 @@ jobs:
             --base-sha "$BASE_SHA" \
             --tested-sha "$checkout_sha"
       - name: Validate router receiver setup smoke selection
-        if: matrix.job.area == 'commerce'
+        id: receiver_selection
+        if: always() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success'
         env:
           PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
           PLAYWRIGHT_SMOKE_AREA: commerce
@@ -354,7 +380,7 @@ jobs:
             --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
             --tested-sha "$checkout_sha"
       - name: Run router receiver setup Playwright smoke
-        if: matrix.job.area == 'commerce'
+        if: always() && matrix.job.area == 'commerce' && steps.receiver_selection.outcome == 'success'
         env:
           PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
           PLAYWRIGHT_SMOKE_AREA: commerce
@@ -363,6 +389,7 @@ jobs:
           PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
           PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-results.json
           PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-progress.log
+          PLAYWRIGHT_SMOKE_EVIDENCE_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-evidence.json
         run: |
           set -euo pipefail
           umask 077
@@ -395,6 +422,22 @@ jobs:
             --source-head-sha "$SOURCE_HEAD_SHA" \
             --base-sha "$BASE_SHA" \
             --tested-sha "$checkout_sha"
+      - name: Retain sanitized isolated router evidence
+        if: always() && matrix.job.area == 'commerce'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-evidence-router-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/playwright-router-smoke-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain sanitized router receiver setup evidence
+        if: always() && matrix.job.area == 'commerce'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-evidence-router-receiver-setup-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/playwright-router-receiver-setup-evidence.json
+          if-no-files-found: error
+          retention-days: 7
       # Upload only the reporter's allowlisted, scanned, title-free summary.
       # A failed validation remains failed; this artifact never substitutes for it.
       - name: Retain sanitized smoke evidence
@@ -412,14 +455,16 @@ jobs:
           PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-progress.log
           PLAYWRIGHT_ROUTER_RESULT_FILE: ${{ runner.temp }}/playwright-router-smoke-results.json
           PLAYWRIGHT_ROUTER_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-smoke-progress.log
+          PLAYWRIGHT_ROUTER_EVIDENCE_FILE: ${{ runner.temp }}/playwright-router-smoke-evidence.json
           PLAYWRIGHT_ROUTER_MANIFEST: playwright-router-smoke-manifest.json
           PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-results.json
           PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-progress.log
+          PLAYWRIGHT_ROUTER_RECEIVER_EVIDENCE_FILE: ${{ runner.temp }}/playwright-router-receiver-setup-evidence.json
           PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST: playwright-router-receiver-setup-manifest.json
         run: |
           rm -f -- "$PLAYWRIGHT_SMOKE_RESULT_FILE" "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
-          rm -f -- "$PLAYWRIGHT_ROUTER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_MANIFEST"
-          rm -f -- "$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"
+          rm -f -- "$PLAYWRIGHT_ROUTER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_MANIFEST"
+          rm -f -- "$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"
           rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
   e2e-smoke:
     name: e2e-smoke

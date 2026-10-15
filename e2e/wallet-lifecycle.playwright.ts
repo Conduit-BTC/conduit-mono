@@ -1479,14 +1479,23 @@ for (const intent of ["pay_invoice", "receive", "sign", "journal"] as const) {
               unresolved?: boolean
             ) {
               await original.call(this, owner, records, unresolved)
+              const previousMain = (
+                window as Window & {
+                  __mainChoiceBefore?: { eventId: string }
+                }
+              ).__mainChoiceBefore
+              if (!previousMain)
+                throw new Error("Main-choice fixture state is missing")
               if (
                 !injected &&
-                records.some((record) =>
-                  record.event.tags.some(
-                    (tag: string[]) =>
-                      tag[0] === "d" &&
-                      tag[1].startsWith("conduit:spark:main:v1")
-                  )
+                records.some(
+                  (record) =>
+                    record.event.id !== previousMain.eventId &&
+                    record.event.tags.some(
+                      (tag: string[]) =>
+                        tag[0] === "d" &&
+                        tag[1].startsWith("conduit:spark:main:v1")
+                    )
                 )
               ) {
                 injected = true

@@ -3,7 +3,10 @@ import {
   observeWalletController,
   closeDefaultWalletSession,
 } from "./helpers/wallet-fixture"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 import {
   prepareControlledWallet,
   installControlledWallet,
@@ -897,17 +900,20 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
     const started = performance.now()
     let passwordPresent = false
     let showEnabled = false
-    const phase = (value: string) =>
+    const phase = (value: string, details: Record<string, unknown> = {}) =>
       recordSmokeDiagnostic(test.info(), "wallet-migration", {
         passwordPresent,
         showEnabled,
         scenario: failure,
         phase: value,
         elapsedSeconds: (performance.now() - started) / 1000,
+        ...details,
       })
     phase("seed")
     await prepareControlledWallet(page)
-    await observeWalletController(page)
+    await observeWalletController(page, (diagnostic) =>
+      phase("route_fetch_failed", diagnostic)
+    )
     const identity = createRuntimeSignerIdentity()
     await installRealTestSigner(
       page,
@@ -1227,11 +1233,15 @@ for (const failure of ["none", "sdk-open", "post-open"] as const) {
       phase("fresh_signin")
       // A new document gets a fresh account session and the same encrypted local
       // wallet. The fixture controls the network layer before initialization.
+      recordSmokeFailureContext(test.info(), "migration_route_ready")
       await page.goto(`${market}/products`)
       await expect(page.getByLabel("Open account menu")).toBeVisible()
+      recordSmokeFailureContext(test.info(), "migration_route_ready", "met")
+      recordSmokeFailureContext(test.info(), "migration_wallet_opened")
       await installControlledWallet(page, false, "wallet1@breez.tips")
       await enterWallets(page)
       await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+      recordSmokeFailureContext(test.info(), "migration_wallet_opened", "met")
       expect(
         await page.evaluate(
           async (moduleUrl) => ({
