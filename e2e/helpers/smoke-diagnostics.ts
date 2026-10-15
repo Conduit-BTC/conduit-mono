@@ -479,7 +479,6 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         runtimeMissingCount: "number",
         sparkAvailability: ["ready", "unavailable"],
         openButtonCount: "number",
-        openingButtonCount: "number",
         readyCount: "number",
         recoveryNotice: ["absent", "checking", "pending", "blocked"],
         signerDecryptCalls: "number",
@@ -629,6 +628,41 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         localStorageFailed: "boolean",
       },
     },
+    "commerce-inbox-self-copy": {
+      file: "e2e/commerce-inbox.playwright.ts",
+      fields: {
+        phase: [
+          "setup_complete",
+          "reconnect_complete",
+          "loop_enter",
+          "before_send",
+          "send_completed",
+          "status_visible",
+          "text_persisted",
+          "before_attachment",
+          "attachment_completed",
+          "attachment_status_visible",
+          "file_persisted",
+          "complete",
+        ],
+        principal: ["none", "buyer", "seller"],
+        elapsedSeconds: "number",
+        nearCaseDeadline: "boolean",
+        caseDeadlinePassed: "boolean",
+        clickStarted: "boolean",
+        clickResolved: "boolean",
+        observationAvailable: "boolean",
+        observationWhen: ["send_pending"],
+        sendVisible: "boolean",
+        sendEnabled: "boolean",
+        draftPresent: "boolean",
+        sessionCurrent: "boolean",
+        providerReady: "boolean",
+        localPending: "boolean",
+        localStorageFailed: "boolean",
+        textPersisted: "boolean",
+      },
+    },
     "commerce-buyer-status": {
       file: "e2e/commerce.playwright.ts",
       fields: {
@@ -638,6 +672,14 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         dialogRemoved: "boolean",
         pointerDownOnTrigger: "boolean",
         pointerUpOnTrigger: "boolean",
+        pointerUpObserved: "boolean",
+        pointerCancelObserved: "boolean",
+        pointerType: ["mouse", "touch", "pen", "unavailable"],
+        triggerDetachedDuringGesture: "boolean",
+        triggerReplacedDuringGesture: "boolean",
+        documentVisible: "boolean",
+        documentFocused: "boolean",
+        fontsLoaded: "boolean",
         clickOnTrigger: "boolean",
         triggerMovementDuringGesture: ["stable", "moved", "unavailable"],
         dialogCount: "number",
@@ -1083,6 +1125,7 @@ export function recordSmokeDiagnostic(
     | "merchant-image-dialog-open"
     | "manual-checkout-stop"
     | "commerce-inbox-reconnect"
+    | "commerce-inbox-self-copy"
     | "commerce-journey"
     | "commerce-buyer-status"
     | "wallet-migration"
