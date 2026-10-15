@@ -486,8 +486,30 @@ function retainedDiagnostic(
 }
 
 export function serializeSmokeEvidence(evidence: unknown): string {
-  // Only opaque case hashes and commit identities may contain long hex values.
-  const scanned = JSON.stringify(evidence, (key, value) => {
+  const approvedContexts = new WeakSet<object>()
+  if (isRecord(evidence) && Array.isArray(evidence.tests)) {
+    for (const spec of evidence.tests) {
+      if (
+        !isRecord(spec) ||
+        typeof spec.file !== "string" ||
+        !Array.isArray(spec.tests)
+      )
+        continue
+      for (const test of spec.tests) {
+        if (!isRecord(test) || !Array.isArray(test.results)) continue
+        for (const result of test.results) {
+          if (!isRecord(result) || !isRecord(result.failure)) continue
+          const context = result.failure.context
+          if (safeRetainedSmokeFailureContext(spec.file, context))
+            approvedContexts.add(context as object)
+        }
+      }
+    }
+  }
+  // Mask only validated identities and file-bound static condition names during
+  // scanning. Retain their original values in the artifact; all other strings
+  // still pass through the unchanged privacy scan.
+  const scanned = JSON.stringify(evidence, function (key, value) {
     if (
       key === "duration" ||
       /(?:Ms|Seconds)$/.test(key) ||
@@ -507,6 +529,7 @@ export function serializeSmokeEvidence(evidence: unknown): string {
       /^[0-9a-f]{64}$/.test(value)
     )
       return "case"
+    if (key === "expected" && approvedContexts.has(this)) return "condition"
     return value
   })
   if (
