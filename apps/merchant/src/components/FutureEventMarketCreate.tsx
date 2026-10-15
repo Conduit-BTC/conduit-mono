@@ -733,16 +733,23 @@ function FutureEventMarketCreateForm({
         })
         return
       }
-      if (readFrozenSeriesDraft(organizerPubkey))
-        throw new Error(
-          "Finish or discard the saved series before creating another event."
-        )
-      let saved = loadFutureEventMarketCreation(organizerPubkey)
-      if (saved && !creation)
-        throw new Error(
-          "A saved creation appeared in another tab. Reload before continuing."
-        )
-      saved ??= saveNewFutureEventMarketCreation(organizerPubkey, form)
+      let saved = await withFutureEventMarketCreationLock(
+        organizerPubkey,
+        async () => {
+          if (readFrozenSeriesDraft(organizerPubkey))
+            throw new Error(
+              "Finish or discard the saved series before creating another event."
+            )
+          const current = loadFutureEventMarketCreation(organizerPubkey)
+          if (current && !creation)
+            throw new Error(
+              "A saved creation appeared in another tab. Reload before continuing."
+            )
+          return (
+            current ?? saveNewFutureEventMarketCreation(organizerPubkey, form)
+          )
+        }
+      )
       if (creation && creationSigned === false) {
         saved = (await reviseFutureEventMarketCreation({
           creation,

@@ -4472,6 +4472,70 @@ test("draft discard refuses a competing browser creation lock and can retry afte
   await expect(page.getByLabel("Event title")).toHaveValue("")
 })
 
+test("new creation does not stage a plan while another tab owns the creation lock @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  await page.getByLabel("Event title").fill("Coordinated fair")
+  await page.getByLabel("Description").fill("A public community fair")
+  await page.getByLabel("Location", { exact: true }).fill("Town hall")
+  await page.getByLabel("Start", { exact: true }).fill("2030-06-01T10:00")
+  await page.getByLabel("End", { exact: true }).fill("2030-06-01T16:00")
+  await page.evaluate(
+    (owner) =>
+      new Promise<void>((resolve) => {
+        void navigator.locks.request(
+          `conduit:event-market-creation:${owner}`,
+          async () => {
+            const released = new Promise<void>((done) =>
+              window.addEventListener(
+                "conduit-test-release-creation",
+                () => done(),
+                { once: true }
+              )
+            )
+            resolve()
+            await released
+          }
+        )
+      }),
+    ORGANIZER_PUBKEY
+  )
+  try {
+    await page
+      .getByRole("button", { name: "Publish event", exact: true })
+      .click()
+    await expect(
+      page.getByText(
+        "Another tab is finishing this Event Market. Wait for it before continuing.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    expect(
+      await page.evaluate(
+        (owner) =>
+          localStorage.getItem(
+            `conduit:future-event-market-creation:v1:${owner}`
+          ) === null,
+        ORGANIZER_PUBKEY
+      )
+    ).toBe(true)
+    expect(
+      uniquePublishedEvents(relay.publications).some((event) =>
+        [31923, 31924, 30409].includes(event.kind)
+      )
+    ).toBe(false)
+  } finally {
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("conduit-test-release-creation"))
+    )
+  }
+  await page.getByRole("button", { name: "Publish event", exact: true }).click()
+  await expect(page).toHaveURL(/\/events\/naddr1/)
+})
+
 for (const legacyHistory of [false, true])
   test(`series with ${legacyHistory ? "unknown legacy history" : "pinned missing signatures"} cannot discard or sign replacements @merchant`, async ({
     page,
