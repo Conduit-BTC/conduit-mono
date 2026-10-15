@@ -185,6 +185,14 @@ describe("bounded smoke ownership", () => {
     [["e2e/new.playwright.ts"], false],
     [
       [
+        "scripts/vite/repository_contributors.generated.json",
+        "apps/market/src/routes/__root.tsx",
+        "apps/merchant/src/routes/__root.tsx",
+      ],
+      true,
+    ],
+    [
+      [
         "apps/market/src/routes/about.tsx",
         "apps/market/src/routes/checkout.tsx",
       ],

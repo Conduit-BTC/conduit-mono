@@ -237,12 +237,9 @@ export function smokeNeedsInventory(paths: readonly string[]): boolean {
   const full = selectSmokeShards(
     normalized.filter((path) => !candidates.includes(path))
   )
-  return candidates.some((path) => {
-    const owner = boundedSmokeOwners.find((entry) =>
-      (entry.paths as readonly string[]).includes(path)
-    )
-    return (owner?.areas ?? shardOrder).some((area) => !full.includes(area))
-  })
+  // A bounded shared source may have a broader legacy floor than its actual
+  // owners. Bypass only if that floor is already covered too.
+  return selectSmokeShards(normalized).some((area) => !full.includes(area))
 }
 
 export function expandSmokeMatrix(
