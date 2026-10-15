@@ -14,7 +14,10 @@ import {
   seedTestRelayIdentity,
 } from "./helpers/auth"
 import { interceptBlossom } from "./helpers/blossom"
-import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
+import {
+  prepareEmptyMerchantCatalog,
+  waitForEmptyMerchantCatalog,
+} from "./helpers/merchant-catalog"
 import {
   recordSmokeDiagnostic,
   recordSmokeFailureContext,
@@ -1183,7 +1186,8 @@ test("fallback rejection clears the durable claim across reload @merchant", asyn
     exact: true,
   })
   try {
-    await page.getByRole("button", { name: "Add product" }).first().click()
+    const addProduct = await waitForEmptyMerchantCatalog(page)
+    await addProduct.click()
     mark("dialog_visible")
     await expect(addImage).toBeEnabled()
   } catch (error) {
@@ -1338,11 +1342,11 @@ test("ambiguous fallback retries only the same prepared hash after reload @merch
   )
   await expect(accountMenu).toBeVisible()
   mark("open_dialog")
-  const addProduct = page.getByRole("button", { name: "Add product" }).first()
   const dialogProbe = await installProductDialogDeliveryProbe(page)
   const resumed = page.getByRole("dialog", { name: "Add product" })
   let dialogOpened = false
   try {
+    const addProduct = await waitForEmptyMerchantCatalog(page)
     await addProduct.click()
     await expect(resumed).toBeVisible()
     dialogOpened = true

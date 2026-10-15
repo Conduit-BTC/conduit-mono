@@ -1,5 +1,17 @@
 import { expect, type Page } from "@playwright/test"
 
+/** Wait for the settled empty state before activating a moving touch target. */
+export async function waitForEmptyMerchantCatalog(page: Page) {
+  // The complete empty state replaces taller loading placeholders.
+  await expect(page.getByText("No listings yet", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  })
+  await page.evaluate(() => document.fonts.ready)
+  const trigger = page.getByRole("button", { name: "Add product" }).first()
+  await expect(trigger).toBeEnabled({ timeout: 20_000 })
+  return trigger
+}
+
 /** Initial setup for fixtures that own a fresh, empty merchant catalog. */
 export async function prepareEmptyMerchantCatalog(
   page: Page,
@@ -12,13 +24,5 @@ export async function prepareEmptyMerchantCatalog(
   await expect(
     page.getByRole("heading", { name: "Products", exact: true })
   ).toBeVisible()
-  // The complete empty state replaces the taller loading placeholders. Let
-  // that actual catalog read and the bundled fonts settle before one activation.
-  await expect(page.getByText("No listings yet", { exact: true })).toBeVisible({
-    timeout: 20_000,
-  })
-  await page.evaluate(() => document.fonts.ready)
-  const trigger = page.getByRole("button", { name: "Add product" }).first()
-  await expect(trigger).toBeEnabled({ timeout: 20_000 })
-  return trigger
+  return waitForEmptyMerchantCatalog(page)
 }
