@@ -1,3 +1,4 @@
+import { type WalletNameStates } from "./wallet-name-contract"
 import {
   NostrSignerError,
   type AccountSigner,
@@ -106,6 +107,8 @@ export interface SparkRecoveryState {
   removedWalletIds?: string[]
   /** Derived visibility cache from the last complete account registry read. */
   registryExcludedWalletIds?: string[]
+  /** Local display-name intents and their separate encrypted delivery evidence. */
+  walletNameSync?: WalletNameStates
 }
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
@@ -250,6 +253,10 @@ export function validateSparkRecoveryState(
     const sourceRecords = input.records
     const sourceRemoved = input.removedWalletIds
     const sourceRegistryExcluded = input.registryExcludedWalletIds
+    const sourceWalletNameSync = input.walletNameSync
+    const walletNameSync = sourceWalletNameSync
+      ? structuredClone(sourceWalletNameSync)
+      : undefined
     if (
       typeof ownerPubkey !== "string" ||
       ownerPubkey !== owner ||
@@ -379,6 +386,8 @@ export function validateSparkRecoveryState(
       throw new SparkRecoveryError("invalid_record")
     return {
       ownerPubkey,
+      // Optional names retain their own validation boundary without mutable aliases.
+      ...(walletNameSync !== undefined ? { walletNameSync } : {}),
       records: compactSparkRecoveryChoices(records),
       unresolvedObserved,
       ...(removedWalletIds !== undefined ? { removedWalletIds } : {}),
@@ -432,6 +441,9 @@ export function mergeSparkRecoveryRecords(
     throw new SparkRecoveryError("invalid_record")
   return {
     ownerPubkey: saved.ownerPubkey,
+    ...(saved.walletNameSync !== undefined
+      ? { walletNameSync: saved.walletNameSync }
+      : {}),
     records: compactSparkRecoveryChoices([...records.values()]),
     unresolvedObserved: saved.unresolvedObserved || next.unresolvedObserved,
     ...(saved.removedWalletIds !== undefined
@@ -1552,7 +1564,7 @@ export function recoveryReadiness(record: SparkRecoveryRecord): {
   }
 }
 
-function hasFreshReadback(
+export function hasFreshReadback(
   evidence: SparkRecoveryDelivery | undefined
 ): boolean {
   return (

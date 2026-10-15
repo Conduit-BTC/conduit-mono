@@ -422,6 +422,7 @@ describe("planPublishRelays", () => {
       `conduit:spark:primary:v1:${network}`,
       `conduit:spark:main:v1:${network}`,
       `conduit:spark:registry:v1:${network}`,
+      `conduit:wallet-names:v1:${network}`,
     ]),
   ]) {
     it(`carries author intent into an exact owned ${coordinate} recovery write`, async () => {
@@ -456,6 +457,8 @@ describe("planPublishRelays", () => {
     "conduit:spark:main:v1:mainnet:extra",
     "conduit:spark:registry:v1:unknown",
     "conduit:spark:registry:v1:mainnet:extra",
+    "conduit:wallet-names:v1:unknown",
+    "conduit:wallet-names:v1:mainnet:extra",
   ]) {
     it(`rejects unsupported recovery coordinates at the authenticated writer: ${coordinate}`, async () => {
       const event = signedTestEvent({ kind: 30078, tags: [["d", coordinate]] })

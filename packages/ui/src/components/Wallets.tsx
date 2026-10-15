@@ -434,12 +434,13 @@ export function Wallets({
                 ? " Encrypted relay recovery is confirmed."
                 : " Relay recovery is not confirmed yet."}{" "}
               Save your phrase, account number and network to recover elsewhere.
-              Your Nostr signer can see the recovery details when encrypting or
-              opening the wallet. External wallet authorizations are stored on
-              this device. Copying a recovery phrase puts it on your system
-              clipboard, where other apps or sync services may retain it. Never
-              include wallet secrets in support reports, telemetry, screenshots,
-              or public issues.
+              Your Nostr signer can see the recovery details and account-backed
+              wallet names when encrypting or opening them. Account-backed names
+              sync across your devices; other names stay on this device.
+              External wallet authorizations are stored on this device. Copying
+              a recovery phrase puts it on your system clipboard, where other
+              apps or sync services may retain it. Never include wallet secrets
+              in support reports, telemetry, screenshots, or public issues.
             </p>
           </div>
           <a
@@ -574,9 +575,148 @@ type WalletDialogAction = (
   trigger: HTMLButtonElement
 ) => void | Promise<void>
 
+const recoveryIssueText: Record<
+  NonNullable<
+    UseWalletsReturn["mainWalletDiagnosis"]
+  >["choice"]["issues"][number],
+  string
+> = {
+  missing_local_record: "no local signed record",
+  awaiting_publish: "relay acceptance pending",
+  auth_required: "relay authentication required",
+  rejected: "relay rejected the write",
+  timed_out: "relay write timed out",
+  policy_blocked: "relay policy blocked the write",
+  cancelled: "write was interrupted",
+  publish_error: "relay write failed",
+  read_not_queried: "exact readback has not run",
+  read_absent: "exact readback did not find the record",
+  read_unavailable: "exact readback was unavailable",
+  readback_stale: "last confirmed readback is stale",
+  insufficient_copies: "not enough confirmed copies",
+}
+const recoveryCoverageText: Record<
+  NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>["coverage"],
+  string
+> = {
+  complete: "all selected relays answered",
+  partial: "some relay checks did not complete",
+  unavailable: "relay checks were unavailable",
+}
+const recoveryStateText: Record<
+  NonNullable<UseWalletsReturn["recoveryDiscoveryDiagnosis"]>["state"],
+  string
+> = {
+  absent_within_scope: "no matching backup was found in this check",
+  recoverable: "a matching backup was found",
+  conflict: "recovery records conflict",
+  unresolved: "recovery evidence is incomplete",
+}
+
+function RecoveryDeliveryDetail({
+  label,
+  diagnosis,
+}: {
+  label: string
+  diagnosis: NonNullable<UseWalletsReturn["mainWalletDiagnosis"]>["choice"]
+}) {
+  if (diagnosis.ready) return null
+  return (
+    <li>
+      {label}:{" "}
+      {diagnosis.issues.map((issue) => recoveryIssueText[issue]).join("; ")}
+      {diagnosis.targetCount > 0 &&
+        ` (${diagnosis.confirmedTargets}/${diagnosis.targetCount} fresh target readbacks; ${diagnosis.independentCopies} independent copies)`}
+    </li>
+  )
+}
+
+function RecoveryDiagnosisDetails({ wallets }: { wallets: UseWalletsReturn }) {
+  const pendingWallets = wallets.wallets
+    .filter((wallet) => wallet.providerId === "spark")
+    .map((wallet) => wallets.recoveryDiagnosisByWallet[wallet.id])
+    .filter((diagnosis) => diagnosis && !diagnosis.backup.ready)
+  const primary = Object.values(wallets.recoveryDiagnosisByWallet)[0]?.primary
+  const main = wallets.mainWalletDiagnosis
+  const discovery = wallets.recoveryDiscoveryDiagnosis
+  if (
+    !pendingWallets.length &&
+    (primary?.ready ?? true) &&
+    (main?.choice.ready ?? true) &&
+    (main?.registry?.ready ?? true) &&
+    wallets.recoverySync !== "pending" &&
+    wallets.recoverySync !== "blocked"
+  )
+    return null
+  return (
+    <details className="text-sm text-[var(--text-secondary)]">
+      <summary className="cursor-pointer">Recovery sync details</summary>
+      <div className="grid gap-2 pt-2">
+        {discovery && (
+          <p>
+            Relay checks: {recoveryCoverageText[discovery.coverage]}. Result:{" "}
+            {recoveryStateText[discovery.state]}.
+            {discovery.invalidEvidence &&
+              " Some signed recovery evidence could not be interpreted."}
+            {!discovery.registryMembershipReady &&
+              " Account membership is not confirmed."}
+          </p>
+        )}
+        <ul className="list-disc pl-5">
+          {pendingWallets.map((diagnosis, index) => (
+            <RecoveryDeliveryDetail
+              key={index}
+              label={`Wallet ${index + 1} backup`}
+              diagnosis={diagnosis.backup}
+            />
+          ))}
+          {primary && (
+            <RecoveryDeliveryDetail
+              label="Primary choice"
+              diagnosis={primary}
+            />
+          )}
+          {main && (
+            <RecoveryDeliveryDetail
+              label="Main choice"
+              diagnosis={main.choice}
+            />
+          )}
+          {main?.registry && (
+            <RecoveryDeliveryDetail
+              label="Account membership"
+              diagnosis={main.registry}
+            />
+          )}
+        </ul>
+      </div>
+    </details>
+  )
+}
+
 function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
   return (
     <>
+      {(wallets.nameSync === "pending" || wallets.nameSync === "checking") && (
+        <section
+          role="status"
+          className="grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-5 text-sm"
+        >
+          <p>Wallet names saved on this device. Name sync is pending.</p>
+          <Button
+            className="justify-self-start"
+            variant="outline"
+            disabled={wallets.nameSync === "checking"}
+            onClick={() =>
+              void wallets.retryWalletNames().catch(() => undefined)
+            }
+          >
+            {wallets.nameSync === "checking"
+              ? "Syncing wallet names…"
+              : "Sync wallet names"}
+          </Button>
+        </section>
+      )}
       {wallets.mainWalletSync === "pending" && (
         <div
           role="status"
@@ -628,6 +768,7 @@ function RecoverySyncNotice({ wallets }: { wallets: UseWalletsReturn }) {
           </Button>
         </section>
       )}
+      <RecoveryDiagnosisDetails wallets={wallets} />
     </>
   )
 }
@@ -859,7 +1000,11 @@ function WalletRow({
     if (menuTrigger.current) action(wallet, menuTrigger.current)
   }
   return (
-    <div className="grid gap-3 p-4 sm:p-5">
+    <div
+      data-wallet-state={runtime.status}
+      data-wallet-id={wallet.id}
+      className="grid gap-3 p-4 sm:p-5"
+    >
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -1225,6 +1370,10 @@ function RenameWalletDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Rename wallet</DialogTitle>
+          <DialogDescription>
+            Saved on this device immediately. Names for account-backed wallets
+            also sync across your devices through your Nostr signer.
+          </DialogDescription>
         </DialogHeader>
         <Label htmlFor="wallet-name">Wallet name</Label>
         <Input

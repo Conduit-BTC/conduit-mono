@@ -2236,6 +2236,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         `conduit:spark:primary:v1:${network}`,
         `conduit:spark:main:v1:${network}`,
         `conduit:spark:registry:v1:${network}`,
+        "conduit:wallet-names:v1:mainnet",
       ]),
     ]
     const events = new Map(
@@ -2287,6 +2288,8 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       "conduit:spark:main:v1:mainnet:extra",
       "conduit:spark:registry:v1:unknown",
       "conduit:spark:registry:v1:mainnet:extra",
+      "conduit:wallet-names:v1:unknown",
+      "conduit:wallet-names:v1:mainnet:extra",
     ]) {
       await expect(
         executor.query(

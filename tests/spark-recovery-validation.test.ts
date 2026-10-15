@@ -85,10 +85,25 @@ describe("Spark recovery owned validation snapshots", () => {
   it("detaches merged evidence from both inputs and does not mutate either input", () => {
     const f = fixture()
     const current = f.state([f.record()])
+    const walletId = crypto.randomUUID()
+    current.walletNameSync = {
+      mainnet: {
+        pending: {
+          [walletId]: {
+            name: "Pending local label",
+            token: crypto.randomUUID(),
+          },
+        },
+      },
+    }
     const incoming = [f.record()]
     const currentBefore = JSON.stringify(current)
     const incomingBefore = JSON.stringify(incoming)
     const result = mergeSparkRecoveryRecords(current, incoming, true)
+    expect(
+      JSON.stringify(result.walletNameSync) ===
+        JSON.stringify(current.walletNameSync)
+    ).toBe(true)
     expect(JSON.stringify(current) === currentBefore).toBe(true)
     expect(JSON.stringify(incoming) === incomingBefore).toBe(true)
     const resultBefore = JSON.stringify(result)
@@ -96,6 +111,7 @@ describe("Spark recovery owned validation snapshots", () => {
     current.removedWalletIds![0] = "changed"
     current.registryExcludedWalletIds![0] = "changed"
     current.records[0].delivery[0].accepted = true
+    current.walletNameSync.mainnet!.pending[walletId].name = "Changed label"
     incoming[0].targets[0].url = "wss://changed.invalid"
     incoming[0].delivery[0].readBack = true
     incoming[0].event.tags.length = 0
