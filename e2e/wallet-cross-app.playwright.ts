@@ -2088,9 +2088,13 @@ test("foreground wallet import stays ready after an older background opening is 
     observationAvailable: true,
     lockObservationAvailable: false,
   }
+  let readinessObservation: Record<string, number | boolean> = {}
   const checkpoint = (phase: RefusalPhase) => {
     diagnostic.phase = phase
-    recordSmokeDiagnostic(testInfo, "wallet-background-refusal", diagnostic)
+    recordSmokeDiagnostic(testInfo, "wallet-background-refusal", {
+      ...diagnostic,
+      ...readinessObservation,
+    })
   }
   try {
     for (const page of [source, target]) await prepareControlledWallet(page)
@@ -2294,10 +2298,73 @@ test("foreground wallet import stays ready after an older background opening is 
     diagnostic.foregroundImportSettled = true
     checkpoint("foreground_import_settled")
     expect(restoredSameWallet).toBe(true)
-    await expect(target.getByText("Ready", { exact: true })).toHaveCount(1)
-    await expect(
-      target.getByRole("button", { name: "Open wallet", exact: true })
-    ).toHaveCount(1)
+    recordSmokeFailureContext(
+      testInfo,
+      "wallet_refusal_foreground_import_completed",
+      "met"
+    )
+    recordSmokeFailureContext(testInfo, "wallet_refusal_import_ready")
+    try {
+      await expect(target.getByText("Ready", { exact: true })).toHaveCount(1)
+      await expect(
+        target.getByRole("button", { name: "Open wallet", exact: true })
+      ).toHaveCount(1)
+    } catch (error) {
+      readinessObservation = { readinessObservationAvailable: false }
+      try {
+        const runtime = await target.evaluate(
+          async ({ sparkSdk, walletId }) => {
+            const { getSparkWalletManager } = await import(sparkSdk)
+            const manager = getSparkWalletManager()
+            const controller = (window as unknown as WalletFixtureWindow)
+              .__controlledWalletController
+            const state = controller.runtime[walletId]
+            const others = controller.portableWallets.filter(
+              (wallet) => wallet.id !== walletId
+            )
+            return {
+              nativeSessionOpen: manager?.isOpen(walletId) === true,
+              targetRuntimeReady: state?.status === "ready",
+              targetRuntimeConnecting: state?.status === "connecting",
+              targetRuntimeLocked: state?.status === "locked",
+              targetRuntimeUnavailable: state?.status === "unavailable",
+              targetRuntimeError: state?.status === "error",
+              walletCount: controller.portableWallets.length,
+              otherReadyWalletCount: others.filter(
+                (wallet) => controller.runtime[wallet.id]?.status === "ready"
+              ).length,
+              otherNativeOpenWalletCount: others.filter(
+                (wallet) => manager?.isOpen(wallet.id) === true
+              ).length,
+            }
+          },
+          { sparkSdk, walletId }
+        )
+        readinessObservation = {
+          readinessObservationAvailable: true,
+          ...runtime,
+          readyTextCount: await target
+            .getByText("Ready", { exact: true })
+            .count(),
+          readyStateCount: await target
+            .locator('[data-wallet-state="ready"]')
+            .count(),
+          openButtonCount: await target
+            .getByRole("button", { name: "Open wallet", exact: true })
+            .count(),
+        }
+      } catch {
+        // Keep the original assertion failure if a read-only probe is unavailable.
+      }
+      checkpoint("foreground_import_settled")
+      recordSmokeFailureContext(
+        testInfo,
+        "wallet_refusal_import_ready",
+        "unmet"
+      )
+      throw error
+    }
+    recordSmokeFailureContext(testInfo, "wallet_refusal_import_ready", "met")
 
     recordSmokeFailureContext(
       testInfo,
