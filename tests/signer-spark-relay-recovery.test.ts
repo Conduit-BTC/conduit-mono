@@ -1146,23 +1146,27 @@ describe("explicit Spark recovery and stale observation repair", () => {
     ).toBeUndefined()
     expect((await f.store.load(f.owner)).records).toHaveLength(0)
   })
-  it("does not revive an account-removed registration during explicit import", async () => {
+  it("keeps a removed registration retired while allowing explicit phrase recovery into a new registration", async () => {
     const f = fixture(),
       source = bundle(),
       service = f.service()
     const candidate = await service.prepare(source)
     const discovery = await service.discover(false, "mainnet")
-    await expect(
-      resolveExplicitSparkImport({
+    const journal = await f.store.load(f.owner)
+    expect(
+      await resolveExplicitSparkImport({
         service,
         bundle: source,
         discovery: {
           ...discovery,
           confirmedRemovedWalletIds: [candidate.walletId!],
         },
-        journal: await f.store.load(f.owner),
+        journal,
       })
-    ).rejects.toThrow("removed from this account")
+    ).toBeUndefined()
+    expect(
+      JSON.stringify(await f.store.load(f.owner)) === JSON.stringify(journal)
+    ).toBe(true)
   })
   it("repairs only an explicit stale observation and preserves signed records and removal decisions", async () => {
     const f = fixture(),

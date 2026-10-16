@@ -217,10 +217,9 @@ export async function resolveExplicitSparkImport(input: {
       restored.mnemonic !== normalizeSparkMnemonic(input.bundle.mnemonic)
     )
       continue
-    if (removed.has(walletId))
-      throw new Error(
-        "This wallet was removed from this account. Review its account recovery before adding it again."
-      )
+    // Explicit phrase recovery may create a fresh registration. Never reuse a
+    // retired ID or erase its removal evidence.
+    if (removed.has(walletId)) continue
     matches.add(walletId)
   }
   if (matches.size > 1)
@@ -694,7 +693,8 @@ export async function backUpAccountSparkWallet(
       discovery.coverage !== "complete" ||
       discovery.invalidCount ||
       discovery.unresolvedObserved ||
-      discovery.state !== "recoverable"
+      (discovery.state !== "recoverable" &&
+        discovery.state !== "absent_within_scope")
     )
       return false
     pointer = await service.preparePrimary(candidate)
@@ -714,7 +714,8 @@ export async function backUpAccountSparkWallet(
   const latest = await service.discover(false, bundle.network, options)
   if (
     latest.coverage !== "complete" ||
-    latest.state !== "recoverable" ||
+    (latest.state !== "recoverable" &&
+      latest.state !== "absent_within_scope") ||
     latest.invalidCount ||
     latest.unresolvedObserved ||
     latest.candidates.some((item) => item.source === "addy" && !item.resolved)

@@ -132,12 +132,18 @@ Explicit phrase import validates the phrase, configured network, Spark account
 number and native identity, then persists verified signer-encrypted local recovery.
 It does not require a complete relay read. Matching verified backups retain their
 opaque registration ID; repeated imports reuse the existing local signer wallet.
-Known account removals and conflicting registrations require account review.
+Known account removals keep their old registration IDs retired; explicit phrase
+recovery may create a new registration for the same native wallet without erasing
+removal history. Conflicting active registrations require account review.
 Unrelated malformed recovery evidence stays retained, without vetoing an
 independent phrase import. Import does not infer account absence, select a main
 wallet, replace a primary pointer, publish account membership or change a public
 receiving destination on incomplete evidence. Backup delivery remains pending.
 Automatic new-wallet creation and account mutations retain their stronger gates.
+Complete, valid empty account membership permits an explicit creation or import
+to publish a new backup and membership entry. An empty list must not permanently
+leave that new registration pending; partial or uncertain evidence still cannot
+authorize account writes.
 
 An older build may have retained an unexplained `unresolvedObserved` warning.
 Retry alone preserves that warning. The explicit **Repair saved recovery state**
