@@ -120,6 +120,54 @@ The everyday UI deliberately omits Lock. Account logout/replacement still closes
 signer-owned provider sessions. The shared `lockSpark` operation remains available
 to lifecycle callers and composed close/reopen tests.
 
+## Partial recovery and local repair
+
+Recovery access and account membership have different evidence requirements.
+A validated, owner-signed membership snapshot can restore its active wallet
+while some relays are unavailable. Known removals, conflicting membership,
+unusable signed evidence and account replacement still fence automatic restore.
+Partial restoration does not apply account defaults or claim confirmed delivery.
+
+Explicit phrase import validates the phrase, configured network, Spark account
+number and native identity, then persists verified signer-encrypted local recovery.
+It does not require a complete relay read. Matching verified backups retain their
+opaque registration ID; repeated imports reuse the existing local signer wallet.
+Known account removals and conflicting registrations require account review.
+Unrelated malformed recovery evidence stays retained, without vetoing an
+independent phrase import. Import does not infer account absence, select a main
+wallet, replace a primary pointer, publish account membership or change a public
+receiving destination on incomplete evidence. Backup delivery remains pending.
+Automatic new-wallet creation and account mutations retain their stronger gates.
+
+An older build may have retained an unexplained `unresolvedObserved` warning.
+Retry alone preserves that warning. The explicit **Repair saved recovery state**
+action acknowledges it only after verifying a usable signed backup and consistent
+recovery: either the bounded plan completes, or positive signed account membership
+is available. Empty, malformed or conflicting observations cannot authorize repair.
+This is a device-local acknowledgement, never proof of global absence.
+
+Repair compares the entire checked journal in one account-fenced transaction.
+It preserves signed event bytes, credentials, removals, exclusions and pending
+name/address work, and records the verified backup reference in
+`legacyUnresolvedRepair`. A concurrent journal change aborts repair. New
+owner-authenticated malformed observations retain an `unresolvedEventId`; legacy
+repair cannot clear that evidence, even if a later relay read omits it. Phrase
+import remains the independent access path while account recovery needs attention.
+No recovery content or identifiers are added to diagnostics or telemetry.
+
+Opening a signer-backed wallet uses the owning signer directly, including after
+account replacement and when an encrypted password fallback remains. A rejected
+signer open can expose the retained fallback explicitly. Recovery details also
+retain the previous-password choice. Password-only device wallets keep their
+existing unlock path; switching identities never converts a signer wallet to a
+password wallet or grants another identity access.
+
+Controlled coverage uses generated test identities, actual NIP-44/signature and
+native identity checks, local relays, isolated databases and a controlled provider.
+It does not establish installed-signer consent, physical-device behavior, public
+relay durability, provider activation or funded settlement. Those remain
+maintainer-owned validation.
+
 ## Deployment evidence
 
 Hosted mainnet wallet builds require the public Breez client configuration in
