@@ -382,3 +382,10 @@ export {
 } from "./hooks/useProgressiveEventMarketDiscovery"
 
 export { useCommerceInbox } from "./hooks/useCommerceInbox"
+
+export {
+  observeCheckoutSparkOperation,
+  type CheckoutSparkOperationStep,
+  type CheckoutSparkPerformanceObservation,
+  type CheckoutSparkPerformanceObserver,
+} from "./protocol/checkout-spark-performance"

@@ -1,6 +1,8 @@
 import {
   DexieCheckoutSparkSettledRepository,
+  observeCheckoutSparkOperation,
   projectCheckoutSparkMerchantSettlement,
+  type CheckoutSparkPerformanceObserver,
   type MerchantCheckoutSparkReconciliationStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
@@ -334,6 +336,10 @@ interface AdvancementDependencies extends ReconciliationDependencies {
   continueNativeTreasury?: typeof continueMerchantCheckoutSparkNativeTreasury
   /** Queue discovery; never await or drain the worker calling this adapter. */
   requestRescan: () => void
+  /** A newly paid continuation can wake its serialized owner, not bypass it. */
+  onProgress?: () => void
+  /** Optional bounded, content-free observation of one advancement invocation. */
+  observePerformance?: CheckoutSparkPerformanceObserver
 }
 
 /**
@@ -343,6 +349,26 @@ interface AdvancementDependencies extends ReconciliationDependencies {
  * its owner supplies the active-session guard and drains work before replacement.
  */
 export async function advanceMerchantCheckoutSparkOrder(
+  principalPubkey: string,
+  candidate: MerchantCheckoutSparkRecoveryCandidate,
+  assertActive: () => void,
+  dependencies: AdvancementDependencies
+): Promise<MerchantCheckoutSparkReconciliationStatus> {
+  return observeCheckoutSparkOperation({
+    app: "merchant",
+    step: "router_merchant_recovery",
+    operation: () =>
+      advanceMerchantCheckoutSparkOrderPhase(
+        principalPubkey,
+        candidate,
+        assertActive,
+        dependencies
+      ),
+    observe: dependencies.observePerformance,
+  })
+}
+
+async function advanceMerchantCheckoutSparkOrderPhase(
   principalPubkey: string,
   candidate: MerchantCheckoutSparkRecoveryCandidate,
   assertActive: () => void,
@@ -447,6 +473,10 @@ export async function advanceMerchantCheckoutSparkOrder(
         return "needs_attention"
     }
     dependencies.requestRescan()
+    if (result.payout.outcome === "paid") {
+      assertActive()
+      dependencies.onProgress?.()
+    }
     return "progress_pending"
   }
   if (
@@ -509,6 +539,10 @@ export async function advanceMerchantCheckoutSparkOrder(
   // Let discovery select a new signed pointer. Never manufacture one from local
   // state, reset an uncertain intent, or send another leg within this invocation.
   dependencies.requestRescan()
+  if (result.payout.outcome === "paid") {
+    assertActive()
+    dependencies.onProgress?.()
+  }
   return result.payout.reason === "invoice_window_insufficient"
     ? "needs_attention"
     : "progress_pending"

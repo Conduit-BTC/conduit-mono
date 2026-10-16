@@ -1,4 +1,9 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { mapCheckoutSparkPreparationReads } from "@conduit/core/protocol/checkout-spark-preparation-reads"
+import {
+  observeCheckoutSparkOperation,
+  type CheckoutSparkPerformanceObserver,
+} from "@conduit/core/protocol/checkout-spark-performance"
 import {
   EVENT_KINDS,
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
@@ -126,6 +131,7 @@ export function canRetryCheckoutSparkSettledPreparation(input: {
 }
 
 type Dependencies = {
+  observePerformance?: CheckoutSparkPerformanceObserver
   readRecipientPayout?: typeof readCheckoutSparkRecipientPayoutAddress
   prepareFunding?: typeof prepareCheckoutSparkSettledFunding
   publishOrder?: typeof publishCheckoutSparkSettledBoundOrder
@@ -142,6 +148,18 @@ type Dependencies = {
 export async function prepareCheckoutSparkSettledOrder(
   input: PrepareCheckoutSparkSettledOrderInput,
   dependencies: Dependencies = {}
+): Promise<PreparedCheckoutSparkSettledOrder> {
+  return observeCheckoutSparkOperation({
+    app: "market",
+    step: "router_preparation",
+    observe: dependencies.observePerformance,
+    operation: () => prepareCheckoutSparkSettledOrderPhase(input, dependencies),
+  })
+}
+
+async function prepareCheckoutSparkSettledOrderPhase(
+  input: PrepareCheckoutSparkSettledOrderInput,
+  dependencies: Dependencies
 ): Promise<PreparedCheckoutSparkSettledOrder> {
   // Retain the old input shape only to explicitly reject deferred public modes.
   // Never silently turn an approved public checkout into a private payment.
@@ -367,48 +385,57 @@ export async function prepareCheckoutSparkSettledOrder(
     sourcesById.set(event.id, event)
   for (const event of quote.pickupSourceEvents ?? [])
     sourcesById.set(event.id, event)
-  const recipients: CheckoutSparkSettledRecipientInput[] = []
   const readRecipientPayout =
     dependencies.readRecipientPayout ?? readCheckoutSparkRecipientPayoutAddress
   // Core aggregates repeated suppliers and orders each unique recipient once.
-  // Read sequentially so cancellation also stops any remaining profile work.
-  for (const obligation of commerce) {
-    assertCurrent()
-    const payout = await readRecipientPayout({
-      recipientPubkey: obligation.recipientId,
-      accountPubkey: buyer.kind === "signed_in" ? buyer.pubkey : null,
-      authenticatedPubkey: buyer.kind === "signed_in" ? buyer.pubkey : null,
-      shouldContinue,
-    })
-    assertCurrent()
-    if (payout.state !== "ready") {
-      throw new CheckoutSparkSettledPayoutPreflightError(payout.reason)
-    }
-    if (!payout.signedEvent) {
-      throw new CheckoutSparkSettledPayoutPreflightError(
-        "profile_source_unavailable"
-      )
-    }
-    // Detach this exact selected revision before awaiting another recipient.
-    const [profile] = snapshotCheckoutSparkPlanSourceEvents([
-      payout.signedEvent,
-    ])
-    sourcesById.set(profile!.id, profile!)
-    recipients.push({
-      kind: obligation.kind,
-      recipientId: obligation.recipientId,
-      destination: {
-        type: "lightning_address",
-        value: payout.lud16,
-        source: {
-          type: "signed_profile",
-          profileEventId: payout.profileEventId,
-          profileEventCreatedAt: payout.profileEventCreatedAt,
-        },
-      },
-      weightSats: obligation.amountSats,
-    })
-  }
+  const recipients = await observeCheckoutSparkOperation({
+    app: "market",
+    step: "router_recipient_profiles",
+    observe: dependencies.observePerformance,
+    operation: () =>
+      mapCheckoutSparkPreparationReads(
+        commerce,
+        assertCurrent,
+        async (obligation): Promise<CheckoutSparkSettledRecipientInput> => {
+          assertCurrent()
+          const payout = await readRecipientPayout({
+            recipientPubkey: obligation.recipientId,
+            accountPubkey: buyer.kind === "signed_in" ? buyer.pubkey : null,
+            authenticatedPubkey:
+              buyer.kind === "signed_in" ? buyer.pubkey : null,
+            shouldContinue,
+          })
+          assertCurrent()
+          if (payout.state !== "ready") {
+            throw new CheckoutSparkSettledPayoutPreflightError(payout.reason)
+          }
+          if (!payout.signedEvent) {
+            throw new CheckoutSparkSettledPayoutPreflightError(
+              "profile_source_unavailable"
+            )
+          }
+          // Detach this exact selected revision while other reads may still run.
+          const [profile] = snapshotCheckoutSparkPlanSourceEvents([
+            payout.signedEvent,
+          ])
+          sourcesById.set(profile!.id, profile!)
+          return {
+            kind: obligation.kind,
+            recipientId: obligation.recipientId,
+            destination: {
+              type: "lightning_address",
+              value: payout.lud16,
+              source: {
+                type: "signed_profile",
+                profileEventId: payout.profileEventId,
+                profileEventCreatedAt: payout.profileEventCreatedAt,
+              },
+            },
+            weightSats: obligation.amountSats,
+          }
+        }
+      ),
+  })
   const sourceEvents = snapshotCheckoutSparkPlanSourceEvents([
     ...sourcesById.values(),
   ])
@@ -429,48 +456,55 @@ export async function prepareCheckoutSparkSettledOrder(
   let continuationPlanDigest: string | null = null
   let prepared: PreparedCheckoutSparkSettledFunding
   try {
-    prepared = await (
-      dependencies.prepareFunding ?? prepareCheckoutSparkSettledFunding
-    )({
-      checkoutId: input.checkoutId,
-      orderId: input.orderId,
-      purchaseClaimDigest: input.purchaseClaimDigest,
-      merchantPubkey,
-      network: input.network,
-      takeoverAt,
-      grossFundingSats,
-      fundingExpirySecs: timing.fundingExpirySecs,
-      identity: buyer,
-      shouldContinue,
-      quoteAuthority: quote,
-      sourceEvents,
-      recipients,
-      onPlanPrepared: ({ plan, sourceEvents: canonicalSources }) => {
-        continuationPlanDigest = plan.planDigest
-        saveCheckoutSparkSettledContinuation(
+    prepared = await observeCheckoutSparkOperation({
+      app: "market",
+      step: "router_funding_preparation",
+      observe: dependencies.observePerformance,
+      operation: () =>
+        (dependencies.prepareFunding ?? prepareCheckoutSparkSettledFunding)(
           {
-            schemaVersion: 1,
-            checkoutId: plan.checkoutId,
-            planDigest: plan.planDigest,
+            checkoutId: input.checkoutId,
+            orderId: input.orderId,
             purchaseClaimDigest: input.purchaseClaimDigest,
-            buyerPubkey: buyer.pubkey,
-            identityKind: buyer.kind,
-            createdAt: plan.createdAt,
-            expiresAt:
-              buyer.kind === "guest_ephemeral"
-                ? buyer.expiresAt
-                : plan.createdAt + 24 * 60 * 60_000,
-            order: orderSchema.parse({
-              ...orderDraft,
-              createdAt: Math.max(input.nowMs, plan.createdAt),
-            }),
-            sourceEvents: canonicalSources,
-            addressValidity,
-            shippingZoneEligibility,
+            merchantPubkey,
+            network: input.network,
+            takeoverAt,
+            grossFundingSats,
+            fundingExpirySecs: timing.fundingExpirySecs,
+            identity: buyer,
+            shouldContinue,
+            quoteAuthority: quote,
+            sourceEvents,
+            recipients,
+            onPlanPrepared: ({ plan, sourceEvents: canonicalSources }) => {
+              continuationPlanDigest = plan.planDigest
+              saveCheckoutSparkSettledContinuation(
+                {
+                  schemaVersion: 1,
+                  checkoutId: plan.checkoutId,
+                  planDigest: plan.planDigest,
+                  purchaseClaimDigest: input.purchaseClaimDigest,
+                  buyerPubkey: buyer.pubkey,
+                  identityKind: buyer.kind,
+                  createdAt: plan.createdAt,
+                  expiresAt:
+                    buyer.kind === "guest_ephemeral"
+                      ? buyer.expiresAt
+                      : plan.createdAt + 24 * 60 * 60_000,
+                  order: orderSchema.parse({
+                    ...orderDraft,
+                    createdAt: Math.max(input.nowMs, plan.createdAt),
+                  }),
+                  sourceEvents: canonicalSources,
+                  addressValidity,
+                  shippingZoneEligibility,
+                },
+                dependencies.continuationStorage
+              )
+            },
           },
-          dependencies.continuationStorage
-        )
-      },
+          { observePerformance: dependencies.observePerformance }
+        ),
     })
   } catch (cause) {
     if (
