@@ -64,7 +64,10 @@ A later substrate swap must not change callers.
 
 ## Signer and session rules
 
-Only the active NIP-07 or NIP-46 account signer may authorize a protected read.
+The current runtime admits active NIP-07/NIP-46 account signers for protected
+reads. The approved separate-origin local method in `docs/specs/protocol.md`
+requires an explicit account-bound adapter through the same authenticated owner;
+a reported public key or restoration candidate alone grants no authority.
 The signed event pubkey must equal the expected active account. Guest-order
 ephemeral keys, anonymous sessions, wallet keys, service signers, and
 caller-supplied arbitrary keys are ineligible. There is no guest fallback.

@@ -26,6 +26,15 @@ import {
   matchesMerchantEventRelationship,
   projectFutureMerchantTimelineOccurrences,
 } from "../apps/merchant/src/lib/merchant-event-timeline"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+
+async function admitted(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error(`Fixture admission failed: ${result.status}`)
+  return result.event
+}
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -51,7 +60,8 @@ const signedMarket = finalizeEvent(
   },
   organizerSecret
 )
-const market = parseEventMarketRosterEvent(signedMarket)!
+const verifiedMarket = await admitted(signedMarket)
+const market = parseEventMarketRosterEvent(verifiedMarket)!
 const signedDate = finalizeEvent(
   {
     kind: 31922,
@@ -66,22 +76,54 @@ const signedDate = finalizeEvent(
   },
   organizerSecret
 )
-const date = parseEventMarketCalendarEvent(signedDate)!
+const verifiedDate = await admitted(signedDate)
+const date = parseEventMarketCalendarEvent(verifiedDate)!
 const exactRead: EventMarketRosterReadResult = {
   coordinate,
   resolution: { state: "current", market },
   coverage: "complete",
   retained: true,
   observedRelayUrls: ["wss://example.test"],
-  observedEvidence: [signedMarket],
+  observedEvidence: [verifiedMarket],
   calendar: date,
   calendarCoverage: "complete",
   schedule: {
     kind: "single",
     coordinate: dateCoordinate,
     occurrence: date,
-    occurrenceEvent: signedDate,
+    occurrenceEvent: verifiedDate,
   },
+}
+const newerSignedMarket = finalizeEvent(
+  {
+    ...signedMarket,
+    tags: [...signedMarket.tags, ["prev", signedMarket.id]],
+    created_at: 200,
+  },
+  organizerSecret
+)
+const verifiedNewerMarket = await admitted(newerSignedMarket)
+const newerRead: EventMarketRosterReadResult = {
+  ...exactRead,
+  resolution: {
+    state: "current",
+    market: parseEventMarketRosterEvent(verifiedNewerMarket)!,
+  },
+  observedEvidence: [verifiedMarket, verifiedNewerMarket],
+}
+async function negativeRead(
+  events: SignedPublicNostrEvent[]
+): Promise<EventMarketRosterReadResult> {
+  const verifiedEvents = await Promise.all(events.map(admitted))
+  return {
+    ...exactRead,
+    resolution: resolveEventMarketRoster({
+      coordinate,
+      revisions: verifiedEvents.filter((event) => event.kind === 30409),
+      deletions: verifiedEvents.filter((event) => event.kind === 5),
+    }),
+    observedEvidence: verifiedEvents,
+  }
 }
 
 describe("Merchant product Event Market relationships", () => {
@@ -202,7 +244,7 @@ describe("Merchant product Event Market relationships", () => {
     ])
   })
 
-  it("prefers a newer signed schedule with fewer dates over a stale larger series", () => {
+  it("prefers a newer signed schedule with fewer dates over a stale larger series", async () => {
     const seriesCoordinate = `31924:${organizer}:neighborhood-series`
     const seriesMarketSigned = finalizeEvent(
       {
@@ -223,24 +265,31 @@ describe("Merchant product Event Market relationships", () => {
       },
       organizerSecret
     )
-    const seriesMarket = parseEventMarketRosterEvent(seriesMarketSigned)!
-    const dates = Array.from({ length: 6 }, (_, index) => {
-      const event = finalizeEvent(
-        {
-          kind: 31922,
-          tags: [
-            ["d", `series-day-${index}`],
-            ["title", `Series day ${index}`],
-            ["start", `2030-04-${String(index + 10).padStart(2, "0")}`],
-          ],
-          content: "",
-          created_at: 100,
-        },
-        organizerSecret
-      )
-      return { event, date: parseEventMarketCalendarEvent(event)! }
-    })
-    const schedule = (members: typeof dates, createdAt: number) => {
+    const verifiedSeriesMarket = await admitted(seriesMarketSigned)
+    const seriesMarket = parseEventMarketRosterEvent(verifiedSeriesMarket)!
+    const dates = await Promise.all(
+      Array.from({ length: 6 }, async (_, index) => {
+        const event = finalizeEvent(
+          {
+            kind: 31922,
+            tags: [
+              ["d", `series-day-${index}`],
+              ["title", `Series day ${index}`],
+              ["start", `2030-04-${String(index + 10).padStart(2, "0")}`],
+            ],
+            content: "",
+            created_at: 100,
+          },
+          organizerSecret
+        )
+        const verifiedEvent = await admitted(event)
+        return {
+          event: verifiedEvent,
+          date: parseEventMarketCalendarEvent(verifiedEvent)!,
+        }
+      })
+    )
+    const schedule = async (members: typeof dates, createdAt: number) => {
       const signed = finalizeEvent(
         {
           ...buildEventMarketSeriesDraft({
@@ -253,10 +302,10 @@ describe("Merchant product Event Market relationships", () => {
         },
         organizerSecret
       )
-      return parseEventMarketSeriesEvent(signed)!
+      return parseEventMarketSeriesEvent(await admitted(signed))!
     }
-    const oldSchedule = schedule(dates, 101)
-    const newSchedule = schedule(dates.slice(0, 1), 102)
+    const oldSchedule = await schedule(dates, 101)
+    const newSchedule = await schedule(dates.slice(0, 1), 102)
     const read = (
       series: typeof oldSchedule,
       members: typeof dates,
@@ -264,7 +313,7 @@ describe("Merchant product Event Market relationships", () => {
     ): EventMarketRosterReadResult => ({
       coordinate: seriesMarket.coordinate,
       resolution: { state: "current", market: seriesMarket },
-      observedEvidence: [seriesMarketSigned],
+      observedEvidence: [verifiedSeriesMarket],
       coverage,
       retained: true,
       observedRelayUrls: [],
@@ -304,7 +353,7 @@ describe("Merchant product Event Market relationships", () => {
     )
   })
 
-  it("preserves a newer signed single date even when its read is partial", () => {
+  it("preserves a newer signed single date even when its read is partial", async () => {
     const newerSignedDate = finalizeEvent(
       {
         kind: 31922,
@@ -319,7 +368,8 @@ describe("Merchant product Event Market relationships", () => {
       },
       organizerSecret
     )
-    const newerDate = parseEventMarketCalendarEvent(newerSignedDate)!
+    const admittedNewerDate = await admitted(newerSignedDate)
+    const newerDate = parseEventMarketCalendarEvent(admittedNewerDate)!
     const partialNewer: EventMarketRosterReadResult = {
       ...exactRead,
       calendar: newerDate,
@@ -328,7 +378,7 @@ describe("Merchant product Event Market relationships", () => {
         kind: "single",
         coordinate: dateCoordinate,
         occurrence: newerDate,
-        occurrenceEvent: newerSignedDate,
+        occurrenceEvent: admittedNewerDate,
       },
     }
     expect(
@@ -339,38 +389,8 @@ describe("Merchant product Event Market relationships", () => {
     ).toEqual([partialNewer])
   })
 
-  const newerSignedMarket = finalizeEvent(
-    {
-      ...signedMarket,
-      tags: [...signedMarket.tags, ["prev", signedMarket.id]],
-      created_at: 200,
-    },
-    organizerSecret
-  )
-  const newerRead: EventMarketRosterReadResult = {
-    ...exactRead,
-    resolution: {
-      state: "current",
-      market: parseEventMarketRosterEvent(newerSignedMarket)!,
-    },
-    observedEvidence: [signedMarket, newerSignedMarket],
-  }
-  function negativeRead(
-    events: (typeof signedMarket)[]
-  ): EventMarketRosterReadResult {
-    return {
-      ...exactRead,
-      resolution: resolveEventMarketRoster({
-        coordinate,
-        revisions: events.filter((event) => event.kind === 30409),
-        deletions: events.filter((event) => event.kind === 5),
-      }),
-      observedEvidence: events,
-    }
-  }
-
   for (const target of ["coordinate", "old-id"] as const) {
-    it(`keeps a newer roster over a non-covering ${target} deletion in either merge order`, () => {
+    it(`keeps a newer roster over a non-covering ${target} deletion in either merge order`, async () => {
       const deletion = finalizeEvent(
         {
           kind: 5,
@@ -384,7 +404,7 @@ describe("Merchant product Event Market relationships", () => {
         },
         organizerSecret
       )
-      const older = negativeRead([signedMarket, deletion])
+      const older = await negativeRead([signedMarket, deletion])
       expect(older.resolution.state).toBe("deleted")
       for (const [left, right] of [
         [older, newerRead],
@@ -392,13 +412,15 @@ describe("Merchant product Event Market relationships", () => {
       ]) {
         const merged = mergeMerchantTimelineMarketReads([left!], [right!])[0]!
         expect(merged.resolution).toEqual(newerRead.resolution)
-        expect(merged.observedEvidence).toContainEqual(deletion)
+        expect(
+          merged.observedEvidence?.some((event) => event.id === deletion.id)
+        ).toBe(true)
         expect(projectFutureMerchantTimelineOccurrences(merged)).toHaveLength(1)
       }
     })
   }
 
-  it("allows a signed repair of an older malformed roster in either merge order", () => {
+  it("allows a signed repair of an older malformed roster in either merge order", async () => {
     const malformed = finalizeEvent(
       {
         ...signedMarket,
@@ -419,11 +441,15 @@ describe("Merchant product Event Market relationships", () => {
       ...exactRead,
       resolution: {
         state: "current",
-        market: parseEventMarketRosterEvent(repaired)!,
+        market: parseEventMarketRosterEvent(await admitted(repaired))!,
       },
-      observedEvidence: [signedMarket, malformed, repaired],
+      observedEvidence: [
+        verifiedMarket,
+        await admitted(malformed),
+        await admitted(repaired),
+      ],
     }
-    const older = negativeRead([signedMarket, malformed])
+    const older = await negativeRead([signedMarket, malformed])
     expect(older.resolution.state).toBe("malformed")
     for (const [left, right] of [
       [older, repairedRead],
@@ -434,12 +460,12 @@ describe("Merchant product Event Market relationships", () => {
     }
   })
 
-  it("keeps a covering deletion after merging a later current read and stale observations", () => {
+  it("keeps a covering deletion after merging a later current read and stale observations", async () => {
     const deletion = finalizeEvent(
       { kind: 5, created_at: 250, tags: [["a", coordinate]], content: "" },
       organizerSecret
     )
-    const older = negativeRead([signedMarket, deletion])
+    const older = await negativeRead([signedMarket, deletion])
     for (const [left, right] of [
       [older, newerRead],
       [newerRead, older],
@@ -454,7 +480,7 @@ describe("Merchant product Event Market relationships", () => {
     }
   })
 
-  it("preserves conflicts exposed only by the union of separately current reads", () => {
+  it("preserves conflicts exposed only by the union of separately current reads", async () => {
     const fork = finalizeEvent(
       {
         ...newerSignedMarket,
@@ -467,9 +493,9 @@ describe("Merchant product Event Market relationships", () => {
       ...exactRead,
       resolution: {
         state: "current",
-        market: parseEventMarketRosterEvent(fork)!,
+        market: parseEventMarketRosterEvent(await admitted(fork))!,
       },
-      observedEvidence: [signedMarket, fork],
+      observedEvidence: [verifiedMarket, await admitted(fork)],
     }
     for (const [left, right] of [
       [forkRead, newerRead],

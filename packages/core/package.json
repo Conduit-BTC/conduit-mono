@@ -12,6 +12,8 @@
     "./protocol/*": "./src/protocol/*.ts",
     "./pricing": "./src/pricing/index.ts",
     "./pricing/trusted-rate-provider": "./src/pricing/trusted-rate-provider.ts",
+    "./pricing/common-rate-provider": "./src/pricing/common-rate-provider.ts",
+    "./pricing/signed-rate-client": "./src/pricing/signed-rate-client.ts",
     "./wallets": "./src/wallets/index.ts",
     "./schemas": "./src/schemas/index.ts",
     "./utils": "./src/utils/index.ts",
@@ -20,7 +22,8 @@
     "./telemetry-contract": "./src/telemetry-contract.ts",
     "./db": "./src/db/index.ts",
     "./context/*": "./src/context/*.tsx",
-    "./hooks/*": "./src/hooks/*.ts"
+    "./hooks/*": "./src/hooks/*.ts",
+    "./wallets/*": "./src/wallets/*.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -38,17 +41,19 @@
     "dexie": "^4.4.6",
     "libphonenumber-js": "^1.13.14",
     "nostr-tools": "2.25.2",
-    "posthog-js": "^1.434.15",
+    "posthog-js": "^1.435.7",
     "tailwind-merge": "^3.7.0",
-    "tldts": "7.4.16",
-    "zod": "^4.6.5"
+    "tldts": "7.4.18",
+    "zod": "^4.6.5",
+    "@buildonspark/spark-sdk": "0.13.0",
+    "@scure/bip39": "2.4.0"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",
     "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@tanstack/react-query": "^5.103.1",
+    "@tanstack/react-query": "^5.104.1",
     "@types/country-list": "^2.1.4",
     "@types/react": "^19.2.18",
     "typescript": "^6.0.3"

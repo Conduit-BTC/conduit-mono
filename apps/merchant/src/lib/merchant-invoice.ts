@@ -1,3 +1,8 @@
+import { createWalletReceivingInvoice } from "@conduit/core/wallets/wallet-receiving"
+import {
+  receivingWalletBindingSchema,
+  type ReceivingWalletBinding,
+} from "@conduit/core/wallets/receiving"
 import {
   getProfilePaymentAddress,
   loadSelectedProfileContext,
@@ -5,6 +10,7 @@ import {
   db,
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
+  getCommerceInbox,
   isValidLud16Address,
   mockMakeInvoice,
   normalizeLightningInvoice,
@@ -12,6 +18,7 @@ import {
   nwcGetInfo,
   nwcMakeInvoice,
   publishMerchantOrderMessage,
+  RelayPublishDiagnosticsError,
   validateLightningInvoiceForPayment,
   weblnMakeInvoice,
   type LnurlPayMetadata,
@@ -19,6 +26,7 @@ import {
   type NwcConnection,
   type NwcGetInfoResult,
   type PublishMerchantOrderMessageInput,
+  type PublishMerchantOrderMessageResult,
   type StoredMerchantPendingInvoice,
 } from "@conduit/core"
 
@@ -28,6 +36,7 @@ export type MerchantPendingInvoice = StoredMerchantPendingInvoice
 export type MerchantInvoiceActionSource = Exclude<MerchantInvoiceSource, "mock">
 
 export type MerchantInvoiceSelection =
+  | { type: "wallet"; walletId: string }
   | { type: "profile_lud16" }
   | { type: "webln" }
   | { type: "nwc"; connection: NwcConnection }
@@ -54,7 +63,10 @@ export type RetryMerchantInvoiceInput = MerchantInvoiceScope & {
 }
 
 export type MerchantInvoiceStatus =
-  { state: "none" } | { state: "pending" | "sent" }
+  | { state: "none" }
+  | {
+      state: "pending" | "sent" | "accepted_unrecorded" | "delivery_unknown"
+    }
 
 export interface MerchantPendingInvoiceStore {
   get(
@@ -81,6 +93,12 @@ export interface MerchantInvoiceLockManager {
 
 export interface MerchantInvoiceDependencies {
   store: MerchantPendingInvoiceStore
+  makeWalletInvoice?(
+    owner: string,
+    walletId: string,
+    amountSats: number,
+    description?: string
+  ): Promise<{ invoice: string; receivingWallet: ReceivingWalletBinding }>
   getProfileLud16(merchantPubkey: string): Promise<string | null>
   fetchLnurlPayMetadata(lud16: string): Promise<LnurlPayMetadata>
   fetchLnurlInvoice(
@@ -103,7 +121,10 @@ export interface MerchantInvoiceDependencies {
     invoice: string
   }
   isMockPayments(): boolean
-  publish(input: PublishMerchantOrderMessageInput): Promise<unknown>
+  publish(
+    input: PublishMerchantOrderMessageInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
+  hasAcceptedInvoice?(saved: MerchantPendingInvoice): Promise<boolean>
   now(): number
   nwcTimeoutMs?: number
   lockManager?: MerchantInvoiceLockManager | null
@@ -111,11 +132,16 @@ export interface MerchantInvoiceDependencies {
 
 export interface MerchantInvoiceModule {
   getStatus(input: MerchantInvoiceScope): Promise<MerchantInvoiceStatus>
-  createAndDeliver(input: CreateMerchantInvoiceInput): Promise<void>
-  retryDelivery(input: RetryMerchantInvoiceInput): Promise<void>
+  createAndDeliver(
+    input: CreateMerchantInvoiceInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
+  retryDelivery(
+    input: RetryMerchantInvoiceInput
+  ): Promise<PublishMerchantOrderMessageResult | void>
 }
 
 const MERCHANT_INVOICE_SOURCES: readonly MerchantInvoiceSource[] = [
+  "wallet",
   "profile_lud16",
   "webln",
   "nwc",
@@ -168,6 +194,8 @@ function parseStoredPendingInvoice(
     (value.note !== undefined && typeof value.note !== "string") ||
     (value.delivery !== "buyer_and_self" && value.delivery !== "self_only") ||
     !MERCHANT_INVOICE_SOURCES.includes(value.source) ||
+    (value.receivingWallet !== undefined &&
+      !receivingWalletBindingSchema.safeParse(value.receivingWallet).success) ||
     !Number.isSafeInteger(value.invoiceExpiresAt) ||
     (value.deliveryState !== "pending" && value.deliveryState !== "sent") ||
     !Number.isSafeInteger(value.updatedAt)
@@ -212,6 +240,27 @@ export class DexieMerchantPendingInvoiceStore implements MerchantPendingInvoiceS
     if (!merchant || !normalizedOrderId) return
     await this.table.delete(pendingInvoiceId(merchant, normalizedOrderId))
   }
+}
+
+/** Resolve only the exact device-retained issuer; missing authority needs manual review. */
+export async function loadMerchantInvoiceReceivingAuthority(
+  input: MerchantInvoiceScope & { invoice: string; amountMsats: number },
+  store: MerchantPendingInvoiceStore = new DexieMerchantPendingInvoiceStore()
+): Promise<ReceivingWalletBinding | null> {
+  const scope = validateScope(input)
+  const saved = await store.get(scope.merchantPubkey, scope.orderId)
+  if (
+    !saved ||
+    saved.merchantPubkey !== scope.merchantPubkey ||
+    saved.buyerPubkey !== scope.buyerPubkey ||
+    saved.orderId !== scope.orderId ||
+    saved.source !== "wallet" ||
+    saved.amountMsats !== input.amountMsats ||
+    saved.invoice.trim().toLowerCase() !== input.invoice.trim().toLowerCase()
+  )
+    return null
+  const binding = receivingWalletBindingSchema.safeParse(saved.receivingWallet)
+  return binding.success ? binding.data : null
 }
 
 function assertAmount(amountSats: number): number {
@@ -304,7 +353,11 @@ async function acquireInvoice(
   amountMsats: number,
   orderId: string,
   dependencies: MerchantInvoiceDependencies
-): Promise<{ invoice: string; source: MerchantInvoiceSource }> {
+): Promise<{
+  invoice: string
+  source: MerchantInvoiceSource
+  receivingWallet?: ReceivingWalletBinding
+}> {
   const memo = `Conduit order ${orderId}`
   if (dependencies.isMockPayments()) {
     return {
@@ -314,6 +367,18 @@ async function acquireInvoice(
   }
 
   switch (source.type) {
+    case "wallet": {
+      if (!dependencies.makeWalletInvoice)
+        throw new Error("Wallet invoice creation is unavailable.")
+      const result = await dependencies.makeWalletInvoice(
+        merchantPubkey,
+        source.walletId,
+        amountSats,
+        memo
+      )
+      return { ...result, source: "wallet" }
+    }
+
     case "profile_lud16": {
       const lud16 = normalizeLud16(
         await dependencies.getProfileLud16(merchantPubkey)
@@ -416,7 +481,7 @@ async function deliverSavedInvoice(
   dependencies: MerchantInvoiceDependencies,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
-): Promise<void> {
+): Promise<PublishMerchantOrderMessageResult | void> {
   if (saved.source !== "mock") {
     validateGeneratedInvoice(
       saved.invoice,
@@ -428,20 +493,66 @@ async function deliverSavedInvoice(
   const attempting: MerchantPendingInvoice = {
     ...saved,
     deliveryState: "pending",
+    deliveryAttempted: false,
     updatedAt: now,
   }
   await dependencies.store.put(attempting)
 
-  await dependencies.publish(
-    toPublishInput(attempting, authenticatedPubkey, shouldContinue)
-  )
+  // Save the invoice before signer/readiness work, but fence retries only at
+  // the immutable-delivery boundary. The fence must precede staging so a crash
+  // cannot leave a recoverable send paired with a freely retryable invoice.
+  let delivery: PublishMerchantOrderMessageResult | void
+  try {
+    delivery = await dependencies.publish({
+      ...toPublishInput(attempting, authenticatedPubkey, shouldContinue),
+      onRecipientDeliveryStarting: async () => {
+        await dependencies.store.put({
+          ...attempting,
+          deliveryAttempted: true,
+          updatedAt: dependencies.now(),
+        })
+      },
+    })
+  } catch (error) {
+    if (
+      error instanceof RelayPublishDiagnosticsError &&
+      error.diagnostics.successfulRelayUrls.length === 0
+    ) {
+      await dependencies.store.put({
+        ...attempting,
+        deliveryAttempted: false,
+        updatedAt: dependencies.now(),
+      })
+    }
+    throw error
+  }
+
+  let stillCurrent: boolean
+  try {
+    stillCurrent = shouldContinue?.() !== false
+  } catch {
+    stillCurrent = false
+  }
+  if (!stillCurrent) {
+    if (delivery) return { ...delivery, checkpointFailure: true }
+    throw new Error("Merchant signer session changed after invoice delivery")
+  }
 
   const sentAt = dependencies.now()
-  await dependencies.store.put({
-    ...attempting,
-    deliveryState: "sent",
-    updatedAt: sentAt,
-  })
+  try {
+    await dependencies.store.put({
+      ...attempting,
+      deliveryState: "sent",
+      deliveryAttempted: true,
+      updatedAt: sentAt,
+    })
+  } catch (error) {
+    // A real publisher returns an accepted receipt. A failed local status write
+    // must not turn that known acceptance into a request to resend the invoice.
+    if (delivery) return { ...delivery, checkpointFailure: true }
+    throw error
+  }
+  return delivery
 }
 
 // Navigator locks coordinate tabs where supported. This JavaScript-realm
@@ -496,10 +607,20 @@ export function createMerchantInvoiceModule(
       assertSavedInvoiceBuyer(saved, scope.buyerPubkey, "used")
       const expired =
         saved.invoiceExpiresAt <= Math.floor(dependencies.now() / 1_000)
-      return expired ? { state: "none" } : { state: saved.deliveryState }
+      if (expired) return { state: "none" }
+      if (
+        saved.deliveryState === "pending" &&
+        (await dependencies.hasAcceptedInvoice?.(saved))
+      )
+        return { state: "accepted_unrecorded" }
+      if (saved.deliveryState === "pending" && saved.deliveryAttempted)
+        return { state: "delivery_unknown" }
+      return { state: saved.deliveryState }
     },
 
-    async createAndDeliver(input): Promise<void> {
+    async createAndDeliver(
+      input
+    ): Promise<PublishMerchantOrderMessageResult | void> {
       const scope = validateScope(input)
       const scopeId = pendingInvoiceId(scope.merchantPubkey, scope.orderId)
       return runExclusive(scopeId, async () => {
@@ -514,6 +635,20 @@ export function createMerchantInvoiceModule(
           ) {
             await dependencies.store.delete(scope.merchantPubkey, scope.orderId)
           } else {
+            if (
+              existing.deliveryState === "pending" &&
+              (await dependencies.hasAcceptedInvoice?.(existing))
+            )
+              throw new Error(
+                "The saved invoice was already accepted. Do not send it again."
+              )
+            if (
+              existing.deliveryState === "pending" &&
+              existing.deliveryAttempted
+            )
+              throw new Error(
+                "The saved invoice has an unresolved delivery attempt. Check exact delivery recovery before sending again."
+              )
             throw new Error(
               existing.deliveryState === "pending"
                 ? "A saved invoice still needs delivery. Retry it before creating another."
@@ -547,6 +682,9 @@ export function createMerchantInvoiceModule(
           ...(input.note?.trim() ? { note: input.note.trim() } : {}),
           delivery: input.delivery,
           source: acquired.source,
+          ...(acquired.receivingWallet
+            ? { receivingWallet: acquired.receivingWallet }
+            : {}),
           deliveryState: "pending",
           updatedAt: now,
         }
@@ -560,7 +698,9 @@ export function createMerchantInvoiceModule(
       })
     },
 
-    async retryDelivery(input): Promise<void> {
+    async retryDelivery(
+      input
+    ): Promise<PublishMerchantOrderMessageResult | void> {
       const scope = validateScope(input)
       const scopeId = pendingInvoiceId(scope.merchantPubkey, scope.orderId)
       return runExclusive(scopeId, async () => {
@@ -570,6 +710,17 @@ export function createMerchantInvoiceModule(
         )
         if (!saved) throw new Error("No saved invoice is available for retry.")
         assertSavedInvoiceBuyer(saved, scope.buyerPubkey, "retried")
+        if (
+          saved.deliveryState === "pending" &&
+          (await dependencies.hasAcceptedInvoice?.(saved))
+        )
+          throw new Error(
+            "The saved invoice was already accepted. Do not send it again."
+          )
+        if (saved.deliveryState === "pending" && saved.deliveryAttempted)
+          throw new Error(
+            "The saved invoice has an unresolved delivery attempt. Check exact delivery recovery before sending again."
+          )
         return deliverSavedInvoice(
           saved,
           dependencies,
@@ -591,17 +742,39 @@ async function getStoredMerchantProfileLud16(
   )
 }
 
+async function hasAcceptedInvoiceInEncryptedHistory(
+  saved: MerchantPendingInvoice
+): Promise<boolean> {
+  const owner = getCommerceInbox(saved.merchantPubkey)
+  owner.assertCurrent()
+  const projections = await owner.store.projections()
+  owner.assertCurrent()
+  return projections.some(({ projection }) => {
+    if (projection.kind !== "order") return false
+    const message = projection.message
+    return (
+      message.type === "payment_request" &&
+      message.orderId === saved.orderId &&
+      message.senderPubkey === saved.merchantPubkey &&
+      message.recipientPubkey === saved.buyerPubkey &&
+      message.payload.invoice === saved.invoice
+    )
+  })
+}
+
 export function createDefaultMerchantInvoiceModule(
   store: MerchantPendingInvoiceStore = new DexieMerchantPendingInvoiceStore()
 ): MerchantInvoiceModule {
   return createMerchantInvoiceModule({
     store,
     getProfileLud16: getStoredMerchantProfileLud16,
+    makeWalletInvoice: createWalletReceivingInvoice,
     fetchLnurlPayMetadata,
     fetchLnurlInvoice,
     makeWeblnInvoice: weblnMakeInvoice,
     getNwcInfo: (connection, timeoutMs) =>
       nwcGetInfo(connection, timeoutMs, "merchant"),
+    hasAcceptedInvoice: hasAcceptedInvoiceInEncryptedHistory,
     // Invoice issuance is not safely retryable after a client-side timeout.
     // Keep awaiting the original NWC response while the per-order lock is held.
     makeNwcInvoice: (connection, input) =>

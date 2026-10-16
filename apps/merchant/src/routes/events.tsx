@@ -2,7 +2,7 @@ import { useEffect } from "react"
 import { Loader2, Plus } from "lucide-react"
 import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router"
 import { useAuth } from "@conduit/core"
-import { Button } from "@conduit/ui"
+import { Button, PageHeader, PageLayout } from "@conduit/ui"
 import { MerchantEventsTimeline } from "../components/MerchantEventsTimeline"
 import { parseMerchantEventsSearch } from "../lib/market-links"
 
@@ -45,22 +45,17 @@ export function EventsDirectoryPage() {
     void navigate({ to: "/events/new", search: { relation: search.relation } })
   }
   return (
-    <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-balance font-display text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Events
-          </h1>
-          <p className="mt-2 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Find events where you can sell, or create and manage an event of
-            your own.
-          </p>
-        </div>
-        <Button type="button" onClick={createEvent}>
-          <Plus aria-hidden="true" />
-          Create event
-        </Button>
-      </header>
+    <PageLayout>
+      <PageHeader
+        title="Events"
+        description="Find events where you can sell, or create and manage an event of your own."
+        actions={
+          <Button type="button" onClick={createEvent}>
+            <Plus aria-hidden="true" className="size-4 shrink-0" />
+            Create event
+          </Button>
+        }
+      />
       <MerchantEventsTimeline
         key={merchantPubkey || "disconnected"}
         merchantPubkey={merchantPubkey}
@@ -89,6 +84,6 @@ export function EventsDirectoryPage() {
         }
         onCreate={createEvent}
       />
-    </div>
+    </PageLayout>
   )
 }

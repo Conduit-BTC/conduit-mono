@@ -7,6 +7,10 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const MAX_SEQUENCE = 2_147_483_647
@@ -88,16 +92,24 @@ export function buildEventMarketAuthorizationDraft(
 }
 
 export function parseEventMarketAuthorizationEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketAuthorization | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketAuthorizationFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Field parser for the private order schema after synchronous signature refinement. */
+export function parseEventMarketAuthorizationFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketAuthorization | null {
   if (
     event.kind !== EVENT_KINDS.EVENT_MARKET_AUTH ||
     event.content !== "" ||
-    !isValidSignedPublicNostrEvent(event) ||
     new TextEncoder().encode(JSON.stringify(event)).length > 65_536
   )
     return null
-  const one = (name: string, length: number): string[] | null => {
+  const one = (name: string, length: number): readonly string[] | null => {
     const tags = event.tags.filter((tag) => tag[0] === name)
     return tags.length === 1 && tags[0]?.length === length ? tags[0] : null
   }
@@ -172,31 +184,60 @@ export type EventMarketAuthorizationResolution =
       ancestry: ParsedEventMarketAuthorization[]
     }
 
-/** Reduce retained signed observations; relay order and timestamps never resolve forks. */
-export function resolveEventMarketAuthorization(input: {
+type AuthorizationResolutionInput = {
   marketCoordinate: string
   merchantPubkey: string
   transitions: readonly SignedPublicNostrEvent[]
   deletions?: readonly SignedPublicNostrEvent[]
-}): EventMarketAuthorizationResolution {
+}
+
+/** Reduce retained signed observations; relay order and timestamps never resolve forks. */
+export function resolveEventMarketAuthorization(
+  input: AuthorizationResolutionInput
+): EventMarketAuthorizationResolution {
+  return reduceEventMarketAuthorization(
+    input,
+    isVerifiedNostrEvent,
+    parseEventMarketAuthorizationEvent
+  )
+}
+
+/** Private order validation repeats crypto on its saved copies without granting public admission. */
+export function resolveEventMarketAuthorizationForPrivateOrder(
+  input: AuthorizationResolutionInput
+): EventMarketAuthorizationResolution {
+  return reduceEventMarketAuthorization(
+    input,
+    (event): event is SignedPublicNostrEvent =>
+      isValidSignedPublicNostrEvent(event),
+    parseEventMarketAuthorizationFieldsForPrivateOrder
+  )
+}
+
+function reduceEventMarketAuthorization<T extends SignedPublicNostrEvent>(
+  input: AuthorizationResolutionInput,
+  accepted: (event: SignedPublicNostrEvent) => event is T,
+  parse: (event: T) => ParsedEventMarketAuthorization | null
+): EventMarketAuthorizationResolution {
   const market = parseAddressableCoordinate(input.marketCoordinate, [
     EVENT_KINDS.EVENT_MARKET,
   ])
   if (!market || !HEX_64.test(input.merchantPubkey))
     return { state: "invalid_reference" }
-  const scoped = input.transitions.filter(
-    (event) =>
-      event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
-      event.pubkey === market.authorPubkey &&
-      event.tags.some(
-        (tag) => tag[0] === "a" && tag[1] === market.coordinate
-      ) &&
-      event.tags.some(
-        (tag) => tag[0] === "p" && tag[1] === input.merchantPubkey
-      ) &&
-      isValidSignedPublicNostrEvent(event)
-  )
-  const parsed = scoped.map(parseEventMarketAuthorizationEvent)
+  const scoped = input.transitions
+    .filter(
+      (event) =>
+        event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
+        event.pubkey === market.authorPubkey &&
+        event.tags.some(
+          (tag) => tag[0] === "a" && tag[1] === market.coordinate
+        ) &&
+        event.tags.some(
+          (tag) => tag[0] === "p" && tag[1] === input.merchantPubkey
+        )
+    )
+    .filter(accepted)
+  const parsed = scoped.map(parse)
   if (parsed.some((event) => event === null)) return { state: "malformed" }
   const events = new Map(
     (parsed as ParsedEventMarketAuthorization[]).map((event) => [
@@ -208,7 +249,7 @@ export function resolveEventMarketAuthorization(input: {
     (event) =>
       event.kind === EVENT_KINDS.DELETION &&
       event.pubkey === market.authorPubkey &&
-      isValidSignedPublicNostrEvent(event)
+      accepted(event)
   )
   if (events.size === 0) {
     const scopedDeletions = deletions.filter(

@@ -3,6 +3,7 @@ import type {
   NetworkPreferenceReadbackStatus,
   NetworkPreferenceRelayOutcome,
 } from "../db"
+import { summarizeAccountNetworkReadback } from "./account-network-evidence"
 
 export interface NetworkPreferencePublishObservation {
   relayUrl: string
@@ -34,6 +35,11 @@ const PUBLISH_STRENGTH: Record<NetworkPreferencePublishStatus, number> = {
 const READBACK_STRENGTH: Record<NetworkPreferenceReadbackStatus, number> = {
   pending: 0,
   timed_out: 1,
+  auth_required: 1,
+  verification_unavailable: 1,
+  unavailable: 1,
+  policy_blocked: 1,
+  cancelled: 1,
   absent: 2,
   observed: 3,
 }
@@ -138,13 +144,5 @@ export function unresolvedNetworkPreferenceReadbackRelayUrls(
 export function hasCompletedExactNetworkPreferenceReadback(
   outcomes: readonly NetworkPreferenceRelayOutcome[]
 ): boolean {
-  return (
-    outcomes.length > 0 &&
-    outcomes.some((outcome) => outcome.readbackStatus === "observed") &&
-    outcomes.every(
-      (outcome) =>
-        outcome.readbackStatus === "observed" ||
-        outcome.readbackStatus === "absent"
-    )
-  )
+  return summarizeAccountNetworkReadback(outcomes).confirmed
 }

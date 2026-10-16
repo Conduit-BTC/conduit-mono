@@ -5,34 +5,36 @@ import { finalizeEvent, getPublicKey, type VerifiedEvent } from "nostr-tools"
 import {
   AUTH_REVISION_STORAGE_KEY,
   AUTH_STORAGE_KEY,
-  RemoteSessionSigner,
-  RemoteSignerError,
   bumpAuthRevision,
   claimAuthRevision,
-  cleanupInvalidatedAuthSession,
-  commitRemoteSignerConnection,
   forgetAuthSession,
+  parseAuthSession,
+  readAuthRevision,
+  revokeAuthSessionAuthority,
+  readAuthSession,
+  type AuthStorage,
+} from "../packages/core/src/protocol/auth-session"
+import {
+  RemoteSessionSigner,
+  RemoteSignerError,
+  commitRemoteSignerConnection,
   logoutRemoteSigner,
   prepareRemoteSignerSessionStorage,
   pairRemoteSigner,
   pairRemoteSignerFromNostrConnect,
-  parseAuthSession,
   parseBunkerUri,
   persistRemoteSignerSession,
-  readAuthRevision,
   requiresRemoteSignerSessionCleanup,
-  revokeAuthSessionAuthority,
   rollbackAndAbandonRemoteSignerConnection,
   rollbackNewRemoteSignerSession,
-  readAuthSession,
   restoreRemoteSigner,
   verifyRemoteSignerConnection,
-  type AuthStorage,
-  type Nip46AuthSession,
   type RemoteBunkerSigner,
   type RemoteSignerAdapterInvalidation,
   type RemoteSignerKeyVault,
 } from "../packages/core/src/protocol/remote-signer"
+import { retireAuthSession } from "../packages/core/src/protocol/auth-session-lifecycle"
+import { type Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
 import { Nip46TransportError } from "../packages/core/src/protocol/nip46-rpc"
 
 const REMOTE_PUBKEY = "1".repeat(64)
@@ -540,7 +542,7 @@ describe("remote signer parsing and storage", () => {
     const revocation = revokeAuthSessionAuthority(expected, storage, {
       sessionDisposition: "discard",
     })
-    const cleanup = cleanupInvalidatedAuthSession(expected, {
+    const cleanup = retireAuthSession(expected, {
       storage,
       keyVault,
       withLock: async (task) => {
@@ -626,7 +628,7 @@ describe("remote signer parsing and storage", () => {
 
     expect(readAuthSession(storage)).toEqual(replacement)
     await expect(
-      cleanupInvalidatedAuthSession(expected, { storage, keyVault })
+      retireAuthSession(expected, { storage, keyVault })
     ).resolves.toBe("replacement")
     expect(readAuthSession(storage)).toEqual(replacement)
     expect(await keyVault.load(expected.clientKeyId)).toBeNull()
@@ -640,7 +642,7 @@ describe("remote signer parsing and storage", () => {
     storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(expected))
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, {
+      retireAuthSession(expected, {
         storage,
         keyVault,
         withLock: async () => {
@@ -659,7 +661,7 @@ describe("remote signer parsing and storage", () => {
     storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(expected))
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, { storage, keyVault })
+      retireAuthSession(expected, { storage, keyVault })
     ).resolves.toBe("removed")
     expect(storage.getItem(AUTH_STORAGE_KEY)).toBeNull()
     expect(keyVault.values.has(expected.clientKeyId)).toBe(false)
@@ -678,7 +680,7 @@ describe("remote signer parsing and storage", () => {
     storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(replacement))
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, { storage, keyVault })
+      retireAuthSession(expected, { storage, keyVault })
     ).resolves.toBe("replacement")
     expect(readAuthSession(storage)).toEqual(replacement)
     expect(keyVault.values.has(expected.clientKeyId)).toBe(false)
@@ -696,10 +698,10 @@ describe("remote signer parsing and storage", () => {
     storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(replacement))
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, {
+      retireAuthSession(expected, {
         storage,
         keyVault,
-        retireExpectedKeyOnMetadataFailure: true,
+        retireExpectedCredentialsOnMetadataFailure: true,
       })
     ).resolves.toBe("replacement")
     expect(readAuthSession(storage)).toEqual(replacement)
@@ -718,10 +720,10 @@ describe("remote signer parsing and storage", () => {
     const keyVault = seededKeyVault()
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, {
+      retireAuthSession(expected, {
         storage,
         keyVault,
-        retireExpectedKeyOnMetadataFailure: true,
+        retireExpectedCredentialsOnMetadataFailure: true,
       })
     ).rejects.toMatchObject({
       code: "unavailable",
@@ -744,7 +746,7 @@ describe("remote signer parsing and storage", () => {
     const keyVault = seededKeyVault()
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, { storage, keyVault })
+      retireAuthSession(expected, { storage, keyVault })
     ).rejects.toMatchObject({
       code: "unavailable",
       operation: "retire invalidated signer session",
@@ -762,7 +764,7 @@ describe("remote signer parsing and storage", () => {
     }
 
     await expect(
-      cleanupInvalidatedAuthSession(expected, { storage, keyVault })
+      retireAuthSession(expected, { storage, keyVault })
     ).rejects.toMatchObject({
       code: "unavailable",
       operation: "retire invalidated signer session",

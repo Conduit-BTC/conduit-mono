@@ -6,6 +6,8 @@ import {
   retainSignedEventMarketEvidence,
   retryEventMarketRosterDelivery,
   retryEventMarketCalendarDelivery,
+  admitPublicEvent,
+  type VerifiedNostrEvent,
   type EventMarketCalendarDraftInput,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -189,7 +191,26 @@ export async function publishFutureEventMarketCreation(
     if (!input.shouldContinue()) throw new Error("Organizer session changed.")
   }
   assertCurrent()
-  const events = await dependencies.loadEvents(creation.marketCoordinate)
+  const loadedEvents = await dependencies.loadEvents(creation.marketCoordinate)
+  const events: VerifiedNostrEvent[] = []
+  for (let offset = 0; offset < loadedEvents.length; offset += 64) {
+    assertCurrent()
+    const admissions = await Promise.all(
+      loadedEvents
+        .slice(offset, offset + 64)
+        .map((event) => admitPublicEvent(event))
+    )
+    assertCurrent()
+    for (const admission of admissions) {
+      if (admission.status === "verified") events.push(admission.event)
+      else if (admission.status === "unavailable")
+        throw new Error(
+          "Saved Event Market signature verification is unavailable."
+        )
+      else if (admission.status === "cancelled")
+        throw new Error("Organizer session changed.")
+    }
+  }
   function savedEvent(record: "calendar" | "market") {
     const id =
       record === "calendar"

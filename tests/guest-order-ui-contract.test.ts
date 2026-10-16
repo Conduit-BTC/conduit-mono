@@ -32,7 +32,9 @@ describe("guest order UI contracts", () => {
   it("keeps buyer recovery local and disables guest relay inbox reads", async () => {
     const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
 
-    expect(source).toContain("enabled: signerConnected")
+    expect(source).toContain(
+      "useCommerceInbox(activeBuyerPubkey, signerConnected)"
+    )
     expect(source).toContain("guestIdentity.expiresAt - Date.now()")
     expect(source).toContain("clearSessionGuestOrderSigningIdentity")
     expect(source).toContain("pruneExpiredGuestOrderData")

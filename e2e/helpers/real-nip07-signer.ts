@@ -168,6 +168,7 @@ export function parseCanonicalRuntimePrivateRumor(input: {
   inboxOwner: RuntimeSignerIdentity
   recipient: RuntimeSignerIdentity
   sender: RuntimeSignerIdentity
+  rumorKind?: 14 | 15 | 16
   wrapperKeyAssignments?: Map<string, string>
   wrap: Event
 }): RuntimePrivateRumor | null {
@@ -219,7 +220,7 @@ export function parseCanonicalRuntimePrivateRumor(input: {
     }
     const rumorRecipients = rumor.tags.filter(([name]) => name === "p")
     if (
-      rumor.kind !== 16 ||
+      rumor.kind !== (input.rumorKind ?? 16) ||
       rumor.pubkey !== sender.pubkey ||
       rumor.pubkey !== seal.pubkey ||
       rumorRecipients.length !== 1 ||
@@ -281,7 +282,8 @@ export function countDistinctMatchingRuntimePrivateWraps(input: {
  */
 export async function readAuthenticatedGiftWraps(
   identity: RuntimeSignerIdentity,
-  relayUrl: string
+  relayUrl: string,
+  nowMs: () => number = Date.now
 ): Promise<Event[]> {
   requireIdentitySecret(identity)
   const challengeSubscriptionId = "gift-wrap-challenge"
@@ -307,7 +309,7 @@ export async function readAuthenticatedGiftWraps(
 
     const authEvent = signRuntimeTestEvent(identity, {
       kind: 22_242,
-      created_at: Math.floor(Date.now() / 1_000),
+      created_at: Math.floor(nowMs() / 1_000),
       tags: [
         ["relay", relayUrl],
         ["challenge", challengeFrame[1] as string],
@@ -361,28 +363,50 @@ export async function readAuthenticatedGiftWraps(
  * Playwright runner. Only public identity and relay preferences are serialized
  * into the page.
  */
+const pageSignerIdentities = new WeakMap<Page, RuntimeSignerIdentity>()
+
+export async function replaceRealTestSigner(
+  page: Page,
+  identity: RuntimeSignerIdentity
+): Promise<void> {
+  requireIdentitySecret(identity)
+  if (!pageSignerIdentities.has(page))
+    throw new Error("Install the runtime signer before replacing it.")
+  pageSignerIdentities.set(page, identity)
+  await page.evaluate((pubkey) => {
+    ;(
+      window as unknown as { nostr: { getPublicKey(): Promise<string> } }
+    ).nostr.getPublicKey = async () => pubkey
+  }, identity.pubkey)
+}
+
 export async function installRealTestSigner(
   page: Page,
   identity: RuntimeSignerIdentity,
-  relayUrl: string
+  relayUrl: string,
+  options: { beforeDecrypt?: () => void } = {}
 ): Promise<void> {
   requireIdentitySecret(identity)
+  pageSignerIdentities.set(page, identity)
+  const activeIdentity = () => pageSignerIdentities.get(page)!
   const signBinding = "__conduitRealSignEvent"
   const encryptBinding = "__conduitRealNip44Encrypt"
   const decryptBinding = "__conduitRealNip44Decrypt"
 
   await page.exposeFunction(signBinding, (event: EventTemplate) =>
-    signRuntimeTestEvent(identity, event)
+    signRuntimeTestEvent(activeIdentity(), event)
   )
   await page.exposeFunction(
     encryptBinding,
     (peerPubkey: string, plaintext: string) =>
-      encryptRuntimeTestPayload(identity, peerPubkey, plaintext)
+      encryptRuntimeTestPayload(activeIdentity(), peerPubkey, plaintext)
   )
   await page.exposeFunction(
     decryptBinding,
-    (peerPubkey: string, ciphertext: string) =>
-      decryptRuntimeTestPayload(identity, peerPubkey, ciphertext)
+    (peerPubkey: string, ciphertext: string) => {
+      options.beforeDecrypt?.()
+      return decryptRuntimeTestPayload(activeIdentity(), peerPubkey, ciphertext)
+    }
   )
 
   await page.addInitScript(

@@ -13,6 +13,13 @@ import {
   type ProductDeletionCandidate,
   type ProductDeletionEvidence,
 } from "@conduit/core/protocol/product-deletion"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+
+async function admittedDeletion(event: unknown) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified") throw new Error("Expected signed event")
+  return result.event
+}
 
 const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
 const MERCHANT_B_SECRET = new Uint8Array(32).fill(2)
@@ -323,7 +330,7 @@ describe("safe product deletion target construction", () => {
 })
 
 describe("signed deletion evidence", () => {
-  it("returns the exact validated event and parsed targets from one safe boundary", () => {
+  it("returns immutable admitted bytes and parsed targets from one safe boundary", async () => {
     const signed = finalizeEvent(
       {
         kind: 5,
@@ -337,7 +344,8 @@ describe("signed deletion evidence", () => {
       MERCHANT_A_SECRET
     )
 
-    const validated = validateProductDeletionEvent(signed)
+    const admitted = await admittedDeletion(signed)
+    const validated = validateProductDeletionEvent(admitted)
 
     expect(validated?.signedEvent).toEqual({
       id: signed.id,
@@ -348,8 +356,9 @@ describe("signed deletion evidence", () => {
       content: signed.content,
       sig: signed.sig,
     })
-    expect(validated?.signedEvent).not.toBe(signed)
-    expect(validated?.signedEvent.tags).not.toBe(signed.tags)
+    expect(validated?.signedEvent).toBe(admitted)
+    expect(Object.isFrozen(admitted)).toBe(true)
+    expect(Object.isFrozen(admitted.tags[0])).toBe(true)
     expect(validated?.evidence).toEqual([
       {
         target: "event",
@@ -368,7 +377,7 @@ describe("signed deletion evidence", () => {
     ])
   })
 
-  it("accepts a signed exact e deletion created at the Unix epoch", () => {
+  it("accepts a signed exact e deletion created at the Unix epoch", async () => {
     const signed = finalizeEvent(
       {
         kind: 5,
@@ -379,7 +388,9 @@ describe("signed deletion evidence", () => {
       MERCHANT_A_SECRET
     )
 
-    expect(productDeletionEvidenceFromSignedEvent(signed)).toEqual([
+    expect(
+      productDeletionEvidenceFromSignedEvent(await admittedDeletion(signed))
+    ).toEqual([
       {
         target: "event",
         deletionEventId: signed.id,
@@ -390,7 +401,7 @@ describe("signed deletion evidence", () => {
     ])
   })
 
-  it("validates the signed kind-5 identity and keeps only safe product targets", () => {
+  it("validates the signed kind-5 identity and keeps only safe product targets", async () => {
     const signed = finalizeEvent(
       {
         kind: 5,
@@ -407,7 +418,9 @@ describe("signed deletion evidence", () => {
       MERCHANT_A_SECRET
     )
 
-    expect(productDeletionEvidenceFromSignedEvent(signed)).toEqual([
+    expect(
+      productDeletionEvidenceFromSignedEvent(await admittedDeletion(signed))
+    ).toEqual([
       {
         target: "event",
         deletionEventId: signed.id,

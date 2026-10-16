@@ -9,11 +9,13 @@
   ],
   "overrides": {
     "browserslist": "4.28.7",
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.16",
     "fflate": "0.4.9",
     "nanoid": "3.3.18",
-    "postcss": "8.5.28",
-    "sharp": "0.35.4",
+    "postcss": "8.5.30",
+    "seroval": "1.6.8",
+    "sharp": "0.35.5",
+    "source-map-js": "1.2.2",
     "undici": "7.29.1"
   },
   "scripts": {
@@ -64,7 +66,12 @@
     "test:e2e:mobile": "bun scripts/dev/run_playwright_e2e.ts mobile",
     "test:e2e:webkit": "bun scripts/dev/run_playwright_e2e.ts webkit",
     "test:e2e:areas": "bun scripts/ci/validate_playwright_smoke_areas.ts",
-    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules",
+    "dev:ui": "bun run --filter @conduit/market dev:ui",
+    "build:ui": "bun run --filter @conduit/market build:ui",
+    "preview:ui": "bun run --filter @conduit/market preview:ui",
+    "typecheck:ui": "tsc -p packages/ui/workbench/tsconfig.json --noEmit",
+    "ui:check": "bun test tests/no-hardcoded-colors.test.ts tests/ui-foundation-policy.test.ts"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -74,19 +81,19 @@
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@playwright/test": "^1.62.1",
-    "@tanstack/router-generator": "^1.167.38",
+    "@playwright/test": "^1.64.0",
+    "@tanstack/router-generator": "^1.167.40",
     "dexie": "^4.4.6",
-    "eslint": "^10.11.0",
+    "eslint": "^10.12.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "fake-indexeddb": "^6.2.5",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
     "nostr-tools": "2.25.2",
-    "prettier": "^3.9.9",
+    "prettier": "^3.9.10",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.70.1"
+    "typescript-eslint": "^8.71.2"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [

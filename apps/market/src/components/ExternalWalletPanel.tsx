@@ -120,7 +120,7 @@ export function ExternalWalletPanel({
   if (!invoice) return null
   if (requiresPreparation) {
     return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
+      <section className="rounded-[var(--radius-md)] border border-warning/40 bg-warning/5 p-5">
         <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
           {preparationError ? "Invoice unavailable" : "Preparing your invoice"}
         </h2>
@@ -173,7 +173,7 @@ export function ExternalWalletPanel({
   if (invoiceBlocked) {
     return (
       <section
-        className={`rounded-[1.5rem] border p-5 ${invoiceCanRenew ? "border-[var(--border)] bg-[var(--surface)]" : "border-amber-500/40 bg-amber-500/5"}`}
+        className={`rounded-[var(--radius-md)] border p-5 ${invoiceCanRenew ? "border-[var(--border)] bg-[var(--surface)]" : "border-warning/40 bg-warning/5"}`}
       >
         <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
           {invoiceCanRenew ? "Invoice expired" : "Invoice unavailable"}
@@ -220,7 +220,7 @@ export function ExternalWalletPanel({
   }
   return (
     <div className="space-y-3">
-      <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+      <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
         <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
           {isMerchantInvoice
             ? "Pay merchant invoice"
@@ -246,7 +246,7 @@ export function ExternalWalletPanel({
           onBeforeInvoiceUse={canUseInvoice}
         />
       </section>
-      <section className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
         {publicReceiptInvoice && receiptNotice}
         <Button
           variant="outline"

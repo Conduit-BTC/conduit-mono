@@ -62,14 +62,14 @@ function SelectorItem({
   variant?: "default" | "danger" | "warning"
 }) {
   const className = cn(
-    "cursor-pointer rounded-xl px-3 text-[15px] font-medium",
+    "cursor-pointer rounded-[var(--radius-md)] px-3 text-[15px] font-medium",
     pill ? "min-h-11 py-2" : "h-11",
     variant === "default" &&
       "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]",
     variant === "warning" &&
       "text-secondary-400 focus:bg-secondary-500/5 focus:text-secondary-300",
     variant === "danger" &&
-      "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+      "text-[var(--error-text)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error-text)]"
   )
   const content = (
     <>
@@ -137,7 +137,7 @@ export function ProfileSelector({
         <button
           type="button"
           className={cn(
-            "inline-flex h-12 min-w-[12.5rem] items-center gap-3 rounded-[18px] bg-[linear-gradient(135deg,color-mix(in_srgb,var(--primary-400)_88%,var(--primary-500))_0%,color-mix(in_srgb,var(--primary-300)_76%,var(--tertiary-500)_24%)_100%)] px-3 text-left text-[var(--on-primary)] shadow-[0_10px_28px_color-mix(in_srgb,var(--primary-500)_28%,transparent),inset_0_1px_0_color-mix(in_srgb,var(--on-primary)_18%,transparent)] transition-all hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary-400)]",
+            "inline-flex h-12 min-w-[12.5rem] items-center gap-3 rounded-[var(--radius-md)] bg-primary-500 px-3 text-left text-[var(--on-primary)]  transition-all hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary-400)]",
             className
           )}
         >
@@ -152,7 +152,7 @@ export function ProfileSelector({
             {alertLabel && !open ? (
               <span
                 aria-hidden="true"
-                className="absolute -right-1 -top-1 text-[var(--warning)] drop-shadow"
+                className="absolute -right-1 -top-1 text-[var(--warning-text)] drop-shadow"
               >
                 <FilledWarningIcon size={13} />
               </span>
@@ -178,7 +178,7 @@ export function ProfileSelector({
         style={{
           boxShadow: "0 0 0 1.5px var(--border-overlay), var(--shadow-dialog)",
         }}
-        className="w-[15rem] rounded-[1.35rem] border-0 bg-[var(--surface-overlay)] p-0 backdrop-blur-xl"
+        className="w-[15rem] rounded-[var(--radius-md)] border-0 bg-[var(--surface-overlay)] p-0 "
       >
         <div className="p-3">
           <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--text-secondary)]">

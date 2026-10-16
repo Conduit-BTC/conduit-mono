@@ -16,6 +16,14 @@ import {
   type SignedEventMarketMerchantDecision,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+
+async function admitted(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error(`Fixture admission failed: ${result.status}`)
+  return result.event
+}
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -34,7 +42,9 @@ const firstDraft = buildEventMarketRosterDraft({
   state: "open",
   merchants: [initialRow],
 })
-const first = finalizeEvent({ ...firstDraft, created_at: 100 }, secret)
+const first = await admitted(
+  finalizeEvent({ ...firstDraft, created_at: 100 }, secret)
+)
 const emptyDraft = buildEventMarketRosterDraft({
   dTag: "fair-market",
   organizerPubkey: organizer,
@@ -42,7 +52,9 @@ const emptyDraft = buildEventMarketRosterDraft({
   state: "open",
   merchants: [],
 })
-const empty = finalizeEvent({ ...emptyDraft, created_at: 100 }, secret)
+const empty = await admitted(
+  finalizeEvent({ ...emptyDraft, created_at: 100 }, secret)
+)
 const delivery = {
   plan: {} as never,
   attemptedRelayUrls: ["wss://example.com"],
@@ -273,7 +285,8 @@ describe("future Event Market organizer updates", () => {
     expect(order).toEqual(["saved", "published"])
     expect(result.signedEvent.id).toBe(saved?.id)
     expect(
-      parseEventMarketRosterEvent(result.signedEvent)?.previousEventId
+      parseEventMarketRosterEvent(await admitted(result.signedEvent))
+        ?.previousEventId
     ).toBe(first.id)
     const retry = await retryEventMarketRosterDelivery(
       {
@@ -285,7 +298,9 @@ describe("future Event Market organizer updates", () => {
           coordinate: marketCoordinate,
           resolution: {
             state: "current",
-            market: parseEventMarketRosterEvent(result.signedEvent)!,
+            market: parseEventMarketRosterEvent(
+              await admitted(result.signedEvent)
+            )!,
           },
           coverage: "complete",
           retained: true,
@@ -322,7 +337,7 @@ describe("future Event Market organizer updates", () => {
             coordinate: marketCoordinate,
             resolution: {
               state: "current",
-              market: parseEventMarketRosterEvent(later)!,
+              market: parseEventMarketRosterEvent(await admitted(later))!,
             },
             coverage: "complete",
             retained: true,
@@ -424,7 +439,9 @@ describe("future Event Market organizer updates", () => {
     expect(order).toEqual(["persisted", "saved", "row", "grant"])
     expect(result.signed).toEqual(saved)
     expect(
-      parseEventMarketAuthorizationEvent(result.signed.authorization)
+      parseEventMarketAuthorizationEvent(
+        await admitted(result.signed.authorization)
+      )
     ).toMatchObject({
       state: "active",
       sequence: 0,
@@ -579,7 +596,7 @@ describe("future Event Market organizer updates", () => {
         readAuthorization: async () => ({
           resolution: {
             state: "active",
-            tip: parseEventMarketAuthorizationEvent(active)!,
+            tip: parseEventMarketAuthorizationEvent(await admitted(active))!,
             ancestry: [active],
             deletions: [],
           },
@@ -597,24 +614,29 @@ describe("future Event Market organizer updates", () => {
     )
     expect(order).toEqual(["saved", "revoke", "remove-row"])
     expect(
-      parseEventMarketAuthorizationEvent(result.signed.authorization)
+      parseEventMarketAuthorizationEvent(
+        await admitted(result.signed.authorization)
+      )
     ).toMatchObject({
       state: "revoked",
       sequence: 1,
       parentIds: [active.id],
     })
     expect(
-      parseEventMarketRosterEvent(result.signed.roster)?.merchants
+      parseEventMarketRosterEvent(await admitted(result.signed.roster))
+        ?.merchants
     ).toEqual([])
   })
 
   it("keeps an interrupted approval as a saved row-only state and retries the exact grant", async () => {
     let saved: SignedEventMarketMerchantDecision | undefined
-    const current = () => ({
+    const current = async () => ({
       coordinate: marketCoordinate,
       resolution: {
         state: "current" as const,
-        market: parseEventMarketRosterEvent(saved?.roster ?? empty)!,
+        market: parseEventMarketRosterEvent(
+          await admitted(saved?.roster ?? empty)
+        )!,
       },
       coverage: "complete" as const,
       retained: true,
@@ -639,7 +661,7 @@ describe("future Event Market organizer updates", () => {
         {
           ...storage,
           read: async () => ({
-            ...current(),
+            ...(await current()),
             resolution: {
               state: "current",
               market: parseEventMarketRosterEvent(empty)!,
@@ -737,7 +759,7 @@ describe("future Event Market organizer updates", () => {
         readAuthorization: async () => ({
           resolution: {
             state: "revoked",
-            tip: parseEventMarketAuthorizationEvent(revoked)!,
+            tip: parseEventMarketAuthorizationEvent(await admitted(revoked))!,
             ancestry: [active, revoked],
             deletions: [],
           },
@@ -751,7 +773,9 @@ describe("future Event Market organizer updates", () => {
       }
     )
     expect(
-      parseEventMarketAuthorizationEvent(result.signed.authorization)
+      parseEventMarketAuthorizationEvent(
+        await admitted(result.signed.authorization)
+      )
     ).toMatchObject({
       state: "active",
       sequence: 2,
@@ -805,7 +829,7 @@ describe("future Event Market organizer updates", () => {
           readAuthorization: async () => ({
             resolution: {
               state: "active",
-              tip: parseEventMarketAuthorizationEvent(active)!,
+              tip: parseEventMarketAuthorizationEvent(await admitted(active))!,
               ancestry: [active],
               deletions: [],
             },
@@ -826,6 +850,8 @@ describe("future Event Market organizer updates", () => {
     ).rejects.toThrow("saved for retry")
     expect(saved).toBeDefined()
     expect(published).toEqual([3841, 30409])
-    expect(parseEventMarketRosterEvent(saved!.roster)?.merchants).toEqual([])
+    expect(
+      parseEventMarketRosterEvent(await admitted(saved!.roster))?.merchants
+    ).toEqual([])
   })
 })

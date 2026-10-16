@@ -50,7 +50,7 @@ export function ThemeToggleButton({
         data-theme-toggle-preference={preference}
         data-theme-toggle-target={nextPreference}
         className={cn(
-          "relative inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-sm hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
+          "relative inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-primary)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
           className
         )}
         onClick={() => {

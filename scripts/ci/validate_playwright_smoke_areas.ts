@@ -2,11 +2,20 @@ import { spawnSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readSmokeFiles } from "./playwright_smoke_files"
+
 import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
+import { safeRetainedSmokeDiagnostics } from "../../e2e/helpers/smoke-diagnostics"
 import {
   safePlaywrightSmokeId,
   safePlaywrightSmokeTitle,
+  safePlaywrightFailure,
+  safePlaywrightRunnerError,
 } from "./playwright_smoke_reporter"
+import {
+  formatRouterSmokeDiagnostic,
+  parseRouterSmokeDiagnostic,
+} from "./router_smoke_diagnostic"
 
 type PlaywrightJsonSpec = {
   file?: string
@@ -26,10 +35,13 @@ type PlaywrightJsonSpec = {
 }
 
 type PlaywrightJsonResult = {
+  diagnostics?: unknown
+  failure?: unknown
   duration?: number
   error?: PlaywrightJsonError
   errors?: PlaywrightJsonError[]
   retry?: number
+  router?: unknown
   status?: string
 }
 
@@ -95,7 +107,17 @@ function formatSpec(spec: PlaywrightJsonSpec): string {
   const location = spec.file
     ? `${manifestFile(spec.file)}${spec.line ? `:${spec.line}` : ""}`
     : "unknown location"
-  return `${location} (${spec.title ?? "untitled test"})`
+  const id =
+    spec.smokeId && /^[0-9a-f]{64}$/.test(spec.smokeId)
+      ? spec.smokeId
+      : safePlaywrightSmokeId(spec.id)
+  const project = spec.project ?? spec.tests?.[0]?.projectName
+  const safeProject = ["chromium", "mobile-chromium", "mobile-webkit"].includes(
+    project ?? ""
+  )
+    ? project
+    : "unknown"
+  return `${location} (${spec.title ?? "untitled test"}) case=${id} project=${safeProject}`
 }
 
 function assignedAreasForSpec(spec: PlaywrightJsonSpec): SmokeArea[] {
@@ -118,7 +140,10 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
 
-function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
+function firstAttemptDiagnostic(
+  result: PlaywrightJsonResult | undefined,
+  specFile?: string
+): string {
   const reportedStatus = result?.status
   const status =
     reportedStatus === "failed" ||
@@ -148,8 +173,18 @@ function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
     file !== "unknown"
       ? `${file}${location?.line ? `:${location.line}` : ""}${location?.column ? `:${location.column}` : ""}`
       : "unavailable"
+  const router =
+    manifestFile(specFile) === "e2e/commerce-router-recovery.playwright.ts"
+      ? parseRouterSmokeDiagnostic(result?.router)
+      : undefined
 
-  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.`
+  const sourceFile = manifestFile(specFile)
+  const failure = safePlaywrightFailure(result?.failure, sourceFile)
+  const diagnostics = safeRetainedSmokeDiagnostics(
+    sourceFile,
+    result?.diagnostics
+  )
+  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}${router ? ` ${formatRouterSmokeDiagnostic(router)}` : ""}.${failure ? ` Boundary: ${JSON.stringify(failure)}.` : ""}${diagnostics.length ? ` Observed: ${JSON.stringify(diagnostics)}.` : ""}`
 }
 
 export function buildPlaywrightSmokeManifest(
@@ -286,6 +321,15 @@ export function validatePlaywrightSmokeExecution(
   selectedAreas: readonly SmokeArea[],
   evidence: PlaywrightSmokeEvidenceContext
 ): PlaywrightSmokeManifest {
+  const startupErrors = (report.errors ?? []).slice(0, 4).flatMap((value) => {
+    const safe = safePlaywrightRunnerError(value)
+    return safe?.phase === "startup" ? [safe] : []
+  })
+  if (startupErrors.length) {
+    throw new Error(
+      `Playwright smoke startup failed before execution could be verified: ${JSON.stringify(startupErrors)}.`
+    )
+  }
   validatePlaywrightSmokeAreas(report, selectedAreas)
   const executedManifest = buildPlaywrightSmokeManifest(
     report,
@@ -337,14 +381,20 @@ export function validatePlaywrightSmokeExecution(
         resultStatuses[0] !== "passed"
       ) {
         errors.push(
-          `Playwright smoke did not pass cleanly on its first attempt: ${formatSpec(spec)}.\n${firstAttemptDiagnostic(test.results?.[0])}`
+          `Playwright smoke did not pass cleanly on its first attempt: ${formatSpec(spec)}.\n${firstAttemptDiagnostic(test.results?.[0], spec.file)}`
         )
       }
     }
   }
 
   if ((report.errors ?? []).length > 0) {
-    errors.push("Playwright reported top-level execution errors.")
+    const runnerErrors = (report.errors ?? []).slice(0, 4).flatMap((value) => {
+      const safe = safePlaywrightRunnerError(value)
+      return safe ? [safe] : []
+    })
+    errors.push(
+      `Playwright reported top-level execution errors${runnerErrors.length ? `: ${JSON.stringify(runnerErrors)}` : ""}.`
+    )
   }
   if ((report.stats?.skipped ?? 0) > 0) {
     errors.push("Playwright skipped selected smoke tests.")
@@ -414,25 +464,39 @@ function readJsonFile<T>(path: string, label: string): T {
   }
 }
 
+export function buildPlaywrightSmokeDiscoveryArgs(
+  shard?: string,
+  config?: string
+): string[] {
+  if (config !== undefined && config.trim() === "") {
+    throw new Error("Playwright smoke config must name a configuration file.")
+  }
+  return [
+    "playwright",
+    "test",
+    "--list",
+    "--reporter=json",
+    ...(shard ? [`--shard=${shard}`] : []),
+    ...(config ? ["--config", config] : []),
+  ]
+}
+
 function discoverPlaywrightTests(
   area: SmokeArea | "all" = "all",
-  shard?: string
+  shard?: string,
+  config?: string,
+  files?: string[]
 ): PlaywrightJsonReport {
   const result = spawnSync(
     "bunx",
-    [
-      "playwright",
-      "test",
-      "--list",
-      "--reporter=json",
-      ...(shard ? [`--shard=${shard}`] : []),
-    ],
+    buildPlaywrightSmokeDiscoveryArgs(shard, config),
     {
       encoding: "utf8",
       env: {
         ...process.env,
         PLAYWRIGHT_SMOKE_DISCOVERY: "true",
         PLAYWRIGHT_SMOKE_AREA: area,
+        PLAYWRIGHT_SMOKE_FILES: JSON.stringify(files ?? []),
       },
     }
   )
@@ -451,10 +515,18 @@ function discoverPlaywrightTests(
 if (import.meta.main) {
   const selectedAreas = readSelectedAreas()
   const shard = readArgument("--shard")
+  const config = readArgument("--config")
+  if (
+    process.argv.includes("--config") &&
+    (!config || config.startsWith("--"))
+  ) {
+    throw new Error("Playwright smoke config must name a configuration file.")
+  }
   const executionReportPath = readArgument("--execution-report")
   const expectedManifestPath = readArgument("--expected-manifest")
   const manifestOutputPath = readArgument("--manifest-output")
   const evidence = readEvidenceContext(Boolean(executionReportPath))
+  const files = readSmokeFiles(process.env.PLAYWRIGHT_SMOKE_FILES)
 
   if (executionReportPath || expectedManifestPath) {
     if (!executionReportPath || !expectedManifestPath) {
@@ -485,6 +557,8 @@ if (import.meta.main) {
 
   let report: PlaywrightJsonReport
   if (shard) {
+    if (files)
+      throw new Error("File selection cannot be combined with count sharding.")
     const match = shard.match(/^([1-9]\d*)\/([1-9]\d*)$/)
     if (
       !match ||
@@ -496,10 +570,14 @@ if (import.meta.main) {
       )
     }
     const total = Number(match[2])
-    const full = discoverPlaywrightTests()
+    const full = discoverPlaywrightTests("all", undefined, config)
     validatePlaywrightSmokeAreas(full, selectedAreas)
     const parts = Array.from({ length: total }, (_, index) =>
-      discoverPlaywrightTests(selectedAreas[0]!, `${index + 1}/${total}`)
+      discoverPlaywrightTests(
+        selectedAreas[0]!,
+        `${index + 1}/${total}`,
+        config
+      )
     )
     validatePlaywrightSmokeShardPartition(
       buildPlaywrightSmokeManifest(full, selectedAreas, evidence),
@@ -509,7 +587,39 @@ if (import.meta.main) {
     )
     report = parts[Number(match[1]) - 1]!
   } else {
-    report = discoverPlaywrightTests()
+    const full = discoverPlaywrightTests("all", undefined, config)
+    validatePlaywrightSmokeAreas(full, selectedAreas)
+    if (files) {
+      if (selectedAreas.length !== 1) {
+        throw new Error("File selection requires one smoke area.")
+      }
+      const fullManifest = buildPlaywrightSmokeManifest(
+        full,
+        selectedAreas,
+        evidence
+      )
+      for (const file of files) {
+        if (!fullManifest.tests.some((test) => test.file === file)) {
+          throw new Error("Selected smoke file has no tests in this area.")
+        }
+      }
+      report = discoverPlaywrightTests(
+        selectedAreas[0]!,
+        undefined,
+        config,
+        files
+      )
+      const expected = {
+        ...fullManifest,
+        tests: fullManifest.tests.filter((test) => files.includes(test.file)),
+      }
+      expected.selectedTestCount = expected.tests.length
+      validatePlaywrightSmokeShardPartition(expected, [
+        buildPlaywrightSmokeManifest(report, selectedAreas, evidence),
+      ])
+    } else {
+      report = full
+    }
   }
   const counts = validatePlaywrightSmokeAreas(report, selectedAreas)
   const manifest = buildPlaywrightSmokeManifest(report, selectedAreas, evidence)

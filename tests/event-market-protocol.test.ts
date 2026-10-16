@@ -18,6 +18,10 @@ import {
   type EventMarketEventDraft,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "@conduit/core/protocol/verified-public-event"
 
 const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER_PUBKEY = getPublicKey(ORGANIZER_SECRET)
@@ -55,6 +59,32 @@ function signRaw(input: {
       content: input.content ?? "",
     },
     input.secret ?? ORGANIZER_SECRET
+  )
+}
+
+async function admitted(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error("Signed test fixture was rejected.")
+  return result.event
+}
+
+async function parsedMerchantProduct(input: {
+  tags: string[][]
+  content: string
+  [key: string]: unknown
+}) {
+  return parseProductEvent(
+    await admitted(
+      signRaw({
+        secret: MERCHANT_SECRET,
+        kind: EVENT_KINDS.PRODUCT,
+        tags: input.tags,
+        content: input.content,
+      })
+    )
   )
 }
 
@@ -124,7 +154,7 @@ describe("event-market coordinates and naddr references", () => {
 })
 
 describe("event-market protocol fixtures", () => {
-  it("requires every UTC day for a signed calendar crossing midnight", () => {
+  it("requires every UTC day for a signed calendar crossing midnight", async () => {
     const now = Date.UTC(2026, 8, 30, 22, 30) / 1_000
     for (const offset of [3_600, -60]) {
       const draft = buildEventMarketCalendarDraft({
@@ -137,7 +167,9 @@ describe("event-market protocol fixtures", () => {
       const dayTags = draft.tags.filter((tag) => tag[0] === "D")
       expect(dayTags).toHaveLength(2)
       expect(
-        parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, draft, now))
+        parseEventMarketCalendarEvent(
+          await admitted(signDraft(ORGANIZER_SECRET, draft, now))
+        )
       ).not.toBeNull()
       const incomplete = {
         ...draft,
@@ -145,13 +177,13 @@ describe("event-market protocol fixtures", () => {
       }
       expect(
         parseEventMarketCalendarEvent(
-          signDraft(ORGANIZER_SECRET, incomplete, now)
+          await admitted(signDraft(ORGANIZER_SECRET, incomplete, now))
         )
       ).toBeNull()
     }
   })
 
-  it("builds and parses NIP-52 date and timed calendar events", () => {
+  it("builds and parses NIP-52 date and timed calendar events", async () => {
     const dateDraft = buildEventMarketCalendarDraft({
       kind: EVENT_KINDS.CALENDAR_DATE,
       dTag: "market-day",
@@ -161,7 +193,7 @@ describe("event-market protocol fixtures", () => {
       locations: ["Public Square"],
     })
     const date = parseEventMarketCalendarEvent(
-      signDraft(ORGANIZER_SECRET, dateDraft)
+      await admitted(signDraft(ORGANIZER_SECRET, dateDraft))
     )
 
     expect(date).toMatchObject({
@@ -189,16 +221,18 @@ describe("event-market protocol fixtures", () => {
     ])
 
     const timed = parseEventMarketCalendarEvent(
-      signRaw({
-        kind: timedDraft.kind,
-        tags: [
-          ...timedDraft.tags,
-          ["t", "V4V"],
-          ["t", " Chicago "],
-          ["t", "V4V"],
-        ],
-        content: timedDraft.content,
-      })
+      await admitted(
+        signRaw({
+          kind: timedDraft.kind,
+          tags: [
+            ...timedDraft.tags,
+            ["t", "V4V"],
+            ["t", " Chicago "],
+            ["t", "V4V"],
+          ],
+          content: timedDraft.content,
+        })
+      )
     )
     expect(timed).toMatchObject({
       coordinate: `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER_PUBKEY}:night-market`,
@@ -211,7 +245,7 @@ describe("event-market protocol fixtures", () => {
     })
   })
 
-  it("publishes calendar summaries as interoperable NIP-52 content", () => {
+  it("publishes calendar summaries as interoperable NIP-52 content", async () => {
     const dateDraft = buildEventMarketCalendarDraft({
       kind: EVENT_KINDS.CALENDAR_DATE,
       dTag: "summary-date",
@@ -240,13 +274,17 @@ describe("event-market protocol fixtures", () => {
       "A timed public description.",
     ])
     expect(
-      parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, dateDraft))
+      parseEventMarketCalendarEvent(
+        await admitted(signDraft(ORGANIZER_SECRET, dateDraft))
+      )
     ).toMatchObject({
       content: "An all-day public description.",
       summary: "An all-day public description.",
     })
     expect(
-      parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, timedDraft))
+      parseEventMarketCalendarEvent(
+        await admitted(signDraft(ORGANIZER_SECRET, timedDraft))
+      )
     ).toMatchObject({
       content: "A timed public description.",
       summary: "A timed public description.",
@@ -267,7 +305,7 @@ describe("event-market protocol fixtures", () => {
     expect(draft.tags).toContainEqual(["summary", "Brief public summary."])
   })
 
-  it("parses the bounded timed-calendar day frontier without throwing past it", () => {
+  it("parses the bounded timed-calendar day frontier without throwing past it", async () => {
     const firstDay = 25_000
     const start = firstDay * 86_400
     const boundaryEnd = start + 370 * 86_400
@@ -284,7 +322,9 @@ describe("event-market protocol fixtures", () => {
         ]),
       ],
     })
-    expect(parseEventMarketCalendarEvent(boundary)).not.toBeNull()
+    expect(
+      parseEventMarketCalendarEvent(await admitted(boundary))
+    ).not.toBeNull()
 
     const oversized = signRaw({
       kind: EVENT_KINDS.CALENDAR_TIME,
@@ -300,11 +340,12 @@ describe("event-market protocol fixtures", () => {
       ],
     })
 
-    expect(() => parseEventMarketCalendarEvent(oversized)).not.toThrow()
-    expect(parseEventMarketCalendarEvent(oversized)).toBeNull()
+    const admittedOversized = await admitted(oversized)
+    expect(() => parseEventMarketCalendarEvent(admittedOversized)).not.toThrow()
+    expect(parseEventMarketCalendarEvent(admittedOversized)).toBeNull()
   })
 
-  it("rejects timed-calendar instants outside the JavaScript Date range", () => {
+  it("rejects timed-calendar instants outside the JavaScript Date range", async () => {
     const unsupportedStart = 8_640_000_000_001
     expect(() =>
       buildEventMarketCalendarDraft({
@@ -325,13 +366,16 @@ describe("event-market protocol fixtures", () => {
       ],
     })
 
-    expect(() => parseEventMarketCalendarEvent(unsupported)).not.toThrow()
-    expect(parseEventMarketCalendarEvent(unsupported)).toBeNull()
+    const admittedUnsupported = await admitted(unsupported)
+    expect(() =>
+      parseEventMarketCalendarEvent(admittedUnsupported)
+    ).not.toThrow()
+    expect(parseEventMarketCalendarEvent(admittedUnsupported)).toBeNull()
   })
 
-  it("preserves repeated raw shipping-option tags for fail-closed classification", () => {
+  it("preserves repeated raw shipping-option tags for fail-closed classification", async () => {
     const pickup = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup`
-    const parsed = parseProductEvent({
+    const parsed = await parsedMerchantProduct({
       id: "external-product-event",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_800_000_000,
@@ -363,7 +407,7 @@ describe("event-market protocol fixtures", () => {
       buildProductListingEventDraft({ product: parsed, dTag: "coffee" })
     ).toThrow("Product shipping option has conflicting repeated extra costs")
 
-    const identical = parseProductEvent({
+    const identical = await parsedMerchantProduct({
       id: "identical-duplicate-shipping-tags",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_800_000_000,
@@ -383,12 +427,12 @@ describe("event-market protocol fixtures", () => {
     ).toContainEqual(["shipping_option", pickup, "5"])
   })
 
-  it("distinguishes malformed shipping-option extra costs from an absent extra", () => {
+  it("distinguishes malformed shipping-option extra costs from an absent extra", async () => {
     const pickup = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup`
     const malformedValues = ["", "-1", "1e3", "Infinity", "not-a-price"]
 
     for (const malformedValue of malformedValues) {
-      const parsed = parseProductEvent({
+      const parsed = await parsedMerchantProduct({
         id: `malformed-extra-${malformedValue}`,
         pubkey: MERCHANT_PUBKEY,
         created_at: 1_800_000_000,
@@ -414,7 +458,7 @@ describe("event-market protocol fixtures", () => {
       ).toThrow("Product shipping option extra cost is malformed")
     }
 
-    const absent = parseProductEvent({
+    const absent = await parsedMerchantProduct({
       id: "absent-extra",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_800_000_000,
@@ -432,7 +476,7 @@ describe("event-market protocol fixtures", () => {
     ])
   })
 
-  it("retains malformed required product-price evidence without inventing purchase readiness", () => {
+  it("retains malformed required product-price evidence without inventing purchase readiness", async () => {
     const malformedPriceTags = [
       undefined,
       ["price", "", "USD"],
@@ -442,7 +486,7 @@ describe("event-market protocol fixtures", () => {
     ] as const
 
     for (const priceTag of malformedPriceTags) {
-      const parsed = parseProductEvent({
+      const parsed = await parsedMerchantProduct({
         id: `malformed-price-${priceTag?.[1] ?? "missing"}`,
         pubkey: MERCHANT_PUBKEY,
         created_at: 1_800_000_000,
@@ -466,7 +510,7 @@ describe("event-market protocol fixtures", () => {
       ).toThrow("Product price evidence is malformed")
     }
 
-    const validZero = parseProductEvent({
+    const validZero = await parsedMerchantProduct({
       id: "valid-zero-price",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_800_000_000,
@@ -482,8 +526,8 @@ describe("event-market protocol fixtures", () => {
     expect(validZero.priceEvidenceMalformed).toBeUndefined()
   })
 
-  it("refuses to publish malformed repeated event-market coordinates", () => {
-    const product = parseProductEvent({
+  it("refuses to publish malformed repeated event-market coordinates", async () => {
+    const product = await parsedMerchantProduct({
       id: "external-product-event",
       pubkey: MERCHANT_PUBKEY,
       created_at: 1_800_000_000,

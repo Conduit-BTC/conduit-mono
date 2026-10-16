@@ -11,16 +11,22 @@ import {
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 const HEX_64 = /^[0-9a-f]{64}$/i
 
 const CONTROL_CHARACTER = /\p{Cc}/u
@@ -97,6 +103,7 @@ export type EventMarketCalendarDraftInput =
     })
 
 export interface ParsedEventMarketCalendar {
+  /** Exact verified public revision; retaining it does not establish freshness. */
   signedEvent?: SignedPublicNostrEvent
   coordinate: string
   eventId: string
@@ -119,6 +126,56 @@ export interface ParsedEventMarketCalendar {
   endDate?: string
   startTzid?: string
   endTzid?: string
+  createdAt: number
+  sourceRelayUrls?: string[]
+}
+
+/** Historical router evidence only; new public markets use kind 31927. */
+export type EventMarketOrderAcceptance = "open" | "closed"
+
+const EVENT_MARKET_LIFECYCLE_TAG = "conduit_event_market"
+
+export interface ParsedEventMarketPickup {
+  /** Exact verified public revision; retaining it does not establish freshness. */
+  signedEvent?: SignedPublicNostrEvent
+  coordinate: string
+  eventId: string
+  authorPubkey: string
+  dTag: string
+  title: string
+  content: string
+  price: number
+  currency: string
+  countries: string[]
+  location?: string
+  geohash?: string
+  createdAt: number
+  sourceRelayUrls?: string[]
+  /** Network-read provenance; retained records remain display-only. */
+  evidenceState?: "live" | "retained"
+}
+
+export interface ParsedEventMarketCollection {
+  /** Exact verified revision used for lossless lifecycle-only updates. */
+  signedEvent?: SignedPublicNostrEvent
+  /** Omitted only for legacy events whose scheduled end closes ordering. */
+  orderAcceptance?: EventMarketOrderAcceptance
+  coordinate: string
+  eventId: string
+  authorPubkey: string
+  dTag: string
+  title: string
+  content: string
+  summary?: string
+  image?: string
+  location?: string
+  geohash?: string
+  eventCoordinates: string[]
+  pickupCoordinates: string[]
+  productCoordinates: string[]
+  /** Valid bounded relay hints from product `a` tags, keyed by coordinate. */
+  productRelayHintsByCoordinate?: Record<string, string[]>
+  unsupportedReferences: string[]
   createdAt: number
   sourceRelayUrls?: string[]
 }
@@ -485,13 +542,19 @@ export function buildEventMarketCalendarDraft(
   }
 }
 
-function tagValues(tags: readonly string[][], name: string): string[] {
+function tagValues(
+  tags: readonly (readonly string[])[],
+  name: string
+): string[] {
   return tags
     .filter((tag) => tag[0] === name && typeof tag[1] === "string")
     .map((tag) => tag[1]!)
 }
 
-function singleTag(tags: readonly string[][], name: string): string | null {
+function singleTag(
+  tags: readonly (readonly string[])[],
+  name: string
+): string | null {
   const values = tagValues(tags, name)
   return values.length === 1 ? values[0]! : null
 }
@@ -509,7 +572,7 @@ function eventCoordinate(
 }
 
 function optionalSingleTag(
-  tags: readonly string[][],
+  tags: readonly (readonly string[])[],
   name: string
 ): string | undefined | null {
   const values = tagValues(tags, name)
@@ -517,17 +580,19 @@ function optionalSingleTag(
   return values[0]
 }
 
-function validSignedKind(
-  event: SignedPublicNostrEvent,
-  kinds: readonly number[]
-): boolean {
-  return kinds.includes(event.kind) && isValidSignedPublicNostrEvent(event)
+export function parseEventMarketCalendarEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketCalendar | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketCalendarFieldsForPrivateOrder(event)
+    : null
 }
 
-export function parseEventMarketCalendarEvent(
+/** Field parser for the private order schema after its own signature refinement. */
+export function parseEventMarketCalendarFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketCalendar | null {
-  if (!validSignedKind(event, EVENT_MARKET_CALENDAR_KINDS)) return null
+  if (!EVENT_MARKET_CALENDAR_KINDS.includes(event.kind as never)) return null
   const coordinate = eventCoordinate(event, EVENT_MARKET_CALENDAR_KINDS)
   const title = singleTag(event.tags, "title")
   const startValue = singleTag(event.tags, "start")
@@ -633,6 +698,201 @@ export function parseEventMarketCalendarEvent(
   }
 }
 
+/** Parse a signed legacy pickup revision for immutable checkout recovery only. */
+export function parseEventMarketPickupEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketPickup | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketPickupFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private-order fields; its owner validates the signature first. */
+export function parseEventMarketPickupFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedEventMarketPickup | null {
+  if (event.kind !== EVENT_KINDS.SHIPPING_OPTION) return null
+  if (
+    event.tags.some(
+      (tag) => tag[0] === "destination_schema" || tag[0] === "destination"
+    )
+  ) {
+    return null
+  }
+  const coordinate = eventCoordinate(event, [EVENT_KINDS.SHIPPING_OPTION])
+  const title = singleTag(event.tags, "title")
+  const service = singleTag(event.tags, "service")
+  const priceTags = event.tags.filter((tag) => tag[0] === "price")
+  const location = optionalSingleTag(event.tags, "location")
+  const geohash = optionalSingleTag(event.tags, "g")
+  if (
+    !coordinate ||
+    !title ||
+    service !== "pickup" ||
+    priceTags.length !== 1 ||
+    location === null ||
+    geohash === null ||
+    (!location && !geohash) ||
+    (geohash !== undefined && !GEOHASH.test(geohash))
+  ) {
+    return null
+  }
+  const priceValue = priceTags[0]?.[1]
+  const price =
+    priceValue !== undefined && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(priceValue)
+      ? Number(priceValue)
+      : NaN
+  const currency = priceTags[0]?.[2]?.trim().toUpperCase()
+  if (!Number.isFinite(price) || price < 0 || !currency) return null
+  const countries = Array.from(
+    new Set(
+      event.tags
+        .filter((tag) => tag[0] === "country")
+        .flatMap((tag) => tag.slice(1))
+        .map((country) => country.trim().toUpperCase())
+    )
+  )
+  if (
+    countries.length === 0 ||
+    countries.some((country) => !/^[A-Z]{2}$/.test(country))
+  ) {
+    return null
+  }
+
+  return {
+    signedEvent: event,
+    coordinate: coordinate.coordinate,
+    eventId: event.id.toLowerCase(),
+    authorPubkey: coordinate.authorPubkey,
+    dTag: coordinate.dTag,
+    title,
+    content: event.content,
+    price,
+    currency,
+    countries,
+    ...(location ? { location } : {}),
+    ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
+    createdAt: event.created_at * 1_000,
+  }
+}
+
+/** Parse a signed legacy collection revision for immutable checkout recovery only. */
+export function parseEventMarketCollectionEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketCollection | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketCollectionFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private-order fields; its owner validates the signature first. */
+export function parseEventMarketCollectionFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedEventMarketCollection | null {
+  if (event.kind !== EVENT_KINDS.PRODUCT_COLLECTION) return null
+  const coordinate = eventCoordinate(event, [EVENT_KINDS.PRODUCT_COLLECTION])
+  const title = singleTag(event.tags, "title")
+  const summary = optionalSingleTag(event.tags, "summary")
+  const image = optionalSingleTag(event.tags, "image")
+  const location = optionalSingleTag(event.tags, "location")
+  const geohash = optionalSingleTag(event.tags, "g")
+  const lifecycleTags = event.tags.filter(
+    (tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG
+  )
+  const lifecycle = lifecycleTags[0]
+  if (
+    lifecycleTags.length > 1 ||
+    (lifecycle &&
+      (lifecycle.length !== 3 ||
+        lifecycle[1] !== "1" ||
+        (lifecycle[2] !== "open" && lifecycle[2] !== "closed")))
+  ) {
+    return null
+  }
+  const orderAcceptance = lifecycle?.[2] as
+    EventMarketOrderAcceptance | undefined
+  if (
+    !coordinate ||
+    !title ||
+    summary === null ||
+    image === null ||
+    location === null ||
+    geohash === null
+  ) {
+    return null
+  }
+  if (geohash && !GEOHASH.test(geohash)) return null
+
+  const eventCoordinates: string[] = []
+  const productCoordinates: string[] = []
+  const productRelayHintsByCoordinate = new Map<string, string[]>()
+  const pickupCoordinates: string[] = []
+  const unsupportedReferences: string[] = []
+  for (const tag of event.tags) {
+    if (tag[0] === "a" && tag[1]) {
+      const parsed = parseAddressableCoordinate(tag[1])
+      if (!parsed) unsupportedReferences.push(tag[1])
+      else if (EVENT_MARKET_CALENDAR_KINDS.includes(parsed.kind as never)) {
+        eventCoordinates.push(parsed.coordinate)
+      } else if (parsed.kind === EVENT_KINDS.PRODUCT) {
+        productCoordinates.push(parsed.coordinate)
+        const relayHints = normalizePortableRelayHints(tag[2] ? [tag[2]] : [])
+        if (relayHints.length > 0) {
+          productRelayHintsByCoordinate.set(
+            parsed.coordinate,
+            Array.from(
+              new Set([
+                ...(productRelayHintsByCoordinate.get(parsed.coordinate) ?? []),
+                ...relayHints,
+              ])
+            )
+          )
+        }
+      } else {
+        unsupportedReferences.push(parsed.coordinate)
+      }
+    }
+    if (tag[0] === "shipping_option" && tag[1]) {
+      const parsed = parseAddressableCoordinate(tag[1])
+      if (
+        parsed?.kind === EVENT_KINDS.SHIPPING_OPTION &&
+        parsed.authorPubkey === coordinate.authorPubkey
+      ) {
+        pickupCoordinates.push(parsed.coordinate)
+      } else {
+        unsupportedReferences.push(parsed?.coordinate ?? tag[1])
+      }
+    }
+  }
+
+  return {
+    signedEvent: event,
+    coordinate: coordinate.coordinate,
+    eventId: event.id.toLowerCase(),
+    authorPubkey: coordinate.authorPubkey,
+    dTag: coordinate.dTag,
+    title,
+    content: event.content,
+    ...(summary ? { summary } : {}),
+    ...(image ? { image } : {}),
+    ...(location ? { location } : {}),
+    ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
+    ...(orderAcceptance ? { orderAcceptance } : {}),
+    eventCoordinates: Array.from(new Set(eventCoordinates)),
+    pickupCoordinates: Array.from(new Set(pickupCoordinates)),
+    productCoordinates: Array.from(new Set(productCoordinates)),
+    ...(productRelayHintsByCoordinate.size > 0
+      ? {
+          productRelayHintsByCoordinate: Object.fromEntries(
+            productRelayHintsByCoordinate
+          ),
+        }
+      : {}),
+    unsupportedReferences: Array.from(new Set(unsupportedReferences)),
+    createdAt: event.created_at * 1_000,
+  }
+}
+
 export interface EventMarketDeletionEvidence {
   /** Signed kind-5 event that supplied this deletion evidence. */
   deletionEventId: string
@@ -653,8 +913,7 @@ function validDeletionEvents(
 ): SignedPublicNostrEvent[] {
   return events.filter(
     (event) =>
-      event.kind === EVENT_KINDS.DELETION &&
-      isValidSignedPublicNostrEvent(event)
+      event.kind === EVENT_KINDS.DELETION && isVerifiedNostrEvent(event)
   )
 }
 
@@ -803,6 +1062,7 @@ export interface EventMarketReadPlan {
   relayUrls: string[]
   /** Full ordered candidates passed to final source-policy admission. */
   candidateRelayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
@@ -864,6 +1124,7 @@ export async function getEventMarketReadPlan(input: {
   const lookupOptions = {
     signal: input.signal,
     relayUrls: relayListLookupPlan.candidateRelayUrls,
+    relayTargets: relayListLookupPlan.relayTargets,
     maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
@@ -976,6 +1237,13 @@ export async function getEventMarketReadPlan(input: {
   return {
     relayUrls: selectedRelayUrls,
     candidateRelayUrls: relayUrls,
+    relayTargets: mergeRelayTargets(
+      plan.relayTargets,
+      relayTargetsFromUrls(portableRelayHints, {
+        kind: "public_hint",
+        operation: "read",
+      })
+    ).filter((target) => relayUrls.includes(target.url)),
     maxRelayAttempts: plan.maxRelayAttempts ?? EVENT_MARKET_MAX_RELAY_HINTS,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],

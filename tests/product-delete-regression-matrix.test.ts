@@ -526,7 +526,10 @@ describe("product deletion convergence regression matrix", () => {
       createdAt: 100,
       title: "Isolated product",
     })
-    const deletionRelayPlans: string[][] = []
+    const deletionRelayPlans: Array<{
+      relayUrls: string[]
+      targetUrls: string[]
+    }> = []
     Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
     __setCommerceTestOverrides({
       fetchPublicEvents: async (filter, options) => {
@@ -534,7 +537,11 @@ describe("product deletion convergence regression matrix", () => {
           return [product] as never
         }
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
-          deletionRelayPlans.push(options?.relayUrls ?? [])
+          deletionRelayPlans.push({
+            relayUrls: options?.relayUrls ?? [],
+            targetUrls:
+              options?.relayTargets?.map((target) => target.url) ?? [],
+          })
         }
         return []
       },
@@ -545,8 +552,10 @@ describe("product deletion convergence regression matrix", () => {
     expect(deletionRelayPlans.length).toBeGreaterThan(0)
     expect(
       deletionRelayPlans.every(
-        (relayUrls) =>
-          relayUrls.length === 1 && relayUrls[0] === isolatedRelayUrl
+        ({ relayUrls, targetUrls }) =>
+          relayUrls.length === 1 &&
+          relayUrls[0] === isolatedRelayUrl &&
+          targetUrls.includes(isolatedRelayUrl)
       )
     ).toBe(true)
   })

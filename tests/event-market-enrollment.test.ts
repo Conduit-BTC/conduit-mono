@@ -79,9 +79,9 @@ function memoryStorage() {
 function delivery(ack = true): PublishWithPlannerResult {
   return {
     plan: {} as never,
-    attemptedRelayUrls: ["wss://inbox.example"],
-    successfulRelayUrls: ack ? ["wss://inbox.example"] : [],
-    failedRelayUrls: ack ? [] : ["wss://inbox.example"],
+    attemptedRelayUrls: ["wss://inbox.conduit.market"],
+    successfulRelayUrls: ack ? ["wss://inbox.conduit.market"] : [],
+    failedRelayUrls: ack ? [] : ["wss://inbox.conduit.market"],
     relayFailureMessages: {},
   }
 }
@@ -211,7 +211,7 @@ describe("Event Market private enrollment", () => {
       inbox: async (owner: string) => ({
         state: "ready" as const,
         organizerPubkey: owner,
-        relayUrls: ["wss://inbox.example"],
+        relayUrls: ["wss://inbox.conduit.market"],
       }),
       publish: (async (event) => {
         attempted.push(event.id)
@@ -288,7 +288,7 @@ describe("Event Market private enrollment", () => {
       inbox: async (owner: string) => ({
         state: "ready" as const,
         organizerPubkey: owner,
-        relayUrls: ["wss://inbox.example"],
+        relayUrls: ["wss://inbox.conduit.market"],
       }),
       publish: (async () => {
         published += 1

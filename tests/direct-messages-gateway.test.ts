@@ -1,1064 +1,514 @@
-import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+  getPublicKey,
+} from "nostr-tools"
+import { v2 } from "nostr-tools/nip44"
+import { createWrap, wrapEvent } from "nostr-tools/nip59"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
-  EVENT_KINDS,
   getCachedDirectMessageConversationList,
   getConversationDetail,
   getDirectMessageConversationList,
   getDirectMessageThread,
   markDirectMessageConversationRead,
 } from "@conduit/core"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import type {
+  NostrKeySigner,
+  SignedNostrEvent,
+} from "../packages/core/src/protocol/nostr-event-signer"
+import {
+  getProtectedReadAuthorization,
+  installProtectedReadSigner,
+  __resetProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
+import {
+  activateAccountSigner,
+  retireAccountSigner,
+  SessionSigner,
+} from "../packages/core/src/protocol/session-signer"
+import type {
+  ReadProtectedInboxOptions,
+  ProtectedInboxReadResult,
+} from "../packages/core/src/protocol/protected-inbox-read"
 
-const BUYER = "buyer-pubkey"
-const MERCHANT = "merchant-pubkey"
-
-type Row = {
+type CacheRow = {
   id: string
   senderPubkey: string
   recipientPubkey: string
   content: string
-  orderCompanion?: {
-    orderId: string
-    orderRumorId: string
-  }
   kind: number
   createdAt: number
   read: 0 | 1
 }
 
-let directRows: Row[] = []
-let orderRows: Array<{
-  id: string
-  orderId?: string
-  type?: string
-  senderPubkey?: string
-  recipientPubkey?: string
-  rawContent: string
-}> = []
+const relay = "wss://inbox.example"
+const databases: ConduitDB[] = []
+const owners: CommerceInbox[] = []
+const signers: SessionSigner[] = []
+let cacheRows: CacheRow[] = []
 
-function giftWrapEvent(id: string, recipient = BUYER) {
+function signedRumor(
+  authorSecret: Uint8Array,
+  recipientPubkey: string,
+  kind: number,
+  content: string,
+  extraTags: string[][] = [],
+  createdAt = 1_700_000_000
+): { wrap: SignedNostrEvent; rumorId: string } {
+  const draft = {
+    kind,
+    pubkey: getPublicKey(authorSecret),
+    created_at: createdAt,
+    tags: [["p", recipientPubkey], ...extraTags],
+    content,
+  }
   return {
-    id,
-    kind: EVENT_KINDS.GIFT_WRAP,
-    pubkey: MERCHANT,
-    created_at: 100,
-    content: "wrapped",
-    tags: [["p", recipient]],
+    wrap: wrapEvent(draft, authorSecret, recipientPubkey),
+    rumorId: getEventHash(draft),
   }
 }
 
-function directRumor(params: {
-  id: string
-  sender: string
-  recipient: string
-  content: string
+function legacyEvent(
+  authorSecret: Uint8Array,
+  recipientPubkey: string,
+  content: string,
   createdAt: number
-  subject?: string
-  extraTags?: string[][]
-}) {
-  return {
-    id: params.id,
-    kind: EVENT_KINDS.DIRECT_MESSAGE,
-    pubkey: params.sender,
-    created_at: params.createdAt,
-    content: params.content,
-    tags: [
-      ["p", params.recipient],
-      ...(params.subject ? [["subject", params.subject]] : []),
-      ...(params.extraTags ?? []),
-    ],
-  }
+): SignedNostrEvent {
+  return finalizeEvent(
+    {
+      kind: 4,
+      created_at: createdAt,
+      tags: [["p", recipientPubkey]],
+      content,
+    },
+    authorSecret
+  )
 }
 
-function orderRumor(id: string) {
-  return {
-    id,
-    kind: EVENT_KINDS.ORDER,
-    pubkey: BUYER,
-    created_at: 105,
-    content: JSON.stringify({ note: "order note" }),
-    tags: [
-      ["p", MERCHANT],
-      ["type", "message"],
-      ["order", "order-1"],
+function orderContent(
+  orderId: string,
+  buyer: string,
+  merchant: string
+): string {
+  return JSON.stringify({
+    id: orderId,
+    merchantPubkey: merchant,
+    buyerPubkey: buyer,
+    items: [
+      {
+        productId: "synthetic-item",
+        format: "physical",
+        quantity: 1,
+        priceAtPurchase: 1,
+        currency: "SATS",
+      },
     ],
-  }
+    subtotal: 1,
+    currency: "SATS",
+    shippingCostSats: 0,
+    shippingCostStatus: "not_required",
+    createdAt: 1_700_000_000_000,
+  })
 }
 
-function legacyDirectMessage(params: {
-  id: string
-  sender: string
-  recipient: string
-  ciphertext: string
-  createdAt: number
-}) {
+function setup() {
+  const buyerSecret = generateSecretKey()
+  const merchantSecret = generateSecretKey()
+  const buyer = getPublicKey(buyerSecret)
+  const merchant = getPublicKey(merchantSecret)
+  let decrypts = 0
+  const provider: NostrKeySigner = {
+    pubkey: buyer,
+    authMethod: "nip07",
+    getPublicKey: async () => buyer,
+    signEvent: async (event) => finalizeEvent(event, buyerSecret),
+    encryptNip44: async (peer, content) =>
+      v2.encrypt(content, v2.utils.getConversationKey(buyerSecret, peer)),
+    decryptNip44: async (peer, content) => {
+      decrypts += 1
+      return v2.decrypt(content, v2.utils.getConversationKey(buyerSecret, peer))
+    },
+    decryptLegacy: async (_peer, content) => `plain:${content}`,
+  }
+  let current = true
+  const signer = new SessionSigner(provider, {
+    expectedPubkey: buyer,
+    revision: crypto.randomUUID(),
+    authMethod: "nip07",
+    getCapabilities: () => ({
+      signEvent: true,
+      nip44: true,
+      nip04Decrypt: true,
+    }),
+    hasAuthority: () => current,
+  })
+  activateAccountSigner(signer)
+  signers.push(signer)
+  installProtectedReadSigner(signer, buyer, () => current)
+  const authorization = getProtectedReadAuthorization(buyer)!
+  const database = new ConduitDB(`dm-gateway-${crypto.randomUUID()}`, {
+    indexedDB: new IDBFactory(),
+    IDBKeyRange,
+  })
+  databases.push(database)
+  const owner = new CommerceInbox(
+    authorization,
+    signer,
+    new CommerceInboxStore(authorization, database)
+  )
+  owners.push(owner)
+  const events: SignedNostrEvent[] = []
+  const reads: ReadProtectedInboxOptions["transport"][] = []
+  const read = async (
+    options: ReadProtectedInboxOptions
+  ): Promise<ProtectedInboxReadResult> => {
+    reads.push(options.transport)
+    const selected = events.filter((event) => {
+      if (options.transport === "nip17")
+        return (
+          event.kind === 1059 &&
+          event.tags.some((tag) => tag[0] === "p" && tag[1] === buyer)
+        )
+      if (options.transport === "nip04_incoming")
+        return (
+          event.kind === 4 &&
+          event.pubkey !== buyer &&
+          event.tags.some((tag) => tag[0] === "p" && tag[1] === buyer)
+        )
+      return event.kind === 4 && event.pubkey === buyer
+    })
+    return {
+      events: selected,
+      coverage: "complete",
+      auth: {
+        state: "not_challenged",
+        challengedCount: 0,
+        succeededCount: 0,
+        failedCount: 0,
+      },
+      relayResult: {
+        status: "success",
+        observations: [],
+        attemptedCount: 1,
+        completedCount: 1,
+        failedCount: 0,
+        authoritativeEmpty: selected.length === 0,
+        relays: [
+          {
+            relayIndex: 0,
+            status: "success",
+            auth: "not_challenged",
+            eventCount: selected.length,
+            duplicateCount: 0,
+            malformedCount: 0,
+            unusableCount: 0,
+          },
+        ],
+      },
+    }
+  }
+  __setCommerceTestOverrides({
+    getCommerceInbox: (principal) => {
+      if (principal !== buyer) throw new Error("Wrong account owner")
+      return owner
+    },
+    getAccountSigner: () => signer,
+    resolveInboxRelayUrls: async () => [relay],
+    readProtectedInbox: read,
+  })
   return {
-    id: params.id,
-    kind: EVENT_KINDS.DM_LEGACY,
-    pubkey: params.sender,
-    created_at: params.createdAt,
-    content: params.ciphertext,
-    tags: [["p", params.recipient]],
+    buyer,
+    merchant,
+    buyerSecret,
+    merchantSecret,
+    owner,
+    database,
+    events,
+    reads,
+    decrypts: () => decrypts,
+    retire: () => {
+      current = false
+      retireAccountSigner(signer)
+    },
   }
 }
 
 beforeEach(() => {
   __resetCommerceTestOverrides()
-  directRows = []
-  orderRows = []
-  __setCommerceTestOverrides({
-    allowMissingProtectedReadAuthorization: true,
-    now: () => 1_700_000_000_000,
-    getAccountSigner: () => plainTestSigner({} as never),
-    resolveInboxRelayUrls: async () => ["wss://inbox.example"],
-    getCachedDirectMessages: async (principalPubkey) =>
-      directRows.filter(
-        (row) =>
-          row.recipientPubkey === principalPubkey ||
-          row.senderPubkey === principalPubkey
-      ) as never,
-    putCachedDirectMessages: async (rows) => {
-      for (const row of rows as Row[]) {
-        directRows = [
-          ...directRows.filter((existing) => existing.id !== row.id),
-          row,
-        ]
-      }
-    },
-    deleteCachedDirectMessages: async (ids) => {
-      const deleted = new Set(ids)
-      directRows = directRows.filter((row) => !deleted.has(row.id))
-    },
-    getCachedOrderMessages: async () => orderRows as never,
-    putCachedOrderMessages: async (rows) => {
-      for (const row of rows as Array<{ id: string; rawContent: string }>) {
-        orderRows = [
-          ...orderRows.filter((existing) => existing.id !== row.id),
-          row,
-        ]
-      }
-    },
-    markDirectMessagesRead: async (
-      principalPubkey,
-      counterpartyPubkey,
-      transport = "nip17"
-    ) => {
-      let updated = 0
-      directRows = directRows.map((row) => {
-        if (
-          row.recipientPubkey !== principalPubkey ||
-          row.senderPubkey !== counterpartyPubkey ||
-          row.kind !==
-            (transport === "nip04"
-              ? EVENT_KINDS.DM_LEGACY
-              : EVENT_KINDS.DIRECT_MESSAGE) ||
-          row.read !== 0
-        ) {
-          return row
-        }
-        updated += 1
-        return { ...row, read: 1 }
-      })
-      return updated
-    },
-  })
+  cacheRows = []
 })
 
-afterEach(() => {
+afterEach(async () => {
   __resetCommerceTestOverrides()
-  directRows = []
-  orderRows = []
+  for (const owner of owners.splice(0)) owner.stop()
+  __resetProtectedReadSigner()
+  for (const signer of signers.splice(0)) retireAccountSigner(signer)
+  for (const database of databases.splice(0)) await database.delete()
 })
 
-describe("general direct-message gateway", () => {
-  it("queries incoming and outgoing kind-4 filters", async () => {
-    const legacyFilters: Array<Record<string, unknown>> = []
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) => {
-        if (filter.kinds?.includes(EVENT_KINDS.DM_LEGACY)) {
-          legacyFilters.push(filter as Record<string, unknown>)
-        }
-        return []
-      },
-    })
-
-    await getDirectMessageConversationList({ principalPubkey: BUYER })
-
-    expect(legacyFilters).toHaveLength(2)
-    expect(legacyFilters).toContainEqual(
-      expect.objectContaining({
-        kinds: [EVENT_KINDS.DM_LEGACY],
-        "#p": [BUYER],
-      })
+describe("shared direct-message gateway", () => {
+  it("reads incoming and outgoing legacy events into distinct transport threads", async () => {
+    const h = setup()
+    h.events.push(
+      signedRumor(h.merchantSecret, h.buyer, 14, "current message").wrap,
+      legacyEvent(h.merchantSecret, h.buyer, "legacy-incoming", 1_700_000_001),
+      legacyEvent(h.buyerSecret, h.merchant, "legacy-outgoing", 1_700_000_002)
     )
-    expect(legacyFilters).toContainEqual(
-      expect.objectContaining({
-        kinds: [EVENT_KINDS.DM_LEGACY],
-        authors: [BUYER],
-      })
-    )
-  })
-
-  it("keeps nip17 and nip04 summaries separate and caches kind-4 plaintext", async () => {
-    const incomingLegacy = legacyDirectMessage({
-      id: "legacy-incoming",
-      sender: MERCHANT,
-      recipient: BUYER,
-      ciphertext: "legacy incoming cipher",
-      createdAt: 99,
-    })
-    const outgoingLegacy = legacyDirectMessage({
-      id: "legacy-outgoing",
-      sender: BUYER,
-      recipient: MERCHANT,
-      ciphertext: "legacy outgoing cipher",
-      createdAt: 100,
-    })
-    __setCommerceTestOverrides({
-      getAccountSigner: () =>
-        plainTestSigner({
-          decrypt: async (_user: unknown, ciphertext: string) =>
-            `plain:${ciphertext}`,
-        } as never),
-      fetchPublicEvents: async (filter) => {
-        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
-          return [giftWrapEvent("wrap-current")] as never
-        }
-        if (filter.kinds?.includes(EVENT_KINDS.DM_LEGACY)) {
-          return (filter.authors ? [outgoingLegacy] : [incomingLegacy]) as never
-        }
-        return []
-      },
-      giftUnwrap: async () =>
-        directRumor({
-          id: "current-dm",
-          sender: MERCHANT,
-          recipient: BUYER,
-          content: "current message",
-          createdAt: 101,
-        }) as never,
-    })
-
     const result = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
+      principalPubkey: h.buyer,
     })
-
-    expect(result.data.map((conversation) => conversation.id).sort()).toEqual([
-      `nip04:${MERCHANT}`,
-      `nip17:${MERCHANT}`,
+    expect(h.reads).toContain("nip04_incoming")
+    expect(h.reads).toContain("nip04_outgoing")
+    expect(result.data.map((item) => item.id).sort()).toEqual([
+      `nip04:${h.merchant}`,
+      `nip17:${h.merchant}`,
     ])
-    expect(
-      result.data.find((conversation) => conversation.transport === "nip04")
-        ?.messageCount
-    ).toBe(2)
-    expect(
-      directRows
-        .filter((row) => row.kind === EVENT_KINDS.DM_LEGACY)
-        .map((row) => ({ id: row.id, content: row.content }))
-        .sort((a, b) => a.id.localeCompare(b.id))
-    ).toEqual([
-      { id: "legacy-incoming", content: "plain:legacy incoming cipher" },
-      { id: "legacy-outgoing", content: "plain:legacy outgoing cipher" },
+    const legacy = result.data.find((item) => item.transport === "nip04")
+    expect(legacy?.messages.map((message) => message.content).sort()).toEqual([
+      "plain:legacy-incoming",
+      "plain:legacy-outgoing",
     ])
+    expect(await h.database.messages.count()).toBe(0)
+    expect(
+      JSON.stringify(await h.database.commerceInboxRecords.toArray())
+    ).not.toContain("plain:legacy")
   })
 
-  it("retries only failed legacy decrypts without suppressing nip17", async () => {
-    const decryptCalls: Record<string, number> = {}
-    let unwrapCalls = 0
-    const goodLegacy = legacyDirectMessage({
-      id: "legacy-good",
-      sender: MERCHANT,
-      recipient: BUYER,
-      ciphertext: "good-cipher",
-      createdAt: 99,
-    })
-    const badLegacy = legacyDirectMessage({
-      id: "legacy-bad",
-      sender: MERCHANT,
-      recipient: BUYER,
-      ciphertext: "bad-cipher",
-      createdAt: 100,
-    })
-    __setCommerceTestOverrides({
-      getAccountSigner: () =>
-        plainTestSigner({
-          decrypt: async (_user: unknown, ciphertext: string) => {
-            decryptCalls[ciphertext] = (decryptCalls[ciphertext] ?? 0) + 1
-            if (ciphertext === "bad-cipher") throw new Error("private")
-            return "legacy readable"
-          },
-        } as never),
-      fetchPublicEvents: async (filter) => {
-        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
-          return [giftWrapEvent("wrap-current")] as never
-        }
-        if (filter.kinds?.includes(EVENT_KINDS.DM_LEGACY) && !filter.authors) {
-          return [goodLegacy, badLegacy] as never
-        }
-        return []
-      },
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return directRumor({
-          id: "current-dm",
-          sender: MERCHANT,
-          recipient: BUYER,
-          content: "current readable",
-          createdAt: 101,
-        }) as never
-      },
-    })
-
-    const first = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    const second = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    const third = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(first.meta.legacyDecryptFailures).toEqual([
-      { eventId: "legacy-bad", reason: "decrypt_failed", retryable: true },
-    ])
-    expect(second.meta.legacyDecryptFailures).toEqual([
-      { eventId: "legacy-bad", reason: "decrypt_failed", retryable: false },
-    ])
-    expect(third.meta.legacyDecryptFailures).toEqual(
-      second.meta.legacyDecryptFailures
+  it("shares one authenticated decode across concurrent direct and order consumers", async () => {
+    const h = setup()
+    h.events.push(
+      signedRumor(h.merchantSecret, h.buyer, 14, "hello").wrap,
+      signedRumor(
+        h.merchantSecret,
+        h.buyer,
+        16,
+        JSON.stringify({ note: "order note" }),
+        [
+          ["type", "message"],
+          ["order", "order-1"],
+        ],
+        1_700_000_001
+      ).wrap
     )
-    expect(decryptCalls).toEqual({ "good-cipher": 1, "bad-cipher": 2 })
-    expect(unwrapCalls).toBe(1)
-    expect(second.data.map((conversation) => conversation.id).sort()).toEqual([
-      `nip04:${MERCHANT}`,
-      `nip17:${MERCHANT}`,
-    ])
-  })
-
-  it("groups kind-14 messages by counterparty and ignores kind-16 order wraps", async () => {
-    const rumors: Record<string, ReturnType<typeof directRumor>> = {
-      "wrap-a": directRumor({
-        id: "dm-a",
-        sender: MERCHANT,
-        recipient: BUYER,
-        content: "hi, how can I help?",
-        createdAt: 101,
-      }),
-      "wrap-b": directRumor({
-        id: "dm-b",
-        sender: BUYER,
-        recipient: MERCHANT,
-        content: "do you ship to NZ?",
-        createdAt: 102,
-      }),
-    }
-
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([
-              giftWrapEvent("wrap-a"),
-              giftWrapEvent("wrap-b"),
-              giftWrapEvent("wrap-order"),
-            ] as never)
-          : [],
-      giftUnwrap: async (event) =>
-        (event.id === "wrap-order"
-          ? orderRumor("order-rumor")
-          : rumors[event.id]) as never,
-    })
-
-    const result = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(result.data).toHaveLength(1)
-    expect(result.data[0]?.counterpartyPubkey).toBe(MERCHANT)
-    expect(result.data[0]?.messageCount).toBe(2)
-    expect(result.data[0]?.preview).toBe("do you ship to NZ?")
-    expect(result.data[0]?.unreadFromCounterparty).toBe(1)
-    expect(orderRows).toHaveLength(1)
-  })
-
-  it("keeps exact order companions out of the generic messages inbox", async () => {
-    const unwrapCalls: Record<string, number> = {}
-    orderRows = [
-      {
-        id: "cached-authoritative-order",
-        orderId: "order-1",
-        type: "order",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        rawContent: "{}",
-      },
-    ]
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([
-              giftWrapEvent("wrap-order-companion"),
-              giftWrapEvent("wrap-unmatched-companion"),
-              giftWrapEvent("wrap-subject-only"),
-              giftWrapEvent("wrap-normal-subject"),
-              giftWrapEvent("wrap-human-marker"),
-            ] as never)
-          : [],
-      giftUnwrap: async (event) => {
-        unwrapCalls[event.id] = (unwrapCalls[event.id] ?? 0) + 1
-        return directRumor({
-          id: event.id.replace("wrap-", "dm-"),
-          sender: MERCHANT,
-          recipient: BUYER,
-          content:
-            event.id === "wrap-order-companion"
-              ? "A new order was sent to you through Conduit Market.\nReview it at: https://sell.conduit.market/orders?order=order-1"
-              : event.id === "wrap-unmatched-companion"
-                ? "A new order was sent to you through Conduit Market.\nReview it at: https://sell.conduit.market/orders?order=missing-order"
-                : event.id === "wrap-subject-only"
-                  ? "A normal message can use the same subject."
-                  : event.id === "wrap-human-marker"
-                    ? "Reply on Signal, not here."
-                    : "This remains a normal conversation message.",
-          createdAt:
-            event.id === "wrap-unmatched-companion"
-              ? 100
-              : event.id === "wrap-human-marker"
-                ? 99
-                : 101,
-          subject:
-            event.id !== "wrap-normal-subject"
-              ? "conduit-order-notification"
-              : "conduit-order-notification-followup",
-          extraTags:
-            event.id === "wrap-order-companion" ||
-            event.id === "wrap-unmatched-companion" ||
-            event.id === "wrap-human-marker"
-              ? [
-                  [
-                    "order",
-                    event.id === "wrap-unmatched-companion"
-                      ? "missing-order"
-                      : "order-1",
-                  ],
-                  [
-                    "conduit",
-                    "order-companion",
-                    "1",
-                    event.id === "wrap-unmatched-companion"
-                      ? "missing-order-event"
-                      : "cached-authoritative-order",
-                  ],
-                  ["client", "Conduit Market"],
-                ]
-              : [],
-        }) as never
-      },
-    })
-
-    const first = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    const second = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(first.data).toHaveLength(1)
-    expect(first.data[0]?.preview).toBe(
-      "This remains a normal conversation message."
-    )
-    expect(directRows.map((row) => row.id)).toEqual([
-      "dm-subject-only",
-      "dm-normal-subject",
-      "dm-human-marker",
-      "dm-unmatched-companion",
-    ])
-    expect(
-      directRows.find((row) => row.id === "dm-unmatched-companion")
-    ).toMatchObject({
-      read: 1,
-      orderCompanion: {
-        orderId: "missing-order",
-        orderRumorId: "missing-order-event",
-      },
-    })
-    expect(unwrapCalls).toEqual({
-      "wrap-order-companion": 1,
-      "wrap-unmatched-companion": 1,
-      "wrap-subject-only": 1,
-      "wrap-normal-subject": 1,
-      "wrap-human-marker": 1,
-    })
-    expect(second.data).toEqual(first.data)
-  })
-
-  it("reconciles a pending companion when its authoritative order arrives later", async () => {
-    let unwrapCalls = 0
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-late-companion")] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return directRumor({
-          id: "dm-late-companion",
-          sender: MERCHANT,
-          recipient: BUYER,
-          content:
-            "A new order was sent to you through Conduit Market.\n" +
-            "Review it at: https://sell.conduit.market/orders?order=late-order",
-          createdAt: 101,
-          subject: "conduit-order-notification",
-          extraTags: [
-            ["order", "late-order"],
-            ["conduit", "order-companion", "1", "late-order-event"],
-            ["client", "Conduit Market"],
-          ],
-        }) as never
-      },
-    })
-
-    const beforeOrder = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(beforeOrder.data).toHaveLength(1)
-    expect(beforeOrder.data[0]?.unreadFromCounterparty).toBe(0)
-    expect(beforeOrder.data[0]?.preview).toBe(
-      "A new order was sent to you through Conduit Market.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=late-order"
-    )
-    expect(directRows).toMatchObject([
-      {
-        id: "dm-late-companion",
-        read: 1,
-        orderCompanion: {
-          orderId: "late-order",
-          orderRumorId: "late-order-event",
-        },
-      },
-    ])
-
-    expect(
-      await markDirectMessageConversationRead({
-        principalPubkey: BUYER,
-        counterpartyPubkey: MERCHANT,
-        transport: "nip17",
-      })
-    ).toBe(0)
-    const beforeOrderRefresh = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    expect(beforeOrderRefresh.data[0]?.unreadFromCounterparty).toBe(0)
-
-    orderRows = [
-      {
-        id: "late-order-event",
-        orderId: "late-order",
-        type: "order",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        rawContent: "{}",
-      },
-    ]
-    const afterOrder = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(afterOrder.data).toHaveLength(0)
-    expect(directRows).toHaveLength(0)
-    expect(orderRows).toHaveLength(1)
-    expect(unwrapCalls).toBe(1)
-  })
-
-  it("scrubs a previously cached canonical companion after order evidence exists", async () => {
-    directRows = [
-      {
-        id: "cached-companion",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        content:
-          "A new order was sent to you through Conduit Market.\n" +
-          "Review it at: https://sell.conduit.market/orders?order=cached-order",
-        orderCompanion: {
-          orderId: "cached-order",
-          orderRumorId: "cached-order-event",
-        },
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 100,
-        read: 0,
-      },
-      {
-        id: "ambiguous-legacy-copy",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        content:
-          "A new order was sent to you through Conduit Market.\n" +
-          "Review it at: https://sell.conduit.market/orders?order=cached-order",
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 99,
-        read: 0,
-      },
-      {
-        id: "cached-human-message",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        content: "Reply on Signal, not here.",
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 101,
-        read: 0,
-      },
-    ]
-    orderRows = [
-      {
-        id: "cached-order-event",
-        orderId: "cached-order",
-        type: "order",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        rawContent: "{}",
-      },
-    ]
-    __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
-
-    const result = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(result.data).toHaveLength(1)
-    expect(result.data[0]?.preview).toBe("Reply on Signal, not here.")
-    expect(result.data[0]?.unreadFromCounterparty).toBe(2)
-    expect(directRows.map((row) => row.id)).toEqual([
-      "ambiguous-legacy-copy",
-      "cached-human-message",
-    ])
-  })
-
-  it("preserves complete preview content for presentation-time formatting", async () => {
-    const legacyEnvelope = JSON.stringify({
-      id: "2e2811f8-d38e-4929-a937-7b41e5fa6f2e",
-      type: 2,
-      message: "Your order has been declined.",
-      paid: false,
-      shipped: false,
-      cancelled: true,
-      padding: "x".repeat(80),
-    })
-    expect(legacyEnvelope.length).toBeGreaterThan(140)
-
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-legacy-envelope")] as never)
-          : [],
-      giftUnwrap: async () =>
-        directRumor({
-          id: "dm-legacy-envelope",
-          sender: MERCHANT,
-          recipient: BUYER,
-          content: legacyEnvelope,
-          createdAt: 103,
-        }) as never,
-    })
-
-    const result = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(result.data[0]?.preview).toBe(legacyEnvelope)
-  })
-
-  it("unwraps and routes a mixed inbox once across concurrent consumers", async () => {
-    const unwrapCalls: Record<string, number> = {}
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-dm"), giftWrapEvent("wrap-order")] as never)
-          : [],
-      giftUnwrap: async (event) => {
-        unwrapCalls[event.id] = (unwrapCalls[event.id] ?? 0) + 1
-        return (
-          event.id === "wrap-order"
-            ? orderRumor("order-rumor")
-            : directRumor({
-                id: "dm-rumor",
-                sender: MERCHANT,
-                recipient: BUYER,
-                content: "hello",
-                createdAt: 101,
-              })
-        ) as never
-      },
-    })
-
     const [direct, orders] = await Promise.all([
-      getDirectMessageConversationList({ principalPubkey: BUYER }),
-      getConversationDetail({ principalPubkey: BUYER, orderId: "order-1" }),
+      getDirectMessageConversationList({ principalPubkey: h.buyer }),
+      getConversationDetail({ principalPubkey: h.buyer, orderId: "order-1" }),
     ])
-
     expect(direct.data[0]?.messageCount).toBe(1)
     expect(orders.data?.messages).toHaveLength(1)
-    expect(unwrapCalls).toEqual({ "wrap-dm": 1, "wrap-order": 1 })
-    expect(directRows).toHaveLength(1)
-    expect(orderRows).toHaveLength(1)
+    expect(h.decrypts()).toBe(4)
+    await getDirectMessageConversationList({ principalPubkey: h.buyer })
+    expect(h.decrypts()).toBe(4)
+    expect(await h.database.commerceInboxWrappers.count()).toBe(2)
+    expect(await h.database.commerceInboxRecords.count()).toBe(2)
   })
 
-  it("surfaces decrypt failures in meta without leaking content", async () => {
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-ok"), giftWrapEvent("wrap-bad")] as never)
-          : [],
-      giftUnwrap: async (event) =>
-        (event.id === "wrap-ok"
-          ? directRumor({
-              id: "dm-ok",
-              sender: MERCHANT,
-              recipient: BUYER,
-              content: "readable",
-              createdAt: 101,
-            })
-          : null) as never,
+  it("keeps exact companion hidden only after its matching order is authenticated", async () => {
+    const h = setup()
+    const order = signedRumor(
+      h.merchantSecret,
+      h.buyer,
+      16,
+      orderContent("order-1", h.buyer, h.merchant),
+      [
+        ["type", "order"],
+        ["order", "order-1"],
+      ]
+    )
+    const copy =
+      "A new order was sent to you through Conduit Market.\n" +
+      "Review it at: https://sell.conduit.market/orders?order=order-1"
+    h.events.push(
+      signedRumor(h.merchantSecret, h.buyer, 14, copy, [
+        ["subject", "conduit-order-notification"],
+        ["order", "order-1"],
+        ["conduit", "order-companion", "1", order.rumorId],
+        ["client", "Conduit Market"],
+      ]).wrap
+    )
+    const first = await getDirectMessageConversationList({
+      principalPubkey: h.buyer,
     })
+    expect(first.data).toHaveLength(1)
+    h.events.push(order.wrap)
+    const second = await getDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    expect(second.data).toHaveLength(0)
+    expect(h.owner.getSnapshot().orderMessages).toHaveLength(1)
+    expect(h.owner.getSnapshot().directMessages).toHaveLength(0)
+  })
 
+  it("isolates an invalid signed wrapper while retaining a valid neighbor", async () => {
+    const h = setup()
+    const malformedSeal = finalizeEvent(
+      {
+        kind: 13,
+        created_at: 1_700_000_001,
+        tags: [],
+        content: v2.encrypt(
+          "not-a-rumor",
+          v2.utils.getConversationKey(h.merchantSecret, h.buyer)
+        ),
+      },
+      h.merchantSecret
+    )
+    h.events.push(
+      signedRumor(h.merchantSecret, h.buyer, 14, "readable").wrap,
+      createWrap(malformedSeal, h.buyer)
+    )
     const result = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
+      principalPubkey: h.buyer,
     })
-
     expect(result.data).toHaveLength(1)
-    expect(result.meta.decryptFailures).toHaveLength(1)
-    const failure = result.meta.decryptFailures?.[0]
-    expect(failure?.wrapId).toBe("wrap-bad")
-    expect(failure?.reason).toBe("nip44_failed")
-    expect(Object.keys(failure ?? {}).sort()).toEqual(["reason", "wrapId"])
-    expect(result.meta.degraded).toBe(true)
+    expect(h.owner.getSnapshot().diagnostics.states.invalid_envelope).toBe(1)
+    expect(h.owner.getSnapshot().directMessages[0]?.content).toBe("readable")
   })
 
-  it("keeps a complete compatibility read healthy without a declaration", async () => {
-    __setCommerceTestOverrides({
-      resolveInboxRelayUrls: async () => [],
-      fetchPublicEvents: async () => [],
-    })
-
-    const result = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    // Permissive reads (CND-208): the read still runs over local/compatibility
-    // relays with complete coverage; the missing declaration is reported as
-    // typed setup state instead of degrading the data.
-    expect(result.data).toEqual([])
-    expect(result.meta.stale).toBe(false)
-    expect(result.meta.degraded).toBe(false)
-    expect(result.meta.inbox?.declarationState).toBe("not_observed")
-    expect(result.meta.inbox?.coverage).toBe("complete")
-  })
-
-  it("re-attempts only previously-failed wraps on a later read", async () => {
-    const unwrapCalls: Record<string, number> = {}
-    let badResolves = false
-
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-ok"), giftWrapEvent("wrap-bad")] as never)
-          : [],
-      giftUnwrap: async (event) => {
-        unwrapCalls[event.id] = (unwrapCalls[event.id] ?? 0) + 1
-        if (event.id === "wrap-ok") {
-          return directRumor({
-            id: "dm-ok",
-            sender: MERCHANT,
-            recipient: BUYER,
-            content: "readable",
-            createdAt: 101,
-          }) as never
-        }
-        return (
-          badResolves
-            ? directRumor({
-                id: "dm-recovered",
-                sender: MERCHANT,
-                recipient: BUYER,
-                content: "recovered",
-                createdAt: 102,
-              })
-            : null
-        ) as never
-      },
-    })
-
-    const first = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    expect(first.meta.decryptFailures).toHaveLength(1)
-
-    badResolves = true
-    const second = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    // wrap-ok parsed on the first read is not unwrapped again; wrap-bad is.
-    expect(unwrapCalls["wrap-ok"]).toBe(1)
-    expect(unwrapCalls["wrap-bad"]).toBe(2)
-    expect(second.meta.decryptFailures ?? []).toHaveLength(0)
-    expect(second.data[0]?.messageCount).toBe(2)
-  })
-
-  it("retries a wrapper when its routed cache write fails", async () => {
-    let unwrapCalls = 0
-    let cacheAttempts = 0
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-cache-retry")] as never)
-          : [],
-      giftUnwrap: async () => {
-        unwrapCalls += 1
-        return directRumor({
-          id: "dm-cache-retry",
-          sender: MERCHANT,
-          recipient: BUYER,
-          content: "available before persistence",
-          createdAt: 101,
-        }) as never
-      },
-      putCachedDirectMessages: async (rows) => {
-        cacheAttempts += 1
-        if (cacheAttempts === 1) throw new Error("cache unavailable")
-        directRows = rows as Row[]
-      },
-    })
-
-    const first = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    const second = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-
-    expect(first.data[0]?.preview).toBe("available before persistence")
-    expect(second.data[0]?.preview).toBe("available before persistence")
-    expect(unwrapCalls).toBe(2)
-    expect(cacheAttempts).toBe(2)
-    expect(directRows).toHaveLength(1)
-  })
-
-  it("keeps successful wrapper state isolated by principal", async () => {
-    const otherBuyer = "other-buyer"
-    let unwrapCalls = 0
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) => {
-        if (!filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) return []
-        const recipient = filter["#p"]?.[0] ?? BUYER
-        return [giftWrapEvent("shared-wrap-id", recipient)] as never
-      },
-      giftUnwrap: async (event) => {
-        unwrapCalls += 1
-        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1] ?? ""
-        return directRumor({
-          id: `dm-${recipient}`,
-          sender: MERCHANT,
-          recipient,
-          content: `hello ${recipient}`,
-          createdAt: 101,
-        }) as never
-      },
-    })
-
-    const first = await getDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    const second = await getDirectMessageConversationList({
-      principalPubkey: otherBuyer,
-    })
-
-    expect(first.data[0]?.preview).toBe(`hello ${BUYER}`)
-    expect(second.data[0]?.preview).toBe(`hello ${otherBuyer}`)
-    expect(unwrapCalls).toBe(2)
-  })
-
-  it("adds the principal's kind-10050 inbox relays to the DM read fanout", async () => {
-    let giftWrapReadRelays: string[] | undefined
-
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter, options) => {
-        if (filter.kinds?.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)) {
-          return [
-            {
-              id: "relays-10050",
-              kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
-              pubkey: BUYER,
-              created_at: 90,
-              content: "",
-              tags: [["relay", "wss://inbox.example"]],
-            },
-          ] as never
-        }
-        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
-          giftWrapReadRelays = options?.relayUrls as string[] | undefined
-          return [giftWrapEvent("wrap-a")] as never
-        }
-        return []
-      },
-      giftUnwrap: async () =>
-        directRumor({
-          id: "dm-a",
-          sender: MERCHANT,
-          recipient: BUYER,
-          content: "hi",
-          createdAt: 101,
-        }) as never,
-    })
-
-    await getDirectMessageConversationList({ principalPubkey: BUYER })
-
-    expect(giftWrapReadRelays).toContain("wss://inbox.example")
-  })
-
-  it("returns a single counterparty thread", async () => {
-    __setCommerceTestOverrides({
-      fetchPublicEvents: async (filter) =>
-        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
-          ? ([giftWrapEvent("wrap-a")] as never)
-          : [],
-      giftUnwrap: async () =>
-        directRumor({
-          id: "dm-a",
-          sender: BUYER,
-          recipient: MERCHANT,
-          content: "hello",
-          createdAt: 101,
-        }) as never,
-    })
-
-    const result = await getDirectMessageThread({
-      principalPubkey: BUYER,
-      counterpartyPubkey: MERCHANT,
+  it("groups the authenticated thread and marks only incoming selected messages read", async () => {
+    const h = setup()
+    h.events.push(
+      signedRumor(h.merchantSecret, h.buyer, 14, "incoming").wrap,
+      signedRumor(
+        h.buyerSecret,
+        h.buyer,
+        14,
+        "outgoing self-copy",
+        [["p", h.merchant]],
+        1_700_000_001
+      ).wrap
+    )
+    const thread = await getDirectMessageThread({
+      principalPubkey: h.buyer,
+      counterpartyPubkey: h.merchant,
       transport: "nip17",
     })
-
-    expect(result.data?.counterpartyPubkey).toBe(MERCHANT)
-    expect(result.data?.messages).toHaveLength(1)
-    expect(result.data?.messages[0]?.content).toBe("hello")
-    expect(result.data?.messages[0]?.createdAt).toBe(101_000)
-  })
-
-  it("marks only the selected incoming conversation read and is idempotent", async () => {
-    directRows = [
-      {
-        id: "selected-incoming",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        content: "incoming",
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 101_000,
-        read: 0,
-      },
-      {
-        id: "selected-outgoing",
-        senderPubkey: BUYER,
-        recipientPubkey: MERCHANT,
-        content: "outgoing",
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 102_000,
-        read: 0,
-      },
-      {
-        id: "other-incoming",
-        senderPubkey: "other-merchant",
-        recipientPubkey: BUYER,
-        content: "other",
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 103_000,
-        read: 0,
-      },
-    ]
-    __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
-
-    const before = await getCachedDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    expect(
-      before.data.find((item) => item.id === `nip17:${MERCHANT}`)
-        ?.unreadFromCounterparty
-    ).toBe(1)
-
+    expect(thread.data?.messages.map((message) => message.content)).toEqual([
+      "incoming",
+      "outgoing self-copy",
+    ])
     expect(
       await markDirectMessageConversationRead({
-        principalPubkey: BUYER,
-        counterpartyPubkey: MERCHANT,
-      })
-    ).toBe(1)
-    expect(
-      await markDirectMessageConversationRead({
-        principalPubkey: BUYER,
-        counterpartyPubkey: MERCHANT,
-      })
-    ).toBe(0)
-
-    const after = await getCachedDirectMessageConversationList({
-      principalPubkey: BUYER,
-    })
-    expect(
-      after.data.find((item) => item.id === `nip17:${MERCHANT}`)
-        ?.unreadFromCounterparty
-    ).toBe(0)
-    expect(
-      after.data.find((item) => item.id === "nip17:other-merchant")
-        ?.unreadFromCounterparty
-    ).toBe(1)
-    expect(directRows.find((row) => row.id === "selected-outgoing")?.read).toBe(
-      0
-    )
-  })
-
-  it("marks read state only for the selected transport", async () => {
-    directRows = [
-      {
-        id: "current-incoming",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        content: "current",
-        kind: EVENT_KINDS.DIRECT_MESSAGE,
-        createdAt: 102_000,
-        read: 0,
-      },
-      {
-        id: "legacy-incoming",
-        senderPubkey: MERCHANT,
-        recipientPubkey: BUYER,
-        content: "legacy",
-        kind: EVENT_KINDS.DM_LEGACY,
-        createdAt: 101_000,
-        read: 0,
-      },
-    ]
-
-    expect(
-      await markDirectMessageConversationRead({
-        principalPubkey: BUYER,
-        counterpartyPubkey: MERCHANT,
-        transport: "nip04",
-      })
-    ).toBe(1)
-    expect(directRows.find((row) => row.id === "legacy-incoming")?.read).toBe(1)
-    expect(directRows.find((row) => row.id === "current-incoming")?.read).toBe(
-      0
-    )
-
-    expect(
-      await markDirectMessageConversationRead({
-        principalPubkey: BUYER,
-        counterpartyPubkey: MERCHANT,
+        principalPubkey: h.buyer,
+        counterpartyPubkey: h.merchant,
         transport: "nip17",
       })
     ).toBe(1)
-    expect(directRows.find((row) => row.id === "current-incoming")?.read).toBe(
-      1
+    expect(
+      await markDirectMessageConversationRead({
+        principalPubkey: h.buyer,
+        counterpartyPubkey: h.merchant,
+        transport: "nip17",
+      })
+    ).toBe(0)
+  })
+
+  it("retains extra recipients as metadata while replies and read state stay in one counterparty thread", async () => {
+    const h = setup()
+    const third = getPublicKey(generateSecretKey())
+    h.events.push(
+      signedRumor(h.merchantSecret, h.buyer, 14, "group reply", [
+        ["p", third],
+        ["e", "synthetic-parent"],
+      ]).wrap
     )
+    const result = await getDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    const participants = [h.buyer, h.merchant, third].sort()
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.participants).toEqual(participants)
+    expect(result.data[0]?.messages[0]?.replyTo).toBe("synthetic-parent")
+    h.events.push(
+      signedRumor(
+        h.buyerSecret,
+        h.buyer,
+        14,
+        "two-party reply",
+        [["p", h.merchant]],
+        1_700_000_001
+      ).wrap
+    )
+    const replied = await getDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    expect(replied.data).toHaveLength(1)
+    expect(replied.data[0]?.id).toBe(`nip17:${h.merchant}`)
+    expect(
+      replied.data[0]?.messages?.map((message) => message.content)
+    ).toEqual(["group reply", "two-party reply"])
+    expect(
+      await markDirectMessageConversationRead({
+        principalPubkey: h.buyer,
+        counterpartyPubkey: h.merchant,
+        transport: "nip17",
+        conversationId: `nip17:${h.merchant}`,
+      })
+    ).toBe(1)
+    const cached = await getCachedDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    expect(cached.data).toHaveLength(1)
+    expect(cached.data[0]?.messageCount).toBe(2)
+    expect(cached.data[0]?.unreadFromCounterparty).toBe(0)
+  })
+
+  it("fences old-account state after a session change", async () => {
+    const first = setup()
+    first.events.push(
+      signedRumor(first.merchantSecret, first.buyer, 14, "first account").wrap
+    )
+    expect(
+      (await getDirectMessageConversationList({ principalPubkey: first.buyer }))
+        .data
+    ).toHaveLength(1)
+    first.retire()
+    __resetProtectedReadSigner()
+    const second = setup()
+    second.events.push(
+      signedRumor(second.merchantSecret, second.buyer, 14, "second account")
+        .wrap
+    )
+    expect(
+      (
+        await getDirectMessageConversationList({
+          principalPubkey: second.buyer,
+        })
+      ).data[0]?.preview
+    ).toBe("second account")
+    expect(first.owner.getSnapshot().directMessages).toHaveLength(0)
+    expect(() => first.owner.assertCurrent()).toThrow()
+  })
+
+  it("keeps the cache-only projection limited to supplied local rows", async () => {
+    const h = setup()
+    cacheRows = [
+      {
+        id: "cached",
+        senderPubkey: h.merchant,
+        recipientPubkey: h.buyer,
+        content: "cached preview",
+        kind: 14,
+        createdAt: 1_700_000_000_000,
+        read: 0,
+      },
+    ]
+    __setCommerceTestOverrides({
+      getCachedDirectMessages: async () => cacheRows as never,
+    })
+    const list = await getCachedDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    expect(list.data[0]?.preview).toBe("cached preview")
+    expect(list.data[0]?.unreadFromCounterparty).toBe(1)
+    expect(await h.database.commerceInboxWrappers.count()).toBe(0)
   })
 })

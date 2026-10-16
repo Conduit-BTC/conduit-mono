@@ -289,6 +289,18 @@ export function useMerchantEventTimeline(input: {
     (exactQuery.data?.markets ?? []).some(
       isMerchantTimelineMarketReadIncomplete
     )
+  // An unavailable sibling cannot erase a completed observation. In
+  // particular, exact hydration may fail after a successful product read.
+  const relationshipObservationAvailable =
+    (!!productsQuery.data &&
+      (productsQuery.data.meta.productReadCoverage !== "unavailable" ||
+        productsQuery.data.data.length > 0)) ||
+    (exactQuery.data?.markets ?? []).some(
+      (read) => read.coverage !== "unavailable" || read.retained
+    )
+  const relationshipPending =
+    productsQuery.isPending ||
+    (productReferences.length > 0 && exactQuery.isPending)
   const refreshFollowing = followingQuery.refetch
   const refreshConduit = conduitQuery.refetch
   const refreshProducts = productsQuery.refetch
@@ -354,12 +366,10 @@ export function useMerchantEventTimeline(input: {
     },
     relationships: {
       markets: exactQuery.data?.markets ?? EMPTY_MARKET_READS,
-      isInitialLoading:
-        productsQuery.isPending ||
-        (productReferences.length > 0 && exactQuery.isPending),
+      isInitialLoading: relationshipPending,
       isFetching: productsQuery.isFetching || exactQuery.isFetching,
       incomplete: relationshipIncomplete,
-      unavailable: productsQuery.isError || exactQuery.isError,
+      unavailable: !relationshipPending && !relationshipObservationAvailable,
       refetch: refetchRelationships,
     },
   }

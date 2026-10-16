@@ -1,9 +1,10 @@
-import type { SignedPublicNostrEvent } from "../protocol/signed-event"
+import type { VerifiedNostrEvent } from "../protocol/verified-public-event"
 import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
 import type {
   KnownOrderStatus,
   OrderItemFulfillmentSchema,
   ProductShippingOptionReference,
+  ProductSupplierAllocation,
   ProductZapMessagePolicy,
 } from "../schemas"
 
@@ -22,7 +23,7 @@ export interface Product {
   id: string
   /** Signed kind-30402 event id behind this exact product projection. */
   sourceEventId?: EventId
-  signedProductEvent?: SignedPublicNostrEvent
+  signedProductEvent?: VerifiedNostrEvent
   pubkey: Pubkey
   title: string
   summary?: string
@@ -90,6 +91,8 @@ export interface Product {
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
   publicZapPolicyKnown: boolean
+  /** Signed NIP-57 allocation terms from this exact product revision. */
+  supplierAllocation?: ProductSupplierAllocation
   location?: string
   /** Signed listing-area geohash. Four characters for newly authored areas. */
   geohash?: string

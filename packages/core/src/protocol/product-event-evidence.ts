@@ -207,7 +207,7 @@ export function signedProductPriceEvidenceIsMalformed(input: {
 
 /** Parse the one required NIP-99/Gamma price tag without compatibility fallback. */
 export function parseSignedProductPriceTag(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): SignedProductPriceTag | null {
   const priceTags = (tags ?? []).filter((tag) => tag[0] === "price")
   if (priceTags.length !== 1) return null
@@ -221,7 +221,7 @@ export function parseSignedProductPriceTag(
 }
 
 function exactTrimmedTagValue(
-  tags: readonly string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   name: string,
   maxLength: number
 ): string | undefined {
@@ -342,7 +342,7 @@ function signedContentProjection(content: string): {
 
 /** Bounded display projection from one exact signed kind-30402 revision. */
 export function projectSignedProductPreviewEvidence(event: {
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
   content: string
 }): SignedProductPreviewEvidence | null {
   const content = signedContentProjection(event.content)
@@ -446,7 +446,7 @@ export function projectSignedProductPreviewEvidence(event: {
 
 /** Preserve every shipping_option occurrence, including malformed extras. */
 export function parseSignedProductShippingOptionTags(
-  tags: readonly string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   productCurrency: string | undefined
 ): {
   shippingOptionId?: string
@@ -510,7 +510,7 @@ export function parseSignedProductShippingOptionTags(
 
 /** Strict projection used by public participation and ACK authorization. */
 export function projectSignedProductFulfillmentEvidence(event: {
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
   content: string
 }): Pick<
   ProductSchema,

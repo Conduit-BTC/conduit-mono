@@ -1,12 +1,20 @@
 import { describe, expect, it } from "bun:test"
 import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import { admitFixture } from "./helpers/public-event"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import { type RelayTarget } from "@conduit/core/protocol/relay-authority"
+import {
   applyAccountNetworkRelayExclusion,
   CANONICAL_APP_RELAY_DEFINITIONS,
   EVENT_KINDS,
   config,
   createInMemoryAccountNetworkLocalStateRepository,
   createRelaySettingsFromPreferences,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   planRelayReads,
   planRelayWrites,
   selectPrivateMessageDeliveryRoute,
@@ -14,13 +22,62 @@ import {
   type InboxDeclarationResolution,
 } from "@conduit/core"
 
-const OWNER = "a".repeat(64)
+const OWNER_SECRET = generateSecretKey()
+const OWNER = getPublicKey(OWNER_SECRET)
 const PERSONAL_RELAY = "wss://personal.example"
 const PERSONAL_ONLY_RELAY = "wss://personal-only.example"
 const REMOTE_PERSONAL_OVERLAP_RELAY = "wss://relay.nostr.band"
 const OVERLAP_RELAY = "wss://conduit-congee.fly.dev"
 const DECLARED_INBOX = "wss://inbox.example"
 const REMOVED_APP_RELAY = "wss://relay.damus.io"
+
+async function ownerEvidenceFor(relayUrls: readonly string[]) {
+  const evidence = createInMemoryOwnerRelayListEvidenceRepository()
+  const event = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: 1_700_000_000,
+        tags: relayUrls.map((url) => ["r", url]),
+        content: "",
+      },
+      OWNER_SECRET
+    )
+  )
+  await evidence.reconcile({
+    pubkey: OWNER,
+    observations: [{ signedEvent: event }],
+    lookup: {
+      observedAt: Date.now(),
+      coverage: "complete",
+      hadEvent: true,
+      eventId: event.id,
+    },
+  })
+  return evidence
+}
+
+async function eligible(
+  targets: readonly RelayTarget[],
+  operation: "read" | "write",
+  repository: ReturnType<
+    typeof createInMemoryAccountNetworkLocalStateRepository
+  >,
+  ownerRelayListEvidenceRepository?: ReturnType<
+    typeof createInMemoryOwnerRelayListEvidenceRepository
+  >
+) {
+  return (
+    await filterEligibleAccountRelayTargets({
+      accountPubkey: OWNER,
+      authenticatedPubkey: OWNER,
+      targets,
+      operation,
+      repository,
+      ownerRelayListEvidenceRepository,
+    })
+  ).map((target) => target.url)
+}
 
 function resolution(
   overrides: Partial<InboxDeclarationResolution>
@@ -74,16 +131,9 @@ describe("app relay routing integration", () => {
           state
         )
       )
-      const eligible = await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        candidateRelayUrls: plan.candidateRelayUrls,
-        appRelayUrls: plan.appRelayUrls,
-        personalRelayUrls: plan.personalRelayUrls,
-        repository,
-      })
+      const admitted = await eligible(plan.relayTargets, "read", repository)
       for (const relayUrl of configuredRelayUrls) {
-        expect(eligible).not.toContain(relayUrl)
+        expect(admitted).not.toContain(relayUrl)
       }
     } finally {
       config.corePublicFallbackRelayUrls = previousFallbackRelayUrls
@@ -142,28 +192,18 @@ describe("app relay routing integration", () => {
     )
 
     const repository = createInMemoryAccountNetworkLocalStateRepository()
+    const ownerEvidence = await ownerEvidenceFor([
+      OVERLAP_RELAY,
+      PERSONAL_RELAY,
+    ])
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
     )
     expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        candidateRelayUrls: readPlan.relayUrls,
-        appRelayUrls: readPlan.appRelayUrls,
-        personalRelayUrls: readPlan.personalRelayUrls,
-        repository,
-      })
+      await eligible(readPlan.relayTargets, "read", repository, ownerEvidence)
     ).not.toContain(PERSONAL_RELAY)
     expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        candidateRelayUrls: readPlan.relayUrls,
-        appRelayUrls: readPlan.appRelayUrls,
-        personalRelayUrls: readPlan.personalRelayUrls,
-        repository,
-      })
+      await eligible(readPlan.relayTargets, "read", repository, ownerEvidence)
     ).toContain(OVERLAP_RELAY)
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
@@ -172,14 +212,12 @@ describe("app relay routing integration", () => {
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", false)
     )
-    const personalOnly = await filterEligibleAccountRelayUrls({
-      accountPubkey: OWNER,
-      authenticatedPubkey: OWNER,
-      candidateRelayUrls: readPlan.relayUrls,
-      appRelayUrls: readPlan.appRelayUrls,
-      personalRelayUrls: readPlan.personalRelayUrls,
+    const personalOnly = await eligible(
+      readPlan.relayTargets,
+      "read",
       repository,
-    })
+      ownerEvidence
+    )
     expect(personalOnly).toEqual(
       expect.arrayContaining([OVERLAP_RELAY, PERSONAL_RELAY])
     )
@@ -196,29 +234,19 @@ describe("app relay routing integration", () => {
         committedAt: 200,
       })
     )
-    const wholeRelayExcluded = await filterEligibleAccountRelayUrls({
-      accountPubkey: OWNER,
-      authenticatedPubkey: OWNER,
-      candidateRelayUrls: readPlan.relayUrls,
-      appRelayUrls: readPlan.appRelayUrls,
-      personalRelayUrls: readPlan.personalRelayUrls,
+    const wholeRelayExcluded = await eligible(
+      readPlan.relayTargets,
+      "read",
       repository,
-    })
+      ownerEvidence
+    )
     expect(wholeRelayExcluded).not.toContain(OVERLAP_RELAY)
     expect(wholeRelayExcluded).toContain(PERSONAL_RELAY)
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
     )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [DECLARED_INBOX],
-        appRelayUrls: [],
-        personalRelayUrls: [],
-        repository,
-      })
-    ).toEqual([DECLARED_INBOX])
+    expect(await eligible([], "read", repository, ownerEvidence)).toEqual([])
   })
 
   it("keeps the removed Damus relay out of app config, plans, and personal setup presets", () => {
@@ -320,15 +348,7 @@ describe("app relay routing integration", () => {
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", false)
     )
-    const appDisabled = await filterEligibleAccountRelayUrls({
-      accountPubkey: OWNER,
-      authenticatedPubkey: OWNER,
-      candidateRelayUrls: plan.candidateRelayUrls,
-      appRelayUrls: plan.appRelayUrls,
-      personalRelayUrls: plan.personalRelayUrls,
-      independentRelayUrls: plan.independentRelayUrls,
-      repository,
-    })
+    const appDisabled = await eligible(plan.relayTargets, "read", repository)
     expect(appDisabled).toContain(OVERLAP_RELAY)
     expect(appDisabled).not.toContain("wss://relay.ditto.pub")
 
@@ -338,15 +358,11 @@ describe("app relay routing integration", () => {
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
     )
-    const personalDisabled = await filterEligibleAccountRelayUrls({
-      accountPubkey: OWNER,
-      authenticatedPubkey: OWNER,
-      candidateRelayUrls: plan.candidateRelayUrls,
-      appRelayUrls: plan.appRelayUrls,
-      personalRelayUrls: plan.personalRelayUrls,
-      independentRelayUrls: plan.independentRelayUrls,
-      repository,
-    })
+    const personalDisabled = await eligible(
+      plan.relayTargets,
+      "read",
+      repository
+    )
     expect(personalDisabled).toContain(REMOTE_PERSONAL_OVERLAP_RELAY)
     expect(personalDisabled).not.toContain(PERSONAL_RELAY)
     expect(personalDisabled).not.toContain(PERSONAL_ONLY_RELAY)
@@ -359,17 +375,9 @@ describe("app relay routing integration", () => {
         committedAt: 300,
       })
     )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        candidateRelayUrls: plan.candidateRelayUrls,
-        appRelayUrls: plan.appRelayUrls,
-        personalRelayUrls: plan.personalRelayUrls,
-        independentRelayUrls: plan.independentRelayUrls,
-        repository,
-      })
-    ).not.toContain(REMOTE_PERSONAL_OVERLAP_RELAY)
+    expect(await eligible(plan.relayTargets, "read", repository)).not.toContain(
+      REMOTE_PERSONAL_OVERLAP_RELAY
+    )
   })
 
   it("keeps declared NIP-17 delivery exclusive and bounds fallback to validated orders", () => {

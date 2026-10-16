@@ -8,6 +8,7 @@ import {
 } from "nostr-tools/pure"
 
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
@@ -1123,7 +1124,7 @@ test("future Event Market catalog follows signed merchant approval and current p
   )
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
-    page.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toBeEnabled()
   await page.getByRole("heading", { name: "Future Fair soap" }).click()
   await expect(page).toHaveURL(/\/products\/.*[?&]event=/)
@@ -1208,7 +1209,7 @@ test("future Event Market catalog follows signed merchant approval and current p
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toBeVisible()
-  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toHaveCount(0)
@@ -1393,7 +1394,7 @@ test("signed series dates open one market and keep separate buyer choices @marke
         .textContent()) === selectedDateLabel
     ).toBe(true)
     await expect(
-      page.getByRole("button", { name: "Add", exact: true })
+      page.getByRole("button", { name: /^Add .+ to cart$/ })
     ).toBeEnabled()
   }
   await gotoAs(
@@ -1824,9 +1825,9 @@ test("Event Market variable products select a purchasable variation before check
     .getByRole("listitem")
     .filter({ hasText: "Future handoff soap" })
   await expect(
-    card.getByRole("button", { name: "Add", exact: true })
+    card.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toBeEnabled()
-  await card.getByRole("button", { name: "Add", exact: true }).click()
+  await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(page).toHaveURL(/\/products\//)
   expect(new URL(page.url()).searchParams.get("event")).toBe(
     eventCoordinate(market)
@@ -1983,9 +1984,9 @@ test("two future market products form one order and one private organizer releas
     }
     const card = page.getByRole("listitem").filter({ hasText: name })
     await expect(
-      card.getByRole("button", { name: "Add", exact: true })
+      card.getByRole("button", { name: /^Add .+ to cart$/ })
     ).toBeEnabled()
-    await card.getByRole("button", { name: "Add", exact: true }).click()
+    await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
     await expect(
       page.getByRole("button", {
         name: `Cart, ${index + 1} item${index === 0 ? "" : "s"}`,
@@ -2466,6 +2467,27 @@ test("two future market products form one order and one private organizer releas
         )
     )
   await expect.poll(() => completionMessages().length).toBe(1)
+  // Recipient publication precedes optional self-copy work and local persistence.
+  // Reload must verify the encrypted completion record, not an in-flight send.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async ({ root, principal, rumorId }) => {
+          const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
+          const owner = getCommerceInbox(principal)
+          return (await owner.store.projections()).some(
+            ({ projection }: { projection: InboxProjection }) =>
+              projection.kind === "order" && projection.message.id === rumorId
+          )
+        },
+        {
+          root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+          principal: MERCHANT_PUBKEY,
+          rumorId: completionMessages()[0]!.rumor.id,
+        }
+      )
+    )
+    .toBe(true)
   await page.reload()
   await expect(
     page
@@ -2637,6 +2659,63 @@ test("merchant directory separates open collapsible My Events and All Events wit
   ).toHaveAttribute("aria-pressed", "true")
 })
 
+for (const failedSource of [
+  "market discovery",
+  "products",
+  "all reads",
+] as const)
+  test(`merchant directory composes availability when ${failedSource} is unavailable @merchant`, async ({
+    page,
+  }) => {
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    relay.seed(
+      createFollowList(
+        "merchant",
+        [ORGANIZER_PUBKEY],
+        Math.floor(Date.now() / 1000) - 10
+      )
+    )
+    if (failedSource === "market discovery") relay.rejectMarketDiscovery(true)
+    if (failedSource === "products") relay.rejectReadKind(30402, true)
+    if (failedSource === "all reads") relay.rejectReads(true)
+    await gotoAs(page, merchantUrl, "/events", "merchant")
+    const my = page.getByRole("region", { name: "My Events timeline" })
+    const all = page.getByRole("region", { name: "All Events timeline" })
+    const unavailable = failedSource === "all reads"
+    await expect(
+      my.getByRole("heading", {
+        name: unavailable
+          ? "Couldn’t connect to your relays"
+          : "No organizing events found yet",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      all.getByRole("heading", {
+        name: unavailable
+          ? "Couldn’t connect to your relays"
+          : "No events found yet",
+        exact: true,
+      })
+    ).toBeVisible()
+    await my.getByRole("button", { name: "Selling At", exact: true }).click()
+    await expect(
+      my.getByRole("heading", {
+        name: unavailable
+          ? "Couldn’t connect to your relays"
+          : "No selling events found yet",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Refresh Selling At", exact: true })
+    ).toBeEnabled()
+    await expect(
+      page.getByRole("button", { name: "Refresh All Events", exact: true })
+    ).toBeEnabled()
+  })
+
 test("merchant personal timeline scopes unavailable discovery with an unrelated product-linked event @merchant", async ({
   page,
 }) => {
@@ -2686,7 +2765,7 @@ test("merchant personal timeline scopes unavailable discovery with an unrelated 
     all.getByRole("button", { name: /^Open Unrelated Fair/ })
   ).toBeVisible()
   await expect(
-    my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+    my.getByRole("heading", { name: "No organizing events found yet" })
   ).toBeVisible()
   await expect(
     my.getByRole("heading", { name: "You aren’t organizing any events" })
@@ -4301,16 +4380,16 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
     page.getByText("This Event Market is closed to new purchases.")
   ).toBeVisible()
   await expect(
-    page.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toHaveCount(0)
   await page.getByRole("button", { name: "Ship it", exact: true }).click()
   await expect(
     page.getByRole("button", { name: "Ship it", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
   await expect(
-    page.getByRole("button", { name: "Add", exact: true })
+    page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toBeEnabled()
-  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
   relay.seed(
     signEvent(ORGANIZER_SECRET, {
@@ -4429,7 +4508,7 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   await expect(
     page.getByRole("heading", { name: "Receipt soap" })
   ).toBeVisible()
-  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
   await page.goto(`${marketUrl}/checkout`)
   await page
@@ -4645,9 +4724,10 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     page.getByRole("button", { name: "Decline request" })
   ).toBeVisible()
-  const merchantRow = page.locator("div.rounded-xl").filter({
+  const merchantRow = page.getByRole("group").filter({
     has: page.locator(`[id="assignment-${MERCHANT_PUBKEY}"]`),
   })
+  await expect(merchantRow).toBeVisible()
   await merchantRow.getByLabel("Public assignment").fill("Booth 4")
   // The host's own seller row refreshes independently; target only the requester.
   const approveMerchant = merchantRow.getByRole("button", {
@@ -4722,7 +4802,7 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     card.getByRole("heading", { name: MERCHANT_TEMPLATE_TITLE })
   ).toBeVisible()
-  await card.getByRole("button", { name: "Add", exact: true }).click()
+  await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
   await expect(
     page.getByRole("button", { name: "Cart, 1 item", exact: true })
   ).toBeVisible()
@@ -4806,6 +4886,9 @@ test("direct event pickup verifies changed authority before adding and increment
         "buyer",
         { event: eventCoordinate(market) }
       )
+      await expect(
+        page.getByRole("button", { name: "Open account menu", exact: true })
+      ).toBeVisible()
       const add = page.getByRole("button", { name: /^Add (1 to cart|more)/ })
       await expect(add).toBeEnabled()
       // Seed new signed evidence after render. No subscription or manual refresh
@@ -4926,6 +5009,20 @@ test("direct event pickup verifies changed authority before adding and increment
         await expect(
           page.getByRole("button", { name: /^Cart, [1-9]\d* items?/ })
         ).toHaveCount(0)
+        if (change === "revoked" || change === "closed") {
+          await expect(
+            page.getByRole("heading", {
+              name: "Listing not available",
+              exact: true,
+            })
+          ).toBeVisible()
+          await expect(
+            page.getByRole("alert").filter({
+              hasText:
+                "This product is not currently available for event pickup.",
+            })
+          ).toBeVisible()
+        }
       }
     })
   }
@@ -5078,17 +5175,17 @@ test("event variation shipping rejects changed and deleted listings before addin
     page.getByRole("button", { name: "Cart, 2 items", exact: true })
   ).toBeVisible()
 
-  relay.seed(
-    signEvent(MERCHANT_SECRET, {
-      kind: 5,
-      created_at: createdAt + 3,
-      content: "",
-      tags: [
-        ["a", eventCoordinate(candle)],
-        ["k", "30402"],
-      ],
-    })
-  )
+  const deletion = signEvent(MERCHANT_SECRET, {
+    kind: 5,
+    created_at: createdAt + 3,
+    content: "",
+    tags: [
+      ["a", eventCoordinate(candle)],
+      ["k", "30402"],
+    ],
+  })
+  relay.seed(deletion)
+  const beforeDeletionRead = relay.requests.length
   await add.click()
   await expect(
     page
@@ -5099,4 +5196,9 @@ test("event variation shipping rejects changed and deleted listings before addin
   await expect(
     page.getByRole("button", { name: "Cart, 2 items", exact: true })
   ).toBeVisible()
+  expect(
+    relay.requests
+      .slice(beforeDeletionRead)
+      .some((request) => request.matchedEventIds.includes(deletion.id))
+  ).toBe(true)
 })

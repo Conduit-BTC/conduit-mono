@@ -208,6 +208,21 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     (sellingQuery.data?.markets ?? []).some(
       isMerchantTimelineMarketReadIncomplete
     )
+  const ownerUnavailable =
+    (ownQuery.isError && !ownQuery.data) ||
+    ownQuery.data?.coverage === "unavailable"
+  const futureUnavailable =
+    (futureQuery.isError && !futureQuery.data) ||
+    futureQuery.data?.coverage === "unavailable"
+  const knownRosterAvailable = (sellingQuery.data?.markets ?? []).some(
+    (read) => read.coverage !== "unavailable" || read.retained
+  )
+  const organizingUnavailable =
+    ownerUnavailable &&
+    discovery.relationships.unavailable &&
+    !knownRosterAvailable
+  const compositeUnavailable =
+    organizingUnavailable && (futureAuthors.length === 0 || futureUnavailable)
   const networkLimited =
     networkPending || discovery.perspective.incomplete || futureIncomplete
   const refetchIncludedSources = () =>
@@ -233,7 +248,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       allReads,
       ownQuery.isPending,
       ownQuery.isFetching,
-      ownQuery.isError || ownQuery.data?.coverage === "unavailable",
+      organizingUnavailable,
       ownerIncomplete ||
         knownRosterIncomplete ||
         discovery.relationships.isInitialLoading ||
@@ -251,7 +266,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       allReads,
       discovery.relationships.isInitialLoading,
       discovery.relationships.isFetching || sellingQuery.isFetching,
-      discovery.relationships.unavailable,
+      compositeUnavailable,
       networkLimited ||
         ownQuery.isPending ||
         ownerIncomplete ||
@@ -266,10 +281,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         futureQuery.isFetching ||
         ownQuery.isFetching ||
         sellingQuery.isFetching,
-      futureQuery.isError ||
-        futureQuery.data?.coverage === "unavailable" ||
-        ownQuery.isError ||
-        ownQuery.data?.coverage === "unavailable",
+      compositeUnavailable,
       networkLimited ||
         ownerIncomplete ||
         discovery.relationships.isInitialLoading ||
@@ -532,7 +544,7 @@ function MerchantEventTimelineSection({
     >
       <div className="flex items-center gap-2">
         <h2 className="min-w-0 flex-1">
-          <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-lg py-2 text-left text-lg font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:text-xl">
+          <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-[var(--radius-md)] py-2 text-left text-lg font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:text-xl">
             <ChevronDown
               className="size-5 shrink-0 group-data-[state=closed]:-rotate-90"
               aria-hidden="true"
@@ -686,7 +698,7 @@ export function MerchantEventTimelineEmptyState({
           ? "Create an event to get started."
           : "Events available through your relays will appear here."
   return (
-    <div className="rounded-xl border border-dashed border-[var(--border)] p-4">
+    <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] p-4">
       <div className="flex items-center gap-2">
         <CalendarDays
           className="size-5 shrink-0 text-[var(--text-muted)]"

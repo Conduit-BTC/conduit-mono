@@ -1,34 +1,31 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Search } from "lucide-react"
 import {
-  buildDirectMessageRumor,
-  cacheParsedDirectMessage,
+  createParticipantMessageRumor,
+  sendAccountInboxRumor,
   clearProtectedReadAuthenticationSuppression,
   deriveProtectedReadPresentationState,
-  EVENT_KINDS,
   formatNpub,
-  getCachedDirectMessageConversationList,
-  getCachedMerchantConversationList,
-  getDirectMessageConversationList,
-  getMerchantConversationList,
   getAccountSigner,
   getProfileName,
   markDirectMessageConversationRead,
-  parseDirectMessageRumor,
   publishPrivateMessage,
   PrivateMessageRelayReadinessError,
   pubkeyToNpub,
-  selectProtectedReadRows,
   useAuth,
+  useCommerceInbox,
+  type PrivateMessageEvent,
+  type AccountInboxSendResult,
+  type ParsedDirectMessage,
   useConduitSession,
   useInboxDeclaration,
   useProfiles,
   type Profile,
 } from "@conduit/core"
 import {
+  CommerceInboxRecovery,
   Button,
   ConversationCardScroller,
   ConversationMessageBubble,
@@ -37,6 +34,7 @@ import {
   matchesConversationSearch,
   MessagingReadinessNotice,
   MessageComposer,
+  PrivateSendNotice,
   ProtectedInboxNotice,
   SearchInput,
   SignerRecoveryNotice,
@@ -72,7 +70,7 @@ type OptimisticDirectMessageSend = {
   messageScope: OptimisticConversationScope
   message: OptimisticConversationMessage
   counterpartyPubkey: string
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
 }
 
 function MessagesPage() {
@@ -120,19 +118,25 @@ function MessagesWorkspace() {
   }
   const session = useConduitSession()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const hasAccount = !!accountPubkey
   const signerConnected =
     signerReadiness === "ready" && !!accountPubkey && pubkey === accountPubkey
   const authenticatedPubkey = signerConnected ? pubkey : null
+  const inbox = useCommerceInbox(accountPubkey, signerConnected)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [composerText, setComposerText] = useState("")
+  const [directSendOutcome, setDirectSendOutcome] = useState<{
+    accountPubkey: string
+    counterpartyPubkey: string
+    result: AccountInboxSendResult
+  } | null>(null)
   const [conversationSearch, setConversationSearch] = useState("")
   const [conversationSheetOpen, setConversationSheetOpen] = useState(false)
   const optimisticMessageQueue = useOptimisticConversationMessages({
     ownerKey: accountPubkey,
     authorityKey: `${authGeneration}:${signerReadiness}`,
   })
+  const preparedDmRumors = useRef(new Map<string, PrivateMessageEvent>())
   const optimisticMessageScope = optimisticMessageQueue.scope
   const optimisticMessages = optimisticMessageQueue.messages
   const removeOptimisticMessage = optimisticMessageQueue.remove
@@ -159,24 +163,7 @@ function MessagesWorkspace() {
   }
 
   // Own-inbox reads are permissive (CND-208); only sends require readiness.
-  const liveQuery = useQuery({
-    queryKey: ["merchant-dms-live", accountPubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () =>
-      getDirectMessageConversationList({ principalPubkey: accountPubkey! }),
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
-  })
-  const cachedQuery = useQuery({
-    queryKey: ["merchant-dms", accountPubkey ?? "none"],
-    enabled: hasAccount,
-    queryFn: () =>
-      getCachedDirectMessageConversationList({
-        principalPubkey: accountPubkey!,
-      }),
-    staleTime: 5_000,
-  })
+  const liveQuery = inbox.direct
   const retryMessagesRead = () => {
     if (!accountPubkey || !signerConnected) return
     clearProtectedReadAuthenticationSuppression(accountPubkey)
@@ -184,8 +171,8 @@ function MessagesWorkspace() {
   }
 
   const conversations = useMemo(
-    () => selectProtectedReadRows(liveQuery.data?.data, cachedQuery.data?.data),
-    [cachedQuery.data, liveQuery.data]
+    () => liveQuery.data?.data ?? [],
+    [liveQuery.data]
   )
   const liveMeta = liveQuery.data?.meta
   const protectedMessagesReadState = deriveProtectedReadPresentationState({
@@ -229,6 +216,7 @@ function MessagesWorkspace() {
         conversation.counterpartyPubkey,
         pubkeyToNpub(conversation.counterpartyPubkey),
         getConversationMessageDisplayContent(conversation.preview),
+        ...(conversation.messages ?? []).map((message) => message.content),
       ])
     })
   }, [conversationSearch, conversations, profilesQuery.data])
@@ -276,43 +264,26 @@ function MessagesWorkspace() {
     optimisticMessages,
     removeOptimisticMessage,
   ])
-  const relatedOrdersLiveQuery = useQuery({
-    queryKey: [
-      "merchant-message-orders-live",
-      accountPubkey ?? "none",
-      selected?.counterpartyPubkey ?? "none",
-    ],
-    enabled: signerConnected && !!selected,
-    queryFn: () =>
-      getMerchantConversationList({
-        principalPubkey: accountPubkey!,
-        counterpartyPubkey: selected!.counterpartyPubkey,
-        limit: 3,
-      }),
-  })
-  const relatedOrdersCacheQuery = useQuery({
-    queryKey: [
-      "merchant-message-orders",
-      accountPubkey ?? "none",
-      selected?.counterpartyPubkey ?? "none",
-    ],
-    enabled: hasAccount && !!selected,
-    queryFn: () =>
-      getCachedMerchantConversationList({
-        principalPubkey: accountPubkey!,
-        counterpartyPubkey: selected!.counterpartyPubkey,
-        limit: 3,
-      }),
-  })
+  const relatedOrdersLiveQuery = {
+    ...inbox.merchant,
+    data: inbox.merchant.data
+      ? {
+          ...inbox.merchant.data,
+          data: inbox.merchant.data.data
+            .filter(
+              (conversation) =>
+                conversation.buyerPubkey === selected?.counterpartyPubkey
+            )
+            .slice(0, 3),
+        }
+      : undefined,
+  }
   const retryRelatedOrdersRead = () => {
     if (!accountPubkey || !signerConnected) return
     clearProtectedReadAuthenticationSuppression(accountPubkey)
     void relatedOrdersLiveQuery.refetch()
   }
-  const relatedOrders = selectProtectedReadRows(
-    relatedOrdersLiveQuery.data?.data,
-    relatedOrdersCacheQuery.data?.data
-  )
+  const relatedOrders = relatedOrdersLiveQuery.data?.data ?? []
   const relatedOrdersReadState = deriveProtectedReadPresentationState({
     visibleCount: relatedOrders.length,
     pending: relatedOrdersLiveQuery.isLoading,
@@ -328,17 +299,11 @@ function MessagesWorkspace() {
       principalPubkey: accountPubkey,
       counterpartyPubkey: selected.counterpartyPubkey,
       transport: selected.transport,
+      conversationId:
+        (selected.participants?.length ?? 0) > 2 ? selected.id : undefined,
     })
       .then(async (updated) => {
         if (cancelled || updated === 0) return
-        await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-dms", accountPubkey],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["merchant-dms-live", accountPubkey],
-          }),
-        ])
       })
       .catch(() => {
         console.warn("Failed to update direct-message read state")
@@ -349,9 +314,10 @@ function MessagesWorkspace() {
     }
   }, [
     accountPubkey,
-    queryClient,
     selected?.counterpartyPubkey,
     selected?.transport,
+    selected?.id,
+    selected?.participants,
     selected?.unreadFromCounterparty,
   ])
 
@@ -366,38 +332,61 @@ function MessagesWorkspace() {
       if (!signer) {
         throw new Error("Connect your signer to reply.")
       }
-      const { selfCopyError } = await publishPrivateMessage({
-        rumor: input.rumor,
-        senderPubkey: input.accountPubkey,
-        accountPubkey: input.accountPubkey,
-        authenticatedPubkey: input.accountPubkey,
-        recipientPubkey: input.counterpartyPubkey,
-        signer,
-        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
-        signerInteraction: "external",
-        shouldContinue: () =>
-          isCurrentMessagingAuthority(
-            input.accountPubkey,
-            input.authGeneration
-          ),
-      })
-      if (
-        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
-      ) {
-        return
+      const recipients = input.rumor.tags
+        .filter((tag) => tag[0] === "p")
+        .map((tag) => tag[1]!)
+      const markAccepted = () => {
+        optimisticMessageQueue.markPublished(
+          input.messageScope,
+          input.message.localId
+        )
+        const current = messagingAuthorityRef.current
+        if (current.accountPubkey === input.accountPubkey) {
+          const currentScope = {
+            ownerKey: current.accountPubkey,
+            authorityKey: `${current.authGeneration}:${current.signerReadiness}`,
+          }
+          if (currentScope.authorityKey !== input.messageScope.authorityKey)
+            optimisticMessageQueue.markPublished(
+              currentScope,
+              input.message.localId
+            )
+        }
       }
-      optimisticMessageQueue.markPublished(
-        input.messageScope,
-        input.message.localId
+      const outcome = await sendAccountInboxRumor(
+        {
+          principal: input.accountPubkey,
+          recipients,
+          content: input.rumor.content,
+          rumor: input.rumor,
+        },
+        {
+          getSigner: () => signer,
+          send: async (prepared) =>
+            await publishPrivateMessage({
+              ...prepared,
+              signerInteraction: "external",
+              relayAuthMethod: signer.authMethod,
+              shouldContinue: () => {
+                if (prepared.shouldContinue?.() === false) return false
+                return isCurrentMessagingAuthority(
+                  input.accountPubkey,
+                  input.authGeneration
+                )
+              },
+              onRecipientAccepted: async (delivery) => {
+                markAccepted()
+                await prepared.onRecipientAccepted?.(delivery)
+              },
+            }),
+        }
       )
-      if (selfCopyError) {
-        console.warn("DM self-copy publish failed", selfCopyError)
-      }
-      try {
-        await cacheParsedDirectMessage(parseDirectMessageRumor(input.rumor))
-      } catch {
-        console.warn("Failed to cache published direct message")
-      }
+      markAccepted()
+      setDirectSendOutcome({
+        accountPubkey: input.accountPubkey,
+        counterpartyPubkey: input.counterpartyPubkey,
+        result: outcome,
+      })
     },
     onSuccess: async (_, input) => {
       if (
@@ -405,14 +394,6 @@ function MessagesWorkspace() {
       ) {
         return
       }
-      await Promise.allSettled([
-        queryClient.invalidateQueries({
-          queryKey: ["merchant-dms", input.accountPubkey],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["merchant-dms-live", input.accountPubkey],
-        }),
-      ])
     },
     onError: (error, input) => {
       if (
@@ -447,13 +428,16 @@ function MessagesWorkspace() {
     }
 
     const createdAt = Date.now()
-    const rumor = buildDirectMessageRumor({
+    setDirectSendOutcome(null)
+    const rumor = createParticipantMessageRumor({
       senderPubkey: accountPubkey,
-      recipientPubkey: selected.counterpartyPubkey,
+      recipientPubkeys: [selected.counterpartyPubkey],
       content,
       appId: "merchant",
       createdAt: Math.floor(createdAt / 1000),
+      replyTo: threadMessages.at(-1)?.id,
     })
+    preparedDmRumors.current.set(rumor.id, rumor)
     const messageScope = optimisticMessageScope
     const message = optimisticMessageQueue.enqueue(messageScope, {
       eventId: rumor.id,
@@ -481,14 +465,17 @@ function MessagesWorkspace() {
     ) {
       return
     }
-    const rumor = buildDirectMessageRumor({
-      senderPubkey: accountPubkey,
-      recipientPubkey: selected.counterpartyPubkey,
-      content: message.content,
-      appId: "merchant",
-      createdAt: Math.floor(message.createdAt / 1000),
-    })
+    const rumor =
+      preparedDmRumors.current.get(message.eventId ?? "") ??
+      createParticipantMessageRumor({
+        senderPubkey: accountPubkey,
+        recipientPubkeys: [selected.counterpartyPubkey],
+        content: message.content,
+        appId: "merchant",
+        createdAt: Math.floor(message.createdAt / 1000),
+      })
     const messageScope = optimisticMessageScope
+    setDirectSendOutcome(null)
     optimisticMessageQueue.markPending(messageScope, message.localId)
     sendMutation.mutate({
       accountPubkey,
@@ -507,19 +494,21 @@ function MessagesWorkspace() {
     const previousAuthorityKey = previousMessageAuthorityKeyRef.current
     previousMessageAuthorityKeyRef.current = optimisticMessageScope.authorityKey
     if (previousAuthorityKey === optimisticMessageScope.authorityKey) return
+    preparedDmRumors.current.clear()
     sendMutation.reset()
   }, [optimisticMessageScope.authorityKey, sendMutation])
 
   const showEmpty =
     signerConnected &&
     messagingReady &&
-    !cachedQuery.isLoading &&
+    !liveQuery.isLoading &&
     !liveQuery.isLoading &&
     conversations.length === 0 &&
     protectedMessagesReadState === "complete"
 
   return (
     <div className="min-w-0 max-w-full space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
+      <CommerceInboxRecovery {...inbox} />
       <div className="xl:shrink-0">
         <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
           Buyer support inbox
@@ -541,7 +530,7 @@ function MessagesWorkspace() {
       ) : null}
 
       {!hasAccount && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view buyer messages.
         </div>
       )}
@@ -583,21 +572,21 @@ function MessagesWorkspace() {
 
       {hasAccount &&
         conversations.length === 0 &&
-        (cachedQuery.isLoading || liveQuery.isLoading) && (
+        (liveQuery.isLoading || liveQuery.isLoading) && (
           <div className="text-sm text-[var(--text-secondary)]">
             Loading buyer messages…
           </div>
         )}
 
       {showEmpty && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No buyer messages yet.
         </div>
       )}
 
       {hasAccount && conversations.length > 0 && (
         <div className="grid min-w-0 max-w-full gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+          <aside className="hidden min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
               Conversations
             </div>
@@ -610,7 +599,7 @@ function MessagesWorkspace() {
             />
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
-                <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                   No conversations match your search.
                 </div>
               )}
@@ -647,16 +636,17 @@ function MessagesWorkspace() {
                   Conversations
                 </div>
                 <SheetTrigger asChild>
+                  {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                   <button
                     type="button"
-                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                   >
                     <Search className="h-4 w-4" />
                     Search
                   </button>
                 </SheetTrigger>
               </div>
-              <section className="min-w-0 max-w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+              <section className="min-w-0 max-w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                 {filteredConversations.length > 0 ? (
                   <ConversationCardScroller>
                     {filteredConversations.map((conversation) => {
@@ -686,7 +676,7 @@ function MessagesWorkspace() {
                     })}
                   </ConversationCardScroller>
                 ) : (
-                  <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                  <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                     No conversations match your search.
                   </div>
                 )}
@@ -708,7 +698,7 @@ function MessagesWorkspace() {
                 />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
-                    <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                       No conversations match your search.
                     </div>
                   )}
@@ -739,7 +729,7 @@ function MessagesWorkspace() {
             </Sheet>
           </div>
 
-          <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:h-full xl:min-h-0">
+          <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:h-full xl:min-h-0">
             {selected ? (
               <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col">
                 <div className="mb-3 flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
@@ -823,6 +813,11 @@ function MessagesWorkspace() {
                         <ConversationMessageBubble
                           key={message.id}
                           content={message.content}
+                          file={
+                            "file" in message
+                              ? (message as ParsedDirectMessage).file
+                              : undefined
+                          }
                           mine={message.senderPubkey === accountPubkey}
                           timestampLabel={new Date(
                             message.createdAt
@@ -833,6 +828,7 @@ function MessagesWorkspace() {
                         <ConversationMessageBubble
                           key={message.localId}
                           content={message.content}
+
                           mine
                           timestampLabel={new Date(
                             message.createdAt
@@ -866,12 +862,34 @@ function MessagesWorkspace() {
                       <MessageComposer
                         value={composerText}
                         onChange={setComposerText}
+                        onAttach={
+                          accountPubkey && selected && inbox.attach
+                            ? (file) =>
+                                inbox.attach!(
+                                  [selected.counterpartyPubkey],
+                                  file
+                                )
+                            : undefined
+                        }
                         onSend={sendDirectMessage}
                         sending={sendMutation.isPending}
                         placeholder="Reply to buyer"
                       />
+                      <PrivateSendNotice
+                        outcome={
+                          directSendOutcome?.accountPubkey === accountPubkey &&
+                          directSendOutcome.counterpartyPubkey ===
+                            selected.counterpartyPubkey
+                            ? directSendOutcome.result
+                            : null
+                        }
+                        label="Reply"
+                      />
                       {sendMutation.error && (
-                        <div role="alert" className="text-xs text-error">
+                        <div
+                          role="alert"
+                          className="text-xs text-[var(--error-text)]"
+                        >
                           Message wasn't published. Retry from the message
                           bubble.
                         </div>

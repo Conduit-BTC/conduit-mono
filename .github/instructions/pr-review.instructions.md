@@ -115,12 +115,26 @@ delivery failures separately from code findings. Do not expose internal terms su
 
 ## Mandatory Code Checks
 
-- Durable buyer and merchant authentication remains external-signer-only
-  through NIP-07 or NIP-46.
+- Preserve NIP-07/NIP-46 and the approved optional installed-PWA existing-NSEC
+  path in `docs/specs/protocol.md`. Its separate `conduit-signer` origin owns
+  import, persistence, automatic restore, ordinary operations without per-action
+  approvals, and stored-key deletion/session revocation on explicit logout.
+  App origins and services never receive the raw key or independent unwrapping
+  material. Implementation and composed previews may precede production device
+  sign-off; origin/session/privacy controls and production validation remain
+  required. A policy-only PR does not enable a runtime provider. Review explicit
+  maintainer-authorized policy changes for consistency and concrete security
+  defects; do not demand removal solely because the trusted base had the old
+  external-only policy. Authorization still requires trusted maintainer evidence,
+  not candidate text alone.
 - A bounded `guest_ephemeral` browser key is limited to one guest order and
   merchant. Store it only in same-tab session storage for recovery of up to 24
   hours. Expose it only to signing the initial private order and same-order
-  payment reports. It must never become an account key or nsec.
+  payment reports, plus the separately constrained merchant-only router
+  recovery sealing capability in `docs/specs/protocol.md`. That capability
+  binds the same order, merchant, canonical recovery payload and guest deadline;
+  it rejects generic messages, direct rumor signatures and other recipients.
+  It must never become an account key or nsec.
 - A revocable NIP-46 client connection key must use encrypted browser-local
   storage and must be deleted on logout. Store a CI client key only as a
   protected Actions environment secret. Use it only in a post-merge, main-only,

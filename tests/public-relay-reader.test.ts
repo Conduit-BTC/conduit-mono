@@ -1,3 +1,4 @@
+import { isVerifiedNostrEvent } from "@conduit/core"
 import { afterEach, expect, it } from "bun:test"
 import { finalizeEvent } from "nostr-tools/pure"
 import {
@@ -300,9 +301,9 @@ it("progressive discovery carries the same result vocabulary without claiming fi
   expect(snapshots[0]).toMatchObject({
     phase: "progressive",
     readCoverage: "partial",
-    eventsVerified: true,
     globalAbsence: false,
   })
+  expect(snapshots[0].events.every(isVerifiedNostrEvent)).toBe(true)
   expect(snapshots[0].eventSourceRelayUrls?.[signed.id]).toEqual([
     "wss://first.example",
   ])

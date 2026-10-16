@@ -8,6 +8,7 @@ import {
   isMerchantOrderAccepted,
   isMerchantOrderPaid,
   isPaymentProofEvidenceMessage,
+  type CheckoutSparkMerchantSettlementProjection,
   type MerchantConversationSummary,
   type MerchantOrderState,
   type OrderSummary,
@@ -26,7 +27,7 @@ export type OrderQueueTab =
   | "shipped"
   | "closed"
 
-export type MerchantOrderSort = "priority" | "recent"
+export type MerchantOrderSort = "newest" | "priority" | "recent"
 
 export const ORDER_PHASE_OPTIONS: Array<{
   value: OrderQueueTab
@@ -44,8 +45,9 @@ export const ORDER_SORT_OPTIONS: Array<{
   value: MerchantOrderSort
   label: string
 }> = [
-  { value: "priority", label: "Priority" },
-  { value: "recent", label: "Recent activity" },
+  { value: "newest", label: "Newest orders" },
+  { value: "recent", label: "Recently updated" },
+  { value: "priority", label: "Needs attention — oldest first" },
 ]
 
 export function isOrderQueueTab(value: unknown): value is OrderQueueTab {
@@ -85,7 +87,29 @@ export function getMerchantOrderSummary(
   return extractOrderSummary(conversation.messages ?? [], {
     buyerPubkey: conversation.buyerPubkey,
     merchantPubkey: conversation.merchantPubkey,
+    orderId: conversation.orderId,
   })
+}
+
+/** Original parsed buyer order time, never a later status or relay arrival. */
+export function getMerchantOrderPlacedAt(
+  conversation: MerchantConversationSummary
+): number | null {
+  return (
+    getEarliestMessageAt(
+      conversation.messages ?? [],
+      (message) =>
+        message.type === "order" &&
+        message.orderId === conversation.orderId &&
+        message.payload.id === conversation.orderId &&
+        message.senderPubkey === conversation.buyerPubkey &&
+        message.recipientPubkey === conversation.merchantPubkey &&
+        message.payload.buyerPubkey === conversation.buyerPubkey &&
+        message.payload.merchantPubkey === conversation.merchantPubkey &&
+        message.createdAt >= 0 &&
+        Number.isFinite(new Date(message.createdAt).getTime())
+    ) ?? null
+  )
 }
 
 export function isMerchantGuestOrder(
@@ -247,7 +271,8 @@ export function getMerchantOrderFulfillment(
 }
 
 export function getMerchantConversationState(
-  conversation: MerchantConversationSummary
+  conversation: MerchantConversationSummary,
+  settlement: CheckoutSparkMerchantSettlementProjection | null = null
 ): MerchantOrderState {
   const summary = getMerchantOrderSummary(conversation)
   const effectiveStatus = getEffectiveMerchantOrderStatus(
@@ -258,17 +283,61 @@ export function getMerchantConversationState(
     },
     conversation.status
   )
+  const routedUnverified =
+    summary.checkoutSparkRouted && settlement?.commerceVerified !== true
   return {
-    status: effectiveStatus.status,
+    // A manual "paid" status cannot authorize a fresh routed fulfillment.
+    // Keep older shipped/terminal history intact for display and closure.
+    status:
+      routedUnverified && effectiveStatus.status?.toLowerCase() === "paid"
+        ? "pending"
+        : effectiveStatus.status,
     cancellation: effectiveStatus.cancellation,
-    paid: summary.paymentConfirmed,
+    // A buyer's routed-order marker or a merchant status is not provider proof.
+    paid: summary.checkoutSparkRouted
+      ? settlement?.commerceVerified === true
+      : summary.paymentConfirmed,
     paymentObserved:
       summary.paymentProofReceived || summary.paymentReportReceived,
     paymentReported: summary.externalPaymentReportReceived,
     accepted: summary.accepted,
     invoiceSent: summary.invoiceSent,
+    checkoutSparkRouted: summary.checkoutSparkRouted,
     shippingUpdated: summary.shippingUpdateReceived,
   }
+}
+
+export function canMerchantIssueOrderInvoice(input: {
+  buyerInboxKnown: boolean
+  queue: MerchantOrderQueue | null
+  state: MerchantOrderState
+}): boolean {
+  return (
+    input.buyerInboxKnown &&
+    input.queue === "unpaid_review" &&
+    !isMerchantOrderPaid(input.state) &&
+    !input.state.paymentObserved &&
+    !input.state.checkoutSparkRouted &&
+    !!input.state.accepted
+  )
+}
+
+/** A previously observed exact routed order vetoes an ordinary invoice. */
+export function hasMerchantRoutedCheckoutOrder(
+  conversations: readonly MerchantConversationSummary[],
+  scope: {
+    merchantPubkey: string
+    buyerPubkey: string
+    orderId: string
+  }
+): boolean {
+  return conversations.some(
+    (conversation) =>
+      conversation.merchantPubkey === scope.merchantPubkey &&
+      conversation.buyerPubkey === scope.buyerPubkey &&
+      conversation.orderId === scope.orderId &&
+      getMerchantOrderSummary(conversation).checkoutSparkRouted
+  )
 }
 
 export type MerchantOrderQueue = Exclude<OrderQueueTab, "all">
@@ -292,10 +361,11 @@ export function getMerchantConversationCommunication(
 }
 
 export function getMerchantConversationQueue(
-  conversation: MerchantConversationSummary
+  conversation: MerchantConversationSummary,
+  settlement: CheckoutSparkMerchantSettlementProjection | null = null
 ): MerchantOrderQueue {
   const summary = getMerchantOrderSummary(conversation)
-  const state = getMerchantConversationState(conversation)
+  const state = getMerchantConversationState(conversation, settlement)
   const status = (state.status ?? "pending").toLowerCase()
   if (
     status === "cancelled" ||
@@ -306,6 +376,12 @@ export function getMerchantConversationQueue(
     return "closed"
   }
   if (state.shippingUpdated || status === "shipped") return "shipped"
+  if (state.checkoutSparkRouted) {
+    if (settlement?.commerceVerified) return "paid_fulfill"
+    return settlement?.creditVerified || settlement?.merchantVerified
+      ? "verify_payment"
+      : "unpaid_review"
+  }
   const fulfillment = getMerchantOrderFulfillment(summary.items)
   const acceptedZeroCostPickup =
     isMerchantOrderAccepted(state) &&
@@ -353,11 +429,12 @@ function getEarliestMessageAt(
 }
 
 function getMerchantConversationPriority(
-  conversation: MerchantConversationSummary
+  conversation: MerchantConversationSummary,
+  settlement: CheckoutSparkMerchantSettlementProjection | null = null
 ): MerchantConversationPriority {
-  const state = getMerchantConversationState(conversation)
+  const state = getMerchantConversationState(conversation, settlement)
   const status = (state.status ?? "pending").toLowerCase()
-  const queue = getMerchantConversationQueue(conversation)
+  const queue = getMerchantConversationQueue(conversation, settlement)
   const observedAt = Number.isFinite(conversation.latestAt)
     ? conversation.latestAt
     : 0
@@ -440,10 +517,42 @@ function compareOrderIds(
   return left.orderId < right.orderId ? -1 : 1
 }
 
+/** Reordering never changes an existing selection or the action target. */
+export function getMerchantOrderSelection(
+  conversations: readonly Pick<MerchantConversationSummary, "id" | "orderId">[],
+  selectedId: string | null,
+  requestedOrderId?: string
+): string | null {
+  const requested = requestedOrderId
+    ? conversations.find((item) => item.orderId === requestedOrderId)
+    : null
+  if (requested) return requested.id
+  if (selectedId && conversations.some((item) => item.id === selectedId)) {
+    return selectedId
+  }
+  return conversations[0]?.id ?? null
+}
+
 export function sortMerchantConversations(
   conversations: MerchantConversationSummary[],
-  sort: MerchantOrderSort
+  sort: MerchantOrderSort,
+  getSettlement: (
+    conversation: MerchantConversationSummary
+  ) => CheckoutSparkMerchantSettlementProjection | null = () => null
 ): MerchantConversationSummary[] {
+  if (sort === "newest") {
+    return conversations
+      .map((conversation) => ({
+        conversation,
+        placedAt: getMerchantOrderPlacedAt(conversation) ?? -1,
+      }))
+      .sort(
+        (left, right) =>
+          right.placedAt - left.placedAt ||
+          compareOrderIds(left.conversation, right.conversation)
+      )
+      .map(({ conversation }) => conversation)
+  }
   if (sort === "recent") {
     return [...conversations].sort(
       (left, right) =>
@@ -454,7 +563,10 @@ export function sortMerchantConversations(
   return conversations
     .map((conversation) => ({
       conversation,
-      priority: getMerchantConversationPriority(conversation),
+      priority: getMerchantConversationPriority(
+        conversation,
+        getSettlement(conversation)
+      ),
     }))
     .sort((left, right) => {
       const rankDelta = left.priority.rank - right.priority.rank
@@ -472,15 +584,19 @@ export function sortMerchantConversations(
 }
 
 export function getMerchantConversationPhase(
-  conversation: MerchantConversationSummary
+  conversation: MerchantConversationSummary,
+  settlement: CheckoutSparkMerchantSettlementProjection | null = null
 ): "pending" | "in_progress" | "completed" | "cancelled" {
-  return getMerchantOrderPhase(getMerchantConversationState(conversation))
+  return getMerchantOrderPhase(
+    getMerchantConversationState(conversation, settlement)
+  )
 }
 
 export function getMerchantConversationStatusDisplay(
-  conversation: MerchantConversationSummary
+  conversation: MerchantConversationSummary,
+  settlement: CheckoutSparkMerchantSettlementProjection | null = null
 ): OrderStatusDisplay {
-  const state = getMerchantConversationState(conversation)
+  const state = getMerchantConversationState(conversation, settlement)
   const status = (state.status ?? "pending").toLowerCase()
   if (
     status === "cancelled" ||
@@ -492,6 +608,31 @@ export function getMerchantConversationStatusDisplay(
   }
   if (state.shippingUpdated || status === "shipped") {
     return getOrderStatusDisplay("shipped")
+  }
+  if (state.checkoutSparkRouted) {
+    if (settlement?.commerceVerified) return getOrderStatusDisplay("paid")
+    if (settlement?.recipientUnverified) {
+      return {
+        tone: "warning",
+        label: "Payout observed — recipient unverified",
+      }
+    }
+    if (settlement?.merchantVerified && !settlement.creditVerified) {
+      return { tone: "warning", label: "Payout observed — funding unverified" }
+    }
+    if (settlement?.merchantVerified) {
+      return { tone: "info", label: "Other payouts pending" }
+    }
+    if (settlement?.receiverSettlementObserved) {
+      return {
+        tone: "info",
+        label: "Recipient receipt observed — verifying checkout",
+      }
+    }
+    if (settlement?.creditVerified) {
+      return { tone: "info", label: "Funding verified — routing pending" }
+    }
+    return { tone: "info", label: "Awaiting checkout verification" }
   }
   if (isMerchantOrderPaid(state)) return getOrderStatusDisplay("paid")
   if (state.paymentReported) {
@@ -507,11 +648,13 @@ export function getMerchantConversationStatusDisplay(
 }
 
 export function isMerchantConversationActiveFulfillment(
-  conversation: MerchantConversationSummary
+  conversation: MerchantConversationSummary,
+  settlement: CheckoutSparkMerchantSettlementProjection | null = null
 ): boolean {
-  const state = getMerchantConversationState(conversation)
+  const state = getMerchantConversationState(conversation, settlement)
   const phase = getMerchantOrderPhase(state)
   if (phase === "completed" || phase === "cancelled") return false
+  if (state.checkoutSparkRouted) return settlement?.commerceVerified === true
   const status = (state.status ?? "pending").toLowerCase()
   return (
     isMerchantOrderPaid(state) ||

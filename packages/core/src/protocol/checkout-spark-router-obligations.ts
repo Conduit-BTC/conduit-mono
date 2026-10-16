@@ -11,6 +11,24 @@ import {
 } from "./lightning"
 
 export const CONDUIT_CHECKOUT_FEE_RECIPIENT = "conduithodlings@strike.me"
+/** Fixed team-controlled destination for an explicitly gated local canary. */
+export const CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT =
+  "conduit-tester@rizful.com"
+
+export type CheckoutSparkConduitDestinationPolicy =
+  "production" | "local_router_canary"
+
+export function checkoutSparkConduitFeeRecipient(
+  policy: CheckoutSparkConduitDestinationPolicy
+):
+  | typeof CONDUIT_CHECKOUT_FEE_RECIPIENT
+  | typeof CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT {
+  if (policy === "production") return CONDUIT_CHECKOUT_FEE_RECIPIENT
+  if (policy === "local_router_canary") {
+    return CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT
+  }
+  throw new Error("Checkout Spark Conduit destination policy is invalid.")
+}
 
 const CONDUIT_FEE_NUMERATOR = 21n
 const CONDUIT_FEE_DENOMINATOR = 1_000n
@@ -37,6 +55,8 @@ export interface CheckoutSparkOrganizerObligationInput {
 export interface CheckoutSparkConduitObligationInput {
   paymentRequest: string
   maxFeeSats: number
+  /** Omitted is always the production destination. Never a free-form address. */
+  destinationPolicy?: CheckoutSparkConduitDestinationPolicy
 }
 
 export interface BuildCheckoutSparkRouterObligationsInput {
@@ -48,7 +68,7 @@ export interface BuildCheckoutSparkRouterObligationsInput {
   commerce: readonly CheckoutSparkCommerceObligationInput[]
   /** Optional already-authorized and endpoint-resolved event organizer leg. */
   organizer?: CheckoutSparkOrganizerObligationInput | null
-  /** Exact invoice and fee allowance for the fixed Conduit destination. */
+  /** Exact invoice and fee allowance for the selected allowlisted destination. */
   conduit: CheckoutSparkConduitObligationInput
 }
 
@@ -224,7 +244,9 @@ export function buildCheckoutSparkRouterObligations(
   const conduit = normalizeObligation(
     {
       kind: "conduit",
-      recipientId: CONDUIT_CHECKOUT_FEE_RECIPIENT,
+      recipientId: checkoutSparkConduitFeeRecipient(
+        input.conduit.destinationPolicy ?? "production"
+      ),
       paymentRequest: input.conduit.paymentRequest,
       amountSats: conduitFeeSats,
       maxFeeSats: input.conduit.maxFeeSats,

@@ -30,7 +30,7 @@ export function EventTimelineEmptyState({
     <div
       role={loadFailed ? "alert" : undefined}
       className={`py-10 text-center text-sm ${
-        loadFailed ? "text-[var(--warning)]" : "text-[var(--text-muted)]"
+        loadFailed ? "text-[var(--warning-text)]" : "text-[var(--text-muted)]"
       }`}
     >
       <p>

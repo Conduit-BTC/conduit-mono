@@ -3,6 +3,7 @@ import {
   createSelectedProfileContext,
   type LnurlPayMetadata,
 } from "@conduit/core"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   resolveCheckoutSparkConduitInvoiceWitness,
   resolveCheckoutSparkRecipientInvoiceWitness,
@@ -31,19 +32,39 @@ function metadata(): LnurlPayMetadata {
 }
 
 /** Stub the trusted getProfiles boundary only for preparation unit tests. */
-function profileRead(recipientPubkey: string, nowSeconds: number): ProfileRead {
-  const context = createSelectedProfileContext({
-    pubkey: recipientPubkey,
-    row: {
-      pubkey: recipientPubkey,
-      eventId: "e".repeat(64),
-      eventCreatedAt: nowSeconds - 100,
-      rawContent: JSON.stringify({ lud16: LUD16 }),
-      cachedAt: Date.now(),
+function profileRead(
+  recipientPubkey: string,
+  nowSeconds: number,
+  signingKeys: ReadonlyMap<string, Uint8Array>
+): ProfileRead {
+  const signingKey = signingKeys.get(recipientPubkey)
+  if (!signingKey || getPublicKey(signingKey) !== recipientPubkey) {
+    throw new Error("Router fixture requires the exact recipient signing key.")
+  }
+  const event = finalizeEvent(
+    {
+      kind: 0,
+      created_at: nowSeconds - 100,
+      tags: [],
+      content: JSON.stringify({ lud16: LUD16 }),
     },
-    observed: true,
-    readComplete: true,
-  })
+    signingKey
+  )
+  const context = {
+    ...createSelectedProfileContext({
+      pubkey: recipientPubkey,
+      row: {
+        pubkey: recipientPubkey,
+        eventId: event.id,
+        eventCreatedAt: event.created_at,
+        rawContent: event.content,
+        cachedAt: Date.now(),
+      },
+      observed: true,
+      readComplete: true,
+    }),
+    signedEvent: event,
+  }
   return {
     data: { [recipientPubkey]: context.profile },
     profileContexts: { [recipientPubkey]: context },
@@ -61,6 +82,7 @@ export async function mockRouterInvoiceWitnesses(
     "checkoutId" | "network" | "routerObligationInputs"
   >,
   nowSeconds: number,
+  signingKeys: ReadonlyMap<string, Uint8Array>,
   shouldContinue = () => true
 ): Promise<readonly CheckoutSparkPayoutInvoiceWitness[]> {
   const recipients = [
@@ -83,7 +105,7 @@ export async function mockRouterInvoiceWitnesses(
         {
           profile: {
             readProfiles: async () =>
-              profileRead(obligation.recipientId, nowSeconds),
+              profileRead(obligation.recipientId, nowSeconds, signingKeys),
           },
           lnurl: {
             fetchMetadata: async () => metadata(),
@@ -120,7 +142,8 @@ export async function withMockRouterInvoiceWitnesses<
   >,
 >(
   input: T,
-  nowSeconds: number
+  nowSeconds: number,
+  signingKeys: ReadonlyMap<string, Uint8Array>
 ): Promise<
   T & {
     invoiceWitnesses: readonly CheckoutSparkPayoutInvoiceWitness[]
@@ -128,6 +151,10 @@ export async function withMockRouterInvoiceWitnesses<
 > {
   return {
     ...input,
-    invoiceWitnesses: await mockRouterInvoiceWitnesses(input, nowSeconds),
+    invoiceWitnesses: await mockRouterInvoiceWitnesses(
+      input,
+      nowSeconds,
+      signingKeys
+    ),
   }
 }

@@ -1,4 +1,5 @@
 import {
+  admitEmbeddedEventMarketOrderEvidence,
   readEventMarketOrderEvidenceByIds,
   verifyEventMarketOrderEvidence,
   type EventMarketOrderEvidenceResult,
@@ -40,9 +41,15 @@ export async function readVerifiedFutureEventMarketOrderEvidence(input: {
       input.order.items.filter((item) => item.format === "physical").length
   )
     return { result: { status: "invalid", reason: "order" }, events: [] }
+  const embeddedEvents = await admitEmbeddedEventMarketOrderEvidence(
+    input.order
+  )
+  if (input.shouldContinue?.() === false) {
+    throw new DOMException("Order authorization was cancelled.", "AbortError")
+  }
   const embedded = verifyEventMarketOrderEvidence({
     order: input.order,
-    events: [],
+    events: embeddedEvents,
   })
   if (embedded.status === "verified") return { result: embedded, events: [] }
   const ids = [
@@ -69,7 +76,7 @@ export async function readVerifiedFutureEventMarketOrderEvidence(input: {
     events: read.events,
     result: verifyEventMarketOrderEvidence({
       order: input.order,
-      events: read.events,
+      events: [...embeddedEvents, ...read.events],
     }),
   }
 }

@@ -7,6 +7,10 @@ import {
 } from "@conduit/core"
 import { useBtcUsdRate } from "./useBtcUsdRate"
 import { useShopperPricePreference } from "./useShopperPricePreference"
+import {
+  coordinationPricingEnabled,
+  getFeeInclusiveListingPriceDisplay,
+} from "../lib/checkout-coordination-pricing"
 
 export function useShopperPricing() {
   const rateQuery = useBtcUsdRate()
@@ -27,12 +31,24 @@ export function useShopperPricing() {
     (sats: number) => getShopperSatsDisplay(sats, preference, quote),
     [preference, quote]
   )
+  const formatListingPrice = useCallback(
+    (price: CommercePriceLike, options?: ShopperPriceDisplayOptions) =>
+      getFeeInclusiveListingPriceDisplay(
+        price,
+        preference,
+        quote,
+        coordinationPricingEnabled(),
+        options
+      ),
+    [preference, quote]
+  )
 
   return {
     preference,
     rateQuery,
     quote,
     formatPrice,
+    formatListingPrice,
     formatSatsAmount,
     setCurrency,
     setSatsStandard,

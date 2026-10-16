@@ -8,6 +8,7 @@ import {
 import {
   __resetShippingTestOverrides,
   __setShippingTestOverrides,
+  admitPublicEvent,
   buildShippingPolicyEventDraft,
   buildProductListingEventDraft,
   fetchMerchantShippingPolicy,
@@ -75,7 +76,12 @@ const event = finalizeEvent(
   },
   secret
 )
-const product = parseProductEvent(new NDKEvent(undefined, event))!
+async function admittedProduct(signed: typeof event) {
+  const result = await admitPublicEvent(signed)
+  if (result.status !== "verified") throw new Error("Invalid product fixture")
+  return parseProductEvent(result.event)
+}
+const product = await admittedProduct(event)
 const raw = { ...createCartItemFromProduct(product), quantity: 1 }
 const listing = {
   product,
@@ -153,7 +159,6 @@ function reader(frontiers = new Map<string, CachedShippingOptionFrontier>()) {
           : []
       return {
         events: events.map((event) => new NDKEvent(undefined, event)),
-        eventsVerified: true,
         eventSourceRelayUrls: {},
         relays: (options.relayUrls ?? []).map((relayUrl, index) => ({
           relayUrl,
@@ -223,7 +228,7 @@ describe("current policy evidence at commerce action gates", () => {
           },
           secret
         )
-        const baseline = parseProductEvent(new NDKEvent(undefined, malformed))!
+        const baseline = await admittedProduct(malformed)
         expect(baseline.shippingAdjustmentsMalformed).toBe(true)
         expect(
           prepareCartFulfillment(
@@ -242,6 +247,7 @@ describe("current policy evidence at commerce action gates", () => {
             signAndPublishProductWriteBundle(
               {
                 merchantPubkey: merchant,
+                durableCommit: {},
                 listings: [
                   {
                     ...listing,
@@ -310,12 +316,11 @@ describe("current policy evidence at commerce action gates", () => {
       },
     },
   ]
-  for (const changes of incompatibleLegacyTerms) {
-    it(`blocks legacy v1 ${changes.name} before signing new or preserved table listings`, async () => {
+  for (const { name, ...fields } of incompatibleLegacyTerms) {
+    it(`blocks legacy v1 ${name} before signing new or preserved table listings`, async () => {
       const source = reader()
       const legacyEvent = policyEvent(1, legacyPolicy)
       source.setEvents([legacyEvent])
-      const { name: _name, ...fields } = changes
       const incompatible = { ...product, sourcePrice: undefined, ...fields }
       const signed = finalizeEvent(
         {
@@ -327,7 +332,7 @@ describe("current policy evidence at commerce action gates", () => {
         },
         secret
       )
-      const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+      const parsed = await admittedProduct(signed)
       expect(
         prepareCartFulfillment(
           [{ ...createCartItemFromProduct(parsed), quantity: 1 }],
@@ -349,6 +354,7 @@ describe("current policy evidence at commerce action gates", () => {
             signAndPublishProductWriteBundle(
               {
                 merchantPubkey: merchant,
+                durableCommit: {},
                 listings: [
                   {
                     product: incompatible,
@@ -427,7 +433,7 @@ describe("current policy evidence at commerce action gates", () => {
         },
         secret
       )
-      const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+      const parsed = await admittedProduct(signed)
       const items = [{ ...createCartItemFromProduct(parsed), quantity: 1 }]
       const reviewed = prepareCartFulfillment(
         items,
@@ -667,6 +673,7 @@ describe("current policy evidence at commerce action gates", () => {
           signAndPublishProductWriteBundle(
             {
               merchantPubkey: merchant,
+              durableCommit: {},
               listings: [listing],
               onSignedLocal: async () => {
                 localWrites++
@@ -765,6 +772,7 @@ describe("current policy evidence at commerce action gates", () => {
         signAndPublishProductWriteBundle(
           {
             merchantPubkey: merchant,
+            durableCommit: {},
             listings: [listing],
             onSignedLocal: async () => {
               localWrites++

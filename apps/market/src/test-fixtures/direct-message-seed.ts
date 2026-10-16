@@ -1,4 +1,4 @@
-import { db } from "@conduit/core"
+import { getCommerceInbox } from "@conduit/core/protocol/commerce-inbox"
 
 interface SeededDirectMessage {
   id: string
@@ -8,27 +8,28 @@ interface SeededDirectMessage {
 }
 
 /**
- * Test-only: writes kind-14 rows through the app's Dexie instance so live
+ * Test-only: writes encrypted projections through the app's inbox owner so live
  * observers see the change exactly as an inbox sync or read mark would do.
  */
 export async function seedDirectMessages(
   rows: readonly SeededDirectMessage[]
 ): Promise<void> {
-  await db.messages.bulkPut(
-    rows.map((row) => ({
-      ...row,
-      content: "",
-      kind: 14,
-      createdAt: 1,
-    }))
-  )
+  for (const row of rows) {
+    const owner = getCommerceInbox(row.recipientPubkey)
+    await owner.initialize()
+    await owner.store.putProjection(
+      {
+        kind: "direct",
+        message: { ...row, content: "", transport: "nip17", createdAt: 1 },
+      },
+      row.read
+    )
+  }
 }
 
 export async function markSeededDirectMessagesRead(
+  principalPubkey: string,
   ids: readonly string[]
 ): Promise<void> {
-  await db.messages
-    .where("id")
-    .anyOf([...ids])
-    .modify({ read: 1 })
+  await getCommerceInbox(principalPubkey).markRead(ids)
 }

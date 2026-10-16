@@ -23,6 +23,7 @@ import {
   fromStoredOrganizerEventForm,
   type OrganizerEventMarketFormValues,
 } from "../apps/merchant/src/lib/event-market-form"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -80,12 +81,15 @@ function setup(overrides: Partial<OrganizerEventMarketFormValues> = {}) {
   }
   const read = async () => {
     const market = [...saved.values()].find((event) => event.kind === 30409)
+    const admitted = market ? await admitPublicEvent(market) : undefined
+    if (admitted && admitted.status !== "verified")
+      throw new Error(`Fixture admission failed: ${admitted.status}`)
     return {
       coordinate: creation.marketCoordinate,
       resolution: market
         ? {
             state: "current" as const,
-            market: parseEventMarketRosterEvent(market)!,
+            market: parseEventMarketRosterEvent(admitted!.event)!,
           }
         : { state: "missing" as const },
       coverage: "complete" as const,

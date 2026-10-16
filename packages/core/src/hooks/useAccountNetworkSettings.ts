@@ -1,3 +1,5 @@
+import { relayTargetsFromUrls } from "../protocol/relay-authority"
+import { inboxDeclarationEvidenceFacts } from "../protocol/account-network-evidence"
 import {
   useCallback,
   useEffect,
@@ -18,7 +20,7 @@ import { useConduitSession } from "../context/ConduitSessionContext"
 import {
   dexieAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   subscribeAccountNetworkLocalState,
   type AccountNetworkLocalState,
 } from "../protocol/account-network-local-state"
@@ -42,7 +44,10 @@ import {
 import type { ConduitTelemetryApp } from "../telemetry"
 import { observeAccountNetworkInboxRepair } from "../protocol/account-network-telemetry"
 import { EVENT_KINDS } from "../protocol/kinds"
-import { type AccountNetworkPreferencesReconciliation } from "../protocol/network-preferences"
+import {
+  planAccountNetworkInspectionTargets,
+  type AccountNetworkPreferencesReconciliation,
+} from "../protocol/network-preferences"
 import {
   buildAccountNetworkSettingsView,
   createCandidateNetworkRelayRow,
@@ -184,6 +189,7 @@ const RELAY_INFORMATION_REFRESH_CONCURRENCY = 4
 function emptyFrontier(): AccountNetworkFrontierView {
   return {
     state: "not_checked",
+    currentUsable: false,
     stale: false,
     retained: false,
     coverage: "not_checked",
@@ -375,7 +381,7 @@ function resultMessage(
   }
   const pending = result.checkpoints.some((checkpoint) => checkpoint.pending)
   return pending
-    ? "The exact signed preferences are staged. Some relay confirmation remains retryable."
+    ? "Your signed relay preferences are saved on this device. Relay confirmation is still pending. You can keep editing or retry confirmation."
     : "The exact signed preferences were confirmed on the planned relays."
 }
 
@@ -387,12 +393,14 @@ function canRedistributeExactInbox(
     return false
   }
   const inbox = reconciliation.inboxDeclaration
+  const facts = inboxDeclarationEvidenceFacts(inbox)
   return Boolean(
-    inbox.state === "declared" &&
-    inbox.eventId &&
-    inbox.stale &&
-    inbox.observation?.coverage === "complete" &&
-    inbox.observation.eventId === undefined
+    facts.currentUsable &&
+    facts.currentEventId &&
+    facts.stale &&
+    facts.coverage === "complete" &&
+    !facts.currentObserved &&
+    !facts.distributionPending
   )
 }
 
@@ -530,14 +538,17 @@ export function useAccountNetworkSettings(
       shouldContinue: () => !cancelled,
       isRelayEligible: async (relayUrl) =>
         (
-          await filterEligibleAccountRelayUrls({
+          await filterEligibleAccountRelayTargets({
             accountPubkey,
             authenticatedPubkey: accountPubkey,
-            candidateRelayUrls: [relayUrl],
-            appRelayUrls: [relayUrl],
-            personalRelayUrls: [],
+            operation: "read",
+            targets: relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "read",
+              bucket: "diagnostic_read",
+            }),
           })
-        ).includes(relayUrl),
+        ).some((target) => target.url === relayUrl),
     })
       .then(async (scans) => {
         if (
@@ -701,20 +712,12 @@ export function useAccountNetworkSettings(
         "Wait for saved Network settings to load before making changes."
       )
     }
-    if (
-      baseView.pendingExactDeliveries.some((pending) => pending.retryAvailable)
-    ) {
-      throw new Error(
-        "Retry the exact staged Network update before preparing another change."
-      )
-    }
     return { reconciliation, localState: activeLocal.state }
   }, [
     accountPreferences.localReady,
     activeLocal?.ready,
     activeLocal?.state,
     reconciliation,
-    baseView.pendingExactDeliveries,
   ])
 
   const validate = useCallback(
@@ -1186,26 +1189,23 @@ export function useAccountNetworkSettings(
     setOperation({ kind: "refresh", phase: "checking", message: null })
     setRelayInformationRefreshing(true)
     try {
-      await accountPreferences.refetch()
+      const refreshed = await accountPreferences.refetch()
+      if (!refreshed)
+        throw new Error(
+          "Preference evidence is unavailable or the account changed."
+        )
       const snapshot = captureAccount()
       const shouldContinue = accountFenceFor(snapshot)
       const stored =
         (await dexieAccountNetworkLocalStateRepository.get(snapshot.pubkey)) ??
         emptyAccountNetworkLocalState(snapshot.pubkey)
-      const personalRelayRows = baseView.rows
-      const appRelayRows = baseView.appRelays?.rows ?? []
-      const ownerSelectedRelayUrls = personalRelayRows.map((row) => row.url)
-      const appRelayUrlSet = new Set(appRelayRows.map((row) => row.url))
-      const personalRelayUrlSet = new Set(
-        personalRelayRows
-          .filter((row) => row.readEnabled || row.publishEnabled)
-          .map((row) => row.url)
-      )
-      const independentRelayUrlSet = new Set(
-        personalRelayRows
-          .filter((row) => row.privateInboxEnabled || row.recoveryReadOnly)
-          .map((row) => row.url)
-      )
+      const refreshedView = buildAccountNetworkSettingsView({
+        reconciliation: refreshed,
+        localState: stored,
+      })
+      const personalRelayRows = refreshedView.rows
+      const appRelayRows = refreshedView.appRelays?.rows ?? []
+      const inspectionTargets = planAccountNetworkInspectionTargets(refreshed)
       const refreshShouldContinue = () =>
         shouldContinue() && generation === scanGeneration.current
       const scans = await scanRelayBatch({
@@ -1217,21 +1217,16 @@ export function useAccountNetworkSettings(
         shouldContinue: refreshShouldContinue,
         isRelayEligible: async (relayUrl) =>
           (
-            await filterEligibleAccountRelayUrls({
+            await filterEligibleAccountRelayTargets({
               accountPubkey: snapshot.pubkey,
               authenticatedPubkey: snapshot.pubkey,
-              candidateRelayUrls: [relayUrl],
-              ownerSelectedRelayUrls,
-              appRelayUrls: appRelayUrlSet.has(relayUrl) ? [relayUrl] : [],
-              personalRelayUrls: personalRelayUrlSet.has(relayUrl)
-                ? [relayUrl]
-                : [],
-              independentRelayUrls: independentRelayUrlSet.has(relayUrl)
-                ? [relayUrl]
-                : [],
+              operation: "read",
+              targets: inspectionTargets.filter(
+                (target) => target.url === relayUrl
+              ),
               repository: dexieAccountNetworkLocalStateRepository,
             })
-          ).includes(relayUrl),
+          ).some((target) => target.url === relayUrl),
       })
       if (!shouldContinue() || generation !== scanGeneration.current) return
       const updated = await recordAccountNetworkRelayScans({
@@ -1248,7 +1243,11 @@ export function useAccountNetworkSettings(
       setOperation({
         kind: "refresh",
         phase: "complete",
-        message: "Network relay information is current.",
+        message:
+          refreshed.ownerRelayList.observation.coverage === "complete" &&
+          refreshed.inboxDeclaration.observation?.coverage === "complete"
+            ? "Network relay information refreshed."
+            : "Refresh finished with incomplete relay evidence. Saved preferences remain available.",
       })
     } catch (error) {
       if (generation === scanGeneration.current) {
@@ -1263,13 +1262,7 @@ export function useAccountNetworkSettings(
         setRelayInformationRefreshing(false)
       }
     }
-  }, [
-    accountFenceFor,
-    accountPreferences,
-    baseView.appRelays,
-    baseView.rows,
-    captureAccount,
-  ])
+  }, [accountFenceFor, accountPreferences, captureAccount])
 
   return {
     view: baseView,

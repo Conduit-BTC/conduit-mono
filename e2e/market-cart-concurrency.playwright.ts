@@ -13,6 +13,7 @@ import type { CartItem } from "../apps/market/src/lib/cart-model"
 import type { CartPurchaseClaim } from "../apps/market/src/lib/cart-repository"
 import { publishTestRelayEvents } from "./helpers/auth"
 import { delayCartNotifications } from "./helpers/cart-notifications"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const coreBrowserModulePath = `/@fs${fileURLToPath(
@@ -554,7 +555,10 @@ test("Cart and HUD increments honor newer signed stock evidence @market", async 
 
 test("delayed stale quantity actions cannot restore a line removed in another tab @market", async ({
   context,
-}) => {
+}, info) => {
+  const mark = (phase: string, tabIndex = -1) =>
+    recordSmokeDiagnostic(info, "cart-stale-action", { phase, tabIndex })
+  mark("seed")
   await seedLegacyCart(context, legacyCart)
 
   const currentTab = await context.newPage()
@@ -565,12 +569,14 @@ test("delayed stale quantity actions cannot restore a line removed in another ta
     delayCartNotifications(staleIncreaseTab),
   ])
 
+  mark("navigate")
   await Promise.all([
     currentTab.goto(`${marketUrl}/cart`),
     staleDecreaseTab.goto(`${marketUrl}/cart`),
     staleIncreaseTab.goto(`${marketUrl}/cart`),
   ])
 
+  mark("ready")
   const remove = currentTab.getByRole("button", {
     name: "Remove Race item from cart",
   })
@@ -582,7 +588,9 @@ test("delayed stale quantity actions cannot restore a line removed in another ta
   })
   await expect(remove).toBeVisible()
   await expect(staleDecrease).toBeVisible()
+  await expect(staleIncrease).toBeVisible()
 
+  mark("remove")
   await remove.click()
   await expect(
     currentTab.getByRole("heading", { name: "Your cart is empty" })
@@ -598,11 +606,17 @@ test("delayed stale quantity actions cannot restore a line removed in another ta
       ).__cartNotificationDelay.count()
     )
   ).toBeGreaterThan(0)
+  mark("stale_decrease")
   await staleDecrease.click()
+  mark("stale_increase")
   await staleIncrease.click()
   await expect(currentTab.getByText("Race item")).toHaveCount(0)
 
-  for (const staleTab of [staleDecreaseTab, staleIncreaseTab]) {
+  for (const [tabIndex, staleTab] of [
+    staleDecreaseTab,
+    staleIncreaseTab,
+  ].entries()) {
+    mark("resume", tabIndex)
     await staleTab.evaluate(() => {
       window.dispatchEvent(new PageTransitionEvent("pageshow"))
     })
@@ -610,6 +624,7 @@ test("delayed stale quantity actions cannot restore a line removed in another ta
       staleTab.getByRole("heading", { name: "Your cart is empty" })
     ).toBeVisible()
 
+    mark("release", tabIndex)
     await staleTab.evaluate(() =>
       (
         window as typeof window & {
@@ -621,10 +636,12 @@ test("delayed stale quantity actions cannot restore a line removed in another ta
       staleTab.getByRole("heading", { name: "Your cart is empty" })
     ).toBeVisible()
   }
+  mark("reload")
   await currentTab.reload()
   await expect(
     currentTab.getByRole("heading", { name: "Your cart is empty" })
   ).toBeVisible()
+  mark("complete")
 })
 
 test("delayed product quote refreshes cannot restore a line removed in another tab @market", async ({
@@ -1098,6 +1115,103 @@ test("a stale remove consumes only observed quantities and preserves a concurren
   )
   await expect(
     staleRemovingTab.getByText("Qty 1", { exact: true })
+  ).toBeVisible()
+})
+
+test("signed cart quantities can decrease and be removed while verification is unavailable @market", async ({
+  context,
+  page,
+}) => {
+  const signedProductEvent = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 100,
+      content: "Synthetic cart outage fixture",
+      tags: [
+        ["d", "race-item"],
+        ["title", "Race item"],
+        ["price", "1200", "SATS"],
+        ["type", "simple", "digital"],
+      ],
+    },
+    MERCHANT_SECRET
+  )
+  await seedLegacyCart(context, {
+    ...legacyCart,
+    items: [
+      {
+        ...legacyCart.items[0]!,
+        productEventId: signedProductEvent.id,
+        productUpdatedAt: 100000,
+        signedProductEvent,
+      },
+    ],
+  })
+  await page.goto(`${marketUrl}/cart`)
+  await expect(page.getByText("Qty 2", { exact: true })).toBeVisible()
+  await page.evaluate(async (corePath) => {
+    const repositoryPath = "/src/lib/cart-repository.ts"
+    const proofPath = corePath.replace(
+      /index\.ts$/,
+      "protocol/verified-public-event.ts"
+    )
+    const repository = (await import(
+      /* @vite-ignore */ repositoryPath
+    )) as typeof import("../apps/market/src/lib/cart-repository")
+    const proof = (await import(
+      /* @vite-ignore */ proofPath
+    )) as typeof import("../packages/core/src/protocol/verified-public-event")
+    if (
+      !proof.isVerifiedNostrEvent(
+        repository.getCartRepositorySnapshot().items[0]?.signedProductEvent
+      )
+    ) {
+      throw new Error(
+        "Synthetic signed cart did not hydrate through the browser worker"
+      )
+    }
+    proof.__resetPublicEventVerificationForTests()
+    Object.defineProperty(window, "Worker", {
+      configurable: true,
+      value: undefined,
+    })
+  }, coreBrowserModulePath)
+
+  await page
+    .getByRole("button", { name: "Decrease quantity for Race item" })
+    .click()
+  await expect(page.getByText("Qty 1", { exact: true })).toBeVisible()
+  const preserved = await page.evaluate(
+    async ({ corePath, signedEvent }) => {
+      const core = (await import(
+        /* @vite-ignore */ corePath
+      )) as typeof import("../packages/core/src")
+      const proofPath = corePath.replace(
+        /index\.ts$/,
+        "protocol/verified-public-event.ts"
+      )
+      const proof = (await import(
+        /* @vite-ignore */ proofPath
+      )) as typeof import("../packages/core/src/protocol/verified-public-event")
+      const row = await core.db.shoppingCarts.get("market")
+      const line = row?.lines[0] as
+        { item?: { signedProductEvent?: typeof signedEvent } } | undefined
+      return (
+        !!line?.item?.signedProductEvent &&
+        proof.sameSignedPublicEvent(signedEvent, line.item.signedProductEvent)
+      )
+    },
+    { corePath: coreBrowserModulePath, signedEvent: signedProductEvent }
+  )
+  expect(preserved).toBe(true)
+  await page.getByRole("button", { name: "Remove Race item from cart" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Your cart is empty" })
+  ).toBeVisible()
+  expect(await readCanonicalLines(page)).toEqual([])
+  await page.reload()
+  await expect(
+    page.getByRole("heading", { name: "Your cart is empty" })
   ).toBeVisible()
 })
 

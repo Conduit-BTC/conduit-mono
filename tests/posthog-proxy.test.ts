@@ -139,6 +139,12 @@ const validBrowserEventProperties = {
     handoff_stage: "arrival",
     mode: "buy",
   },
+  checkout_router_operation_result: {
+    step: "router_preparation",
+    status: "success",
+    latency_bucket: "250ms_1s",
+    count_bucket: "1",
+  },
   relay_connect_result: { network: "browser", status: "success" },
   relay_publish_result: { network: "browser", status: "failure" },
   nip17_compatibility_result: {

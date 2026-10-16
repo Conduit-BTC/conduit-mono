@@ -1,5 +1,6 @@
 import {
   decodeLightningInvoiceAmount,
+  decodeLightningInvoicePaymentHash,
   type MerchantConversationSummary,
   type NwcLookupInvoiceResult,
 } from "@conduit/core"
@@ -31,7 +32,14 @@ export type MerchantPaymentVerificationResult = {
 function getMerchantPaymentEvidenceKey(
   candidate: MerchantPaymentVerificationCandidate
 ): string {
-  return `${candidate.orderId}:${candidate.evidenceMessageId}`
+  // A later buyer proof is new evidence for the same invoice, not a new
+  // settlement. Keep confirmation suppression scoped to that exact intent.
+  return JSON.stringify([
+    candidate.orderId,
+    candidate.buyerPubkey,
+    candidate.invoice.trim().toLowerCase(),
+    candidate.expectedAmountMsats,
+  ])
 }
 
 export async function verifyMerchantPaymentCandidates({
@@ -121,7 +129,11 @@ export function getMerchantNwcAddressStatus({
 function findCandidate(
   conversation: MerchantConversationSummary
 ): MerchantPaymentVerificationCandidate | null {
-  if (getMerchantConversationQueue(conversation) !== "verify_payment") {
+  if (
+    !["verify_payment", "unpaid_review"].includes(
+      getMerchantConversationQueue(conversation)
+    )
+  ) {
     return null
   }
 
@@ -145,15 +157,7 @@ function findCandidate(
         message.payload.verification?.state !== "verification_failed" &&
         message.payload.verification?.state !== "disputed"
     )
-  if (evidence?.type !== "payment_proof" || !evidence.payload.invoice) {
-    return null
-  }
-
-  const invoice = evidence.payload.invoice.trim()
-  const decoded = decodeLightningInvoiceAmount(invoice)
-  if (decoded.msats === null || decoded.msats <= 0) return null
-
-  const latestMerchantInvoice = [...messages]
+  const merchantInvoice = [...messages]
     .reverse()
     .find(
       (message) =>
@@ -161,10 +165,41 @@ function findCandidate(
         message.senderPubkey === conversation.merchantPubkey &&
         message.recipientPubkey === conversation.buyerPubkey
     )
+  const proofInvoice =
+    evidence?.type === "payment_proof"
+      ? evidence.payload.invoice?.trim()
+      : undefined
+  const matchingMerchantInvoice = proofInvoice
+    ? [...messages]
+        .reverse()
+        .find(
+          (message) =>
+            message.type === "payment_request" &&
+            message.senderPubkey === conversation.merchantPubkey &&
+            message.recipientPubkey === conversation.buyerPubkey &&
+            message.payload.invoice.trim().toLowerCase() ===
+              proofInvoice.toLowerCase()
+        )
+    : merchantInvoice
+  // A buyer report cannot replace a merchant-issued invoice or its destination.
+  // An older exact request retains its original invoice after later edits.
+  if (merchantInvoice && proofInvoice && !matchingMerchantInvoice) return null
+  const invoice =
+    matchingMerchantInvoice?.type === "payment_request"
+      ? matchingMerchantInvoice.payload.invoice.trim()
+      : (proofInvoice ?? "")
+  if (!invoice) return null
+  const decoded = decodeLightningInvoiceAmount(invoice)
+  const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+  if (decoded.msats === null || decoded.msats <= 0 || !paymentHash) return null
+  if (
+    evidence?.type === "payment_proof" &&
+    evidence.payload.paymentHash &&
+    evidence.payload.paymentHash.trim().toLowerCase() !== paymentHash
+  )
+    return null
   const matchesMerchantInvoice =
-    latestMerchantInvoice?.type === "payment_request" &&
-    latestMerchantInvoice.payload.invoice.trim().toLowerCase() ===
-      invoice.toLowerCase()
+    matchingMerchantInvoice?.type === "payment_request"
   const orderCurrency = order.payload.currency.trim().toUpperCase()
   const matchesSatsOrder =
     (orderCurrency === "SAT" || orderCurrency === "SATS") &&
@@ -177,9 +212,9 @@ function findCandidate(
   return {
     orderId: conversation.orderId,
     buyerPubkey: conversation.buyerPubkey,
-    evidenceMessageId: evidence.id,
+    evidenceMessageId: evidence?.id ?? matchingMerchantInvoice!.id,
     invoice,
-    paymentHash: evidence.payload.paymentHash?.trim() || undefined,
+    paymentHash,
     expectedAmountMsats: decoded.msats,
     orderCreatedAt: order.payload.createdAt,
     delivery:
@@ -233,6 +268,9 @@ export function isNwcSettlementMatch(
     return false
   }
   if (settlement.amountMsats !== candidate.expectedAmountMsats) return false
+  const invoiceHash = decodeLightningInvoicePaymentHash(candidate.invoice)
+  if (!invoiceHash || settlement.paymentHash.toLowerCase() !== invoiceHash)
+    return false
   if (
     candidate.paymentHash &&
     settlement.paymentHash.toLowerCase() !== candidate.paymentHash.toLowerCase()

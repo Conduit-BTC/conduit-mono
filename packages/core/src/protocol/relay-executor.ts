@@ -31,6 +31,12 @@ import {
   normalizeRelayUrl,
 } from "./relay-settings"
 import { serializeSignerOperation } from "./interactive-signer"
+import {
+  isAddressRequestsDTag,
+  isSparkWalletRegistryDTag,
+  isWalletNamesDTag,
+  parseSparkRecoveryChoiceAddress,
+} from "../wallets/spark-recovery-address"
 
 export interface PlainNostrFilter {
   ids?: string[]
@@ -46,14 +52,22 @@ export interface PlainNostrFilter {
 export interface RelayRequest {
   relayUrls: string[]
   filters: PlainNostrFilter[]
-  operation: "public_read" | "private_inbox_read"
+  operation:
+    | "public_read"
+    | "private_inbox_read"
+    | "legacy_inbox_read"
+    | "account_recovery_read"
 }
 
 export type RelayQuery = RelayRequest
 
 export interface RelayExecutionOptions {
   signal?: AbortSignal
+  /** Recheck account relay authority immediately before obtaining a socket. */
+  admitRelay?: (relayUrl: string) => Promise<boolean>
   authorization?: ProtectedReadAuthorization
+  /** Validated protected events; early only after this socket has authenticated. */
+  onProtectedEvent?: (event: SignedNostrEvent) => void
   connectTimeoutMs?: number
   queryTimeoutMs?: number
   authTimeoutMs?: number
@@ -97,6 +111,7 @@ export type RelayFailureCode =
   | "challenge_superseded"
   | "protocol_invalid"
   | "protocol_limit_exceeded"
+  | "consumer_failed"
   | "query_timed_out"
   | "aborted"
 
@@ -471,7 +486,38 @@ function assertRequest(
     throw new Error("Private inbox read requires active authorization")
   }
   assertProtectedReadAuthorization(authorization, authorization.expectedPubkey)
+  if (request.operation === "account_recovery_read") {
+    for (const filter of request.filters) {
+      if (
+        Object.keys(filter).some(
+          (key) => !["authors", "ids", "kinds", "limit", "#d"].includes(key)
+        ) ||
+        filter.authors?.length !== 1 ||
+        filter.authors[0] !== authorization.expectedPubkey ||
+        filter.kinds?.length !== 1 ||
+        filter.kinds[0] !== 30078 ||
+        (filter["#d"] !== undefined &&
+          (filter["#d"].length !== 1 ||
+            (!parseSparkRecoveryChoiceAddress(filter["#d"][0]) &&
+              !isSparkWalletRegistryDTag(filter["#d"][0]) &&
+              !isWalletNamesDTag(filter["#d"][0]) &&
+              !isAddressRequestsDTag(filter["#d"][0])))) ||
+        (filter.ids !== undefined &&
+          (filter.ids.length !== 1 ||
+            !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||
+        !Number.isSafeInteger(filter.limit) ||
+        filter.limit! < 1 ||
+        filter.limit! > 128
+      )
+        throw new Error(
+          "Wallet recovery read must be scoped to the active owner and kind 30078"
+        )
+    }
+    return
+  }
+  const legacy = request.operation === "legacy_inbox_read"
   const allowedPrivateFilterKeys = new Set([
+    ...(legacy ? ["authors"] : []),
     "ids",
     "kinds",
     "#p",
@@ -490,10 +536,14 @@ function assertRequest(
         (filter.ids.length !== 1 ||
           !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||
       filter.kinds?.length !== 1 ||
-      filter.kinds[0] !== 1_059 ||
-      filter["#p"]?.length !== 1 ||
-      filter["#p"]?.[0]?.trim().toLowerCase() !==
-        authorization.expectedPubkey ||
+      filter.kinds[0] !== (legacy ? 4 : 1_059) ||
+      (legacy && filter.authors !== undefined
+        ? filter.authors.length !== 1 ||
+          filter.authors[0] !== authorization.expectedPubkey ||
+          filter["#p"] !== undefined
+        : filter["#p"]?.length !== 1 ||
+          filter["#p"]?.[0]?.trim().toLowerCase() !==
+            authorization.expectedPubkey) ||
       (limit !== undefined &&
         (!Number.isSafeInteger(limit) ||
           limit < 1 ||
@@ -638,19 +688,22 @@ class RelayConnection {
     if (!challenge) throw new RelayAuthError("missing_challenge")
     if (this.invalidChallenge) throw new RelayAuthError("challenge_invalid")
     if (this.authenticatedChallenge === challenge) return
-    if (this.usedChallenges.has(challenge)) {
-      onSignerInvoked?.()
-      throw new RelayAuthError("challenge_replayed")
-    }
-    if (this.usedChallenges.size >= MAX_USED_CHALLENGES) {
-      onSignerInvoked?.()
-      throw new RelayAuthError("challenge_loop")
-    }
     if (this.authPromise) {
       if (this.authPromiseChallenge !== challenge) {
         throw new RelayAuthError("challenge_superseded")
       }
     } else {
+      // AUTH dispatch marks the challenge used while its matching OK is still
+      // pending. Same-connection consumers join that attempt; only a new
+      // authentication may be rejected as replaying an already-sent challenge.
+      if (this.usedChallenges.has(challenge)) {
+        onSignerInvoked?.()
+        throw new RelayAuthError("challenge_replayed")
+      }
+      if (this.usedChallenges.size >= MAX_USED_CHALLENGES) {
+        onSignerInvoked?.()
+        throw new RelayAuthError("challenge_loop")
+      }
       let authenticationPhase:
         "before_signer" | "signer_pending" | "auth_sent" = "before_signer"
       this.authSignerInvoked = false
@@ -1001,6 +1054,7 @@ function promptSuppressionForTerminalFailure(
   switch (failure) {
     case "aborted":
     case "authority_changed":
+    case "consumer_failed":
     case "authentication_timed_out":
     case "signer_authorization_denied":
     case "signer_unavailable":
@@ -1533,6 +1587,19 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     }
     let connection: RelayConnection
     try {
+      if (options.admitRelay && !(await options.admitRelay(relayUrl))) {
+        observe({ type: "auth", relayIndex, state: "authority_changed" })
+        return {
+          relayIndex,
+          status: "failed",
+          auth: "authority_changed",
+          eventCount: 0,
+          duplicateCount: 0,
+          malformedCount: 0,
+          unusableCount: 0,
+          failure: "authority_changed",
+        }
+      }
       connection = await this.getConnection(
         relayUrl,
         authorization,
@@ -1589,6 +1656,30 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
       let eventFrameCount = 0
       let wireBytes = 0
       const protectedEvents = new Map<string, SignedNostrEvent>()
+      const emittedProtectedEventIds = new Set<string>()
+
+      const emitProtectedEvent = (event: SignedNostrEvent): boolean => {
+        if (emittedProtectedEventIds.has(event.id)) return true
+        if (authorization && !hasProtectedReadAuthority(authorization)) {
+          auth = "authority_changed"
+          return false
+        }
+        try {
+          options.onProtectedEvent?.({
+            ...event,
+            tags: event.tags.map((tag) => [...tag]),
+          })
+        } catch {
+          finish("consumer_failed")
+          return false
+        }
+        if (authorization && !hasProtectedReadAuthority(authorization)) {
+          auth = "authority_changed"
+          return false
+        }
+        emittedProtectedEventIds.add(event.id)
+        return true
+      }
 
       const retireSubscription = (): void => {
         if (!subscriptionId) return
@@ -1609,6 +1700,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             observe({ type: "duplicate", relayIndex })
             continue
           }
+          if (!emitProtectedEvent(event)) return false
           seenEventIds.add(event.id)
           events.push(event)
           eventCount += 1
@@ -1873,6 +1965,15 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
               observe({ type: "unusable", relayIndex })
               break
             }
+            if (
+              authorization &&
+              request.operation !== "account_recovery_read" &&
+              event.tags.filter((tag) => tag[0] === "p").length !== 1
+            ) {
+              unusableCount += 1
+              observe({ type: "unusable", relayIndex })
+              break
+            }
             if (authorization && !hasProtectedReadAuthority(authorization)) {
               auth = "authority_changed"
               finish("authority_changed")
@@ -1884,6 +1985,9 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
                 observe({ type: "duplicate", relayIndex })
               } else {
                 protectedEvents.set(event.id, event)
+                if (auth === "succeeded" && !emitProtectedEvent(event)) {
+                  finish("authority_changed")
+                }
               }
               break
             }

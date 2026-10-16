@@ -2,7 +2,11 @@ name: Dependency Security
 
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - test/smoke-route-scenarios
+      - feat/wallet-name-sync
+      - feat/wallet-ui-hierarchy
   merge_group:
     branches: [main]
   push:
@@ -49,7 +53,7 @@ jobs:
   osv-pr-scan:
     name: OSV PR scan
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v2.6.0
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v2.7.0
     permissions:
       actions: read
       contents: read
@@ -58,7 +62,7 @@ jobs:
   osv-full-scan:
     name: OSV full scan
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.6.0
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.7.0
     permissions:
       actions: read
       contents: read

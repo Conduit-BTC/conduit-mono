@@ -11,10 +11,12 @@ import {
   canonicalizeProductSpecifications,
   parseProductEvent,
 } from "./products"
+import { verifySignedEventBatches } from "./relay-reader"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import { normalizeCurrencyIdentity } from "../pricing"
 
 export type EventMarketOrderEvidenceResult =
@@ -56,6 +58,33 @@ export function hasExactSelectedProductSpecifications(
     JSON.stringify(sort(canonical)) ===
     JSON.stringify(sort(product.specifications))
   )
+}
+
+/** Re-admit private order copies before a public proof-gated reduction. */
+export async function admitEmbeddedEventMarketOrderEvidence(
+  order: OrderSchema,
+  options: { signal?: AbortSignal } = {}
+): Promise<VerifiedNostrEvent[]> {
+  const future = order.items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  const embedded = future.flatMap((item) => {
+    const fulfillment = item.fulfillment
+    if (fulfillment?.type !== "event_market_pickup") return []
+    return [
+      fulfillment.market.signedEvent,
+      fulfillment.calendar.signedEvent,
+      ...(fulfillment.schedule ? [fulfillment.schedule.signedEvent] : []),
+      fulfillment.product.signedEvent,
+      fulfillment.grant.signedEvidence.tip,
+      ...fulfillment.grant.signedEvidence.ancestry,
+      ...fulfillment.grant.signedEvidence.deletions,
+    ]
+  })
+  const unique = [
+    ...new Map(embedded.map((event) => [event.id, event])).values(),
+  ]
+  return verifySignedEventBatches(unique, { ...options, batchSize: 64 })
 }
 
 /** Exact original evidence authorizes only this already-created order's physical terms. */
@@ -117,9 +146,8 @@ export function verifyEventMarketOrderEvidence(input: {
   ]
   const byId = new Map(
     [...input.events, ...embeddedEvidence]
-      .filter(
-        (event) => ids.has(event.id) && isValidSignedPublicNostrEvent(event)
-      )
+      .filter((event) => ids.has(event.id) && isVerifiedNostrEvent(event))
+      .filter(isVerifiedNostrEvent)
       .map((event) => [event.id, event])
   )
   if ([...ids].some((id) => !byId.has(id)))

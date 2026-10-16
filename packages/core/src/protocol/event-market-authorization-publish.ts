@@ -6,6 +6,7 @@ import {
 } from "./event-market-authorization"
 import { readEventMarketAuthorization } from "./event-market-authorization-read"
 import { waitForVisibleDocument } from "./interactive-signer"
+import { admitPublicEvent } from "./verified-public-event"
 import { EVENT_KINDS } from "./kinds"
 import { getAccountSigner } from "./session-signer"
 import type { UnsignedNostrEvent } from "./nostr-event-signer"
@@ -17,6 +18,13 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+
+async function parseAdmittedAuthorizationEvent(event: SignedPublicNostrEvent) {
+  const admission = await admitPublicEvent(event)
+  return admission.status === "verified"
+    ? parseEventMarketAuthorizationEvent(admission.event)
+    : null
+}
 
 interface AuthorizationPublishDependencies {
   read: typeof readEventMarketAuthorization
@@ -176,7 +184,7 @@ export async function publishEventMarketAuthorization(
     organizerPubkey: market.authorPubkey,
     shouldContinue: input.shouldContinue,
   })
-  const parsed = parseEventMarketAuthorizationEvent(signedEvent)
+  const parsed = await parseAdmittedAuthorizationEvent(signedEvent)
   if (
     !parsed ||
     parsed.marketCoordinate !== market.coordinate ||
@@ -216,7 +224,7 @@ export async function retryEventMarketAuthorizationDelivery(
     "read" | "publish"
   > = defaults
 ): Promise<PublishWithPlannerResult> {
-  const parsed = parseEventMarketAuthorizationEvent(input.signedEvent)
+  const parsed = await parseAdmittedAuthorizationEvent(input.signedEvent)
   if (
     !parsed ||
     input.authenticatedPubkey?.toLowerCase() !== parsed.organizerPubkey

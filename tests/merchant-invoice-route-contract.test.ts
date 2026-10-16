@@ -140,13 +140,17 @@ describe("merchant invoice route contract", () => {
     )
   })
 
-  it("keeps the profile destination default and wallet sources explicit", async () => {
+  it("keeps the receiving default automatic and fallback sources explicit", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
 
     expect(source).toContain("createDefaultMerchantInvoiceModule")
     expect(source).toContain(
-      'useState<MerchantInvoiceActionSource>("profile_lud16")'
+      "useState<MerchantInvoiceActionSource | null>(null)"
     )
+    expect(source).toContain(
+      'nwc.receivingWalletId ? "wallet" : "profile_lud16"'
+    )
+    expect(source).toMatch(/<SelectItem\s+value="wallet"/)
     expect(source).toMatch(/<SelectItem\s+value="profile_lud16"/)
     expect(source).toMatch(/<SelectItem\s+value="webln"/)
     expect(source).toMatch(/<SelectItem\s+value="nwc"/)

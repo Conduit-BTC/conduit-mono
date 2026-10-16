@@ -76,8 +76,7 @@ export function ProductImageFrame({
       ) : (
         <div
           className={cn(
-            "flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-muted)]",
-            soldOut && "opacity-60"
+            "flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
           )}
         >
           <ImageOff className="size-6" aria-hidden="true" />

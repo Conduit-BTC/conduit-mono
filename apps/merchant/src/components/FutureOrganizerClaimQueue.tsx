@@ -14,7 +14,6 @@ import {
   useAuth,
   verifyFutureMarketReceiptAuthority,
   type FutureMarketOrganizerClaim,
-  type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
 import {
   Button,
@@ -29,27 +28,25 @@ import {
 import { SavedFutureHandoffUpdate } from "./SavedFutureHandoffUpdate"
 
 function hasVerifiedHandoffEvidence(
-  receipt: FutureMarketReadyReceiptSchema,
+  authorityVerified: boolean,
   merchandiseVerified: boolean,
   refreshing: boolean
 ): boolean {
-  return (
-    verifyFutureMarketReceiptAuthority(receipt) &&
-    merchandiseVerified &&
-    !refreshing
-  )
+  return authorityVerified && merchandiseVerified && !refreshing
 }
 
 function OriginalApprovalNotice({
-  receipt,
+  authorityVerified,
+  checking,
   acknowledged,
 }: {
-  receipt: FutureMarketReadyReceiptSchema
+  authorityVerified: boolean
+  checking: boolean
   acknowledged: boolean
 }) {
-  if (acknowledged || verifyFutureMarketReceiptAuthority(receipt)) return null
+  if (acknowledged || authorityVerified || checking) return null
   return (
-    <p role="alert" className="text-sm text-[var(--warning)]">
+    <p role="alert" className="text-sm text-[var(--warning-text)]">
       Original organizer handoff approval could not be verified from this
       receipt. Physical handoff is blocked.
     </p>
@@ -122,6 +119,25 @@ function ClaimCard({
     retry: false,
     refetchInterval: 30_000,
   })
+  const authorityQuery = useQuery({
+    queryKey: [
+      "future-market-claim-authority",
+      claim.receipt.id,
+      authGeneration,
+    ],
+    queryFn: async ({ signal }) => {
+      const verified = await verifyFutureMarketReceiptAuthority(receipt, {
+        signal,
+      })
+      return (
+        verified && !signal.aborted && isAuthGenerationCurrent(authGeneration)
+      )
+    },
+    enabled: signerReady,
+    retry: false,
+    staleTime: Infinity,
+  })
+  const authorityVerified = signerReady && authorityQuery.data === true
   const merchandise = signerReady ? merchandiseQuery.data : undefined
   const merchandiseVerified =
     merchandise !== undefined &&
@@ -131,9 +147,9 @@ function ClaimCard({
     signerReady &&
     (Boolean(exactAck) ||
       hasVerifiedHandoffEvidence(
-        receipt,
+        authorityVerified,
         merchandiseVerified,
-        merchandiseQuery.isFetching
+        merchandiseQuery.isFetching || authorityQuery.isFetching
       )) &&
     claim.state === "ready_for_pickup" &&
     codeMatches &&
@@ -225,7 +241,7 @@ function ClaimCard({
   }
 
   return (
-    <article className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+    <article className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-wide text-[var(--text-muted)]">
@@ -253,7 +269,7 @@ function ClaimCard({
           return (
             <li
               key={item.product.eventId}
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
+              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
             >
               <div className="flex flex-wrap justify-between gap-2">
                 <span className="font-medium">
@@ -279,7 +295,7 @@ function ClaimCard({
           Checking exact signed product details…
         </p>
       ) : !merchandiseVerified ? (
-        <p role="alert" className="text-sm text-[var(--warning)]">
+        <p role="alert" className="text-sm text-[var(--warning-text)]">
           Exact signed product details could not be verified. Physical handoff
           is blocked. Refresh product details before releasing these items.
         </p>
@@ -296,7 +312,11 @@ function ClaimCard({
       ) : null}
       {claim.state === "ready_for_pickup" ? (
         <div className="space-y-2">
-          <OriginalApprovalNotice receipt={receipt} acknowledged={!!exactAck} />
+          <OriginalApprovalNotice
+            authorityVerified={authorityVerified}
+            checking={authorityQuery.isFetching}
+            acknowledged={!!exactAck}
+          />
           <Label htmlFor={`claim-code-${claim.receipt.id}`}>
             Confirm buyer pickup code
           </Label>
@@ -327,18 +347,18 @@ function ClaimCard({
         </Button>
       ) : null}
       {storageError ? (
-        <p role="alert" className="text-sm text-[var(--destructive)]">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           {storageError}
         </p>
       ) : null}
       {stale ? (
-        <p role="alert" className="text-sm text-[var(--warning)]">
+        <p role="alert" className="text-sm text-[var(--warning-text)]">
           Private receipt updates may be incomplete. Refresh to check for other
           updates.
         </p>
       ) : null}
       {claim.state === "conflicting" ? (
-        <p role="alert" className="text-sm text-[var(--warning)]">
+        <p role="alert" className="text-sm text-[var(--warning-text)]">
           Conflicting private release evidence needs merchant review.
         </p>
       ) : null}
@@ -348,7 +368,7 @@ function ClaimCard({
         </p>
       ) : null}
       {error ? (
-        <p role="alert" className="text-sm text-[var(--destructive)]">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           {error}
         </p>
       ) : null}
@@ -441,7 +461,7 @@ export function FutureOrganizerClaimQueue({
           </p>
         ) : null}
         {visibleRead?.coverageDegraded ? (
-          <p role="status" className="text-sm text-[var(--warning)]">
+          <p role="status" className="text-sm text-[var(--warning-text)]">
             Some private inbox relays could not be checked. Valid received
             claims remain available; other claims or updates may be missing.
           </p>

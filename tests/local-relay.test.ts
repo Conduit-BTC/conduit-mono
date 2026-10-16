@@ -24,6 +24,7 @@ import {
   sharedInboxDiscoveryRelayUrls,
   fetchSignedEventsFanoutDetailed,
 } from "@conduit/core"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 
 import {
   normalizeRelayEvent,
@@ -694,6 +695,7 @@ describe("local Bun relay", () => {
       })
       const result = await publishAccountNetworkMutation({
         reviewed,
+        authenticatedPubkey: recipientPubkey,
         signer: {
           authMethod: "nip07",
           async getPublicKey() {
@@ -706,8 +708,12 @@ describe("local Bun relay", () => {
         dependencies: {
           repository: mutationRepository,
           reconcile: async () => reconciliation,
-          resolveRelayPlan: () => [relayUrl],
-          filterEligibleRelayUrls: async (_pubkey, relayUrls) => [...relayUrls],
+          resolveRelayPlan: ({ kind }) =>
+            relayTargetsFromUrls([relayUrl], {
+              kind: "discovery",
+              operation: "write",
+              registry: kind === 10002 ? "owner_10002" : "inbox_10050",
+            }),
           publishToRelay: async (input) =>
             await publishSignedEventToRelay({
               ...input,
