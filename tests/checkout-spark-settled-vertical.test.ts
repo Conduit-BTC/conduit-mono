@@ -577,7 +577,7 @@ describe("settled Spark no-funds vertical flow", () => {
     })
     await expect(noAck.prepare()).rejects.toThrow("relay ACK")
     expect(noAck.calls).toEqual({
-      metadata: 2,
+      metadata: 1,
       material: 1,
       wallet: 1,
       receive: 1,
@@ -630,13 +630,12 @@ describe("settled Spark no-funds vertical flow", () => {
     expect(run.preparationOrder).toEqual([
       "metadata",
       "metadata",
-      "metadata",
       "material",
       "open",
       "receive",
     ])
     expect(run.calls).toEqual({
-      metadata: 3,
+      metadata: 2,
       material: 1,
       wallet: 1,
       receive: 1,
@@ -645,7 +644,7 @@ describe("settled Spark no-funds vertical flow", () => {
     })
     await expect(run.prepare()).rejects.toThrow("already prepared")
     expect(run.calls).toEqual({
-      metadata: 3,
+      metadata: 2,
       material: 1,
       wallet: 1,
       receive: 1,
@@ -760,7 +759,7 @@ describe("settled Spark no-funds vertical flow", () => {
       profileEventId: signedProfileContext(true).frontier?.eventId,
     })
     expect(run.calls).toEqual({
-      metadata: 2,
+      metadata: 1,
       material: 1,
       wallet: 1,
       receive: 1,

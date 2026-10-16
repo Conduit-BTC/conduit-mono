@@ -227,16 +227,19 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
         let activeCalls = 0
         let maxActiveCalls = 0
         let assertHeldCurrent: (() => void) | undefined
+        let reportHeldProgress: (() => void) | undefined
         const worker = startMerchantCheckoutSparkReconciliation({
           now: clock.now,
           schedule: clock.schedule,
-          reconcile: async (selected, assertCurrent) => {
+          reconcile: async (selected, assertCurrent, reportProgress) => {
             calls.push(selected.checkoutId)
             activeCalls += 1
             maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
             try {
               if (calls.length === 1) {
                 assertHeldCurrent = assertCurrent
+                reportHeldProgress = reportProgress
+                reportProgress()
                 // The worker must invalidate the result even if an adapter
                 // completes without calling its guard again after the await.
                 return await held.promise
@@ -267,6 +270,9 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
         }
 
         expect(() => assertHeldCurrent?.(), transition).toThrow(
+          "Merchant checkout reconciliation candidate changed."
+        )
+        expect(() => reportHeldProgress?.(), transition).toThrow(
           "Merchant checkout reconciliation candidate changed."
         )
         expect(clock.nextDelay(), transition).toBeNull()
@@ -577,6 +583,109 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
     await clock.advance(750)
     expect(updates.at(-1)?.counts.unavailable).toBe(1)
     expect(clock.nextDelay()).toBe(30_000)
+    worker.dispose()
+  })
+
+  it("gives other due work a turn after progress and backs off the next unchanged phase", async () => {
+    const clock = fakeClock()
+    const calls: Array<{ id: string; at: number }> = []
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      reconcile: async (selected, assertCurrent, reportProgress) => {
+        assertCurrent()
+        calls.push({ id: selected.checkoutId, at: clock.now() })
+        if (calls.length === 1) reportProgress()
+        return selected.checkoutId === "b" ? "retired" : "progress_pending"
+      },
+      onUpdate() {},
+    })
+    worker.replaceCandidates([candidate("a"), candidate("b")])
+    await clock.advance(0)
+    expect(clock.nextDelay()).toBe(750)
+    await clock.advance(750)
+    expect(calls).toEqual([
+      { id: "a", at: 0 },
+      { id: "b", at: 750 },
+    ])
+    await clock.advance(750)
+    expect(calls.at(-1)).toEqual({ id: "a", at: 1_500 })
+    expect(clock.nextDelay()).toBe(30_000)
+    await clock.advance(30_000)
+    expect(clock.nextDelay()).toBe(60_000)
+    worker.dispose()
+  })
+
+  it("resets accumulated polling backoff only after newly reported paid progress", async () => {
+    const clock = fakeClock()
+    let calls = 0
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      reconcile: async (_selected, _assertCurrent, reportProgress) => {
+        calls += 1
+        if (calls === 4) reportProgress()
+        return "progress_pending"
+      },
+      onUpdate() {},
+    })
+    worker.replaceCandidates([candidate("a")])
+    await clock.advance(210_000)
+    expect(calls).toBe(4)
+    expect(clock.nextDelay()).toBe(750)
+    await clock.advance(750)
+    expect(calls).toBe(5)
+    expect(clock.nextDelay()).toBe(30_000)
+    worker.dispose()
+  })
+
+  it.each([
+    "pending",
+    "unavailable",
+    "needs_attention",
+    "renewal_wait",
+  ] as const)(
+    "does not fast-wake a marked operation that finishes %s instead of progress_pending",
+    async (status) => {
+      const clock = fakeClock()
+      const worker = startMerchantCheckoutSparkReconciliation({
+        now: clock.now,
+        schedule: clock.schedule,
+        reconcile: async (_selected, _assertCurrent, reportProgress) => {
+          reportProgress()
+          if (status === "unavailable") throw new Error("provider unavailable")
+          return status
+        },
+        onUpdate() {},
+      })
+      worker.replaceCandidates([candidate("a")])
+      await clock.advance(0)
+      expect(clock.nextDelay()).toBe(30_000)
+      worker.dispose()
+    }
+  )
+
+  it("does not let a progress wake advance a future takeover boundary", async () => {
+    const clock = fakeClock()
+    const calls: number[] = []
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      observeBeforeTakeover: true,
+      reconcile: async (_selected, _assertCurrent, reportProgress) => {
+        calls.push(clock.now())
+        reportProgress()
+        return "progress_pending"
+      },
+      onUpdate() {},
+    })
+    worker.replaceCandidates([candidate("a", 120_000)])
+    await clock.advance(0)
+    expect(clock.nextDelay()).toBe(120_000)
+    await clock.advance(119_999)
+    expect(calls).toEqual([0])
+    await clock.advance(1)
+    expect(calls).toEqual([0, 120_000])
     worker.dispose()
   })
 })

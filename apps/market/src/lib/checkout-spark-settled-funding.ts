@@ -1,6 +1,8 @@
 import {
   DexieCheckoutSparkSettledRepository,
   runCheckoutSparkFinancialWorkflow,
+  observeCheckoutSparkOperation,
+  type CheckoutSparkPerformanceObserver,
   type CheckoutSparkSettledReconciliation,
   type ConduitAppId,
   type WalletPaymentFeeApproval,
@@ -92,6 +94,7 @@ type PayFundingInvoice = (
 ) => Promise<CheckoutInvoicePaymentResult>
 
 export interface CheckoutSparkSettledFundingDependencies {
+  observePerformance?: CheckoutSparkPerformanceObserver
   repository?: SettledRepository
   storage?: CheckoutSparkSettledPreparationStorage | null
   recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
@@ -142,10 +145,20 @@ export function createCheckoutSparkSettledFundingBridge(
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const loadAuthorized =
     dependencies.loadAuthorized ?? loadAuthorizedCheckoutSparkSettledFunding
-  const attestCredit =
+  const attestCreditProvider =
     dependencies.attestCredit ??
     ((walletId: string, request: SparkCheckoutReceiveRequest) =>
       requireSparkManager().attestCheckoutReceiveCredit(walletId, request))
+  const attestCredit = (
+    walletId: string,
+    request: SparkCheckoutReceiveRequest
+  ) =>
+    observeCheckoutSparkOperation({
+      app: "market",
+      step: "router_funding_observation",
+      observe: dependencies.observePerformance,
+      operation: () => attestCreditProvider(walletId, request),
+    })
   const payInvoice = dependencies.payInvoice ?? payCheckoutInvoice
   const now = dependencies.now ?? Date.now
   const verifyBuyerAuthority =

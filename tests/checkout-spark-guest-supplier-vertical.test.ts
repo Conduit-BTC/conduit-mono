@@ -167,15 +167,8 @@ describe("offline guest supplier settled checkout composition", () => {
       "merchant@wallet.conduit.market",
       "supplier@wallet.conduit.market",
     ]
-    const unavailablePreflightReads = [
-      requiredAddresses[0]!,
-      requiredAddresses[0]!,
-      requiredAddresses[1]!,
-    ]
-    const supportedPreflightReads = requiredAddresses.flatMap((address) => [
-      address,
-      address,
-    ])
+    const unavailablePreflightReads = [...requiredAddresses]
+    const supportedPreflightReads = [...requiredAddresses]
     let orderWrap: NDKEvent | undefined
     let lastProgressId: string | undefined
     let lastAcknowledgedState: string | undefined

@@ -11,6 +11,7 @@ import {
   type CheckoutSparkSettledOutgoingStepResult,
   type CheckoutSparkSettledReconciliation,
   type OrderLifecycle,
+  type CheckoutSparkPerformanceObserver,
 } from "@conduit/core"
 
 import {
@@ -69,6 +70,7 @@ export type AdvanceCheckoutSparkSettledShopperResult =
   | { status: "outgoing_step"; step: CheckoutSparkSettledOutgoingStepResult }
 
 export interface AdvanceCheckoutSparkSettledShopperDependencies {
+  observePerformance?: CheckoutSparkPerformanceObserver
   readOrder?: (orderId: string) => Promise<OrderLifecycle | undefined>
   readPreparation?: typeof getCheckoutSparkSettledPreparation
   readInitialRecovery?: typeof getCheckoutSparkRecoveryDelivery
@@ -292,7 +294,7 @@ export async function advanceCheckoutSparkSettledShopper(
     }
     const bridge = (
       dependencies.fundingBridge ?? createCheckoutSparkSettledFundingBridge
-    )(input.checkoutId)
+    )(input.checkoutId, { observePerformance: dependencies.observePerformance })
     const originalBeforeSend = input.fundingPayment.beforeSend
     const originalShouldContinue = input.fundingPayment.shouldContinue
     const funding = await bridge.fund({
@@ -449,6 +451,7 @@ export async function advanceCheckoutSparkSettledShopper(
     },
     {
       store: outgoingStore,
+      observePerformance: dependencies.observePerformance,
       assertCurrent: assertAuthority,
       now,
       outgoing: guardedProvider,

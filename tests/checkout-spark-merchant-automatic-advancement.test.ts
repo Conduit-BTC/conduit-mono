@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import type {
   CheckoutSparkMerchantOrderWitness,
   CheckoutSparkMerchantSettlementRecord,
+  CheckoutSparkPerformanceObservation,
   MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
 import {
@@ -318,6 +319,127 @@ function fixture() {
 }
 
 describe("automatic Merchant checkout one-phase advancement", () => {
+  it("observes one content-free advancement operation without changing its result", async () => {
+    const context = fixture()
+    const observations: Readonly<CheckoutSparkPerformanceObservation>[] = []
+    context.options.observePerformance = (observation) => {
+      observations.push(observation)
+    }
+    expect(await context.run(freshCandidate)).toBe("progress_pending")
+    expect(observations).toHaveLength(1)
+    expect(observations[0]).toEqual({
+      step: "router_merchant_recovery",
+      status: "success",
+      durationMs: expect.any(Number),
+      count: 1,
+    })
+    expect(Object.keys(observations[0]!).sort()).toEqual([
+      "count",
+      "durationMs",
+      "status",
+      "step",
+    ])
+  })
+
+  it("isolates optional performance observation failure from payment advancement", async () => {
+    const context = fixture()
+    context.options.observePerformance = () => {
+      throw new Error("optional observer unavailable")
+    }
+    expect(await context.run(freshCandidate)).toBe("progress_pending")
+    expect(context.calls).toContain("continuation")
+  })
+
+  it("observes a revoked operation as failure without weakening its active guard", async () => {
+    const context = fixture()
+    const observations: Readonly<CheckoutSparkPerformanceObservation>[] = []
+    context.options.observePerformance = (observation) => {
+      observations.push(observation)
+    }
+    context.setActive(false)
+    await expect(context.run(freshCandidate)).rejects.toThrow(
+      "Active Merchant session changed"
+    )
+    expect(
+      observations.map(({ step, status, count }) => ({ step, status, count }))
+    ).toEqual([
+      { step: "router_merchant_recovery", status: "failure", count: 1 },
+    ])
+    expect(context.calls).toEqual([])
+  })
+
+  it.each(["paid", "already_paid", "wait"] as const)(
+    "reports newly paid progress only, not a repeated %s continuation result",
+    async (outcome) => {
+      const context = fixture()
+      let progress = 0
+      context.options.onProgress = () => {
+        progress += 1
+      }
+      context.options.continuePayout = async (_principal, selected) => ({
+        ...consumed(selected),
+        payout: { outcome, sendAttempted: outcome === "paid" },
+      })
+      expect(await context.run(freshCandidate)).toBe("progress_pending")
+      expect(progress).toBe(outcome === "paid" ? 1 : 0)
+    }
+  )
+
+  it.each(["paid", "already_paid", "wait"] as const)(
+    "reports newly paid native progress only, not a repeated %s result",
+    async (outcome) => {
+      const context = fixture()
+      let progress = 0
+      Object.assign(context.options.repository!, {
+        saveTreasuryPrepared: async () => {},
+        recordMerchantTreasury: async () => {},
+      })
+      context.setSelection({ status: "native_treasury" })
+      context.options.onProgress = () => {
+        progress += 1
+      }
+      context.options.continueNativeTreasury = async (
+        _principal,
+        selected
+      ) => ({
+        ...consumed(selected),
+        payout: { outcome, sendAttempted: outcome === "paid" },
+      })
+      expect(await context.run(freshCandidate)).toBe("progress_pending")
+      expect(progress).toBe(outcome === "paid" ? 1 : 0)
+    }
+  )
+
+  it.each(["prepared", "existing_intent", "recovery_pending"] as const)(
+    "does not mark %s preparation as payment progress before fresh signed selection",
+    async (status) => {
+      const context = fixture()
+      let progress = 0
+      context.options.onProgress = () => {
+        progress += 1
+      }
+      context.setPreparation({ status, recoveryDelivery: "relay_accepted" })
+      expect(await context.run()).toBe("progress_pending")
+      expect(progress).toBe(0)
+      expect(context.calls).not.toContain("continuation")
+    }
+  )
+
+  it("does not report progress after a paid continuation revokes the session", async () => {
+    const context = fixture()
+    let progress = 0
+    context.options.onProgress = () => {
+      progress += 1
+    }
+    context.intercept((stage) => {
+      if (stage === "continuation") context.setActive(false)
+    })
+    await expect(context.run(freshCandidate)).rejects.toThrow(
+      "Active Merchant session changed"
+    )
+    expect(progress).toBe(0)
+  })
+
   it("inspects renewal in a separate authorized preparation phase without continuing the expired intent", async () => {
     const context = fixture()
     context.setSelection({ status: "renewal_needed" })
