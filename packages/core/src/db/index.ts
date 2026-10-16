@@ -1114,6 +1114,8 @@ export interface OrderLifecycleItem {
  */
 export interface OrderLifecycle {
   orderId: string
+  /** Explicit immutable commerce encoding; absent on historical named orders. */
+  orderWireFormat?: "conduit" | "open_markets"
   /** Buyer-local source provenance; legacy field name. Never sent in order content or used for payment/payout. */
   claimedReferralSource?: {
     sourceDomain?: string
@@ -1301,6 +1303,16 @@ export class ConduitDB extends Dexie {
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
+  orderWireFormats!: EntityTable<
+    {
+      orderId: string
+      buyerPubkey: string
+      merchantPubkey: string
+      orderWireFormat: "conduit" | "open_markets"
+      createdAt: number
+    },
+    "orderId"
+  >
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
   productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
   localProductWriteIntents!: EntityTable<LocalProductWriteIntent, "id">
@@ -1624,6 +1636,11 @@ export class ConduitDB extends Dexie {
       commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
+    })
+    // Additive metadata only: bind a format before any encrypted staging.
+    // Existing order, wallet, ciphertext and recovery tables are unchanged.
+    this.version(27).stores({
+      orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
     })
   }
 }

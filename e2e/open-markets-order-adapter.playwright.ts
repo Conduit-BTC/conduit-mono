@@ -85,12 +85,15 @@ test("independent numeric order receives an invoice, confirmation and shipping r
           rumor.tags.some((tag) => tag[0] === "status" && tag[1] === status)) &&
         !rumor.content.trim().startsWith("{") &&
         (type !== "2" ||
-          rumor.tags.some(
-            (tag) =>
-              tag[0] === "payment" &&
-              tag[1] === "lightning" &&
-              tag[2] === invoice
-          ))
+          (rumor.tags.some(
+            (tag) => tag[0] === "expiration" && tag[1] === String(now + 3600)
+          ) &&
+            rumor.tags.some(
+              (tag) =>
+                tag[0] === "payment" &&
+                tag[1] === "lightning" &&
+                tag[2] === invoice
+            )))
       )
     })
   }
@@ -214,7 +217,7 @@ test("independent numeric order receives an invoice, confirmation and shipping r
         ["subject", "Receipt"],
         ["order", wireOrderId],
         ["amount", "200"],
-        ["payment", "lightning", invoice, preimage.toString("hex")],
+        ["payment", "lightning", invoice],
       ],
       "Payment claimed"
     )

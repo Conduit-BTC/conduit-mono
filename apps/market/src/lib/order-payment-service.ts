@@ -853,6 +853,7 @@ async function deliverReceiptLinkedProof(
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
         {
+          orderContext: locked,
           signerInteraction: "background_external",
           accountPubkey,
           authenticatedPubkey,
@@ -2128,6 +2129,7 @@ async function runOrderPaymentInternal(
           ctx.merchantPubkey,
           ctx.buyerIdentity ?? ctx.buyerPubkey,
           {
+            orderContext: lifecycle,
             signerInteraction: "background_external",
             accountPubkey: ctx.accountPubkey,
             authenticatedPubkey: ctx.authenticatedPubkey,
@@ -2451,6 +2453,7 @@ export async function resendOrderProof(
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
         {
+          orderContext: locked,
           signerInteraction: "background_external",
           accountPubkey,
           authenticatedPubkey,
@@ -2711,6 +2714,7 @@ export async function submitExternalPaymentProof(
         locked.merchantPubkey,
         buyerIdentity ?? locked.buyerPubkey,
         {
+          orderContext: locked,
           signerInteraction: "background_external",
           accountPubkey,
           authenticatedPubkey,

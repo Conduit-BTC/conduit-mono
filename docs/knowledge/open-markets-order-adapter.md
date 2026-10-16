@@ -25,9 +25,48 @@ extension prevents an otherwise authenticated order from reaching Merchant.
 An independent buyer sends a NIP-17/NIP-59 kind-16 rumor with numeric type 1,
 structured tags and human-readable content. Merchant can review the request,
 accept or decline, send a Lightning invoice, receive a kind-17 Lightning claim,
-verify payment, and send numeric status/shipping updates. New Market checkouts
-retain named kind-16 JSON. Kind 1327 remains an experimental proposal, not an
-enabled writer.
+verify payment, and send numeric status/shipping updates. Market can also select
+numeric orders for an independent merchant and receive that merchant's invoice,
+confirmation, conversation and fulfillment updates. Kind 1327 remains an
+experimental proposal, not an enabled writer.
+
+### New Market orders
+
+Standard checkout exposes **Order compatibility**: **Conduit** (the existing
+named kind-16 JSON contract, the default) or **Open Markets** (numeric type 1).
+The buyer selects Open Markets when the merchant requests that contract.
+Neither a `client` tag, kind-10050 inbox declaration, relay response nor empty
+lookup establishes commerce-format support. There is no probe order or second
+representation. Private router checkout requires its existing Conduit contract;
+the selector explains that requirement and submission checks it before wallet
+preparation. This adapter does not change payment routing policy.
+
+Before wrapping or staging a new order, save its order ID, buyer, merchant and
+selected format in the device-local `orderWireFormats` table. The staged
+`orderLifecycles.orderWireFormat` also freezes that choice. A different party
+pair or format cannot reuse it. Missing historical metadata means the deployed
+named contract. Recovery republishes the original signed encrypted wrap;
+it never re-encodes the order from current checkout controls. Changing a seller
+or starting another order does not change a pending order or invoice.
+
+Numeric order `amount` is the aggregate sats total including delivery. Common
+tags carry product coordinates, quantities and optional delivery/contact fields;
+text carries the buyer's note. The bounded extension retains the already
+approved Conduit snapshot inside the same recipient's encryption. Multiple
+different shipping coordinates cannot be represented by this common contract
+and fail before delivery rather than silently dropping a line's terms.
+
+Payment reports use kind 17 with the exact Lightning invoice, its amount and
+an optional preimage. Conversation uses kind 14 with the original wire order
+ID as `subject`. These follow-ups use the saved lifecycle's format and party
+pair. Numeric history without its saved outbound format cannot silently send
+a named conversation reply. Guest checkout retains its existing outbound-only
+identity and contact/recovery rules; it gains no guest inbox or conversation.
+
+The database upgrade adds the format-choice table without rewriting installed
+order, invoice, wallet or encrypted outbox records. Rollback must preserve this
+table, the numeric reader and staged wraps; never downgrade the database or
+rebuild pending sends into the other representation.
 
 Core's `open-markets-orders.ts` codec and CommerceInbox own ingestion. There is
 no second inbox, relay planner, transport or server-side order translator.
@@ -58,25 +97,31 @@ consequential actions while conversation remains available.
 
 ## Reply and payment boundaries
 
-| Operation          | Compatible wire                                          |
-| ------------------ | -------------------------------------------------------- |
-| Invoice            | Kind 16, type 2, exact sats amount and Lightning invoice |
-| Acceptance         | Kind 16, type 3, pending                                 |
-| Verified payment   | Kind 16, type 3, confirmed                               |
-| Fulfillment/status | Kind 16, type 3, supported mapped status                 |
-| Shipping           | Kind 16, type 4, shipped, optional carrier/tracking      |
-| Conversation       | Kind 14, subject equal to wire order ID                  |
+| Operation          | Compatible wire                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------- |
+| Invoice            | Kind 16, type 2, exact sats amount and Lightning invoice                                           |
+| Acceptance         | Kind 16, type 3, pending                                                                           |
+| Verified payment   | Kind 16, type 3, confirmed                                                                         |
+| Fulfillment/status | Kind 16, type 3, supported mapped status                                                           |
+| Shipping           | Kind 16, type 4, processing/shipped/delivered/exception; shipped exposes optional carrier/tracking |
+| Conversation       | Kind 14, subject equal to wire order ID                                                            |
 
 Numeric replies have human-readable content. An optional bounded `conduit`
 version-1 tag preserves richer local semantics, including acceptance versus
 pending and verified paid versus a remote claim. Its identities, amount,
 invoice, mapped status and tracking must agree with the common fields.
-Independent buyers need no extension on their orders or receipts. Unextended
-confirmation/completion/cancellation is retained as a report, not invented paid
-state or effective cancellation.
+Independent buyers need no extension on their orders or receipts. On Merchant,
+unextended confirmation/completion/cancellation remains a report and cannot
+establish settlement or effective cancellation. In Market, an exact locally
+selected numeric order binds the wire ID and both parties: its merchant's
+pending/confirmed/completed/cancelled updates receive the same buyer-facing
+acceptance/payment/completion/cancellation meaning as named merchant updates.
+That projection is account-local; it grants no receiving-wallet authority.
 
-Other shipping phases and refund operations remain inspectable external
-records until their domain semantics are implemented. A refund request is
+Processing/delivered/exception shipping phases remain non-authoritative reports
+on Merchant. The exact owning Market order can display processing and delivered;
+exception stays a report with its note. Refund operations remain inspectable
+external records. A refund request is
 never emitted as cancellation. Corrections that need richer local metadata
 remain in the bounded extension; no refund transfer is initiated here.
 
@@ -84,20 +129,32 @@ Kind-14 notes remain in the direct inbox. Orders may additionally preview a
 note only for an existing external order with the exact subject and two-party
 identity. The preview cannot grant financial or fulfillment authority.
 
-A supported kind-17 receipt has one Lightning invoice/preimage proof. Its amount
-must match the invoice; SHA-256 of the preimage must match the payment hash.
+A supported kind-17 receipt has one Lightning invoice and optional preimage.
+Its amount must match the invoice. If supplied, a valid 32-byte preimage's
+SHA-256 must match the payment hash. A three-entry `payment` tag without a
+preimage is an unverified payment report, not a malformed message or settlement.
 Kind 17 never falls back to the kind-16 Conduit extension parser. A disguised
 order/status extension remains external evidence, including under an unknown
-version. Decode-rule version 4 reprocesses retained wrappers so a projection
-admitted by the earlier rules cannot retain order authority after recovery.
+version. Decode-rule version 5 reprocesses retained unsupported reports while
+preserving the earlier kind-17 authority restriction and genuine deletions or
+message-expiration decisions.
 The supported receipt remains an unverified claim. Automation additionally requires the exact
 authenticated merchant-issued invoice and the existing receiving-wallet
 settlement verifier. Wrong-party, wrong-invoice, unsupported or conflicting
 claims cannot confirm payment. Existing manual verification stays explicit.
 Repeated claims cannot credit settlement or stock twice.
 
-Format selection comes from the retained authenticated order, never a client
-brand tag. Select one representation before staging. Retry exact rumor and
+Numeric invoice replies include the BOLT11 `expiration` deadline. If a peer
+supplies this common tag, it must match the invoice's decoded validity deadline.
+It limits paying that invoice, not retention of its authenticated order history:
+an expired invoice still correlates an eventual payment report. Outer-wrapper
+expiration and ordinary NIP-40 disappearing messages retain their existing TTL.
+Invoice totals may differ after merchant review; the buyer sees the existing
+amount-change warning, and the merchant's note explains adjustments.
+
+Reply format selection comes from the retained authenticated order; new Market
+selection comes from the buyer's explicit checkout choice, never a client
+brand or relay-declaration tag. Select one representation before staging. Retry exact rumor and
 encrypted delivery bytes under existing authority. Missing history cannot
 silently select an incompatible writer. The decode-rule upgrade reprocesses
 previously retained external wrappers.
@@ -146,9 +203,14 @@ removal never follows silently from a timer or another client's brand tag.
 ## Validation and further migration
 
 Authentic encrypted tests cover intake, receipts, duplicate/conflicting terms,
-local identity and retained-history recovery. The local-relay browser journey
-covers numeric intake, invoice, explicit manual payment confirmation, shipping
-and reload. Wallet-verifier tests, browser observations, actual external clients,
+local identity, format pinning, installed pending invoices and retained-history
+recovery. Peer vectors are derived from
+[nostrich-marketplace at 668198e](https://github.com/nostrichOS/nostrich-marketplace/tree/668198e3388ba35e0fcc3a2a4a9e9503402de69e),
+`src/orders/orders.ts` and `docs/orders.md`. Local-relay browser journeys cover
+both directions: numeric intake/replies and Market selection, merchant invoice,
+no-preimage report, merchant confirmation, conversation, fulfillment and reload.
+They use real NIP-44/NIP-59 encryption with runner-owned identities and simulated
+peers. Wallet-verifier tests, browser observations, actual external clients,
 real signers/devices and live settlement are distinct evidence classes.
 Local tests do not certify Nostrich or a production deployment. Diagnostics
 remain content-free.

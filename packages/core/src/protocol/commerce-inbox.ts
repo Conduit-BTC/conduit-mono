@@ -1,4 +1,6 @@
 import type { RelayTarget } from "./relay-authority"
+import { db, type OrderLifecycle } from "../db"
+import { projectOwnedNumericOrderMessages } from "./order-format"
 import {
   getOrderAdapterCounts,
   openMarketsLocalOrderId,
@@ -199,7 +201,9 @@ const emptySnapshot = (): CommerceInboxSnapshot => ({
   },
 })
 function projectRetainedInboxRecords(
-  projections: Array<{ row: InboxProjectionRow; projection: InboxProjection }>
+  projections: Array<{ row: InboxProjectionRow; projection: InboxProjection }>,
+  ownedOrders: readonly OrderLifecycle[] = [],
+  principal = ""
 ) {
   const directMessages: ParsedDirectMessage[] = []
   const orderMessages: ParsedOrderMessage[] = []
@@ -269,7 +273,11 @@ function projectRetainedInboxRecords(
   })
   return {
     directMessages: visibleDirect.sort((a, b) => a.createdAt - b.createdAt),
-    orderMessages: orderMessages.sort((a, b) => a.createdAt - b.createdAt),
+    orderMessages: projectOwnedNumericOrderMessages(
+      orderMessages,
+      ownedOrders,
+      principal
+    ).sort((a, b) => a.createdAt - b.createdAt),
     externalRecords,
     unreadIds,
   }
@@ -279,8 +287,18 @@ function projectRetainedInboxRecords(
 export async function readRetainedCommerceInbox(
   ...args: Parameters<typeof readRetainedInboxProjections>
 ): Promise<CommerceInboxSnapshot> {
-  const projections = await readRetainedInboxProjections(...args)
-  return { ...emptySnapshot(), ...projectRetainedInboxRecords(projections) }
+  const [projections, ownedOrders] = await Promise.all([
+    readRetainedInboxProjections(...args),
+    (args[2] ?? db).orderLifecycles
+      .where("buyerPubkey")
+      .equals(args[0])
+      .toArray(),
+  ])
+  if (!args[1]()) throw new Error("Inbox account session ended")
+  return {
+    ...emptySnapshot(),
+    ...projectRetainedInboxRecords(projections, ownedOrders, args[0]),
+  }
 }
 
 const owners = new Map<string, CommerceInbox>()
@@ -336,6 +354,10 @@ export class CommerceInbox {
           .toArray(),
         this.store.database.commerceInboxRanges
           .where("accountPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderLifecycles
+          .where("buyerPubkey")
           .equals(this.store.principal)
           .toArray(),
       ])
@@ -407,18 +429,23 @@ export class CommerceInbox {
   }
   private async refreshView(): Promise<void> {
     this.assertCurrent()
-    const [projections, wrappers, ranges, deliveries] = await Promise.all([
-      this.store.projections(),
-      this.store.wrappers(),
-      this.store.database.commerceInboxRanges
-        .where("accountPubkey")
-        .equals(this.store.principal)
-        .toArray(),
-      this.store.database.commerceInboxDeliveries
-        .where("accountPubkey")
-        .equals(this.store.principal)
-        .toArray(),
-    ])
+    const [projections, wrappers, ranges, deliveries, ownedOrders] =
+      await Promise.all([
+        this.store.projections(),
+        this.store.wrappers(),
+        this.store.database.commerceInboxRanges
+          .where("accountPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.commerceInboxDeliveries
+          .where("accountPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderLifecycles
+          .where("buyerPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+      ])
     this.assertCurrent()
     const decryptFailures: DecryptFailure[] = []
     const legacyDecryptFailures: LegacyDmDecryptFailure[] = []
@@ -469,7 +496,11 @@ export class CommerceInbox {
       admissionRejected: range.admissionRejected,
       historyAttempted: range.historyAttempted,
     }))
-    const retained = projectRetainedInboxRecords(projections)
+    const retained = projectRetainedInboxRecords(
+      projections,
+      ownedOrders,
+      this.store.principal
+    )
     this.snapshot = {
       ...this.snapshot,
       sourceRelays: this.sourceRelays(),
@@ -678,9 +709,16 @@ export class CommerceInbox {
               projection = { kind: "direct", message }
             }
             phase = "persisting"
-            const expiry = rumor.tags.find(
-              (tag) => tag[0] === "expiration"
-            )?.[1]
+            // Open Markets type-2 expiration is the validated BOLT11 payment
+            // deadline. Keep invoice evidence after that deadline for settlement
+            // and recovery. Outer-wrap expiry and other rumor expiry still apply.
+            const invoiceValidity =
+              record.category === "commerce" &&
+              record.parsedOrderMessage?.wireFormat === "open_markets" &&
+              record.parsedOrderMessage.type === "payment_request"
+            const expiry = invoiceValidity
+              ? undefined
+              : rumor.tags.find((tag) => tag[0] === "expiration")?.[1]
             await this.store.commit(
               row,
               this.claimOwner,

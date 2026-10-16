@@ -382,3 +382,10 @@ export {
 } from "./hooks/useProgressiveEventMarketDiscovery"
 
 export { useCommerceInbox } from "./hooks/useCommerceInbox"
+export {
+  getOrderWireFormat,
+  pinOrderWireFormat,
+  projectOwnedNumericOrderMessages,
+  type OrderWireFormat,
+} from "./protocol/order-format"
+export { encodeOpenMarketsBuyerMessage } from "./protocol/commerce-wire"

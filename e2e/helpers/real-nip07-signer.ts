@@ -168,7 +168,7 @@ export function parseCanonicalRuntimePrivateRumor(input: {
   inboxOwner: RuntimeSignerIdentity
   recipient: RuntimeSignerIdentity
   sender: RuntimeSignerIdentity
-  rumorKind?: 14 | 15 | 16
+  rumorKind?: 14 | 15 | 16 | 17
   wrapperKeyAssignments?: Map<string, string>
   wrap: Event
 }): RuntimePrivateRumor | null {

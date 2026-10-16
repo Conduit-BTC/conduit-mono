@@ -62,6 +62,7 @@ const mobileTestFiles = [
   "**/event-sign-preview-mobile.playwright.ts",
 ]
 const responsiveCoverageFiles = [
+  "**/market-open-markets-order.playwright.ts",
   "**/open-markets-order-adapter.playwright.ts",
   "**/shared-ui-composition.playwright.ts",
   "**/shared-ui-visual-contract.playwright.ts",

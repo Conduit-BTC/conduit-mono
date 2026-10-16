@@ -369,6 +369,8 @@ async function publishBoundOrderFromFrozenPlan(
 
   const lifecycle: StagedOrderLifecycleInput = {
     orderId: plan.orderId,
+    // The router contract requires its existing named payload and payment hints.
+    orderWireFormat: "conduit",
     buyerPubkey,
     buyerIdentityKind: guest ? "guest_ephemeral" : "signed_in",
     ...(guest ? { guestSessionExpiresAt: guest.expiresAt } : {}),

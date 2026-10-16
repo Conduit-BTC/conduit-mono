@@ -316,7 +316,7 @@ export function createValidatedOrderRouteScope(input: {
     completePrivateMessageEvent(input.rumor)
   )
   if (
-    input.rumor.kind !== EVENT_KINDS.ORDER ||
+    ![EVENT_KINDS.ORDER, 17].includes(input.rumor.kind) ||
     !input.rumor.id ||
     input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey ||
     rumorRecipient !== expectedRumorRecipient ||
@@ -324,13 +324,14 @@ export function createValidatedOrderRouteScope(input: {
       recipientPubkey !== senderPubkey) ||
     decoded.category !== "commerce" ||
     !decoded.parsedOrderMessage ||
-    decoded.parsedOrderMessage.orderId !== orderId
+    (decoded.parsedOrderMessage.orderId !== orderId &&
+      decoded.parsedOrderMessage.wireOrderId !== orderId)
   ) {
     throw new Error("Cannot authorize compatibility routing for this rumor.")
   }
   const scope = Object.freeze({
     rumorId: input.rumor.id,
-    orderId,
+    orderId: decoded.parsedOrderMessage.wireOrderId ?? orderId,
     senderPubkey,
     recipientPubkey,
   })
@@ -865,10 +866,11 @@ export function consumeValidatedOrderRouteScope(input: {
   const decoded = decodeCommerceMessageRumor(input.rumor)
   const rumorOrderId =
     decoded.category === "commerce"
-      ? decoded.parsedOrderMessage?.orderId
+      ? (decoded.parsedOrderMessage?.wireOrderId ??
+        decoded.parsedOrderMessage?.orderId)
       : undefined
   return (
-    input.rumor.kind === EVENT_KINDS.ORDER &&
+    [EVENT_KINDS.ORDER, 17].includes(input.rumor.kind) &&
     scope.rumorId === input.rumor.id &&
     scope.orderId === rumorOrderId &&
     scope.senderPubkey === input.senderPubkey &&

@@ -787,16 +787,30 @@ content-free.
 
 ## Legacy Conduit Order Message Payload (CND-128)
 
-New Conduit orders use kind `16` with JSON `content` and
-explicit `p`, named `type`, and `order` tags. There is no current Conduit kind
-`17` payment-proof writer and no proposed OMF kind-`1327` writer.
+The default Conduit order contract uses kind `16` with JSON `content` and
+explicit `p`, named `type`, and `order` tags. Standard Market checkout also
+offers explicit Open Markets numeric format selection; client tags and
+kind-10050 declarations never select commerce format. Private router checkout
+retains its required named contract. No proposed OMF kind-`1327` writer is enabled.
 
 The shared [numeric order adapter](../knowledge/open-markets-order-adapter.md)
 also reads validated Open Markets numeric orders into Merchant review, sends
-compatible numeric replies for those orders, and treats supported kind-17
-Lightning receipts as claims for the existing settlement verifier. Original
+compatible numeric replies for those orders, and writes numeric orders, kind-17
+Lightning reports and kind-14 conversation for explicitly selected Market
+orders. A device-local party-scoped format choice must commit before encrypted
+staging, remains immutable in lifecycle/recovery, and never creates a second
+representation. Existing orders without format metadata remain named.
+Supported kind-17 receipts, with or without a preimage, remain claims for the
+existing settlement verifier. Numeric invoice `expiration` must agree with the
+BOLT11 deadline and does not erase invoice history after payment validity ends;
+ordinary message and wrapper TTLs remain in force. Original
 wire IDs and encrypted originals are preserved; missing historical prices,
 listing revisions and destination terms remain unknown.
+
+Only an exact locally selected numeric buyer order projects its merchant's
+common confirmation/fulfillment statuses into buyer-facing order state. Generic
+inbound reports do not gain settlement authority on Merchant. Account, party,
+invoice, recovery and guest outbound-only boundaries remain unchanged.
 
 This legacy format is not wire-compatible with the GammaMarkets order-message
 format. GammaMarkets uses numeric kind-16 `type` values, human-readable

@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
 import {
   decodeLightningInvoiceAmount,
+  decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
 } from "./lightning"
 import type { ParsedOrderMessage } from "./orders"
@@ -220,8 +221,22 @@ export function parseOpenMarketsOrderMessage(
     }
   }
   if (rumor.kind === 16 && type === "4") {
-    if (single(rumor, "status") !== "shipped")
+    const status = single(rumor, "status")
+    if (
+      !["processing", "shipped", "delivered", "exception"].includes(
+        status ?? ""
+      )
+    )
       throw new Error("Unsupported shipping status")
+    if (status !== "shipped")
+      return {
+        ...base,
+        type: "status_update",
+        payload: {
+          status: `fulfillment_${status}_reported`,
+          note: rumor.content || undefined,
+        },
+      }
     return {
       ...base,
       type: "shipping_update",
@@ -236,7 +251,7 @@ export function parseOpenMarketsOrderMessage(
   if (
     payments.length !== 1 ||
     payments[0]?.[1] !== "lightning" ||
-    payments[0].length !== (rumor.kind === 17 ? 4 : 3)
+    !(rumor.kind === 17 ? [3, 4] : [3]).includes(payments[0].length)
   )
     throw new Error("Unsupported commerce payment")
   const invoice = payments[0][2]!
@@ -249,7 +264,14 @@ export function parseOpenMarketsOrderMessage(
     !Number.isSafeInteger(amount * 1000)
   )
     throw new Error("Commerce invoice amount mismatch")
-  if (rumor.kind === 16)
+  if (rumor.kind === 16) {
+    const expiration = single(rumor, "expiration")
+    if (
+      expiration !== undefined &&
+      integer(expiration, true) !==
+        decodeLightningInvoiceMetadata(invoice).expiresAt
+    )
+      throw new Error("Commerce invoice expiration mismatch")
     return {
       ...base,
       type: "payment_request",
@@ -260,10 +282,12 @@ export function parseOpenMarketsOrderMessage(
         note: rumor.content || undefined,
       },
     }
-  const preimage = payments[0][3]!
+  }
+  const preimage = payments[0][3]
   if (
-    !HEX.test(preimage) ||
-    bytesToHex(sha256(hexToBytes(preimage))) !== paymentHash
+    preimage !== undefined &&
+    (!HEX.test(preimage) ||
+      bytesToHex(sha256(hexToBytes(preimage))) !== paymentHash)
   )
     throw new Error("Invalid commerce payment proof")
   return {

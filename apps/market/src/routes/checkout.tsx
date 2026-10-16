@@ -1,4 +1,5 @@
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
+import { OrderFormatSelect } from "../components/OrderFormatSelect"
 import { CheckoutSparkNativeTreasuryNotice } from "../components/CheckoutSparkNativeTreasuryNotice"
 import {
   AlertCircle,
@@ -70,6 +71,7 @@ import {
   type OrderLifecycleItem,
   type OrderShippingZoneEligibility,
   type StagedOrderLifecycleInput,
+  type OrderWireFormat,
   type NwcConnection,
   type NwcGetInfoResult,
   type Profile,
@@ -1290,6 +1292,9 @@ function CheckoutPage() {
   const [eventReceiptDraft, setEventReceiptDraft] =
     useState<EventGuestReceiptDraft | null>(null)
   const [note, setNote] = useState("")
+  const [orderFormats, setOrderFormats] = useState<
+    Record<string, OrderWireFormat>
+  >({})
   const [error, setError] = useState<string | null>(null)
   const [shippingAttempted, setShippingAttempted] = useState(false)
   const [shippingErrors, setShippingErrors] = useState<
@@ -1588,6 +1593,9 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
+  const requestedOrderWireFormat = selectedMerchant
+    ? (orderFormats[selectedMerchant] ?? "conduit")
+    : "conduit"
   // Async work must keep its originating buyer frame, not adopt a newer session.
   const getCheckoutReferralScope = useCallback(
     () => checkoutReferralSessionFence.getScope(accountPubkey, authGeneration),
@@ -1912,6 +1920,9 @@ function CheckoutPage() {
     fulfillment: preparedFulfillment.resolutions,
   })
   const routerBranchTargetCheckout = routerAdmission.mode === "router"
+  const orderWireFormat: OrderWireFormat = routerBranchTargetCheckout
+    ? "conduit"
+    : requestedOrderWireFormat
   const routerPreparationUnavailableMessage =
     routerAdmission.mode === "router" && !routerAdmission.ready
       ? "This checkout’s fulfillment is not supported by the router yet."
@@ -2953,6 +2964,12 @@ function CheckoutPage() {
 
   /** Explicit checkout preparation; this action never submits payment. */
   async function prepareSettledRouterOrder(): Promise<void> {
+    if (orderWireFormat !== "conduit") {
+      setError(
+        "This payment option requires Conduit order compatibility."
+      )
+      return
+    }
     if (routerPreparationUnavailableMessage) {
       setError(routerPreparationUnavailableMessage)
       return
@@ -3381,6 +3398,7 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        orderWireFormat,
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
@@ -4037,6 +4055,7 @@ function CheckoutPage() {
       // Orders can render it immediately, then hand payment to the service.
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        orderWireFormat,
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
@@ -5203,6 +5222,27 @@ function CheckoutPage() {
           )}
 
           {/* ── Order action ──────────────────────────────────────────────── */}
+          <OrderFormatSelect
+            value={orderWireFormat}
+            disabled={
+              routerBranchTargetCheckout ||
+              checkoutRecoveryIsChecking ||
+              checkoutRecoveryBlockingMessage !== null ||
+              paymentInFlightRef.current
+            }
+            onChange={(format) => {
+              if (selectedMerchant)
+                setOrderFormats((current) => ({
+                  ...current,
+                  [selectedMerchant]: format,
+                }))
+            }}
+          />
+          {routerBranchTargetCheckout && (
+            <p role="status" className="text-sm text-[var(--text-secondary)]">
+              This payment option requires Conduit order compatibility.
+            </p>
+          )}
           {
             <>
               {!routerBranchTargetCheckout && !isGuestCheckout && (

@@ -130,15 +130,29 @@ type CreateOrderLifecycleInput = Omit<
 export async function createOrderLifecycle(
   input: CreateOrderLifecycleInput
 ): Promise<OrderLifecycle> {
-  const now = Date.now()
-  const record: OrderLifecycle = {
-    ...input,
-    phase: input.phase ?? deriveOrderLifecyclePhase(input),
-    createdAt: input.createdAt ?? now,
-    updatedAt: now,
-  }
-  await db.orderLifecycles.put(record)
-  return record
+  return await db.transaction("rw", db.orderLifecycles, async () => {
+    const previous = await db.orderLifecycles.get(input.orderId)
+    if (
+      previous &&
+      (previous.buyerPubkey !== input.buyerPubkey ||
+        previous.merchantPubkey !== input.merchantPubkey ||
+        (input.orderWireFormat !== undefined &&
+          input.orderWireFormat !== (previous.orderWireFormat ?? "conduit")))
+    )
+      throw new Error(
+        "A saved order cannot change its party pair or commerce format"
+      )
+    const now = Date.now()
+    const record: OrderLifecycle = {
+      ...input,
+      orderWireFormat: previous?.orderWireFormat ?? input.orderWireFormat,
+      phase: input.phase ?? deriveOrderLifecyclePhase(input),
+      createdAt: input.createdAt ?? now,
+      updatedAt: now,
+    }
+    await db.orderLifecycles.put(record)
+    return record
+  })
 }
 
 export async function getOrderLifecycle(
@@ -1028,6 +1042,12 @@ function mergeOrderLifecyclePatch(
   patch: Partial<Omit<OrderLifecycle, "orderId" | "createdAt">>,
   now = Date.now()
 ): OrderLifecycle {
+  if (
+    Object.prototype.hasOwnProperty.call(patch, "orderWireFormat") &&
+    (patch.orderWireFormat ?? "conduit") !==
+      (existing.orderWireFormat ?? "conduit")
+  )
+    throw new Error("A saved order cannot change commerce format")
   const merged: OrderLifecycle = {
     ...existing,
     ...patch,

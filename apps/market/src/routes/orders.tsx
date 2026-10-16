@@ -2202,6 +2202,15 @@ function OrderDetail({
   const replyMutation = useMutation({
     mutationFn: async () => {
       if (guestIdentity) throw new Error("Guest orders cannot send messages")
+      if (
+        !row.lifecycle &&
+        row.conversation?.messages?.some(
+          (message) => message.wireFormat === "open_markets"
+        )
+      )
+        throw new Error(
+          "Restore this order's saved format before sending a reply."
+        )
       if (!signerReady) throw new Error("Reconnect your signer to send.")
       if (!replyText.trim()) throw new Error("Message is required")
       if (!getAccountSigner()) throw new Error("Signer not connected")
@@ -2235,6 +2244,7 @@ function OrderDetail({
         row.merchantPubkey,
         buyerPubkey,
         {
+          orderContext: row.lifecycle,
           accountPubkey: authenticatedPubkey ?? null,
           authenticatedPubkey: authenticatedPubkey ?? null,
           shouldContinue: shouldContinueBuyerSession,
