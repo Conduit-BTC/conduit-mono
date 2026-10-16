@@ -220,8 +220,9 @@ function projectRetainedInboxRecords(
       externalRecords.push(projection.record)
     if (row.read === 0) unreadIds.add(row.logicalId)
   }
-  // Kind-14 notes stay in the direct inbox. Only an exact known external order
-  // between the same two parties gains an additional, non-authoritative preview.
+  // Kind-14 notes stay in the direct inbox. An authenticated order or exact
+  // saved buyer selection can bind a non-authoritative order preview, even if
+  // the outgoing history copy is missing. The party-scoped alias excludes peers.
   const knownOrders = new Set(
     orderMessages
       .filter(
@@ -229,6 +230,21 @@ function projectRetainedInboxRecords(
           message.type === "order" && message.wireFormat === "open_markets"
       )
       .map((message) => message.orderId)
+      .concat(
+        ownedOrders
+          .filter(
+            (order) =>
+              order.buyerPubkey === principal &&
+              order.orderWireFormat === "open_markets"
+          )
+          .map((order) =>
+            openMarketsLocalOrderId(
+              order.orderId,
+              principal,
+              order.merchantPubkey
+            )
+          )
+      )
   )
   const orderMessageIds = new Set(orderMessages.map((message) => message.id))
   for (const message of directMessages) {

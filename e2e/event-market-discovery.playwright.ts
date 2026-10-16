@@ -126,7 +126,7 @@ for (const audience of ["guest", "following"] as const) {
             }
           })
       )
-      expect(cache.schemaVersion).toBe(270)
+      expect(cache.schemaVersion).toBe(280)
       expect(cache.records).toBeGreaterThanOrEqual(2)
       expect(cache.records).toBeLessThanOrEqual(2_048)
       expect(cache.bytes).toBeLessThanOrEqual(8 * 1_024 * 1_024)
@@ -242,7 +242,7 @@ for (const history of databaseHistories) {
       await page.goto(marketUrl + "/privacy-policy")
       await seedHistoricalEventMarketDatabase(page, history, rows)
       const expected = {
-        nativeVersion: 270,
+        nativeVersion: 280,
         preservedTables: Object.keys(history.stores).length,
         discoveryIndex: true,
         deleted: true,
@@ -396,7 +396,7 @@ test("native full discovery cache retains an exact-event deletion through reload
       coordinate
     )
     expect(restored.deleted).toBe(true)
-    expect(restored.nativeVersion).toBe(270)
+    expect(restored.nativeVersion).toBe(280)
   } finally {
     disposeRuntimeSignerIdentity(organizer)
   }

@@ -854,4 +854,71 @@ describe("explicit order-format selection and the numeric peer contract", () => 
         .orderMessages.every((message) => message.orderId === f.orderId)
     ).toBe(true)
   })
+
+  it("recovers peer conversation from the saved numeric order when its outgoing history copy is missing", async () => {
+    const f = fixture()
+    await pinOrderWireFormat(f.lifecycle, { database: f.database })
+    await f.database.orderLifecycles.put(f.lifecycle)
+    const signer: NostrKeySigner = {
+      pubkey: f.buyerPubkey,
+      authMethod: "nip07",
+      getPublicKey: async () => f.buyerPubkey,
+      signEvent: async (event) => finalizeEvent(event, f.buyerKey),
+      encryptNip44: async (peer, text) =>
+        v2.encrypt(text, v2.utils.getConversationKey(f.buyerKey, peer)),
+      decryptNip44: async (peer, text) =>
+        v2.decrypt(text, v2.utils.getConversationKey(f.buyerKey, peer)),
+    }
+    installProtectedReadSigner(signer, f.buyerPubkey, () => true)
+    const authorization = getProtectedReadAuthorization(f.buyerPubkey)!
+    let owner = new CommerceInbox(
+      authorization,
+      signer,
+      new CommerceInboxStore(authorization, f.database)
+    )
+    owners.push(owner)
+    for (const key of [f.merchantKey, generateSecretKey()]) {
+      const rumor = {
+        kind: 14,
+        pubkey: getPublicKey(key),
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ["p", f.buyerPubkey],
+          ["subject", f.orderId],
+          ["order", f.orderId],
+        ],
+        content: "Synthetic recovery conversation",
+      }
+      await owner.ingest(
+        await admitFixture(wrapEvent(rumor, key, f.buyerPubkey)),
+        ["wss://fixture.example"]
+      )
+      await owner.waitForDecode()
+    }
+    expect(owner.getSnapshot().directMessages.length).toBe(2)
+    expect(owner.getSnapshot().orderMessages.length).toBe(1)
+    expect(
+      owner
+        .getSnapshot()
+        .orderMessages.every(
+          (message) =>
+            message.type === "message" &&
+            message.orderId === f.orderId &&
+            message.senderPubkey === f.merchantPubkey
+        )
+    ).toBe(true)
+    owner.stop()
+    owner = new CommerceInbox(
+      authorization,
+      signer,
+      new CommerceInboxStore(authorization, f.database)
+    )
+    owners.push(owner)
+    await owner.initialize()
+    await owner.waitForDecode()
+    expect(owner.getSnapshot().orderMessages.length).toBe(1)
+    expect(owner.getSnapshot().orderMessages[0]?.orderId === f.orderId).toBe(
+      true
+    )
+  })
 })

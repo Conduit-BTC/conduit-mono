@@ -62,6 +62,9 @@ ID as `subject`. These follow-ups use the saved lifecycle's format and party
 pair. Numeric history without its saved outbound format cannot silently send
 a named conversation reply. Guest checkout retains its existing outbound-only
 identity and contact/recovery rules; it gains no guest inbox or conversation.
+The exact saved numeric buyer order also binds incoming conversation when its
+outgoing history/self-copy is missing. Another sender using the same wire ID
+remains a separate direct message and cannot gain that order's authority.
 Guest format checkpoints expire with that same session, including choices saved
 before encrypted staging. Guest cleanup removes them alongside expired order data;
 signed-in choices retain their existing recovery lifetime.
