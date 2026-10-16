@@ -154,7 +154,14 @@ jobs:
             shards="$(bun scripts/ci/select_smoke_shards.ts --all)"
           else
             base_sha="$(git merge-base "$RAW_BASE_SHA" "$HEAD_SHA")"
-            shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA")"
+            needs_inventory="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA" --needs-inventory)"
+            if [[ "$needs_inventory" == "true" ]]; then
+              bun install --frozen-lockfile
+              bun run test:e2e:areas --manifest-output smoke-inventory.json > /dev/null
+              shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA" --inventory smoke-inventory.json)"
+            else
+              shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA")"
+            fi
           fi
 
           echo "Selected smoke shards: $shards"
@@ -179,6 +186,8 @@ jobs:
     # Commerce runs ordinary, native-router, and receiver lanes serially.
     # Individual test deadlines remain unchanged.
     timeout-minutes: ${{ matrix.job.area == 'commerce' && 25 || 20 }}
+    env:
+      PLAYWRIGHT_SMOKE_FILES: ${{ toJSON(matrix.job.files || fromJSON('[]')) }}
     steps:
       - name: No browser smoke needed
         if: matrix.job.area == 'none'
@@ -495,7 +504,6 @@ jobs:
   build-mainnet:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [format, lint, typecheck, test, color-policy, telemetry-policy]
     outputs:
       public-config-digest: ${{ steps.deployment-contract.outputs.public-config-digest }}
     env:
