@@ -1116,14 +1116,6 @@ export async function getEventMarketDiscoveryReadPlan(input: {
   const requestedAuth = normalizePubkey(input.authenticatedPubkey)
   const authenticatedPubkey =
     requestedAuth === accountPubkey ? requestedAuth : null
-  const snapshot = authenticatedPubkey
-    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
-    : loadRelaySettingsPlanningSnapshot()
-  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
-    snapshot.settings.entries.flatMap((entry) =>
-      entry.readEnabled ? [entry.url] : []
-    )
-  )
   const authors = [
     ...new Set(
       (input.organizerPubkeys ?? []).filter((author) =>
@@ -1131,6 +1123,18 @@ export async function getEventMarketDiscoveryReadPlan(input: {
       )
     ),
   ].sort()
+  const includesAuthenticatedOwner =
+    authenticatedPubkey !== null && authors.includes(authenticatedPubkey)
+  const snapshot = authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
+    : loadRelaySettingsPlanningSnapshot()
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    snapshot.settings.entries.flatMap((entry) =>
+      entry.readEnabled || (includesAuthenticatedOwner && entry.writeEnabled)
+        ? [entry.url]
+        : []
+    )
+  )
   const lookupPlan = planRelayReads({
     intent: "relay_lists",
     authenticatedPubkey,
