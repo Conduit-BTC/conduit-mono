@@ -19,6 +19,10 @@ session uses author-free discovery and public-browsing messaging; signer readine
 does not turn a retained account into a guest.
 Retained account scope does not admit owner-only relay grants. Those reads also
 require the matching connected signer and a current authority generation.
+When that authenticated owner belongs to the explicit organizer audience,
+discovery also includes the owner's signed write-only relay selections. This
+preserves cold discovery on explicitly selected non-TLS transports without
+granting them to other audiences or recovering accounts.
 
 Candidate reads run four at a time with a budget of 128 requests per pass.
 The relay planner's distinct admitted-source cap applies to the whole scan,
