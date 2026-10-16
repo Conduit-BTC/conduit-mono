@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { nip19, nip44 } from "nostr-tools"
 import {
   finalizeEvent,
@@ -4831,3 +4832,205 @@ for (const legacyHistory of [false, true])
       )
     ).toBe(false)
   })
+
+test("legacy signed series retries repeated delivery failures in the same page @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  const saved = savedCreationFixture("Retained series description")
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    ...buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: `${saved.dTag}-date-1`,
+      title: saved.form.title,
+      summary: saved.form.summary,
+      start: 1_906_538_400,
+      end: 1_906_560_000,
+      startTzid: "UTC",
+      endTzid: "UTC",
+      locations: [saved.form.eventLocation],
+    }),
+    created_at: Math.floor(Date.now() / 1000) - 10,
+  })
+  relay.seed(calendar)
+  await page.evaluate(
+    async ({ saved, calendar }) => {
+      localStorage.setItem(
+        `conduit:future-event-market-series-draft:1:${saved.organizerPubkey}`,
+        JSON.stringify({
+          version: 1,
+          organizerPubkey: saved.organizerPubkey,
+          marketDTag: saved.dTag,
+          scheduleDTag: `${saved.dTag}-schedule`,
+          occurrenceDTags: [`${saved.dTag}-date-1`],
+          form: saved.form,
+          dateRows: [
+            { id: "first", start: saved.form.start, end: saved.form.end },
+          ],
+        })
+      )
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () =>
+          reject(new Error("Fixture database unavailable"))
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction(
+            "eventMarketRosterEvidence",
+            "readwrite"
+          )
+          transaction.objectStore("eventMarketRosterEvidence").put({
+            id: `${saved.marketCoordinate}:${calendar.id}`,
+            marketCoordinate: saved.marketCoordinate,
+            signedEvent: calendar,
+            cachedAt: Date.now(),
+          })
+          transaction.oncomplete = () => {
+            database.close()
+            resolve()
+          }
+          transaction.onerror = () => {
+            database.close()
+            reject(new Error("Fixture persistence failed"))
+          }
+        }
+      })
+    },
+    { saved, calendar }
+  )
+  await page.reload()
+  const resume = page.getByRole("button", {
+    name: "Resume publishing",
+    exact: true,
+  })
+  relay.rejectKind(31923, true)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const before = relay.publications.filter(
+      ({ event }) => event.kind === 31923
+    ).length
+    await expect(resume).toBeEnabled()
+    await resume.click()
+    await expect
+      .poll(
+        () =>
+          relay.publications.filter(({ event }) => event.kind === 31923).length
+      )
+      .toBeGreaterThan(before)
+    await expect(resume).toBeEnabled()
+  }
+  relay.rejectKind(31923, false)
+  await resume.click()
+  await expect(page).toHaveURL(/\/events\/naddr1/)
+  const dates = relay.publications.filter(({ event }) => event.kind === 31923)
+  expect(dates.length).toBeGreaterThanOrEqual(3)
+  expect(
+    dates.every(({ event }) => sameSignedPublicEvent(event, calendar))
+  ).toBe(true)
+  expect(
+    uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 31924
+    )
+  ).toHaveLength(1)
+  expect(
+    uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 30409
+    )
+  ).toHaveLength(1)
+})
+
+test("retention before a failed creation pointer save exposes exact retry without reload @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  const saved = savedCreationFixture("Signed recovery description")
+  await storeSavedCreation(page, saved)
+  await expect(page.getByLabel("Description")).toBeEnabled()
+  await page.evaluate((owner) => {
+    const original = Storage.prototype.setItem
+    let fail = true
+    Storage.prototype.setItem = function (key, value) {
+      if (
+        fail &&
+        key === `conduit:future-event-market-creation:v1:${owner}` &&
+        JSON.parse(value).calendarEventId
+      ) {
+        fail = false
+        throw new DOMException(
+          "Synthetic pointer save failure",
+          "QuotaExceededError"
+        )
+      }
+      return original.call(this, key, value)
+    }
+  }, ORGANIZER_PUBKEY)
+  await page.getByRole("button", { name: "Publish event", exact: true }).click()
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Synthetic pointer save failure" })
+  ).toBeVisible()
+  expect(
+    relay.publications.filter(({ event }) => event.kind === 31923)
+  ).toHaveLength(0)
+  const retained = await page.evaluate(
+    async (coordinate) =>
+      new Promise<SignedEvent>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () =>
+          reject(new Error("Fixture database unavailable"))
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction(
+            "eventMarketRosterEvidence",
+            "readonly"
+          )
+          const rows = transaction
+            .objectStore("eventMarketRosterEvidence")
+            .getAll()
+          rows.onsuccess = () => {
+            const event = rows.result.find(
+              (row) =>
+                row.marketCoordinate === coordinate &&
+                row.signedEvent.kind === 31923
+            )?.signedEvent
+            if (!event) reject(new Error("Retained calendar unavailable"))
+            else resolve(event)
+          }
+          transaction.oncomplete = () => database.close()
+          transaction.onerror = () => {
+            database.close()
+            reject(new Error("Fixture read failed"))
+          }
+        }
+      }),
+    saved.marketCoordinate
+  )
+  await expect(page.getByLabel("Description")).toBeDisabled()
+  await expect(
+    page.getByRole("button", {
+      name: "Discard draft and start new event",
+      exact: true,
+    })
+  ).toHaveCount(0)
+  const retry = page.getByRole("button", {
+    name: "Retry saved event",
+    exact: true,
+  })
+  await expect(retry).toBeEnabled()
+  await retry.click()
+  await expect(page).toHaveURL(/\/events\/naddr1/)
+  const dates = relay.publications.filter(({ event }) => event.kind === 31923)
+  expect(dates.length).toBeGreaterThan(0)
+  expect(
+    dates.every(({ event }) => sameSignedPublicEvent(event, retained))
+  ).toBe(true)
+  expect(
+    uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 30409
+    )
+  ).toHaveLength(1)
+})

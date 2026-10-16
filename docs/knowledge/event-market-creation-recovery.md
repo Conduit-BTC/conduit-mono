@@ -45,3 +45,11 @@ correction, new creation, discard/reload, signed retry followed by editing,
 series correction, native lock refusal and missing pinned series signatures.
 These controlled fixtures do not establish an external extension, public-relay
 delivery, physical-device recovery, or paid handout.
+
+Recovery controls refresh retained-signature evidence after every publication
+attempt, including when retention committed but the plan-pointer write failed.
+The unchanged pointer is not proof that the draft is still unsigned. Legacy
+series ID upgrades update the page's frozen plan immediately after persistence,
+so repeated delivery failures can resume in the same page. Browser regressions
+exercise both interruptions without reload and compare every canonical signed
+field, including the signature, through the successful retry.
