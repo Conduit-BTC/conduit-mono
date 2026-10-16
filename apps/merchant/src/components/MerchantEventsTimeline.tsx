@@ -602,7 +602,7 @@ function MerchantEventTimelineSection({
           <div
             role="status"
             aria-label="Loading events"
-            className="space-y-2 rounded-xl border border-[var(--border)] p-3"
+            className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3"
           >
             <span className="sr-only">Loading events</span>
             {[0, 1].map((row) => (
