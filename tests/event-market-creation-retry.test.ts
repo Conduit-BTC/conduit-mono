@@ -237,17 +237,13 @@ describe("durable future Event Market creation", () => {
       },
       test.dependencies
     )
-    let message = ""
-    try {
+    expect(() =>
       saveNewFutureEventMarketCreation(
         organizer,
         { ...test.form, title: "x".repeat(201) },
         test.storage
       )
-    } catch (cause) {
-      message = (cause as Error).message
-    }
-    expect(message).toContain("Calendar title")
+    ).toThrow("Calendar title")
     expect(loadFutureEventMarketCreation(organizer, test.storage)).toBeNull()
   })
 
@@ -422,13 +418,7 @@ describe("durable future Event Market creation", () => {
   it.each(["x".repeat(1_001), "Public\u0000fair"])(
     "rejects invalid calendar text before saving a creation",
     (summary) => {
-      let message = ""
-      try {
-        setup({ summary })
-      } catch (cause) {
-        message = (cause as Error).message
-      }
-      expect(message).toContain("Description")
+      expect(() => setup({ summary })).toThrow("Description")
     }
   )
 
