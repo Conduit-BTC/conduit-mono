@@ -177,22 +177,6 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     marketReads,
     sellingQuery.data?.markets ?? []
   )
-  const section = (
-    reads: typeof marketReads,
-    initialLoading: boolean,
-    isFetching: boolean,
-    unavailable: boolean,
-    limited: boolean,
-    refetch: () => Promise<unknown>
-  ) => ({
-    marketReads: reads,
-    futureOccurrences: reads.flatMap(projectFutureMerchantTimelineOccurrences),
-    initialLoading,
-    isFetching,
-    unavailable,
-    limited,
-    refetch,
-  })
   const networkPending =
     discovery.perspective.isInitialLoading ||
     (futureAuthors.length > 0 && futureQuery.isPending)
@@ -244,52 +228,57 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         : undefined,
     ])
   return {
-    organizing: section(
-      allReads,
-      ownQuery.isPending,
-      ownQuery.isFetching,
-      organizingUnavailable,
-      ownerIncomplete ||
+    marketReads: allReads,
+    futureOccurrences: allReads.flatMap(
+      projectFutureMerchantTimelineOccurrences
+    ),
+    organizing: {
+      initialLoading: ownQuery.isPending,
+      isFetching: ownQuery.isFetching,
+      unavailable: organizingUnavailable,
+      limited:
+        ownerIncomplete ||
         knownRosterIncomplete ||
         discovery.relationships.isInitialLoading ||
         discovery.relationships.incomplete ||
         discovery.relationships.unavailable,
-      () =>
+      refetch: () =>
         Promise.all([
           !ownQuery.isFetching && !ownQuery.isPaused
             ? ownQuery.refetch({ cancelRefetch: false })
             : undefined,
           discovery.relationships.refetch(),
-        ])
-    ),
-    selling: section(
-      allReads,
-      discovery.relationships.isInitialLoading,
-      discovery.relationships.isFetching || sellingQuery.isFetching,
-      compositeUnavailable,
-      networkLimited ||
+        ]),
+    },
+    selling: {
+      initialLoading: discovery.relationships.isInitialLoading,
+      isFetching: discovery.relationships.isFetching || sellingQuery.isFetching,
+      unavailable: compositeUnavailable,
+      limited:
+        networkLimited ||
         ownQuery.isPending ||
         ownerIncomplete ||
         discovery.relationships.incomplete ||
         knownRosterIncomplete,
-      refetchIncludedSources
-    ),
-    all: section(
-      allReads,
-      networkPending || ownQuery.isPending,
-      discovery.perspective.isFetching ||
+      refetch: refetchIncludedSources,
+    },
+    all: {
+      initialLoading: networkPending || ownQuery.isPending,
+      isFetching:
+        discovery.perspective.isFetching ||
         futureQuery.isFetching ||
         ownQuery.isFetching ||
         sellingQuery.isFetching,
-      compositeUnavailable,
-      networkLimited ||
+      unavailable: compositeUnavailable,
+      limited:
+        networkLimited ||
         ownerIncomplete ||
         discovery.relationships.isInitialLoading ||
         discovery.relationships.incomplete ||
         discovery.relationships.unavailable ||
         knownRosterIncomplete,
-      refetchIncludedSources
-    ),
+      refetch: refetchIncludedSources,
+    },
     accountPubkey,
     authenticatedPubkey,
     authGeneration,
@@ -343,7 +332,8 @@ function MerchantEventTimelineSection({
   relationship: MerchantEventRelationshipFilter
   title: string
   data: ReturnType<typeof useMerchantEventTimelineData> &
-    ReturnType<typeof useMerchantEventTimelineData>["all"]
+    ReturnType<typeof useMerchantEventTimelineData>[
+      "organizing" | "selling" | "all"]
 }) {
   const {
     marketReads,

@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   extractFollowPubkeys,
@@ -301,56 +301,33 @@ export function useMerchantEventTimeline(input: {
   const relationshipPending =
     productsQuery.isPending ||
     (productReferences.length > 0 && exactQuery.isPending)
-  const refreshFollowing = followingQuery.refetch
-  const refreshConduit = conduitQuery.refetch
-  const refreshProducts = productsQuery.refetch
-  const refreshExact = exactQuery.refetch
   // Each source skips its own active read; a running sibling does not suppress
   // a settled source, and explicit refresh never cancels background progress.
-  const refetchPerspective = useCallback(async () => {
+  async function refetchPerspective() {
     await Promise.all([
       followingEnabled && !followingQuery.isFetching && !followingQuery.isPaused
-        ? refreshFollowing({ cancelRefetch: false })
+        ? followingQuery.refetch({ cancelRefetch: false })
         : undefined,
       conduitEnabled && !conduitQuery.isFetching && !conduitQuery.isPaused
-        ? refreshConduit({ cancelRefetch: false })
+        ? conduitQuery.refetch({ cancelRefetch: false })
         : undefined,
     ])
-  }, [
-    followingEnabled,
-    conduitEnabled,
-    followingQuery.isFetching,
-    followingQuery.isPaused,
-    conduitQuery.isFetching,
-    conduitQuery.isPaused,
-    refreshFollowing,
-    refreshConduit,
-  ])
-  const refetchRelationships = useCallback(async () => {
+  }
+  async function refetchRelationships() {
     await Promise.all([
       merchantPubkey &&
       session.relaySettingsReady &&
       !productsQuery.isFetching &&
       !productsQuery.isPaused
-        ? refreshProducts({ cancelRefetch: false })
+        ? productsQuery.refetch({ cancelRefetch: false })
         : undefined,
       productReferences.length > 0 &&
       !exactQuery.isFetching &&
       !exactQuery.isPaused
-        ? refreshExact({ cancelRefetch: false })
+        ? exactQuery.refetch({ cancelRefetch: false })
         : undefined,
     ])
-  }, [
-    merchantPubkey,
-    session.relaySettingsReady,
-    productReferences.length,
-    productsQuery.isFetching,
-    productsQuery.isPaused,
-    exactQuery.isFetching,
-    exactQuery.isPaused,
-    refreshProducts,
-    refreshExact,
-  ])
+  }
   return {
     perspective: {
       organizerPubkeys: authorPubkeys,
