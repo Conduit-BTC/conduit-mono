@@ -96,6 +96,16 @@ function coordinateOf(event: SignedPublicNostrEvent): string | undefined {
   return `${event.kind}:${event.pubkey}:${dTags[0][1]}`
 }
 
+function requiresOrganizerStockRecovery(
+  assignment: ParsedEventMarketAssignment
+): boolean {
+  return (
+    assignment.stockPool.state === "invalid" ||
+    (assignment.stockPool.state === "valid" &&
+      assignment.stockPool.pool.state === "active")
+  )
+}
+
 function cancellation(event: SignedPublicNostrEvent): boolean {
   const lifecycle = event.tags.filter((tag) => tag[0] === "event_occurrence")
   return (
@@ -290,6 +300,7 @@ export type MerchantInventoryRecoveryResult =
         | "assignment_conflict"
         | "tracking_mismatch"
         | "overallocated"
+        | "organizer_stock_recovery_required"
     }
 
 /**
@@ -437,6 +448,21 @@ export async function recoverMerchantInventoryProduct(
         coverage,
         reason: "malformed_assignment",
       }
+    if (requiresOrganizerStockRecovery(current)) {
+      // The public marker cannot reconstruct private consumption. Retain it
+      // even when blocking: a later stale relay copy must not free the hold.
+      await db.eventMarketRosterEvidence.put({
+        id: `${current.marketCoordinate}:${current.eventId}`,
+        marketCoordinate: current.marketCoordinate,
+        signedEvent: current.signedEvent,
+        cachedAt: Date.now(),
+      })
+      return {
+        state: "unsafe_conflict",
+        coverage,
+        reason: "organizer_stock_recovery_required",
+      }
+    }
     tupleCandidates.set(coordinate, current)
   }
   const scopedCache = new Map<string, SignedPublicNostrEvent[]>()
@@ -460,6 +486,13 @@ export async function recoverMerchantInventoryProduct(
       events: readonly SignedPublicNostrEvent[]
     ) => {
       if (!events.length) return
+      scopedCache.set(marketCoordinate, [
+        ...new Map(
+          [...(scopedCache.get(marketCoordinate) ?? []), ...events].map(
+            (event) => [event.id, event]
+          )
+        ).values(),
+      ])
       await db.eventMarketRosterEvidence.bulkPut(
         events.map((event) => ({
           id: `${marketCoordinate}:${event.id}`,
@@ -487,6 +520,24 @@ export async function recoverMerchantInventoryProduct(
       coverage,
       resolved.coverage === "stale" ? "partial" : resolved.coverage
     )
+    // An exact read can discover a newer pool marker than candidate discovery.
+    // Even deleting that assignment does not prove its private pool reconciled.
+    const strongest = (scopedCache.get(candidate.marketCoordinate) ?? [])
+      .filter((event) => coordinateOf(event) === candidate.coordinate)
+      .sort(
+        (a, b) =>
+          -compareReplaceableEventFrontiers(
+            { createdAt: a.created_at, eventId: a.id },
+            { createdAt: b.created_at, eventId: b.id }
+          )
+      )[0]
+    const observed = strongest && parseEventMarketAssignmentEvent(strongest)
+    if (observed && requiresOrganizerStockRecovery(observed))
+      return {
+        state: "unsafe_conflict",
+        coverage,
+        reason: "organizer_stock_recovery_required",
+      }
     if (
       ["conflicting", "malformed", "incomplete", "missing"].includes(
         resolved.state
@@ -499,6 +550,12 @@ export async function recoverMerchantInventoryProduct(
       }
     if (!resolved.assignment) continue
     const assignment = resolved.assignment
+    if (requiresOrganizerStockRecovery(assignment))
+      return {
+        state: "unsafe_conflict",
+        coverage,
+        reason: "organizer_stock_recovery_required",
+      }
     const lifecycle =
       assignment.state === "removed"
         ? {

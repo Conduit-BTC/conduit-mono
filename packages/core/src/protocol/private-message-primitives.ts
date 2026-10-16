@@ -429,7 +429,7 @@ export type UnwrapOutcome =
   | {
       status: "deferred_machine"
       wrapId: string
-      kind: typeof EVENT_KINDS.ORDER
+      kind: number
     }
   | { status: "decrypt_failed"; wrapId: string; reason: DecryptFailureReason }
 
@@ -677,7 +677,7 @@ export async function unwrapGiftWrap(
         // Invalid recovery never gains generic rendering or domain authority.
       }
     }
-    return { status: "deferred_machine", wrapId, kind: EVENT_KINDS.ORDER }
+    return { status: "deferred_machine", wrapId, kind: rumor.kind }
   }
   if (decodedRecord.category === "commerce") {
     if (decodedRecord.parsedOrderMessage)

@@ -140,3 +140,34 @@ external signer compatibility, independent-device reconciliation, live relay
 convergence, funded settlement or physical handout. Atomic rollover and the full
 rescheduling flow remain incomplete. New delegated organizer acceptance is gated;
 historical organizer receipt tests cannot stand in for that integration.
+
+## Organizer stock handover foundation
+
+`event-market-stock-authority` checks the Conduit-private grant, consumption and
+closing grammar with real NIP-59/NIP-44 encryption. It separates structural
+parsing from authenticated envelope evidence. `event-market-organizer-stock-marker`
+checks the public assignment commitment, material forks and cold-recovery denial
+when private stock authority is unresolved. Unknown extensions do not erase the
+signed catalog record or become new financial authority.
+
+`merchant-inventory-organizer-hold` and `merchant-inventory-product-write` cover
+the shared stock owner: ordinary availability, seller pickup exclusion,
+concurrent sales, assignment removal, expiry/cancellation, tracking-mode edits,
+rollback and preservation of the entrusted quantity.
+
+`event-market-stock-journal` composes a saved Merchant reservation, its signed
+assignment successor and an explicitly designated organizer's local journal.
+It covers atomic acceptance/claim uniqueness, exact replay, closing races,
+chronology, input mutation, reload, external signing refusal, session changes
+and durable exact recipient/owner envelope retries. No test publishes to public
+relays or transfers funds. `event-market-stock-schema` preserves populated
+installed v25/v26/v26.1/v27 histories through additive v28 and proves that
+normal cache clearing/pruning retains inventory and private journals.
+
+This is a local foundation, not completed delegated checkout. Authenticated
+Merchant import/closing reconciliation, fresh-device writer handover, current
+roster/settlement/claim composition, event router economics and app workflows
+still require integration. Ordinary suitability remains gated for an active or
+invalid stock commitment. These tests do not establish independent-device
+serialization, live delivery, funded handout, external signer compatibility or
+physical-device acceptance.

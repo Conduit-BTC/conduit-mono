@@ -1392,6 +1392,7 @@ export async function readEventMarketAssignment(
       value.state,
       value.inventory,
       [...value.fulfillmentMethods].sort(),
+      value.stockPool,
     ])
   if (new Set(tips.map(material)).size > 1)
     return { state: "conflicting", coverage, retained }

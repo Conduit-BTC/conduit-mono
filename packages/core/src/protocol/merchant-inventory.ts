@@ -164,8 +164,9 @@ export async function commitMerchantInventoryStockEdit(input: {
       if (
         assignments.some(
           (a) =>
-            a.state === "active" &&
-            (a.inventory.mode === "untracked") !== (stock === undefined)
+            (stock === undefined && outstandingOrganizerStockHold(a) > 0) ||
+            (a.state === "active" &&
+              (a.inventory.mode === "untracked") !== (stock === undefined))
         )
       )
         throw new Error("Tracking mode requires assignment reconciliation")
@@ -196,16 +197,45 @@ export function listMerchantInventoryAssignments(
     .toArray()
 }
 
+/** Unreconciled organizer goods never return to seller stock merely because time passed. */
+export function outstandingOrganizerStockHold(
+  assignment: MerchantInventoryAssignment
+): number {
+  const hold = assignment.organizerStockHold
+  if (hold === undefined) return 0
+  if (
+    !hold ||
+    typeof hold.poolId !== "string" ||
+    !hold.poolId.trim() ||
+    typeof hold.organizerPubkey !== "string" ||
+    !HEX_ID.test(hold.organizerPubkey) ||
+    !Number.isInteger(hold.quantity) ||
+    hold.quantity < 1 ||
+    hold.quantity > MAX_STOCK ||
+    !Number.isInteger(hold.importedQuantity) ||
+    hold.importedQuantity < 0 ||
+    hold.importedQuantity > hold.quantity ||
+    typeof hold.closed !== "boolean"
+  )
+    throw new Error("Organizer stock hold requires reconciliation")
+  const outstanding = hold.closed ? 0 : hold.quantity - hold.importedQuantity
+  if (outstanding > 0 && assignment.inventory.mode !== "tracked")
+    throw new Error("Organizer stock hold requires tracked inventory")
+  return outstanding
+}
+
 export function effectiveAllocation(
   assignment: MerchantInventoryAssignment,
   nowMs: number
 ): number {
-  return assignment.state === "active" &&
+  const liveAllocation =
+    assignment.state === "active" &&
     !assignment.terminal &&
     nowMs < assignment.occurrenceEndMs &&
     assignment.inventory.mode === "tracked"
-    ? assignment.inventory.quantity
-    : 0
+      ? assignment.inventory.quantity
+      : 0
+  return Math.max(liveAllocation, outstandingOrganizerStockHold(assignment))
 }
 
 /** Current local stock math; an intact writer never waits for relay agreement. */
@@ -223,7 +253,9 @@ export async function readMerchantInventoryAvailability(
   if (product.stock === undefined) {
     if (
       assignments.some(
-        (a) => a.inventory.mode !== "untracked" && a.state === "active"
+        (a) =>
+          outstandingOrganizerStockHold(a) > 0 ||
+          (a.inventory.mode !== "untracked" && a.state === "active")
       )
     )
       throw new Error("Inventory tracking mismatch")
@@ -359,12 +391,24 @@ export async function commitMerchantInventoryAssignment(input: {
         throw new Error("Inventory tracking mismatch")
       const existing =
         await db.merchantInventoryAssignments.get(assignmentCoordinate)
+      const organizerHold = existing
+        ? outstandingOrganizerStockHold(existing)
+        : 0
+      if (organizerHold > 0 && inventory.mode !== "tracked")
+        throw new Error("Organizer stock hold requires tracked inventory")
       const priorMutation = existing?.publicationJobs.find(
         (j) => j.id === mutationId
       )
       if (priorMutation) {
         if (
-          JSON.stringify(priorMutation.assignmentSnapshot) !==
+          JSON.stringify(
+            priorMutation.assignmentSnapshot && {
+              state: priorMutation.assignmentSnapshot.state,
+              inventory: priorMutation.assignmentSnapshot.inventory,
+              fulfillmentMethods:
+                priorMutation.assignmentSnapshot.fulfillmentMethods,
+            }
+          ) !==
           JSON.stringify({
             state,
             inventory,
@@ -402,13 +446,14 @@ export async function commitMerchantInventoryAssignment(input: {
       const reservedElsewhere = siblings
         .filter((a) => a.coordinate !== assignmentCoordinate)
         .reduce((sum, a) => sum + effectiveAllocation(a, nowMs), 0)
-      const nextReserved =
+      const liveReservation =
         state === "active" &&
         !terminal &&
         nowMs < occurrenceEndMs &&
         inventory.mode === "tracked"
           ? inventory.quantity
           : 0
+      const nextReserved = Math.max(liveReservation, organizerHold)
       if (
         product.stock !== undefined &&
         reservedElsewhere + nextReserved > product.stock
@@ -420,6 +465,9 @@ export async function commitMerchantInventoryAssignment(input: {
         state,
         inventory,
         fulfillmentMethods: [...fulfillmentMethods],
+        ...(existing?.organizerStockHold
+          ? { organizerStockHold: structuredClone(existing.organizerStockHold) }
+          : {}),
       }
       const assignment: MerchantInventoryAssignment = {
         coordinate: assignmentCoordinate,
@@ -432,6 +480,9 @@ export async function commitMerchantInventoryAssignment(input: {
         fulfillmentMethods: [...fulfillmentMethods],
         occurrenceEndMs,
         terminal,
+        ...(existing?.organizerStockHold !== undefined
+          ? { organizerStockHold: existing.organizerStockHold }
+          : {}),
         revision,
         signedAssignmentEvent: existing?.signedAssignmentEvent,
         publicationJobs: [...(existing?.publicationJobs ?? []), nextJob],
@@ -625,7 +676,9 @@ export async function acceptMerchantInventoryOrder(input: {
             if (
               !assignment ||
               assignment.inventory.mode !== "tracked" ||
-              effectiveAllocation(assignment, acceptedAt) < item.quantity
+              effectiveAllocation(assignment, acceptedAt) -
+                outstandingOrganizerStockHold(assignment) <
+                item.quantity
             )
               throw new Error("Insufficient pickup allocation")
           } else if (product.stock - effective < item.quantity) {
@@ -643,7 +696,9 @@ export async function acceptMerchantInventoryOrder(input: {
           }
         } else if (
           siblings.some(
-            (a) => a.state === "active" && a.inventory.mode !== "untracked"
+            (a) =>
+              outstandingOrganizerStockHold(a) > 0 ||
+              (a.state === "active" && a.inventory.mode !== "untracked")
           )
         ) {
           throw new Error("Inventory tracking mismatch")
@@ -692,6 +747,13 @@ export async function acceptMerchantInventoryOrder(input: {
             state: assignment.state,
             inventory: assignment.inventory,
             fulfillmentMethods: [...assignment.fulfillmentMethods],
+            ...(assignment.organizerStockHold
+              ? {
+                  organizerStockHold: structuredClone(
+                    assignment.organizerStockHold
+                  ),
+                }
+              : {}),
           }
           assignment.publicationJobs.push(nextJob)
           await db.merchantInventoryAssignments.put(assignment)
@@ -749,6 +811,19 @@ function makeAssignmentDraft(
     state: snapshot.state,
     inventory: snapshot.inventory,
     fulfillmentMethods: snapshot.fulfillmentMethods,
+    ...(snapshot.organizerStockHold
+      ? {
+          organizerStockPool: {
+            state: snapshot.organizerStockHold.closed
+              ? ("closed" as const)
+              : ("active" as const),
+            poolId: snapshot.organizerStockHold.poolId,
+            organizerPubkey: snapshot.organizerStockHold.organizerPubkey,
+            quantity: snapshot.organizerStockHold.quantity,
+            importedQuantity: snapshot.organizerStockHold.importedQuantity,
+          },
+        }
+      : {}),
     previousEventId: predecessor?.id,
   })
   return {

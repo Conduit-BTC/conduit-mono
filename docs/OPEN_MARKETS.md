@@ -230,3 +230,12 @@ behavior, Conduit behavior, compatibility consequence, and proposed repair.
 The current experimental merchant-owned assignment and durable acceptance path,
 its frozen proposal revision, and remaining integration limits are documented in
 [Signed event publication](knowledge/signed-event-publication.md#occurrence-scoped-inventory-and-acceptance).
+
+The optional organizer stock handover is a separate Conduit extension, not a
+claim of upstream compatibility. It commits a private grant rumor with the
+namespaced `conduit_stock_pool` tag on the existing assignment and keeps the
+grant/acceptance/closing journal inside NIP-59 wrappers. The implementation
+contract and activation limits are in
+[Event Markets](specs/event-markets.md#conduit-organizer-stock-handover-extension).
+Local reservation and journal tests do not establish a complete organizer
+checkout, payment, device handout or cross-client implementation.

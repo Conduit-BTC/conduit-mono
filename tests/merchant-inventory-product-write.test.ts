@@ -164,6 +164,89 @@ it("rejects edits below live allocations without advancing product or outbox", a
     (await db.products.get(coordinate))?.eventId === listing(20, 100).id
   ).toBe(true)
 })
+
+it("keeps an expired organizer pool reserved through the shared product writer", async () => {
+  const { assignmentCoordinate } = await setup()
+  const hold = {
+    poolId: crypto.randomUUID(),
+    organizerPubkey: organizer,
+    quantity: 4,
+    importedQuantity: 0,
+    closed: false,
+  }
+  await db.merchantInventoryAssignments.update(assignmentCoordinate, {
+    occurrenceEndMs: 1,
+    organizerStockHold: hold,
+  })
+  let failure: unknown
+  try {
+    await commitLocalProductWrite(write(listing(3, 101)))
+  } catch (error) {
+    failure = error
+  }
+  expect(failure).toBeInstanceOf(Error)
+  expect((await db.merchantInventoryProducts.get(coordinate))?.stock).toBe(20)
+  expect(await db.productListingOutbox.count()).toBe(0)
+  await commitLocalProductWrite(write(listing(4, 101)))
+  const current = await readMerchantInventoryAvailability(db, coordinate)
+  expect(current.product.stock).toBe(4)
+  expect(current.ordinaryAvailable).toBe(0)
+  expect(current.assignments[0]?.organizerStockHold).toEqual(hold)
+})
+
+it("fails closed when an untracked product would bypass its retained organizer hold", async () => {
+  const { assignmentCoordinate } = await setup()
+  await db.merchantInventoryAssignments.update(assignmentCoordinate, {
+    occurrenceEndMs: 1,
+    organizerStockHold: {
+      poolId: crypto.randomUUID(),
+      organizerPubkey: organizer,
+      quantity: 4,
+      importedQuantity: 0,
+      closed: false,
+    },
+  })
+  // A damaged/restored mode cannot turn unresolved entrusted goods into infinity.
+  await db.merchantInventoryProducts.update(coordinate, { stock: undefined })
+  const untracked = finalizeEvent(
+    {
+      ...listing(20, 101),
+      tags: listing(20, 101).tags.filter((tag) => tag[0] !== "stock"),
+    },
+    secret
+  )
+  let failure: unknown
+  try {
+    await commitLocalProductWrite(write(untracked))
+  } catch (error) {
+    failure = error
+  }
+  expect(failure).toBeInstanceOf(Error)
+  expect(await db.productListingOutbox.count()).toBe(0)
+  expect((await db.products.get(coordinate))?.eventId).toBe(listing(20, 100).id)
+})
+
+it("does not publish around an invalid closed organizer hold summary", async () => {
+  const { assignmentCoordinate } = await setup()
+  await db.merchantInventoryAssignments.update(assignmentCoordinate, {
+    organizerStockHold: {
+      poolId: crypto.randomUUID(),
+      organizerPubkey: organizer,
+      quantity: 4,
+      importedQuantity: 5,
+      closed: true,
+    },
+  })
+  let failure: unknown
+  try {
+    await commitLocalProductWrite(write(listing(18, 101)))
+  } catch (error) {
+    failure = error
+  }
+  expect(failure).toBeInstanceOf(Error)
+  expect(await db.productListingOutbox.count()).toBe(0)
+  expect((await db.merchantInventoryProducts.get(coordinate))?.stock).toBe(20)
+})
 it("rolls inventory back when the shared product-write persistence fails", async () => {
   await setup()
   const failure = spyOn(

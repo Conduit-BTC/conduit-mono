@@ -103,6 +103,18 @@ or deletion from independent partitions.
 
 ### Relay Read Authentication
 
+The optional Event Market organizer-stock extension uses the same unsigned
+rumor/seal/gift-wrap construction, not detached signed order rumors or a new
+public event kind. Its private kind-14 `conduit-event-stock` subject and
+`["conduit", "event-stock", "1"]` marker are machine-only, including malformed
+or unknown versions. The Merchant's existing signed assignment may commit the
+exact private grant rumor ID with the namespaced `conduit_stock_pool` tag.
+Private JSON is not authenticated without the verified envelope or that exact
+signed commitment. Neither relay delivery nor the commitment proves payment,
+handout or complete stock reconciliation. The bounded grant, journal, closing
+and cold-recovery rules are in `event-markets.md`; no guest signer, account-key
+sharing or service-custody authority is added.
+
 NIP-42 is used only for an explicitly protected relay operation. The first
 protected operation is the active principal reading their own `kind:1059` gift
 wraps with filters constrained to `#p` equal to the active account pubkey.

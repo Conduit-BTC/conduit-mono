@@ -7,6 +7,7 @@ import Dexie, {
   type Table,
 } from "dexie"
 import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
+import type { PrivateMessageRumor } from "../protocol/private-message-primitives"
 import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
@@ -1288,6 +1289,7 @@ export interface MerchantInventoryPublicationJob {
     state: "active" | "removed"
     inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
     fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+    organizerStockHold?: MerchantInventoryAssignment["organizerStockHold"]
   }
   draft?: {
     pubkey: string
@@ -1323,6 +1325,15 @@ export interface MerchantInventoryAssignment {
   occurrenceEndMs: number
   /** Only verified terminal cancellation or applicable deletion sets this. */
   terminal: boolean
+  /** Private advance handover. Lifecycle expiry never releases this stock. */
+  organizerStockHold?: {
+    poolId: string
+    organizerPubkey: string
+    quantity: number
+    importedQuantity: number
+    /** Only a completely reconciled organizer closing frontier sets this. */
+    closed: boolean
+  }
   revision: number
   signedAssignmentEvent?: SignedPublicNostrEvent
   publicationJobs: MerchantInventoryPublicationJob[]
@@ -1344,6 +1355,53 @@ export interface MerchantInventoryAcceptedOrder {
     remainingAllocation?: number
   }>
   acceptedAt: number
+}
+
+/** Durable, account-scoped private stock authority; never a relay cache. */
+export interface EventMarketOrganizerStockPool {
+  id: string
+  accountPubkey: string
+  poolId: string
+  merchantPubkey: string
+  organizerPubkey: string
+  writerId: string
+  assignmentCoordinate: string
+  productCoordinate: string
+  grantRumor: PrivateMessageRumor
+  quantity: number
+  acceptedQuantity: number
+  acceptedSequence: number
+  lastAcceptedId: string
+  importedQuantity: number
+  importedSequence: number
+  lastImportedId: string
+  /** Preparation consumes Merchant availability before any external signing. */
+  state: "prepared" | "active" | "closing" | "closed"
+  closingRumor?: PrivateMessageRumor
+  /** Exact encrypted retries, not proof of recipient observation. */
+  grantWraps?: {
+    recipient: SignedPublicNostrEvent
+    self: SignedPublicNostrEvent
+  }
+  closingWraps?: {
+    recipient: SignedPublicNostrEvent
+    self: SignedPublicNostrEvent
+  }
+}
+
+export interface EventMarketOrganizerStockEntry {
+  id: string
+  accountPubkey: string
+  poolId: string
+  sequence: number
+  orderId: string
+  claimRef: string
+  rumor: PrivateMessageRumor
+  quantity: number
+  /** Exact original evidence retained privately, never displayed as a message. */
+  evidence: string
+  wraps?: { recipient: SignedPublicNostrEvent; self: SignedPublicNostrEvent }
+  imported: boolean
 }
 
 export class ConduitDB extends Dexie {
@@ -1420,6 +1478,14 @@ export class ConduitDB extends Dexie {
   merchantInventoryAcceptedOrders!: EntityTable<
     MerchantInventoryAcceptedOrder,
     "orderId"
+  >
+  eventMarketOrganizerStockPools!: EntityTable<
+    EventMarketOrganizerStockPool,
+    "id"
+  >
+  eventMarketOrganizerStockEntries!: EntityTable<
+    EventMarketOrganizerStockEntry,
+    "id"
   >
 
   constructor(databaseName = "conduit", options?: DexieOptions) {
@@ -1724,6 +1790,15 @@ export class ConduitDB extends Dexie {
       // The additive index does not rewrite durable or legacy evidence rows.
       eventMarketRosterEvidence:
         "id, marketCoordinate, cachedAt, discoveryBytes",
+    })
+
+    this.version(28).stores({
+      // Additive only: preserve the complete installed inventory/discovery union.
+      // Account-scoped unique bindings prevent a replay from consuming twice.
+      eventMarketOrganizerStockPools:
+        "id, accountPubkey, &[accountPubkey+poolId], [accountPubkey+assignmentCoordinate]",
+      eventMarketOrganizerStockEntries:
+        "id, accountPubkey, [accountPubkey+poolId], &[accountPubkey+poolId+sequence], &[accountPubkey+poolId+orderId], &[accountPubkey+poolId+claimRef]",
     })
   }
 }

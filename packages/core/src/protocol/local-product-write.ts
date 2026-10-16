@@ -1796,6 +1796,7 @@ export async function commitLocalProductWrite(
           )
           if (
             (inventory.stock === undefined) !== (row.stock === undefined) ||
+            (row.stock === undefined && reserved > 0) ||
             (row.stock !== undefined && row.stock < reserved)
           )
             throw new Error(

@@ -1,4 +1,5 @@
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import { isEventMarketStockAuthorityRumor } from "./event-market-stock-marker"
 
 /** An already authenticated inner NIP-17 rumor. Authentication belongs to unwrap. */
 export interface CommerceRumor {
@@ -245,6 +246,8 @@ export function decodeCommerceMessageRumor(
   rumor: CommerceRumor
 ): DecodedCommerceMessage {
   const source = provenance(rumor)
+  if (isEventMarketStockAuthorityRumor(rumor))
+    return { category: "machine", provenance: source }
   const tags = rumor.tags ?? []
   const typeTags = values(tags, "type")
   const contentObject = rumor.kind === 16 ? objectContent(rumor.content) : null

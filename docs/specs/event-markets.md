@@ -124,6 +124,75 @@ appending an organizer recipient to their commerce weight is not that extension.
 No public routed zap, service-operated executor, guest inbox or automatic refund
 is introduced.
 
+## Conduit organizer stock handover extension
+
+Merchant-absent organizer sales use an explicitly entrusted, finite tracked
+quantity from one occurrence assignment. Merchant remains the sole product and
+assignment stock writer. The organizer consumes only its private reserved pool;
+it never signs Merchant listings or obtains the Merchant account key. Untracked
+inventory is not an implicit infinite pool. The pool binds the exact Merchant,
+organizer, product, assignment, roster, occurrence, authorization and optional
+schedule revisions, an exclusive organizer-device writer, quantity and deadline.
+New organizer acceptance still requires current event authority. Zero organizer
+fee does not disable otherwise valid handout authority.
+
+Before requesting a grant seal or publishing its assignment commitment, commit
+the private grant draft and assignment stock hold in the existing inventory
+transaction. A failed signature or relay acknowledgement does not release that
+hold. The signed assignment carries the Conduit-only commitment:
+
+```text
+["conduit_stock_pool", "1", "active" | "closed", "<grant-rumor-id>", "<organizer>", "<original-quantity>", "<imported-quantity>"]
+```
+
+This is not part of the experimental Open Markets assignment profile. It is a
+commitment to the exact private unsigned grant rumor, not a public order or
+payment registry. Duplicate, unknown or malformed commitments supply no new
+commerce authority. General catalog parsing retains that distinction. Cold
+Merchant recovery must not reconstruct ordinary availability from an active or
+unusable commitment without its private pool/journal evidence. An intact local
+writer may continue from durable state; a fresh organizer device must not reset
+consumption from the original grant after a partial or empty inbox read.
+
+While unresolved, each assignment reserves the greater of its currently live
+allocation and its outstanding organizer hold, not their sum. Seller pickup may
+consume only the live allocation less that hold. Ordinary sales and every stock
+edit honor the hold, even after assignment removal, event end, cancellation or
+revocation. Those transitions stop new acceptance; they do not prove that
+entrusted goods are unused. Tracking-mode changes cannot erase a hold.
+
+Private grant, acceptance and closing records reuse unsigned kind-14 rumors,
+author-signed NIP-59 seals, ephemeral gift wraps and NIP-44 v2 encryption. The
+reserved subject is `conduit-event-stock`, with the exact marker
+`["conduit", "event-stock", "1"]`. Dedicated consumers validate the payload,
+exact roles and grant commitment after envelope authentication. Generic Messages
+must quarantine that reserved subject/marker, including unknown versions or
+malformed content. A parsed JSON body alone is not proof of its sender. Exact
+encrypted recipient and owner recovery copies are retained before delivery.
+Only account signers can author these records; the guest-key exception is not
+widened.
+
+Organizer acceptance atomically debits its remaining pool and retains an
+immutable sequence/predecessor, order, accepted identity/terms, quantity and
+unique claim before sealing or publication. Exact retries resume that decision;
+changed terms under an existing order/claim reject. Handout does not debit it
+again, and funding or organizer-fee receipt alone cannot authorize handout.
+The accepted order still requires exact commerce settlement and claim checks.
+Closing freezes acceptance locally before requesting its seal. Unused stock may
+return only after the Merchant verifies that closing frontier and imports every
+accepted entry through it once. Missing, conflicting or divergent entries keep
+the remaining hold. Import uses the existing accepted-order transaction and
+product projection owner, preserving original order terms even after the date
+ends; it is not a second stock writer or a second payment executor.
+
+These are local serialized writers with an explicit handover, not a distributed
+lease, cross-device lock or proof of global network absence. Parallel independent
+organizer devices require reconciliation/handover rather than starting a second
+pool writer. Durable grants, decisions, closing evidence and replay protection
+are not cache and survive relay changes and schema upgrades. This contract does
+not itself activate organizer purchasing or relax the separate wallet recovery,
+frozen router plan, receiving qualification and composed acceptance gates.
+
 ## Usable workflows and recovery
 
 The same Event Market link identifies the host workspace and merchant participation surface. An authenticated request, invitation, decline or withdrawal is private coordination, never public admission authority. The merchant sees the current signed approval separately from private request delivery. The organizer can admit their own merchant identity without manually copying a public key. Approved merchants add existing products or create a product in the event context; product ownership, stock and prices stay with the merchant.
