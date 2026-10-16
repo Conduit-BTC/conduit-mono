@@ -147,7 +147,8 @@ historical organizer receipt tests cannot stand in for that integration.
 
 `merchant-occurrence-regressions` composes signed products, actual checkout
 pricing, existing local product writes, reopened inventory and acceptance. It
-covers fiat source-currency binding, prior stock decisions and shortfalls,
+covers order source-currency consistency, original quotes after later listing
+price edits, prior stock decisions and shortfalls,
 pending pre-assignment orders, concurrent material product edits, retained
 variation-parent withdrawal evidence, and cold/warm assignment reads with
 missing superseded history and known-fork controls. Both ordinary product
@@ -167,3 +168,12 @@ conversation is available: no acceptance action may target that other order,
 and release commits exactly one acceptance for the requested order.
 Browser payment reports, merchant confirmations and signer/relay interactions
 are synthetic; these checks establish client behavior, not funded settlement.
+
+Saved inventory acceptance is bound to the original order identity and complete
+terms. Merchant display and fulfillment recheck that binding; another valid,
+same-ID payload cannot inherit acceptance or unlock zero-cost completion.
+Explicit merchant acceptance and payment confirmation retain the original quote
+after a later listing-price edit. The current signed listing remains the stock
+projection baseline, and concurrent material edits still reject the whole debit.
+The composed browser controls cover both the conflicting-order rejection and
+first confirmation at the original price after a published listing edit.

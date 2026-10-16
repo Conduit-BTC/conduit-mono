@@ -1560,7 +1560,10 @@ test("signed series dates open one market and keep separate buyer choices @marke
   await expect(page.getByRole("option").last()).toBeDisabled()
 })
 
-async function createAssignedPickupOrder(page: Page) {
+async function createAssignedPickupOrder(
+  page: Page,
+  options: { zeroCost?: boolean } = {}
+) {
   page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
@@ -1600,7 +1603,15 @@ async function createAssignedPickupOrder(page: Page) {
       ["alt", "Open Markets event merchant authorization"],
     ],
   })
-  const product = createMerchantTemplateProductEvent(createdAt)
+  const template = createMerchantTemplateProductEvent(createdAt)
+  const product = options.zeroCost
+    ? signEvent(MERCHANT_SECRET, {
+        ...template,
+        tags: template.tags.map((tag) =>
+          tag[0] === "price" ? ["price", "0", "SATS"] : tag
+        ),
+      })
+    : template
   relay.seed(
     calendar,
     market,
@@ -6502,15 +6513,23 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await expect(page.getByTestId("future-market-order-pickup")).toBeVisible()
 })
 
-for (const rescheduled of [false, true])
-  test(`prepaid first confirmation ${rescheduled ? "after same-event rescheduling" : "without a date change"} @market @merchant @occurrence-orders`, async ({
+for (const scenario of [
+  { rescheduled: false, repriced: false, label: "without a date change" },
+  {
+    rescheduled: true,
+    repriced: false,
+    label: "after same-event rescheduling",
+  },
+  { rescheduled: false, repriced: true, label: "after a listing price edit" },
+])
+  test(`prepaid first confirmation ${scenario.label} @market @merchant @occurrence-orders`, async ({
     page,
   }) => {
     test.setTimeout(180_000)
     const { relay, createdAt, product, order, marketNaddr } =
       await createAssignedPickupOrder(page)
     relay.seed(...signedBuyerPaymentReport(order.id))
-    if (rescheduled)
+    if (scenario.rescheduled)
       await rescheduleSameEvent(
         page,
         relay,
@@ -6519,6 +6538,62 @@ for (const rescheduled of [false, true])
         createdAt + 97_200
       )
     await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+    if (scenario.repriced) {
+      const edited = signEvent(MERCHANT_SECRET, {
+        ...product,
+        created_at: Math.floor(Date.now() / 1000) + 1,
+        tags: product.tags.map((tag) =>
+          tag[0] === "price" ? ["price", "2600", "SATS"] : tag
+        ),
+      })
+      const published = await page.evaluate(
+        async ({ root, appRoot, event, coordinate, relayUrl }) => {
+          const { db } = await import(`${root}/db/index.ts`)
+          const { commitLocalProductWrite, readCurrentProductWriteRevision } =
+            await import(`${root}/protocol/local-product-write.ts`)
+          const {
+            prepareProductListingDeliveryJob,
+            hasCommonAcknowledgedRelay,
+          } = await import(`${root}/protocol/product-listing-delivery.ts`)
+          const { deliverQueuedProductListings } = await import(
+            `${appRoot}/lib/product-listing-delivery.ts`
+          )
+          const current = await readCurrentProductWriteRevision(coordinate)
+          const job = prepareProductListingDeliveryJob({
+            merchantPubkey: event.pubkey,
+            signedEvents: [event],
+            relayTargets: [
+              { relayUrl, ownerSelected: false, personalRelay: true },
+            ],
+            readyForDelivery: false,
+          })
+          await commitLocalProductWrite({
+            intentId: "reprice-after-buyer-order",
+            merchantPubkey: event.pubkey,
+            expectedRevisions: [
+              { addressId: coordinate, eventId: current.eventId },
+            ],
+            listingJob: job,
+          })
+          await deliverQueuedProductListings(job.id, {
+            authenticatedPubkey: event.pubkey,
+            shouldContinue: () => true,
+            expectedSignedEvents: [event],
+          })
+          return hasCommonAcknowledgedRelay(
+            await db.productListingOutbox.get(job.id)
+          )
+        },
+        {
+          root: `/@fs${process.cwd()}/packages/core/src`,
+          appRoot: `/@fs${process.cwd()}/apps/merchant/src`,
+          event: edited,
+          coordinate: eventCoordinate(product),
+          relayUrl: FIXTURE_RELAY,
+        }
+      )
+      expect(published).toBe(true)
+    }
     await page
       .getByRole("button", { name: "Confirm payment", exact: true })
       .click()
@@ -6550,6 +6625,21 @@ for (const rescheduled of [false, true])
       acceptedOrders: 1,
       savedOrder: true,
     })
+    expect(
+      await page.evaluate(
+        async ({ root, original }) => {
+          const { db } = await import(`${root}/db/index.ts`)
+          const { orderSchema } = await import(`${root}/schemas/index.ts`)
+          const saved = await db.merchantInventoryAcceptedOrders.get(
+            original.id
+          )
+          return (
+            saved?.termsBinding === JSON.stringify(orderSchema.parse(original))
+          )
+        },
+        { root: `/@fs${process.cwd()}/packages/core/src`, original: order }
+      )
+    ).toBe(true)
     await page.reload()
     await page
       .getByRole("button", {
@@ -6916,4 +7006,63 @@ test("saved assignments remain in Selling At outside both follow perspectives af
   await expect(
     my.getByRole("button", { name: /^Open Merchant Fair/ })
   ).toBeVisible()
+})
+
+test("conflicting same-ID zero-cost order cannot inherit saved acceptance @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const { relay, createdAt, product, order } = await createAssignedPickupOrder(
+    page,
+    { zeroCost: true }
+  )
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+  await page.evaluate(
+    (key) => localStorage.setItem(key, "1"),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
+  await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  await expect(
+    page.getByRole("button", {
+      name: "Retry acceptance publication",
+      exact: true,
+    })
+  ).toBeVisible()
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
+  relay.seed(
+    ...signedBuyerOrder(
+      {
+        ...order,
+        items: order.items.map((item) => ({ ...item, quantity: 2 })),
+        subtotal: 0,
+      },
+      createdAt - 60
+    )
+  )
+  await page.reload()
+  await expect(
+    page
+      .getByText(/each × 2/)
+      .filter({ visible: true })
+      .first()
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Mark picked up / complete", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("alert").filter({
+      hasText: "Saved inventory could not be verified for this order",
+    })
+  ).toBeVisible()
+  expect(
+    await occurrenceInventory(page, eventCoordinate(product), order.id)
+  ).toMatchObject({
+    stock: 8,
+    allocation: 1,
+    acceptedOrders: 1,
+    savedOrder: true,
+  })
 })

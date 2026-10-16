@@ -1,5 +1,6 @@
 import { verifySignedEventBatches } from "./relay-reader"
-import { db } from "../db"
+import { db, type MerchantInventoryAcceptedOrder } from "../db"
+import { normalizeCurrencyIdentity } from "../pricing"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
 import { orderSchema, type OrderSchema, type ProductSchema } from "../schemas"
 import {
@@ -418,6 +419,50 @@ export async function resumeMerchantOccurrencePublication(
   })
 }
 
+function acceptanceBindings(order: OrderSchema) {
+  return {
+    identityBinding: JSON.stringify([
+      order.id,
+      order.buyerPubkey,
+      order.merchantPubkey,
+    ]),
+    termsBinding: JSON.stringify(order),
+  }
+}
+
+/** A saved stock decision authorizes only its original order, not an ID alias. */
+export function matchesMerchantOccurrenceAcceptance(
+  accepted: MerchantInventoryAcceptedOrder,
+  candidate: OrderSchema
+): boolean {
+  const parsed = orderSchema.safeParse(candidate)
+  if (!parsed.success) return false
+  const binding = acceptanceBindings(parsed.data)
+  return (
+    accepted.orderId === parsed.data.id &&
+    accepted.merchantPubkey === parsed.data.merchantPubkey &&
+    accepted.identityBinding === binding.identityBinding &&
+    accepted.termsBinding === binding.termsBinding
+  )
+}
+
+export async function readMerchantOccurrenceAcceptedOrder(input: {
+  merchantPubkey: string
+  orderId: string
+  order: OrderSchema | null
+}): Promise<MerchantInventoryAcceptedOrder | undefined> {
+  const saved = await db.merchantInventoryAcceptedOrders.get(input.orderId)
+  if (!saved) return undefined
+  if (
+    !input.order ||
+    input.order.merchantPubkey !== input.merchantPubkey ||
+    input.order.id !== input.orderId ||
+    !matchesMerchantOccurrenceAcceptance(saved, input.order)
+  )
+    throw new Error("Order ID has conflicting accepted terms.")
+  return saved
+}
+
 /** Local acceptance uses committed inventory and known evidence, without a mandatory relay read. */
 export async function acceptMerchantOccurrenceOrder(
   input: MerchantOccurrenceSession & {
@@ -430,18 +475,10 @@ export async function acceptMerchantOccurrenceOrder(
   const order = orderSchema.parse(input.order)
   if (order.merchantPubkey !== input.merchantPubkey)
     throw new Error("Order belongs to another merchant.")
-  const identityBinding = JSON.stringify([
-    order.id,
-    order.buyerPubkey,
-    order.merchantPubkey,
-  ])
-  const termsBinding = JSON.stringify(order)
+  const { identityBinding, termsBinding } = acceptanceBindings(order)
   const previous = await db.merchantInventoryAcceptedOrders.get(order.id)
   if (previous) {
-    if (
-      previous.identityBinding !== identityBinding ||
-      previous.termsBinding !== termsBinding
-    )
+    if (!matchesMerchantOccurrenceAcceptance(previous, order))
       throw new Error("Order ID has conflicting accepted terms.")
     return { replayed: true, order: previous }
   }
@@ -520,14 +557,15 @@ export async function acceptMerchantOccurrenceOrder(
     )
       throw new Error("The product is not currently sellable.")
     if (
-      (product.sourcePrice?.amount ?? product.price) !==
-        (item.sourcePrice?.amount ?? item.priceAtPurchase) ||
-      (product.sourcePrice?.currency ?? product.currency).toUpperCase() !==
-        (item.sourcePrice?.currency ?? item.currency).toUpperCase()
+      item.sourcePrice &&
+      normalizeCurrencyIdentity(item.sourcePrice.currency) !==
+        normalizeCurrencyIdentity(item.sourcePrice.normalizedCurrency)
     )
       throw new Error(
-        "Product terms changed. Review this order with the buyer."
+        "Order source currency does not match its normalized currency."
       )
+    // Explicit merchant acceptance honors the original order quote. Current
+    // listing metadata remains the stock projection baseline, not a repricing.
     const recovery = await recoverMerchantInventoryProduct({
       db,
       productCoordinate: product.id,

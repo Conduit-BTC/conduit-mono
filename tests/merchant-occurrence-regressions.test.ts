@@ -621,7 +621,7 @@ it("rejects a different source currency even when its claimed normalized currenc
       order: purchase,
       products: [product],
     })
-  ).rejects.toThrow("Product terms changed")
+  ).rejects.toThrow("Order source currency")
   expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
 })
 it("does not authorize a variation when retaining its parent fails", async () => {
@@ -927,4 +927,87 @@ it("new delegated assignment acceptance stays gated while legacy handoff orders 
   ).rejects.toThrow("This order needs its delegated fulfillment workflow.")
   expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
   expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(6)
+})
+
+it("explicit acceptance retains the original order price after a later committed listing edit", async () => {
+  const original = listing("honor-original-quote", 10, 100)
+  const product = await setup(original)
+  const purchase = order([product], "original-price-order")
+  const edited = listing("honor-original-quote", 10, 110, "SATS", 102)
+  await commitLocalProductWrite({
+    intentId: "edit-price-after-order",
+    merchantPubkey: merchant,
+    expectedRevisions: [{ addressId: product.id, eventId: original.id }],
+    listingJob: job(edited),
+  })
+  const accepted = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [],
+  })
+  expect(accepted.replayed).toBe(false)
+  expect(accepted.order.termsBinding).toBe(
+    JSON.stringify(orderSchema.parse(purchase))
+  )
+  expect(purchase.items[0]?.priceAtPurchase).toBe(100)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+  expect(
+    (await db.merchantInventoryProducts.get(product.id))?.sourceProductEvent.id
+  ).toBe(edited.id)
+  expect(
+    (
+      await acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [],
+      })
+    ).replayed
+  ).toBe(true)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+})
+
+it("reads saved acceptance only for the exact original identity and terms", async () => {
+  const { readMerchantOccurrenceAcceptedOrder } =
+    await import("../packages/core/src/protocol/merchant-occurrence-workflow")
+  const product = await setup(listing("read-accepted-binding"))
+  const purchase = order([product], "bound-accepted-order")
+  const saved = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const read = (candidate: typeof purchase | null) =>
+    readMerchantOccurrenceAcceptedOrder({
+      merchantPubkey: merchant,
+      orderId: purchase.id,
+      order: candidate,
+    })
+  expect((await read(purchase))?.termsBinding).toBe(saved.order.termsBinding)
+  for (const candidate of [
+    { ...purchase, buyerPubkey: "b".repeat(64) },
+    {
+      ...purchase,
+      items: purchase.items.map((item) => ({ ...item, quantity: 2 })),
+      subtotal: 20,
+    },
+    {
+      ...purchase,
+      items: purchase.items.map((item) => ({
+        ...item,
+        priceAtPurchase: 11,
+        sourcePrice: {
+          amount: 11,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+      })),
+      subtotal: 11,
+    },
+  ])
+    await expect(read(orderSchema.parse(candidate))).rejects.toThrow(
+      "conflicting accepted terms"
+    )
+  await expect(read(null)).rejects.toThrow("conflicting accepted terms")
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
 })
