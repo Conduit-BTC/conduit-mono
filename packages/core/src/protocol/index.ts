@@ -269,6 +269,7 @@ export {
 } from "./event-market"
 export * from "./event-market-enrollment"
 export * from "./event-market-roster"
+export * from "./event-market-organizer-fee"
 export {
   type ParsedEventMarketSeries,
   type EventMarketSeriesResolution,

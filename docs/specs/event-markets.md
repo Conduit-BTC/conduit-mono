@@ -62,6 +62,68 @@ New kind `30409` records do not reinterpret old kind `30405` product collections
 
 Future-event validation covers unapproved product spam, automatic admission for approved merchants, product revision/untag/deletion, organizer mode and assignment edits, revocation and reapproval, stale and divergent relays, stale organizer edits, direct links, compatible cart grouping, buyer review, historical order continuity, and composed Market/Merchant browser journeys. Local tests do not establish live-relay convergence or physical handoff.
 
+## Conduit organizer-fee extension
+
+This is a Conduit extension, not a claim that the experimental Open Markets
+proposal defines buyer event fees or organizer payment authority. Merchant
+product prices, allocations and destinations remain Merchant-owned. The
+ordinary profile's no-separate-pickup-fee rule above remains the baseline for
+orders without this explicitly disclosed extension.
+
+The organizer may author one optional namespaced tag in its existing signed
+kind `30409` roster. No new kind or second public fee registry is introduced:
+
+```text
+["conduit_event_fee", "1", "active", "<basis-points>", "<minimum-sats>", "<lightning-address>"]
+// An optional seventh value is the exclusive expiry in Unix seconds.
+["conduit_event_fee", "1", "disabled"]
+["conduit_event_fee", "1", "revoked"]
+```
+
+The complete signed roster revision binds the market coordinate, organizer,
+terms and destination. Integer fields use canonical nonnegative decimal
+integers; amounts and totals must also fit safe millisatoshi conversion. The
+receiver is a normalized Lightning address, not a profile lookup that can later
+redirect a funded payment. Active terms with both economic fields zero are
+disabled. An absent tag retains the original zero-organizer-fee behavior.
+Duplicate tags, unknown versions, malformed fields, a wrong author/market or
+invalid signature provide no financial authority. Fee parsing is independent
+of catalog presentation; invalid fee terms do not erase otherwise valid roster
+evidence or hide its recovery path.
+
+Fee authoring requires the authenticated organizer and strongest observed roster
+parent. Save the exact signed revision before publication, and retry its same
+bytes. Unrelated open/close, booth and merchant-approval/revocation edits preserve
+existing fee tags, including unsupported versions, rather than silently
+dropping them. Disabling or revoking is an explicit newly signed revision.
+Expiry must be later than a new active revision's signing time. Current
+financial admission checks signed creation time and exclusive expiry; historical
+parsing must not apply today's clock to correctly retained funded evidence.
+
+The fee is `max(minimumSats, ceil(commerceTotalSats * basisPoints / 10000))`.
+Its base is the approved merchandise plus shipping total, excluding organizer,
+Conduit and network fees. Do not charge a fee on another fee or change the
+independent Conduit floor. A coordinated fee-bearing plan must disclose the
+organizer, rate/minimum, exact fee and complete fixed funding total before
+payment. Freeze the exact signed terms revision and destination. Later edits,
+revocation, profile changes or expiry cannot reprice or redirect that funded
+plan.
+
+Execution must reuse the existing ordered router: required Merchant/supplier
+commerce, organizer fee, then Conduit's existing native final collection. The
+organizer obligation bears its own approved outgoing fee. Its uncertainty cannot
+undo paid commerce, ask for another full purchase or block otherwise authorized
+handout. Conduit collection cannot sweep an unresolved organizer obligation.
+
+Implementation boundary: signed term parsing, calculation and retained roster
+publication do not themselves enable fee-bearing checkout. Admission still
+requires the versioned event/router economics and evidence, receiving
+qualification, same-plan recovery and composed acceptance integration. Existing
+version-three/four funded plans must retain their original digests and amounts;
+appending an organizer recipient to their commerce weight is not that extension.
+No public routed zap, service-operated executor, guest inbox or automatic refund
+is introduced.
+
 ## Usable workflows and recovery
 
 The same Event Market link identifies the host workspace and merchant participation surface. An authenticated request, invitation, decline or withdrawal is private coordination, never public admission authority. The merchant sees the current signed approval separately from private request delivery. The organizer can admit their own merchant identity without manually copying a public key. Approved merchants add existing products or create a product in the event context; product ownership, stock and prices stay with the merchant.

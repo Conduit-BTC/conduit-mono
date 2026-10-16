@@ -91,6 +91,12 @@ The existing historical private organizer handoff conveys physical release
 authority. New organizer acceptance requires the separate advance delegation
 and reconciliation integration described below.
 
+Conduit's optional `conduit_event_fee` roster tag is a separate namespaced
+extension, not part of upstream PR #15. Its signed authoring/retention and
+financial-admission boundary are described in the
+[organizer-fee contract](specs/event-markets.md#conduit-organizer-fee-extension).
+Reading or publishing fee terms does not certify an enabled event payment path.
+
 This remains an experimental implementation of upstream PR #15, not accepted
 Open Markets default-branch behavior. The proposal head was rechecked on
 2026-10-05 at `8aa6d83331c750be22bf01413a1f932778e64568`. See the
