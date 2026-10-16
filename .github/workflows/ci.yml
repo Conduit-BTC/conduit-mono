@@ -302,7 +302,7 @@ jobs:
       # ordinary Commerce network lane. Both must pass the required aggregate.
       - name: Validate isolated router smoke selection
         id: router_selection
-        if: always() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success'
+        if: ${{ !cancelled() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success' }}
         env:
           PLAYWRIGHT_SMOKE_AREA: commerce
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -324,7 +324,7 @@ jobs:
             --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
             --tested-sha "$checkout_sha"
       - name: Run isolated router Playwright smoke tests
-        if: always() && matrix.job.area == 'commerce' && steps.router_selection.outcome == 'success'
+        if: ${{ !cancelled() && matrix.job.area == 'commerce' && steps.router_selection.outcome == 'success' }}
         env:
           PLAYWRIGHT_SMOKE_AREA: commerce
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -366,7 +366,7 @@ jobs:
             --tested-sha "$checkout_sha"
       - name: Validate router receiver setup smoke selection
         id: receiver_selection
-        if: always() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success'
+        if: ${{ !cancelled() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success' }}
         env:
           PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
           PLAYWRIGHT_SMOKE_AREA: commerce
@@ -389,7 +389,7 @@ jobs:
             --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
             --tested-sha "$checkout_sha"
       - name: Run router receiver setup Playwright smoke
-        if: always() && matrix.job.area == 'commerce' && steps.receiver_selection.outcome == 'success'
+        if: ${{ !cancelled() && matrix.job.area == 'commerce' && steps.receiver_selection.outcome == 'success' }}
         env:
           PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true"
           PLAYWRIGHT_SMOKE_AREA: commerce
