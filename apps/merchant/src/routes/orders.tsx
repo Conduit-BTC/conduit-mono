@@ -3649,7 +3649,7 @@ function OrdersWorkspace() {
             {selected && orderSummary ? (
               <div className="space-y-4">
                 {acceptedInventoryQuery.data ? (
-                  <section className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <section className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                     <p role="status" className="text-pretty text-sm">
                       {inventoryNotice ||
                         "Accepted inventory is saved on this device. Retries never consume it again."}
