@@ -162,6 +162,8 @@ same-event reschedule, paid pickup and original receipt continuity after the old
 end, revised unused-allocation deadlines in both directions, publication retry
 after payment, selected-order resolution beyond the product-search cap, and
 reload of off-graph assigned events in Selling At without product association
-tags.
+tags. The selected-order case holds the requested order while another saved
+conversation is available: no acceptance action may target that other order,
+and release commits exactly one acceptance for the requested order.
 Browser payment reports, merchant confirmations and signer/relay interactions
 are synthetic; these checks establish client behavior, not funded settlement.

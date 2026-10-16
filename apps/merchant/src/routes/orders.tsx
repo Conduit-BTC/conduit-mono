@@ -1129,7 +1129,9 @@ function OrdersWorkspace() {
 
   const selected =
     filteredConversations.find(
-      (conversation) => conversation.id === selectedConversationId
+      (conversation) =>
+        conversation.id === selectedConversationId &&
+        (!selectedFromUrl || conversation.orderId === selectedFromUrl)
     ) ?? null
   const selectedOrderContextRef = useRef({
     merchantPubkey: pubkey,

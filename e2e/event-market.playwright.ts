@@ -6704,41 +6704,80 @@ test("selected order resolves its own products beyond the search cap @merchant @
     at + 2
   )
   const selected = makeOrder("search-cap-selected", [100], at)
+  const selectedWraps = signedBuyerOrder(selected, at)
+  const selectedWrapIds = new Set(selectedWraps.map((event) => event.id))
   relay.seed(
     ...products,
     createInboxDeclaration("merchant", at),
     createInboxDeclaration("buyer", at),
-    ...signedBuyerOrder(many, at + 2),
-    ...signedBuyerOrder(selected, at)
+    ...signedBuyerOrder(many, at + 2)
   )
-  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: selected.id })
-  await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  await gotoAs(page, merchantUrl, "/orders", "merchant")
   await expect(
-    page.getByText(/Accepted and inventory saved on this device/)
+    page.getByRole("button", { name: "Accept order", exact: true })
   ).toBeVisible()
-  expect(
-    relay.requests.some((request) =>
-      request.filters.some(
-        (filter) =>
-          filter.kinds?.includes(30402) && filter["#d"]?.includes("cap-100")
-      )
-    )
-  ).toBe(true)
-  const state = await page.evaluate(
-    async ({ root, productId, orderId }) => {
-      const { db } = await import(`${root}/db/index.ts`)
-      return {
-        stock: (await db.merchantInventoryProducts.get(productId)).stock,
-        saved: !!(await db.merchantInventoryAcceptedOrders.get(orderId)),
-      }
-    },
-    {
-      root: `/@fs${process.cwd()}/packages/core/src`,
-      productId: eventCoordinate(products[100]!),
-      orderId: selected.id,
-    }
+  relay.seed(...selectedWraps)
+  const held = relay.holdRelayEventResponses((_, event) =>
+    selectedWrapIds.has(event.id)
   )
-  expect(state).toEqual({ stock: 9, saved: true })
+  try {
+    await gotoAs(page, merchantUrl, "/orders", "merchant", {
+      order: selected.id,
+    })
+    await held.captured
+    // Another conversation has hydrated, but the requested order is still held.
+    await expect(
+      page
+        .getByRole("button", { name: "Filter & sort", exact: true })
+        .or(page.getByRole("textbox", { name: "Search orders", exact: true }))
+        .filter({ visible: true })
+        .first()
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Accept order", exact: true })
+    ).toHaveCount(0)
+    held.release()
+    await page
+      .getByRole("button", { name: "Accept order", exact: true })
+      .click()
+    await expect(
+      page.getByText(/Accepted and inventory saved on this device/)
+    ).toBeVisible()
+    expect(
+      relay.requests.some((request) =>
+        request.filters.some(
+          (filter) =>
+            filter.kinds?.includes(30402) && filter["#d"]?.includes("cap-100")
+        )
+      )
+    ).toBe(true)
+    const state = await page.evaluate(
+      async ({ root, productId, orderId }) => {
+        const { db } = await import(`${root}/db/index.ts`)
+        return {
+          stock: (await db.merchantInventoryProducts.get(productId)).stock,
+          saved: !!(await db.merchantInventoryAcceptedOrders.get(orderId)),
+          acceptedCount: await db.merchantInventoryAcceptedOrders.count(),
+          otherAccepted: !!(await db.merchantInventoryAcceptedOrders.get(
+            "search-many-products"
+          )),
+        }
+      },
+      {
+        root: `/@fs${process.cwd()}/packages/core/src`,
+        productId: eventCoordinate(products[100]!),
+        orderId: selected.id,
+      }
+    )
+    expect(state).toEqual({
+      stock: 9,
+      saved: true,
+      acceptedCount: 1,
+      otherAccepted: false,
+    })
+  } finally {
+    held.release()
+  }
 })
 
 test("legacy stock decision survives acceptance and publication retry @merchant @occurrence-orders", async ({
