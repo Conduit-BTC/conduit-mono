@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   extractFollowPubkeys,
@@ -21,6 +21,7 @@ import {
 import {
   getMerchantProductMarketReferences,
   hydrateMerchantProductMarkets,
+  isMerchantTimelineMarketReadIncomplete,
   MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT,
 } from "../lib/merchant-event-relationship-hydration"
 // This is the same public perspective used by Market. Merchant reads the
@@ -32,15 +33,21 @@ export const MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
 const EMPTY_MARKET_READS: EventMarketRosterReadResult[] = []
 
 export interface MerchantEventTimelineDiscovery {
-  organizerPubkeys: string[] | undefined
-  relationshipMarkets: EventMarketRosterReadResult[]
-  relationshipPending: boolean
-  relationshipIncomplete: boolean
-  isInitialLoading: boolean
-  isFetching: boolean
-  isRefreshStale: boolean
-  error: unknown
-  refetch: () => void
+  perspective: {
+    organizerPubkeys: string[] | undefined
+    isInitialLoading: boolean
+    isFetching: boolean
+    incomplete: boolean
+    refetch: () => Promise<void>
+  }
+  relationships: {
+    markets: EventMarketRosterReadResult[]
+    isInitialLoading: boolean
+    isFetching: boolean
+    incomplete: boolean
+    unavailable: boolean
+    refetch: () => Promise<void>
+  }
 }
 
 function retainedSupersedesLive(
@@ -280,52 +287,67 @@ export function useMerchantEventTimeline(input: {
     (exactQuery.data?.failedCount ?? 0) > 0 ||
     productReferences.length > MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT ||
     (exactQuery.data?.markets ?? []).some(
-      (read) =>
-        read.resolution.state !== "current" ||
-        read.coverage !== "complete" ||
-        read.calendarCoverage !== "complete" ||
-        (read.schedule?.kind === "series" &&
-          read.scheduleCoverage !== "complete")
+      isMerchantTimelineMarketReadIncomplete
     )
-  const refreshFollowing = followingQuery.refetch
-  const refreshConduit = conduitQuery.refetch
-  const refreshProducts = productsQuery.refetch
-  const refreshExact = exactQuery.refetch
-  const refetch = useCallback(() => {
-    if (followingEnabled) void refreshFollowing()
-    if (conduitEnabled) void refreshConduit()
-    if (merchantPubkey) void refreshProducts()
-    if (productReferences.length > 0) void refreshExact()
-  }, [
-    followingEnabled,
-    conduitEnabled,
-    merchantPubkey,
-    productReferences.length,
-    refreshFollowing,
-    refreshConduit,
-    refreshProducts,
-    refreshExact,
-  ])
+  // An unavailable sibling cannot erase a completed observation. In
+  // particular, exact hydration may fail after a successful product read.
+  const relationshipObservationAvailable =
+    (!!productsQuery.data &&
+      (productsQuery.data.meta.productReadCoverage !== "unavailable" ||
+        productsQuery.data.data.length > 0)) ||
+    (exactQuery.data?.markets ?? []).some(
+      (read) => read.coverage !== "unavailable" || read.retained
+    )
+  const relationshipPending =
+    productsQuery.isPending ||
+    (productReferences.length > 0 && exactQuery.isPending)
+  // Each source skips its own active read; a running sibling does not suppress
+  // a settled source, and explicit refresh never cancels background progress.
+  async function refetchPerspective() {
+    await Promise.all([
+      followingEnabled && !followingQuery.isFetching && !followingQuery.isPaused
+        ? followingQuery.refetch({ cancelRefetch: false })
+        : undefined,
+      conduitEnabled && !conduitQuery.isFetching && !conduitQuery.isPaused
+        ? conduitQuery.refetch({ cancelRefetch: false })
+        : undefined,
+    ])
+  }
+  async function refetchRelationships() {
+    await Promise.all([
+      merchantPubkey &&
+      session.relaySettingsReady &&
+      !productsQuery.isFetching &&
+      !productsQuery.isPaused
+        ? productsQuery.refetch({ cancelRefetch: false })
+        : undefined,
+      productReferences.length > 0 &&
+      !exactQuery.isFetching &&
+      !exactQuery.isPaused
+        ? exactQuery.refetch({ cancelRefetch: false })
+        : undefined,
+    ])
+  }
   return {
-    organizerPubkeys: authorPubkeys,
-    relationshipMarkets: exactQuery.data?.markets ?? EMPTY_MARKET_READS,
-    relationshipPending:
-      productsQuery.isPending ||
-      (productReferences.length > 0 && exactQuery.isPending),
-    relationshipIncomplete,
-    isInitialLoading: authorPubkeys === undefined,
-    isFetching:
-      followingQuery.isFetching ||
-      conduitQuery.isFetching ||
-      productsQuery.isFetching ||
-      exactQuery.isFetching,
-    isRefreshStale:
-      followingQuery.isError || conduitQuery.isError || relationshipIncomplete,
-    error:
-      followingQuery.error ??
-      conduitQuery.error ??
-      productsQuery.error ??
-      exactQuery.error,
-    refetch,
+    perspective: {
+      organizerPubkeys: authorPubkeys,
+      isInitialLoading: authorPubkeys === undefined,
+      isFetching: followingQuery.isFetching || conduitQuery.isFetching,
+      incomplete:
+        followingQuery.isError ||
+        conduitQuery.isError ||
+        (followingEnabled &&
+          isCommerceReadIncomplete(followingQuery.data?.meta)) ||
+        (conduitEnabled && isCommerceReadIncomplete(conduitQuery.data?.meta)),
+      refetch: refetchPerspective,
+    },
+    relationships: {
+      markets: exactQuery.data?.markets ?? EMPTY_MARKET_READS,
+      isInitialLoading: relationshipPending,
+      isFetching: productsQuery.isFetching || exactQuery.isFetching,
+      incomplete: relationshipIncomplete,
+      unavailable: !relationshipPending && !relationshipObservationAvailable,
+      refetch: refetchRelationships,
+    },
   }
 }

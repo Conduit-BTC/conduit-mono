@@ -9,10 +9,14 @@ describe("Merchant event discovery presentation", () => {
       const html = renderToStaticMarkup(
         <MerchantEventTimelineEmptyState relationship="all" limited={limited} />
       )
-      expect(html).toContain("No events found on your relays")
+      expect(html).toContain(
+        limited ? "No events found yet" : "No events found on your relays"
+      )
       expect(html).not.toContain('role="alert"')
       expect(html).not.toContain("Retry")
-      expect(html.includes("Some relay checks did not finish.")).toBe(limited)
+      expect(html).not.toContain("Some relay checks did not finish.")
+      expect(html).not.toContain("py-10")
+      expect(html).not.toContain("size-8")
     }
   )
   it("preserves actual connection failure and known unreadable dates as distinct states", () => {
