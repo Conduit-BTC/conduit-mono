@@ -6602,9 +6602,15 @@ for (const scenario of [
     })
     await expect(dialog).toBeVisible()
     const from = relay.publications.length
+    const confirmationAck = relay.holdNextPublicationAck(
+      (event) =>
+        event.kind === 1059 &&
+        event.tags.some((tag) => tag[0] === "p" && tag[1] === BUYER_PUBKEY)
+    )
     await dialog
       .getByRole("button", { name: "Confirm payment", exact: true })
       .click()
+    await confirmationAck.captured
     await expect
       .poll(
         () =>
@@ -6617,6 +6623,13 @@ for (const scenario of [
           ).length
       )
       .toBe(1)
+    await expect(
+      page.getByText("Payment confirmed.", { exact: true })
+    ).toHaveCount(0)
+    confirmationAck.release()
+    await expect(
+      page.getByText("Payment confirmed.", { exact: true })
+    ).toBeVisible()
     expect(
       await occurrenceInventory(page, eventCoordinate(product), order.id)
     ).toMatchObject({
@@ -6960,10 +6973,35 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
       sourceId: original.id,
     }
   )
+  // Interrupt before transport staging; reloading an in-flight send retains
+  // its live delivery lease and does not permit immediate recovery.
+  await page.evaluate(
+    (key) => localStorage.setItem(key, "1"),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
   await expect(
-    page.getByText(/Accepted and inventory saved on this device/)
+    page.getByText(
+      "Accepted locally. The buyer notification and inventory publication can be retried.",
+      { exact: true }
+    )
   ).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as typeof window & {
+              __conduitSyntheticSignAttempts?: number
+            }
+          ).__conduitSyntheticSignAttempts ?? 0
+      )
+    )
+    .toBeGreaterThan(0)
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
   await page.reload()
   await page
     .getByRole("button", { name: "Retry acceptance publication", exact: true })

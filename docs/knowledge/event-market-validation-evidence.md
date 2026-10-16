@@ -177,3 +177,13 @@ after a later listing-price edit. The current signed listing remains the stock
 projection baseline, and concurrent material edits still reject the whole debit.
 The composed browser controls cover both the conflicting-order rejection and
 first confirmation at the original price after a published listing edit.
+
+The legacy stock-credit browser case interrupts notification signing before
+transport staging, then reloads and retries against the same saved acceptance.
+A reload during an in-flight private send retains its delivery claim until
+release or expiry; an immediate successful retry is not guaranteed during that
+lease. Tests must establish their interruption boundary without bypassing the
+shared delivery owner's claim or increasing assertion timeouts.
+The first-payment controls hold the recipient ACK to distinguish observed
+publication bytes from a completed confirmation, then wait for the completed
+confirmation before reload and inventory-publication retry.
