@@ -33,8 +33,10 @@ export async function pinOrderWireFormat(
     "rw",
     [database.orderWireFormats, database.orderLifecycles],
     async () => {
-      const previous = await database.orderWireFormats.get(order.orderId)
-      const lifecycle = await database.orderLifecycles.get(order.orderId)
+      const [previous, lifecycle] = await Promise.all([
+        database.orderWireFormats.get(order.orderId),
+        database.orderLifecycles.get(order.orderId),
+      ])
       assertCurrent()
       if (
         lifecycle &&

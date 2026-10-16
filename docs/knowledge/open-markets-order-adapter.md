@@ -63,7 +63,9 @@ pair. Numeric history without its saved outbound format cannot silently send
 a named conversation reply. Guest checkout retains its existing outbound-only
 identity and contact/recovery rules; it gains no guest inbox or conversation.
 
-The database upgrade adds the format-choice table without rewriting installed
+Database version 28 applies the complete additive union of main's v27 roster
+index and the undeployed adapter candidate's v27 format table. It upgrades both
+installed lineages, as well as older named-order databases, without rewriting installed
 order, invoice, wallet or encrypted outbox records. Rollback must preserve this
 table, the numeric reader and staged wraps; never downgrade the database or
 rebuild pending sends into the other representation.

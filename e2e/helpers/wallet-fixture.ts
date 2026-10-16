@@ -76,7 +76,7 @@ export async function retryWalletRecovery(page: Page) {
         .catch(() => false),
       recoveryBlockedVisible: await page
         .getByText(
-          "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+          "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
           { exact: true }
         )
         .isVisible()
@@ -310,11 +310,15 @@ export async function openWalletSetup(
     phase: "before_trigger" | "trigger_clicked" | "import_clicked"
   ) => Promise<void>
 ) {
+  // Exercise the real touch path. Mouse input opens Radix menus on pointerdown;
+  // the wallet touch path opens only after the gesture has completed.
+  const activate = (control: Locator) =>
+    test.info().project.use.hasTouch ? control.tap() : control.click()
   await diagnostic?.("before_trigger")
-  await page.getByRole("button", { name: "Add wallet", exact: true }).click()
+  await activate(page.getByRole("button", { name: "Add wallet", exact: true }))
   await diagnostic?.("trigger_clicked")
-  await page
-    .getByRole("menuitem", {
+  await activate(
+    page.getByRole("menuitem", {
       name:
         name === "Create wallet"
           ? "Create a wallet"
@@ -323,7 +327,7 @@ export async function openWalletSetup(
             : "Connect an external wallet",
       exact: true,
     })
-    .click()
+  )
   await diagnostic?.("import_clicked")
 }
 
@@ -347,7 +351,8 @@ export type WalletRouteFetchDetail = WalletRouteFetchDiagnostic & {
 export async function observeWalletController(
   page: Page,
   onFetchError?: (diagnostic: WalletRouteFetchDiagnostic) => void,
-  onFetchErrorDetail?: (diagnostic: WalletRouteFetchDetail) => void
+  onFetchErrorDetail?: (diagnostic: WalletRouteFetchDetail) => void,
+  observeAccount = false
 ) {
   let navigations = 0
   let navigationRequests = 0
@@ -406,12 +411,15 @@ export async function observeWalletController(
     ].find((candidate) => body.includes(candidate))
     if (!marker || body.split(marker).length !== 2)
       throw new Error("Wallet controller observation seam changed")
+    if (observeAccount && !body.includes("const auth = useAuth();"))
+      throw new Error("Wallet account observation seam changed")
     await route.fulfill({
       response,
       body: body.replace(
         marker,
         marker +
-          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);"
+          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
+          (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
       ),
     })
   })

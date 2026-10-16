@@ -88,7 +88,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function fixture(takeoverAfterMs = 45 * 60_000) {
+async function fixture(takeoverAfterMs = 45 * 60_000, commerceLegCount = 2) {
   const database = new ConduitDB(`shopper-runner-${crypto.randomUUID()}`, {
     indexedDB,
     IDBKeyRange,
@@ -116,15 +116,21 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
     beforeWait?: (milliseconds: number) => Promise<void>
     beforeAck?: () => Promise<void>
     beforeMetadataRead?: () => Promise<void>
+    pendingPayoutMs?: number
+    beforeSdkWait?: (milliseconds: number) => Promise<void>
     wrongOrigin?: boolean
     feeOverCap?: boolean
     feeUnavailable?: boolean
   } = {}
+  const pendingUntil = new Map<string, number>()
+  const sdkObservations = { transferReads: 0, statusReads: 0 }
   const manager = new SparkWalletManager(
     new FirstPartySparkSdkFactory({
       network: "mainnet",
       now: () => authority.now,
-      wait: async () => {},
+      wait: async (milliseconds) => {
+        await hooks.beforeSdkWait?.(milliseconds)
+      },
       loadModule: async () => ({
         ...native.module,
         async initialize(input) {
@@ -133,13 +139,48 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
             wallet: {
               ...opened.wallet,
               async getTransferFromSsp(id) {
+                sdkObservations.transferReads += 1
                 await hooks.beforePayoutRead?.()
                 if (hooks.hidePayoutHistory) return null
-                return opened.wallet.getTransferFromSsp(id)
+                const transfer = await opened.wallet.getTransferFromSsp(id)
+                const request = transfer?.userRequest
+                if (
+                  request &&
+                  typeof request === "object" &&
+                  "id" in request &&
+                  authority.now < (pendingUntil.get(String(request.id)) ?? 0)
+                ) {
+                  return {
+                    ...transfer!,
+                    userRequest: {
+                      ...request,
+                      status: "LIGHTNING_PAYMENT_INITIATED",
+                      paymentPreimage: undefined,
+                    },
+                  }
+                }
+                return transfer
+              },
+              async getLightningSendRequest(id) {
+                sdkObservations.statusReads += 1
+                const request = await opened.wallet.getLightningSendRequest(id)
+                return request && authority.now < (pendingUntil.get(id) ?? 0)
+                  ? {
+                      ...request,
+                      status: "LIGHTNING_PAYMENT_INITIATED",
+                      paymentPreimage: undefined,
+                    }
+                  : request
               },
               async payLightningInvoice(request) {
                 await hooks.beforeNativeSend?.()
                 const result = await opened.wallet.payLightningInvoice(request)
+                if (hooks.pendingPayoutMs !== undefined) {
+                  pendingUntil.set(
+                    result.id,
+                    authority.now + hooks.pendingPayoutMs
+                  )
+                }
                 if (hooks.failSendAfterAdmission)
                   throw new Error("Synthetic provider interruption")
                 return result
@@ -200,25 +241,38 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
       expiresAt: receive.expiresAt,
     },
     recipients: [
-      ...(
-        [
-          ["merchant", MERCHANT, 750],
-          ["supplier", SUPPLIER, 250],
-        ] as const
-      ).map(([kind, recipientId, weightSats]) => ({
-        kind,
-        recipientId,
-        weightSats,
-        destination: {
-          type: "lightning_address" as const,
-          value: `${kind}@wallet.conduit.market`,
-          source: {
-            type: "signed_profile" as const,
-            profileEventId: "d".repeat(64),
-            profileEventCreatedAt: NOW / 1_000,
+      ...Array.from({ length: commerceLegCount }, (_, index) => {
+        const kind = index === 0 ? ("merchant" as const) : ("supplier" as const)
+        const recipientId =
+          index === 0
+            ? MERCHANT
+            : index === 1
+              ? SUPPLIER
+              : new NDKPrivateKeySigner(randomBytes(32).toString("hex")).pubkey
+        const share = Math.floor(1_000 / commerceLegCount)
+        const weightSats =
+          commerceLegCount === 2
+            ? index === 0
+              ? 750
+              : 250
+            : index === 0
+              ? 1_000 - share * (commerceLegCount - 1)
+              : share
+        return {
+          kind,
+          recipientId,
+          weightSats,
+          destination: {
+            type: "lightning_address" as const,
+            value: `${kind}${index > 1 ? index : ""}@wallet.conduit.market`,
+            source: {
+              type: "signed_profile" as const,
+              profileEventId: "d".repeat(64),
+              profileEventCreatedAt: NOW / 1_000,
+            },
           },
-        },
-      })),
+        }
+      }),
       {
         kind: "conduit",
         recipientId: CONDUIT_CHECKOUT_FEE_RECIPIENT,
@@ -483,6 +537,7 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
     plan,
     authority,
     hooks,
+    sdkObservations,
     async cleanup() {
       await manager.close(walletId)
       database.close()
@@ -492,6 +547,115 @@ async function fixture(takeoverAfterMs = 45 * 60_000) {
 }
 
 describe("foreground settled shopper routing", () => {
+  it.each([1, 3, 8])(
+    "measures outer 2/4/5s observation waits for %i commerce legs without replay",
+    async (commerceLegs) => {
+      const f = await fixture(undefined, commerceLegs)
+      const waits: number[] = []
+      const startedAt = f.authority.now
+      try {
+        f.hooks.failSendAfterAdmission = true
+        f.hooks.hidePayoutHistory = true
+        f.hooks.beforeWait = async (milliseconds) => {
+          waits.push(milliseconds)
+          f.authority.now += milliseconds
+          if (waits.length === 3) {
+            f.hooks.failSendAfterAdmission = false
+            f.hooks.hidePayoutHistory = false
+          }
+        }
+        expect(
+          await createCheckoutSparkSettledShopperRunner(f.dependencies).run({
+            ...f.input,
+            fundingPoll: undefined,
+          })
+        ).toEqual({ status: "complete" })
+        expect(waits).toEqual([2_000, 4_000, 5_000])
+        expect(f.authority.now - startedAt).toBe(11_000)
+        expect(f.calls.payer).toBe(1)
+        expect(f.calls.invoices).toHaveLength(commerceLegs + 1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(commerceLegs + 1)
+        expect(f.sdkObservations.statusReads).toBe(0)
+      } finally {
+        await f.cleanup()
+      }
+    },
+    20_000
+  )
+
+  it("measures nested default 60s SDK observations before the outer Buyer runner waits", async () => {
+    // The preserved 45-minute fixture takeover isolates the five-minute check
+    // budget; this does not extend a new plan's two-minute dispatch authority.
+    const f = await fixture(undefined, 1)
+    const sdkWaits: number[] = []
+    const runnerWaits: number[] = []
+    const startedAt = f.authority.now
+    try {
+      f.hooks.pendingPayoutMs = 125_000
+      f.hooks.beforeSdkWait = async (milliseconds) => {
+        sdkWaits.push(milliseconds)
+        f.authority.now += milliseconds
+      }
+      f.hooks.beforeWait = async (milliseconds) => {
+        runnerWaits.push(milliseconds)
+        f.authority.now += milliseconds
+      }
+      expect(
+        await createCheckoutSparkSettledShopperRunner(f.dependencies).run({
+          ...f.input,
+          fundingPoll: undefined,
+        })
+      ).toEqual({ status: "complete" })
+      expect(runnerWaits).toEqual([2_000, 4_000])
+      expect(f.authority.now - startedAt).toBe(250_000)
+      expect(
+        sdkWaits.reduce((total, milliseconds) => total + milliseconds, 0)
+      ).toBe(244_000)
+      expect(sdkWaits).toHaveLength(488)
+      expect(f.sdkObservations.statusReads).toBe(488)
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(2)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("measures the five-minute runner boundary while an admitted exact SDK observation drains", async () => {
+    // Preserve the fixture takeover so only checking-budget/drain cost is varied.
+    const f = await fixture(undefined, 1)
+    const sdkWaits: number[] = []
+    const runnerWaits: number[] = []
+    const startedAt = f.authority.now
+    try {
+      f.hooks.pendingPayoutMs = Number.POSITIVE_INFINITY
+      f.hooks.beforeSdkWait = async (milliseconds) => {
+        sdkWaits.push(milliseconds)
+        f.authority.now += milliseconds
+      }
+      f.hooks.beforeWait = async (milliseconds) => {
+        runnerWaits.push(milliseconds)
+        f.authority.now += milliseconds
+      }
+      expect(
+        await createCheckoutSparkSettledShopperRunner(f.dependencies).run({
+          ...f.input,
+          fundingPoll: undefined,
+        })
+      ).toEqual({ status: "paused", reason: "reconciliation_timeout" })
+      expect(runnerWaits).toEqual([2_000, 4_000, 5_000])
+      expect(f.authority.now - startedAt).toBe(311_000)
+      expect(
+        sdkWaits.reduce((total, milliseconds) => total + milliseconds, 0)
+      ).toBe(300_000)
+      expect(sdkWaits).toHaveLength(600)
+      expect(f.sdkObservations.statusReads).toBe(600)
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(1)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
   it("reports exact authority transfer when next-recipient metadata crosses handoff without preparing or sending", async () => {
     const f = await fixture(120_000)
     try {

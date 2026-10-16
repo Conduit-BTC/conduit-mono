@@ -4126,6 +4126,97 @@ describe("first-party Spark SDK adapter", () => {
     expect(payCalls).toBe(0)
   })
 
+  it.each([1, 3, 8])(
+    "measures the default exact Lightning polling bound across %i independent offline attempts",
+    async (attempts) => {
+      for (const completesAfterMs of [500, Number.POSITIVE_INFINITY]) {
+        let now = 0
+        let startedAt = 0
+        let transferReads = 0
+        let statusReads = 0
+        let sendCalls = 0
+        let observedTransferId = PAYMENT_ATTEMPT_ID
+        const waits: number[] = []
+        const nativeRequest = (id: string) => ({
+          typename: "LightningSendRequest",
+          id,
+          status:
+            now - startedAt >= completesAfterMs
+              ? "LIGHTNING_PAYMENT_SUCCEEDED"
+              : "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+          encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+          idempotencyKey: observedTransferId,
+          ...(now - startedAt >= completesAfterMs
+            ? { paymentPreimage: ZERO_PREIMAGE }
+            : {}),
+        })
+        const wallet = createNativeWallet({
+          async getTransferFromSsp(id) {
+            transferReads += 1
+            return {
+              sparkId: id,
+              totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+              userRequest: nativeRequest("offline-exact-request"),
+            }
+          },
+          async getLightningSendRequest(id) {
+            statusReads += 1
+            return nativeRequest(id)
+          },
+          async payLightningInvoice() {
+            sendCalls += 1
+            throw new Error("An exact observation must never send")
+          },
+        })
+        const client = await openClient(
+          createFactory(wallet, {}, "mainnet", {
+            now: () => now,
+            wait: async (milliseconds) => {
+              waits.push(milliseconds)
+              now += milliseconds
+            },
+          })
+        )
+        // The fixture's five consecutive privacy observations add four 500 ms
+        // waits during open. Measure exact reconciliation separately from that.
+        expect(now).toBe(2_000)
+        waits.length = 0
+        now = 0
+        try {
+          for (let index = 0; index < attempts; index += 1) {
+            startedAt = now
+            observedTransferId = `${PAYMENT_ATTEMPT_ID.slice(0, -1)}${index}`
+            const result = await client.reconcileLightningSend!({
+              transferId: observedTransferId,
+              paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+              amountSats: 1_000,
+              maxFeeSats: 5,
+              // Deliberately omit completionTimeoutSecs and pollIntervalMs.
+            })
+            expect(result).toMatchObject({
+              status: "resolved",
+              payment: {
+                status: Number.isFinite(completesAfterMs)
+                  ? "completed"
+                  : "pending",
+              },
+            })
+          }
+          const readsPerAttempt = Number.isFinite(completesAfterMs) ? 1 : 120
+          expect(now).toBe(attempts * readsPerAttempt * 500)
+          expect(transferReads).toBe(attempts)
+          expect(statusReads).toBe(attempts * readsPerAttempt)
+          expect(waits).toHaveLength(attempts * readsPerAttempt)
+          expect(waits.every((milliseconds) => milliseconds === 500)).toBe(true)
+          expect(sendCalls).toBe(0)
+        } finally {
+          await client.disconnect()
+        }
+      }
+    }
+  )
+
   it("recovers an uppercase persisted invoice from lowercase Spark evidence", async () => {
     let payCalls = 0
     const wallet = createNativeWallet({

@@ -13,7 +13,9 @@ import {
   getNdk,
   isSatsLikeCurrency,
   parseProductEvent,
+  observeCheckoutSparkOperation,
   type CheckoutSparkRecipientPayoutAddressResolution,
+  type CheckoutSparkPerformanceObservation,
 } from "@conduit/core"
 import {
   CheckoutSparkSettledPayoutPreflightError,
@@ -449,6 +451,146 @@ describe("signed supplier settled entry", () => {
     plan: { createdAt: NOW },
   } as PreparedCheckoutSparkSettledFunding
 
+  it.each([1, 3, 8])(
+    "bounds independent payout profile reads to four with %s recipients",
+    async (recipientCount) => {
+      const secrets = Array.from({ length: recipientCount - 1 }, () =>
+        generateSecretKey()
+      )
+      const publicKeys = [MERCHANT, ...secrets.map(getPublicKey)].sort()
+      const selectedProfiles = new Map(
+        [MERCHANT_SECRET, ...secrets].map((secret, index) => {
+          const event = finalizeEvent(
+            {
+              kind: 0,
+              created_at: NOW / 1_000,
+              tags: [],
+              content: JSON.stringify({
+                lud16: `recipient${index}@example.test`,
+              }),
+            },
+            secret
+          )
+          return [event.pubkey, event] as const
+        })
+      )
+      const listing = await product(
+        "bounded-preparation",
+        8_000,
+        recipientCount === 1
+          ? []
+          : [
+              ["conduit_supplier_allocation", "1"],
+              ...publicKeys.map((pubkey) => [
+                "zap",
+                pubkey,
+                "wss://relay.conduit.market",
+                "1",
+              ]),
+            ]
+      )
+      const input = await request(false, [{ product: listing, quantity: 1 }])
+      const reads: string[] = []
+      const observations: Readonly<CheckoutSparkPerformanceObservation>[] = []
+      let pending: Array<() => void> = []
+      let maximumInFlight = 0
+      let waves = 0
+      let settled = false
+      let failure: unknown
+      let virtualTime = 0
+      const controlledObservations: Readonly<CheckoutSparkPerformanceObservation>[] =
+        []
+      const operation = observeCheckoutSparkOperation({
+        app: "market",
+        step: "router_recipient_profiles",
+        now: () => virtualTime,
+        observe: (observation) => controlledObservations.push(observation),
+        operation: () =>
+          prepareCheckoutSparkSettledOrder(input, {
+            now: () => NOW,
+            observePerformance: (observation) => observations.push(observation),
+            readRecipientPayout: async ({ recipientPubkey }) => {
+              reads.push(recipientPubkey)
+              await new Promise<void>((resolve) => {
+                pending.push(resolve)
+                maximumInFlight = Math.max(maximumInFlight, pending.length)
+              })
+              const profile = selectedProfiles.get(recipientPubkey)!
+              return {
+                state: "ready",
+                recipientPubkey,
+                lud16: JSON.parse(profile.content).lud16,
+                profileEventId: profile.id,
+                profileEventCreatedAt: profile.created_at,
+                signedEvent: structuredClone(profile),
+              }
+            },
+            prepareFunding: async (terms) => {
+              expect(
+                terms.recipients.map((recipient) => recipient.recipientId)
+              ).toEqual([
+                MERCHANT,
+                ...publicKeys.filter((pubkey) => pubkey !== MERCHANT),
+                checkoutSparkConduitFeeRecipient("production"),
+              ])
+              return prepared
+            },
+            publishOrder: async () =>
+              ({ orderId: input.orderId }) as PublishedCheckoutSparkBoundOrder,
+          }),
+      }).then(
+        () => {
+          settled = true
+        },
+        (error: unknown) => {
+          failure = error
+          settled = true
+        }
+      )
+      // Each release is one deterministic synthetic network-latency unit.
+      // No wall-clock threshold, provider or public relay participates.
+      while (!settled) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        if (pending.length) {
+          waves++
+          virtualTime += 10
+          const current = pending
+          pending = []
+          for (const resolve of current) resolve()
+        }
+      }
+      await operation
+      if (failure) throw failure
+      expect({
+        reads: reads.length,
+        distinct: new Set(reads).size,
+        maximumInFlight,
+        waves,
+        durationMs: controlledObservations[0]?.durationMs,
+      }).toEqual({
+        reads: recipientCount,
+        distinct: recipientCount,
+        maximumInFlight: Math.min(4, recipientCount),
+        waves: Math.ceil(recipientCount / 4),
+        durationMs: Math.ceil(recipientCount / 4) * 10,
+      })
+      expect(
+        observations.map(({ step, status, count }) => ({ step, status, count }))
+      ).toEqual([
+        { step: "router_recipient_profiles", status: "success", count: 1 },
+        { step: "router_funding_preparation", status: "success", count: 1 },
+        { step: "router_preparation", status: "success", count: 1 },
+      ])
+      expect(
+        observations.every(
+          (observation) =>
+            Object.keys(observation).sort().join() ===
+            "count,durationMs,status,step"
+        )
+      ).toBe(true)
+    }
+  )
+
   it.each([false, true])(
     "prepares exact aggregated merchant and supplier legs with guest=%s",
     async (guest) => {
@@ -529,7 +671,7 @@ describe("signed supplier settled entry", () => {
     }
   )
 
-  it("detaches each selected profile and the quote before later recipient reads", async () => {
+  it("detaches each resolved profile and the quote while other recipient reads are pending", async () => {
     const input = await supplierRequest()
     const originalQuote = structuredClone(input.quoteAuthority)
     const merchantPayout = payout(MERCHANT)
@@ -548,6 +690,9 @@ describe("signed supplier settled entry", () => {
       ndk: getNdk(),
       readRecipientPayout: async ({ recipientPubkey }) => {
         if (recipientPubkey === MERCHANT) return merchantPayout
+        // The merchant result settles before another concurrent read updates
+        // its source. Mutation before resolution would instead be new evidence.
+        await new Promise<void>((resolve) => setImmediate(resolve))
         Object.assign(merchantPayout.signedEvent!, laterProfile)
         merchantPayout.lud16 = "updated@example.test"
         merchantPayout.profileEventId = laterProfile.id
@@ -614,7 +759,7 @@ describe("signed supplier settled entry", () => {
         name: CheckoutSparkSettledPayoutPreflightError.name,
         reason,
       })
-      expect(reads).toEqual(recipientOrder.slice(0, 2))
+      expect(reads).toEqual(recipientOrder)
       expect([preparedCalls, publishedCalls]).toEqual([0, 0])
     }
   )
@@ -710,7 +855,7 @@ describe("signed supplier settled entry", () => {
       releaseRead(payout(recipientOrder[1]!))
       expect(isCurrent()).toBe(false)
       await expect(operation).rejects.toThrow("buyer session changed")
-      expect(reads).toEqual(recipientOrder.slice(0, 2))
+      expect(reads).toEqual(recipientOrder)
       expect([preparedCalls, publishedCalls]).toEqual([0, 0])
     }
   )

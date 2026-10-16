@@ -258,6 +258,41 @@ describe("merchant organizer event form", () => {
     )
   })
 
+  it("uses the calendar description limit and accepts ordinary multiline prose", () => {
+    for (const summary of [
+      "x".repeat(1_000),
+      "First paragraph\nSecond paragraph\tDetails",
+    ])
+      expect(
+        validateOrganizerEventMarketForm({ ...validForm(), summary }).canPublish
+      ).toBe(true)
+    expect(
+      validateOrganizerEventMarketForm({
+        ...validForm(),
+        summary: "x".repeat(1_001),
+      }).errors.summary
+    ).toBe("Description must be 1,000 characters or fewer.")
+    expect(
+      validateOrganizerEventMarketForm({
+        ...validForm(),
+        summary: "Public\u0000fair",
+      }).errors.summary
+    ).toContain("control characters")
+  })
+
+  it("keeps malformed saved all-day dates available for correction", () => {
+    const stored = {
+      ...validForm(),
+      calendarType: "date" as const,
+      start: "invalid",
+      end: "invalid",
+    }
+    const restored = fromStoredOrganizerEventForm(stored)
+    expect(restored.start).toBe("invalid")
+    expect(restored.end).toBe("invalid")
+    expect(validateOrganizerEventMarketForm(restored).canPublish).toBe(false)
+  })
+
   it("rejects reversed schedules and nonexistent local DST times", () => {
     const reversed = validateOrganizerEventMarketForm({
       ...validForm(),

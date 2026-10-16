@@ -231,6 +231,8 @@ export interface CachedEventMarketRosterEvidence {
   marketCoordinate: string
   signedEvent: SignedPublicNostrEvent
   cachedAt: number
+  /** Bounded browsing cache only; absent on durable and legacy evidence. */
+  discoveryBytes?: number
 }
 
 /** Account-scoped signed settings evidence; relay omission cannot erase it. */
@@ -1616,6 +1618,13 @@ export class ConduitDB extends Dexie {
       commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
+      // Dexie also replays the installed version's schema during upgrade.
+      // Keep the concurrent v25 assignment preview's populated stores here;
+      // adding them only at a later version would delete/recreate their rows.
+      merchantInventoryProducts: "coordinate, merchantPubkey",
+      merchantInventoryAssignments:
+        "coordinate, productCoordinate, merchantPubkey, occurrenceCoordinate",
+      merchantInventoryAcceptedOrders: "orderId, merchantPubkey, acceptedAt",
     })
     // Both preview lineages already opened v25. Add the complete union at a
     // fresh version so neither lineage loses durable authority or recovery.
@@ -1637,10 +1646,24 @@ export class ConduitDB extends Dexie {
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
     })
-    // Additive metadata only: bind a format before any encrypted staging.
-    // Existing order, wallet, ciphertext and recovery tables are unchanged.
     this.version(27).stores({
+      // The undeployed adapter v27 lineage already has this store. Declare it
+      // here as well so Dexie does not drop its rows before applying v28.
       orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
+      // Main and discovery previews independently used v26. A fresh version
+      // applies their complete additive union to either installed lineage.
+      // Size keys bound background discovery without scanning signed payloads.
+      // The additive index does not rewrite durable or legacy evidence rows.
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
+    })
+    // Apply the complete additive union to both v27 lineages: main's roster
+    // index and the undeployed adapter candidate's format table. Durable order,
+    // invoice, wallet and encrypted delivery records are never rewritten.
+    this.version(28).stores({
+      orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
     })
   }
 }

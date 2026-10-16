@@ -389,3 +389,10 @@ export {
   type OrderWireFormat,
 } from "./protocol/order-format"
 export { encodeOpenMarketsBuyerMessage } from "./protocol/commerce-wire"
+
+export {
+  observeCheckoutSparkOperation,
+  type CheckoutSparkOperationStep,
+  type CheckoutSparkPerformanceObservation,
+  type CheckoutSparkPerformanceObserver,
+} from "./protocol/checkout-spark-performance"

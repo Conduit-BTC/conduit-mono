@@ -20,6 +20,7 @@ import {
   type SparkRecoveryDiscovery,
   type SparkRecoveryCandidate,
   type SparkRecoveryTransport,
+  type SparkRecoveryState,
 } from "./spark-recovery-service"
 import { DexieSparkRecoveryStore } from "./spark-recovery-store"
 import { createSparkRecoveryReader } from "./spark-recovery-read"
@@ -35,7 +36,12 @@ import {
   registerSparkWalletAtomically,
   type MarketWalletStore,
 } from "./wallet-storage"
-import type { SparkRecoveryBundle } from "./spark-recovery-contract"
+import {
+  SparkRecoveryError,
+  SPARK_RECOVERY_PREFIX,
+  type SparkRecoveryBundle,
+} from "./spark-recovery-contract"
+import { normalizeSparkMnemonic } from "./spark-recovery"
 import type { WalletDescriptor, WalletRegistry } from "./index"
 
 const services = new WeakMap<AccountSigner, SparkRecoveryService>()
@@ -170,6 +176,72 @@ export function assertWalletCreationDiscovery(
       "Wallet recovery is incomplete or conflicting. Retry recovery before creating or importing another wallet."
     )
   }
+}
+
+/** Explicit phrase possession restores one wallet, not account membership or absence. */
+export async function resolveExplicitSparkImport(input: {
+  service: Pick<SparkRecoveryService, "restore">
+  bundle: SparkRecoveryBundle
+  discovery: SparkRecoveryDiscovery
+  journal: SparkRecoveryState
+}): Promise<string | undefined> {
+  const matches = new Set<string>()
+  const removed = new Set([
+    ...(input.discovery.confirmedRemovedWalletIds ?? []),
+    ...(input.discovery.registry?.removedWalletIds ?? []),
+    ...(input.journal.registryExcludedWalletIds ?? []),
+  ])
+  // Serialize signer consent: each attempt may prompt, and refusal must stop
+  // before any later backup decryption request is dispatched.
+  for (const record of input.journal.records) {
+    const address = record.event.tags.find((tag) => tag[0] === "d")?.[1]
+    if (!address?.startsWith(SPARK_RECOVERY_PREFIX)) continue
+    const walletId = address.slice(SPARK_RECOVERY_PREFIX.length)
+    let restored
+    try {
+      restored = await input.service.restore(
+        { eventId: record.event.id, walletId, source: "conduit_v1" },
+        undefined,
+        { priority: "foreground" }
+      )
+    } catch (error) {
+      // Preserve unusable evidence, but do not let an unrelated malformed backup
+      // veto independent phrase recovery. Signer refusal and lost authority abort.
+      if (error instanceof SparkRecoveryError) continue
+      throw error
+    }
+    if (
+      !("walletId" in restored) ||
+      restored.network !== input.bundle.network ||
+      restored.accountNumber !== input.bundle.accountNumber ||
+      restored.mnemonic !== normalizeSparkMnemonic(input.bundle.mnemonic)
+    )
+      continue
+    // Explicit phrase recovery may create a fresh registration. Never reuse a
+    // retired ID or erase its removal evidence.
+    if (removed.has(walletId)) continue
+    matches.add(walletId)
+  }
+  if (matches.size > 1)
+    throw new Error(
+      "Multiple saved wallet registrations match this recovery. Open the existing wallet before changing account membership."
+    )
+  // Prove the configured native identity even when no relay backup is reachable.
+  await deriveSparkRecoveryIdentity(input.bundle)
+  return [...matches][0]
+}
+
+/** Positive membership may restore a wallet while relay convergence is pending. */
+export function canRestoreAccountRegistryDiscovery(
+  discovery: SparkRecoveryDiscovery
+): boolean {
+  return (
+    !!discovery.registry &&
+    !!discovery.registryEventId &&
+    discovery.state === "recoverable" &&
+    !discovery.invalidCount &&
+    !discovery.unresolvedObserved
+  )
 }
 
 export function isCompleteAccountRegistryDiscovery(
@@ -486,24 +558,40 @@ export async function restoreAccountSparkWallets(
   signer: AccountSigner,
   discovery: SparkRecoveryDiscovery,
   network: SparkRecoveryBundle["network"],
-  options: AccountSignerOperationOptions = {}
+  options: AccountSignerOperationOptions = {},
+  dependencies: {
+    store?: MarketWalletStore
+    registry?: WalletRegistry
+    journal?: DexieSparkRecoveryStore
+    service?: SparkRecoveryService
+  } = {}
 ): Promise<Array<{ walletId: string } & SparkRecoveryBundle>> {
   // Old backups remain discoverable for explicit import, but without the
   // current account registry they cannot prove the wallet was not removed.
-  if (!isCompleteAccountRegistryDiscovery(discovery)) return []
+  if (!canRestoreAccountRegistryDiscovery(discovery)) return []
   if (!discovery.candidates.length) return []
   assertWalletSignerCurrent(signer)
-  const store = getMarketWalletStore()
-  const registry = getMarketWalletRegistry()
+  const store = dependencies.store ?? getMarketWalletStore()
+  const registry = dependencies.registry ?? getMarketWalletRegistry()
   const removed = new Set(
-    (await new DexieSparkRecoveryStore().load(signer.pubkey))
-      .removedWalletIds ?? []
+    (
+      await (dependencies.journal ?? new DexieSparkRecoveryStore()).load(
+        signer.pubkey
+      )
+    ).removedWalletIds ?? []
   )
+  for (const walletId of [
+    ...(discovery.confirmedRemovedWalletIds ?? []),
+    ...(discovery.registry?.removedWalletIds ?? []),
+  ])
+    removed.add(walletId)
+  const active = new Set(discovery.registry?.activeWalletIds)
   const restored: Array<{ walletId: string } & SparkRecoveryBundle> = []
   for (const candidate of discovery.candidates) {
     if (
       candidate.source !== "conduit_v1" ||
       !candidate.walletId ||
+      !active.has(candidate.walletId) ||
       removed.has(candidate.walletId)
     )
       continue
@@ -513,11 +601,9 @@ export async function restoreAccountSparkWallets(
       )
     )
       continue
-    const bundle = await getAccountSparkRecovery(signer).restore(
-      candidate,
-      undefined,
-      options
-    )
+    const bundle = await (
+      dependencies.service ?? getAccountSparkRecovery(signer)
+    ).restore(candidate, undefined, options)
     if (!("walletId" in bundle) || bundle.network !== network) continue
     assertWalletSignerCurrent(signer)
     const recovery = await sealSignerSparkRecovery(
@@ -600,9 +686,19 @@ export async function backUpAccountSparkWallet(
     )
   }
   const discovery = await service.discover(false, bundle.network, options)
-  let pointer = discovery.primaryPointerEventId
-  if (!pointer) pointer = await service.preparePrimary(candidate)
   const backup = await service.deliver(candidate.eventId, options)
+  let pointer = discovery.primaryPointerEventId
+  if (!pointer) {
+    if (
+      discovery.coverage !== "complete" ||
+      discovery.invalidCount ||
+      discovery.unresolvedObserved ||
+      (discovery.state !== "recoverable" &&
+        discovery.state !== "absent_within_scope")
+    )
+      return false
+    pointer = await service.preparePrimary(candidate)
+  }
   const primary = await service.deliver(pointer, options)
   // Account membership can advance only after every planned relay confirms
   // both encrypted recovery references. Backup durability remains a separate
@@ -617,9 +713,16 @@ export async function backUpAccountSparkWallet(
     return false
   const latest = await service.discover(false, bundle.network, options)
   if (
-    latest.coverage === "complete" &&
+    latest.coverage !== "complete" ||
+    (latest.state !== "recoverable" &&
+      latest.state !== "absent_within_scope") ||
+    latest.invalidCount ||
+    latest.unresolvedObserved ||
+    latest.candidates.some((item) => item.source === "addy" && !item.resolved)
+  )
+    return false
+  if (
     latest.state === "recoverable" &&
-    !latest.invalidCount &&
     latest.registry?.activeWalletIds.includes(walletId)
   )
     return latest.registryEventId

@@ -4,6 +4,11 @@ import {
   type ReporterDescription,
 } from "@playwright/test"
 
+import {
+  readSmokeFiles,
+  smokeNeedsBothApps,
+} from "./scripts/ci/playwright_smoke_files"
+
 import { smokeAreaTags } from "./e2e/helpers/smoke-areas"
 
 const CI = !!process.env.CI
@@ -15,6 +20,7 @@ const configuredRelayPort =
   requestedRelayPort && requestedRelayPort !== "0"
     ? requestedRelayPort
     : undefined
+const smokeFiles = readSmokeFiles(process.env.PLAYWRIGHT_SMOKE_FILES)
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 if (commerceIncluded) {
@@ -64,6 +70,8 @@ const mobileTestFiles = [
 const responsiveCoverageFiles = [
   "**/market-open-markets-order.playwright.ts",
   "**/open-markets-order-adapter.playwright.ts",
+  "**/event-market-discovery.playwright.ts",
+  "**/wallet-recovery-repair.playwright.ts",
   "**/shared-ui-composition.playwright.ts",
   "**/shared-ui-visual-contract.playwright.ts",
   "**/shared-ui-surface-audit.playwright.ts",
@@ -109,24 +117,32 @@ const relayWebServer = configuredRelayPort
 
 const webServer = [
   relayWebServer,
-  {
-    command: "bun scripts/dev/run_playwright_web_server.ts market",
-    url: `http://127.0.0.1:${marketPort}/products`,
-    reuseExistingServer: !CI && !commerceIncluded,
-    timeout: 120_000,
-  },
-  {
-    command: "bun scripts/dev/run_playwright_web_server.ts merchant",
-    url: `http://127.0.0.1:${merchantPort}/`,
-    reuseExistingServer: !CI && !commerceIncluded,
-    timeout: 120_000,
-  },
+  ...(!smokeNeedsBothApps(smokeFiles) && smokeArea === "merchant"
+    ? []
+    : [
+        {
+          command: "bun scripts/dev/run_playwright_web_server.ts market",
+          url: `http://127.0.0.1:${marketPort}/products`,
+          reuseExistingServer: !CI && !commerceIncluded,
+          timeout: 120_000,
+        },
+      ]),
+  ...(!smokeNeedsBothApps(smokeFiles) && smokeArea === "market"
+    ? []
+    : [
+        {
+          command: "bun scripts/dev/run_playwright_web_server.ts merchant",
+          url: `http://127.0.0.1:${merchantPort}/`,
+          reuseExistingServer: !CI && !commerceIncluded,
+          timeout: 120_000,
+        },
+      ]),
 ]
 
 export default defineConfig({
   metadata: smokeEvidence ? { smokeEvidence } : undefined,
   testDir: "./e2e",
-  testMatch: "**/*.playwright.ts",
+  testMatch: smokeFiles?.map((file) => `**/${file}`) ?? "**/*.playwright.ts",
   fullyParallel: true,
   forbidOnly: CI,
   // Required evidence accepts only a clean first attempt.
@@ -155,12 +171,20 @@ export default defineConfig({
     },
     {
       name: "mobile-chromium",
-      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
+        (pattern) =>
+          !smokeFiles ||
+          smokeFiles.some((file) => pattern.endsWith(`/${file.slice(4)}`))
+      ),
       use: { ...devices["Pixel 7"] },
     },
     {
       name: "mobile-webkit",
-      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
+        (pattern) =>
+          !smokeFiles ||
+          smokeFiles.some((file) => pattern.endsWith(`/${file.slice(4)}`))
+      ),
       use: { ...devices["iPhone 13"] },
     },
   ],

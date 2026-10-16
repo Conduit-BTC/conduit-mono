@@ -2965,9 +2965,7 @@ function CheckoutPage() {
   /** Explicit checkout preparation; this action never submits payment. */
   async function prepareSettledRouterOrder(): Promise<void> {
     if (orderWireFormat !== "conduit") {
-      setError(
-        "This payment option requires Conduit order compatibility."
-      )
+      setError("This payment option requires Conduit order compatibility.")
       return
     }
     if (routerPreparationUnavailableMessage) {

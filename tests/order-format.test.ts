@@ -371,6 +371,69 @@ describe("explicit order-format selection and the numeric peer contract", () => 
     expect(await f.database.orderLifecycles.count()).toBe(1)
   })
 
+  it.each(["main", "adapter"] as const)(
+    "upgrades the installed %s v27 lineage to the complete additive union",
+    async (lineage) => {
+      const f = fixture()
+      const dependencies = { indexedDB: new IDBFactory(), IDBKeyRange }
+      const name = `installed-v27-${lineage}-${crypto.randomUUID()}`
+      const legacy = new Dexie(name, dependencies)
+      legacy.version(27).stores({
+        orderLifecycles:
+          "orderId, buyerPubkey, merchantPubkey, phase, createdAt",
+        eventMarketRosterEvidence:
+          lineage === "main"
+            ? "id, marketCoordinate, cachedAt, discoveryBytes"
+            : "id, marketCoordinate, cachedAt",
+        ...(lineage === "adapter"
+          ? {
+              orderWireFormats:
+                "orderId, buyerPubkey, merchantPubkey, createdAt",
+            }
+          : {}),
+      })
+      const order = {
+        ...f.lifecycle,
+        orderWireFormat:
+          lineage === "adapter" ? ("open_markets" as const) : undefined,
+      }
+      const evidence = {
+        id: "retained-roster",
+        marketCoordinate: "synthetic-coordinate",
+        cachedAt: Date.now(),
+        discoveryBytes: 17,
+      }
+      await legacy.table("orderLifecycles").put(order)
+      await legacy.table("eventMarketRosterEvidence").put(evidence)
+      if (lineage === "adapter")
+        await legacy.table("orderWireFormats").put({
+          orderId: f.orderId,
+          buyerPubkey: f.buyerPubkey,
+          merchantPubkey: f.merchantPubkey,
+          orderWireFormat: "open_markets",
+          createdAt: f.lifecycle.createdAt,
+        })
+      legacy.close()
+      const upgraded = new ConduitDB(name, dependencies)
+      databases.push(upgraded)
+      expect(await upgraded.orderLifecycles.get(f.orderId)).toEqual(order)
+      expect(await upgraded.eventMarketRosterEvidence.get(evidence.id)).toEqual(
+        evidence
+      )
+      expect(
+        upgraded.eventMarketRosterEvidence.schema.indexes.some(
+          (index) => index.name === "discoveryBytes"
+        )
+      ).toBe(true)
+      expect(await upgraded.orderWireFormats.count()).toBe(
+        lineage === "adapter" ? 1 : 0
+      )
+      expect(
+        getOrderWireFormat((await upgraded.orderLifecycles.get(f.orderId))!)
+      ).toBe(lineage === "adapter" ? "open_markets" : "conduit")
+    }
+  )
+
   it("encrypts a guest numeric payment report only to the declared merchant, without a guest inbox or self-copy", async () => {
     const f = fixture()
     const invoice = makeBolt11Fixture({
