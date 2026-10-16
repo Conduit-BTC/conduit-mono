@@ -3494,6 +3494,113 @@ function createTimelineRefreshFixture(owned = false) {
   return { calendar, market, product, createdAt }
 }
 
+test("merchant directory Selling At retains a refreshed membership removal when another coordinate appears @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await page.clock.install()
+  const { calendar, market, product, createdAt } =
+    createTimelineRefreshFixture()
+  relay.seed(
+    calendar,
+    market,
+    createFollowList("merchant", [ORGANIZER_PUBKEY], createdAt)
+  )
+  await gotoAs(page, merchantUrl, "/events?relation=selling", "merchant")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  const all = page.getByRole("region", { name: "All Events timeline" })
+  const removedEvent = my.getByRole("button", {
+    name: /^Open Healthy Refresh Fair/,
+  })
+  await expect(removedEvent).toBeVisible()
+  let calendarHeld = false
+  const held = relay.holdRelayRequests((request) => {
+    if (
+      calendarHeld ||
+      !request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(31923) &&
+          filter.authors?.includes(ORGANIZER_PUBKEY)
+      )
+    )
+      return false
+    calendarHeld = true
+    return true
+  })
+  try {
+    // Start the regular discovery refresh before the signed removal exists.
+    // Its calendar read stays held; the disabled Selling At query does not poll.
+    await page.clock.fastForward(60_000)
+    await held.captured
+    await expect(removedEvent).toBeVisible()
+    relay.seed(
+      signEvent(ORGANIZER_SECRET, {
+        kind: market.kind,
+        created_at: createdAt + 1,
+        content: market.content,
+        tags: market.tags.filter((tag) => tag[0] !== "merchant"),
+      })
+    )
+    await page
+      .getByRole("button", { name: "Refresh Selling At", exact: true })
+      .click()
+    // The exact refresh sees the signed removal while broad discovery stays stale.
+    await expect(removedEvent).toHaveCount(0)
+    const nextCalendar = signEvent(ORGANIZER_SECRET, {
+      kind: calendar.kind,
+      created_at: createdAt + 1,
+      content: calendar.content,
+      tags: calendar.tags.map((tag) =>
+        tag[0] === "d"
+          ? ["d", "new-coordinate-fair"]
+          : tag[0] === "title"
+            ? ["title", "New Coordinate Fair"]
+            : tag
+      ),
+    })
+    const nextMarket = signEvent(ORGANIZER_SECRET, {
+      kind: market.kind,
+      created_at: createdAt + 1,
+      content: market.content,
+      tags: market.tags.map((tag) =>
+        tag[0] === "d"
+          ? ["d", "new-coordinate-fair"]
+          : tag[0] === "a"
+            ? ["a", eventCoordinate(nextCalendar)]
+            : tag
+      ),
+    })
+    relay.seed(
+      nextCalendar,
+      nextMarket,
+      signEvent(MERCHANT_SECRET, {
+        kind: product.kind,
+        created_at: createdAt + 1,
+        content: product.content,
+        tags: product.tags.map((tag) =>
+          tag[0] === "a" ? ["a", eventCoordinate(nextMarket)] : tag
+        ),
+      })
+    )
+    // Organizing can refresh the settled product source without restarting the held read.
+    await my.getByRole("button", { name: "Organizing", exact: true }).click()
+    await page
+      .getByRole("button", { name: "Refresh Organizing", exact: true })
+      .click()
+    await expect(
+      all.getByRole("button", { name: /^Open New Coordinate Fair/ })
+    ).toBeVisible()
+    await my.getByRole("button", { name: "Selling At", exact: true }).click()
+    await expect(
+      my.getByRole("button", { name: /^Open New Coordinate Fair/ })
+    ).toBeVisible()
+    await expect(removedEvent).toHaveCount(0)
+  } finally {
+    held.release()
+  }
+})
+
 for (const newFollow of [false, true])
   test(`merchant directory Selling At refreshes healthy ${newFollow ? "perspective" : "roster discovery"} to find new membership @merchant`, async ({
     page,

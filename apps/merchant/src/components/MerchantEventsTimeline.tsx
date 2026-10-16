@@ -154,7 +154,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       session.relayScope,
       authenticatedPubkey,
       authGeneration,
-      sellingCoordinates,
+      merchantPubkey,
     ],
     queryFn: ({ signal }) =>
       hydrateMerchantProductMarkets({
@@ -173,9 +173,15 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     enabled: false,
     retry: false,
   })
+  // Refreshed signed evidence outlives coordinate-set changes. Only current
+  // coordinates contribute rows; auth, relay and merchant changes use a new key.
+  const currentSellingCoordinates = new Set(sellingCoordinates)
+  const knownRosterReads = (sellingQuery.data?.markets ?? []).filter((read) =>
+    currentSellingCoordinates.has(read.coordinate)
+  )
   const allReads = mergeMerchantTimelineMarketReads(
     marketReads,
-    sellingQuery.data?.markets ?? []
+    knownRosterReads
   )
   const networkPending =
     discovery.perspective.isInitialLoading ||
@@ -189,16 +195,14 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
   const knownRosterIncomplete =
     sellingQuery.isError ||
     (sellingQuery.data?.failedCount ?? 0) > 0 ||
-    (sellingQuery.data?.markets ?? []).some(
-      isMerchantTimelineMarketReadIncomplete
-    )
+    knownRosterReads.some(isMerchantTimelineMarketReadIncomplete)
   const ownerUnavailable =
     (ownQuery.isError && !ownQuery.data) ||
     ownQuery.data?.coverage === "unavailable"
   const futureUnavailable =
     (futureQuery.isError && !futureQuery.data) ||
     futureQuery.data?.coverage === "unavailable"
-  const knownRosterAvailable = (sellingQuery.data?.markets ?? []).some(
+  const knownRosterAvailable = knownRosterReads.some(
     (read) => read.coverage !== "unavailable" || read.retained
   )
   const organizingUnavailable =
