@@ -118,6 +118,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     authUrl,
     dismissAuthUrl,
     pubkey,
+    restorePendingPubkey,
     method,
     remoteSignerRecovery,
     status,
@@ -130,8 +131,11 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   const signerConnected = status === "connected" && !!pubkey
   const signerRecoveryRequired = !!remoteSignerRecovery && !!pubkey
   const signerWorkspaceAvailable = signerConnected || signerRecoveryRequired
+  // StrictMode cleanup can clear the active pubkey while a restore still owns
+  // its pending identity. Use that identity to keep the restoring shell stable.
   const signerRestoring =
-    !!pubkey && status === "restoring" && !signerRecoveryRequired
+    (!!restorePendingPubkey || (!!pubkey && status === "restoring")) &&
+    !signerRecoveryRequired
   const shouldDelayAuthFallback =
     !!pubkey && !signerWorkspaceAvailable && !authFallbackReady
 
@@ -226,7 +230,9 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 
   throwSyntheticClientErrorForTelemetryTest()
 
-  if (isNotFound && !signerWorkspaceAvailable) {
+  // Settle a saved signer before choosing the missing-page shell. Starting the
+  // public video only to unmount it during restore can stall WebKit media load.
+  if (isNotFound && !signerWorkspaceAvailable && !signerRestoring) {
     return (
       <MerchantPublicAboutShell pageTitle="Not Found" fullBleed>
         <Outlet />
