@@ -1,3 +1,4 @@
+import { verifySignedEvents } from "@conduit/core"
 import { describe, expect, it } from "bun:test"
 import {
   authorizeAnonZapCheckout,
@@ -120,10 +121,20 @@ function profileEvent(): SignedPublicNostrEvent {
   })
 }
 
-function authorize(
-  overrides: Partial<Parameters<typeof authorizeAnonZapCheckout>[0]> = {}
+async function authorize(
+  overrides: Partial<
+    Omit<
+      Parameters<typeof authorizeAnonZapCheckout>[0],
+      "productEvents" | "shippingEvents" | "profileEvents" | "deletionEvents"
+    > & {
+      productEvents: SignedPublicNostrEvent[]
+      shippingEvents: SignedPublicNostrEvent[]
+      profileEvents: SignedPublicNostrEvent[]
+      deletionEvents: SignedPublicNostrEvent[]
+    }
+  > = {}
 ) {
-  return authorizeAnonZapCheckout({
+  const input = {
     intent: {
       merchantPubkey: MERCHANT_PUBKEY,
       items: [{ productAddress: PRODUCT_ADDRESS, quantity: 1 }],
@@ -135,12 +146,19 @@ function authorize(
     receiptRelayUrls: ["wss://relay.conduit.market"],
     nowSeconds: NOW_SECONDS,
     ...overrides,
+  }
+  return authorizeAnonZapCheckout({
+    ...input,
+    productEvents: (await verifySignedEvents(input.productEvents)).events,
+    shippingEvents: (await verifySignedEvents(input.shippingEvents)).events,
+    profileEvents: (await verifySignedEvents(input.profileEvents)).events,
+    deletionEvents: (await verifySignedEvents(input.deletionEvents)).events,
   })
 }
 
 describe("anonymous public zap checkout authorization", () => {
-  it("does not apply client content keywords to valid signed purchase terms", () => {
-    const result = authorize({
+  it("does not apply client content keywords to valid signed purchase terms", async () => {
+    const result = await authorize({
       productEvents: [
         productEvent({ title: "Counterfeit goods display fixture" }),
       ],
@@ -209,8 +227,8 @@ describe("anonymous public zap checkout authorization", () => {
     }
   })
 
-  it("builds a server-owned generic request from signed public state", () => {
-    const result = authorize({
+  it("builds a server-owned generic request from signed public state", async () => {
+    const result = await authorize({
       intent: {
         merchantPubkey: MERCHANT_PUBKEY,
         items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
@@ -261,13 +279,13 @@ describe("anonymous public zap checkout authorization", () => {
     })
   })
 
-  it("prices canonical fixed shipping only from the exact signed option", () => {
+  it("prices canonical fixed shipping only from the exact signed option", async () => {
     const product = productEvent({
       shippingCost: 5,
       canonicalShipping: true,
     })
     const exactOption = shippingEvent({ price: 5 })
-    const result = authorize({
+    const result = await authorize({
       productEvents: [product],
       shippingEvents: [exactOption],
     })
@@ -278,24 +296,33 @@ describe("anonymous public zap checkout authorization", () => {
       unitShippingSats: 5,
     })
 
-    expect(() =>
-      authorize({ productEvents: [product], shippingEvents: [] })
-    ).toThrow("Checkout product requires merchant-coordinated shipping.")
-    expect(() =>
-      authorize({
-        productEvents: [product],
-        shippingEvents: [shippingEvent({ omitService: true })],
-      })
-    ).toThrow("Checkout product requires merchant-coordinated shipping.")
-    expect(() =>
-      authorize({
-        productEvents: [product],
-        shippingEvents: [shippingEvent({ createdAt: NOW_SECONDS - 59 })],
-      })
-    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+    await expect(
+      (async () =>
+        await authorize({ productEvents: [product], shippingEvents: [] }))()
+    ).rejects.toThrow(
+      "Checkout product requires merchant-coordinated shipping."
+    )
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [product],
+          shippingEvents: [shippingEvent({ omitService: true })],
+        }))()
+    ).rejects.toThrow(
+      "Checkout product requires merchant-coordinated shipping."
+    )
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [product],
+          shippingEvents: [shippingEvent({ createdAt: NOW_SECONDS - 59 })],
+        }))()
+    ).rejects.toThrow(
+      "Checkout product requires merchant-coordinated shipping."
+    )
   })
 
-  it("rejects a canonical shipping option deleted by address or exact event id", () => {
+  it("rejects a canonical shipping option deleted by address or exact event id", async () => {
     const product = productEvent({
       shippingCost: 5,
       canonicalShipping: true,
@@ -312,32 +339,38 @@ describe("anonymous public zap checkout authorization", () => {
         createdAt: NOW_SECONDS,
         tags: [target],
       })
-      expect(() =>
-        authorize({
-          productEvents: [product],
-          shippingEvents: [shipping],
-          deletionEvents: [deletion],
-        })
-      ).toThrow("Checkout product requires merchant-coordinated shipping.")
+      await expect(
+        (async () =>
+          await authorize({
+            productEvents: [product],
+            shippingEvents: [shipping],
+            deletionEvents: [deletion],
+          }))()
+      ).rejects.toThrow(
+        "Checkout product requires merchant-coordinated shipping."
+      )
     }
   })
 
-  it("keeps legacy inline fixed shipping on the order-first path", () => {
-    expect(() =>
-      authorize({
-        productEvents: [productEvent({ shippingCost: 5 })],
-        shippingEvents: [],
-      })
-    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  it("keeps legacy inline fixed shipping on the order-first path", async () => {
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [productEvent({ shippingCost: 5 })],
+          shippingEvents: [],
+        }))()
+    ).rejects.toThrow(
+      "Checkout product requires merchant-coordinated shipping."
+    )
   })
 
-  it("derives USD price and shipping from a fresh server rate", () => {
+  it("derives USD price and shipping from a fresh server rate", async () => {
     const pricingRate: BtcUsdRateQuote = {
       rate: 100_000,
       fetchedAt: NOW_SECONDS * 1000,
       source: "mempool",
     }
-    const result = authorize({
+    const result = await authorize({
       productEvents: [
         productEvent({
           price: 10,
@@ -382,8 +415,8 @@ describe("anonymous public zap checkout authorization", () => {
     })
   })
 
-  it("uses the server cross-rate for non-USD fiat", () => {
-    const result = authorize({
+  it("uses the server cross-rate for non-USD fiat", async () => {
+    const result = await authorize({
       productEvents: [
         productEvent({
           price: 10,
@@ -414,49 +447,56 @@ describe("anonymous public zap checkout authorization", () => {
     })
   })
 
-  it("fails closed when fiat cannot be priced by a fresh server quote", () => {
+  it("fails closed when fiat cannot be priced by a fresh server quote", async () => {
     const usdProduct = productEvent({ price: 10, currency: "USD" })
-    expect(() => authorize({ productEvents: [usdProduct] })).toThrow(
-      "Checkout product price cannot be verified in sats."
-    )
-    expect(() =>
-      authorize({
-        productEvents: [usdProduct],
-        pricingRate: {
-          rate: 100_000,
-          fetchedAt: (NOW_SECONDS - 301) * 1000,
-          source: "mempool",
-        },
-      })
-    ).toThrow("Checkout pricing quote is stale.")
+    await expect(
+      (async () => await authorize({ productEvents: [usdProduct] }))()
+    ).rejects.toThrow("Checkout product price cannot be verified in sats.")
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [usdProduct],
+          pricingRate: {
+            rate: 100_000,
+            fetchedAt: (NOW_SECONDS - 301) * 1000,
+            source: "mempool",
+          },
+        }))()
+    ).rejects.toThrow("Checkout pricing quote is stale.")
   })
 
-  it("requires an explicit current public-zap opt-in", () => {
+  it("requires an explicit current public-zap opt-in", async () => {
     for (const publicZapPolicy of ["false", "unknown"] as const) {
-      expect(() =>
-        authorize({ productEvents: [productEvent({ publicZapPolicy })] })
-      ).toThrow("Checkout product does not explicitly allow public zaps.")
+      await expect(
+        (async () =>
+          await authorize({
+            productEvents: [productEvent({ publicZapPolicy })],
+          }))()
+      ).rejects.toThrow(
+        "Checkout product does not explicitly allow public zaps."
+      )
     }
   })
 
-  it("rejects invalid signatures and conflicting latest listings", () => {
+  it("rejects invalid signatures and conflicting latest listings", async () => {
     const signed = productEvent()
     const tampered = { ...signed, content: "tampered after signing" }
-    expect(() => authorize({ productEvents: [tampered] })).toThrow(
-      "Checkout product is unavailable."
-    )
+    await expect(
+      (async () => await authorize({ productEvents: [tampered] }))()
+    ).rejects.toThrow("Checkout product is unavailable.")
 
-    expect(() =>
-      authorize({
-        productEvents: [
-          productEvent({ createdAt: NOW_SECONDS - 10, price: 10 }),
-          productEvent({ createdAt: NOW_SECONDS - 10, price: 11 }),
-        ],
-      })
-    ).toThrow("Checkout product has conflicting latest events.")
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [
+            productEvent({ createdAt: NOW_SECONDS - 10, price: 10 }),
+            productEvent({ createdAt: NOW_SECONDS - 10, price: 11 }),
+          ],
+        }))()
+    ).rejects.toThrow("Checkout product has conflicting latest events.")
   })
 
-  it("rejects products deleted by address or exact event id", () => {
+  it("rejects products deleted by address or exact event id", async () => {
     const product = productEvent()
     for (const target of [
       ["a", PRODUCT_ADDRESS],
@@ -467,43 +507,56 @@ describe("anonymous public zap checkout authorization", () => {
         createdAt: NOW_SECONDS,
         tags: [target],
       })
-      expect(() =>
-        authorize({ productEvents: [product], deletionEvents: [deletion] })
-      ).toThrow("Checkout product is no longer active.")
+      await expect(
+        (async () =>
+          await authorize({
+            productEvents: [product],
+            deletionEvents: [deletion],
+          }))()
+      ).rejects.toThrow("Checkout product is no longer active.")
     }
   })
 
-  it("rejects coordinated shipping", () => {
-    expect(() =>
-      authorize({ productEvents: [productEvent({ shippingCost: null })] })
-    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  it("rejects coordinated shipping", async () => {
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [productEvent({ shippingCost: null })],
+        }))()
+    ).rejects.toThrow(
+      "Checkout product requires merchant-coordinated shipping."
+    )
   })
 
-  it("rejects fixed physical shipping without a country snapshot", () => {
-    expect(() =>
-      authorize({
-        productEvents: [
-          productEvent({ shippingCost: 5, canonicalShipping: true }),
-        ],
-        shippingEvents: [shippingEvent({ price: 5, countries: [] })],
-      })
-    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  it("rejects fixed physical shipping without a country snapshot", async () => {
+    await expect(
+      (async () =>
+        await authorize({
+          productEvents: [
+            productEvent({ shippingCost: 5, canonicalShipping: true }),
+          ],
+          shippingEvents: [shippingEvent({ price: 5, countries: [] })],
+        }))()
+    ).rejects.toThrow(
+      "Checkout product requires merchant-coordinated shipping."
+    )
   })
 
-  it("binds authorization to the signed merchant profile LNURL endpoint", () => {
-    const result = authorize()
+  it("binds authorization to the signed merchant profile LNURL endpoint", async () => {
+    const result = await authorize()
     expect(result.authorization.lnurl).toBe(LNURL)
     expect(result.draft.tags).toContainEqual(["lnurl", LNURL])
 
-    expect(() =>
-      authorize({
-        profileEvents: [
-          signMerchantEvent({
-            kind: 0,
-            content: JSON.stringify({ lud16: "not-an-address" }),
-          }),
-        ],
-      })
-    ).toThrow("Merchant Lightning Address is unavailable.")
+    await expect(
+      (async () =>
+        await authorize({
+          profileEvents: [
+            signMerchantEvent({
+              kind: 0,
+              content: JSON.stringify({ lud16: "not-an-address" }),
+            }),
+          ],
+        }))()
+    ).rejects.toThrow("Merchant Lightning Address is unavailable.")
   })
 })

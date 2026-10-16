@@ -1,3 +1,4 @@
+import { ownerRelayListEvidenceFacts } from "./account-network-evidence"
 import type { OwnerRelayListResolution } from "./owner-relay-list-evidence"
 
 export const ACCOUNT_NETWORK_ROUTING_POLICY_VERSION = 1
@@ -240,6 +241,7 @@ export function reconcileAccountNetworkRoutingPolicy(
 export function classifyAccountNetworkPersonalRelayEvidence(
   resolution: AccountNetworkOwnerRelayListPolicyEvidence
 ): AccountNetworkPersonalRelayEvidence {
+  const facts = ownerRelayListEvidenceFacts(resolution)
   const currentHasUsablePreferences =
     (resolution.current?.preferences?.length ?? 0) > 0
   const retainedHasUsablePreferences =
@@ -282,13 +284,7 @@ export function classifyAccountNetworkPersonalRelayEvidence(
       observedAt: resolution.lastUsable.observedAt,
     }
   }
-  if (
-    resolution.state === "not_observed" &&
-    resolution.lookup.coverage === "complete" &&
-    !resolution.current &&
-    !resolution.lastUsable &&
-    !resolution.pendingDistribution
-  ) {
+  if (facts.scopedAbsent) {
     return {
       state: "absent_within_scope",
       observedAt: resolution.lookup.observedAt,

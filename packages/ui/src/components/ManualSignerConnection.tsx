@@ -5,9 +5,9 @@ import { Button } from "./Button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./Tabs"
 import { Textarea } from "./Textarea"
 
-const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
-const tabClassName =
-  "min-h-11 min-w-0 gap-1 rounded-lg px-1 text-xs whitespace-normal data-[state=active]:bg-primary-500 data-[state=active]:text-white sm:text-sm"
+const primaryClassName =
+  "h-12 w-full rounded-[var(--radius-md)] text-base font-semibold"
+const tabClassName = "min-h-11 min-w-0 gap-1 px-1 text-sm whitespace-normal"
 
 export function BunkerSignerConnection({
   bunkerUri,
@@ -94,14 +94,14 @@ export function ManualSignerConnection({
   return (
     <div
       id={id}
-      className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+      className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
     >
       <p className="text-sm leading-6 text-[var(--text-secondary)]">
         Use another signer or connect from another device.
       </p>
       <Tabs value={activeTab} onValueChange={onTabChange}>
         <TabsList
-          className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
+          className="grid h-auto w-full grid-cols-3 rounded-[var(--radius-md)] p-1"
           aria-label="Remote signer connection method"
         >
           <TabsTrigger value="qr" className={tabClassName}>
@@ -123,7 +123,7 @@ export function ManualSignerConnection({
               <div
                 role="img"
                 aria-label="Nostr Connect connection QR code"
-                className="rounded-lg bg-white p-3"
+                className="rounded-[var(--radius-md)] bg-white p-3"
               >
                 <QRCodeSVG
                   value={nostrConnectUri}

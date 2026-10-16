@@ -21,6 +21,9 @@ export class ReplaceablePublishSafetyError extends Error {
 }
 
 export interface ReplaceablePublishSafetyOptions {
+  /** Exact full-profile merge, supplied only after the profile owner confirms its frontier. */
+  profileAddressPatch?: { previousContent: string; nextContent: string }
+
   contactList?: {
     enforceMinimumPubkeys?: boolean
   }
@@ -62,7 +65,7 @@ export function countMeaningfulProfileFields(
 }
 
 export function countDistinctContactListPubkeys(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): number {
   const pubkeys = new Set<string>()
 
@@ -101,7 +104,7 @@ function normalizeRelayTagUrl(url: string): string | null {
 }
 
 export function countActiveRelayListTags(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): number {
   const relayUrls = new Set<string>()
 
@@ -115,7 +118,7 @@ export function countActiveRelayListTags(
 }
 
 export function countPublishRelayListTags(
-  tags: readonly string[][] | undefined
+  tags: readonly (readonly string[])[] | undefined
 ): number {
   const relayUrls = new Set<string>()
   for (const tag of tags ?? []) {
@@ -128,18 +131,53 @@ export function countPublishRelayListTags(
   return relayUrls.size
 }
 
+function isExactProfileAddressPatch(
+  content: string | undefined,
+  patch: ReplaceablePublishSafetyOptions["profileAddressPatch"]
+): boolean {
+  if (!patch || content !== patch.nextContent) return false
+  try {
+    const before: unknown = JSON.parse(patch.previousContent)
+    const after: unknown = JSON.parse(patch.nextContent)
+    if (
+      !isRecord(before) ||
+      !isRecord(after) ||
+      (Object.hasOwn(after, "lud16") && typeof after.lud16 !== "string") ||
+      Object.hasOwn(after, "lud06")
+    )
+      return false
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+    for (const key of keys) {
+      if (
+        key !== "lud16" &&
+        key !== "lud06" &&
+        (!Object.hasOwn(before, key) ||
+          !Object.hasOwn(after, key) ||
+          JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+      )
+        return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function assertSafeReplaceablePublish(
   event: {
     kind?: number | null
     content?: string
-    tags?: readonly string[][]
+    tags?: readonly (readonly string[])[]
   },
   options: ReplaceablePublishSafetyOptions = {}
 ): void {
   switch (event.kind) {
     case EVENT_KINDS.PROFILE: {
       const fieldCount = countMeaningfulProfileFields(event.content)
-      if (fieldCount <= 1) {
+      if (
+        fieldCount <= 1 &&
+        !isExactProfileAddressPatch(event.content, options.profileAddressPatch)
+      ) {
         throw new ReplaceablePublishSafetyError(
           "Refusing to publish a tiny Nostr profile. Wait for the existing profile to load or fill at least two profile fields before saving."
         )

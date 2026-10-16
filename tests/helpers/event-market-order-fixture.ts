@@ -204,5 +204,6 @@ export function createEventMarketOrderFixture(
     organizer,
     merchant,
     buyer,
+    merchantSecret,
   }
 }

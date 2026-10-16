@@ -1,3 +1,4 @@
+import { admitEmbeddedEventMarketOrderEvidence } from "@conduit/core/protocol/event-market-order-evidence"
 import { describe, expect, it } from "bun:test"
 import { matchFilter, type Filter } from "nostr-tools"
 import {
@@ -86,7 +87,7 @@ describe("occurrence assignment buyer admission", () => {
     expect(absent.resolution.state).toBe("unassigned")
   })
 
-  it("carries exact signed assignment evidence in the encrypted order tags", () => {
+  it("carries exact signed assignment evidence in the encrypted order tags", async () => {
     const fixture = createEventMarketOrderFixture({
       mode: "merchant_present",
       newAssignment: true,
@@ -107,7 +108,7 @@ describe("occurrence assignment buyer admission", () => {
     expect(
       verifyEventMarketOrderEvidence({
         order: fixture.order,
-        events: fixture.events,
+        events: await admitEmbeddedEventMarketOrderEvidence(fixture.order),
       }).status
     ).toBe("verified")
   })

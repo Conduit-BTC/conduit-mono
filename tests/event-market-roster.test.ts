@@ -13,7 +13,6 @@ import {
   resolveEventMarketAuthorization,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
-  parseEventMarketAuthorizationEvent,
   parseEventMarketCalendarEvent,
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
@@ -28,6 +27,10 @@ import {
   type EventMarketMerchantRow,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "@conduit/core/protocol/verified-public-event"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -42,11 +45,14 @@ const productCoordinate = `30402:${merchant}:soap`
 function sign(
   secret: Uint8Array,
   kind: number,
-  tags: string[][],
+  tags: readonly (readonly string[])[],
   createdAt: number,
   content = ""
 ): SignedPublicNostrEvent {
-  return finalizeEvent({ kind, tags, content, created_at: createdAt }, secret)
+  return finalizeEvent(
+    { kind, tags: tags.map((tag) => [...tag]), content, created_at: createdAt },
+    secret
+  )
 }
 
 function roster(
@@ -125,22 +131,33 @@ function assignment(createdAt = 101): SignedPublicNostrEvent {
   return assignmentFor(productCoordinate, merchantSecret, createdAt)
 }
 
+async function admitted(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error("Signed test fixture was rejected.")
+  return result.event
+}
+
 const merchantRow: EventMarketMerchantRow = {
   pubkey: merchant,
   mode: "merchant_present",
   assignment: "Booth 12",
 }
 
-const grantEvent = (() => {
-  const draft = buildEventMarketAuthorizationDraft({
-    marketCoordinate,
-    merchantPubkey: merchant,
-    state: "active",
-    sequence: 0,
-    parentIds: [],
-  })
-  return sign(organizerSecret, draft.kind, draft.tags, 99)
-})()
+const grantEvent = await admitted(
+  (() => {
+    const draft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "active",
+      sequence: 0,
+      parentIds: [],
+    })
+    return sign(organizerSecret, draft.kind, draft.tags, 99)
+  })()
+)
 const authorization = resolveEventMarketAuthorization({
   marketCoordinate,
   merchantPubkey: merchant,
@@ -157,13 +174,13 @@ const authorizationRead = {
 }
 
 describe("experimental Event Market roster", () => {
-  it("keeps self-selling at the merchant booth and rejects externally signed self-handoff before checkout", () => {
+  it("keeps self-selling at the merchant booth and rejects externally signed self-handoff before checkout", async () => {
     const selfRow = { ...merchantRow, pubkey: organizer }
     expect(() => roster([selfRow])).not.toThrow()
     expect(() => roster([{ ...selfRow, mode: "organizer_handoff" }])).toThrow(
       "Self-selling organizers must use merchant booth pickup"
     )
-    const booth = roster([selfRow])
+    const booth = await admitted(roster([selfRow]))
     const invalidHandoff = sign(
       organizerSecret,
       30409,
@@ -174,8 +191,11 @@ describe("experimental Event Market roster", () => {
       ),
       100
     )
-    const market = parseEventMarketRosterEvent(invalidHandoff)!
-    const selfProduct = product(organizerSecret, organizer, "soap", 100)
+    const admittedInvalidHandoff = await admitted(invalidHandoff)
+    const market = parseEventMarketRosterEvent(admittedInvalidHandoff)!
+    const selfProduct = await admitted(
+      product(organizerSecret, organizer, "soap", 100)
+    )
     const selfCoordinate = `30402:${organizer}:soap`
     const selfAssignment = parseEventMarketAssignmentEvent(
       assignmentFor(selfCoordinate, organizerSecret)
@@ -193,10 +213,11 @@ describe("experimental Event Market roster", () => {
       selfGrantDraft.tags,
       99
     )
+    const admittedSelfGrant = await admitted(selfGrant)
     const selfAuthorization = resolveEventMarketAuthorization({
       marketCoordinate,
       merchantPubkey: organizer,
-      transitions: [selfGrant],
+      transitions: [admittedSelfGrant],
     })
     expect(
       resolveEventMarketProduct({
@@ -230,14 +251,15 @@ describe("experimental Event Market roster", () => {
       ],
       100
     )
+    const admittedCalendar = await admitted(signedCalendar)
     const marketRead = {
       coordinate: marketCoordinate,
       resolution: { state: "current" as const, market: boothMarket },
       coverage: "complete" as const,
       retained: true,
       observedRelayUrls: [],
-      calendar: parseEventMarketCalendarEvent(signedCalendar)!,
-      calendarSignedEvent: signedCalendar,
+      calendar: parseEventMarketCalendarEvent(admittedCalendar)!,
+      calendarSignedEvent: admittedCalendar,
       calendarCoverage: "complete" as const,
     }
     const productRead = {
@@ -274,8 +296,8 @@ describe("experimental Event Market roster", () => {
     ).toThrow("Current signed Event Market participation is required")
   })
 
-  it("parses one organizer-signed mode and assignment with a finite author filter", () => {
-    const signed = roster([merchantRow])
+  it("parses one organizer-signed mode and assignment with a finite author filter", async () => {
+    const signed = await admitted(roster([merchantRow]))
     const parsed = parseEventMarketRosterEvent(signed)
     expect(parsed).toMatchObject({
       coordinate: marketCoordinate,
@@ -288,29 +310,29 @@ describe("experimental Event Market roster", () => {
     ])
   })
 
-  it("rejects duplicate or contradictory rows, forged organizer, and bad assignments", () => {
+  it("rejects duplicate or contradictory rows, forged organizer, and bad assignments", async () => {
     expect(() =>
       roster([merchantRow, { ...merchantRow, mode: "organizer_handoff" }])
     ).toThrow()
     expect(() =>
       roster([{ ...merchantRow, assignment: "  Booth 12" }])
     ).toThrow()
-    const signed = roster([merchantRow])
+    const signed = await admitted(roster([merchantRow]))
     const forged = sign(spammerSecret, 30409, signed.tags, 100)
-    expect(parseEventMarketRosterEvent(forged)).toBeNull()
+    expect(parseEventMarketRosterEvent(await admitted(forged))).toBeNull()
     const duplicated = sign(
       organizerSecret,
       30409,
       [...signed.tags, ["merchant", merchant, "organizer_handoff", "Desk"]],
       101
     )
-    expect(parseEventMarketRosterEvent(duplicated)).toBeNull()
+    expect(parseEventMarketRosterEvent(await admitted(duplicated))).toBeNull()
   })
 
-  it("does not restore an older roster after removal and detects a known stale edit", () => {
-    const initial = roster([merchantRow], 100)
-    const removal = roster([], 101, initial.id)
-    const staleEdit = roster(
+  it("does not restore an older roster after removal and detects a known stale edit", async () => {
+    const initial = await admitted(roster([merchantRow], 100))
+    const removal = await admitted(roster([], 101, initial.id))
+    let staleEdit = roster(
       [{ ...merchantRow, assignment: "Booth 14" }],
       102,
       initial.id
@@ -321,6 +343,7 @@ describe("experimental Event Market roster", () => {
         revisions: [initial, removal],
       })
     ).toMatchObject({ state: "current", market: { merchants: [] } })
+    staleEdit = await admitted(staleEdit)
     expect(
       resolveEventMarketRoster({
         coordinate: marketCoordinate,
@@ -335,17 +358,17 @@ describe("experimental Event Market roster", () => {
     ).toMatchObject({ state: "current", market: { merchants: [merchantRow] } })
   })
 
-  it("accepts an observed A to C chain when B was pruned", () => {
-    const initial = roster([merchantRow], 100)
-    const middle = roster([], 101, initial.id)
-    const latest = roster([merchantRow], 102, middle.id)
+  it("accepts an observed A to C chain when B was pruned", async () => {
+    const initial = await admitted(roster([merchantRow], 100))
+    const middle = await admitted(roster([], 101, initial.id))
+    const latest = await admitted(roster([merchantRow], 102, middle.id))
     expect(
       resolveEventMarketRoster({
         coordinate: marketCoordinate,
         revisions: [initial, latest],
       })
     ).toMatchObject({ state: "current", market: { eventId: latest.id } })
-    const sibling = roster([], 103, middle.id)
+    const sibling = await admitted(roster([], 103, middle.id))
     expect(
       resolveEventMarketRoster({
         coordinate: marketCoordinate,
@@ -354,9 +377,9 @@ describe("experimental Event Market roster", () => {
     ).toMatchObject({ state: "conflicting" })
   })
 
-  it("treats signed deletion and malformed newer evidence as stronger than an older approval", () => {
-    const initial = roster([merchantRow], 100)
-    const deletion = sign(
+  it("treats signed deletion and malformed newer evidence as stronger than an older approval", async () => {
+    const initial = await admitted(roster([merchantRow], 100))
+    let deletion = sign(
       organizerSecret,
       5,
       [
@@ -365,6 +388,7 @@ describe("experimental Event Market roster", () => {
       ],
       101
     )
+    deletion = await admitted(deletion)
     expect(
       resolveEventMarketRoster({
         coordinate: marketCoordinate,
@@ -372,12 +396,13 @@ describe("experimental Event Market roster", () => {
         deletions: [deletion],
       })
     ).toMatchObject({ state: "deleted" })
-    const malformed = sign(
+    let malformed = sign(
       organizerSecret,
       30409,
       [...initial.tags, ["event_market", "1", "closed"]],
       102
     )
+    malformed = await admitted(malformed)
     expect(
       resolveEventMarketRoster({
         coordinate: marketCoordinate,
@@ -386,9 +411,11 @@ describe("experimental Event Market roster", () => {
     ).toEqual({ state: "malformed", eventId: malformed.id })
   })
 
-  it("does not restore an older calendar when its newer signed revision is malformed", () => {
-    const market = parseEventMarketRosterEvent(roster([merchantRow]))!
-    const first = sign(
+  it("does not restore an older calendar when its newer signed revision is malformed", async () => {
+    const market = parseEventMarketRosterEvent(
+      await admitted(roster([merchantRow]))
+    )!
+    let first = sign(
       organizerSecret,
       31923,
       [
@@ -399,7 +426,7 @@ describe("experimental Event Market roster", () => {
       ],
       100
     )
-    const invalid = sign(
+    let invalid = sign(
       organizerSecret,
       31923,
       [
@@ -408,6 +435,8 @@ describe("experimental Event Market roster", () => {
       ],
       101
     )
+    first = await admitted(first)
+    invalid = await admitted(invalid)
     expect(
       resolveEventMarketCalendar({ market, revisions: [first] })
     ).not.toBeNull()
@@ -416,10 +445,12 @@ describe("experimental Event Market roster", () => {
     ).toBeNull()
   })
 
-  it("admits assigned products despite product market hints, but rejects spam, hidden, or deleted revisions", () => {
-    const market = parseEventMarketRosterEvent(roster([merchantRow]))!
+  it("admits assigned products despite product market hints, but rejects spam, hidden, or deleted revisions", async () => {
+    const market = parseEventMarketRosterEvent(
+      await admitted(roster([merchantRow]))
+    )!
+    const first = await admitted(product(merchantSecret, merchant, "soap", 100))
     const parsedAssignment = parseEventMarketAssignmentEvent(assignment())!
-    const first = product(merchantSecret, merchant, "soap", 100)
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -429,7 +460,7 @@ describe("experimental Event Market roster", () => {
         assignment: parsedAssignment,
       }).state
     ).toBe("eligible")
-    const spam = product(spammerSecret, spammer, "spam", 100)
+    const spam = await admitted(product(spammerSecret, spammer, "spam", 100))
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -439,7 +470,9 @@ describe("experimental Event Market roster", () => {
         assignment: parsedAssignment,
       }).state
     ).toBe("unapproved")
-    const hidden = product(merchantSecret, merchant, "soap", 101, true, true)
+    const hidden = await admitted(
+      product(merchantSecret, merchant, "soap", 101, true, true)
+    )
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -449,7 +482,9 @@ describe("experimental Event Market roster", () => {
         assignment: parsedAssignment,
       }).state
     ).toBe("hidden")
-    const untagged = product(merchantSecret, merchant, "soap", 102, false)
+    const untagged = await admitted(
+      product(merchantSecret, merchant, "soap", 102, false)
+    )
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -459,7 +494,7 @@ describe("experimental Event Market roster", () => {
         assignment: parsedAssignment,
       }).state
     ).toBe("eligible")
-    const deleted = sign(
+    let deleted = sign(
       merchantSecret,
       5,
       [
@@ -468,6 +503,7 @@ describe("experimental Event Market roster", () => {
       ],
       103
     )
+    deleted = await admitted(deleted)
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -478,7 +514,9 @@ describe("experimental Event Market roster", () => {
         assignment: parsedAssignment,
       }).state
     ).toBe("deleted")
-    const revoked = parseEventMarketRosterEvent(roster([], 103))!
+    const revoked = parseEventMarketRosterEvent(
+      await admitted(roster([], 103))
+    )!
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -488,7 +526,9 @@ describe("experimental Event Market roster", () => {
         assignment: parsedAssignment,
       }).state
     ).toBe("unapproved")
-    const reapproved = parseEventMarketRosterEvent(roster([merchantRow], 104))!
+    const reapproved = parseEventMarketRosterEvent(
+      await admitted(roster([merchantRow], 104))
+    )!
     expect(
       resolveEventMarketProduct({
         authorization,
@@ -530,13 +570,15 @@ describe("experimental Event Market roster", () => {
       market: { merchants: [] },
     })
     expect(read.coverage).toBe("stale")
-    expect(read.observedEvidence).toEqual(
-      expect.arrayContaining([approved, removed])
+    expect(read.observedEvidence?.map((event) => event.id)).toEqual(
+      expect.arrayContaining([approved.id, removed.id])
     )
   })
 
   it("uses the exact latest product revision when a lagging relay offers an old market hint", async () => {
-    const approved = parseEventMarketRosterEvent(roster([merchantRow]))!
+    const approved = parseEventMarketRosterEvent(
+      await admitted(roster([merchantRow]))
+    )!
     const tagged = product(merchantSecret, merchant, "soap", 100)
     const untagged = product(merchantSecret, merchant, "soap", 101, false)
     const read = await readEventMarketProduct(
@@ -548,17 +590,19 @@ describe("experimental Event Market roster", () => {
           retained: true,
           observedRelayUrls: ["wss://example.com"],
           calendar: parseEventMarketCalendarEvent(
-            sign(
-              organizerSecret,
-              31923,
-              [
-                ["d", "fair"],
-                ["title", "Fair"],
-                ["start", "1900000000"],
-                ["end", "1900003600"],
-                ["D", String(Math.floor(1_900_000_000 / 86_400))],
-              ],
-              100
+            await admitted(
+              sign(
+                organizerSecret,
+                31923,
+                [
+                  ["d", "fair"],
+                  ["title", "Fair"],
+                  ["start", "1900000000"],
+                  ["end", "1900003600"],
+                  ["D", String(Math.floor(1_900_000_000 / 86_400))],
+                ],
+                100
+              )
             )
           ),
           calendarCoverage: "complete",
@@ -613,7 +657,7 @@ describe("experimental Event Market roster", () => {
     )
     const tagged = product(merchantSecret, merchant, "soap", 100)
     const untagged = product(merchantSecret, merchant, "soap", 101, false)
-    const spam = product(spammerSecret, spammer, "spam", 100)
+    const spam = await admitted(product(spammerSecret, spammer, "spam", 100))
     const calls: Array<{
       kinds: number[]
       authors: string[]
@@ -744,7 +788,8 @@ describe("experimental Event Market roster", () => {
           merchantPubkey: merchant,
           state: index % 2 === 0 ? "active" : "revoked",
           sequence:
-            parseEventMarketAuthorizationEvent(history.at(-1)!)!.sequence + 1,
+            Number(history.at(-1)!.tags.find((tag) => tag[0] === "seq")?.[1]) +
+            1,
           parentIds: [history.at(-1)!.id],
         })
         history.push(sign(organizerSecret, draft.kind, draft.tags, 102 + index))
@@ -834,15 +879,18 @@ describe("experimental Event Market roster", () => {
     })
   }
 
-  it("freezes the signed roster row, assignment, and product revision with the merchant as payee", () => {
-    const currentMarket = parseEventMarketRosterEvent(roster([merchantRow]))!
+  it("freezes the signed roster row, assignment, and product revision with the merchant as payee", async () => {
+    const currentMarket = parseEventMarketRosterEvent(
+      await admitted(roster([merchantRow]))
+    )!
     const signedProduct = product(merchantSecret, merchant, "soap", 100)
+    const admittedProduct = await admitted(signedProduct)
     const signedAssignment = assignment()
     const currentProduct = resolveEventMarketProduct({
       authorization,
       market: currentMarket,
       productCoordinate,
-      revisions: [signedProduct],
+      revisions: [admittedProduct],
       assignment: parseEventMarketAssignmentEvent(signedAssignment)!,
     })
     const signedCalendar = sign(
@@ -857,7 +905,8 @@ describe("experimental Event Market roster", () => {
       ],
       100
     )
-    const calendar = parseEventMarketCalendarEvent(signedCalendar)!
+    const admittedCalendar = await admitted(signedCalendar)
+    const calendar = parseEventMarketCalendarEvent(admittedCalendar)!
     const marketRead = {
       coordinate: marketCoordinate,
       resolution: { state: "current" as const, market: currentMarket },
@@ -865,7 +914,7 @@ describe("experimental Event Market roster", () => {
       retained: true,
       observedRelayUrls: ["wss://example.com"],
       calendar,
-      calendarSignedEvent: signedCalendar,
+      calendarSignedEvent: admittedCalendar,
       calendarCoverage: "complete" as const,
     }
     const productRead = {
@@ -1008,7 +1057,12 @@ describe("retained future Event Market evidence", () => {
         relayHintTruncated: false,
       }),
       fetch: async (filter) => ({
-        events: live.filter((event) => matchFilter(filter as Filter, event)),
+        events: live.filter((event) =>
+          matchFilter(filter as Filter, {
+            ...event,
+            tags: event.tags.map((tag) => [...tag]),
+          })
+        ),
         relays: [{ relayUrl: "wss://example.com", status: "success" }],
       }),
       load: async () => [...retained.values()],
@@ -1038,7 +1092,7 @@ describe("retained future Event Market evidence", () => {
         marketCoordinate,
         merchantPubkey: merchant,
         state: "revoked",
-        sequence: parseEventMarketAuthorizationEvent(initial)!.sequence + 1,
+        sequence: Number(initial.tags.find((tag) => tag[0] === "seq")?.[1]) + 1,
         parentIds: [initial.id],
       })
       previous = sign(organizerSecret, draft.kind, draft.tags, 105)
@@ -1069,7 +1123,8 @@ describe("retained future Event Market evidence", () => {
         marketCoordinate,
         merchantPubkey: merchant,
         state: "active",
-        sequence: parseEventMarketAuthorizationEvent(previous)!.sequence + 1,
+        sequence:
+          Number(previous.tags.find((tag) => tag[0] === "seq")?.[1]) + 1,
         parentIds: [previous.id],
         repairs: [{ deletionId: erased.id, targetId: previous.id }],
       })
@@ -1200,7 +1255,8 @@ describe("retained future Event Market evidence", () => {
           merchantPubkey: merchant,
           state: "active",
           sequence:
-            parseEventMarketAuthorizationEvent(state.previous)!.sequence + 1,
+            Number(state.previous.tags.find((tag) => tag[0] === "seq")?.[1]) +
+            1,
           parentIds: [state.previous.id],
           repairs:
             defect === "unrepaired"
@@ -1475,11 +1531,14 @@ describe("retained future Event Market evidence", () => {
       state.live.push(product(merchantSecret, merchant, "soap", 100))
       for (const event of [active, revoked, bad])
         state.retained.set(event.id, event)
+      const verifiedTransitions = await Promise.all(
+        [active, revoked, bad].map(admitted)
+      )
       expect(
         resolveEventMarketAuthorization({
           marketCoordinate,
           merchantPubkey: merchant,
-          transitions: [active, revoked, bad],
+          transitions: verifiedTransitions,
         }).state
       ).toBe(defect === "orphan" ? "missing_parent" : "malformed")
       const catalog = await readEventMarketCatalog(

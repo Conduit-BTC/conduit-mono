@@ -22,10 +22,6 @@ describe("Merchant participation inbox errors", () => {
         ["recipient_relays_excluded", "excluded by your Network settings"],
         ["recipient_lookup_failed", "could not be checked"],
         [
-          "recipient_declaration_distribution_pending",
-          `${recipient} has configured a private inbox, but it has not been confirmed`,
-        ],
-        [
           "recipient_declaration_signed_empty",
           `${recipient} has a signed private inbox declaration that lists no relays`,
         ],

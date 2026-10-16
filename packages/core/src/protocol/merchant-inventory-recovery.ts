@@ -19,6 +19,7 @@ import { readEventMarketAssignment } from "./event-market-roster-read"
 import { parseProductEvent } from "./products"
 import {
   fetchSignedEventsFanoutDetailed,
+  verifySignedEventBatches,
   type PublicRelayReadOptions,
 } from "./relay-reader"
 import {
@@ -60,10 +61,7 @@ function options(
     maxRelayAttempts: plan.maxRelayAttempts,
     accountPubkey: input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
-    appRelayUrls: plan.appRelayUrls,
-    personalRelayUrls: plan.personalRelayUrls,
-    independentRelayUrls: plan.independentRelayUrls,
+    relayTargets: plan.relayTargets,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   }
@@ -218,7 +216,11 @@ async function occurrenceState(
       idReadFailed = true
     }
   }
-  const parsedCurrent = current ? parseEventMarketCalendarEvent(current) : null
+  const parsedCurrent = current
+    ? parseEventMarketCalendarEvent(
+        (await verifySignedEventBatches([current]))[0]!
+      )
+    : null
   let coverage = coverageOf(
     plan,
     reads,
@@ -331,7 +333,9 @@ export async function recoverMerchantInventoryProduct(
     }
   let source: ReturnType<typeof parseProductEvent>
   try {
-    source = parseProductEvent(signedProductEvent)
+    source = parseProductEvent(
+      (await verifySignedEventBatches([signedProductEvent]))[0]!
+    )
   } catch {
     return {
       state: "unsafe_conflict",

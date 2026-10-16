@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -23,53 +24,61 @@ import {
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
-const dates = [
-  { dTag: "first", start: 1_790_000_000, end: 1_790_003_600, day: "20717" },
-  { dTag: "second", start: 1_790_086_400, end: 1_790_090_000, day: "20718" },
-].map(({ dTag, start, end, day }) => {
-  const signed = finalizeEvent(
+const dates = await Promise.all(
+  [
+    { dTag: "first", start: 1_790_000_000, end: 1_790_003_600, day: "20717" },
+    { dTag: "second", start: 1_790_086_400, end: 1_790_090_000, day: "20718" },
+  ].map(async ({ dTag, start, end, day }) => {
+    const signed = await admitFixture(
+      finalizeEvent(
+        {
+          kind: 31923,
+          tags: [
+            ["d", dTag],
+            ["title", `Fair ${dTag}`],
+            ["start", String(start)],
+            ["end", String(end)],
+            ["D", day],
+          ],
+          content: "",
+          created_at: 100,
+        },
+        secret
+      )
+    )
+    return { signed, parsed: parseEventMarketCalendarEvent(signed)! }
+  })
+)
+const seriesCoordinate = `31924:${organizer}:fair-dates`
+const seriesSigned = await admitFixture(
+  finalizeEvent(
     {
-      kind: 31923,
-      tags: [
-        ["d", dTag],
-        ["title", `Fair ${dTag}`],
-        ["start", String(start)],
-        ["end", String(end)],
-        ["D", day],
-      ],
-      content: "",
+      ...buildEventMarketSeriesDraft({
+        dTag: "fair-dates",
+        organizerPubkey: organizer,
+        title: "Fair dates",
+        memberCoordinates: dates.map(({ parsed }) => parsed.coordinate),
+      }),
       created_at: 100,
     },
     secret
   )
-  return { signed, parsed: parseEventMarketCalendarEvent(signed)! }
-})
-const seriesCoordinate = `31924:${organizer}:fair-dates`
-const seriesSigned = finalizeEvent(
-  {
-    ...buildEventMarketSeriesDraft({
-      dTag: "fair-dates",
-      organizerPubkey: organizer,
-      title: "Fair dates",
-      memberCoordinates: dates.map(({ parsed }) => parsed.coordinate),
-    }),
-    created_at: 100,
-  },
-  secret
 )
 const series = parseEventMarketSeriesEvent(seriesSigned)!
-const marketSigned = finalizeEvent(
-  {
-    ...buildEventMarketRosterDraft({
-      dTag: "fair",
-      organizerPubkey: organizer,
-      calendarCoordinate: seriesCoordinate,
-      state: "open",
-      merchants: [],
-    }),
-    created_at: 100,
-  },
-  secret
+const marketSigned = await admitFixture(
+  finalizeEvent(
+    {
+      ...buildEventMarketRosterDraft({
+        dTag: "fair",
+        organizerPubkey: organizer,
+        calendarCoordinate: seriesCoordinate,
+        state: "open",
+        merchants: [],
+      }),
+      created_at: 100,
+    },
+    secret
+  )
 )
 const market = parseEventMarketRosterEvent(marketSigned)!
 const seriesRead: EventMarketRosterReadResult = {

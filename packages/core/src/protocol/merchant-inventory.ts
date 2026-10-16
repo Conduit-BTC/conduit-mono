@@ -784,11 +784,19 @@ async function prepareNextPublication(
       (j) => j.revision < pending.revision
     )
     if (previousJobs.some((j) => !j.signedEvent)) return undefined
-    const predecessor =
-      previousJobs.at(-1)?.signedEvent ??
-      (kind === "product"
-        ? (record as MerchantInventoryProduct).signedProductEvent
-        : (record as MerchantInventoryAssignment).signedAssignmentEvent)
+    const predecessors = [
+      ...previousJobs.flatMap((work) =>
+        work.signedEvent ? [work.signedEvent] : []
+      ),
+      ...(kind === "product"
+        ? [(record as MerchantInventoryProduct).signedProductEvent]
+        : (record as MerchantInventoryAssignment).signedAssignmentEvent
+          ? [(record as MerchantInventoryAssignment).signedAssignmentEvent!]
+          : []),
+    ]
+    const predecessor = predecessors.sort(
+      (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)
+    )[0]
     if (!pending.draft) {
       pending.draft =
         kind === "product"
@@ -854,7 +862,8 @@ async function markDelivered(
   db: ConduitDB,
   kind: "product" | "assignment",
   coordinate: string,
-  jobId: string
+  jobId: string,
+  state: "delivered" | "superseded" = "delivered"
 ): Promise<void> {
   const table =
     kind === "product"
@@ -865,7 +874,7 @@ async function markDelivered(
     const work = record?.publicationJobs.find((j) => j.id === jobId)
     if (!record || !work?.signedEvent)
       throw new Error("Signed publication missing")
-    work.state = "delivered"
+    work.state = state
     await table.put(record as never)
   })
 }
@@ -875,7 +884,7 @@ export async function resumeMerchantInventoryPublication(input: {
   db: ConduitDB
   merchantPubkey: string
   sign(draft: Draft): Promise<SignedPublicNostrEvent>
-  publish(signed: SignedPublicNostrEvent): Promise<boolean>
+  publish(signed: SignedPublicNostrEvent): Promise<boolean | "superseded">
 }): Promise<{ signed: number; delivered: number; pending: number }> {
   const { db, merchantPubkey, sign, publish } = input
   let signed = 0
@@ -927,15 +936,21 @@ export async function resumeMerchantInventoryPublication(input: {
         : await db.merchantInventoryAssignments.get(record.coordinate)
     for (const work of current?.publicationJobs ?? []) {
       if (work.state !== "signed" || !work.signedEvent) continue
-      let acknowledged = false
+      let acknowledged: boolean | "superseded" = false
       try {
         acknowledged = await publish(work.signedEvent)
       } catch {
         /* retained for retry */
       }
       if (acknowledged) {
-        await markDelivered(db, record.kind, record.coordinate, work.id)
-        delivered += 1
+        await markDelivered(
+          db,
+          record.kind,
+          record.coordinate,
+          work.id,
+          acknowledged === "superseded" ? "superseded" : "delivered"
+        )
+        if (acknowledged === true) delivered += 1
       }
     }
   }
@@ -950,8 +965,9 @@ export async function resumeMerchantInventoryPublication(input: {
   const pending = [...products, ...assignments].reduce(
     (sum, record) =>
       sum +
-      record.publicationJobs.filter((work) => work.state !== "delivered")
-        .length,
+      record.publicationJobs.filter(
+        (work) => work.state !== "delivered" && work.state !== "superseded"
+      ).length,
     0
   )
   return { signed, delivered, pending }

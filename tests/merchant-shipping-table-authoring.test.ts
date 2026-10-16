@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -14,6 +13,8 @@ import {
   productSchema,
   parseProductEvent,
   quoteShippingPolicy,
+  shippingPolicyQuoteSchema,
+  convertShippingMinor,
   shippingMoneyToMinorUnits,
   getCurrencyFractionDigits,
   type ShippingPolicy,
@@ -36,6 +37,7 @@ import {
 } from "../apps/merchant/src/lib/productVariations"
 import { getMerchantSetupReadiness } from "../apps/merchant/src/lib/readiness"
 import { validateProductPublishForm } from "../apps/merchant/src/lib/productForm"
+import { admitFixture } from "./helpers/public-event"
 import {
   buildShippingPolicyFromDraft,
   changeShippingPolicyOrigin,
@@ -72,7 +74,7 @@ const policy: ShippingPolicy = {
 }
 const draft = buildShippingPolicyEventDraft({ policy })
 const event = finalizeEvent({ ...draft, created_at: 20 }, secret)
-const option = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+const option = parseShippingOptionEvent(await admitFixture(event))!
 option.readSource = "relay"
 option.readCoverage = "complete"
 const product = productSchema.parse({
@@ -100,6 +102,25 @@ const tableIntent = {
 const dependencies = {
   getShippingOptions: async () => [option],
   getEventMarketPickups: async () => [],
+}
+
+// Retained wire fixtures are signed directly, not admitted by a new-write helper.
+function signHistoricalPolicy(policy: ShippingPolicy) {
+  const draft = buildShippingPolicyEventDraft({
+    policy: { ...policy, currency: "USD" },
+  })
+  return finalizeEvent(
+    {
+      ...draft,
+      created_at: 30,
+      tags: draft.tags.map((tag) =>
+        tag[0] === "conduit_shipping_table"
+          ? [tag[0], String(policy.version), JSON.stringify(policy)]
+          : tag
+      ),
+    },
+    secret
+  )
 }
 
 describe("merchant shipping table authoring", () => {
@@ -329,9 +350,9 @@ describe("merchant shipping table authoring", () => {
     form.domestic.rules[0]!.bands[0]!.price = "0.001"
     expect(() => buildShippingPolicyFromDraft(form)).toThrow()
   })
-  test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "BTC"])(
+  test.each(["SATS", "MSATS", "JPY", "USD", "BTC"])(
     "preserves %s prices and thresholds through edit and signed republication",
-    (currency) => {
+    async (currency) => {
       for (const minor of [
         0,
         1,
@@ -373,7 +394,7 @@ describe("merchant shipping table authoring", () => {
           secret
         )
         expect(
-          parseShippingOptionEvent(new NDKEvent(undefined, republished))
+          parseShippingOptionEvent(await admitFixture(republished))
             ?.shippingPolicy
         ).toEqual(rebuilt)
       }
@@ -396,9 +417,9 @@ describe("merchant shipping table authoring", () => {
       shippingHandling: product.shippingHandling,
     })
   })
-  test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "CLF", "BTC"])(
+  test.each(["SATS", "MSATS", "JPY", "USD", "BTC"])(
     "preserves every accepted %s handling minor unit through signed product parsing and quoting",
-    (currency) => {
+    async (currency) => {
       const digits = getCurrencyFractionDigits(currency)
       const exactText = (minor: number) => {
         const text = String(minor).padStart(digits + 1, "0")
@@ -406,7 +427,7 @@ describe("merchant shipping table authoring", () => {
           ? `${text.slice(0, -digits)}.${text.slice(-digits)}`
           : text
       }
-      const losesMaximum = ["USD", "KWD", "BTC"].includes(currency)
+      const losesMaximum = ["USD", "BTC"].includes(currency)
       if (losesMaximum) {
         expect(() =>
           getProductShippingMeasurements({
@@ -474,7 +495,7 @@ describe("merchant shipping table authoring", () => {
           },
           secret
         )
-        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        const parsed = parseProductEvent(await admitFixture(signed))!
         expect(
           shippingMoneyToMinorUnits(parsed.shippingHandling!.amount, currency)
         ).toBe(minor)
@@ -484,13 +505,13 @@ describe("merchant shipping table authoring", () => {
           policyEventId: policyEvent.id,
           policyCreatedAt: policyEvent.created_at,
           merchantPubkey: pubkey,
-          policyEvent,
+          policyEvent: await admitFixture(policyEvent),
           destination: { country: "US" },
           rateInput: {
             rate: minor <= 12345 ? 10_000 : 1_000_000_000_000,
             fetchedAt: Date.now(),
             source: "env",
-            fiatUsdRates: { JPY: 1, KWD: 1, CLF: 1 },
+            fiatUsdRates: { JPY: 1 },
             fiatSource: "env",
           },
           items: [
@@ -498,7 +519,7 @@ describe("merchant shipping table authoring", () => {
               productId: parsed.id,
               productEventId: signed.id,
               productCreatedAt: signed.created_at,
-              productEvent: signed,
+              productEvent: await admitFixture(signed),
               currency,
               quantity,
               weightGrams: parsed.shippingWeightGrams,
@@ -519,6 +540,210 @@ describe("merchant shipping table authoring", () => {
             currency
           )
         ).toBe(minor)
+      }
+    }
+  )
+  test.each([
+    ["KWD", 3],
+    ["CLF", 4],
+  ] as const)(
+    "preserves historical %s precision and signed terms without permitting new commerce",
+    async (currency, digits) => {
+      expect(getCurrencyFractionDigits(currency)).toBe(digits)
+      const exactText = (minor: number) => {
+        const text = String(minor).padStart(digits + 1, "0")
+        return `${text.slice(0, -digits)}.${text.slice(-digits)}`
+      }
+      for (const minor of [
+        0,
+        1,
+        12345,
+        Number.MAX_SAFE_INTEGER - 1,
+        Number.MAX_SAFE_INTEGER,
+      ]) {
+        const historicalPolicy: ShippingPolicy = {
+          ...policy,
+          currency,
+          domestic: {
+            rules: [
+              {
+                country: "US",
+                bands: [{ maxWeightGrams: 500, priceMinor: minor }],
+              },
+            ],
+            freeShippingThresholdMinor: minor,
+          },
+          international: {
+            rules: [
+              {
+                country: "CA",
+                bands: [{ maxWeightGrams: 500, priceMinor: minor }],
+              },
+            ],
+            freeShippingThresholdMinor: minor,
+          },
+        }
+        const signed = signHistoricalPolicy(historicalPolicy)
+        const parsed = parseShippingOptionEvent(await admitFixture(signed))!
+        expect(parsed.shippingPolicy).toEqual(historicalPolicy)
+        const editable = shippingPolicyToDraft(parsed.shippingPolicy!)
+        const editableText = exactText(minor)
+          .replace(/0+$/, "")
+          .replace(/\.$/, "")
+        expect(editable.domestic.rules[0]!.bands[0]!.price).toBe(editableText)
+        expect(editable.domestic.freeShippingThreshold).toBe(editableText)
+        editable.title = "Updated title"
+        const rebuilt = buildShippingPolicyFromDraft(editable)
+        expect(rebuilt).toEqual({
+          ...historicalPolicy,
+          title: "Updated title",
+        })
+        expect(() =>
+          buildShippingPolicyEventDraft({ policy: rebuilt })
+        ).toThrow("Unsupported shipping currency")
+      }
+
+      const historicalPolicy: ShippingPolicy = {
+        version: 2,
+        title: "Historical handling boundary",
+        originCountry: "US",
+        currency,
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 500_000, priceMinor: 0 }],
+            },
+          ],
+        },
+        international: null,
+      }
+      const policyEvent = signHistoricalPolicy(historicalPolicy)
+      const admittedPolicy = await admitFixture(policyEvent)
+      if (currency === "KWD") {
+        expect(() =>
+          getProductShippingMeasurements({
+            currency,
+            shippingHandling: exactText(Number.MAX_SAFE_INTEGER),
+          })
+        ).toThrow("preserve exactly")
+      }
+      for (const minor of [
+        0,
+        1,
+        12345,
+        Number.MAX_SAFE_INTEGER - 1,
+        ...(currency === "KWD" ? [] : [Number.MAX_SAFE_INTEGER]),
+      ]) {
+        const measurements = getProductShippingMeasurements({
+          currency,
+          shippingWeightGrams: "250",
+          shippingHandling: exactText(minor),
+        })
+        expect(
+          shippingMoneyToMinorUnits(
+            measurements.shippingHandling!.amount,
+            currency
+          )
+        ).toBe(minor)
+        const signed = finalizeEvent(
+          {
+            kind: 30402,
+            content: "",
+            created_at: 31,
+            tags: [
+              ["d", "one"],
+              ["title", "Historical product"],
+              ["price", "1", currency],
+              ["type", product.type, "physical"],
+              ["weight", "250", "g"],
+              ["shipping_option", tableIntent.policyCoordinate],
+              [
+                "conduit_shipping_adjustments",
+                "1",
+                JSON.stringify({ handling: measurements.shippingHandling }),
+              ],
+            ],
+          },
+          secret
+        )
+        const admittedProduct = await admitFixture(signed)
+        const parsed = parseProductEvent(admittedProduct)!
+        expect(
+          shippingMoneyToMinorUnits(parsed.shippingHandling!.amount, currency)
+        ).toBe(minor)
+        expect(() =>
+          buildProductListingEventDraft({ product: parsed, dTag: "one" })
+        ).toThrow("not supported for new commerce")
+        const rate = {
+          rate: minor <= 12345 ? 10_000 : 1_000_000_000_000,
+          fetchedAt: 1,
+          source: "env" as const,
+          fiatUsdRates: { [currency]: 1 },
+          fiatSource: "env" as const,
+        }
+        const item = {
+          productId: parsed.id,
+          productEventId: signed.id,
+          productCreatedAt: signed.created_at,
+          productEvent: signed,
+          currency,
+          quantity: 1,
+          weightGrams: parsed.shippingWeightGrams,
+          shippingHandling: parsed.shippingHandling,
+          subtotalMinor: shippingMoneyToMinorUnits(1, currency),
+          convertedSubtotalMinor: 0,
+          convertedHandlingMinor: minor,
+        }
+        const retained = shippingPolicyQuoteSchema.parse({
+          version: 2,
+          merchantPubkey: pubkey,
+          policyCoordinate: tableIntent.policyCoordinate,
+          policyEventId: policyEvent.id,
+          policyCreatedAt: policyEvent.created_at,
+          policyEvent,
+          currency,
+          combinedWeightGrams: 250,
+          shippedSubtotalMinor: 0,
+          bandMaxWeightGrams: 500_000,
+          bandPriceMinor: 0,
+          handlingMinor: minor,
+          freeShippingApplied: false,
+          amountMinor: minor,
+          amountSats: convertShippingMinor(minor, currency, "SATS", rate),
+          pricingRate: minor === 0 ? null : rate,
+          destination: { country: "US" },
+          rule: { country: "US" },
+          itemProductIds: [parsed.id],
+          items: [item],
+        })
+        expect(retained.handlingMinor).toBe(minor)
+        expect(retained.amountMinor).toBe(minor)
+        expect(
+          shippingMoneyToMinorUnits(
+            retained.items[0]!.shippingHandling!.amount,
+            currency
+          )
+        ).toBe(minor)
+        expect(
+          shippingPolicyQuoteSchema.safeParse({
+            ...retained,
+            handlingMinor: minor + 1,
+          }).success
+        ).toBe(false)
+        expect(
+          quoteShippingPolicy({
+            policy: historicalPolicy,
+            policyCoordinate: tableIntent.policyCoordinate,
+            policyEventId: policyEvent.id,
+            policyCreatedAt: policyEvent.created_at,
+            merchantPubkey: pubkey,
+            policyEvent: admittedPolicy,
+            destination: { country: "US" },
+            rateInput: rate,
+            items: [{ ...item, productEvent: admittedProduct }],
+          })
+        ).toEqual({ status: "invalid_policy" })
       }
     }
   )
@@ -703,7 +928,7 @@ describe("merchant shipping table authoring", () => {
     })
     const newerEvent = finalizeEvent({ ...draft, created_at: 21 }, secret)
     const newerOption = parseShippingOptionEvent(
-      new NDKEvent(undefined, newerEvent)
+      await admitFixture(newerEvent)
     )!
     newerOption.readSource = "relay"
     newerOption.readCoverage = "complete"
@@ -754,44 +979,45 @@ describe("merchant shipping table authoring", () => {
         { ...buildShippingPolicyEventDraft({ policy: terms }), created_at: 20 },
         secret
       )
-      const current = parseShippingOptionEvent(
-        new NDKEvent(undefined, policyEvent)
-      )!
+      const current = parseShippingOptionEvent(await admitFixture(policyEvent))!
       current.readSource = "relay"
       current.readCoverage = "complete"
-      const records = ["one", "one-small"].map((dTag, index) => {
-        const source = {
-          ...product,
-          id: `30402:${pubkey}:${dTag}`,
-          type: index === 0 ? ("variable" as const) : ("variation" as const),
-          parentProductId: index === 0 ? undefined : `30402:${pubkey}:one`,
-          specifications: index === 0 ? [] : [{ key: "Size", value: "Small" }],
-          price: 1000,
-          currency: "SATS",
-          sourcePrice: undefined,
-          shippingWeightAllowanceGrams: undefined,
-          shippingHandling: undefined,
-          shippingOptionId: tableIntent.policyCoordinate,
-        }
-        const draft = buildProductListingEventDraft({ product: source, dTag })
-        const signed = finalizeEvent(
-          {
-            ...draft,
-            tags: [...draft.tags, ["conduit_shipping_adjustments", "1", "{"]],
-            created_at: 21,
-          },
-          secret
-        )
-        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
-        expect(parsed.shippingAdjustmentsMalformed).toBe(true)
-        return {
-          product: parsed,
-          dTag,
-          addressId: parsed.id,
-          eventId: signed.id,
-          eventCreatedAt: signed.created_at,
-        }
-      })
+      const records = await Promise.all(
+        ["one", "one-small"].map(async (dTag, index) => {
+          const source = {
+            ...product,
+            id: `30402:${pubkey}:${dTag}`,
+            type: index === 0 ? ("variable" as const) : ("variation" as const),
+            parentProductId: index === 0 ? undefined : `30402:${pubkey}:one`,
+            specifications:
+              index === 0 ? [] : [{ key: "Size", value: "Small" }],
+            price: 1000,
+            currency: "SATS",
+            sourcePrice: undefined,
+            shippingWeightAllowanceGrams: undefined,
+            shippingHandling: undefined,
+            shippingOptionId: tableIntent.policyCoordinate,
+          }
+          const draft = buildProductListingEventDraft({ product: source, dTag })
+          const signed = finalizeEvent(
+            {
+              ...draft,
+              tags: [...draft.tags, ["conduit_shipping_adjustments", "1", "{"]],
+              created_at: 21,
+            },
+            secret
+          )
+          const parsed = parseProductEvent(await admitFixture(signed))!
+          expect(parsed.shippingAdjustmentsMalformed).toBe(true)
+          return {
+            product: parsed,
+            dTag,
+            addressId: parsed.id,
+            eventId: signed.id,
+            eventCreatedAt: signed.created_at,
+          }
+        })
+      )
       const family = {
         root: records[0]!,
         variations: records.slice(1),
@@ -843,51 +1069,53 @@ describe("merchant shipping table authoring", () => {
         { merchantPubkey: pubkey },
         { ...dependencies, getShippingOptions: async () => [current] }
       )
-      const items = prepared.map((target) => {
-        expect(target.product.shippingAdjustmentsMalformed).toBeUndefined()
-        const signed = finalizeEvent(
-          {
-            ...buildProductListingEventDraft({
-              product: applyProductFulfillmentIntentForPublication({
-                product: target.product,
-                merchantPubkey: pubkey,
-                productDTag: target.dTag,
-                intent: target.fulfillmentIntent,
+      const items = await Promise.all(
+        prepared.map(async (target) => {
+          expect(target.product.shippingAdjustmentsMalformed).toBeUndefined()
+          const signed = finalizeEvent(
+            {
+              ...buildProductListingEventDraft({
+                product: applyProductFulfillmentIntentForPublication({
+                  product: target.product,
+                  merchantPubkey: pubkey,
+                  productDTag: target.dTag,
+                  intent: target.fulfillmentIntent,
+                }),
+                dTag: target.dTag,
               }),
-              dTag: target.dTag,
-            }),
-            created_at: 22,
-          },
-          secret
-        )
-        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
-        expect(parsed.shippingAdjustmentsMalformed).toBeUndefined()
-        expect(parsed.shippingHandling?.amount).toBe(
-          action === "repair" ? 25 : undefined
-        )
-        expect(parsed.shippingWeightAllowanceGrams).toBe(
-          action === "repair" ? 50 : undefined
-        )
-        return {
-          productId: parsed.id,
-          productEventId: signed.id,
-          productCreatedAt: signed.created_at,
-          productEvent: signed,
-          currency: "SATS",
-          quantity: 1,
-          weightGrams: parsed.shippingWeightGrams,
-          shippingWeightAllowanceGrams: parsed.shippingWeightAllowanceGrams,
-          shippingHandling: parsed.shippingHandling,
-          subtotalMinor: 1000,
-        }
-      })
+              created_at: 22,
+            },
+            secret
+          )
+          const parsed = parseProductEvent(await admitFixture(signed))!
+          expect(parsed.shippingAdjustmentsMalformed).toBeUndefined()
+          expect(parsed.shippingHandling?.amount).toBe(
+            action === "repair" ? 25 : undefined
+          )
+          expect(parsed.shippingWeightAllowanceGrams).toBe(
+            action === "repair" ? 50 : undefined
+          )
+          return {
+            productId: parsed.id,
+            productEventId: signed.id,
+            productCreatedAt: signed.created_at,
+            productEvent: await admitFixture(signed),
+            currency: "SATS",
+            quantity: 1,
+            weightGrams: parsed.shippingWeightGrams,
+            shippingWeightAllowanceGrams: parsed.shippingWeightAllowanceGrams,
+            shippingHandling: parsed.shippingHandling,
+            subtotalMinor: 1000,
+          }
+        })
+      )
       const result = quoteShippingPolicy({
         policy: terms,
         policyCoordinate: tableIntent.policyCoordinate,
         policyEventId: policyEvent.id,
         policyCreatedAt: policyEvent.created_at,
         merchantPubkey: pubkey,
-        policyEvent,
+        policyEvent: await admitFixture(policyEvent),
         destination: { country: "US" },
         rateInput: { rate: 10000, fetchedAt: Date.now(), source: "env" },
         items,

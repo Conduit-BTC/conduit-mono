@@ -5,12 +5,15 @@
  */
 import { z } from "zod"
 import {
+  PRICING_BTC_SOURCES,
+  PRICING_FIAT_SOURCES,
   getCurrencyFractionDigits,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyIdentity,
   type PricingRateInput,
   type SourcePriceQuote,
 } from "../pricing"
-import { parseProductEvent } from "./products"
+import { parsePrivateOrderProductFields, parseProductEvent } from "./products"
 import { normalizeAddressRegion } from "./address-validation"
 import { EVENT_KINDS } from "./kinds"
 import { getAccountSigner } from "./session-signer"
@@ -28,6 +31,10 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 export const MERCHANT_SHIPPING_POLICY_D_TAG = "conduit-shipping-policy"
 export const SHIPPING_POLICY_EXTENSION_TAG = "conduit_shipping_table"
@@ -293,6 +300,17 @@ export function buildShippingPolicyEventDraft(input: {
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
   const policy = parseShippingPolicy(input.policy)
+  if (!isSupportedCommercePriceCurrency(policy.currency))
+    throw new Error("Unsupported shipping currency.")
+  return buildCanonicalShippingPolicyEventDraft({ ...input, policy })
+}
+
+/** Canonical wire reconstruction also serves retained signed policy parsing. */
+function buildCanonicalShippingPolicyEventDraft(input: {
+  policy: ShippingPolicy
+  clientAppId?: ConduitAppId
+}): ShippingOptionEventDraft {
+  const policy = input.policy
   const rules = [
     ...(policy.domestic?.rules ?? []),
     ...(policy.international?.rules ?? []),
@@ -320,8 +338,8 @@ export function buildShippingPolicyEventDraft(input: {
 }
 
 /** Table capability is required; summary metadata must agree with the policy. */
-export function parseShippingPolicyEventTags(
-  tags: readonly string[][]
+export function parsePrivateOrderShippingPolicyTags(
+  tags: readonly (readonly string[])[]
 ): ShippingPolicy | null {
   const markers = tags.filter((tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG)
   if (
@@ -333,7 +351,7 @@ export function parseShippingPolicyEventTags(
   try {
     const policy = parseShippingPolicy(JSON.parse(markers[0][2]!) as unknown)
     if (String(policy.version) !== markers[0]![1]) return null
-    const draft = buildShippingPolicyEventDraft({ policy })
+    const draft = buildCanonicalShippingPolicyEventDraft({ policy })
     const permitted = new Set([
       ...draft.tags.map((tag) => tag[0]),
       "client",
@@ -380,6 +398,18 @@ export function parseShippingPolicyEventTags(
   } catch {
     return null
   }
+}
+
+/** Public policy parsing requires the exact admitted kind-30406 event. */
+export function parseShippingPolicyEventTags(
+  event: VerifiedNostrEvent
+): ShippingPolicy | null {
+  if (
+    !isVerifiedNostrEvent(event) ||
+    event.kind !== EVENT_KINDS.SHIPPING_OPTION
+  )
+    return null
+  return parsePrivateOrderShippingPolicyTags(event.tags)
 }
 
 export interface ShippingPolicyRevision {
@@ -674,12 +704,13 @@ const shippingPricingRateSchema = z.union([
     .object({
       rate: z.number().finite().positive(),
       fetchedAt: z.number().finite().nonnegative(),
-      source: z.enum(["env", "mempool", "coinbase"]),
+      source: z.enum(PRICING_BTC_SOURCES),
       fiatUsdRates: z
         .record(z.string(), z.number().finite().positive())
         .optional(),
-      fiatSource: z
-        .enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
+      fiatSource: z.enum(PRICING_FIAT_SOURCES).optional(),
+      fiatSources: z
+        .record(z.string().regex(/^[A-Z]{3}$/), z.enum(PRICING_FIAT_SOURCES))
         .optional(),
     })
     .strict(),
@@ -751,7 +782,7 @@ export const shippingPolicyQuoteSchema = z
   ])
   .superRefine((quote, context) => {
     const event = quote.policyEvent
-    const policy = parseShippingPolicyEventTags(event.tags)
+    const policy = parsePrivateOrderShippingPolicyTags(event.tags)
     if (
       event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
       event.pubkey !== quote.merchantPubkey ||
@@ -768,17 +799,21 @@ export const shippingPolicyQuoteSchema = z
       })
       return
     }
-    const result = quoteShippingPolicy({
-      policy,
-      policyCoordinate: quote.policyCoordinate,
-      policyEventId: quote.policyEventId,
-      policyCreatedAt: quote.policyCreatedAt,
-      merchantPubkey: quote.merchantPubkey,
-      policyEvent: event,
-      items: quote.items,
-      destination: quote.destination,
-      rateInput: quote.pricingRate,
-    })
+    const result = quoteShippingPolicyWithEvidence(
+      {
+        policy,
+        policyCoordinate: quote.policyCoordinate,
+        policyEventId: quote.policyEventId,
+        policyCreatedAt: quote.policyCreatedAt,
+        merchantPubkey: quote.merchantPubkey,
+        policyEvent: event,
+        items: quote.items,
+        destination: quote.destination,
+        rateInput: quote.pricingRate,
+      },
+      isValidSignedPublicNostrEvent,
+      true
+    )
     // Earlier v2 snapshots converted merchandise even without a threshold.
     // Preserve readback of those exact terms using their retained rate only.
     if (
@@ -962,18 +997,31 @@ export function convertShippingMinor(
 }
 
 /** Same arithmetic as checkout, with no claim that an unpublished draft is signed. */
-export function previewShippingPolicy(input: {
+type ShippingPolicyPreviewInput = {
   policy: ShippingPolicy
   items: readonly ShippingPolicyPreviewItem[]
   destination: ShippingPolicyDestination
   rateInput?: PricingRateInput
-}): ShippingPolicyPreviewResult {
+}
+
+export function previewShippingPolicy(
+  input: ShippingPolicyPreviewInput
+): ShippingPolicyPreviewResult {
+  return previewShippingPolicyWithCurrencyPolicy(input, false)
+}
+
+function previewShippingPolicyWithCurrencyPolicy(
+  input: ShippingPolicyPreviewInput,
+  historical: boolean
+): ShippingPolicyPreviewResult {
   let policy: ShippingPolicy
   try {
     policy = parseShippingPolicy(input.policy)
   } catch {
     return { status: "invalid_policy" }
   }
+  if (!historical && !isSupportedCommercePriceCurrency(policy.currency))
+    return { status: "invalid_policy" }
   if (
     input.rateInput !== undefined &&
     !shippingPricingRateSchema.safeParse(input.rateInput).success
@@ -986,6 +1034,16 @@ export function previewShippingPolicy(input: {
       item.fulfillmentType !== "digital"
   )
   if (!items.length) return { status: "not_required" }
+  if (
+    !historical &&
+    items.some(
+      (item) =>
+        !isSupportedCommercePriceCurrency(item.currency) ||
+        (item.shippingHandling !== undefined &&
+          !isSupportedCommercePriceCurrency(item.shippingHandling.currency))
+    )
+  )
+    return { status: "invalid_items" }
   if (
     policy.version === 1 &&
     items.some(
@@ -1159,7 +1217,7 @@ export function previewShippingPolicy(input: {
   }
 }
 
-export function quoteShippingPolicy(input: {
+type ShippingPolicyQuoteInput = {
   policy: ShippingPolicy
   policyCoordinate: string
   policyEventId: string
@@ -1169,16 +1227,26 @@ export function quoteShippingPolicy(input: {
   items: readonly ShippingPolicyQuoteItem[]
   destination: ShippingPolicyDestination
   rateInput?: PricingRateInput
-}): ShippingPolicyQuoteResult {
+}
+
+function quoteShippingPolicyWithEvidence(
+  input: ShippingPolicyQuoteInput,
+  hasSignedEvidence: (event: SignedPublicNostrEvent) => boolean,
+  historical = false
+): ShippingPolicyQuoteResult {
   let policy: ShippingPolicy
   try {
     policy = parseShippingPolicy(input.policy)
   } catch {
     return { status: "invalid_policy" }
   }
-  if (!input.policyEvent || !isValidSignedPublicNostrEvent(input.policyEvent))
+  if (!historical && !isSupportedCommercePriceCurrency(policy.currency))
     return { status: "invalid_policy" }
-  const signedPolicy = parseShippingPolicyEventTags(input.policyEvent.tags)
+  if (!input.policyEvent || !hasSignedEvidence(input.policyEvent))
+    return { status: "invalid_policy" }
+  const signedPolicy = parsePrivateOrderShippingPolicyTags(
+    input.policyEvent.tags
+  )
   if (
     !signedPolicy ||
     JSON.stringify(signedPolicy) !== JSON.stringify(policy) ||
@@ -1211,14 +1279,16 @@ export function quoteShippingPolicy(input: {
     const event = item.productEvent
     if (
       !event ||
-      !isValidSignedPublicNostrEvent(event) ||
+      !hasSignedEvidence(event) ||
       event.kind !== EVENT_KINDS.PRODUCT ||
       event.pubkey !== input.merchantPubkey ||
       event.id !== item.productEventId ||
       event.created_at !== item.productCreatedAt
     )
       return { status: "invalid_items" }
-    const product = parseProductEvent(event)
+    const product = isVerifiedNostrEvent(event)
+      ? parseProductEvent(event)
+      : parsePrivateOrderProductFields(event)
     if (
       !product ||
       product.priceEvidenceMalformed ||
@@ -1251,12 +1321,15 @@ export function quoteShippingPolicy(input: {
       return { status: "invalid_items" }
     }
   }
-  const calculation = previewShippingPolicy({
-    policy,
-    items,
-    destination: input.destination,
-    rateInput: input.rateInput,
-  })
+  const calculation = previewShippingPolicyWithCurrencyPolicy(
+    {
+      policy,
+      items,
+      destination: input.destination,
+      rateInput: input.rateInput,
+    },
+    historical
+  )
   if (calculation.status !== "quoted") return calculation
   const { status, amountSats: calculatedSats, ...terms } = calculation
   let amountSats = calculatedSats
@@ -1371,6 +1444,13 @@ export function quoteShippingPolicy(input: {
       policyEvent: structuredClone(input.policyEvent),
     } as ShippingPolicyQuote,
   }
+}
+
+/** Public action quote requires previously admitted immutable live events. */
+export function quoteShippingPolicy(
+  input: ShippingPolicyQuoteInput
+): ShippingPolicyQuoteResult {
+  return quoteShippingPolicyWithEvidence(input, isVerifiedNostrEvent)
 }
 
 /** Advisory only: never changes weight, price, eligibility, or signed terms. */

@@ -258,7 +258,23 @@ async function makeDeletionImmediatelyRetryableAndRemoveLocalEvidence(
           const jobsRequest = outbox.getAll()
           jobsRequest.onsuccess = () => {
             for (const job of jobsRequest.result) {
-              outbox.put({ ...job, nextRetryAt: 0 })
+              // This fixture represents a retry after the rejected target's
+              // backoff has elapsed. Job-level eligibility alone does not
+              // override the independent per-target rejection clock.
+              outbox.put({
+                ...job,
+                nextRetryAt: 0,
+                relayDelivery: job.relayDelivery.map(
+                  (delivery: {
+                    status: string
+                    lastAttemptAt?: number
+                    rejectedAt?: number
+                  }) =>
+                    delivery.status === "rejected"
+                      ? { ...delivery, lastAttemptAt: 0, rejectedAt: 0 }
+                      : delivery
+                ),
+              })
             }
           }
           transaction.objectStore("productTombstones").clear()
@@ -549,6 +565,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   productIndexes: string[]
   tombstoneIndexes: string[]
   ownerEvidenceIndexes: string[]
+  rosterEvidenceIndexes: string[]
   product: Record<string, unknown> | undefined
   tombstone: Record<string, unknown> | undefined
   eventMarketEvidence: Record<string, unknown> | undefined
@@ -566,7 +583,8 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const stores = Array.from(database.objectStoreNames)
           if (
             !stores.includes("productDeletionOutbox") ||
-            !stores.includes("ownerRelayListEvidence")
+            !stores.includes("ownerRelayListEvidence") ||
+            !stores.includes("eventMarketRosterEvidence")
           ) {
             database.close()
             resolve({
@@ -576,6 +594,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               productIndexes: [],
               tombstoneIndexes: [],
               ownerEvidenceIndexes: [],
+              rosterEvidenceIndexes: [],
               product: undefined,
               tombstone: undefined,
               eventMarketEvidence: undefined,
@@ -592,6 +611,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               "productDeletionOutbox",
               "ownerRelayListEvidence",
               "eventMarketEvidence",
+              "eventMarketRosterEvidence",
               "merchantPendingInvoices",
             ],
             "readonly"
@@ -601,6 +621,9 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const outbox = transaction.objectStore("productDeletionOutbox")
           const ownerEvidence = transaction.objectStore(
             "ownerRelayListEvidence"
+          )
+          const rosterEvidence = transaction.objectStore(
+            "eventMarketRosterEvidence"
           )
           const eventMarkets = transaction.objectStore("eventMarketEvidence")
           const pendingInvoices = transaction.objectStore(
@@ -626,6 +649,9 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               productIndexes: Array.from(products.indexNames).sort(),
               tombstoneIndexes: Array.from(tombstones.indexNames).sort(),
               ownerEvidenceIndexes: Array.from(ownerEvidence.indexNames).sort(),
+              rosterEvidenceIndexes: Array.from(
+                rosterEvidence.indexNames
+              ).sort(),
               product: productRequest.result,
               tombstone: tombstoneRequest.result,
               eventMarketEvidence: eventMarketRequest.result,
@@ -670,6 +696,8 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
         const state = await readDatabaseMigrationState(page)
         return {
           nativeVersion: state.nativeVersion,
+          hasDiscoverySizeIndex:
+            state.rosterEvidenceIndexes.includes("discoveryBytes"),
           hasOutbox: state.stores.includes("productDeletionOutbox"),
           hasShopperTrust: state.stores.includes("shopperTrustSnapshots"),
           hasInboxDeclarationEvidence: state.stores.includes(
@@ -709,12 +737,36 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
           hasMerchantShippingSettingsEvidence: state.stores.includes(
             "merchantShippingSettingsEvidence"
           ),
+          hasProductListingOutbox: state.stores.includes(
+            "productListingOutbox"
+          ),
+          hasLocalProductWriteIntents: state.stores.includes(
+            "localProductWriteIntents"
+          ),
+          hasLocalProductWriteFrontiers: state.stores.includes(
+            "localProductWriteFrontiers"
+          ),
+          hasLocalProductShippingOutbox: state.stores.includes(
+            "localProductShippingOutbox"
+          ),
+          hasLocalProductStockCheckpoints: state.stores.includes(
+            "localProductStockCheckpoints"
+          ),
+          hasCommerceInboxStores: [
+            "commerceInboxDeletions",
+            "commerceInboxKeys",
+            "commerceInboxWrappers",
+            "commerceInboxRecords",
+            "commerceInboxRanges",
+            "commerceInboxDeliveries",
+          ].every((name) => state.stores.includes(name)),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 240,
+      nativeVersion: 270,
+      hasDiscoverySizeIndex: true,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -732,6 +784,12 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasCheckoutSparkReconciliations: true,
       hasCheckoutSparkRetirements: true,
       hasMerchantShippingSettingsEvidence: true,
+      hasProductListingOutbox: true,
+      hasLocalProductWriteIntents: true,
+      hasLocalProductWriteFrontiers: true,
+      hasLocalProductShippingOutbox: true,
+      hasLocalProductStockCheckpoints: true,
+      hasCommerceInboxStores: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

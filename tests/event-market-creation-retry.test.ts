@@ -16,6 +16,7 @@ import {
 import {
   loadFutureEventMarketCreation,
   publishFutureEventMarketCreation,
+  reviseFutureEventMarketCreation,
   saveNewFutureEventMarketCreation,
 } from "../apps/merchant/src/lib/event-market-creation-retry"
 import {
@@ -23,6 +24,7 @@ import {
   fromStoredOrganizerEventForm,
   type OrganizerEventMarketFormValues,
 } from "../apps/merchant/src/lib/event-market-form"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -80,12 +82,15 @@ function setup(overrides: Partial<OrganizerEventMarketFormValues> = {}) {
   }
   const read = async () => {
     const market = [...saved.values()].find((event) => event.kind === 30409)
+    const admitted = market ? await admitPublicEvent(market) : undefined
+    if (admitted && admitted.status !== "verified")
+      throw new Error(`Fixture admission failed: ${admitted.status}`)
     return {
       coordinate: creation.marketCoordinate,
       resolution: market
         ? {
             state: "current" as const,
-            market: parseEventMarketRosterEvent(market)!,
+            market: parseEventMarketRosterEvent(admitted!.event)!,
           }
         : { state: "missing" as const },
       coverage: "complete" as const,
@@ -164,6 +169,276 @@ function setup(overrides: Partial<OrganizerEventMarketFormValues> = {}) {
 }
 
 describe("durable future Event Market creation", () => {
+  const key = `conduit:future-event-market-creation:v1:${organizer}`
+
+  it("restores and repairs an invalid unsigned v1 form using the same identity", async () => {
+    const test = setup()
+    const legacy = {
+      ...test.creation,
+      form: {
+        ...test.creation.form,
+        summary: "x".repeat(1_001),
+        timezone: "invalid",
+      },
+    }
+    test.storage.setItem(key, JSON.stringify(legacy))
+    const restored = loadFutureEventMarketCreation(organizer, test.storage)!
+    const revised = await reviseFutureEventMarketCreation(
+      {
+        creation: restored,
+        form: {
+          ...test.form,
+          title: "Corrected fair",
+          summary: "First paragraph\nSecond paragraph",
+          timezone: "America/New_York",
+          imageUrl: "https://example.com/new.jpg",
+        },
+        shouldContinue: () => true,
+        storage: test.storage,
+      },
+      test.dependencies
+    )
+    expect(revised?.marketCoordinate).toBe(restored.marketCoordinate)
+    expect(revised?.calendarCoordinate).toBe(restored.calendarCoordinate)
+    await test.run()
+    expect(test.signed.map((event) => event.kind)).toEqual([31923, 30409])
+    expect(test.signed[0]?.content).toBe("First paragraph\nSecond paragraph")
+    expect(test.signed[0]?.tags).toContainEqual(["title", "Corrected fair"])
+  })
+
+  it("discards only an unsigned plan and permits a deliberate new creation", async () => {
+    const test = setup()
+    await reviseFutureEventMarketCreation(
+      {
+        creation: test.creation,
+        shouldContinue: () => true,
+        storage: test.storage,
+      },
+      test.dependencies
+    )
+    expect(loadFutureEventMarketCreation(organizer, test.storage)).toBeNull()
+    const next = saveNewFutureEventMarketCreation(
+      organizer,
+      test.form,
+      test.storage,
+      () => "87654321-new"
+    )
+    expect(next.marketCoordinate === test.creation.marketCoordinate).toBe(false)
+    expect(test.signed.length).toBe(0)
+  })
+
+  it("preflights non-description calendar constraints before saving any pointer", async () => {
+    const test = setup()
+    await reviseFutureEventMarketCreation(
+      {
+        creation: test.creation,
+        shouldContinue: () => true,
+        storage: test.storage,
+      },
+      test.dependencies
+    )
+    let message = ""
+    try {
+      saveNewFutureEventMarketCreation(
+        organizer,
+        { ...test.form, title: "x".repeat(201) },
+        test.storage
+      )
+    } catch (cause) {
+      message = (cause as Error).message
+    }
+    expect(message).toContain("Calendar title")
+    expect(loadFutureEventMarketCreation(organizer, test.storage)).toBeNull()
+  })
+
+  it("refuses draft repair when signature retention succeeded but pointer saving failed", async () => {
+    const test = setup()
+    const setItem = test.storage.setItem
+    test.storage.setItem = () => {
+      throw new Error("Storage interrupted")
+    }
+    await expect(test.run()).rejects.toThrow("Storage interrupted")
+    test.storage.setItem = setItem
+    const before = test.storage.getItem(key)
+    for (const form of [undefined, test.form]) {
+      await expect(
+        reviseFutureEventMarketCreation(
+          {
+            creation: test.creation,
+            form,
+            shouldContinue: () => true,
+            storage: test.storage,
+          },
+          test.dependencies
+        )
+      ).rejects.toThrow("Signed records")
+      expect(test.storage.getItem(key) === before).toBe(true)
+    }
+    await test.run()
+    expect(test.signed.length).toBe(2)
+  })
+
+  it("keeps pinned missing signatures and unavailable storage outside unsigned recovery", async () => {
+    const test = setup()
+    const before = test.storage.getItem(key)
+    await expect(
+      reviseFutureEventMarketCreation(
+        {
+          creation: test.creation,
+          shouldContinue: () => true,
+          storage: test.storage,
+        },
+        {
+          loadEvents: async () => {
+            throw new Error("Evidence unavailable")
+          },
+        }
+      )
+    ).rejects.toThrow("Evidence unavailable")
+    expect(test.storage.getItem(key) === before).toBe(true)
+    const pinned = { ...test.creation, calendarEventId: "a".repeat(64) }
+    test.storage.setItem(key, JSON.stringify(pinned))
+    await expect(
+      reviseFutureEventMarketCreation(
+        { creation: pinned, shouldContinue: () => true, storage: test.storage },
+        test.dependencies
+      )
+    ).rejects.toThrow("Signed records")
+    expect(
+      loadFutureEventMarketCreation(organizer, test.storage)?.calendarEventId
+    ).toBe(pinned.calendarEventId)
+  })
+
+  it("fences stale tabs and account changes during unsigned repair", async () => {
+    const test = setup()
+    const revised = await reviseFutureEventMarketCreation(
+      {
+        creation: test.creation,
+        form: { ...test.form, title: "Newer details" },
+        shouldContinue: () => true,
+        storage: test.storage,
+      },
+      test.dependencies
+    )
+    await expect(
+      reviseFutureEventMarketCreation(
+        {
+          creation: test.creation,
+          shouldContinue: () => true,
+          storage: test.storage,
+        },
+        test.dependencies
+      )
+    ).rejects.toThrow("another tab")
+    let current = true
+    await expect(
+      reviseFutureEventMarketCreation(
+        {
+          creation: revised!,
+          shouldContinue: () => current,
+          storage: test.storage,
+        },
+        {
+          loadEvents: async () => {
+            current = false
+            return []
+          },
+        }
+      )
+    ).rejects.toThrow("session changed")
+    expect(
+      loadFutureEventMarketCreation(organizer, test.storage)?.form.title
+    ).toBe("Newer details")
+  })
+
+  it("serializes signing against discard and rechecks retained evidence after waiting", async () => {
+    const test = setup()
+    let entered!: () => void
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let release!: () => void
+    const hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const publishCalendar = test.dependencies.publishCalendar
+    test.dependencies.publishCalendar = async (input) => {
+      entered()
+      await hold
+      return publishCalendar(input)
+    }
+    test.acknowledgments.set(31923, false)
+    const publication = test.run().catch(() => undefined)
+    await started
+    const discard = reviseFutureEventMarketCreation(
+      {
+        creation: test.creation,
+        shouldContinue: () => true,
+        storage: test.storage,
+      },
+      test.dependencies
+    )
+    release()
+    await publication
+    await expect(discard).rejects.toThrow("another tab")
+    expect(test.signed.length).toBe(1)
+    expect(
+      loadFutureEventMarketCreation(organizer, test.storage)
+        ?.calendarEventId === test.signed[0]?.id
+    ).toBe(true)
+  })
+
+  it("serializes simultaneous retries without creating another signed calendar", async () => {
+    const test = setup()
+    test.acknowledgments.set(31923, false)
+    await Promise.allSettled([test.run(), test.run()])
+    expect(test.signed.length).toBe(1)
+    expect(test.attempts.length).toBe(2)
+    expect(test.attempts[0]?.id === test.attempts[1]?.id).toBe(true)
+  })
+
+  it("retries signed bytes despite invalid legacy form text without re-signing", async () => {
+    const test = setup()
+    test.acknowledgments.set(31923, false)
+    await expect(test.run()).rejects.toThrow("saved for retry")
+    const saved = loadFutureEventMarketCreation(organizer, test.storage)!
+    test.storage.setItem(
+      key,
+      JSON.stringify({
+        ...saved,
+        form: {
+          ...saved.form,
+          summary: "x".repeat(1_001),
+          timezone: "invalid",
+        },
+      })
+    )
+    test.acknowledgments.set(31923, true)
+    await test.run()
+    expect(test.signed.length).toBe(2)
+    expect(test.attempts[0]?.id === test.attempts[1]?.id).toBe(true)
+  })
+
+  it.each(["x".repeat(1_001), "Public\u0000fair"])(
+    "rejects invalid calendar text before saving a creation",
+    (summary) => {
+      let message = ""
+      try {
+        setup({ summary })
+      } catch (cause) {
+        message = (cause as Error).message
+      }
+      expect(message).toContain("Description")
+    }
+  )
+
+  it("publishes a short multiline description without trapping an unsigned draft", async () => {
+    const test = setup({ summary: "Public fair\nBring friends" })
+    await test.run()
+    expect(test.signed[0]?.content).toBe("Public fair\nBring friends")
+    expect(loadFutureEventMarketCreation(organizer, test.storage)).toBeNull()
+  })
+
   it.each(["2099-01-03", ""])(
     "preserves a legacy v1 all-day end %s and retries the exact signed calendar",
     async (end) => {

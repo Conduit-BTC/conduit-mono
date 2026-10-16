@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it, spyOn } from "bun:test"
 import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import * as core from "@conduit/core"
@@ -12,7 +13,11 @@ import type {
   ProductSchema,
 } from "@conduit/core"
 import { applyProductFulfillmentIntentForPublication } from "../apps/merchant/src/lib/product-publishing"
-import { prepareOrderStockUpdate } from "../apps/merchant/src/lib/order-stock-fulfillment"
+import {
+  assertOrderStockRevisionCurrent,
+  captureOrderStockRevision,
+  prepareOrderStockUpdate,
+} from "../apps/merchant/src/lib/order-stock-fulfillment"
 import {
   getOrderStockDecisionKey,
   type OrderStockAdjustment,
@@ -91,6 +96,44 @@ function prepare(
 }
 
 describe("merchant-owned order stock mutation", () => {
+  it("rejects a changed exact listing revision before a stock signature can be staged", () => {
+    const baseline = record()
+    const expected = captureOrderStockRevision(baseline)
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: { ...record(), eventId: "a".repeat(64) },
+      })
+    ).toThrow("changed while preparing the stock update")
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: { ...record(), product: { ...baseline.product, stock: 4 } },
+      })
+    ).toThrow("changed while preparing the stock update")
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: {
+          ...record(),
+          product: {
+            ...baseline.product,
+            supplierAllocation: { state: "absent", recipients: [], issues: [] },
+          },
+        },
+      })
+    ).toThrow("changed while preparing the stock update")
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: baseline,
+      })
+    ).not.toThrow()
+  })
   it("rebases calculated stock onto the current local listing and preserves its exact fulfillment", () => {
     const baseline = record()
     const result = prepare({ record: baseline })
@@ -146,7 +189,7 @@ describe("merchant-owned order stock mutation", () => {
     }
   })
 
-  it("signs the rebased stock with unchanged event and pickup references", () => {
+  it("signs the rebased stock with unchanged event and pickup references", async () => {
     const baseline = record()
     const prepared = prepare({ record: baseline })
     const product = applyProductFulfillmentIntentForPublication({
@@ -171,16 +214,18 @@ describe("merchant-owned order stock mutation", () => {
     expect(after.tags.filter((tag) => tag[0] !== "stock")).toEqual(
       before.tags.filter((tag) => tag[0] !== "stock")
     )
-    const parsed = core.parseProductEvent(signed)
+    const parsed = core.parseProductEvent(await admitFixture(signed))
     expect(parsed.stock).toBe(2)
     expect(parsed.collectionRefs).toEqual(baseline.product.collectionRefs)
     const previous = core.parseProductEvent(
-      finalizeEvent({ ...before, created_at: 3_000 }, SYNTHETIC_SECRET)
+      await admitFixture(
+        finalizeEvent({ ...before, created_at: 3_000 }, SYNTHETIC_SECRET)
+      )
     )
     expect(parsed.shippingOptionRefs).toEqual(previous.shippingOptionRefs)
   })
 
-  it("preserves event pickup and independent catalog references during order stock updates", () => {
+  it("preserves event pickup and independent catalog references during order stock updates", async () => {
     const baseline = record({
       collectionRefs: [COLLECTION, CATALOG_COLLECTION],
     })
@@ -203,7 +248,7 @@ describe("merchant-owned order stock mutation", () => {
       { ...after, created_at: 4_000 },
       SYNTHETIC_SECRET
     )
-    const parsed = core.parseProductEvent(signed)
+    const parsed = core.parseProductEvent(await admitFixture(signed))
 
     expect(core.isValidSignedPublicNostrEvent(signed)).toBe(true)
     expect(parsed.stock).toBe(2)

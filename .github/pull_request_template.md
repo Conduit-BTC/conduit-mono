@@ -67,10 +67,12 @@ Author proposal. Select one:
 
 ## Risk Review
 
-- [ ] User auth remains external signer only (NIP-07/NIP-46)
-- [ ] No user Nostr account-key custody introduced; approved application signers
-      remain within `docs/specs/protocol.md`, and any Portable Wallet credential
-      handling stays inside `docs/specs/wallets.md`
+- [ ] NIP-07/NIP-46 remain available; any installed-PWA existing-NSEC path follows
+      the separate-origin lifecycle and production requirements in `docs/specs/protocol.md`
+- [ ] No raw account key or independent unwrapping material reaches Market/Merchant
+      origins or Conduit services; signer-origin import/storage stays within
+      `docs/specs/protocol.md`, and Portable Wallet credential handling stays
+      inside `docs/specs/wallets.md`
 - [ ] No plaintext message content added to telemetry, logs, or Conduit-operated servers
 - [ ] No behavioral tracking/profiling introduced
 - [ ] Payment flow remains non-custodial

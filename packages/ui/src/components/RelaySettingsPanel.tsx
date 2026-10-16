@@ -86,7 +86,7 @@ function hasSignedOrPendingMembership(
   row: AccountNetworkRelayRowView
 ): boolean {
   return (
-    Boolean(row.recoveryReadOnly) ||
+    Boolean(row.recoveryReadOnly || row.retainedReadOnly) ||
     [row.readState, row.publishState, row.privateInboxState].some(
       (state) => state === "published" || state === "pending"
     )
@@ -189,9 +189,9 @@ function RoleToggle({
       disabled={disabled}
       onClick={(event) => onToggle(event.currentTarget)}
       className={cn(
-        "inline-flex min-h-11 items-center justify-center rounded-full border px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
+        "inline-flex min-h-11 items-center justify-center rounded-[var(--radius-sm)] border px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         enabled
-          ? "border-primary-400 bg-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] text-[var(--primary-500)]"
+          ? "border-primary-400 bg-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] text-[var(--link-text)]"
           : "border-[var(--border-overlay)] bg-transparent text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
       )}
     >
@@ -253,7 +253,7 @@ function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
       className={cn(
         "relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--surface-elevated)]",
         commerce &&
-          "bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--primary-500)]"
+          "bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--link-text)]"
       )}
     >
       {iconUrl ? (
@@ -410,6 +410,14 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
             </dd>
           </div>
         ) : null}
+        {row.retainedReadOnly ? (
+          <div>
+            <dt className="text-[var(--text-muted)]">Saved read evidence</dt>
+            <dd className="mt-0.5 text-[var(--text-primary)]">
+              Retained for read history only
+            </dd>
+          </div>
+        ) : null}
         <div>
           <dt className="text-[var(--text-muted)]">Recent connection</dt>
           <dd className="mt-0.5 text-[var(--text-primary)]">
@@ -463,12 +471,21 @@ function RelayDetails({ row }: { row: AccountNetworkRelayRowView }) {
 
 function relayRowState(
   row: AccountNetworkRelayRowView,
-  edited: boolean
+  edited: boolean,
+  operationPhase: AccountNetworkSettingsOperationPhase
 ): { label: string; attention: boolean } | null {
   const pending = [row.readState, row.publishState, row.privateInboxState].some(
     (state) => state === "pending"
   )
-  if (pending) return { label: "Publishing", attention: true }
+  if (pending) {
+    return {
+      label:
+        operationPhase === "publishing"
+          ? "Publishing"
+          : "Awaiting confirmation",
+      attention: true,
+    }
+  }
   const draft =
     row.candidate || row.readState === "draft" || row.publishState === "draft"
   if (draft) return { label: "New", attention: false }
@@ -574,6 +591,7 @@ function RelayRoleControls({
 function RelayRow({
   row,
   edited,
+  operationPhase,
   mutationDisabled,
   operationBusy,
   wholeSetupRemoval,
@@ -588,6 +606,7 @@ function RelayRow({
 }: {
   row: AccountNetworkRelayRowView
   edited: boolean
+  operationPhase: AccountNetworkSettingsOperationPhase
   mutationDisabled: boolean
   operationBusy: boolean
   wholeSetupRemoval: boolean
@@ -600,7 +619,7 @@ function RelayRow({
   onMoveEarlier: () => void
   onMoveLater: () => void
 }) {
-  const state = relayRowState(row, edited)
+  const state = relayRowState(row, edited, operationPhase)
   const removalLabel = wholeSetupRemoval
     ? `Remove ${row.url} from my whole setup`
     : `Remove ${row.url} from this review`
@@ -608,7 +627,7 @@ function RelayRow({
     ? "Remove from my whole setup"
     : "Remove from this review"
   return (
-    <li className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+    <li className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <RelayIndicator row={row} />
@@ -616,8 +635,12 @@ function RelayRow({
             <RelayIdentity row={row} />
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
               {row.recoveryReadOnly ? (
-                <span className="text-xs font-medium text-warning">
+                <span className="text-xs font-medium text-[var(--warning-text)]">
                   Recovery read-only
+                </span>
+              ) : row.retainedReadOnly ? (
+                <span className="text-xs font-medium text-[var(--text-muted)]">
+                  Saved read evidence
                 </span>
               ) : null}
               {state ? (
@@ -625,7 +648,7 @@ function RelayRow({
                   className={cn(
                     "text-xs font-medium",
                     state.attention
-                      ? "text-warning"
+                      ? "text-[var(--warning-text)]"
                       : "text-[var(--text-muted)]"
                   )}
                 >
@@ -666,7 +689,7 @@ function RelayRow({
         </div>
       </div>
       {usesUnencryptedRelayTransport(row.url) ? (
-        <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5">
+        <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5">
           <p className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
             <Info className="size-4 shrink-0" aria-hidden="true" />
             <span>Unencrypted connection</span>
@@ -679,9 +702,28 @@ function RelayRow({
       ) : null}
       {row.recoveryReadOnly ? (
         <p className="ml-10 mt-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-          Conduit reads this previous inbox during the 7-day recovery window.
-          Removing it from your whole setup ends recovery for this relay
-          immediately.
+          {row.recoveryPhase === "grace" ? (
+            <>
+              Conduit reads this previous inbox during the seven-day recovery
+              window
+              {row.recoveryExpiresAt !== undefined
+                ? ` through ${formatObservationTime(row.recoveryExpiresAt)}`
+                : ""}
+              . Removing it from your whole setup ends recovery for this relay
+              immediately.
+            </>
+          ) : (
+            <>
+              The previous inbox is retained while confirmation is pending. The
+              seven-day recovery window starts after confirmation. Removing it
+              from your whole setup ends recovery for this relay immediately.
+            </>
+          )}
+        </p>
+      ) : row.retainedReadOnly ? (
+        <p className="ml-10 mt-2 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+          This relay is retained as saved read evidence. No recovery window is
+          active.
         </p>
       ) : null}
       <RelayDetails row={row} />
@@ -692,9 +734,6 @@ function RelayRow({
 function frontierExceptionMessage(
   frontier: AccountNetworkFrontierView
 ): string | null {
-  if (frontier.state === "distribution_pending") {
-    return "Publishing is still in progress."
-  }
   if (frontier.state === "signed_empty") {
     return "The published preference is empty."
   }
@@ -728,7 +767,7 @@ function PublishedRelayPreference({
 }) {
   const exceptionMessage = frontierExceptionMessage(frontier)
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3">
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3">
       <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
         {label}
       </h3>
@@ -765,7 +804,7 @@ function PublishedRelayPreferences({
   const failed = controller.status === "error"
   return (
     <div>
-      <details className="group/published-preferences rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
+      <details className="group/published-preferences rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:p-4">
         <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
           <span>Published preferences</span>
           <ChevronDown
@@ -787,7 +826,10 @@ function PublishedRelayPreferences({
         </div>
       </details>
       {failed && controller.error ? (
-        <p role="alert" className="mt-3 text-pretty text-sm text-error">
+        <p
+          role="alert"
+          className="mt-3 text-pretty text-sm text-[var(--error-text)]"
+        >
           {controller.error}
         </p>
       ) : null}
@@ -797,10 +839,8 @@ function PublishedRelayPreferences({
 
 function PendingUpdateSummary({
   controller,
-  relayDraftDirty,
 }: {
   controller: AccountNetworkSettingsController
-  relayDraftDirty: boolean
 }) {
   const deliveries = controller.view.pendingExactDeliveries
   if (deliveries.length === 0) return null
@@ -808,7 +848,7 @@ function PendingUpdateSummary({
   return (
     <div
       aria-labelledby="pending-network-update-heading"
-      className="mt-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4"
+      className="mt-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -819,8 +859,9 @@ function PendingUpdateSummary({
             Signed update status
           </h3>
           <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-            Conduit retains each exact signed event while it checks shared
-            relays. A publish response alone is not proof of shared readback.
+            Your signed update is saved on this device. Some relay confirmations
+            are still pending. You can keep editing or retry the saved update
+            without signing again.
           </p>
         </div>
         {retryAvailable ? (
@@ -829,14 +870,7 @@ function PendingUpdateSummary({
             variant="outline"
             size="sm"
             className="min-h-11"
-            disabled={
-              relayDraftDirty || operationIsBusy(controller.operation.phase)
-            }
-            title={
-              relayDraftDirty
-                ? "Publish or discard your relay edits before retrying signed preferences."
-                : undefined
-            }
+            disabled={operationIsBusy(controller.operation.phase)}
             onClick={() =>
               void controller.retryPendingUpdate().catch(() => undefined)
             }
@@ -850,7 +884,7 @@ function PendingUpdateSummary({
         {deliveries.map((delivery) => (
           <li
             key={`${delivery.kind}:${delivery.eventId}`}
-            className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5"
+            className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-medium text-[var(--text-primary)]">
@@ -868,18 +902,32 @@ function PendingUpdateSummary({
                   ? "Exact event confirmed"
                   : delivery.confirmationState === "policy_blocked"
                     ? "Targets excluded"
-                    : "Exact readback pending"}
+                    : delivery.authRequiredCount
+                      ? "Readback authorization required"
+                      : "Exact readback pending"}
               </StatusPill>
             </div>
-            <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-              {delivery.exactReadbackCount} exact readback ·{" "}
-              {delivery.unresolvedCount} unresolved ·{" "}
-              {delivery.eligibleTargetCount} eligible target
-              {delivery.eligibleTargetCount === 1 ? "" : "s"}
-              {delivery.excludedTargetCount > 0
-                ? ` · ${delivery.excludedTargetCount} excluded`
-                : ""}
-            </p>
+            <details className="group/confirmation mt-1 text-xs text-[var(--text-secondary)]">
+              <summary className="flex min-h-11 cursor-pointer items-center gap-2">
+                Confirmation details
+                <ChevronDown
+                  className="size-4 group-open/confirmation:rotate-180"
+                  aria-hidden="true"
+                />
+              </summary>
+              <p className="text-pretty leading-5">
+                {delivery.exactReadbackCount} exact readback ·{" "}
+                {delivery.unresolvedCount} unresolved ·{" "}
+                {delivery.eligibleTargetCount} distribution target
+                {delivery.eligibleTargetCount === 1 ? "" : "s"}
+                {delivery.excludedTargetCount > 0
+                  ? ` · ${delivery.excludedTargetCount} excluded`
+                  : ""}
+                {delivery.authRequiredCount
+                  ? ` · ${delivery.authRequiredCount} readback target${delivery.authRequiredCount === 1 ? "" : "s"} require authorization`
+                  : ""}
+              </p>
+            </details>
           </li>
         ))}
       </ul>
@@ -953,7 +1001,7 @@ export function getRelayRemovalReviewCopy(
 function PreparedReviewWarnings({ warnings }: { warnings: readonly string[] }) {
   if (warnings.length === 0) return null
   return (
-    <ul className="space-y-2 text-pretty text-sm leading-6 text-warning">
+    <ul className="space-y-2 text-pretty text-sm leading-6 text-[var(--warning-text)]">
       {warnings.map((warning) => (
         <li key={warning} className="flex items-start gap-2">
           <AlertTriangle className="mt-1 size-4 shrink-0" aria-hidden="true" />
@@ -1016,11 +1064,11 @@ export function RelayRemovalDialog({
             send messages there, and those messages can be missed.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="break-all rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 font-mono text-sm text-[var(--text-primary)]">
+        <div className="break-all rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 font-mono text-sm text-[var(--text-primary)]">
           {relayUrl}
         </div>
         {review.changedObjects.length > 0 ? (
-          <ul className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
+          <ul className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
             {review.changedObjects.map((changedObject) => (
               <li key={changedObject}>{changedObject}</li>
             ))}
@@ -1028,12 +1076,18 @@ export function RelayRemovalDialog({
         ) : null}
         <PreparedReviewWarnings warnings={review.warnings} />
         {instruction ? (
-          <p role="alert" className="text-pretty text-sm text-warning">
+          <p
+            role="alert"
+            className="text-pretty text-sm text-[var(--warning-text)]"
+          >
             {instruction}
           </p>
         ) : null}
         {errorMessage ? (
-          <p role="alert" className="text-pretty text-sm text-error">
+          <p
+            role="alert"
+            className="text-pretty text-sm text-[var(--error-text)]"
+          >
             {errorMessage}
           </p>
         ) : null}
@@ -1314,10 +1368,7 @@ function useRelaySettingsReview(
   )
   const signedRepairAvailable =
     controller.view.relayList.state !== "declared" ||
-    (desiredInboxAvailable &&
-      !["declared", "distribution_pending"].includes(
-        controller.view.inbox.state
-      ))
+    (desiredInboxAvailable && controller.view.inbox.state !== "declared")
   const reviewAvailable = dirty || signedRepairAvailable
   const validation = controller.validate(desiredRoles)
   const validationErrors = hasUnconfiguredLocalCandidate
@@ -1325,12 +1376,9 @@ function useRelaySettingsReview(
     : validation.errors
   const validationError = validationErrors[0] ?? null
   const validationWarnings = validation.warnings
-  const pendingRetry = controller.view.pendingExactDeliveries.some(
-    (delivery) => delivery.retryAvailable
-  )
   const busy = operationIsBusy(controller.operation.phase) || reordering
   const metadataReady = !busy
-  const mutationReady = metadataReady && !pendingRetry && signerReady
+  const mutationReady = metadataReady && signerReady
   const inboxCount = presentationRows.filter(
     (row) => row.privateInboxEnabled
   ).length
@@ -1727,7 +1775,7 @@ function InboxDistributionSection({
 }) {
   if (!controller.exactInboxRedistributionAvailable) return null
   return (
-    <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+    <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)]">
@@ -1782,7 +1830,7 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
           value={review.newRelayUrl}
           onChange={(event) => review.setNewRelayUrl(event.target.value)}
           placeholder="wss://relay.example.com"
-          className="h-11 rounded-xl bg-[var(--surface-elevated)] font-mono"
+          className="h-11 rounded-[var(--radius-md)] bg-[var(--surface-elevated)] font-mono"
         />
         <Button
           type="submit"
@@ -1802,7 +1850,7 @@ function AddRelaySection({ review }: { review: RelaySettingsReview }) {
         <p
           id="account-network-relay-error"
           role="alert"
-          className="mt-2 text-pretty text-sm text-error"
+          className="mt-2 text-pretty text-sm text-[var(--error-text)]"
         >
           {review.addError}
         </p>
@@ -1860,6 +1908,7 @@ function RelayListSection({
                 key={row.url}
                 row={row}
                 edited={review.editedRelayUrls.has(row.url)}
+                operationPhase={controller.operation.phase}
                 mutationDisabled={!review.mutationReady}
                 operationBusy={review.busy}
                 wholeSetupRemoval={review.wholeSetupRelayUrls.has(row.url)}
@@ -1888,7 +1937,7 @@ function RelayListSection({
         </div>
       ) : resultPresentation.kind === "degraded_empty" ? (
         <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-pretty text-sm leading-6 text-[var(--text-primary)]"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-pretty text-sm leading-6 text-[var(--text-primary)]"
           role="alert"
         >
           <span>
@@ -1935,9 +1984,9 @@ function OperationNotice({
       className={cn(
         "mt-3 flex items-start gap-2 text-pretty text-sm leading-6",
         error
-          ? "text-error"
+          ? "text-[var(--error-text)]"
           : complete
-            ? "text-success"
+            ? "text-[var(--success-text)]"
             : "text-[var(--text-secondary)]"
       )}
     >
@@ -1968,7 +2017,7 @@ function NetworkReviewSummary({ review }: { review: RelaySettingsReview }) {
     <div className="flex min-w-0 items-start gap-2">
       {review.hasUnpublishedChanges ? (
         <AlertTriangle
-          className="mt-0.5 size-4 shrink-0 text-[var(--warning)]"
+          className="mt-0.5 size-4 shrink-0 text-[var(--warning-text)]"
           aria-hidden="true"
         />
       ) : null}
@@ -1977,7 +2026,7 @@ function NetworkReviewSummary({ review }: { review: RelaySettingsReview }) {
           className={cn(
             "text-sm font-semibold",
             review.hasUnpublishedChanges
-              ? "text-[var(--warning)]"
+              ? "text-[var(--warning-text)]"
               : "text-[var(--text-secondary)]"
           )}
         >
@@ -2031,7 +2080,7 @@ function NetworkReviewActions({ review }: { review: RelaySettingsReview }) {
       {validationVisible ? (
         <p
           id="network-review-validation"
-          className="max-w-sm text-pretty text-right text-xs text-warning"
+          className="max-w-sm text-pretty text-right text-xs text-[var(--warning-text)]"
         >
           {review.validationError}
         </p>
@@ -2050,7 +2099,10 @@ function NetworkReviewNotices({
   return (
     <>
       {review.localActionError ? (
-        <p role="alert" className="mt-3 text-pretty text-sm text-error">
+        <p
+          role="alert"
+          className="mt-3 text-pretty text-sm text-[var(--error-text)]"
+        >
           {review.localActionError}
         </p>
       ) : null}
@@ -2106,7 +2158,7 @@ function PublishNetworkReviewDialog({
             independently.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <ul className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
+        <ul className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]">
           {summary.changedObjects.map((changedObject) => (
             <li key={changedObject}>{changedObject}</li>
           ))}
@@ -2190,7 +2242,7 @@ function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
           {uses.map((label) => (
             <span
               key={label}
-              className="rounded-full border border-[var(--border-overlay)] px-2 py-1 text-xs font-medium text-[var(--text-secondary)]"
+              className="rounded-[var(--radius-sm)] border border-[var(--border-overlay)] px-2 py-1 text-xs font-medium text-[var(--text-secondary)]"
             >
               {label}
             </span>
@@ -2299,7 +2351,10 @@ function AppRelaysSection({
           )}
         </CollapsibleContent>
         {policyError ? (
-          <p className="mt-3 text-pretty text-sm text-error" role="alert">
+          <p
+            className="mt-3 text-pretty text-sm text-[var(--error-text)]"
+            role="alert"
+          >
             {policyError}
           </p>
         ) : null}
@@ -2420,7 +2475,7 @@ function PersonalRelaysHeader({
         </div>
       </div>
       {recommendation ? (
-        <div className="relative mt-4 flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 pr-12 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative mt-4 flex flex-col gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 pr-12 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-[var(--text-primary)]">
               {recommendation.title}
@@ -2452,7 +2507,10 @@ function PersonalRelaysHeader({
         </div>
       ) : null}
       {policyError ? (
-        <p className="mt-3 text-pretty text-sm text-error" role="alert">
+        <p
+          className="mt-3 text-pretty text-sm text-[var(--error-text)]"
+          role="alert"
+        >
           {policyError}
         </p>
       ) : null}
@@ -2519,10 +2577,7 @@ function RelayPreferencesSection({
       ) : null}
       <PreferenceSectionBody className="pt-0 sm:pt-0">
         <PublishedRelayPreferences controller={controller} />
-        <PendingUpdateSummary
-          controller={controller}
-          relayDraftDirty={review.hasUnpublishedChanges}
-        />
+        <PendingUpdateSummary controller={controller} />
         <InboxDistributionSection
           controller={controller}
           busy={review.busy}
@@ -2598,12 +2653,7 @@ export function RelaySettingsPanel({
 }: RelaySettingsPanelProps) {
   const removalFallbackFocusRef = useRef<HTMLHeadingElement | null>(null)
   return (
-    <section
-      className={cn(
-        "rounded-[2rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 shadow-lg sm:p-7",
-        className
-      )}
-    >
+    <section className={cn("min-w-0 space-y-6", className)}>
       <div className="space-y-6">
         <NetworkHeader focusRef={removalFallbackFocusRef} />
         <RelayPreferencesEditor

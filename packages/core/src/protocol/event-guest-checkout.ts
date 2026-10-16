@@ -6,7 +6,9 @@ import { isValidSignedPublicNostrEvent } from "./signed-event"
 
 /** Experimental Conduit product extension; absent or ambiguous means contact required. */
 export const EVENT_GUEST_CONTACT_TAG = "conduit_event_guest"
-export function hasSignedEventGuestOptIn(tags: readonly string[][]): boolean {
+export function hasSignedEventGuestOptIn(
+  tags: readonly (readonly string[])[]
+): boolean {
   const policies = tags.filter((tag) => tag[0] === EVENT_GUEST_CONTACT_TAG)
   return (
     policies.length === 1 &&

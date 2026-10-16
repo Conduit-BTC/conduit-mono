@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -139,7 +140,7 @@ function item(
 }
 
 describe("future Event Market cart and order snapshots", () => {
-  it("prices a signed zero SAT future listing as one zero-cost pickup order", () => {
+  it("prices a signed zero SAT future listing as one zero-cost pickup order", async () => {
     const secret = generateSecretKey()
     const signed = finalizeEvent(
       {
@@ -156,7 +157,7 @@ describe("future Event Market cart and order snapshots", () => {
       },
       secret
     )
-    const product = parseProductEvent(signed)
+    const product = parseProductEvent(await admitFixture(signed))
     const future = item("soap").fulfillment
     if (future?.type !== "event_market_pickup")
       throw new Error("Missing future pickup")
@@ -183,7 +184,7 @@ describe("future Event Market cart and order snapshots", () => {
       })
     ).toBe(true)
   })
-  it("prices a nonzero signed future listing to the merchant with no buyer pickup fee", () => {
+  it("prices a nonzero signed future listing to the merchant with no buyer pickup fee", async () => {
     const secret = generateSecretKey()
     const signed = finalizeEvent(
       {
@@ -200,7 +201,7 @@ describe("future Event Market cart and order snapshots", () => {
       },
       secret
     )
-    const product = parseProductEvent(signed)
+    const product = parseProductEvent(await admitFixture(signed))
     const future = item("soap").fulfillment
     if (future?.type !== "event_market_pickup")
       throw new Error("Missing future pickup")

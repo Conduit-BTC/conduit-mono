@@ -157,11 +157,12 @@ describe("protected inbox prepared state", () => {
       ].map(source)
     )
 
-    const expectedSelectorCounts = [2, 1, 2, 1, 1]
+    const expectedSelectorCounts = [0, 0, 0, 0, 1]
     for (const [index, text] of sources.entries()) {
+      if (index < 4) expect(text).toContain("useCommerceInbox")
       expect(text).toContain("deriveProtectedReadPresentationState")
       expect(text).toContain("pending:")
-      expect(text.match(/selectProtectedReadRows\(/g)?.length).toBe(
+      expect(text.match(/selectProtectedReadRows\(/g)?.length ?? 0).toBe(
         expectedSelectorCounts[index]
       )
       expect(text).not.toMatch(/data\?\.data\.length\s*\?/)
@@ -174,7 +175,41 @@ describe("protected inbox prepared state", () => {
     expect(sources[4]).toContain(
       'const signerConnected = status === "connected" && !!pubkey'
     )
-    expect(sources[4].match(/enabled: signerConnected/g)?.length).toBe(5)
+    for (const [query, key] of [
+      ["statsQuery", "merchant-dashboard-live"],
+      ["cachedStatsQuery", "merchant-dashboard"],
+      ["conversationsQuery", "merchant-conversations-live"],
+      ["cachedConversationsQuery", "merchant-conversations"],
+    ]) {
+      const options = sources[4].match(
+        new RegExp(`const ${query} = useQuery\\(\\{([\\s\\S]*?)\\n  \\}\\)`)
+      )?.[1]
+      expect(options).toContain("enabled: signerConnected,")
+      expect(options).toContain(`queryKey: ["${key}", pubkey ?? "none"]`)
+    }
+    const settlementOptions = sources[4].match(
+      /useCheckoutSparkOrderSettlements\(\{([\s\S]*?)\n\s*\}\)/
+    )?.[1]
+    expect(settlementOptions).toContain("enabled: signerConnected,")
+    expect(settlementOptions).toContain("pubkey,")
+    expect(settlementOptions).toContain("authGeneration,")
+    expect(settlementOptions).toContain("isAuthGenerationCurrent,")
+    expect(settlementOptions).toContain("conversations: allConversations,")
+    const profileOptions = sources[4].match(
+      /const buyerProfilesQuery = useProfiles\(buyerPubkeys, \{([\s\S]*?)\n\s*\}\)/
+    )?.[1]
+    expect(profileOptions).toContain(
+      "accountPubkey: signerConnected ? pubkey : null"
+    )
+    expect(profileOptions).toContain(
+      "authenticatedPubkey: signerConnected ? pubkey : null"
+    )
+    expect(profileOptions).toContain(
+      "shouldContinue: () => authGenerationRef.current === authGeneration"
+    )
+    expect(profileOptions).toContain(
+      "enabled: signerConnected && buyerPubkeys.length > 0"
+    )
     expect(sources[4]).toContain("if (!signerConnected) return []")
     expect(sources[0]).toContain("directMessageListPending")
     expect(sources[0].match(/\{directMessageSearchEmptyCopy\}/g)?.length).toBe(

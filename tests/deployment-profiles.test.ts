@@ -7,8 +7,31 @@ import {
   selectDeploymentProfileName,
 } from "../scripts/vite/deployment_profile"
 import { resolveDmCompatibilityOrderRoutingEnabled } from "../packages/core/src/config"
+import { assertPagesWalletConfiguration } from "../scripts/vite/build_info"
 
 describe("deployment profiles", () => {
+  it("rejects a hosted wallet build missing its public Breez configuration", () => {
+    for (const app of ["market", "merchant"]) {
+      expect(() =>
+        assertPagesWalletConfiguration(app, true, { CF_PAGES: "1" })
+      ).toThrow("VITE_BREEZ_SPARK_API_KEY")
+      expect(() =>
+        assertPagesWalletConfiguration(app, true, {
+          CF_PAGES: "1",
+          VITE_BREEZ_SPARK_API_KEY: "public-test-key",
+        })
+      ).not.toThrow()
+      expect(() =>
+        assertPagesWalletConfiguration(app, false, { CF_PAGES: "1" })
+      ).not.toThrow()
+    }
+    expect(() =>
+      assertPagesWalletConfiguration("store-builder", true, { CF_PAGES: "1" })
+    ).not.toThrow()
+    expect(() =>
+      assertPagesWalletConfiguration("merchant", true, {})
+    ).not.toThrow()
+  })
   it("fails compatibility routing closed on official hosts outside production", () => {
     for (const runtimeHostname of [
       "shop.conduit.market",
@@ -110,7 +133,7 @@ describe("deployment profiles", () => {
     ).toBe(false)
   })
 
-  it("configures compatibility routing and live presence by profile", () => {
+  it("configures compatibility routing, presence and Quantum Router by profile", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -129,6 +152,94 @@ describe("deployment profiles", () => {
     expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
     expect(production.publicFeatures.livePresenceEnabled).toBe(true)
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
+    expect(preview.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(production.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(staging.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(preview.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
+    for (const profile of [production, staging]) {
+      expect(profile.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
+    }
+    expect(preview.lightningNetwork).toBe("mainnet")
+    expect(production.lightningNetwork).toBe("mainnet")
+    expect(staging.lightningNetwork).toBe("signet")
+  })
+
+  it("ignores dashboard router overrides for managed public profiles", () => {
+    for (const profile of ["preview", "production", "staging"] as const) {
+      const expected = profile === "preview"
+      for (const override of ["true", "false"]) {
+        expect(
+          resolveDeploymentProfile({
+            CONDUIT_DEPLOYMENT_PROFILE: profile,
+            VITE_QUANTUM_ROUTER_ENABLED: override,
+            VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: override,
+            VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+            VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+          }).publicFeatures.quantumRouterEnabled
+        ).toBe(expected)
+        expect(
+          resolveDeploymentProfile({
+            CONDUIT_DEPLOYMENT_PROFILE: profile,
+            VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: override,
+            VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+            VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+          }).publicFeatures.quantumRouterExecutionEnabled
+        ).toBe(expected)
+      }
+    }
+  })
+
+  it("keeps deployed Breez address enablement independent of dashboard values", () => {
+    for (const name of ["preview", "production", "staging"])
+      expect(
+        resolveDeploymentProfile({
+          CONDUIT_DEPLOYMENT_PROFILE: name,
+          VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED: "true",
+          VITE_BREEZ_SPARK_API_KEY: "public-test-key",
+          VITE_BREEZ_LNURL_DOMAIN: "conduit.cash",
+        }).publicFeatures.breezLightningAddressEnabled
+      ).toBe(name !== "staging")
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.breezLightningAddressEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({ VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED: "true" })
+        .publicFeatures.breezLightningAddressEnabled
+    ).toBe(true)
+  })
+
+  it("requires explicit Breez address flags and includes reviewed enablement in manifests", () => {
+    const profiles = loadPagesProfiles()
+    for (const name of ["preview", "production", "staging"] as const) {
+      const missing = structuredClone(profiles)
+      delete (
+        missing.profiles[name].publicFeatures as Partial<
+          (typeof missing.profiles)[typeof name]["publicFeatures"]
+        >
+      ).breezLightningAddressEnabled
+      expect(() => parsePagesProfiles(missing)).toThrow(
+        "must explicitly set breezLightningAddressEnabled"
+      )
+      const enabled = structuredClone(profiles)
+      enabled.profiles[name].publicFeatures.breezLightningAddressEnabled = true
+      expect(
+        parsePagesProfiles(enabled).profiles[name].publicFeatures
+          .breezLightningAddressEnabled
+      ).toBe(true)
+    }
+    const profile = resolveDeploymentProfile({
+      CONDUIT_DEPLOYMENT_PROFILE: "preview",
+    })
+    const manifest = createPublicDeploymentManifest({
+      app: "market",
+      profile,
+      commitSha: "abc123",
+      branch: "feat/address-gate",
+      buildTime: "2026-10-09T00:00:00.000Z",
+      sourceUrl: "https://github.com/Conduit-BTC/conduit-mono",
+    })
+    expect(manifest.publicFeatures.breezLightningAddressEnabled).toBe(true)
+    expect(manifest.publicConfigDigest).toBe(profile.configDigest)
   })
 
   it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
@@ -208,6 +319,54 @@ describe("deployment profiles", () => {
     expect(() => parsePagesProfiles(missingPresence)).toThrow(
       "must explicitly set livePresenceEnabled"
     )
+
+    const missingRouter = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingRouter.profiles.preview.publicFeatures.quantumRouterEnabled
+    expect(() => parsePagesProfiles(missingRouter)).toThrow(
+      "must explicitly set quantumRouterEnabled"
+    )
+    const missingExecution = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingExecution.profiles.preview.publicFeatures
+      .quantumRouterExecutionEnabled
+    expect(() => parsePagesProfiles(missingExecution)).toThrow(
+      "must explicitly set quantumRouterExecutionEnabled"
+    )
+    const disabledRouter = structuredClone(profiles)
+    disabledRouter.profiles.preview.publicFeatures.quantumRouterEnabled = false
+    expect(
+      parsePagesProfiles(disabledRouter).profiles.preview.publicFeatures
+        .quantumRouterEnabled
+    ).toBe(false)
+    const unsupportedNetwork = structuredClone(profiles)
+    unsupportedNetwork.profiles.staging.publicFeatures.quantumRouterEnabled = true
+    expect(() => parsePagesProfiles(unsupportedNetwork)).toThrow(
+      "cannot enable Quantum Router on an unsupported network"
+    )
+    const unsupportedExecution = structuredClone(profiles)
+    unsupportedExecution.profiles.staging.publicFeatures.quantumRouterExecutionEnabled = true
+    expect(() => parsePagesProfiles(unsupportedExecution)).toThrow(
+      "cannot enable Quantum Router on an unsupported network"
+    )
+  })
+
+  it("keeps the local public capability disabled unless explicitly requested", () => {
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.quantumRouterEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({ VITE_QUANTUM_ROUTER_ENABLED: "true" })
+        .publicFeatures.quantumRouterEnabled
+    ).toBe(true)
+    expect(
+      resolveDeploymentProfile({
+        VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+        VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+      }).publicFeatures.quantumRouterEnabled
+    ).toBe(false)
   })
 
   it("keeps local presence disabled unless explicitly enabled", () => {
@@ -218,6 +377,49 @@ describe("deployment profiles", () => {
       resolveDeploymentProfile({ VITE_LIVE_PRESENCE_ENABLED: "true" })
         .publicFeatures.livePresenceEnabled
     ).toBe(true)
+  })
+
+  it("retains unset local execution inheritance and a separate explicit stop", () => {
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.quantumRouterExecutionEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({ VITE_QUANTUM_ROUTER_ENABLED: "true" })
+        .publicFeatures.quantumRouterExecutionEnabled
+    ).toBe(true)
+    expect(
+      resolveDeploymentProfile({
+        VITE_QUANTUM_ROUTER_ENABLED: "true",
+        VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "false",
+      }).publicFeatures.quantumRouterExecutionEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({
+        VITE_QUANTUM_ROUTER_ENABLED: "true",
+        VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "false",
+      }).publicFeatures.quantumRouterEnabled
+    ).toBe(false)
+    const rehearsal = {
+      VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+      VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+    }
+    expect(
+      resolveDeploymentProfile(rehearsal).publicFeatures
+        .quantumRouterExecutionEnabled
+    ).toBe(true)
+    expect(
+      resolveDeploymentProfile({
+        ...rehearsal,
+        VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "false",
+      }).publicFeatures.quantumRouterExecutionEnabled
+    ).toBe(false)
+    const executionOnly = resolveDeploymentProfile({
+      VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "true",
+    })
+    expect(executionOnly.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(executionOnly.publicFeatures.quantumRouterExecutionEnabled).toBe(
+      true
+    )
   })
 
   it("emits only whitelisted public build state and matches effective config", () => {
@@ -238,6 +440,15 @@ describe("deployment profiles", () => {
       true
     )
     expect(manifest.publicFeatures.livePresenceEnabled).toBe(true)
+    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(manifest.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
+    expect(Object.keys(manifest.publicFeatures).sort()).toEqual([
+      "breezLightningAddressEnabled",
+      "dmCompatibilityOrderRoutingEnabled",
+      "livePresenceEnabled",
+      "quantumRouterEnabled",
+      "quantumRouterExecutionEnabled",
+    ])
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
     expect(Object.keys(manifest).sort()).toEqual([
       "app",
@@ -272,6 +483,128 @@ describe("deployment profiles", () => {
     expect(workflow).toContain(
       "manifest.publicFeatures?.livePresenceEnabled !== true"
     )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.quantumRouterEnabled !== expectedRouterEnabled"
+    )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.quantumRouterExecutionEnabled !== expectedRouterExecutionEnabled"
+    )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.breezLightningAddressEnabled !== expectedBreezAddressEnabled"
+    )
     expect(workflow).toContain("throw new Error(")
+  })
+
+  it("compiles the managed capability rather than dashboard router flags", () => {
+    for (const profile of ["preview", "production", "staging"] as const) {
+      const result = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "-e",
+          'import { createConduitBuildContract } from "./scripts/vite/build_info.ts"; const { define } = createConduitBuildContract("apps/market"); console.log(JSON.stringify({ router: define["import.meta.env.VITE_QUANTUM_ROUTER_ENABLED"], execution: define["import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED"], network: define["import.meta.env.VITE_LIGHTNING_NETWORK"], profile: define["import.meta.env.VITE_DEPLOYMENT_PROFILE"] }));',
+        ],
+        env: {
+          ...process.env,
+          CF_PAGES: "",
+          CONDUIT_DEPLOYMENT_PROFILE: profile,
+          VITE_QUANTUM_ROUTER_ENABLED: profile === "staging" ? "true" : "false",
+          VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "true",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout.toString())).toEqual({
+        router: JSON.stringify(profile === "preview" ? "true" : "false"),
+        execution: JSON.stringify(profile === "preview" ? "true" : "false"),
+        network: JSON.stringify(profile === "staging" ? "signet" : "mainnet"),
+        profile: JSON.stringify(profile),
+      })
+    }
+  })
+
+  it("keeps the local compiled execution flag unset unless explicitly stopped", () => {
+    for (const execution of ["", "false"]) {
+      const result = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "-e",
+          'import { createConduitBuildContract } from "./scripts/vite/build_info.ts"; console.log(JSON.stringify(createConduitBuildContract("apps/market").define["import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED"] ?? null));',
+        ],
+        env: {
+          ...process.env,
+          CF_PAGES: "",
+          CONDUIT_DEPLOYMENT_PROFILE: "",
+          VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: execution,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout.toString())).toBe(
+        execution ? JSON.stringify(execution) : null
+      )
+    }
+  })
+
+  it("honors an explicit local dotenv execution stop in the actual Vite bundle", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "-e",
+        `
+        import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+        import { tmpdir } from "node:os";
+        import { resolve } from "node:path";
+        import { createRequire } from "node:module";
+        import { createConduitBuildContract } from "./scripts/vite/build_info.ts";
+        const envDir = mkdtempSync(resolve(tmpdir(), "conduit-execution-env-"));
+        delete process.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED;
+        try {
+          writeFileSync(resolve(envDir, ".env.local"), "VITE_QUANTUM_ROUTER_EXECUTION_ENABLED=false\\n");
+          const { define } = createConduitBuildContract("apps/market");
+          const { build } = await import(createRequire(resolve("apps/market/package.json")).resolve("vite"));
+          const output = await build({ configFile: false, envDir, logLevel: "silent", define,
+            plugins: [{ name: "execution-env-fixture", resolveId(id) { return id.endsWith("fixture:execution-env") ? "\\0execution-env" : null; }, load(id) { return id === "\\0execution-env" ? 'export const execution = import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED; export { conduitBuildInfo } from ' + JSON.stringify(resolve("packages/core/src/build-info.ts")) + ';' : null; } }],
+            build: { write: false, minify: false, lib: { entry: "fixture:execution-env", formats: ["cjs"] }, rolldownOptions: { output: { exports: "named", codeSplitting: false } } }
+          });
+          const chunks = (Array.isArray(output) ? output[0] : output).output.filter(item => item.type === "chunk");
+          if (chunks.length !== 1) throw new Error("Execution dotenv fixture failed.");
+          const fixtureModule = { exports: {} };
+          new Function("module", "exports", chunks[0].code)(fixtureModule, fixtureModule.exports);
+          console.log(JSON.stringify({ hasDefine: Object.hasOwn(define, "import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED"), execution: fixtureModule.exports.execution, admission: fixtureModule.exports.conduitBuildInfo.publicFeatures.quantumRouterEnabled }));
+        } finally { rmSync(envDir, { recursive: true, force: true }); }
+      `,
+      ],
+      env: {
+        ...process.env,
+        CF_PAGES: "",
+        CONDUIT_DEPLOYMENT_PROFILE: "",
+        VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+        VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+        VITE_QUANTUM_ROUTER_ENABLED: "true",
+        VITE_QUANTUM_ROUTER_EXECUTION_ENABLED: "",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(result.exitCode).toBe(0)
+    expect(JSON.parse(result.stdout.toString())).toEqual({
+      hasDefine: false,
+      execution: "false",
+      admission: false,
+    })
+  })
+
+  it("verifies the independent compiled execution field in deployment artifacts", async () => {
+    const verifier = await Bun.file(
+      "scripts/ci/verify_deployment_artifacts.ts"
+    ).text()
+    expect(verifier).toContain(
+      "manifest.publicFeatures.quantumRouterExecutionEnabled !=="
+    )
+    expect(verifier).toContain(
+      "resolvedProfile.publicFeatures.quantumRouterExecutionEnabled"
+    )
   })
 })

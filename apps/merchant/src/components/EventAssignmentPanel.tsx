@@ -1,3 +1,4 @@
+import { resumeMerchantOccurrencePublication } from "../lib/merchant-occurrence-publication"
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -5,7 +6,6 @@ import {
   readEventMarketRoster,
   readMerchantOccurrenceInventory,
   saveMerchantOccurrenceAssignment,
-  resumeMerchantOccurrencePublication,
 } from "@conduit/core"
 import {
   Button,
@@ -144,7 +144,7 @@ export function EventAssignmentPanel(props: {
   const busy = save.isPending || retry.isPending
   return (
     <section
-      className="space-y-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"
+      className="space-y-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4"
       aria-label="Occurrence assignments"
     >
       <div className="space-y-2">
@@ -295,7 +295,10 @@ export function EventAssignmentPanel(props: {
         </p>
       ) : null}
       {save.error || retry.error ? (
-        <p role="alert" className="text-pretty text-sm text-error">
+        <p
+          role="alert"
+          className="text-pretty text-sm text-[var(--error-text)]"
+        >
           {(save.error ?? retry.error)?.message}
         </p>
       ) : null}

@@ -10,6 +10,7 @@ import {
   readTestRelayEvents,
   seedTestRelayIdentity,
 } from "./helpers/auth"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -241,9 +242,89 @@ test("variation measurements require explicit sharing and preserve independent a
   await publishTestRelayEvents([policy])
   await installTestSigner(page, pubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
-  await activate(page.getByRole("button", { name: "Add product" }).first())
+  await expect(
+    page.getByRole("button", {
+      name: "Open merchant account menu",
+      exact: true,
+    })
+  ).toBeVisible()
+  await page.evaluate(() => document.fonts.ready)
+  const trigger = page.getByRole("button", { name: "Add product" }).first()
+  await expect(trigger).toBeEnabled()
+  // Preserve one activation and capture only delivery, mount and geometry state.
+  const diagnosticHandle = await trigger.evaluateHandle((element) => {
+    const observations = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      dialogMounted: false,
+      dialogRemoved: false,
+      fontsAtClick: "unknown",
+    }
+    const listeners = ["pointerdown", "pointerup", "click"].map((type) => {
+      const listener = (event: Event) => {
+        const onTrigger =
+          event.target instanceof Node && element.contains(event.target)
+        if (type === "pointerdown")
+          observations.pointerDownOnTrigger = onTrigger
+        if (type === "pointerup") observations.pointerUpOnTrigger = onTrigger
+        if (type === "click") {
+          observations.clickOnTrigger = onTrigger
+          observations.fontsAtClick = document.fonts.status
+        }
+      }
+      document.addEventListener(type, listener, true)
+      return { type, listener }
+    })
+    const containsDialog = (node: Node) =>
+      node instanceof Element &&
+      (node.matches('[role="dialog"]') ||
+        !!node.querySelector('[role="dialog"]'))
+    const observer = new MutationObserver((changes) => {
+      for (const change of changes) {
+        if ([...change.addedNodes].some(containsDialog))
+          observations.dialogMounted = true
+        if ([...change.removedNodes].some(containsDialog))
+          observations.dialogRemoved = true
+      }
+    })
+    observer.observe(document, { childList: true, subtree: true })
+    return {
+      read() {
+        const rect = element.getBoundingClientRect()
+        return {
+          ...observations,
+          dialogPresent: !!document.querySelector('[role="dialog"]'),
+          triggerEnabled:
+            element.isConnected && !element.hasAttribute("disabled"),
+          triggerX: rect.x,
+          triggerY: rect.y,
+          triggerWidth: rect.width,
+          triggerHeight: rect.height,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        for (const { type, listener } of listeners)
+          document.removeEventListener(type, listener, true)
+      },
+    }
+  })
   const dialog = page.getByRole("dialog", { name: "Add product" })
-  await expect(dialog).toBeVisible()
+  try {
+    await activate(trigger)
+    await expect(dialog).toBeVisible()
+  } catch (error) {
+    recordSmokeDiagnostic(
+      testInfo,
+      "variation-dialog-open",
+      await diagnosticHandle.evaluate((probe) => probe.read())
+    )
+    throw error
+  } finally {
+    await diagnosticHandle.evaluate((probe) => probe.dispose())
+    await diagnosticHandle.dispose()
+  }
   await dialog
     .getByLabel("Title", { exact: true })
     .fill("Variation shipping test")
@@ -263,13 +344,18 @@ test("variation measurements require explicit sharing and preserve independent a
   await parent.getByLabel("Width", { exact: true }).fill("10")
   await parent.getByLabel("Height", { exact: true }).fill("5")
   await dialog.getByRole("button", { name: "Add by URL" }).click()
-  await dialog
-    .getByLabel("Primary image URL")
-    .fill("https://media.conduit.market/variation-shipping.png")
+  const imageUrl = dialog.getByLabel("Primary image URL")
+  // The image field receives focus on the next frame; finish that handoff
+  // before entering tags so it cannot steal their input.
+  await expect(imageUrl).toBeFocused()
+  await imageUrl.fill("https://media.conduit.market/variation-shipping.png")
   const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
   for (const tag of ["shipping", "variation", "test"]) {
     await tags.fill(tag)
     await tags.press("Enter")
+    await expect(
+      dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+    ).toBeVisible()
   }
   await dialog
     .getByRole("checkbox", { name: /This product has options/ })
@@ -305,6 +391,9 @@ test("variation measurements require explicit sharing and preserve independent a
   await expect(publish).toBeDisabled()
   await large.getByLabel("Format", { exact: true }).click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await expect(large.getByLabel("Format", { exact: true })).toHaveText(
+    "Digital"
+  )
   await expect(publish).toBeEnabled()
   const useTable = small.getByRole("checkbox", { name: "Use table" })
   const variationPrice = small.locator("#product-variation-shipping-0")

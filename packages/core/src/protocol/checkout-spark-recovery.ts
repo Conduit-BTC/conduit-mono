@@ -1,13 +1,21 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
-import type { NostrKeySigner } from "./nostr-event-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import { getEventHash } from "nostr-tools"
+import { type PrivateMessageEvent, type PrivateMessageRumor } from "./messaging"
+import type { NostrKeySigner } from "./nostr-event-signer"
+import { retryPrivateMessageWraps } from "./private-message-delivery"
 
 import {
   createCheckoutSparkReconciliation,
   type CheckoutSparkNetwork,
   type CheckoutSparkPlan,
 } from "./checkout-spark-reconciliation"
+import {
+  restoreCheckoutSparkSettledPlan,
+  restoreCheckoutSparkSettledReconciliation,
+  type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
+} from "./checkout-spark-settled-router"
 import { EVENT_KINDS } from "./kinds"
 import {
   publishPrivateMessage,
@@ -16,16 +24,18 @@ import {
   type PublishPrivateMessageInput,
   type PublishPrivateMessageResult,
 } from "./messaging"
-import { getNdk } from "./ndk"
-import { appendConduitClientTag } from "./nip89"
 import {
-  MAX_DECLARED_INBOX_WRITE_RELAYS,
-  resolveInboxDeclaration,
-  type ResolveInboxDeclarationOptions,
-} from "./private-message-routing"
+  readCheckoutSparkMerchantOrderEvidence,
+  type CheckoutSparkMerchantOrderEvidence,
+} from "./checkout-spark-merchant-order-witness"
+import {
+  parseCheckoutSparkMerchantProgressRumor,
+  type CheckoutSparkMerchantProgressPayload,
+} from "./checkout-spark-merchant-progress"
+import { appendConduitClientTag } from "./nip89"
+import { type ResolveInboxDeclarationOptions } from "./private-message-routing"
 import {
   publishWithPlanner,
-  RelayPublishDiagnosticsError,
   type PublishWithPlannerResult,
 } from "./relay-publish"
 import { normalizeSecureOrIsolatedE2eRelayUrls } from "./relay-settings"
@@ -33,14 +43,25 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import { canonicalizeCheckoutSparkPlanSourceEvents } from "./checkout-spark-plan-sources"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const RECOVERY_HANDOFF_DOMAIN = "conduit:checkout-spark-recovery:v1"
+const RECOVERY_SOURCE_BUNDLE_DOMAIN =
+  "conduit:checkout-spark-recovery-sources:v1"
+const RECOVERY_PROGRESS_DOMAIN = "conduit:checkout-spark-recovery-progress:v1"
+const RECOVERY_SNAPSHOT_KEY_DOMAIN =
+  "conduit:checkout-spark-recovery-snapshot-key:v1"
 const RECOVERY_RELAY_REF_DOMAIN =
   "conduit:checkout-spark-recovery-relay-target:v1"
 const MAX_OPAQUE_ID_LENGTH = 256
 const MAX_MNEMONIC_LENGTH = 512
 const MAX_RECOVERY_RELAY_REFS = 64
+/**
+ * Application budget for new source-bearing initial rumors. Leaves room for
+ * NIP-59's nested encryption overhead; not a universal relay capability claim.
+ */
+export const CHECKOUT_SPARK_RECOVERY_SOURCE_RUMOR_MAX_BYTES = 32 * 1024
 
 export interface CheckoutSparkRecoveryWallet {
   providerId: "spark"
@@ -55,7 +76,7 @@ export interface CheckoutSparkRecoveryWallet {
  * rumor -> seal -> gift-wrap chain. It must never enter generic order state,
  * message caches, logs, telemetry, or user-visible conversation rendering.
  */
-export interface CheckoutSparkRecoveryPayload {
+export interface CheckoutSparkLegacyRecoveryPayload {
   schemaVersion: 1
   type: "checkout_spark_recovery"
   handoffId: string
@@ -66,11 +87,81 @@ export interface CheckoutSparkRecoveryPayload {
   wallet: CheckoutSparkRecoveryWallet
 }
 
+/** Versioned snapshot for a settled-allocation checkout. The encrypted wrap is
+ * merchant-only; the sender never persists its plaintext in the order cache. */
+export interface CheckoutSparkSettledRecoveryPayload {
+  schemaVersion: 2
+  type: "checkout_spark_recovery"
+  handoffId: string
+  senderPubkey: string
+  merchantPubkey: string
+  preparedAt: number
+  plan: CheckoutSparkSettledPlan
+  state: CheckoutSparkSettledReconciliation
+  wallet: CheckoutSparkRecoveryWallet
+  /** Original signed public terms, carried only in the private initial handoff. */
+  sourceEvents?: readonly SignedPublicNostrEvent[]
+}
+
+/** A later encrypted update carries no wallet secret. The merchant may use it
+ * only with the exact earlier wallet handoff referenced by initialHandoffId. */
+export interface CheckoutSparkSettledRecoveryProgressPayload {
+  schemaVersion: 3
+  type: "checkout_spark_recovery_progress"
+  handoffId: string
+  initialHandoffId: string
+  senderPubkey: string
+  merchantPubkey: string
+  preparedAt: number
+  plan: CheckoutSparkSettledPlan
+  state: CheckoutSparkSettledReconciliation
+}
+
+export type CheckoutSparkRecoveryPayload =
+  | CheckoutSparkLegacyRecoveryPayload
+  | CheckoutSparkSettledRecoveryPayload
+  | CheckoutSparkSettledRecoveryProgressPayload
+
+/** Encrypted local discovery metadata. Wallet material remains in the original wrapper. */
+export interface CheckoutRecoveryDescriptor {
+  id: string
+  senderPubkey: string
+  createdAt: number
+  wrapId: string
+  checkoutId: string
+  orderId: string
+  planDigest: string
+  takeoverAt: number
+  preparedAt: number
+  payloadDigest: string
+}
+export function checkoutRecoveryPayloadDigest(
+  payload: CheckoutSparkRecoveryPayload
+): string {
+  return hashValue(payload)
+}
+
 export interface CreateCheckoutSparkRecoveryPayloadInput {
   plan: CheckoutSparkPlan
   senderPubkey: string
   mnemonic: string
   accountNumber: number
+  preparedAt: number
+}
+
+export interface CreateCheckoutSparkSettledRecoveryPayloadInput {
+  state: CheckoutSparkSettledReconciliation
+  senderPubkey: string
+  mnemonic: string
+  accountNumber: number
+  preparedAt: number
+  sourceEvents?: readonly SignedPublicNostrEvent[]
+}
+
+export interface CreateCheckoutSparkSettledRecoveryProgressPayloadInput {
+  initialHandoffId: string
+  state: CheckoutSparkSettledReconciliation
+  senderPubkey: string
   preparedAt: number
 }
 
@@ -129,9 +220,9 @@ export interface RetryCheckoutSparkRecoveryResult {
 }
 
 export type CheckoutSparkRecoveryGiftUnwrap = (
-  event: NDKEvent,
+  event: PrivateMessageEvent,
   signer: NostrKeySigner
-) => Promise<NDKEvent | null>
+) => Promise<PrivateMessageEvent | null>
 
 function normalizeHex64(value: string, label: string): string {
   const normalized = value.trim().toLowerCase()
@@ -181,6 +272,26 @@ function canonicalPlan(plan: CheckoutSparkPlan): CheckoutSparkPlan {
   }
 }
 
+function canonicalSettledState(
+  state: CheckoutSparkSettledReconciliation
+): CheckoutSparkSettledReconciliation {
+  try {
+    // The envelope is unchanged. New native plans use an explicitly versioned
+    // nested state; older clients fail closed at the nested plan decoder.
+    // Historical Lightning renewal remains Merchant-only.
+    if (state.schemaVersion !== 3 && state.schemaVersion !== 5)
+      throw new Error("unsupported buyer state")
+    const plan = restoreCheckoutSparkSettledPlan(state.plan)
+    const restored = restoreCheckoutSparkSettledReconciliation(state)
+    if (JSON.stringify(restored.plan) !== JSON.stringify(plan)) {
+      throw new Error("state plan mismatch")
+    }
+    return restored
+  } catch {
+    throw new Error("Checkout Spark settled recovery state is invalid.")
+  }
+}
+
 function assertExactObjectKeys(
   value: unknown,
   expectedKeys: readonly string[],
@@ -200,12 +311,14 @@ function assertExactObjectKeys(
 }
 
 function deriveCheckoutSparkRecoveryHandoffId(input: {
-  plan: CheckoutSparkPlan
+  plan: CheckoutSparkPlan | CheckoutSparkSettledPlan
   senderPubkey: string
   preparedAt: number
   accountNumber: number
+  state?: CheckoutSparkSettledReconciliation
+  sourceEvents?: readonly SignedPublicNostrEvent[]
 }): string {
-  return hashValue([
+  const binding: unknown[] = [
     RECOVERY_HANDOFF_DOMAIN,
     input.plan.checkoutId,
     input.plan.orderId,
@@ -216,13 +329,18 @@ function deriveCheckoutSparkRecoveryHandoffId(input: {
     input.plan.network,
     input.accountNumber,
     input.preparedAt,
-  ])
+  ]
+  if (input.state) binding.push(hashValue(input.state))
+  if (input.sourceEvents) {
+    binding.push(hashValue([RECOVERY_SOURCE_BUNDLE_DOMAIN, input.sourceEvents]))
+  }
+  return hashValue(binding)
 }
 
 /** Build and validate the exact recovery authority before any wrapping. */
 export function createCheckoutSparkRecoveryPayload(
   input: CreateCheckoutSparkRecoveryPayloadInput
-): CheckoutSparkRecoveryPayload {
+): CheckoutSparkLegacyRecoveryPayload {
   const plan = canonicalPlan(input.plan)
   const senderPubkey = normalizeHex64(input.senderPubkey, "Sender pubkey")
   const preparedAt = normalizeTimestamp(input.preparedAt, "Recovery time")
@@ -257,7 +375,262 @@ export function createCheckoutSparkRecoveryPayload(
   })
 }
 
+/** Freeze one exact v3 plan/state snapshot for the merchant before wrapping. */
+export function createCheckoutSparkSettledRecoveryPayload(
+  input: CreateCheckoutSparkSettledRecoveryPayloadInput
+): CheckoutSparkSettledRecoveryPayload {
+  const state = canonicalSettledState(input.state)
+  const plan = state.plan
+  const senderPubkey = normalizeHex64(input.senderPubkey, "Sender pubkey")
+  if (
+    plan.merchantPublicZapPolicy?.schemaVersion === 1 &&
+    plan.merchantPublicZapPolicy.signerPubkey !== senderPubkey
+  ) {
+    throw new Error(
+      "Checkout Spark public zap approval is outside buyer scope."
+    )
+  }
+  const preparedAt = normalizeTimestamp(input.preparedAt, "Recovery time")
+  const accountNumber = normalizeAccountNumber(input.accountNumber)
+  const mnemonic = normalizeMnemonic(input.mnemonic)
+  const sourceEvents =
+    input.sourceEvents === undefined
+      ? undefined
+      : canonicalizeCheckoutSparkPlanSourceEvents(plan, input.sourceEvents)
+  if (preparedAt < plan.createdAt || preparedAt >= plan.takeoverAt) {
+    throw new Error(
+      "Checkout Spark recovery must be prepared before merchant takeover."
+    )
+  }
+  if (state.updatedAt > preparedAt) {
+    throw new Error("Checkout Spark recovery cannot predate its state.")
+  }
+  const handoffId = deriveCheckoutSparkRecoveryHandoffId({
+    plan,
+    senderPubkey,
+    preparedAt,
+    accountNumber,
+    state,
+    sourceEvents,
+  })
+  const payload: CheckoutSparkSettledRecoveryPayload = Object.freeze({
+    schemaVersion: 2,
+    type: "checkout_spark_recovery",
+    handoffId,
+    senderPubkey,
+    merchantPubkey: plan.merchantPubkey,
+    preparedAt,
+    plan,
+    state,
+    wallet: Object.freeze({
+      providerId: "spark",
+      walletId: plan.walletId,
+      network: plan.network,
+      accountNumber,
+      mnemonic,
+    }),
+    ...(sourceEvents ? { sourceEvents } : {}),
+  })
+  assertRecoverySourceRumorBudget(payload)
+  return payload
+}
+
+/** Prepare a machine-only state update without re-exposing wallet material. */
+export function createCheckoutSparkSettledRecoveryProgressPayload(
+  input: CreateCheckoutSparkSettledRecoveryProgressPayloadInput
+): CheckoutSparkSettledRecoveryProgressPayload {
+  const state = canonicalSettledState(input.state)
+  const plan = state.plan
+  const senderPubkey = normalizeHex64(input.senderPubkey, "Sender pubkey")
+  if (
+    plan.merchantPublicZapPolicy?.schemaVersion === 1 &&
+    plan.merchantPublicZapPolicy.signerPubkey !== senderPubkey
+  ) {
+    throw new Error(
+      "Checkout Spark public zap approval is outside buyer scope."
+    )
+  }
+  const initialHandoffId = normalizeHex64(
+    input.initialHandoffId,
+    "Initial recovery handoff id"
+  )
+  const preparedAt = normalizeTimestamp(input.preparedAt, "Recovery time")
+  if (
+    preparedAt < plan.createdAt ||
+    preparedAt >= plan.takeoverAt ||
+    state.updatedAt > preparedAt
+  ) {
+    throw new Error("Checkout Spark progress is outside its recovery window.")
+  }
+  const handoffId = hashValue([
+    RECOVERY_PROGRESS_DOMAIN,
+    initialHandoffId,
+    plan.checkoutId,
+    plan.orderId,
+    plan.planDigest,
+    plan.merchantPubkey,
+    senderPubkey,
+    preparedAt,
+    hashValue(state),
+  ])
+  return Object.freeze({
+    schemaVersion: 3,
+    type: "checkout_spark_recovery_progress",
+    handoffId,
+    initialHandoffId,
+    senderPubkey,
+    merchantPubkey: plan.merchantPubkey,
+    preparedAt,
+    plan,
+    state,
+  })
+}
+
+/** Content-free local retry key for one canonical exact state. */
+export function deriveCheckoutSparkSettledRecoverySnapshotKey(input: {
+  initialHandoffId: string
+  state: CheckoutSparkSettledReconciliation
+}): string {
+  const initialHandoffId = normalizeHex64(
+    input.initialHandoffId,
+    "Initial recovery handoff id"
+  )
+  const state = canonicalSettledState(input.state)
+  return hashValue([
+    RECOVERY_SNAPSHOT_KEY_DOMAIN,
+    initialHandoffId,
+    state.plan.checkoutId,
+    state.plan.planDigest,
+    hashValue(state),
+  ])
+}
+
 function parseRecoveryPayload(value: unknown): CheckoutSparkRecoveryPayload {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "schemaVersion" in value &&
+    value.schemaVersion === 3
+  ) {
+    const progress = value as Record<string, unknown>
+    assertExactObjectKeys(
+      progress,
+      [
+        "schemaVersion",
+        "type",
+        "handoffId",
+        "initialHandoffId",
+        "senderPubkey",
+        "merchantPubkey",
+        "preparedAt",
+        "plan",
+        "state",
+      ],
+      "Checkout Spark recovery progress"
+    )
+    if (
+      progress.type !== "checkout_spark_recovery_progress" ||
+      typeof progress.initialHandoffId !== "string" ||
+      typeof progress.handoffId !== "string" ||
+      typeof progress.senderPubkey !== "string" ||
+      typeof progress.merchantPubkey !== "string" ||
+      typeof progress.preparedAt !== "number"
+    ) {
+      throw new Error("Checkout Spark recovery progress is invalid.")
+    }
+    const candidate = createCheckoutSparkSettledRecoveryProgressPayload({
+      initialHandoffId: progress.initialHandoffId,
+      state: progress.state as CheckoutSparkSettledReconciliation,
+      senderPubkey: progress.senderPubkey,
+      preparedAt: progress.preparedAt,
+    })
+    if (
+      normalizeHex64(progress.handoffId, "Recovery handoff id") !==
+        candidate.handoffId ||
+      normalizeHex64(progress.merchantPubkey, "Merchant pubkey") !==
+        candidate.merchantPubkey ||
+      JSON.stringify(progress.plan) !== JSON.stringify(candidate.plan) ||
+      JSON.stringify(progress.state) !== JSON.stringify(candidate.state)
+    ) {
+      throw new Error("Checkout Spark recovery progress binding is invalid.")
+    }
+    return candidate
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "schemaVersion" in value &&
+    value.schemaVersion === 2
+  ) {
+    const snapshot = value as Record<string, unknown>
+    assertExactObjectKeys(
+      snapshot,
+      [
+        "schemaVersion",
+        "type",
+        "handoffId",
+        "senderPubkey",
+        "merchantPubkey",
+        "preparedAt",
+        "plan",
+        "state",
+        "wallet",
+        ...(Object.hasOwn(snapshot, "sourceEvents") ? ["sourceEvents"] : []),
+      ],
+      "Checkout Spark recovery payload"
+    )
+    assertExactObjectKeys(
+      snapshot.wallet,
+      ["providerId", "walletId", "network", "accountNumber", "mnemonic"],
+      "Checkout Spark recovery wallet"
+    )
+    if (
+      snapshot.type !== "checkout_spark_recovery" ||
+      typeof snapshot.handoffId !== "string" ||
+      typeof snapshot.senderPubkey !== "string" ||
+      typeof snapshot.merchantPubkey !== "string" ||
+      typeof snapshot.preparedAt !== "number" ||
+      typeof snapshot.wallet.providerId !== "string" ||
+      typeof snapshot.wallet.walletId !== "string" ||
+      typeof snapshot.wallet.network !== "string" ||
+      typeof snapshot.wallet.accountNumber !== "number" ||
+      typeof snapshot.wallet.mnemonic !== "string"
+    ) {
+      throw new Error("Checkout Spark recovery payload is invalid.")
+    }
+    const candidate = createCheckoutSparkSettledRecoveryPayload({
+      state: snapshot.state as CheckoutSparkSettledReconciliation,
+      senderPubkey: snapshot.senderPubkey,
+      mnemonic: snapshot.wallet.mnemonic,
+      accountNumber: snapshot.wallet.accountNumber,
+      preparedAt: snapshot.preparedAt,
+      ...(Object.hasOwn(snapshot, "sourceEvents")
+        ? {
+            sourceEvents:
+              snapshot.sourceEvents as readonly SignedPublicNostrEvent[],
+          }
+        : {}),
+    })
+    if (
+      normalizeHex64(snapshot.merchantPubkey, "Merchant pubkey") !==
+        candidate.merchantPubkey ||
+      normalizeHex64(snapshot.handoffId, "Recovery handoff id") !==
+        candidate.handoffId ||
+      snapshot.wallet.providerId !== "spark" ||
+      normalizeOpaqueId(snapshot.wallet.walletId, "Recovery wallet id") !==
+        candidate.wallet.walletId ||
+      snapshot.wallet.network !== candidate.wallet.network ||
+      JSON.stringify(snapshot.plan) !== JSON.stringify(candidate.plan) ||
+      JSON.stringify(snapshot.state) !== JSON.stringify(candidate.state) ||
+      JSON.stringify(snapshot.sourceEvents) !==
+        JSON.stringify(candidate.sourceEvents)
+    ) {
+      throw new Error("Checkout Spark recovery payload binding is invalid.")
+    }
+    return candidate
+  }
   assertExactObjectKeys(
     value,
     [
@@ -316,7 +689,7 @@ function parseRecoveryPayload(value: unknown): CheckoutSparkRecoveryPayload {
 }
 
 function exactTagValue(
-  rumor: NDKEvent,
+  rumor: PrivateMessageEvent,
   name: string,
   expected: string
 ): boolean {
@@ -324,12 +697,17 @@ function exactTagValue(
   return matching.length === 1 && matching[0]?.[1] === expected
 }
 
-/** Build the unsigned machine-only kind-16 rumor wrapped by NIP-59. */
-export function buildCheckoutSparkRecoveryRumor(
-  payloadInput: CheckoutSparkRecoveryPayload
-): NDKEvent {
-  const payload = parseRecoveryPayload(payloadInput)
-  const rumor = new NDKEvent(getNdk())
+function canonicalRecoveryRumor(
+  payload: CheckoutSparkRecoveryPayload
+): PrivateMessageRumor {
+  const rumor: PrivateMessageRumor = {
+    id: "",
+    pubkey: "",
+    kind: EVENT_KINDS.ORDER,
+    created_at: Math.floor(payload.preparedAt / 1_000),
+    tags: [],
+    content: "",
+  }
   rumor.kind = EVENT_KINDS.ORDER
   rumor.pubkey = payload.senderPubkey
   rumor.created_at = Math.floor(payload.preparedAt / 1_000)
@@ -344,19 +722,50 @@ export function buildCheckoutSparkRecoveryRumor(
     "market"
   )
   rumor.content = JSON.stringify(payload)
-  rumor.id = rumor.getEventHash()
+  rumor.id = getEventHash({
+    ...rumor,
+    kind: rumor.kind!,
+    created_at: rumor.created_at!,
+  })
   return rumor
+}
+
+function assertRecoverySourceRumorBudget(
+  payload: CheckoutSparkSettledRecoveryPayload
+): void {
+  if (payload.sourceEvents === undefined) return
+  const serialized = JSON.stringify(canonicalRecoveryRumor(payload))
+  if (
+    new TextEncoder().encode(serialized).byteLength >
+    CHECKOUT_SPARK_RECOVERY_SOURCE_RUMOR_MAX_BYTES
+  ) {
+    throw new Error(
+      "Checkout Spark recovery source rumor exceeds its resource budget."
+    )
+  }
+}
+
+/** Build the unsigned machine-only kind-16 rumor wrapped by NIP-59. */
+export function buildCheckoutSparkRecoveryRumor(
+  payloadInput: CheckoutSparkRecoveryPayload
+): PrivateMessageRumor {
+  return canonicalRecoveryRumor(parseRecoveryPayload(payloadInput))
 }
 
 /** Parse only this dedicated rumor; generic order parsing intentionally ignores it. */
 export function parseCheckoutSparkRecoveryRumor(
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
 ): CheckoutSparkRecoveryPayload {
   try {
     if (
       rumor.kind !== EVENT_KINDS.ORDER ||
       !HEX_64.test(rumor.id?.toLowerCase() ?? "") ||
-      rumor.id.toLowerCase() !== rumor.getEventHash().toLowerCase()
+      rumor.id.toLowerCase() !==
+        getEventHash({
+          ...rumor,
+          kind: rumor.kind!,
+          created_at: rumor.created_at!,
+        }).toLowerCase()
     ) {
       throw new Error("invalid rumor identity")
     }
@@ -392,10 +801,10 @@ function hasExactOuterRecipient(
 }
 
 function signedRecoveryWrap(
-  event: NDKEvent,
+  event: PrivateMessageEvent | SignedPublicNostrEvent,
   merchantPubkey: string
 ): SignedPublicNostrEvent {
-  const signed = event.rawEvent() as SignedPublicNostrEvent
+  const signed = event as SignedPublicNostrEvent
   if (
     signed.kind !== EVENT_KINDS.GIFT_WRAP ||
     !isValidSignedPublicNostrEvent(signed) ||
@@ -636,38 +1045,6 @@ export async function publishCheckoutSparkRecovery(input: {
   }
 }
 
-async function currentRecipientRelays(input: {
-  merchantPubkey: string
-  recipientInboxRelays?: readonly string[]
-  inboxDeclarationOptions?: ResolveInboxDeclarationOptions
-}): Promise<string[]> {
-  if (input.recipientInboxRelays) {
-    return normalizeSecureOrIsolatedE2eRelayUrls(
-      input.recipientInboxRelays
-    ).slice(0, MAX_DECLARED_INBOX_WRITE_RELAYS)
-  }
-  const declaration = await resolveInboxDeclaration(
-    input.merchantPubkey,
-    input.inboxDeclarationOptions
-  )
-  if (declaration.state !== "declared") {
-    throw new Error("Merchant private-message inbox is not currently usable.")
-  }
-  return normalizeSecureOrIsolatedE2eRelayUrls(declaration.relayUrls).slice(
-    0,
-    MAX_DECLARED_INBOX_WRITE_RELAYS
-  )
-}
-
-function recoverPartialPublish(
-  error: unknown
-): PublishWithPlannerResult | null {
-  return error instanceof RelayPublishDiagnosticsError &&
-    error.diagnostics.successfulRelayUrls.length > 0
-    ? error.diagnostics
-    : null
-}
-
 /** Retry the same signed ciphertext; never re-encrypt or re-sign recovery data. */
 export async function retryCheckoutSparkRecoveryDelivery(input: {
   record: CheckoutSparkRecoveryDeliveryRecord
@@ -682,48 +1059,29 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
     input.deliveryProgress,
     input.record
   )
-  const relayUrls = await currentRecipientRelays({
-    merchantPubkey: input.record.merchantPubkey,
+  const { recipientDelivery } = await retryPrivateMessageWraps({
+    rumorId: input.record.rumorId,
+    senderPubkey: input.record.senderPubkey,
+    recipientPubkey: input.record.merchantPubkey,
+    wrappedToRecipient: input.record.signedRecipientWrap,
     recipientInboxRelays: input.recipientInboxRelays,
     inboxDeclarationOptions: input.inboxDeclarationOptions,
+    shouldContinue:
+      input.shouldContinue ?? input.inboxDeclarationOptions?.shouldContinue,
+    publishFn: input.publishFn,
+    acknowledged: (url) =>
+      deliveryProgress.acknowledgedRelayRefs.includes(recoveryRelayRef(url)),
   })
-  if (relayUrls.length === 0) {
-    throw new Error("Merchant private-message inbox is not currently usable.")
-  }
-  const acknowledged = new Set(deliveryProgress.acknowledgedRelayRefs)
-  const pendingRelayUrls = relayUrls.filter(
-    (relayUrl) => !acknowledged.has(recoveryRelayRef(relayUrl))
-  )
-  let recipientDelivery: PublishWithPlannerResult | null = null
-  if (pendingRelayUrls.length > 0) {
-    try {
-      recipientDelivery = await (input.publishFn ?? publishWithPlanner)(
-        input.record.signedRecipientWrap,
-        {
-          intent: "recipient_event",
-          authorPubkey: input.record.senderPubkey,
-          recipientPubkeys: [input.record.merchantPubkey],
-          exclusiveRelayUrls: pendingRelayUrls,
-          deliveryMode: "critical",
-          shouldContinue:
-            input.shouldContinue ??
-            input.inboxDeclarationOptions?.shouldContinue,
-        }
-      )
-    } catch (error) {
-      const partial = recoverPartialPublish(error)
-      if (!partial) throw error
-      recipientDelivery = partial
-    }
+  if (recipientDelivery)
     deliveryProgress = {
       ...deliveryProgress,
       acknowledgedRelayRefs: mergeAcknowledgedRelayRefs({
         existing: deliveryProgress.acknowledgedRelayRefs,
-        attemptedRelayUrls: pendingRelayUrls,
+        attemptedRelayUrls: recipientDelivery.attemptedRelayUrls,
         successfulRelayUrls: recipientDelivery.successfulRelayUrls,
       }),
     }
-  }
+
   return {
     recipientDelivery,
     deliveryProgress,
@@ -758,7 +1116,18 @@ export interface OpenCheckoutSparkRecoveryWrapResult {
 
 export type InspectCheckoutSparkRecoveryWrapOutcome =
   | ({ status: "ok" } & OpenCheckoutSparkRecoveryWrapResult)
-  | { status: "ignored"; wrapId: string }
+  | {
+      status: "merchant_progress"
+      wrapId: string
+      rumorId: string
+      payload: CheckoutSparkMerchantProgressPayload
+    }
+  | {
+      status: "ignored"
+      wrapId: string
+      /** Private, authenticated commerce terms; never an order/payment result. */
+      orderEvidence?: CheckoutSparkMerchantOrderEvidence
+    }
   | { status: "decrypt_failed"; wrapId: string }
   | { status: "malformed"; wrapId: string }
 
@@ -772,39 +1141,86 @@ export async function inspectCheckoutSparkRecoveryWrap(input: {
   signer: NostrKeySigner
   giftUnwrap?: CheckoutSparkRecoveryGiftUnwrap
 }): Promise<InspectCheckoutSparkRecoveryWrapOutcome> {
-  const wrapId = input.signedRecipientWrap.id?.toLowerCase() ?? ""
+  const received = input.signedRecipientWrap
+  const wrapId = received.id?.toLowerCase() ?? ""
   if (
-    !isValidSignedPublicNostrEvent(input.signedRecipientWrap) ||
-    input.signedRecipientWrap.kind !== EVENT_KINDS.GIFT_WRAP
+    !isValidSignedPublicNostrEvent(received) ||
+    received.kind !== EVENT_KINDS.GIFT_WRAP
   ) {
     return { status: "malformed", wrapId }
+  }
+  // Pin the validated envelope before awaiting a potentially external signer.
+  const signedRecipientWrap: SignedPublicNostrEvent = {
+    id: received.id,
+    pubkey: received.pubkey,
+    created_at: received.created_at,
+    kind: received.kind,
+    tags: received.tags.map((tag) => [...tag]),
+    content: received.content,
+    sig: received.sig,
   }
   const signerPubkey = normalizeHex64(
     await input.signer.getPublicKey(),
     "Recovery signer pubkey"
   )
-  if (!hasExactOuterRecipient(input.signedRecipientWrap, signerPubkey)) {
+  if (!hasExactOuterRecipient(signedRecipientWrap, signerPubkey)) {
     throw new Error("Checkout Spark recovery signer is not the merchant.")
   }
-  const wrapped = new NDKEvent(getNdk(), input.signedRecipientWrap)
-  let rumor: NDKEvent | null
+  // Reopen the pinned validated envelope directly, without a decrypted-event cache.
+  const wrapped = signedRecipientWrap
+  let rumor: PrivateMessageEvent | null
   try {
     rumor = input.giftUnwrap
-      ? await input.giftUnwrap(wrapped, input.signer)
+      ? await input.giftUnwrap(
+          { ...wrapped, tags: wrapped.tags.map((tag) => [...tag]) },
+          input.signer
+        )
       : await unwrapPrivateMessageEnvelope(wrapped, input.signer)
   } catch {
     rumor = null
   }
   if (!rumor) return { status: "decrypt_failed", wrapId }
   const typeTags = (rumor.tags ?? []).filter((tag) => tag[0] === "type")
-  if (
-    rumor.kind !== EVENT_KINDS.ORDER ||
-    typeTags.length !== 1 ||
-    typeTags[0]?.[1] !== "checkout_spark_recovery"
-  ) {
-    return { status: "ignored", wrapId }
+  const machineMarker = typeTags.some(
+    (tag) =>
+      tag[1] === "checkout_spark_recovery" ||
+      tag[1] === "checkout_spark_recovery_progress" ||
+      tag[1] === "checkout_spark_merchant_progress"
+  )
+  if (!machineMarker) {
+    const orderEvidence = readCheckoutSparkMerchantOrderEvidence(rumor)
+    return {
+      status: "ignored",
+      wrapId,
+      ...(orderEvidence?.merchantPubkey === signerPubkey
+        ? { orderEvidence }
+        : {}),
+    }
+  }
+  if (rumor.kind !== EVENT_KINDS.ORDER || typeTags.length !== 1) {
+    return { status: "malformed", wrapId }
   }
   try {
+    if (typeTags[0]?.[1] === "checkout_spark_merchant_progress") {
+      const recipients = signedRecipientWrap.tags.filter(
+        (tag) => tag[0] === "p"
+      )
+      const payload = parseCheckoutSparkMerchantProgressRumor(rumor)
+      if (
+        recipients.length !== 1 ||
+        recipients[0]?.length !== 2 ||
+        recipients[0]?.[1] !== signerPubkey ||
+        payload.merchantPubkey !== signerPubkey
+      ) {
+        return { status: "malformed", wrapId }
+      }
+      return {
+        status: "merchant_progress",
+        wrapId,
+        rumorId: rumor.id,
+        payload,
+      }
+    }
     const payload = parseCheckoutSparkRecoveryRumor(rumor)
     if (payload.merchantPubkey !== signerPubkey) {
       return { status: "malformed", wrapId }

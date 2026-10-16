@@ -43,15 +43,13 @@ async function publishProductDeletionRelay(
     status: await publishSignedEventToRelay({
       signedEvent: input.signedEvent,
       relayUrl: input.relayUrl,
+      relayTarget: input.relayTarget ?? undefined,
       authorPubkey: input.signedEvent.pubkey,
       accountPubkey: input.accountPubkey,
       authenticatedPubkey,
-      ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
-      appRelayUrls: input.appRelayUrls,
-      personalRelayUrls: input.personalRelayUrls,
-      independentRelayUrls: input.independentRelayUrls,
       accountNetworkLocalStateRepository:
         input.accountNetworkLocalStateRepository,
+      ownerRelayListEvidenceRepository: input.ownerRelayListEvidenceRepository,
       shouldContinue:
         requiresAuthenticatedOwnerAuthority && authenticatedPubkey
           ? () =>
@@ -66,7 +64,10 @@ async function restoreLocalDeletionEvidence(
   job: ProductDeletionDeliveryJob
 ): Promise<void> {
   await cacheSignedProductDeletionEvent(
-    new NDKEvent(undefined, job.signedEvent)
+    new NDKEvent(undefined, {
+      ...job.signedEvent,
+      tags: job.signedEvent.tags.map((tag) => [...tag]),
+    })
   )
 }
 
@@ -113,6 +114,7 @@ export async function persistSignedProductDeletion(
     currentAppRelayUrls?: readonly string[]
     currentPersonalRelayUrls?: readonly string[]
     sourceRelayUrls: readonly string[]
+    companionListingJobId?: string
   },
   options: ProductDeletionDeliveryOptions = {}
 ): Promise<ProductDeletionDeliveryJob> {
@@ -128,6 +130,7 @@ export async function persistSignedProductDeletion(
       currentPersonalRelayUrls: input.currentPersonalRelayUrls,
       sourceRelayUrls: input.sourceRelayUrls,
       canonicalConduitRelayUrl,
+      companionListingJobId: input.companionListingJobId,
     },
     options
   )
@@ -149,6 +152,9 @@ export function productDeletionJobToPublishResult(
   return {
     plan: {
       intent: "commerce_author_event",
+      // This content-free delivery summary is not an executable authority plan.
+      primaryRelayTargets: [],
+      broadcastRelayTargets: [],
       primaryRelayUrls: job.relayPlan.map((target) => target.relayUrl),
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
@@ -157,6 +163,9 @@ export function productDeletionJobToPublishResult(
     attemptedRelayUrls,
     successfulRelayUrls,
     failedRelayUrls: outstandingDeliveries.map((delivery) => delivery.relayUrl),
+    rejectedRelayUrls: outstandingDeliveries
+      .filter((delivery) => delivery.status === "rejected")
+      .map((delivery) => delivery.relayUrl),
     relayFailureMessages: Object.fromEntries(
       outstandingDeliveries.map((delivery) => [
         delivery.relayUrl,
@@ -212,6 +221,7 @@ export async function deliverQueuedProductDeletion(
 
   const deliveredJob = await deliverProductDeletionJob(jobId, publisher, {
     ...deliveryOptions,
+    respectRejectionBackoff: false,
     isAuthenticatedPubkeyCurrent: bindAuthenticatedProductDeletionAuthority(
       deliveryOptions.authenticatedPubkey,
       shouldContinue,
@@ -257,7 +267,10 @@ export async function resumePendingProductDeletionDeliveries(
       continue
     }
     try {
-      await deliverProductDeletionJob(job.id, publisher, deliveryOptions)
+      await deliverProductDeletionJob(job.id, publisher, {
+        ...deliveryOptions,
+        respectRejectionBackoff: true,
+      })
     } catch {
       // Jobs are independent. Preserve this one for a later retry and continue
       // so an old/corrupt entry cannot starve newer deletions.

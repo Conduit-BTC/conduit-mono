@@ -67,7 +67,6 @@ function readResult(
     events,
     eventSourceRelayUrls: {},
     relays: [{ relayUrl, status, eventCount: events.length }],
-    eventsVerified: true,
   } as Awaited<ReturnType<typeof fetchSignedEventsFanoutDetailed>>
 }
 

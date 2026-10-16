@@ -21,6 +21,25 @@ const input: MerchantPaymentConfirmationInput = {
   order,
 }
 describe("merchant settlement confirmation", () => {
+  it("returns accepted delivery with unavailable local history without retrying paid status", async () => {
+    let attempts = 0
+    const delivery = {
+      recipient: "accepted" as const,
+      selfCopy: "pending" as const,
+      localHistory: "unavailable" as const,
+      checkpointFailure: true as const,
+      deliveryRoute: "declared_inbox" as const,
+    }
+    const result = await confirmMerchantPayment(input, {
+      publishPaid: async () => {
+        attempts += 1
+        return delivery
+      },
+    })
+    expect(result).toEqual({ payment: "confirmed", delivery })
+    expect(attempts).toBe(1)
+  })
+
   it("publishes only the paid transition", async () => {
     let paid = 0
     expect(

@@ -21,6 +21,9 @@ import {
   type RelayWebSocket,
 } from "../packages/core/src/protocol/relay-executor"
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import { admitFixture } from "./helpers/public-event"
 import {
   refreshNdkRelaySettingsWhenIdle,
   disconnectNdk,
@@ -29,6 +32,8 @@ import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
+import { addressRequestsDTag } from "../packages/core/src/wallets/spark-recovery-address"
+import { createSparkRecoveryReader } from "../packages/core/src/wallets/spark-recovery-read"
 
 const PRIVATE_KEY_A = new Uint8Array(32).fill(1)
 const PRIVATE_KEY_B = new Uint8Array(32).fill(2)
@@ -37,6 +42,38 @@ const PUBKEY_B = getPublicKey(PRIVATE_KEY_B)
 
 function emptyAccountNetworkPolicy() {
   return createInMemoryAccountNetworkLocalStateRepository()
+}
+
+async function ownerInboxReadAuthority(
+  selectedRelayUrls: readonly string[],
+  candidateRelayUrls: readonly string[] = selectedRelayUrls
+) {
+  const event = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10050,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: selectedRelayUrls.map((url) => ["relay", url]),
+        content: "",
+      },
+      PRIVATE_KEY_A
+    )
+  )
+  const inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await inboxDeclarationEvidenceRepository.merge({
+    pubkey: PUBKEY_A,
+    signedEvent: event,
+    observedAt: Date.now(),
+  })
+  return {
+    relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
+      kind: "owner_nip17",
+      operation: "read",
+      ownerPubkey: PUBKEY_A,
+    }),
+    inboxDeclarationEvidenceRepository,
+  }
 }
 
 type RelayFrame = unknown[]
@@ -950,6 +987,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: ["wss://protected.example"],
+      ...(await ownerInboxReadAuthority(["wss://protected.example"])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
@@ -988,6 +1026,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: [removedRelayUrl, retainedRelayUrl],
+      ...(await ownerInboxReadAuthority([removedRelayUrl, retainedRelayUrl])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: repository,
@@ -1015,7 +1054,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: [ownerWs, remoteWs],
-      ownerSelectedRelayUrls: [ownerWs],
+      ...(await ownerInboxReadAuthority([ownerWs], [ownerWs, remoteWs])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
@@ -1562,6 +1601,73 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toHaveLength(1)
   })
 
+  it("joins an already-sent authentication while its matching OK is pending", async () => {
+    const wrap = giftWrap()
+    let signCalls = 0
+    let acknowledgeAuth!: () => void
+    let authSent!: () => void
+    const sent = new Promise<void>((resolve) => {
+      authSent = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "pending-shared-challenge"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") {
+          acknowledgeAuth = () => respondToAuth(socket, frame)
+          authSent()
+        }
+        if (frame[0] === "REQ") {
+          socket.relay(["EVENT", frame[1], wrap])
+          socket.relay(["EOSE", frame[1]])
+        }
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize(
+      createSigner(PRIVATE_KEY_A, { onSign: () => signCalls++ })
+    )
+    const first = executor.query(protectedRequest(), { authorization })
+    await sent
+    const exact = executor.query(
+      {
+        ...protectedRequest(),
+        filters: [
+          { kinds: [1_059], "#p": [PUBKEY_A], ids: [wrap.id], limit: 2 },
+        ],
+      },
+      { authorization }
+    )
+    // Admit the second consumer after AUTH has left the socket but before the
+    // relay's matching OK. It must join that same in-flight authentication.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    acknowledgeAuth()
+    const results = await Promise.all([first, exact])
+
+    expect(results.map((result) => source(result).failure)).toEqual([
+      undefined,
+      undefined,
+    ])
+    expect(results.map((result) => result.status)).toEqual([
+      "success",
+      "success",
+    ])
+    expect(results.map((result) => source(result).auth)).toEqual([
+      "succeeded",
+      "succeeded",
+    ])
+    const expectedWrap = structuredClone(wrap)
+    expect(results.map((result) => result.events)).toEqual([
+      [expectedWrap],
+      [expectedWrap],
+    ])
+    expect(signCalls).toBe(1)
+    expect(harness.sockets).toHaveLength(1)
+    expect(harness.sockets[0]?.closed).toBe(false)
+    expect(
+      harness.sockets[0]?.sent.filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(1)
+  })
+
   it("keeps an aborted signer serialized until timeout, then recovers on retry", async () => {
     let releaseFirstSignature!: () => void
     const firstSignature = new Promise<void>((resolve) => {
@@ -1986,6 +2092,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: ["wss://protected.example"],
+      ...(await ownerInboxReadAuthority(["wss://protected.example"])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),
@@ -2112,6 +2219,133 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     expect(
       result.observations.some((observation) => observation.type === "event")
     ).toBe(false)
+  })
+
+  it("reads signed owner app-data without inbox recipient tags and rejects other authors", async () => {
+    const event = finalizeEvent(
+      {
+        kind: 30078,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["d", "conduit:spark:primary:v1"]],
+        content: "ciphertext-fixture",
+      },
+      PRIVATE_KEY_A
+    )
+    const coordinates = [
+      "conduit:spark:primary:v1",
+      "conduit:spark:main:v1",
+      ...["mainnet", "testnet", "signet", "regtest"].flatMap((network) => [
+        `conduit:spark:primary:v1:${network}`,
+        `conduit:spark:main:v1:${network}`,
+        `conduit:spark:registry:v1:${network}`,
+        "conduit:wallet-names:v1:mainnet",
+        addressRequestsDTag(
+          network as "mainnet" | "testnet" | "signet" | "regtest"
+        ),
+      ]),
+    ]
+    const events = new Map(
+      coordinates.map((coordinate) => [
+        coordinate,
+        finalizeEvent({ ...event, tags: [["d", coordinate]] }, PRIVATE_KEY_A),
+      ])
+    )
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "recovery"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] === "REQ") {
+          const filter = frame[2] as { "#d"?: string[] }
+          socket.relay([
+            "EVENT",
+            frame[1],
+            events.get(filter["#d"]?.[0] ?? "conduit:spark:primary:v1"),
+          ])
+          socket.relay(["EOSE", frame[1]])
+        }
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+    const request = {
+      relayUrls: ["wss://protected.example"],
+      operation: "account_recovery_read" as const,
+      filters: [{ kinds: [30078], authors: [PUBKEY_A], limit: 128 }],
+    }
+    const result = await executor.query(request, { authorization })
+    expect(result.events.map((event) => event.id)).toEqual([event.id])
+    expect(result.status).toBe("success")
+    for (const coordinate of coordinates) {
+      const result = await executor.query(
+        {
+          ...request,
+          filters: [{ ...request.filters[0]!, "#d": [coordinate], limit: 1 }],
+        },
+        { authorization }
+      )
+      expect(result.status).toBe("success")
+      expect(result.events.map((e) => e.id)).toEqual([
+        events.get(coordinate)!.id,
+      ])
+    }
+    const requestRead = await createSparkRecoveryReader(
+      executor,
+      createInMemoryAccountNetworkLocalStateRepository()
+    )(
+      "wss://protected.example",
+      PUBKEY_A,
+      undefined,
+      () => true,
+      addressRequestsDTag("mainnet")
+    )
+    expect(requestRead.status).toBe("complete")
+    expect(requestRead.events.map((item) => item.id)).toEqual([
+      events.get(addressRequestsDTag("mainnet"))!.id,
+    ])
+    for (const coordinate of [
+      "conduit:spark:primary:v1:unknown",
+      "conduit:spark:main:v1:mainnet:extra",
+      "conduit:spark:registry:v1:unknown",
+      "conduit:spark:registry:v1:mainnet:extra",
+      "conduit:wallet-names:v1:unknown",
+      "conduit:wallet-names:v1:mainnet:extra",
+      "conduit:address-requests:v1:unknown",
+      "conduit:address-requests:v1:mainnet:extra",
+    ]) {
+      await expect(
+        executor.query(
+          {
+            ...request,
+            filters: [{ ...request.filters[0]!, "#d": [coordinate] }],
+          },
+          { authorization }
+        )
+      ).rejects.toThrow("active owner")
+    }
+    await expect(
+      executor.query(
+        {
+          ...request,
+          filters: [{ ...request.filters[0]!, "#d": ["other-app:primary"] }],
+        },
+        { authorization }
+      )
+    ).rejects.toThrow("active owner")
+    await expect(
+      executor.query(
+        {
+          ...request,
+          filters: [{ ...request.filters[0]!, authors: [PUBKEY_B] }],
+        },
+        { authorization }
+      )
+    ).rejects.toThrow("active owner")
+    await expect(
+      executor.query(
+        { ...request, filters: [{ ...request.filters[0]!, kinds: [1059] }] },
+        { authorization }
+      )
+    ).rejects.toThrow("kind 30078")
   })
 
   it("snapshots recipient filters before asynchronous connection work", async () => {
@@ -2559,6 +2793,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const inbox = await readProtectedInbox({
       principalPubkey: PUBKEY_A,
       relayUrls: ["wss://protected.example"],
+      ...(await ownerInboxReadAuthority(["wss://protected.example"])),
       limit: 10,
       authorization,
       accountNetworkLocalStateRepository: emptyAccountNetworkPolicy(),

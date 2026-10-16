@@ -16,6 +16,9 @@ import {
   type ShopperTrustResolveRelayLists,
 } from "@conduit/core"
 import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
+import { relayTargetsFromUrls } from "@conduit/core/protocol/relay-authority"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
 
 import {
   bolt11DescriptionHashField,
@@ -163,7 +166,7 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
-    expect(db.verno).toBe(25)
+    expect(db.verno).toBe(27)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -1021,9 +1024,10 @@ describe("shopper trust evidence", () => {
         now: () => NOW_MS,
         resolveRelayLists,
         baseRelayUrls: [publicRelay],
-        authenticatedPubkey: MERCHANT_PUBKEY,
-        accountNetworkLocalStateRepository:
-          createInMemoryAccountNetworkLocalStateRepository(),
+        baseRelayTargets: relayTargetsFromUrls([publicRelay], {
+          kind: "public_hint",
+          operation: "read",
+        }),
       }
     )
 
@@ -1047,9 +1051,27 @@ describe("shopper trust evidence", () => {
   it("uses an authenticated owner read relay without admitting remote ws hints", async () => {
     const ownerRelay = "ws://owner-network.example:4848"
     const remoteRelay = "ws://remote-shopper.example:4848"
+    const ownerEvidence = createInMemoryOwnerRelayListEvidenceRepository()
+    const ownerSelection = await admitFixture(
+      signedEvent(MERCHANT_SECRET, {
+        kind: EVENT_KINDS.RELAY_LIST,
+        createdAt: NOW_SECONDS,
+        tags: [["r", ownerRelay, "read"]],
+      })
+    )
+    await ownerEvidence.reconcile({
+      pubkey: MERCHANT_PUBKEY,
+      observations: [{ signedEvent: ownerSelection }],
+      lookup: {
+        observedAt: NOW_MS,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: ownerSelection.id,
+      },
+    })
     const observed: Array<{
       relayUrls: readonly string[]
-      ownerSelectedRelayUrls: readonly string[]
+      ownerReadTargets: readonly { url: string; grants: unknown[] }[]
       authenticatedPubkey?: string | null
     }> = []
     const relayListAuthenticatedPubkeys: Array<string | null | undefined> = []
@@ -1063,6 +1085,7 @@ describe("shopper trust evidence", () => {
         authenticatedPubkey: MERCHANT_PUBKEY,
         accountNetworkLocalStateRepository:
           createInMemoryAccountNetworkLocalStateRepository(),
+        ownerRelayListEvidenceRepository: ownerEvidence,
         cache: createCache(),
         forceRefresh: true,
         now: () => NOW_MS,
@@ -1110,7 +1133,7 @@ describe("shopper trust evidence", () => {
           const relayUrls = options?.relayUrls ?? []
           observed.push({
             relayUrls,
-            ownerSelectedRelayUrls: options?.ownerSelectedRelayUrls ?? [],
+            ownerReadTargets: options?.relayTargets ?? [],
             authenticatedPubkey: options?.authenticatedPubkey,
           })
           return {
@@ -1120,7 +1143,6 @@ describe("shopper trust evidence", () => {
               status: "success" as const,
               eventCount: 0,
             })),
-            eventsVerified: true,
           }
         },
       }
@@ -1131,8 +1153,18 @@ describe("shopper trust evidence", () => {
       observed.some(({ relayUrls }) => relayUrls.includes(ownerRelay))
     ).toBe(true)
     expect(
-      observed.some(({ ownerSelectedRelayUrls }) =>
-        ownerSelectedRelayUrls.includes(ownerRelay)
+      observed.some(({ ownerReadTargets }) =>
+        ownerReadTargets.some(
+          (target) =>
+            target.url === ownerRelay &&
+            target.grants.some(
+              (grant) =>
+                (grant as { kind?: string; operation?: string }).kind ===
+                  "owner_nip65" &&
+                (grant as { kind?: string; operation?: string }).operation ===
+                  "read"
+            )
+        )
       )
     ).toBe(true)
     expect(
@@ -1649,7 +1681,6 @@ describe("shopper trust evidence", () => {
           filter.authors?.includes(SHOPPER_PUBKEY) && filterHasKind(filter, 1)
             ? {
                 ...successfulRead([forgedActivity]),
-                eventsVerified: true,
               }
             : successfulRead(),
         now: () => NOW_MS,

@@ -207,7 +207,7 @@ export function parseEventMarketAssignmentEvent(
   )
     return null
 
-  const one = (name: string, length: number): string[] | null => {
+  const one = (name: string, length: number): readonly string[] | null => {
     const tags = event.tags.filter((tag) => tag[0] === name)
     return tags.length === 1 && tags[0]?.length === length ? tags[0] : null
   }

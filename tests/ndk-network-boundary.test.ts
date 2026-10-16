@@ -1,5 +1,17 @@
 import { describe, expect, it } from "bun:test"
 import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import { config } from "../packages/core/src/config"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+} from "../packages/core/src/protocol/relay-authority"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "../packages/core/src/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
+import {
   __resetPublicReaderTestState,
   fetchSignedEventsFanoutDetailed,
 } from "../packages/core/src/protocol/relay-reader"
@@ -9,8 +21,46 @@ import {
 } from "../packages/core/src/protocol/account-network-local-state"
 import { createDefaultAccountNetworkRoutingPolicy } from "../packages/core/src/protocol/account-network-routing-policy"
 
-const ACCOUNT_A = "a".repeat(64)
+const ACCOUNT_A_SECRET = generateSecretKey()
+const ACCOUNT_A = getPublicKey(ACCOUNT_A_SECRET)
 const ACCOUNT_B = "b".repeat(64)
+
+const publicTargets = (relayUrls: readonly string[]) =>
+  relayTargetsFromUrls(relayUrls, { kind: "public_hint", operation: "read" })
+
+async function ownerReadEvidence(relayUrls: readonly string[]) {
+  const repository = createInMemoryOwnerRelayListEvidenceRepository()
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: 10002,
+        created_at: 100,
+        tags: relayUrls.map((url) => ["r", url, "read"]),
+        content: "",
+      },
+      ACCOUNT_A_SECRET
+    )
+  )
+  await repository.reconcile({
+    pubkey: ACCOUNT_A,
+    observations: [{ signedEvent }],
+    lookup: {
+      observedAt: 100,
+      coverage: "complete",
+      hadEvent: true,
+      eventId: signedEvent.id,
+    },
+  })
+  return repository
+}
+
+const ownerTargets = (relayUrls: readonly string[]) =>
+  relayTargetsFromUrls(relayUrls, {
+    kind: "owner_nip65",
+    operation: "read",
+    ownerPubkey: ACCOUNT_A,
+    selection: "read",
+  })
 
 function accountNetworkState(
   pubkey: string,
@@ -149,15 +199,17 @@ describe("NDK network boundary", () => {
         return accountNetworkState(pubkey, [])
       },
     }
+    const ownerRelayListEvidenceRepository = await ownerReadEvidence([ownerWs])
 
     try {
       const read = fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
-          ownerSelectedRelayUrls: [ownerWs],
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
           shouldContinue: () => sessionCurrent,
@@ -186,6 +238,7 @@ describe("NDK network boundary", () => {
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => accountNetworkState(pubkey, []),
     }
+    const ownerRelayListEvidenceRepository = await ownerReadEvidence([ownerWs])
 
     try {
       const blockers = blockerRelayUrls.map((relayUrl) =>
@@ -203,9 +256,10 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
-          ownerSelectedRelayUrls: [ownerWs],
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
           shouldContinue: () => sessionCurrent,
@@ -233,15 +287,17 @@ describe("NDK network boundary", () => {
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => accountNetworkState(pubkey, []),
     }
+    const ownerRelayListEvidenceRepository = await ownerReadEvidence([ownerWs])
 
     try {
       const ownerRead = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs, remoteWs],
+          relayTargets: ownerTargets([ownerWs, remoteWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
-          ownerSelectedRelayUrls: [ownerWs],
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
@@ -254,9 +310,10 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_B,
-          ownerSelectedRelayUrls: [ownerWs],
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
@@ -265,8 +322,10 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
@@ -275,7 +334,7 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
-          ownerSelectedRelayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           reuseRelayConnections: false,
         }
       )
@@ -290,9 +349,10 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
-          ownerSelectedRelayUrls: [ownerWs],
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: excludedRepository,
           reuseRelayConnections: false,
         }
@@ -301,9 +361,10 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
+          relayTargets: ownerTargets([ownerWs]),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
-          ownerSelectedRelayUrls: [ownerWs],
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: {
             get: async () => {
               throw new Error("durable policy unavailable")
@@ -313,7 +374,7 @@ describe("NDK network boundary", () => {
         }
       )
 
-      expect(opened.openedUrls).toEqual([ownerWs])
+      expect(opened.openedUrls).toEqual([ownerWs, ownerWs])
     } finally {
       opened.restore()
     }
@@ -321,7 +382,9 @@ describe("NDK network boundary", () => {
 
   it("keeps independent remote authority when its URL overlaps a disabled local source", async () => {
     const remoteOverlap = "wss://relay.ditto.pub"
-    const appOnly = "wss://relay.dreamith.to"
+    const appOnly = config.appReadRelayUrls.find(
+      (url) => url !== remoteOverlap
+    )!
     const opened = installEoseWebSocket()
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => ({
@@ -339,10 +402,20 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [appOnly, remoteOverlap],
+          relayTargets: mergeRelayTargets(
+            relayTargetsFromUrls([appOnly, remoteOverlap], {
+              kind: "app",
+              operation: "read",
+              bucket: "general_read",
+            }),
+            relayTargetsFromUrls([remoteOverlap], {
+              kind: "remote_nip65",
+              operation: "read",
+              pubkey: ACCOUNT_B,
+            })
+          ),
           accountPubkey: ACCOUNT_A,
           authenticatedPubkey: ACCOUNT_A,
-          appRelayUrls: [appOnly, remoteOverlap],
-          independentRelayUrls: [remoteOverlap],
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
@@ -376,6 +449,7 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [relayUrl],
+          relayTargets: publicTargets([relayUrl]),
           accountPubkey: ACCOUNT_A,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
@@ -385,11 +459,13 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls: [relayUrl],
+          relayTargets: publicTargets([relayUrl]),
           accountPubkey: ACCOUNT_B,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
       )
+      const accountPolicyReads = queriedPubkeys.length
       const publicRead = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
@@ -409,12 +485,8 @@ describe("NDK network boundary", () => {
       ])
       expect(publicRead.relays).toMatchObject(otherAccount.relays)
       expect(opened.openedUrls).toEqual([relayUrl, relayUrl])
-      expect(queriedPubkeys).toEqual([
-        ACCOUNT_A,
-        ACCOUNT_A,
-        ACCOUNT_B,
-        ACCOUNT_B,
-      ])
+      expect(new Set(queriedPubkeys)).toEqual(new Set([ACCOUNT_A, ACCOUNT_B]))
+      expect(queriedPubkeys).toHaveLength(accountPolicyReads)
     } finally {
       opened.restore()
     }
@@ -422,7 +494,7 @@ describe("NDK network boundary", () => {
 
   it("backfills a bounded read after source policy suppresses an earlier candidate", async () => {
     const personalRelayUrl = "wss://personal-disabled.conduit.market"
-    const appRelayUrl = "wss://app-enabled.conduit.market"
+    const appRelayUrl = config.appReadRelayUrls[0]!
     const opened = installEoseWebSocket()
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => ({
@@ -434,16 +506,27 @@ describe("NDK network boundary", () => {
         },
       }),
     }
+    const ownerRelayListEvidenceRepository = await ownerReadEvidence([
+      personalRelayUrl,
+    ])
 
     try {
       const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [personalRelayUrl, appRelayUrl],
+          relayTargets: mergeRelayTargets(
+            ownerTargets([personalRelayUrl]),
+            relayTargetsFromUrls([appRelayUrl], {
+              kind: "app",
+              operation: "read",
+              bucket: "general_read",
+            })
+          ),
           maxRelayAttempts: 1,
           accountPubkey: ACCOUNT_A,
-          appRelayUrls: [appRelayUrl],
-          personalRelayUrls: [personalRelayUrl],
+          authenticatedPubkey: ACCOUNT_A,
+          ownerRelayListEvidenceRepository,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
@@ -466,13 +549,13 @@ describe("NDK network boundary", () => {
     )
     const removedRelayUrl = relayUrls.at(-1)!
     const opened = installEoseWebSocket()
-    let durableReads = 0
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => {
-        durableReads += 1
         return accountNetworkState(
           pubkey,
-          durableReads >= relayUrls.length ? [removedRelayUrl] : []
+          opened.openedUrls.length >= relayUrls.length - 1
+            ? [removedRelayUrl]
+            : []
         )
       },
     }
@@ -482,14 +565,16 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls,
+          relayTargets: publicTargets(relayUrls),
           accountPubkey: ACCOUNT_A,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
       )
 
-      expect(durableReads).toBe(relayUrls.length + 1)
       expect(opened.openedUrls).toEqual(relayUrls.slice(0, -1))
+      expect(result.admittedRelayUrls).toEqual(relayUrls.slice(0, -1))
+      expect(result.attemptedRelayUrls).toEqual(relayUrls.slice(0, -1))
       expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(
         relayUrls.slice(0, -1)
       )
@@ -498,7 +583,7 @@ describe("NDK network boundary", () => {
     }
   })
 
-  it("applies local order only after the final account read plan is selected", async () => {
+  it("preserves the operation's selected order at final account read admission", async () => {
     const relayUrls = [
       "wss://first-order.conduit.market",
       "wss://second-order.conduit.market",
@@ -516,16 +601,15 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls,
+          relayTargets: publicTargets(relayUrls),
           accountPubkey: ACCOUNT_A,
           accountNetworkLocalStateRepository: repository,
           reuseRelayConnections: false,
         }
       )
 
-      expect(opened.openedUrls).toEqual(preferredRelayOrder)
-      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(
-        preferredRelayOrder
-      )
+      expect(opened.openedUrls).toEqual(relayUrls)
+      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(relayUrls)
       expect(new Set(result.relays.map(({ relayUrl }) => relayUrl))).toEqual(
         new Set(relayUrls)
       )

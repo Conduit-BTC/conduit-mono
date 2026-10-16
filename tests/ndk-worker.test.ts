@@ -19,6 +19,7 @@ import {
   refreshNdkRelaySettings,
   refreshNdkRelaySettingsWhenIdle,
   verifySignedEvents,
+  isVerifiedNostrEvent,
 } from "@conduit/core"
 import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 import { snapshotSignedPublicEvent } from "../packages/core/src/protocol/verified-public-event"
@@ -232,7 +233,6 @@ describe("Plain public reader worker verification", () => {
       events: [],
       relays: [],
       admittedRelayUrls: [],
-      eventsVerified: true,
     })
     expect(openedRelayCount).toBe(0)
   })
@@ -737,7 +737,7 @@ describe("Plain public reader worker verification", () => {
     )
 
     expect(result.events).toEqual([])
-    expect(result.eventsVerified).toBe(true)
+    expect(result.events.every(isVerifiedNostrEvent)).toBe(true)
     expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://offline.example",

@@ -5,8 +5,10 @@ async function source(path: string): Promise<string> {
 }
 
 describe("private-message declaration authority propagation", () => {
-  it("carries live authority through both send-time declaration reads", async () => {
-    const messaging = await source("packages/core/src/protocol/messaging.ts")
+  it("carries live authority through send and exact-replay declaration reads", async () => {
+    const messaging = await source(
+      "packages/core/src/protocol/private-message-delivery.ts"
+    )
 
     expect(messaging).toContain(
       'shouldContinue?: PublicRelayReadOptions["shouldContinue"]'
@@ -15,7 +17,7 @@ describe("private-message declaration authority propagation", () => {
       messaging.match(
         /input\.accountNetworkLocalStateRepository,\s*input\.shouldContinue/g
       )
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(messaging).toMatch(
       /return resolveInboxDeclaration\(pubkey, \{[\s\S]*?shouldContinue,\s*\}\)/
     )
@@ -39,12 +41,13 @@ describe("private-message declaration authority propagation", () => {
       marketMessages.match(
         /shouldContinue:\s*\(\) =>\s*isCurrentMessagingAuthority\(/g
       )
-    ).toHaveLength(2)
-    expect(
-      merchantMessages.match(
-        /shouldContinue:\s*\(\) =>\s*isCurrentMessagingAuthority\(/g
-      )
     ).toHaveLength(1)
+    for (const messages of [marketMessages, merchantMessages]) {
+      // The adapter and route fences must both survive shared send delegation.
+      expect(messages).toMatch(
+        /shouldContinue:\s*\(\) => \{\s*if \(prepared\.shouldContinue\?\.\(\) === false\) return false\s*return isCurrentMessagingAuthority\(\s*input\.accountPubkey,\s*input\.authGeneration\s*\)/
+      )
+    }
   })
 
   it("binds merchant order sends to the live account generation", async () => {

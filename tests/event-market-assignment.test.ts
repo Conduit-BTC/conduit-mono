@@ -1,3 +1,4 @@
+import { admitFixtureEvent } from "./helpers/admit-event"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -274,7 +275,7 @@ describe("experimental occurrence product assignment", () => {
     }
   })
 
-  it("checks current product type, format, stock and variation parent", () => {
+  it("checks current product type, format, stock and variation parent", async () => {
     const parsed = parseEventMarketAssignmentEvent(assignment())!
     const productEvent = finalizeEvent(
       {
@@ -291,7 +292,7 @@ describe("experimental occurrence product assignment", () => {
       },
       merchantSecret
     )
-    const product = parseProductEvent(productEvent)
+    const product = parseProductEvent(await admitFixtureEvent(productEvent))
     expect(
       isEventMarketAssignmentProductSuitable({ assignment: parsed, product })
     ).toBe(true)

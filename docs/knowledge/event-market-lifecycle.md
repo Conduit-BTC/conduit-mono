@@ -57,7 +57,9 @@ market, grant, calendar, product and payee terms. A material change requires
 buyer review. Created orders pin the accepted signed evidence; subsequent
 organizer edits do not reinterpret their goods, date, assignment or payee.
 
-Merchant-present pickup and organizer handoff remain supported. Organizer
+Merchant-present assignment pickup is supported. New organizer acceptance is
+gated on advance delegation, writer handover and order-ID reconciliation.
+Historical authenticated organizer handoff remains inspectable. Organizer
 release requires an authenticated, order-specific merchant message and exact
 merchandise evidence. An organizer acknowledgement grants no merchant payment
 or general lifecycle authority. Private ready/revoke/acknowledgement operations

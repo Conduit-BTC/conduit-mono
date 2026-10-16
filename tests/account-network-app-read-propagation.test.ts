@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 async function source(path: string): Promise<string> {
-  return await Bun.file(path).text()
+  return (await Bun.file(path).text()).replace(/\r\n/g, "\n")
 }
 
 describe("app account-network read propagation", () => {
@@ -47,7 +47,7 @@ describe("app account-network read propagation", () => {
     )
     expect(checkout).toContain("authGenerationRef.current === authGeneration")
     expect(orders).toMatch(
-      /assertCartPickupHandlerReady\(row\.lifecycle\?\.items \?\? \[\], undefined, \{\s+requestingAccountPubkey: authenticatedPubkey,\s+authenticatedPubkey,\s+shouldContinue: shouldContinueBuyerSession,/
+      /assertCartPickupHandlerReady\(\s+\(row\.lifecycle\?\.items \?\? \[\]\)\.map\(\(item\) => \(\{\s+fulfillment:\s+item\.fulfillment\?\.type === "event_market_pickup"\s+\? item\.fulfillment\s+: undefined,\s+\}\)\),\s+undefined,\s+\{\s+requestingAccountPubkey: authenticatedPubkey,\s+authenticatedPubkey,\s+shouldContinue: shouldContinueBuyerSession,/
     )
     expect(orders).toMatch(
       /accountPubkey: authenticatedPubkey,\s+authenticatedPubkey,\s+shouldContinue: shouldContinueBuyerSession,\s+shouldContinuePaymentAuthority:/
@@ -203,7 +203,7 @@ describe("app account-network read propagation", () => {
 
     expect(hook).toContain("const controller = new AbortController()")
     expect(hook).toContain("signal: controller.signal")
-    expect(hook).toContain("controller.abort()")
+    expect(hook).toContain("reconciliationControllerRef.current?.abort()")
     expect(reconciliation.match(/signal: options\.signal/g)).toHaveLength(2)
     expect(ownerEvidence).toContain("signal: options.signal")
     expect(inboxEvidence).toContain("signal: input.signal")
@@ -402,7 +402,7 @@ describe("app account-network read propagation", () => {
       source("packages/core/src/hooks/useUpdateProfile.ts"),
       source("apps/market/src/routes/profile.tsx"),
       source("apps/merchant/src/routes/profile.tsx"),
-      source("apps/merchant/src/routes/payments.tsx"),
+      source("packages/core/src/hooks/useWalletAddress.ts"),
       source("apps/market/src/routes/checkout.tsx"),
     ])
 
@@ -412,10 +412,13 @@ describe("app account-network read propagation", () => {
     expect(updateHook).toContain("authorityRef.current.authenticatedPubkey")
     expect(updateHook).toContain("authorityRef.current.authGeneration")
     expect(updateHook).toContain("publishProfileContext(profile, appId, {")
-    for (const caller of [marketProfile, merchantProfile, merchantPayments]) {
+    for (const caller of [marketProfile, merchantProfile]) {
       expect(caller).toContain("authenticatedPubkey,")
       expect(caller).toContain("authGeneration,")
     }
+    expect(merchantPayments).toContain("authenticatedPubkey: owner")
+    expect(merchantPayments).toContain("authGeneration: generation")
+    expect(merchantPayments).toContain("shouldContinue: current")
     expect(checkout).toContain(
       "shouldContinue: () => authGenerationRef.current === authGeneration"
     )
@@ -527,10 +530,13 @@ describe("app account-network read propagation", () => {
       merchantOrders.indexOf("const confirmPaymentMutation =")
     )
     expect(stockMutation).toMatch(
-      /signAndPublishProductListing\(\{[\s\S]{0,100}merchantPubkey: pubkey,[\s\S]{0,100}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
+      /signAndPublishProductWriteBundle\(\{\s*merchantPubkey: pubkey,\s*authenticatedPubkey,\s*shouldContinue: \(\) => isCurrentOrderAction\(authority\),\s*assertCurrentWriteBaseline,/
     )
     expect(stockMutation).toMatch(
-      /deliverSignedProductEvent\([\s\S]{0,180}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
+      /ensureSignedProductListingsQueued\(\{[\s\S]{0,180}merchantPubkey: pubkey,[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
+    )
+    expect(stockMutation).toMatch(
+      /deliverQueuedProductListings\(queued\.id, \{[\s\S]{0,120}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(lightning).toContain("accountPubkey,")
     expect(lightning).toContain("accountNetworkLocalStateRepository,")

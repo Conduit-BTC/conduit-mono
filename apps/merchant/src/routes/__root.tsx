@@ -118,6 +118,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     authUrl,
     dismissAuthUrl,
     pubkey,
+    restorePendingPubkey,
     method,
     remoteSignerRecovery,
     status,
@@ -126,11 +127,15 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
+  const deviceWalletRoute = pathname === "/wallet" || pathname === "/wallet/"
   const signerConnected = status === "connected" && !!pubkey
   const signerRecoveryRequired = !!remoteSignerRecovery && !!pubkey
   const signerWorkspaceAvailable = signerConnected || signerRecoveryRequired
+  // StrictMode cleanup can clear the active pubkey while a restore still owns
+  // its pending identity. Use that identity to keep the restoring shell stable.
   const signerRestoring =
-    !!pubkey && status === "restoring" && !signerRecoveryRequired
+    (!!restorePendingPubkey || (!!pubkey && status === "restoring")) &&
+    !signerRecoveryRequired
   const shouldDelayAuthFallback =
     !!pubkey && !signerWorkspaceAvailable && !authFallbackReady
 
@@ -207,11 +212,17 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   useEffect(() => {
     const title = isNotFound
       ? "Not Found"
-      : signerWorkspaceAvailable || signerRestoring
+      : signerWorkspaceAvailable || signerRestoring || deviceWalletRoute
         ? getPageTitle(pathname)
         : "Connect"
     document.title = `${title} | Conduit Merchant`
-  }, [isNotFound, pathname, signerRestoring, signerWorkspaceAvailable])
+  }, [
+    deviceWalletRoute,
+    isNotFound,
+    pathname,
+    signerRestoring,
+    signerWorkspaceAvailable,
+  ])
 
   useEffect(() => {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
@@ -219,7 +230,9 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 
   throwSyntheticClientErrorForTelemetryTest()
 
-  if (isNotFound && !signerWorkspaceAvailable) {
+  // Settle a saved signer before choosing the missing-page shell. Starting the
+  // public video only to unmount it during restore can stall WebKit media load.
+  if (isNotFound && !signerWorkspaceAvailable && !signerRestoring) {
     return (
       <MerchantPublicAboutShell pageTitle="Not Found" fullBleed>
         <Outlet />
@@ -227,7 +240,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (shouldDelayAuthFallback) {
+  if (shouldDelayAuthFallback && !deviceWalletRoute) {
     return (
       <>
         <AuthGateGrace />
@@ -238,7 +251,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (signerRestoring) {
+  if (signerRestoring && !deviceWalletRoute) {
     return (
       <RootShell>
         <AuthRestoring method={method} />
@@ -249,7 +262,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     )
   }
 
-  if (!signerWorkspaceAvailable) {
+  if (!signerWorkspaceAvailable && !deviceWalletRoute) {
     return <ConnectGate />
   }
 
@@ -309,7 +322,7 @@ function AuthGateGrace() {
 function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
   return (
     <div className="flex min-h-[50vh] items-center justify-center">
-      <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
+      <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
         <KeyRound className="mx-auto h-5 w-5 animate-pulse text-secondary-300" />
         <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
           Restoring signer
@@ -409,7 +422,7 @@ function ReportBugAction() {
         target="_blank"
         rel="noopener noreferrer"
         referrerPolicy="no-referrer"
-        className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600"
+        className="font-medium text-[var(--link-text)] underline underline-offset-4 hover:text-[var(--link-text)]"
       >
         Report a Bug
       </a>
@@ -541,6 +554,7 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/messages") return "Messages"
   if (pathname === "/profile") return "Profile"
   if (pathname === "/payments") return "Payments"
+  if (pathname === "/wallet") return "Wallets"
   if (pathname === "/shipping") return "Shipping"
   if (pathname === "/network") return "Network"
   if (pathname === "/about") return "About"

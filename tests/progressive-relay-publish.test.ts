@@ -12,6 +12,7 @@ import {
   emptyAccountNetworkLocalState,
   EVENT_KINDS,
   publishWithPlannerProgressive,
+  relayTargetsFromUrls,
   type AccountNetworkLocalStateRepository,
   type ExclusiveRelayPublishStatus,
 } from "@conduit/core"
@@ -31,6 +32,13 @@ function giftWrapEvent() {
     },
     generateSecretKey()
   )
+}
+
+function deliveryTargets(relayUrls: readonly string[]) {
+  return relayTargetsFromUrls(relayUrls, {
+    kind: "source_delivery",
+    operation: "write",
+  })
 }
 
 function deferred<T>(): {
@@ -169,6 +177,7 @@ describe("progressive relay publishing", () => {
       intent: "recipient_event",
       accountPubkey,
       exclusiveRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      relayTargets: deliveryTargets([FAST_RELAY, SLOW_RELAY]),
       independentRelayUrls: [FAST_RELAY, SLOW_RELAY],
       deliveryMode: "critical",
       accountNetworkLocalStateRepository: repository,
@@ -224,6 +233,7 @@ describe("progressive relay publishing", () => {
       accountPubkey,
       accountNetworkLocalStateRepository: repository,
       exclusiveRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      relayTargets: deliveryTargets([FAST_RELAY, SLOW_RELAY]),
       independentRelayUrls: [FAST_RELAY, SLOW_RELAY],
       deliveryMode: "critical",
       relayAuthentication: {
@@ -277,6 +287,7 @@ describe("progressive relay publishing", () => {
         get: async () => undefined,
       },
       exclusiveRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      relayTargets: deliveryTargets([FAST_RELAY, SLOW_RELAY]),
       independentRelayUrls: [FAST_RELAY, SLOW_RELAY],
       deliveryMode: "critical",
       relayAuthentication: {

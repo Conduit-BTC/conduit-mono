@@ -8,9 +8,12 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   compareReplaceableEventFrontiers,
-  isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 const CONTROL_CHARACTER = /\p{Cc}/u
 const MAX_MEMBERS = 256
@@ -117,11 +120,19 @@ export function buildEventMarketSeriesDraft(input: {
 }
 
 export function parseEventMarketSeriesEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketSeries | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketSeriesFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Field parser for the private order schema after its own signature refinement. */
+export function parseEventMarketSeriesFieldsForPrivateOrder(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketSeries | null {
   if (
     event.kind !== EVENT_KINDS.CALENDAR ||
-    !isValidSignedPublicNostrEvent(event) ||
     new TextEncoder().encode(JSON.stringify(event)).length > MAX_SIGNED_BYTES
   )
     return null
@@ -173,8 +184,9 @@ export function resolveEventMarketSeries(input: {
         event.tags.some(
           (tag) => tag[0] === "d" && tag[1] === coordinate.dTag
         ) &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     )
+    .filter(isVerifiedNostrEvent)
     .sort(
       (left, right) =>
         -compareReplaceableEventFrontiers(
@@ -223,8 +235,9 @@ export function resolveEventMarketOccurrence(input: {
         event.tags.some(
           (tag) => tag[0] === "d" && tag[1] === coordinate.dTag
         ) &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     )
+    .filter(isVerifiedNostrEvent)
     .sort(
       (left, right) =>
         -compareReplaceableEventFrontiers(

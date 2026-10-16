@@ -105,7 +105,7 @@ export function ListingAreaPicker({
     : preservedLocation
 
   return (
-    <div className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+    <div className="grid gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
       <Label htmlFor="listing-area-country">{label}</Label>
       <p className="text-xs leading-5 text-[var(--text-muted)]">{helpText}</p>
       <Combobox
@@ -172,12 +172,12 @@ export function ListingAreaPicker({
         </p>
       )}
       {error && (
-        <p role="status" className="text-xs text-error">
+        <p role="status" className="text-xs text-[var(--error-text)]">
           Place index unavailable. You can still publish without an area.
         </p>
       )}
       {placeId !== null && !loading && !selected && !error && (
-        <p role="status" className="text-xs text-error">
+        <p role="status" className="text-xs text-[var(--error-text)]">
           Selected place is no longer available. Choose another or clear the
           area.
         </p>

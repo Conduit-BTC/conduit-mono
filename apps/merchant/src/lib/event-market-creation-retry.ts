@@ -1,4 +1,5 @@
 import {
+  buildEventMarketCalendarDraft,
   parseEventMarketCalendarEvent,
   parseEventMarketRosterEvent,
   publishEventMarketRoster,
@@ -6,6 +7,8 @@ import {
   retainSignedEventMarketEvidence,
   retryEventMarketRosterDelivery,
   retryEventMarketCalendarDelivery,
+  admitPublicEvent,
+  type VerifiedNostrEvent,
   type EventMarketCalendarDraftInput,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -91,6 +94,8 @@ export function loadFutureEventMarketCreation(
       creation.marketCoordinate !==
         `30409:${organizerPubkey}:${creation.dTag}` ||
       !creation.form ||
+      (creation.form.calendarType !== "timed" &&
+        creation.form.calendarType !== "date") ||
       Object.keys(emptyForm).some(
         (key) =>
           typeof creation.form[key as keyof OrganizerEventMarketFormValues] !==
@@ -101,10 +106,9 @@ export function loadFutureEventMarketCreation(
       )
     )
       throw new Error("Invalid saved creation.")
-    const calendar = calendarForCreation(creation)
     if (
       creation.calendarCoordinate !==
-      `${calendar.kind}:${organizerPubkey}:${calendar.dTag}`
+      `${creation.form.calendarType === "date" ? 31922 : 31923}:${organizerPubkey}:${creation.dTag}-calendar`
     )
       throw new Error("Invalid saved calendar coordinate.")
     return creation
@@ -138,6 +142,8 @@ export function saveNewFutureEventMarketCreation(
     calendarCoordinate: `${prepared.calendar.kind}:${organizerPubkey}:${dTag}-calendar`,
     form: toStoredOrganizerEventForm(form),
   }
+  // Validate the actual wire draft before a saved pointer can freeze the form.
+  buildEventMarketCalendarDraft(calendarForCreation(creation))
   storage.setItem(storageKey(organizerPubkey), JSON.stringify(creation))
   return creation
 }
@@ -166,8 +172,116 @@ const defaultDependencies: CreationDependencies = {
   retryRoster: retryEventMarketRosterDelivery,
 }
 
+const creationLocks = new Map<string, Promise<unknown>>()
+
+/** Signing, retry and unsigned-draft repair share one account-scoped lock. */
+export async function withFutureEventMarketCreationLock<T>(
+  organizerPubkey: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const name = `conduit:event-market-creation:${organizerPubkey}`
+  if (typeof navigator !== "undefined" && navigator.locks)
+    return navigator.locks.request(name, { ifAvailable: true }, (lock) => {
+      if (!lock)
+        throw new Error(
+          "Another tab is finishing this Event Market. Wait for it before continuing."
+        )
+      return task()
+    })
+  if (typeof window !== "undefined")
+    throw new Error(
+      "This browser cannot safely coordinate saved creation. Use a browser with Web Locks support."
+    )
+  // Non-browser callers (including deterministic tests) still serialize work.
+  const previous = creationLocks.get(name) ?? Promise.resolve()
+  const next = previous.catch(() => undefined).then(task)
+  creationLocks.set(name, next)
+  try {
+    return await next
+  } finally {
+    if (creationLocks.get(name) === next) creationLocks.delete(name)
+  }
+}
+
+export async function isFutureEventMarketCreationSigned(
+  creation: FutureEventMarketCreation,
+  dependencies: Pick<CreationDependencies, "loadEvents"> = defaultDependencies
+): Promise<boolean> {
+  // A missing pointer does not prove unsigned: retention precedes pointer save.
+  return Boolean(
+    creation.calendarEventId ||
+    creation.marketEventId ||
+    (await dependencies.loadEvents(creation.marketCoordinate)).length
+  )
+}
+
+/** Only unsigned plans may change or be discarded; retained bytes are untouched. */
+export async function reviseFutureEventMarketCreation(
+  input: {
+    creation: FutureEventMarketCreation
+    /** Omit to discard the unsigned plan. */
+    form?: OrganizerEventMarketFormValues
+    shouldContinue: () => boolean
+    storage?: CreationStorage
+  },
+  dependencies: Pick<CreationDependencies, "loadEvents"> = defaultDependencies
+): Promise<FutureEventMarketCreation | null> {
+  return withFutureEventMarketCreationLock(
+    input.creation.organizerPubkey,
+    async () => {
+      const storage = input.storage ?? browserStorage()
+      const current = loadFutureEventMarketCreation(
+        input.creation.organizerPubkey,
+        storage
+      )
+      const assertCurrent = () => {
+        if (!input.shouldContinue())
+          throw new Error("Organizer session changed.")
+        if (
+          JSON.stringify(
+            loadFutureEventMarketCreation(
+              input.creation.organizerPubkey,
+              storage
+            )
+          ) !== JSON.stringify(input.creation)
+        )
+          throw new Error(
+            "The saved creation changed in another tab. Reload before continuing."
+          )
+      }
+      assertCurrent()
+      if (
+        !current ||
+        (await isFutureEventMarketCreationSigned(current, dependencies))
+      )
+        throw new Error(
+          "Signed records may already be public. Finish publishing the saved event before editing or starting another."
+        )
+      assertCurrent()
+      if (!input.form) {
+        storage.removeItem(storageKey(current.organizerPubkey))
+        return null
+      }
+      const prepared = prepareOrganizerEventMarketForm(input.form, {
+        requireFutureStart: true,
+      })
+      const revised = {
+        ...current,
+        form: toStoredOrganizerEventForm(input.form),
+        calendarCoordinate: `${prepared.calendar.kind}:${current.organizerPubkey}:${current.dTag}-calendar`,
+      }
+      buildEventMarketCalendarDraft(calendarForCreation(revised))
+      storage.setItem(
+        storageKey(current.organizerPubkey),
+        JSON.stringify(revised)
+      )
+      return revised
+    }
+  )
+}
+
 /** Resume missing signatures and retry saved signatures without minting revisions. */
-export async function publishFutureEventMarketCreation(
+async function publishFutureEventMarketCreationUnlocked(
   input: {
     organizerPubkey: string
     authenticatedPubkey: string | null
@@ -175,11 +289,19 @@ export async function publishFutureEventMarketCreation(
     onSaved?: (creation: FutureEventMarketCreation) => void
     onStep?: (step: string) => void
     storage?: CreationStorage
+    expectedCreation?: FutureEventMarketCreation
   },
   dependencies: CreationDependencies = defaultDependencies
 ): Promise<{ marketCoordinate: string; successfulRelayUrls: string[] }> {
   const storage = input.storage ?? browserStorage()
   let creation = loadFutureEventMarketCreation(input.organizerPubkey, storage)
+  if (
+    input.expectedCreation &&
+    JSON.stringify(creation) !== JSON.stringify(input.expectedCreation)
+  )
+    throw new Error(
+      "The saved creation changed in another tab. Reload before continuing."
+    )
   if (!creation || input.authenticatedPubkey !== creation.organizerPubkey)
     throw new Error(
       "The authenticated organizer and saved creation are required."
@@ -189,7 +311,26 @@ export async function publishFutureEventMarketCreation(
     if (!input.shouldContinue()) throw new Error("Organizer session changed.")
   }
   assertCurrent()
-  const events = await dependencies.loadEvents(creation.marketCoordinate)
+  const loadedEvents = await dependencies.loadEvents(creation.marketCoordinate)
+  const events: VerifiedNostrEvent[] = []
+  for (let offset = 0; offset < loadedEvents.length; offset += 64) {
+    assertCurrent()
+    const admissions = await Promise.all(
+      loadedEvents
+        .slice(offset, offset + 64)
+        .map((event) => admitPublicEvent(event))
+    )
+    assertCurrent()
+    for (const admission of admissions) {
+      if (admission.status === "verified") events.push(admission.event)
+      else if (admission.status === "unavailable")
+        throw new Error(
+          "Saved Event Market signature verification is unavailable."
+        )
+      else if (admission.status === "cancelled")
+        throw new Error("Organizer session changed.")
+    }
+  }
   function savedEvent(record: "calendar" | "market") {
     const id =
       record === "calendar"
@@ -283,4 +424,13 @@ export async function publishFutureEventMarketCreation(
     marketCoordinate: activeCreation.marketCoordinate,
     successfulRelayUrls: delivery.successfulRelayUrls,
   }
+}
+
+export function publishFutureEventMarketCreation(
+  input: Parameters<typeof publishFutureEventMarketCreationUnlocked>[0],
+  dependencies: CreationDependencies = defaultDependencies
+): ReturnType<typeof publishFutureEventMarketCreationUnlocked> {
+  return withFutureEventMarketCreationLock(input.organizerPubkey, () =>
+    publishFutureEventMarketCreationUnlocked(input, dependencies)
+  )
 }

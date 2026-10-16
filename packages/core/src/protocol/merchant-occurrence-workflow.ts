@@ -1,3 +1,4 @@
+import { verifySignedEventBatches } from "./relay-reader"
 import { db } from "../db"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
 import { orderSchema, type OrderSchema, type ProductSchema } from "../schemas"
@@ -19,9 +20,12 @@ import {
   retainEventMarketCommerceEvidence,
 } from "./event-market-roster-read"
 import { parseEventMarketSeriesEvent } from "./event-market-schedule"
-import { verifyEventMarketOrderEvidence } from "./event-market-order-evidence"
+import {
+  verifyEventMarketOrderEvidence,
+  admitEmbeddedEventMarketOrderEvidence,
+} from "./event-market-order-evidence"
 import { parseProductEvent } from "./products"
-import { getProductsByIds, cacheSignedProductListingEvent } from "./commerce"
+import { getProductsByIds } from "./commerce"
 import { getAccountSigner } from "./session-signer"
 import { publishWithPlanner } from "./relay-publish"
 import { waitForVisibleDocument } from "./interactive-signer"
@@ -343,7 +347,9 @@ export async function saveMerchantOccurrenceAssignment(
     source.pubkey !== input.merchantPubkey
   )
     throw new Error("The current signed product could not be verified.")
-  const product = parseProductEvent(source)
+  const product = parseProductEvent(
+    (await verifySignedEventBatches([source]))[0]!
+  )
   if (product.type === "variable" || product.format !== "physical")
     throw new Error("Choose a sellable physical product for pickup.")
   if (product.type === "variation") {
@@ -443,7 +449,11 @@ export async function saveMerchantOccurrenceAssignment(
 
 /** Resume immutable public projections. Delivery never decides whether the sale happened. */
 export async function resumeMerchantOccurrencePublication(
-  input: MerchantOccurrenceSession
+  input: MerchantOccurrenceSession & {
+    publishProduct: (
+      event: SignedPublicNostrEvent
+    ) => Promise<boolean | "superseded">
+  }
 ) {
   assertSession(input)
   return resumeMerchantInventoryPublication({
@@ -460,6 +470,7 @@ export async function resumeMerchantOccurrencePublication(
     },
     publish: async (event) => {
       assertSession(input)
+      if (event.kind === 30402) return input.publishProduct(event)
       const delivery = await publishWithPlanner(event, {
         intent: "commerce_author_event",
         authorPubkey: input.merchantPubkey,
@@ -468,10 +479,6 @@ export async function resumeMerchantOccurrencePublication(
         deliveryMode: "critical",
         shouldContinue: input.shouldContinue,
       })
-      if (event.kind === 30402)
-        await cacheSignedProductListingEvent(event, {
-          sourceRelayUrls: delivery.successfulRelayUrls,
-        })
       if (event.kind === 30410) {
         const assignment = parseEventMarketAssignmentEvent(event)
         if (assignment)
@@ -513,9 +520,14 @@ export async function acceptMerchantOccurrenceOrder(
   const eventItems = order.items.filter(
     (item) => item.fulfillment?.type === "event_market_pickup"
   )
+  const orderEvidence = eventItems.length
+    ? await admitEmbeddedEventMarketOrderEvidence(order)
+    : []
+  assertSession(input)
   if (
     eventItems.length &&
-    verifyEventMarketOrderEvidence({ order, events: [] }).status !== "verified"
+    verifyEventMarketOrderEvidence({ order, events: orderEvidence }).status !==
+      "verified"
   )
     throw new Error("The order's exact signed event evidence is invalid.")
   await reconcileKnownOccurrenceLifecycle(input.merchantPubkey)
@@ -569,7 +581,9 @@ export async function acceptMerchantOccurrenceOrder(
       )
     )
       throw new Error("Known deletion evidence blocks this product.")
-    const product = parseProductEvent(source)
+    const product = parseProductEvent(
+      (await verifySignedEventBatches([source]))[0]!
+    )
     if (
       product.pubkey !== input.merchantPubkey ||
       product.type === "variable" ||
@@ -607,7 +621,7 @@ export async function acceptMerchantOccurrenceOrder(
       const retained = await loadRetainedSignedEventMarketEvidence(
         fulfillment.market.coordinate
       )
-      const evidence = [
+      const evidence = await verifySignedEventBatches([
         ...new Map(
           [
             ...retained,
@@ -618,7 +632,7 @@ export async function acceptMerchantOccurrenceOrder(
             ...(fulfillment.schedule ? [fulfillment.schedule.signedEvent] : []),
           ].map((event) => [event.id, event])
         ).values(),
-      ]
+      ])
       const market = resolveEventMarketRoster({
         coordinate: fulfillment.market.coordinate,
         revisions: evidence.filter((event) => event.kind === 30409),
@@ -632,7 +646,10 @@ export async function acceptMerchantOccurrenceOrder(
       })
       const calendarEvent = newest(evidence, fulfillment.calendar.coordinate)
       const calendar =
-        calendarEvent && parseEventMarketCalendarEvent(calendarEvent)
+        calendarEvent &&
+        parseEventMarketCalendarEvent(
+          (await verifySignedEventBatches([calendarEvent]))[0]!
+        )
       const row =
         market.state === "current" &&
         market.market.merchants.find(
@@ -673,8 +690,13 @@ export async function acceptMerchantOccurrenceOrder(
         calendar.end !== fulfillment.calendar.end ||
         JSON.stringify(calendar.locations) !==
           JSON.stringify(
-            parseEventMarketCalendarEvent(fulfillment.calendar.signedEvent)
-              ?.locations
+            parseEventMarketCalendarEvent(
+              (
+                await verifySignedEventBatches([
+                  fulfillment.calendar.signedEvent,
+                ])
+              )[0]!
+            )?.locations
           )
       )
         throw new Error(
@@ -683,7 +705,10 @@ export async function acceptMerchantOccurrenceOrder(
       if (fulfillment.schedule) {
         const scheduleEvent = newest(evidence, fulfillment.schedule.coordinate)
         const schedule =
-          scheduleEvent && parseEventMarketSeriesEvent(scheduleEvent)
+          scheduleEvent &&
+          parseEventMarketSeriesEvent(
+            (await verifySignedEventBatches([scheduleEvent]))[0]!
+          )
         if (
           !schedule ||
           !schedule.memberCoordinates.includes(calendar.coordinate)
@@ -735,90 +760,4 @@ export async function acceptMerchantOccurrenceOrder(
     evidence: termsBinding,
     items,
   })
-}
-
-/** Capture the committed head before the ordinary editor asks the signer. */
-export async function prepareMerchantInventoryProductEdits(
-  products: readonly { coordinate: string; eventId?: string }[]
-) {
-  const revisions: Record<string, number> = {}
-  for (const product of products) {
-    const current = await db.merchantInventoryProducts.get(product.coordinate)
-    if (!current) continue
-    if (
-      current.publicationJobs.some((job) => !job.signedEvent) ||
-      current.signedProductEvent.id !== product.eventId
-    )
-      throw new Error(
-        "This product has newer committed inventory. Finish signing its saved updates and refresh before editing."
-      )
-    revisions[product.coordinate] = current.revision
-  }
-  return revisions
-}
-
-/** A signed ordinary edit joins the same transaction boundary as reservations and sales. */
-export async function commitMerchantInventoryProductEdits(
-  events: readonly SignedPublicNostrEvent[],
-  revisions: Record<string, number>
-) {
-  await db.transaction(
-    "rw",
-    db.merchantInventoryProducts,
-    db.merchantInventoryAssignments,
-    async () => {
-      for (const event of events) {
-        if (event.kind !== 30402) continue
-        const product = parseProductEvent(event)
-        const expected = revisions[product.id]
-        if (expected === undefined) continue
-        const current = await db.merchantInventoryProducts.get(product.id)
-        if (
-          !current ||
-          current.revision !== expected ||
-          !isValidSignedPublicNostrEvent(event) ||
-          event.pubkey !== current.merchantPubkey ||
-          event.created_at <= current.signedProductEvent.created_at
-        )
-          throw new Error(
-            "Inventory changed while signing. Refresh the product before retrying the edit."
-          )
-        const availability = await readMerchantInventoryAvailability(
-          db,
-          product.id
-        )
-        const reserved =
-          current.stock === undefined
-            ? undefined
-            : current.stock - (availability.ordinaryAvailable ?? 0)
-        if (
-          (current.stock === undefined) !== (product.stock === undefined) ||
-          (product.stock !== undefined && product.stock < (reserved ?? 0))
-        )
-          throw new Error(
-            "Reconcile current occurrence allocations before changing this stock balance or tracking mode."
-          )
-        current.stock = product.stock
-        current.revision += 1
-        current.sourceProductEvent = event
-        current.signedProductEvent = event
-        current.publicationJobs.push({
-          id: `product-edit:${event.id}`,
-          revision: current.revision,
-          createdAt: Date.now(),
-          state: "signed",
-          signedEvent: event,
-          draft: {
-            kind: event.kind,
-            pubkey: event.pubkey,
-            created_at: event.created_at,
-            tags: event.tags,
-            content: event.content,
-          },
-          productStock: product.stock,
-        })
-        await db.merchantInventoryProducts.put(current)
-      }
-    }
-  )
 }

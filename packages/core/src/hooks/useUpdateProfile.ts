@@ -19,6 +19,7 @@ import {
 export interface UseUpdateProfileOptions {
   authenticatedPubkey?: string | null
   authGeneration?: number
+  expectedLightningAddress?: string
   shouldContinue?: () => boolean
 }
 
@@ -94,6 +95,7 @@ export function useUpdateProfile(
       return publishProfileContext(profile, appId, {
         authenticatedPubkey,
         shouldContinue,
+        expectedLightningAddress: options.expectedLightningAddress,
       })
     },
     onError: (error) => {

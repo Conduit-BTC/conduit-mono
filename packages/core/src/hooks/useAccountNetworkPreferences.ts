@@ -20,7 +20,7 @@ export interface UseAccountNetworkPreferencesResult {
   localReady: boolean
   reconciliation: AccountNetworkPreferencesReconciliation | null
   error: string | null
-  refetch: () => void
+  refetch: () => Promise<AccountNetworkPreferencesReconciliation | null>
 }
 
 export interface AccountNetworkPreferencesState {
@@ -61,7 +61,8 @@ export function useAccountNetworkPreferences(
   const contextKey = enabled ? pubkey?.trim().toLowerCase() || null : null
   const authGenerationRef = useRef(authGeneration)
   const reconciliationControllerRef = useRef<AbortController | null>(null)
-  const [retryRevision, setRetryRevision] = useState(0)
+  const contextKeyRef = useRef(contextKey)
+  const reconciliationRevisionRef = useRef(0)
   const [state, setState] = useState<AccountNetworkPreferencesState>({
     contextKey: null,
     status: "idle",
@@ -72,6 +73,8 @@ export function useAccountNetworkPreferences(
 
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
+    contextKeyRef.current = contextKey
+    reconciliationRevisionRef.current += 1
     return () => {
       reconciliationControllerRef.current?.abort()
       reconciliationControllerRef.current = null
@@ -128,34 +131,34 @@ export function useAccountNetworkPreferences(
     }
   }, [contextKey])
 
-  useEffect(() => {
-    if (
-      !contextKey ||
-      !freshEnabled ||
-      state.contextKey !== contextKey ||
-      !state.localReady
-    ) {
-      return
-    }
-
-    let cancelled = false
-    const controller = new AbortController()
-    reconciliationControllerRef.current = controller
-    setState((current) => ({
-      ...current,
-      status: "reconciling",
-      error: null,
-    }))
-    void reconcileAccountNetworkPreferences(contextKey, {
-      requestingAccountPubkey: contextKey,
-      authenticatedPubkey: contextKey,
-      signal: controller.signal,
-      shouldContinue: () =>
+  const refetch =
+    useCallback(async (): Promise<AccountNetworkPreferencesReconciliation | null> => {
+      if (!contextKey || !freshEnabled) return null
+      reconciliationControllerRef.current?.abort()
+      const controller = new AbortController()
+      const revision = ++reconciliationRevisionRef.current
+      reconciliationControllerRef.current = controller
+      const shouldContinue = () =>
         !controller.signal.aborted &&
-        authGenerationRef.current === authGeneration,
-    })
-      .then((reconciliation) => {
-        if (cancelled || controller.signal.aborted) return
+        contextKeyRef.current === contextKey &&
+        authGenerationRef.current === authGeneration &&
+        reconciliationRevisionRef.current === revision
+      setState((current) => ({
+        ...current,
+        status: "reconciling",
+        error: null,
+      }))
+      try {
+        const reconciliation = await reconcileAccountNetworkPreferences(
+          contextKey,
+          {
+            requestingAccountPubkey: contextKey,
+            authenticatedPubkey: contextKey,
+            signal: controller.signal,
+            shouldContinue,
+          }
+        )
+        if (!shouldContinue()) return null
         setState({
           contextKey,
           status: "ready",
@@ -163,40 +166,38 @@ export function useAccountNetworkPreferences(
           reconciliation,
           error: null,
         })
-      })
-      .catch((error: unknown) => {
-        if (cancelled || controller.signal.aborted) return
-        setState((current) => ({
-          ...current,
-          contextKey,
-          status: "error",
-          localReady: true,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unable to reconcile Network preferences",
-        }))
-      })
-
-    return () => {
-      cancelled = true
-      if (reconciliationControllerRef.current === controller) {
-        reconciliationControllerRef.current = null
+        return reconciliation
+      } catch (error) {
+        if (shouldContinue())
+          setState((current) => ({
+            ...current,
+            contextKey,
+            status: "error",
+            error:
+              error instanceof Error
+                ? error.message
+                : "Unable to reconcile Network preferences",
+          }))
+        return null
+      } finally {
+        if (reconciliationControllerRef.current === controller)
+          reconciliationControllerRef.current = null
       }
-      controller.abort()
-    }
-  }, [
-    authGeneration,
-    contextKey,
-    freshEnabled,
-    retryRevision,
-    state.contextKey,
-    state.localReady,
-  ])
+    }, [authGeneration, contextKey, freshEnabled])
 
-  const refetch = useCallback(() => {
-    setRetryRevision((current) => current + 1)
-  }, [])
+  useEffect(() => {
+    if (
+      !contextKey ||
+      !freshEnabled ||
+      state.contextKey !== contextKey ||
+      !state.localReady
+    )
+      return
+    void refetch()
+    return () => {
+      reconciliationControllerRef.current?.abort()
+    }
+  }, [contextKey, freshEnabled, refetch, state.contextKey, state.localReady])
 
   // Effects run after render. Never expose account A's ready state while the
   // render has already switched to account B (or disconnected).

@@ -16,7 +16,7 @@ fixtures are retired; the corresponding user outcomes use current signed data.
 | AC-EM-07   | EV-EM-07 | Exact encrypted retries survive reload and do not duplicate release                         | `event-market-handoff`, `future-market-private-read-cancellation`, composed private handoff browser journey               | Interrupted live delivery and fresh-device recovery        |
 | AC-EM-08   | EV-EM-08 | Private receipt contents remain minimal; merchant retains payment authority                 | `event-market-handoff`, `event-market-order-evidence`, `event-market-e2e-privacy`                                         | Inspect organizer and buyer UI without collecting payloads |
 | AC-EM-09   | EV-EM-09 | Known revocation blocks release; authenticated acknowledgement supports merchant completion | `merchant-order-phase`, `merchant-order-action-view`, composed handoff browser journey                                    | Physical handout and completion                            |
-| AC-EM-10   | EV-EM-10 | Signed-in and guest contact pickup remain; immediate contact-free pickup is opt-in          | `buyer-checkout`, `event-contact-free`, `market-event-fulfillment`                                                        | Mobile guest receipt retention and recovery                |
+| AC-EM-10   | EV-EM-10 | Assignment pickup permits contact-free checkout; historical immediate pickup retains opt-in | `buyer-checkout`, `event-contact-free`, `market-event-fulfillment`                                                        | Mobile guest receipt retention and recovery                |
 | AC-EM-11   | EV-EM-11 | Host, merchant, buyer and organizer flows work together                                     | `e2e/event-market.playwright.ts` in both app areas                                                                        | Candidate preview with independent real accounts           |
 | AC-EM-12   | EV-EM-12 | Ordinary shipping, digital products and non-event collections still work                    | `buyer-checkout`, `cart-model`, `commerce-gateway`, `merchant-product-publishing`                                         | Ordinary nonzero purchase and wallet settlement            |
 | AC-EM-13   | EV-EM-13 | Finite recurrence and shipping/pickup choices retain exact selected date                    | `event-market-schedule`, `event-fulfillment-choice`, `future-event-market-timeline`, composed browser cases               | Timezone and device checks                                 |
@@ -74,9 +74,10 @@ Series purchases require a current or future selected occurrence.
 `event-market-checkout-authorization` locks both rules at snapshot creation and
 submit; expiration of one series occurrence does not close other valid dates.
 
-Catalog discovery resolves the signed roster before querying kind `30402` by
-its bounded merchant author set and exact market tag. An empty roster sends no
-product query. Cached signed cards still appear before the network wait;
+Catalog discovery resolves the signed roster before querying kind `30410` by
+its bounded merchant author set and exact market/occurrence, then resolving the
+ordinary product coordinates. An empty roster sends no assignment query. Product
+discovery tags establish no assignment authority. Cached signed cards still appear before the network wait;
 candidate display adds no per-merchant grant reads or purchase authority.
 `event-market-roster` covers 48 and 256 newer unapproved listings ahead of an
 approved product, including partial relay coverage and saturated responses.
@@ -111,10 +112,29 @@ where available, with a serialized runtime queue as fallback. This coordinates
 the asynchronous decrypt/merge window with compaction across browser tabs;
 environments without Web Locks only have runtime-local serialization.
 
-Contact-free checkout checks the current date and merchant-signed opt-in before
-creating an order. Historical decoding checks the claimed creation-time terms;
+New assignment checkout permits contact-free pickup without a product opt-in
+until the selected occurrence ends. Historical pre-assignment immediate pickup
+retains its currently-occurring date and merchant-signed opt-in checks. Historical decoding checks the claimed creation-time terms;
 buyer-authored payload and rumor timestamps do not independently prove when a
 merchant observed the order. Receiver time cannot distinguish backdating from
 delayed delivery or another device's recovery. `event-contact-free` preserves
 receipt verification after the date has ended. Decoding and bearer receipt
 possession establish neither payment nor fulfillment authorization.
+
+## Occurrence writer integration evidence
+
+`merchant-inventory-product-write` composes actual signed acceptance, the existing
+`commitLocalProductWrite` owner and listing delivery adapter. It covers atomic
+ordinary edits, allocation floors, rollback, failed publication, repeated orders,
+subsequent acceptance and preservation of newer ordinary product metadata.
+`merchant-inventory-schema-upgrade` uses the exact main-v26, discovery-v26 and
+assignment-v25 histories, commits real stock/allocation/order records, upgrades,
+accepts concurrent repeated orders, rejects oversell, and reloads retained signed
+retry work without another debit or signature. Structural union preservation in
+`event-market-schema-upgrade` remains a separate check.
+
+These are synthetic cryptographic/database integration tests. They do not prove
+external signer compatibility, independent-device reconciliation, live relay
+convergence, funded settlement or physical handout. Atomic rollover and the full
+rescheduling flow remain incomplete. New delegated organizer acceptance is gated;
+historical organizer receipt tests cannot stand in for that integration.

@@ -1,3 +1,4 @@
+import { admitFixtureEvent } from "./helpers/admit-event"
 import { afterAll, describe, expect, it } from "bun:test"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
@@ -106,7 +107,9 @@ describe("merchant occurrence acceptance composed with signed evidence and durab
       },
       organizerSecret
     )
-    const parsedCalendar = parseEventMarketCalendarEvent(calendar)
+    const parsedCalendar = parseEventMarketCalendarEvent(
+      await admitFixtureEvent(calendar)
+    )
     expect(parsedCalendar).not.toBeNull()
     const grant = finalizeEvent(
       {
@@ -136,7 +139,7 @@ describe("merchant occurrence acceptance composed with signed evidence and durab
       },
       merchantSecret
     )
-    const product = parseProductEvent(productEvent)
+    const product = parseProductEvent(await admitFixtureEvent(productEvent))
     const assignmentEvent = finalizeEvent(
       {
         ...buildEventMarketAssignmentDraft({
@@ -420,8 +423,15 @@ describe("merchant occurrence acceptance composed with signed evidence and durab
       db,
       merchantPubkey: merchant,
       sign: async (draft) => {
-        const { pubkey: _pubkey, ...unsigned } = draft
-        return finalizeEvent(unsigned, merchantSecret)
+        return finalizeEvent(
+          {
+            kind: draft.kind,
+            created_at: draft.created_at,
+            content: draft.content,
+            tags: draft.tags.map((tag) => [...tag]),
+          },
+          merchantSecret
+        )
       },
       publish: async () => false,
     })

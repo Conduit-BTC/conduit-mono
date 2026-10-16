@@ -1,3 +1,4 @@
+import { isVerifiedNostrEvent } from "@conduit/core"
 import { expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
@@ -87,7 +88,7 @@ it("emits only verified cumulative relay results before the slow relay finishes"
     })
     const preview = await first
     expect(finished).toBe(false)
-    expect(preview.eventsVerified).toBe(true)
+    expect(preview.events.every(isVerifiedNostrEvent)).toBe(true)
     expect(preview.events.map((event) => event.id)).toEqual([signed.id])
     expect(preview.events[0]?.content).toBe("Public test")
     expect(preview.relays).toHaveLength(1)

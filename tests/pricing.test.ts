@@ -1,3 +1,4 @@
+import { signFixture, publicFixturePubkey } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import {
   BTC_USD_RATE_STALE_MS,
@@ -441,6 +442,148 @@ describe("commerce pricing", () => {
     }
   })
 
+  it("rejects fiat outside the new-commerce allowlist even when a conversion rate exists", () => {
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5, XYZ: 2 },
+    }
+    for (const currency of ["BGN", "XYZ"]) {
+      expect(normalizeCommercePrice(10, currency, rates)).toMatchObject({
+        status: "unsupported",
+        sats: null,
+      })
+      expect(getPriceSats({ price: 10, currency }, rates)).toBeNull()
+    }
+    expect(normalizeCommercePrice(10, "USD", rates)).toMatchObject({
+      status: "ok",
+      sats: 10_000,
+    })
+    expect(normalizeCommercePrice(10, "EUR", rates)).toMatchObject({
+      status: "ok",
+      sats: 12_000,
+    })
+  })
+
+  it("keeps historical fiat conversion explicit without changing new price admission", () => {
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5, XYZ: 2 },
+    }
+    for (const [currency, sats] of [
+      ["BGN", 5_000],
+      ["XYZ", 20_000],
+    ] as const) {
+      const price = { price: 10, currency }
+      expect(normalizeCommercePrice(10, currency, rates).status).toBe(
+        "unsupported"
+      )
+      expect(
+        normalizeCommercePrice(10, currency, rates, {
+          currencyPolicy: "historical",
+        })
+      ).toMatchObject({ status: "ok", sats, approximate: true })
+      expect(getPriceSats(price, rates)).toBeNull()
+      expect(
+        getPriceSats(price, rates, { currencyPolicy: "historical" })
+      ).toEqual({ sats, approximate: true })
+    }
+    expect(
+      normalizeCommercePrice(10, "BGN", null, {
+        currencyPolicy: "historical",
+      }).status
+    ).toBe("rate_required")
+    expect(
+      normalizeCommercePrice(10, "POINTS", rates, {
+        currencyPolicy: "historical",
+      }).status
+    ).toBe("unsupported")
+  })
+
+  it("does not admit retired source currencies through cached listing sats", () => {
+    const cachedPrice = {
+      price: 5_000,
+      currency: "SATS",
+      priceSats: 5_000,
+      sourcePrice: { amount: 10, currency: "BGN", normalizedCurrency: "BGN" },
+    }
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5 },
+    }
+    expect(getPriceSats(cachedPrice)).toBeNull()
+    expect(getPriceSats(cachedPrice, rates)).toBeNull()
+    expect(
+      getPriceSats(cachedPrice, rates, { currencyPolicy: "historical" })
+    ).toEqual({ sats: 5_000, approximate: true })
+    expect(
+      getPriceSats({ ...cachedPrice, currency: "BGN", price: 10 }, rates)
+    ).toBeNull()
+  })
+
+  it("rejects unsupported shipping before cached sats or zero cost can bypass admission", () => {
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5, XYZ: 2 },
+    }
+    for (const currency of ["BGN", "XYZ"]) {
+      const source = { amount: 10, currency, normalizedCurrency: currency }
+      expect(
+        getShippingCostSats(
+          { shippingCostSats: 5_000, sourceShippingCost: source },
+          rates
+        )
+      ).toBeNull()
+      const freeShipping = {
+        shippingCostSats: 0,
+        sourceShippingCost: { ...source, amount: 0 },
+      }
+      expect(getShippingCostSats(freeShipping, rates)).toBeNull()
+      expect(
+        getShippingCostSats(freeShipping, rates, {
+          currencyPolicy: "historical",
+        })
+      ).toEqual({ sats: 0, approximate: false })
+    }
+    expect(
+      getShippingCostSats(canonicalizeShippingCost(10, "BGN"), rates, {
+        currencyPolicy: "historical",
+      })
+    ).toEqual({ sats: 5_000, approximate: true })
+    expect(
+      getShippingCostSats(canonicalizeShippingCost(0, "USD"), rates)
+    ).toEqual({
+      sats: 0,
+      approximate: false,
+    })
+    expect(
+      getShippingCostSats(canonicalizeShippingCost(10, "EUR"), rates)
+    ).toEqual({
+      sats: 12_000,
+      approximate: true,
+    })
+  })
+
+  it("preserves exact native Bitcoin denominations under the bounded fiat policy", () => {
+    for (const [amount, currency] of [
+      [1_000, "SAT"],
+      [1_000, "SATS"],
+      [1_000_000, "MSAT"],
+      [1_000_000, "MSATS"],
+      [0.00001, "BTC"],
+      [0.00001, "XBT"],
+    ] as const) {
+      expect(normalizeCommercePrice(amount, currency)).toMatchObject({
+        status: "ok",
+        sats: 1_000,
+        approximate: false,
+      })
+      expect(getPriceSats({ price: amount, currency })).toEqual({
+        sats: 1_000,
+        approximate: false,
+      })
+    }
+  })
+
   it("canonicalizes shipping costs without assuming fiat amounts are sats", () => {
     expect(canonicalizeShippingCost(5, "USD")).toEqual({
       sourceShippingCost: {
@@ -469,20 +612,25 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("parses tag-only NIP-99 SAT listings as sats-canonical products", () => {
-    const product = parseProductEvent({
-      id: "event-1",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Pocket clip",
-      tags: [
-        ["d", "clip"],
-        ["title", "Extra Pocket Clip"],
-        ["price", "250000", "SAT"],
-        ["shipping_cost", "5000"],
-        ["image", "https://example.com/clip.png"],
-      ],
-    })
+  it("parses tag-only NIP-99 SAT listings as sats-canonical products", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-1",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Pocket clip",
+          tags: [
+            ["d", "clip"],
+            ["title", "Extra Pocket Clip"],
+            ["price", "250000", "SAT"],
+            ["shipping_cost", "5000"],
+            ["image", "https://example.com/clip.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
@@ -495,19 +643,24 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("preserves canonical signed zero-SATS evidence for an authorized pickup flow", () => {
-    const product = parseProductEvent({
-      id: "event-free-pickup",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Event badge",
-      tags: [
-        ["d", "event-badge"],
-        ["title", "Event Badge"],
-        ["price", "0", "SATS"],
-        ["type", "simple", "physical"],
-      ],
-    })
+  it("preserves canonical signed zero-SATS evidence for an authorized pickup flow", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-free-pickup",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Event badge",
+          tags: [
+            ["d", "event-badge"],
+            ["title", "Event Badge"],
+            ["price", "0", "SATS"],
+            ["type", "simple", "physical"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product).toMatchObject({
       price: 0,
@@ -576,20 +729,25 @@ describe("commerce pricing", () => {
     expect(getShopperSatsDisplay(0).primary).not.toBe("Free")
   })
 
-  it("preserves fiat shipping source quotes and converts them with rate input", () => {
-    const product = parseProductEvent({
-      id: "event-usd-shipping",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Notebook",
-      tags: [
-        ["d", "notebook"],
-        ["title", "Notebook"],
-        ["price", "1000", "SATS"],
-        ["shipping_cost", "10", "USD"],
-        ["image", "https://example.com/notebook.png"],
-      ],
-    })
+  it("preserves fiat shipping source quotes and converts them with rate input", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-usd-shipping",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Notebook",
+          tags: [
+            ["d", "notebook"],
+            ["title", "Notebook"],
+            ["price", "1000", "SATS"],
+            ["shipping_cost", "10", "USD"],
+            ["image", "https://example.com/notebook.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.shippingCostSats).toBeUndefined()
     expect(product.sourceShippingCost).toEqual({
@@ -603,19 +761,24 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("parses BTC listings as sats-canonical products", () => {
-    const product = parseProductEvent({
-      id: "event-2",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Knife",
-      tags: [
-        ["d", "knife"],
-        ["title", "Cyberita Scandigrind Folder"],
-        ["price", "0.0025", "BTC"],
-        ["image", "https://example.com/knife.png"],
-      ],
-    })
+  it("parses BTC listings as sats-canonical products", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-2",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Knife",
+          tags: [
+            ["d", "knife"],
+            ["title", "Cyberita Scandigrind Folder"],
+            ["price", "0.0025", "BTC"],
+            ["image", "https://example.com/knife.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
@@ -626,20 +789,25 @@ describe("commerce pricing", () => {
     })
   })
 
-  it("parses tag-only digital listings as not requiring shipping", () => {
-    const product = parseProductEvent({
-      id: "event-digital",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "PDF guide",
-      tags: [
-        ["d", "pdf-guide"],
-        ["title", "PDF Guide"],
-        ["price", "25000", "SATS"],
-        ["type", "simple", "digital"],
-        ["image", "https://example.com/guide.png"],
-      ],
-    })
+  it("parses tag-only digital listings as not requiring shipping", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-digital",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "PDF guide",
+          tags: [
+            ["d", "pdf-guide"],
+            ["title", "PDF Guide"],
+            ["price", "25000", "SATS"],
+            ["type", "simple", "digital"],
+            ["image", "https://example.com/guide.png"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.type).toBe("simple")
     expect(product.format).toBe("digital")
@@ -647,18 +815,23 @@ describe("commerce pricing", () => {
     expect(product.shippingOptionId).toBeUndefined()
   })
 
-  it("preserves fiat source quotes and displays rate-backed sats", () => {
-    const product = parseProductEvent({
-      id: "event-3",
-      pubkey: "merchant",
-      created_at: 1_700_000_000,
-      content: "Euro listing",
-      tags: [
-        ["d", "euro-listing"],
-        ["title", "Euro Listing"],
-        ["price", "10", "EUR"],
-      ],
-    })
+  it("preserves fiat source quotes and displays rate-backed sats", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "event-3",
+          pubkey: publicFixturePubkey,
+          created_at: 1_700_000_000,
+          content: "Euro listing",
+          tags: [
+            ["d", "euro-listing"],
+            ["title", "Euro Listing"],
+            ["price", "10", "EUR"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.price).toBe(10)
     expect(product.currency).toBe("EUR")
@@ -673,6 +846,47 @@ describe("commerce pricing", () => {
       primary: "~ 12,000 sats",
       secondary: "€10.00 EUR",
     })
+  })
+
+  it("keeps a genuinely signed historical BGN listing readable without admitting a new purchase", async () => {
+    const product = parseProductEvent(
+      await signFixture({
+        created_at: 1_700_000_000,
+        content: "Historical fiat listing",
+        tags: [
+          ["d", "historical-bgn-listing"],
+          ["title", "Historical Fiat Listing"],
+          ["price", "10", "BGN"],
+          ["shipping_cost", "2", "BGN"],
+        ],
+      })
+    )
+    const rates: BtcUsdRateQuote = {
+      ...testRates,
+      fiatUsdRates: { ...testRates.fiatUsdRates, BGN: 0.5 },
+    }
+    expect(product.price).toBe(10)
+    expect(product.currency).toBe("BGN")
+    expect(product.sourcePrice).toEqual({
+      amount: 10,
+      currency: "BGN",
+      normalizedCurrency: "BGN",
+    })
+    expect(product.sourceShippingCost).toEqual({
+      amount: 2,
+      currency: "BGN",
+      normalizedCurrency: "BGN",
+    })
+    expect(getPriceSats(product, rates)).toBeNull()
+    expect(getShippingCostSats(product, rates)).toBeNull()
+    expect(
+      getPriceSats(product, rates, { currencyPolicy: "historical" })
+    ).toEqual({ sats: 5_000, approximate: true })
+    expect(
+      getShippingCostSats(product, rates, { currencyPolicy: "historical" })
+    ).toEqual({ sats: 1_000, approximate: true })
+    expect(getProductPriceDisplay(product, rates).primary).toBe("~ 5,000 sats")
+    expect(getProductPriceDisplay(product, rates).secondary).toContain("BGN")
   })
 
   it("labels fiat source quote currencies without double-estimating USD", () => {
@@ -799,11 +1013,11 @@ describe("commerce pricing", () => {
   it("allows checkout payloads to preserve source quotes while settling in sats", () => {
     const parsed = orderSchema.parse({
       id: "order-1",
-      merchantPubkey: "merchant",
+      merchantPubkey: publicFixturePubkey,
       buyerPubkey: "buyer",
       items: [
         {
-          productId: "30402:merchant:item",
+          productId: `30402:${publicFixturePubkey}:item`,
           quantity: 1,
           priceAtPurchase: 250_000,
           currency: "SATS",

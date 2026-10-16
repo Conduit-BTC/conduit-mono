@@ -151,3 +151,11 @@ reads restore observed reservations across markets; their coverage does not prov
 global absence, and intact local inventory bypasses those reads. Core arithmetic tests alone do not prove
 those composed flows. External signer/relay/device, funded payment and physical
 handout evidence remain separate maintainer validation.
+
+Ordinary product edits and inventory product projections share
+`commitLocalProductWrite` and the existing listing outbox. A stock projection
+adopts its retained signed identity into that owner rather than starting a second
+publisher. Exact older inventory projection jobs can be superseded by a later
+retained projection without discarding their signed evidence or pairing unrelated
+deletions/shipping operations. A newer ordinary product edit supplies the metadata
+for the next stock projection; its content and shipping terms must not regress.

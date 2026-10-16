@@ -21,7 +21,7 @@ export function SellerCard({
     <Link
       to="/$identityRef"
       params={{ identityRef: pubkeyToNpub(pubkey) }}
-      className="flex h-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+      className="flex h-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
     >
       <DeferredMerchantAvatar
         picture={identity.picture}

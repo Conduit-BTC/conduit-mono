@@ -281,7 +281,7 @@ cross-app commerce Playwright shards. App-local changes keep their owning app
 shard and add commerce when they affect the shared checkout, order, product,
 messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
 `main` run every critical shard; docs-only changes skip browser installation.
-Market runs in three single-worker jobs. Their project-aware discovery manifests
+Full Market areas run in three single-worker jobs. Their project-aware discovery manifests
 must combine to the complete Market selection with no missing or repeated tests.
 Market browser fixtures use synthetic mainnet invoices so Spark wallet setup and
 manual invoice handoff share a supported network; Commerce uses testnet.
@@ -291,6 +291,11 @@ Use those commands for full runs; direct unscoped `playwright test` cannot
 serve Market and Commerce with different Lightning networks.
 Playwright area tags select the tests. CI rejects an untagged smoke test or a
 selected area that contains zero tests.
+Bounded About/legal composition and existing test-file-only changes use the
+explicit [smoke ownership map](docs/knowledge/smoke-selection.md), retaining the
+owning app's route/theme/browser baseline. Unknown helpers and runtime changes
+expand conservatively; large subsets retain full-area partitions. Build overlaps
+independent checks, while preview verification still requires its validated build.
 
 Browser smoke jobs use the official Playwright Noble image with browsers and
 system libraries preinstalled. When updating the locked `@playwright/test`
@@ -300,7 +305,80 @@ evaluates to an empty string. The Actions runner converts that definition to no
 job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
-`pipefail`. The existing 20-minute limit and strict execution evidence still apply.
+`pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
+25-minute limit for its serial ordinary, native-router, and receiver setup
+lanes, including setup, evidence upload, and cleanup. Individual test deadlines
+remain unchanged. Job cancellation still fails the aggregate gate, even when
+all test artifacts were uploaded successfully.
+
+A retry-dependent pass still fails the smoke gate. Required CI runs use zero
+automatic retries; a separate diagnostic rerun cannot turn a failed first
+attempt into readiness evidence. Concurrent shards and selected coverage are
+unchanged.
+
+Every progress and failure entry includes an opaque case ID derived from
+Playwright's test identity. Parameterized cases at the same source line retain
+distinct IDs even when their titles are redacted. Compare IDs on the same
+tested commit; renaming or moving a test can change its identity.
+
+Each shard retains a seven-day `smoke-evidence-<shard>-<attempt>` artifact. Its
+title-free JSON includes source/base/tested SHAs, project and area, case IDs,
+first-attempt outcomes and duration buckets, fixed failure categories, repository
+locations, and allowlisted diagnostics. It is constructed from approved fields
+and scanned before writing. Raw reports, browser output, screenshots, traces,
+step titles, and attachments are never uploaded. An artifact records observed
+execution; the separate manifest/SHA/first-attempt verifier remains the gate.
+
+The isolated router and receiver setup lanes retain separate `smoke-evidence-router-<attempt>`
+and `smoke-evidence-router-receiver-setup-<attempt>` artifacts under the same policy.
+Each lane runs after an earlier lane fails only when its own setup and selection
+succeeded. A later passing lane does not replace an earlier failure.
+
+Schema version 2 retains timing only as fixed duration buckets: `under-1s`,
+`1-5s`, `5-15s`, `15-30s`, `30-60s`, `1-5m`, `5-15m`, and `15m-plus`.
+Lower bounds are inclusive and upper bounds exclusive; invalid durations use
+`unknown`. This applies to setup, execution, each attempt, and diagnostic
+elapsed/phase/slowest times. The artifact serializer rejects exact duration
+fields. Exact durations remain in the transient verifier report and existing
+progress output, which are not uploaded as artifacts.
+
+`reporterSetupBucket` measures reporter construction through the first test start;
+it includes subsequent discovery and server startup, not job queueing, container
+setup or dependency installation. `executionBucket` measures first test start
+through reporter completion, including teardown. A startup failure has zero
+execution time, represented as `under-1s`. Use Actions job/step timestamps for the complete critical path
+and combined runner-minutes; do not add overlapping wall-clock intervals.
+
+Failures correlate the primary result error with the latest matching leaf step
+and retain the last completed boundary before that step. This avoids attributing
+equal error contents to an earlier recovered operation or a propagated parent.
+Error contents are compared only in memory and are never retained. Categories identify observations such as assertion,
+timeout, fixture or browser operation, not a proven root cause. Unknown remains
+unknown. Surface audits also record a boolean when WebKit reports a network-process
+crash through a WebSocket error; page-crash events and browser stderr may miss
+that failure. The socket error text is never retained. Reproduction commands target the source group and browser with one
+worker and no retries; a parameterized source line can run several cases.
+Check out the recorded tested SHA, match the CI browser image, use fresh app
+servers, and match the case ID to distinguish those cases. Local results do not
+replace hosted Linux/WebKit or physical-device evidence.
+
+The direct-route surface audit uses a fresh browser context for each route,
+with the same project/device options, signer and theme setup, and assertions.
+This isolates route shells from WebKit network-process failures observed during
+repeated document replacement. Navigation/history and cross-route state tests
+retain their own shared-context behavior. No failed navigation is retried.
+
+The privacy-safe reporter
+retains allowlisted footer geometry and product-submit readiness categories for
+the corresponding fixtures, including the failed first attempt. It drops raw
+annotations, form values, identities, message content, and error text. Extend
+these diagnostics only with bounded fields and matching privacy regression tests.
+Surface audits also retain fixed phase, page-crash and failed-document counters.
+CI enables `DEBUG=pw:browser`; the reporter classifies only fixed browser-process
+signals in memory and emits content-free counters to the progress log. Raw stderr
+stays suppressed. Do not enable `PW_RUNNER_DEBUG`, which bypasses the reporter.
+A matching signal is diagnostic evidence, not proof that every timeout shares
+the same cause; absence of a signal does not exclude a browser failure.
 
 ## Code Conventions
 
@@ -374,12 +452,29 @@ These are non-negotiable across all code:
 
 ### Authentication
 
-- Durable account signing uses external signers only (NIP-07, NIP-46)
-- Do not generate, store, or manage a user's durable Nostr account private key.
+- NIP-07/NIP-46 remain supported account connection methods. The approved
+  optional installed-PWA NSEC path in [the protocol contract](docs/specs/protocol.md)
+  imports an existing account key only into the separate `conduit-signer` origin.
+  The signer owns persistence, automatic restore, ordinary operations without
+  per-action approvals, and stored-key deletion/session revocation on explicit
+  logout. Market/Merchant receive public identity and operation results, never
+  the raw key, backup or independent unwrapping material; services never receive
+  the key. Implementation and composed preview testing may precede production
+  device sign-off; origin/session/privacy controls apply throughout. Production
+  still requires maintainer security review, exact-origin physical-iPhone
+  validation and separate deployment/release approval.
+- Do not generate, store, or manage durable account keys in app origins or
+  services. Product account creation is outside the existing-key exception.
+  Test identities are ordinary newly generated CSPRNG Nostr keys in controlled
+  test processes or signer-owned test surfaces. No fixed credentials in source
+  or history and no raw keys in app storage, services, diagnostics or artifacts;
+  protected-smoke guards remain enforced.
   A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
   Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
-  signing to the initial private order and same-order payment reports. It must
-  never become an account key or nsec.
+  signing to the initial private order, same-order payment reports, and the
+  separately constrained merchant-only router recovery envelopes documented in
+  [the protocol specification](docs/specs/protocol.md#client-ephemeral-guest-order-key-exception).
+  It must never become an account key or nsec.
 - A revocable NIP-46 client connection key must use encrypted browser-local
   storage and must be deleted on logout. Store a CI client key only as a
   protected Actions environment secret. Use it only in a post-merge, main-only,

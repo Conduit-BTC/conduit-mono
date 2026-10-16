@@ -48,7 +48,6 @@ export function mountMerchantTrustHarness(
           status: "failed" as const,
           eventCount: 0,
         })),
-        eventsVerified: true,
       }),
     })
   }
@@ -78,6 +77,7 @@ export function mountMerchantTrustHarness(
 
     return (
       <>
+        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
         <button
           type="button"
           data-testid="merchant-trust-connect"

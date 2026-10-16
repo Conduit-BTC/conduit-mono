@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import { matchFilter, type Filter } from "nostr-tools"
 import {
@@ -192,18 +193,21 @@ async function fixture(series = false) {
     productRead,
     selectedOccurrenceCoordinate: calendarCoordinate,
   })
-  const parsedProduct = () => {
+  const parsedProduct = async () => {
     const event =
       live.filter((entry) => entry.kind === 30402).at(-1) ??
       [...retained.values()].filter((entry) => entry.kind === 30402).at(-1)!
-    return { ...parseProductEvent(event), sourceEventId: event.id } as Product
+    return {
+      ...parseProductEvent(await admitFixture(event)),
+      sourceEventId: event.id,
+    } as Product
   }
   const item: CartItem = {
-    ...createCartItemFromProduct(parsedProduct(), accepted),
+    ...createCartItemFromProduct(await parsedProduct(), accepted),
     quantity: 1,
   }
   let handlerCalls = 0
-  const submit = (
+  const submit = async (
     reviewedItems: CartItem[] = [item],
     rawItems: CartItem[] = [item],
     overrides: Partial<Parameters<typeof authorizeCurrentCheckoutItems>[0]> = {}
@@ -212,7 +216,7 @@ async function fixture(series = false) {
       mode: "direct_payment",
       reviewedItems,
       rawItems,
-      refreshedProducts: [parsedProduct()],
+      refreshedProducts: [await parsedProduct()],
       readShippingOptions: async () => {
         throw new Error("Event pickup must not read shipping")
       },

@@ -42,4 +42,25 @@ export default [
       "react-hooks/exhaustive-deps": "warn",
     },
   },
+  {
+    files: ["apps/*/src/**/*.{ts,tsx,js,jsx}"],
+    linterOptions: { reportUnusedDisableDirectives: "error" },
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "JSXOpeningElement[name.name=/^(button|input|select|textarea)$/]",
+          message:
+            "Use the shared @conduit/ui control. Keep workflow state in the app.",
+        },
+        {
+          selector:
+            "JSXOpeningElement:has(> JSXAttribute[name.name='role'][value.value=/^(dialog|alertdialog|combobox|listbox|menu|menubar|tab|tablist)$/])",
+          message:
+            "Use @conduit/ui for shared keyboard, focus and overlay behavior.",
+        },
+      ],
+    },
+  },
 ]

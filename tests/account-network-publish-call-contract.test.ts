@@ -44,19 +44,6 @@ const contracts = [
     ],
   },
   {
-    path: "packages/core/src/protocol/future-market-handoff.ts",
-    calls: [
-      {
-        intent: "recipient_event",
-        authorIdentity: "record.senderPubkey",
-        authenticatedIdentity: "input.authenticatedOwnerPubkey",
-        accountIdentity: "record.senderPubkey",
-        count: 2,
-      },
-    ],
-    guards: ["record\\.senderPubkey !== input\\.authenticatedOwnerPubkey"],
-  },
-  {
     path: "apps/merchant/src/lib/product-publishing.ts",
     calls: [
       {
@@ -67,17 +54,24 @@ const contracts = [
         accountIdentity: "merchantPubkey",
         count: 1,
       },
-      {
-        intent: "commerce_author_event",
-        authorIdentity: "signerPubkey",
-        authenticatedIdentity: "authenticatedPubkey",
-        authenticatedPropertyPattern: "authenticatedPubkey",
-        accountIdentity: "signerPubkey",
-        count: 1,
-      },
     ],
     guards: [
       "const\\s+authenticatedPubkey\\s*=\\s*input\\.authenticatedPubkey\\s*===\\s*undefined\\s*\\|\\|\\s*suppliedAuthenticatedPubkey\\s*===\\s*signerPubkey\\s*\\?\\s*signerPubkey\\s*:\\s*null",
+      "deliverLocalProductShippingJob\\(\\s*shippingJob\\.id,\\s*publishExactProductShippingRelay,\\s*\\{\\s*authenticatedPubkey,",
+    ],
+  },
+  {
+    path: "apps/merchant/src/lib/product-listing-delivery.ts",
+    calls: [],
+    guards: [
+      "publishSignedEventToRelay\\(\\{\\s*signedEvent: input\\.signedEvent,\\s*relayUrl: input\\.relayUrl,\\s*relayTarget: input\\.relayTarget,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,\\s*accountNetworkLocalStateRepository:\\s*input\\.accountNetworkLocalStateRepository,\\s*ownerRelayListEvidenceRepository: input\\.ownerRelayListEvidenceRepository,",
+    ],
+  },
+  {
+    path: "packages/core/src/protocol/local-product-shipping-delivery.ts",
+    calls: [],
+    guards: [
+      "publishSignedEventToRelay\\(\\{\\s*relayUrl: input\\.relayUrl,\\s*signedEvent: input\\.signedEvent,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,\\s*relayTarget: input\\.relayTarget,\\s*accountNetworkLocalStateRepository:\\s*input\\.accountNetworkLocalStateRepository,\\s*ownerRelayListEvidenceRepository: input\\.ownerRelayListEvidenceRepository,",
     ],
   },
 ] as const
@@ -137,10 +131,18 @@ describe("account network publish call contract", () => {
     expect(source).toMatch(
       /senderPubkey: sender\(payload\),\s+recipientPubkey: recipient\(payload\),\s+accountPubkey: sender\(payload\),\s+authenticatedPubkey: input\.authenticatedPubkey,/
     )
-    expect(
-      source.match(
-        /authenticatedPubkey: input\.authenticatedOwnerPubkey,\s+shouldContinue: input\.shouldContinue,/g
-      )
-    ).toHaveLength(2)
+    expect(source).toMatch(
+      /retryPrivateMessageWraps\(\{[\s\S]*?accountPubkey: record\.senderPubkey,[\s\S]*?authenticatedPubkey: input\.authenticatedOwnerPubkey,/
+    )
+    expect(source).toContain(
+      "record.senderPubkey !== input.authenticatedOwnerPubkey"
+    )
+    expect(source).not.toContain("publishWithPlanner(")
+    const delivery = await Bun.file(
+      "packages/core/src/protocol/private-message-delivery.ts"
+    ).text()
+    expect(delivery).toMatch(
+      /accountPubkey: input\.accountPubkey,\s+authenticatedPubkey: input\.authenticatedPubkey,/
+    )
   })
 })

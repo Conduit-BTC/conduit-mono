@@ -6,10 +6,23 @@ import {
   type ProductDeletionRelayDeliveryStatus,
   type ProductDeletionRelayRole,
   type ProductDeletionRelayTarget,
+  type ProductListingDeliveryJob,
 } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
-import { validateProductDeletionEvent } from "./product-deletion"
+import {
+  isProductDeletedByNip09,
+  validateProductDeletionEvent,
+} from "./product-deletion"
+import { EVENT_KINDS } from "./kinds"
+import {
+  getProductListingDeliveryJobId,
+  hasCommonAcknowledgedRelay,
+} from "./product-listing-delivery"
 import type { SignedPublicNostrEvent } from "./signed-event"
+import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeUntrustedRelayHintsForContext,
@@ -17,11 +30,17 @@ import {
 } from "./relay-settings"
 import { config } from "../config"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
+const MAX_REJECTED_RETRY_DELAY_MS = 30 * 60_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
 const ROLE_ORDER: readonly ProductDeletionRelayRole[] = [
   "author_write",
@@ -43,6 +62,70 @@ export interface ProductDeletionRelayPlanInput {
 
 export interface PersistProductDeletionDeliveryInput extends ProductDeletionRelayPlanInput {
   signedEvent: SignedPublicNostrEvent
+  companionListingJobId?: string
+}
+
+/** Historical ACKs remain source hints even when a superseded cache row is pruned.
+ * They never restore listing authority or confer owner-selected relay access.
+ */
+export async function collectProductDeletionAcknowledgedSourceRelayUrls(
+  signedDeletion: SignedPublicNostrEvent,
+  listingJobs: readonly ProductListingDeliveryJob[]
+): Promise<string[]> {
+  // Verification waits outside any persistence transaction. Preserve the ACK
+  // observations while admitting their exact signed historical bytes.
+  const jobs = structuredClone(listingJobs)
+  const deletion = await assertSignedDeletionEvent(signedDeletion)
+  const validated = validateProductDeletionEvent(deletion)
+  if (!validated) throw new Error("Product deletion evidence is invalid")
+  const relayUrls = new Set<string>()
+  for (const job of jobs) {
+    if (job.merchantPubkey !== deletion.pubkey) continue
+    for (const event of job.signedEvents) {
+      if (
+        event.kind !== EVENT_KINDS.PRODUCT ||
+        event.pubkey !== deletion.pubkey
+      )
+        continue
+      const admission = await admitPublicEvent(event)
+      if (
+        admission.status === "unavailable" ||
+        admission.status === "cancelled"
+      )
+        throw new Error("Historical product ACK verification unavailable")
+      if (admission.status !== "verified") continue
+      const dTag = event.tags.find(([name]) => name === "d")?.[1]
+      if (
+        !dTag ||
+        !isProductDeletedByNip09(
+          {
+            authorPubkey: event.pubkey,
+            eventId: event.id,
+            addressId: `${event.kind}:${event.pubkey}:${dTag}`,
+            createdAt: event.created_at,
+          },
+          validated.evidence
+        )
+      )
+        continue
+      for (const delivery of job.relayDelivery) {
+        if (delivery.eventId === event.id && delivery.status === "acked") {
+          relayUrls.add(delivery.relayUrl)
+        }
+      }
+    }
+  }
+  return [...relayUrls]
+}
+
+export async function readProductDeletionAcknowledgedSourceRelayUrls(
+  signedDeletion: SignedPublicNostrEvent
+): Promise<string[]> {
+  const jobs = await db.productListingOutbox
+    .where("merchantPubkey")
+    .equals(signedDeletion.pubkey)
+    .toArray()
+  return collectProductDeletionAcknowledgedSourceRelayUrls(signedDeletion, jobs)
 }
 
 export type ProductDeletionPublisherResult = {
@@ -68,8 +151,13 @@ export type ProductDeletionRelayPublisher = (input: {
   appRelayUrls: string[]
   personalRelayUrls: string[]
   independentRelayUrls: string[]
+  relayTarget: RelayTarget | null
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
+    "get"
+  >
+  ownerRelayListEvidenceRepository?: Pick<
+    import("./owner-relay-list-evidence").OwnerRelayListEvidenceRepository,
     "get"
   >
 }) => Promise<ProductDeletionPublisherResult>
@@ -99,16 +187,26 @@ export interface ProductDeletionDeliveryOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: Pick<
+    import("./owner-relay-list-evidence").OwnerRelayListEvidenceRepository,
+    "get"
+  >
   now?: () => number
   retryDelayMs?: number
   deliveryLeaseOwner?: string
   deliveryLeaseMs?: number
   /** Explicit user retry may recover a lease orphaned by a crashed tab. */
   forceDeliveryLeaseRecovery?: boolean
+  /** Scheduled workers pace explicit relay rejections; user Retry ignores this. */
+  respectRejectionBackoff?: boolean
+  /** The same durable listing read used by explicit retries and workers. */
+  getCompanionListingJob?: (
+    jobId: string
+  ) => Promise<ProductListingDeliveryJob | undefined>
 }
 
 function cloneSignedEvent(
-  event: SignedPublicNostrEvent
+  event: SignedPublicNostrEvent | VerifiedNostrEvent
 ): SignedPublicNostrEvent {
   return {
     id: event.id,
@@ -127,9 +225,9 @@ function cloneRelayPlan(
   return plan.map((target) => ({
     relayUrl: target.relayUrl,
     roles: [...target.roles],
-    // Legacy jobs did not persist layer flags. Delivery retains both plausible
-    // authorities for ambiguous App/personal `author_write` overlap; retain the
-    // old shape here for compatibility.
+    // Layer flags record positive provenance at staging time. Preserve them for
+    // diagnostics; retry derives current candidates from author_write and lets
+    // the shared admission gate prove which authority remains available.
     ...(target.appRelay === true ? { appRelay: true } : {}),
     ...(target.personalRelay === true ? { personalRelay: true } : {}),
   }))
@@ -142,12 +240,14 @@ function cloneRelayDelivery(
 }
 
 function persistedTargetRelaySources(
-  target: ProductDeletionRelayTarget | undefined
+  target: ProductDeletionRelayTarget | undefined,
+  accountPubkey: string
 ): {
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
   personalRelayUrls: string[]
   independentRelayUrls: string[]
+  relayTarget: RelayTarget | null
 } {
   if (!target) {
     return {
@@ -155,32 +255,61 @@ function persistedTargetRelaySources(
       appRelayUrls: [],
       personalRelayUrls: [],
       independentRelayUrls: [],
+      relayTarget: null,
     }
   }
 
   const relayUrl = target.relayUrl
-  const hasPersistedLayerProvenance =
-    target.appRelay === true || target.personalRelay === true
-  const legacyAuthorWrite =
-    target.roles.includes("author_write") && !hasPersistedLayerProvenance
-  const configuredAppWriteRelayUrls = new Set(
-    [...config.appWriteRelayUrls, ...config.appBackplaneRelayUrls].flatMap(
-      (rawRelayUrl) => {
-        const normalized = tryNormalizeRelayUrl(rawRelayUrl)
-        return normalized.ok ? [normalized.url] : []
-      }
-    )
-  )
-  // An unflagged author_write URL in the App registry may also have been the
-  // owner's signed NIP-65 choice. Preserve both possibilities; only the
-  // explicit `conduit` role is unambiguously App-owned in legacy jobs.
-  const appRelay =
-    target.appRelay === true ||
-    target.roles.includes("conduit") ||
-    (legacyAuthorWrite && configuredAppWriteRelayUrls.has(relayUrl))
-  const personalRelay =
-    target.personalRelay === true ||
-    (legacyAuthorWrite && !target.roles.includes("conduit"))
+  const authorWrite = target.roles.includes("author_write")
+  // Persisted layer flags describe how this target was sourced when staged.
+  // They cannot veto an independent App bucket or current signed owner grant
+  // during retry; author_write only bounds which URL may be reconsidered.
+  const appRelay = target.appRelay === true || target.roles.includes("conduit")
+  const personalRelay = target.personalRelay === true
+  const relayTarget =
+    mergeRelayTargets(
+      ...(target.appRelay === true || authorWrite
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "write",
+              bucket: "commerce_write",
+            }),
+            relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "write",
+              bucket: "general_write",
+            }),
+          ]
+        : []),
+      ...(target.roles.includes("conduit")
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "app",
+              operation: "write",
+              bucket: "general_write",
+            }),
+          ]
+        : []),
+      ...(authorWrite
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "owner_nip65",
+              operation: "write",
+              ownerPubkey: accountPubkey,
+              selection: "write",
+            }),
+          ]
+        : []),
+      ...(target.roles.includes("source")
+        ? [
+            relayTargetsFromUrls([relayUrl], {
+              kind: "source_delivery",
+              operation: "write",
+            }),
+          ]
+        : [])
+    )[0] ?? null
 
   return {
     ownerSelectedRelayUrls:
@@ -188,6 +317,7 @@ function persistedTargetRelaySources(
     appRelayUrls: appRelay ? [relayUrl] : [],
     personalRelayUrls: personalRelay ? [relayUrl] : [],
     independentRelayUrls: target.roles.includes("source") ? [relayUrl] : [],
+    relayTarget,
   }
 }
 
@@ -253,7 +383,16 @@ export function planProductDeletionRelays(
   input: ProductDeletionRelayPlanInput
 ): ProductDeletionRelayTarget[] {
   const appRelayUrls = new Set(
-    (input.currentAppRelayUrls ?? []).flatMap((relayUrl) => {
+    [
+      ...(input.currentAppRelayUrls ?? []),
+      ...(config.e2eRelayIsolationEnabled
+        ? []
+        : input.currentWriteRelayUrls.filter((relayUrl) =>
+            [...config.appWriteRelayUrls, ...config.commerceRelayUrls].includes(
+              relayUrl
+            )
+          )),
+    ].flatMap((relayUrl) => {
       const normalized = tryNormalizeRelayUrl(relayUrl)
       return normalized.ok ? [normalized.url] : []
     })
@@ -343,13 +482,20 @@ export function planProductDeletionRelays(
     }))
 }
 
-function assertSignedDeletionEvent(event: SignedPublicNostrEvent): void {
-  const validated = validateProductDeletionEvent(event)
+async function assertSignedDeletionEvent(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const admission = await admitPublicEvent(event)
+  const validated =
+    admission.status === "verified"
+      ? validateProductDeletionEvent(admission.event)
+      : null
   if (!validated || validated.evidence.length === 0) {
     throw new Error(
       "Product deletion outbox requires a valid signed kind-5 event with a safe product target"
     )
   }
+  return validated.signedEvent
 }
 
 function relayPlanMatches(
@@ -384,6 +530,17 @@ function signedEventMatches(
   )
 }
 
+function normalizeCompanionListingJobId(
+  raw: string | undefined
+): string | undefined {
+  if (raw === undefined) return undefined
+  const normalized = raw.trim()
+  if (!normalized.startsWith("product-listing:")) {
+    throw new Error("Product deletion companion listing job id is invalid")
+  }
+  return normalized
+}
+
 const dexieProductDeletionOutboxRepository: ProductDeletionOutboxRepository = {
   async add(job) {
     await db.productDeletionOutbox.add(cloneJob(job))
@@ -396,7 +553,10 @@ const dexieProductDeletionOutboxRepository: ProductDeletionOutboxRepository = {
 
   async listUndelivered() {
     const jobs = await db.productDeletionOutbox
-      .filter((job) => job.state !== "delivered")
+      .filter(
+        (job) =>
+          job.state !== "delivered" && job.state !== "superseded_unpublished"
+      )
       .toArray()
     return jobs.map(cloneJob)
   },
@@ -411,6 +571,12 @@ const dexieProductDeletionOutboxRepository: ProductDeletionOutboxRepository = {
       const next = updater(cloneJob(current))
       if (next.id !== id) {
         throw new Error("Product deletion delivery job id is immutable")
+      }
+      if (
+        !signedEventMatches(next.signedEvent, current.signedEvent) ||
+        next.companionListingJobId !== current.companionListingJobId
+      ) {
+        throw new Error("Product deletion delivery intent is immutable")
       }
       await db.productDeletionOutbox.put(cloneJob(next))
       return cloneJob(next)
@@ -473,31 +639,19 @@ function getDeliveryLeaseMs(options?: ProductDeletionDeliveryOptions): number {
  * calls for the same event are idempotent only when the event and original
  * plan are byte-for-byte equivalent.
  */
-export async function persistProductDeletionDelivery(
+export async function prepareProductDeletionDeliveryJob(
   input: PersistProductDeletionDeliveryInput,
   options: ProductDeletionDeliveryOptions = {}
 ): Promise<ProductDeletionDeliveryJob> {
-  assertSignedDeletionEvent(input.signedEvent)
-  const repository = getRepository(options)
+  const signedEvent = await assertSignedDeletionEvent(input.signedEvent)
   const relayPlan = planProductDeletionRelays(input)
-  const existing = await repository.get(input.signedEvent.id)
-
-  if (existing) {
-    if (
-      !signedEventMatches(existing.signedEvent, input.signedEvent) ||
-      !relayPlanMatches(existing.relayPlan, relayPlan)
-    ) {
-      throw new Error(
-        "A product deletion delivery job already exists with a different immutable plan"
-      )
-    }
-    return cloneJob(existing)
-  }
-
+  const companionListingJobId = normalizeCompanionListingJobId(
+    input.companionListingJobId
+  )
   const createdAt = getNow(options)
   const job: ProductDeletionDeliveryJob = {
-    id: input.signedEvent.id,
-    signedEvent: cloneSignedEvent(input.signedEvent),
+    id: signedEvent.id,
+    signedEvent: cloneSignedEvent(signedEvent),
     relayPlan: cloneRelayPlan(relayPlan),
     relayDelivery: relayPlan.map(({ relayUrl }) => ({
       relayUrl,
@@ -507,27 +661,112 @@ export async function persistProductDeletionDelivery(
     state: "pending",
     deliveryAttemptCount: 0,
     retryCount: 0,
+    ...(companionListingJobId ? { companionListingJobId } : {}),
     nextRetryAt: createdAt,
     createdAt,
     updatedAt: createdAt,
   }
 
+  return cloneJob(job)
+}
+
+function sameProductDeletionImmutableIntent(
+  existing: ProductDeletionDeliveryJob,
+  prepared: ProductDeletionDeliveryJob
+): boolean {
+  return (
+    signedEventMatches(existing.signedEvent, prepared.signedEvent) &&
+    relayPlanMatches(existing.relayPlan, prepared.relayPlan) &&
+    existing.companionListingJobId === prepared.companionListingJobId
+  )
+}
+
+export async function persistProductDeletionDelivery(
+  input: PersistProductDeletionDeliveryInput,
+  options: ProductDeletionDeliveryOptions = {}
+): Promise<ProductDeletionDeliveryJob> {
+  const job = await prepareProductDeletionDeliveryJob(input, options)
+  const repository = getRepository(options)
+  const existing = await repository.get(job.id)
+  if (existing) {
+    if (!sameProductDeletionImmutableIntent(existing, job)) {
+      throw new Error(
+        "A product deletion delivery job already exists with a different immutable plan"
+      )
+    }
+    return cloneJob(existing)
+  }
   try {
     await repository.add(job)
   } catch (error) {
     // Another route/tab may have won the same idempotent insert race.
     const raced = await repository.get(job.id)
-    if (
-      !raced ||
-      !signedEventMatches(raced.signedEvent, job.signedEvent) ||
-      !relayPlanMatches(raced.relayPlan, job.relayPlan)
-    ) {
+    if (!raced || !sameProductDeletionImmutableIntent(raced, job)) {
       throw error
     }
     return cloneJob(raced)
   }
 
   return cloneJob(job)
+}
+
+/**
+ * A replacement family may release its companion deletion only after one
+ * relay acknowledged every exact, same-author signed listing in that family.
+ * Reuse this proof before retrying a companion deletion's exact signed event.
+ */
+export async function isDeliveredCompanionListingForDeletion(
+  listing: ProductListingDeliveryJob | undefined,
+  deletionJob: ProductDeletionDeliveryJob
+): Promise<boolean> {
+  listing = listing ? structuredClone(listing) : undefined
+  deletionJob = structuredClone(deletionJob)
+  if (
+    !listing ||
+    !deletionJob.companionListingJobId ||
+    listing.id !== deletionJob.companionListingJobId ||
+    listing.companionDeletionJobId !== deletionJob.id ||
+    deletionJob.id !== deletionJob.signedEvent.id ||
+    listing.merchantPubkey !== deletionJob.signedEvent.pubkey ||
+    listing.readyForDelivery === false ||
+    listing.state !== "delivered" ||
+    listing.signedEvents.length === 0
+  ) {
+    return false
+  }
+  const deletionAdmission = await admitPublicEvent(deletionJob.signedEvent)
+  if (
+    deletionAdmission.status !== "verified" ||
+    !validateProductDeletionEvent(deletionAdmission.event)?.evidence.length
+  )
+    return false
+
+  const eventIds = new Set<string>()
+  for (const event of listing.signedEvents) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT ||
+      event.pubkey !== listing.merchantPubkey ||
+      eventIds.has(event.id)
+    ) {
+      return false
+    }
+    if ((await admitPublicEvent(event)).status !== "verified") return false
+    eventIds.add(event.id)
+  }
+  return (
+    listing.id === getProductListingDeliveryJobId(listing.signedEvents) &&
+    hasCommonAcknowledgedRelay(listing)
+  )
+}
+
+async function isCompanionListingReady(
+  deletionJob: ProductDeletionDeliveryJob,
+  options: ProductDeletionDeliveryOptions
+): Promise<boolean> {
+  const listing = await (options.getCompanionListingJob?.(
+    deletionJob.companionListingJobId!
+  ) ?? db.productListingOutbox.get(deletionJob.companionListingJobId!))
+  return isDeliveredCompanionListingForDeletion(listing, deletionJob)
 }
 
 function deriveDeliveryState(
@@ -540,16 +779,63 @@ function deriveDeliveryState(
   return deliveryAttemptCount > 0 ? "partial" : "pending"
 }
 
+function validConsecutiveRejections(
+  delivery: ProductDeletionRelayDelivery
+): number {
+  const count = delivery.consecutiveRejections
+  return Number.isSafeInteger(count) && count !== undefined && count > 0
+    ? count
+    : 0
+}
+
+function rejectedRetryDelayMs(
+  delivery: ProductDeletionRelayDelivery,
+  retryDelayMs: number
+): number {
+  const rejectionCount = Math.max(1, validConsecutiveRejections(delivery))
+  const exponent = Math.min(rejectionCount - 1, 16)
+  return Math.max(
+    retryDelayMs,
+    Math.min(MAX_REJECTED_RETRY_DELAY_MS, retryDelayMs * 2 ** exponent)
+  )
+}
+
+function rejectedTargetNextRetryAt(
+  delivery: ProductDeletionRelayDelivery,
+  retryDelayMs: number
+): number {
+  const rawAttemptAt = delivery.rejectedAt ?? delivery.lastAttemptAt
+  const attemptAt =
+    Number.isSafeInteger(rawAttemptAt) &&
+    rawAttemptAt !== undefined &&
+    rawAttemptAt >= 0
+      ? rawAttemptAt
+      : 0
+  return attemptAt + rejectedRetryDelayMs(delivery, retryDelayMs)
+}
+
 function reconcileJob(
   job: ProductDeletionDeliveryJob,
   timestamp: number,
   retryDelayMs: number
 ): ProductDeletionDeliveryJob {
   const state = deriveDeliveryState(job.relayDelivery, job.deliveryAttemptCount)
+  const outstanding = job.relayDelivery.filter(
+    (delivery) => delivery.status !== "acked"
+  )
   return {
     ...job,
     state,
-    nextRetryAt: state === "delivered" ? undefined : timestamp + retryDelayMs,
+    nextRetryAt:
+      state === "delivered"
+        ? undefined
+        : Math.min(
+            ...outstanding.map((delivery) =>
+              delivery.status === "rejected"
+                ? rejectedTargetNextRetryAt(delivery, retryDelayMs)
+                : timestamp + retryDelayMs
+            )
+          ),
     updatedAt: timestamp,
   }
 }
@@ -561,6 +847,7 @@ async function retireUnapprovedPersistedRelayTargets(
   retryDelayMs: number
 ): Promise<ProductDeletionDeliveryJob> {
   return await repository.update(id, (current) => {
+    if (current.state === "superseded_unpublished") return current
     const relayPlan = current.relayPlan.filter((target) =>
       isApprovedPersistedRelayTarget(target)
     )
@@ -596,6 +883,7 @@ async function markDeliveryRunStarted(
   retryDelayMs: number
 ): Promise<ProductDeletionDeliveryJob> {
   return repository.update(id, (current) => {
+    if (current.state === "superseded_unpublished") return current
     if (current.deliveryLeaseOwner !== leaseOwner) return current
     return reconcileJob(
       {
@@ -619,6 +907,7 @@ async function markRelayAttemptStarted(
   leaseMs: number
 ): Promise<ProductDeletionDeliveryJob> {
   return repository.update(id, (current) => {
+    if (current.state === "superseded_unpublished") return current
     if (current.deliveryLeaseOwner !== leaseOwner) return current
     return {
       ...current,
@@ -665,6 +954,16 @@ async function markRelayOutcome(
       return {
         ...delivery,
         status,
+        ...(status === "rejected"
+          ? {
+              consecutiveRejections: Math.min(
+                17,
+                validConsecutiveRejections(delivery) + 1
+              ),
+            }
+          : delivery.consecutiveRejections === undefined
+            ? {}
+            : { consecutiveRejections: 0 }),
         ...(status === "acked" ? { acknowledgedAt: timestamp } : {}),
         ...(status === "rejected" ? { rejectedAt: timestamp } : {}),
         ...(status === "timed_out" ? { timedOutAt: timestamp } : {}),
@@ -683,7 +982,11 @@ async function claimDeliveryLease(
   forceRecovery: boolean
 ): Promise<ProductDeletionDeliveryJob> {
   return repository.update(id, (current) => {
-    if (current.state === "delivered") return current
+    if (
+      current.state === "delivered" ||
+      current.state === "superseded_unpublished"
+    )
+      return current
     if (
       current.deliveryLeaseOwner &&
       current.deliveryLeaseOwner !== leaseOwner &&
@@ -744,7 +1047,14 @@ async function deliverProductDeletionJobUnlocked(
   if (!stored) {
     throw new Error("Product deletion delivery job not found")
   }
-  assertSignedDeletionEvent(stored.signedEvent)
+  if (stored.state === "superseded_unpublished") return cloneJob(stored)
+  if (
+    stored.companionListingJobId &&
+    !(await isCompanionListingReady(stored, options))
+  ) {
+    return cloneJob(stored)
+  }
+  await assertSignedDeletionEvent(stored.signedEvent)
   await retireUnapprovedPersistedRelayTargets(
     repository,
     id,
@@ -760,12 +1070,13 @@ async function deliverProductDeletionJobUnlocked(
     leaseMs,
     options.forceDeliveryLeaseRecovery === true
   )
+  if (claimed.state === "superseded_unpublished") return claimed
   if (claimed.deliveryLeaseOwner !== leaseOwner) return claimed
   // The exact signed event is the durable identity for this signer-free retry.
   // Revalidate it after the claim and use only its author as the policy account.
   // Active auth may admit that author's exact owner-selected ws:// subset, but
   // cannot replace the author or alter the immutable event and relay plan.
-  assertSignedDeletionEvent(claimed.signedEvent)
+  await assertSignedDeletionEvent(claimed.signedEvent)
   const accountPubkey = claimed.signedEvent.pubkey
 
   const outstandingRelayUrls = claimed.relayDelivery
@@ -783,19 +1094,35 @@ async function deliverProductDeletionJobUnlocked(
     let deliveryRunStarted = false
 
     for (const relayUrl of outstandingRelayUrls) {
+      const claimedDelivery = claimed.relayDelivery.find(
+        (delivery) => delivery.relayUrl === relayUrl
+      )
+      const retryAt = getNow(options)
+      if (
+        options.respectRejectionBackoff &&
+        claimedDelivery?.status === "rejected" &&
+        retryAt < rejectedTargetNextRetryAt(claimedDelivery, retryDelayMs)
+      ) {
+        continue
+      }
       const authenticatedPubkey = getCurrentAuthenticatedPubkey(options)
       const claimedTarget = claimed.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const claimedSources = persistedTargetRelaySources(claimedTarget)
-      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+      const claimedSources = persistedTargetRelaySources(
+        claimedTarget,
+        accountPubkey
+      )
+      const eligibleTargets = await filterEligibleAccountRelayTargets({
         accountPubkey,
         authenticatedPubkey,
-        candidateRelayUrls: [relayUrl],
-        ...claimedSources,
+        targets: claimedSources.relayTarget ? [claimedSources.relayTarget] : [],
+        operation: "write",
         repository: options.accountNetworkLocalStateRepository,
+        ownerRelayListEvidenceRepository:
+          options.ownerRelayListEvidenceRepository,
       })
-      if (eligibleRelayUrls.length === 0) {
+      if (eligibleTargets.length === 0) {
         // Whole-relay removal is an admission cutoff, not delivery evidence.
         // Keep the immutable target and its prior outcome/attempt count so an
         // authoritative later re-add can resume the exact staged event.
@@ -832,7 +1159,7 @@ async function deliverProductDeletionJobUnlocked(
         continue
       }
       const exactSignedEvent = cloneSignedEvent(current.signedEvent)
-      assertSignedDeletionEvent(exactSignedEvent)
+      await assertSignedDeletionEvent(exactSignedEvent)
       if (!signedEventMatches(exactSignedEvent, claimed.signedEvent)) {
         throw new Error(
           "Product deletion delivery job signed event is immutable"
@@ -841,7 +1168,10 @@ async function deliverProductDeletionJobUnlocked(
       const currentTarget = current.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const currentSources = persistedTargetRelaySources(currentTarget)
+      const currentSources = persistedTargetRelaySources(
+        currentTarget,
+        accountPubkey
+      )
 
       let outcome: ProductDeletionPublisherResult
       if (!isApprovedPersistedRelayTarget(currentTarget)) {
@@ -861,14 +1191,20 @@ async function deliverProductDeletionJobUnlocked(
             ...currentSources,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
           })
         } catch {
-          const stillEligible = await filterEligibleAccountRelayUrls({
+          const stillEligible = await filterEligibleAccountRelayTargets({
             accountPubkey,
             authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
-            candidateRelayUrls: [relayUrl],
-            ...currentSources,
+            targets: currentSources.relayTarget
+              ? [currentSources.relayTarget]
+              : [],
+            operation: "write",
             repository: options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
           })
           if (stillEligible.length === 0) {
             // The target became ineligible after this run admitted it but
@@ -963,14 +1299,37 @@ export async function getPendingProductDeletionDeliveries(
 ): Promise<ProductDeletionDeliveryJob[]> {
   const timestamp = getNow(options)
   const jobs = await getRepository(options).listUndelivered()
-  return jobs
-    .filter(
-      (job) =>
-        !options.dueOnly ||
+  const dueJobs = jobs.filter(
+    (job) =>
+      job.state !== "superseded_unpublished" &&
+      (!options.dueOnly ||
         ((job.nextRetryAt === undefined || job.nextRetryAt <= timestamp) &&
           (job.deliveryLeaseExpiresAt === undefined ||
-            job.deliveryLeaseExpiresAt <= timestamp))
-    )
+            job.deliveryLeaseExpiresAt <= timestamp)))
+  )
+  const actionableJobs = await Promise.all(
+    dueJobs.map(async (job) => {
+      if (!job.companionListingJobId) return job
+      let listing: ProductListingDeliveryJob | undefined
+      try {
+        listing = options.getCompanionListingJob
+          ? await options.getCompanionListingJob(job.companionListingJobId)
+          : await db.productListingOutbox.get(job.companionListingJobId)
+      } catch {
+        // A transient read must not starve unrelated jobs. The delivery gate
+        // rechecks this companion and still refuses an unsafe tombstone.
+        return job
+      }
+      // Keep the immutable tombstone for inspection, but a reciprocal
+      // replacement rejected by every relay cannot unblock this retry.
+      return listing?.companionDeletionJobId === job.id &&
+        listing.state === "failed"
+        ? null
+        : job
+    })
+  )
+  return actionableJobs
+    .filter((job): job is ProductDeletionDeliveryJob => job !== null)
     .sort(
       (left, right) =>
         left.createdAt - right.createdAt || left.id.localeCompare(right.id)
@@ -994,7 +1353,10 @@ export async function deliverPendingProductDeletions(
   for (const job of jobs) {
     try {
       completed.push(
-        await deliverProductDeletionJob(job.id, publisher, options)
+        await deliverProductDeletionJob(job.id, publisher, {
+          ...options,
+          respectRejectionBackoff: true,
+        })
       )
     } catch {
       // Keep this job durable and continue. One corrupt/unavailable job must
