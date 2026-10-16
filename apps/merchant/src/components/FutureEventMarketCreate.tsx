@@ -312,6 +312,7 @@ function FutureEventMarketCreateForm({
   const [creationSigned, setCreationSigned] = useState<boolean | null>(
     restored.creation ? null : false
   )
+  const [creationEvidenceRevision, setCreationEvidenceRevision] = useState(0)
   const [bannerScope] = useState(
     () => `event-create:${organizerPubkey}:${crypto.randomUUID()}`
   )
@@ -384,7 +385,7 @@ function FutureEventMarketCreateForm({
     return () => {
       active = false
     }
-  }, [creation])
+  }, [creation, creationEvidenceRevision])
 
   useEffect(() => {
     let active = true
@@ -599,6 +600,7 @@ function FutureEventMarketCreateForm({
             seriesDraftKey(organizerPubkey),
             JSON.stringify(draft)
           )
+          setFrozenDraft(draft)
           setSavedSignatureCount(savedSignedEvents.length)
           setSeriesSigned(savedSignedEvents.length > 0)
           const retainSeriesSignature = async (
@@ -780,6 +782,9 @@ function FutureEventMarketCreateForm({
       )
     } finally {
       publishing.current = false
+      // Signature retention can succeed even when its plan pointer write fails.
+      // Recheck that evidence even when the saved creation object did not change.
+      setCreationEvidenceRevision((revision) => revision + 1)
       setPending(false)
       setStep("")
     }
