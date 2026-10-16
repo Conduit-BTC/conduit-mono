@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readSmokeFiles } from "./playwright_smoke_files"
+
 import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
 import { safeRetainedSmokeDiagnostics } from "../../e2e/helpers/smoke-diagnostics"
 import {
@@ -482,7 +484,8 @@ export function buildPlaywrightSmokeDiscoveryArgs(
 function discoverPlaywrightTests(
   area: SmokeArea | "all" = "all",
   shard?: string,
-  config?: string
+  config?: string,
+  files?: string[]
 ): PlaywrightJsonReport {
   const result = spawnSync(
     "bunx",
@@ -493,6 +496,7 @@ function discoverPlaywrightTests(
         ...process.env,
         PLAYWRIGHT_SMOKE_DISCOVERY: "true",
         PLAYWRIGHT_SMOKE_AREA: area,
+        PLAYWRIGHT_SMOKE_FILES: JSON.stringify(files ?? []),
       },
     }
   )
@@ -522,6 +526,7 @@ if (import.meta.main) {
   const expectedManifestPath = readArgument("--expected-manifest")
   const manifestOutputPath = readArgument("--manifest-output")
   const evidence = readEvidenceContext(Boolean(executionReportPath))
+  const files = readSmokeFiles(process.env.PLAYWRIGHT_SMOKE_FILES)
 
   if (executionReportPath || expectedManifestPath) {
     if (!executionReportPath || !expectedManifestPath) {
@@ -552,6 +557,8 @@ if (import.meta.main) {
 
   let report: PlaywrightJsonReport
   if (shard) {
+    if (files)
+      throw new Error("File selection cannot be combined with count sharding.")
     const match = shard.match(/^([1-9]\d*)\/([1-9]\d*)$/)
     if (
       !match ||
@@ -580,7 +587,39 @@ if (import.meta.main) {
     )
     report = parts[Number(match[1]) - 1]!
   } else {
-    report = discoverPlaywrightTests("all", undefined, config)
+    const full = discoverPlaywrightTests("all", undefined, config)
+    validatePlaywrightSmokeAreas(full, selectedAreas)
+    if (files) {
+      if (selectedAreas.length !== 1) {
+        throw new Error("File selection requires one smoke area.")
+      }
+      const fullManifest = buildPlaywrightSmokeManifest(
+        full,
+        selectedAreas,
+        evidence
+      )
+      for (const file of files) {
+        if (!fullManifest.tests.some((test) => test.file === file)) {
+          throw new Error("Selected smoke file has no tests in this area.")
+        }
+      }
+      report = discoverPlaywrightTests(
+        selectedAreas[0]!,
+        undefined,
+        config,
+        files
+      )
+      const expected = {
+        ...fullManifest,
+        tests: fullManifest.tests.filter((test) => files.includes(test.file)),
+      }
+      expected.selectedTestCount = expected.tests.length
+      validatePlaywrightSmokeShardPartition(expected, [
+        buildPlaywrightSmokeManifest(report, selectedAreas, evidence),
+      ])
+    } else {
+      report = full
+    }
   }
   const counts = validatePlaywrightSmokeAreas(report, selectedAreas)
   const manifest = buildPlaywrightSmokeManifest(report, selectedAreas, evidence)

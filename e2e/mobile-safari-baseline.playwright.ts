@@ -1938,6 +1938,88 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(connectionString).toBeVisible()
   })
 
+  for (const { app, url } of [
+    { app: "market", url: marketUrl },
+    { app: "merchant", url: merchantUrl },
+  ] as const) {
+    test(`${app} wallet setup keeps touch selection on a moving trigger @${app}`, async ({
+      page,
+    }) => {
+      await installTestSigner(page, TEST_BUYER_PUBKEY)
+      await page.goto(`${url}/wallet`)
+      await expect(
+        page.getByRole("heading", { name: "Wallets", exact: true })
+      ).toBeVisible()
+      // A long wallet list permits the same trigger movement observed in CI.
+      await page.locator("main").evaluate((element) => {
+        element.style.minHeight = "200vh"
+      })
+      await page.evaluate(() => {
+        const probe = { pointerType: "", moved: false }
+        Object.assign(window, { __walletMenuPointerProbe: probe })
+        document.addEventListener(
+          "pointerdown",
+          (event) => {
+            probe.pointerType = event.pointerType
+          },
+          { capture: true, once: true }
+        )
+        const observer = new MutationObserver(() => {
+          if (!document.querySelector('[role="menu"]')) return
+          observer.disconnect()
+          const trigger = Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "Add wallet"
+          )
+          if (!trigger) throw new Error("Wallet trigger is missing")
+          const before = trigger.getBoundingClientRect().y
+          window.scrollBy({ top: 140, behavior: "instant" })
+          probe.moved =
+            Math.abs(trigger.getBoundingClientRect().y - before) > 100
+        })
+        observer.observe(document.body, { childList: true, subtree: true })
+      })
+      await openWalletSetup(page, "Connect wallet", async (phase) => {
+        if (phase === "trigger_clicked") {
+          await expect(page.getByRole("menu")).toBeVisible()
+        }
+      })
+      await expect(
+        page.getByRole("dialog", { name: "Connect wallet", exact: true })
+      ).toBeVisible()
+      expect(
+        await page.evaluate(
+          () =>
+            (
+              window as unknown as {
+                __walletMenuPointerProbe: {
+                  pointerType: string
+                  moved: boolean
+                }
+              }
+            ).__walletMenuPointerProbe
+        )
+      ).toEqual({ pointerType: "touch", moved: true })
+
+      await page.keyboard.press("Escape")
+      await expect(
+        page.getByRole("dialog", { name: "Connect wallet", exact: true })
+      ).not.toBeVisible()
+      await page
+        .getByRole("button", { name: "Add wallet", exact: true })
+        .press("ArrowDown")
+      await expect(page.getByRole("menu")).toBeVisible()
+      await page
+        .getByRole("menuitem", {
+          name: "Connect an external wallet",
+          exact: true,
+        })
+        .press("Enter")
+      await expect(
+        page.getByRole("dialog", { name: "Connect wallet", exact: true })
+      ).toBeVisible()
+    })
+  }
+
   test("market reviews an updated payment address before retrying the same order @market", async ({
     page,
   }) => {
