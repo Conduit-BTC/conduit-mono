@@ -1800,7 +1800,12 @@ export async function commitLocalProductWrite(
             0
           )
           if (
-            (inventory.stock === undefined) !== (row.stock === undefined) ||
+            assignments.some(
+              (assignment) =>
+                assignment.state === "active" &&
+                (assignment.inventory.mode === "untracked") !==
+                  (row.stock === undefined)
+            ) ||
             (row.stock !== undefined && row.stock < reserved)
           )
             throw new Error(

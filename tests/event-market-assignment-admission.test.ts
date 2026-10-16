@@ -1,4 +1,6 @@
 import { admitEmbeddedEventMarketOrderEvidence } from "@conduit/core/protocol/event-market-order-evidence"
+import { assertPrivateMessageFitsTransport } from "@conduit/core/protocol/private-message-primitives"
+import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { describe, expect, it } from "bun:test"
 import { matchFilter, type Filter } from "nostr-tools"
 import {
@@ -9,6 +11,7 @@ import {
 import {
   buildEventMarketAssignmentDraft,
   buildEventMarketOrderRumorTags,
+  serializeOrderRumorContent,
   createEventMarketPickupSnapshot,
   readEventMarketProduct,
   readEventMarketCatalog,
@@ -44,6 +47,38 @@ function source(events: readonly SignedPublicNostrEvent[]) {
 }
 
 describe("occurrence assignment buyer admission", () => {
+  it("carries complete supported authorization history within the shared transport bound", async () => {
+    const fixture = createEventMarketOrderFixture({
+      mode: "merchant_present",
+      newAssignment: true,
+      authorizationDepth: 61,
+    })
+    const tags = buildEventMarketOrderRumorTags(fixture.order)
+    expect(tags.filter((tag) => tag[0] === "evidence")).toHaveLength(65)
+    for (const event of fixture.events) {
+      const tag = tags.find(
+        (candidate) => candidate[0] === "evidence" && candidate[1] === event.id
+      )
+      expect(
+        !!tag?.[2] && sameSignedPublicEvent(JSON.parse(tag[2]), event)
+      ).toBe(true)
+    }
+    expect(
+      verifyEventMarketOrderEvidence({
+        order: fixture.order,
+        events: await admitEmbeddedEventMarketOrderEvidence(fixture.order),
+      }).status
+    ).toBe("verified")
+    expect(() =>
+      assertPrivateMessageFitsTransport({
+        pubkey: fixture.buyer,
+        created_at: fixture.order.createdAt / 1_000,
+        kind: 16,
+        tags: [["p", fixture.merchant], ["type", "order"], ...tags],
+        content: serializeOrderRumorContent(fixture.order),
+      })
+    ).not.toThrow()
+  })
   it("requires the exact merchant assignment despite a historical product market hint", async () => {
     const fixture = createEventMarketOrderFixture({
       mode: "merchant_present",

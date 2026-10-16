@@ -138,8 +138,8 @@ export function buildEventMarketOrderRumorTags(order: OrderSchema): string[][] {
     if (fulfillment.parentProduct) add(fulfillment.parentProduct.signedEvent)
     add(fulfillment.occurrenceAssignment.signedEvent)
   }
-  if (evidence.size > 64)
-    throw new Error("Occurrence order evidence exceeds the recovery bound.")
+  // Preserve complete supported histories. The shared private-message owner
+  // bounds the complete encrypted transport before signing or publication.
   for (const event of evidence.values())
     tags.push(["evidence", event.id, JSON.stringify(event)])
   return tags

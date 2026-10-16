@@ -187,3 +187,11 @@ shared delivery owner's claim or increasing assertion timeouts.
 The first-payment controls hold the recipient ACK to distinguish observed
 publication bytes from a completed confirmation, then wait for the completed
 confirmation before reload and inventory-publication retry.
+
+Ordinary acceptance must preserve the product editor's tracking-mode controls
+when there are no incompatible active assignments. Composed shared-writer tests
+cover both mode changes after acceptance and publication, with active-assignment
+rejection controls. Checkout evidence retains the complete supported signed
+authorization history; the shared encrypted transport-size limit bounds the
+whole message rather than imposing a smaller recovery-event count. The signed
+61-event ancestry control retains all 65 required evidence events.
