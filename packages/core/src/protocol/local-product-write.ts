@@ -1,3 +1,6 @@
+import { sameSignedPublicEvent } from "./verified-public-event"
+import { effectiveAllocation } from "./merchant-inventory"
+import { reconcileKnownOccurrenceLifecycle } from "./merchant-occurrence-lifecycle"
 import {
   db,
   type CachedProduct,
@@ -1584,6 +1587,10 @@ export async function commitLocalProductWrite(
         db.productDeletionOutbox,
         db.products,
         db.productTombstones,
+        db.merchantInventoryProducts,
+        db.merchantInventoryAssignments,
+        db.merchantInventoryAcceptedOrders,
+        db.eventMarketRosterEvidence,
       ],
       async () => {
         if (input.shouldContinue?.() === false) {
@@ -1612,9 +1619,26 @@ export async function commitLocalProductWrite(
           }
           await assertNoPendingLocalStockCheckpoint(addressId)
           const replacement = frontiers.find((row) => row.id === addressId)
+          const inventory = replacement
+            ? await db.merchantInventoryProducts.get(addressId)
+            : undefined
+          const adoptedInventoryProjection =
+            replacement?.eventId === current.eventId &&
+            !current.exactEventDeleted &&
+            inventory?.publicationJobs.some(
+              (work) =>
+                !!work.signedEvent &&
+                sameSignedPublicEvent(
+                  work.signedEvent,
+                  listingJob!.signedEvents.find(
+                    (event) => event.id === replacement.eventId
+                  )!
+                )
+            )
           if (
             replacement &&
-            (replacement.eventCreatedAt! <= (current.eventCreatedAt ?? -1) ||
+            ((!adoptedInventoryProjection &&
+              replacement.eventCreatedAt! <= (current.eventCreatedAt ?? -1)) ||
               replacement.eventCreatedAt! <= current.deletionCreatedAt)
           ) {
             // NIP-01 equal-second ties and NIP-09 address cutoffs are both
@@ -1731,6 +1755,67 @@ export async function commitLocalProductWrite(
         })
         if (input.shouldContinue?.() === false) {
           throw new Error("Product write account session changed")
+        }
+        // Ordinary edits share the acceptance transaction lane. The existing
+        // outbox remains the sole owner of their signed product publication.
+        if (
+          stock &&
+          (await db.merchantInventoryAcceptedOrders.get(stock.orderId))
+        )
+          throw new Error("This order already consumed inventory at acceptance")
+        for (const row of projections) {
+          const inventory = await db.merchantInventoryProducts.get(row.id)
+          if (!inventory) continue
+          const event = listingJob!.signedEvents.find(
+            (candidate) => productAddressId(candidate) === row.id
+          )!
+          // A retained acceptance projection already consumed stock. Staging
+          // its exact bytes in the shared writer must never apply the sale again.
+          if (
+            inventory.publicationJobs.some(
+              (work) =>
+                !!work.signedEvent &&
+                sameSignedPublicEvent(work.signedEvent, event)
+            )
+          )
+            continue
+          if (
+            inventory.merchantPubkey !== intent.merchantPubkey ||
+            inventory.signedProductEvent.id !== expected.get(row.id) ||
+            inventory.publicationJobs.some((work) => !work.signedEvent)
+          )
+            throw new Error(
+              "Committed inventory changed before the product edit"
+            )
+          // A known postponement protects remaining units even when the
+          // assignment panel has not been opened since the calendar changed.
+          await reconcileKnownOccurrenceLifecycle(intent.merchantPubkey, row.id)
+          const assignments = await db.merchantInventoryAssignments
+            .where("productCoordinate")
+            .equals(row.id)
+            .toArray()
+          const reserved = assignments.reduce(
+            (sum, assignment) =>
+              sum + effectiveAllocation(assignment, Date.now()),
+            0
+          )
+          if (
+            assignments.some(
+              (assignment) =>
+                assignment.state === "active" &&
+                (assignment.inventory.mode === "untracked") !==
+                  (row.stock === undefined)
+            ) ||
+            (row.stock !== undefined && row.stock < reserved)
+          )
+            throw new Error(
+              "Reconcile occurrence allocations before changing stock"
+            )
+          inventory.stock = row.stock
+          inventory.revision += 1
+          inventory.sourceProductEvent = event
+          inventory.signedProductEvent = event
+          await db.merchantInventoryProducts.put(inventory)
         }
         for (const row of projections) {
           const existing = await db.products.get(row.id)

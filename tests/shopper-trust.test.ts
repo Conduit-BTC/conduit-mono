@@ -186,6 +186,9 @@ describe("shopper trust evidence", () => {
         "checkoutSparkPlanBindings",
         "checkoutSparkReconciliations",
         "checkoutSparkRetirements",
+        "merchantInventoryProducts",
+        "merchantInventoryAssignments",
+        "merchantInventoryAcceptedOrders",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
@@ -1197,7 +1200,7 @@ describe("shopper trust evidence", () => {
             options?.allowInsecureRelayUrlsForPubkey,
         })
       }
-      return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
+      return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey, {})]))
     }
     const read = async (authenticatedPubkey?: string | null) =>
       await getShopperTrustEvidence(

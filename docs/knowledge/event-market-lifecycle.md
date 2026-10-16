@@ -22,9 +22,10 @@ a roster edit never republishes their products.
 
 ## Dates and discovery
 
-Single-date market closure is explicit. A recurring market requires an
-explicitly selected current or future occurrence, with verified membership in
-the current schedule. Unresolved sibling dates do not invalidate a verified
+Market closure is explicit and separate from occurrence expiry. A new
+assignment purchase requires an unended concrete occurrence for both single-date
+and recurring markets. A recurring market additionally requires an explicitly
+selected occurrence with verified membership in the current schedule. Unresolved sibling dates do not invalidate a verified
 selected occurrence. Removed or edited dates do not rewrite an existing order.
 
 Both apps offer current/upcoming and history views. Calendar timezone and
@@ -56,8 +57,14 @@ Before creating a new order or payment, checkout rechecks selected signed
 market, grant, calendar, product and payee terms. A material change requires
 buyer review. Created orders pin the accepted signed evidence; subsequent
 organizer edits do not reinterpret their goods, date, assignment or payee.
+Rescheduling may update the same calendar coordinate. Known current signed dates
+govern unused allocations; merchants may explicitly accept or confirm payment
+for the original order without rewriting it. Merchants coordinate fulfillment
+changes and any refunds with buyers.
 
-Merchant-present pickup and organizer handoff remain supported. Organizer
+Merchant-present assignment pickup is supported. New organizer acceptance is
+gated on advance delegation, writer handover and order-ID reconciliation.
+Historical authenticated organizer handoff remains inspectable. Organizer
 release requires an authenticated, order-specific merchant message and exact
 merchandise evidence. An organizer acknowledgement grants no merchant payment
 or general lifecycle authority. Private ready/revoke/acknowledgement operations

@@ -12,16 +12,18 @@ describe("path-aware smoke shard selection", () => {
       { id: "market-1", area: "market", shard: "1/3" },
       { id: "market-2", area: "market", shard: "2/3" },
       { id: "market-3", area: "market", shard: "3/3" },
-      { id: "merchant-1", area: "merchant", shard: "1/2" },
-      { id: "merchant-2", area: "merchant", shard: "2/2" },
+      { id: "merchant-1", area: "merchant", shard: "1/3" },
+      { id: "merchant-2", area: "merchant", shard: "2/3" },
+      { id: "merchant-3", area: "merchant", shard: "3/3" },
       { id: "commerce", area: "commerce", shard: "" },
     ])
     expect(expandSmokeMatrix([])).toEqual([
       { id: "none", area: "none", shard: "" },
     ])
     expect(expandSmokeMatrix(["merchant"])).toEqual([
-      { id: "merchant-1", area: "merchant", shard: "1/2" },
-      { id: "merchant-2", area: "merchant", shard: "2/2" },
+      { id: "merchant-1", area: "merchant", shard: "1/3" },
+      { id: "merchant-2", area: "merchant", shard: "2/3" },
+      { id: "merchant-3", area: "merchant", shard: "3/3" },
     ])
   })
   it("selects only the changed app for app-local runtime changes", () => {

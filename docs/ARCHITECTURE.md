@@ -164,7 +164,8 @@ eligibility, checkout, and order persistence. See
 
 Current Event Markets use an experimental Open Markets profile: organizer-signed
 kind `30409` markets and kind `3841` merchant authorization, with merchant-owned
-kind `30402` products. Shared parsing, publishing, evidence resolution,
+kind `30402` products and merchant-signed kind `30410` occurrence assignments.
+Product discovery tags do not establish assignment authority. Shared parsing, publishing, evidence resolution,
 coordinate/`naddr` handling, and deletion semantics belong in `@conduit/core`;
 Market and Merchant routes compose those prepared states. See
 [Open Markets implementation guidance](OPEN_MARKETS.md#experimental-event-markets)
@@ -172,11 +173,22 @@ and the [Event Market contract](specs/event-markets.md) for schedule membership,
 authorization ancestry, checkout evidence, and retirement of collection-based
 event commerce.
 
-The buyer's encrypted order remains buyer-to-merchant. Organizer handoff uses a
+Product, Assignment and Accepted order remain separate durable records. The
+existing `commitLocalProductWrite` transaction and listing outbox own product
+edits and stock projections. Merchant acceptance atomically records inventory
+and the order-ID decision before signing or network delivery; exact retries do
+not consume units again. Dexie v27 retains the complete main/preview union,
+including populated installed-v25 assignment stores. This is local writer
+serialization, not cross-device atomicity.
+
+The buyer's encrypted order remains buyer-to-merchant. Historical organizer handoff uses a
 separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
 scoped organizer-to-merchant handoff acknowledgement. Core owns their strict
 schemas, authority checks, kind-10050 routing, and immutable delivery retry;
-routes never fan out or redact full orders themselves.
+routes never fan out or redact full orders themselves. New organizer acceptance
+for occurrence assignments remains gated on the separate advance-delegation,
+writer-handover and reconciliation contract. Rollover and full Reschedule/Relocate
+remain unfinished; fees and offline checkout-wallet recovery are separate work.
 
 ### Orders And Messages
 

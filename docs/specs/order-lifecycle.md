@@ -358,8 +358,25 @@ browser, counterparties, relays, signers, wallets, LNURL/payment providers, and
 other services the user or merchant selects; do not describe them as remaining
 only on devices or relays.
 
-Guest checkout is narrower: its required recovery contact and fulfillment
+Contact-based guest checkout is narrower: its required recovery contact and fulfillment
 details are delivered inside the merchant's encrypted order copy, removed from
 the checkout form after successful delivery, and omitted from the buyer's
 durable lifecycle/message cache. The remaining redacted guest lifecycle and
 invoice are bounded to the 24-hour guest recovery window.
+
+## Occurrence inventory acceptance
+
+A merchant accepts a new assignment order through one durable transaction that
+binds the order ID to exact identity, terms and retained signed evidence and
+commits all inventory debits. Pickup consumes total stock and its occurrence
+allocation once; ordinary sales respect effective reservations. A matching
+replay returns the saved decision; changed terms under the same ID are rejected.
+The transaction precedes signing, publication and status delivery. Those retries
+reuse saved work without consuming units again or treating relay ACKs as payment.
+
+Product projections use the existing local product-write transaction and listing
+outbox. Committed inventory and accepted orders survive cache pruning, populated
+main/preview schema upgrades and reload. Separate devices have no global atomicity
+guarantee. New organizer acceptance remains gated on the reviewed delegation,
+writer-handover and reconciliation contract. Historical receipt decoding alone
+establishes neither new acceptance authority nor settlement or physical delivery.

@@ -175,6 +175,7 @@ export async function resolveCurrentFutureEventMarketFulfillments(
     const productRead = await dependencies.readProduct({
       marketRead,
       productCoordinate: item.productId,
+      selectedOccurrenceCoordinate: saved.calendar.coordinate,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
     })
