@@ -140,13 +140,13 @@ and handout without a live merchant. Its exact advance delegation, writer
 handover and order-ID reconciliation contract remains an integration dependency;
 this slice does not invent that wire format or alter the payment executor.
 
-After allocation, actual start/end changes or a different pickup venue require
-an explicit replacement occurrence, merchant notice and confirmation of
-remaining allocations. Typo, directions and booth changes remain ordinary.
-Ended/cancelled coordinates stay ended, and accepted commitments require
-appropriate buyer communication. The full Reschedule/Relocate workflow remains
-unfinished, as do rollover, shipping/digital assignment UI, complete unavailable-device
-order recovery and independent-writer repair. Bounded first-use signed assignment
+A same-event calendar edit updates the deadline for unused allocations without
+changing an accepted order or consuming stock again. Merchant acceptance and
+payment confirmation preserve the order's original signed terms. Merchants
+coordinate timing changes and any refunds with buyers. Known cancellation and
+applicable deletion remain terminal for unused allocations. Atomic rollover,
+shipping/digital assignment UI, complete unavailable-device order recovery and
+independent-writer repair remain follow-ups. Bounded first-use signed assignment
 reads restore observed reservations across markets; their coverage does not prove
 global absence, and intact local inventory bypasses those reads. Core arithmetic tests alone do not prove
 those composed flows. External signer/relay/device, funded payment and physical
@@ -159,3 +159,15 @@ publisher. Exact older inventory projection jobs can be superseded by a later
 retained projection without discarding their signed evidence or pairing unrelated
 deletions/shipping operations. A newer ordinary product edit supplies the metadata
 for the next stock projection; its content and shipping terms must not regress.
+
+Current signed assignment assertions remain usable when relays discard older
+addressable revisions under NIP-01. Missing history is distinct from an observed
+fork; known incompatible roots or branches, removals and deletions remain
+negative evidence. Product readers durably retain variation-parent revisions
+and applicable deletion evidence too.
+
+Acceptance shares same-order stock decisions with the existing stock action,
+including local writes awaiting publication. Retrying an acceptance notification
+reuses the durable acceptance time and original rumor identity. A later paid or
+fulfillment milestone suppresses an obsolete accepted notification. Neither a
+publication retry nor payment confirmation consumes the order twice.

@@ -1,3 +1,4 @@
+import Dexie from "dexie"
 import { verifySignedEventBatches } from "./relay-reader"
 import { db } from "../db"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
@@ -40,6 +41,7 @@ import {
   readMerchantInventoryAvailability,
   resumeMerchantInventoryPublication,
   type MerchantInventoryOrderItem,
+  type MerchantInventoryPriorStockAdjustment,
 } from "./merchant-inventory"
 
 interface MerchantOccurrenceSession {
@@ -187,58 +189,74 @@ async function assertKnownAssignmentInventoryAuthority(input: {
     )
 }
 
-/** Only observed organizer cancellation/current scoped deletion releases early. */
+/** Current dates govern unused allocations; accepted order snapshots stay intact. */
 async function reconcileKnownOccurrenceLifecycle(merchantPubkey: string) {
   const assignments = await db.merchantInventoryAssignments
     .where("merchantPubkey")
     .equals(merchantPubkey)
     .toArray()
   for (const assignment of assignments) {
-    if (assignment.terminal) continue
-    const evidence = await loadRetainedSignedEventMarketEvidence(
-      assignment.marketCoordinate
-    )
-    const occurrence = newest(evidence, assignment.occurrenceCoordinate)
-    if (!occurrence) continue
-    const hasCancellation = evidence.some(
-      (event) =>
-        event.kind === occurrence.kind &&
-        event.pubkey === occurrence.pubkey &&
-        event.tags.some(
-          (tag) =>
-            tag[0] === "d" &&
-            tag[1] ===
-              occurrence.tags.find((candidate) => candidate[0] === "d")?.[1]
-        ) &&
-        event.tags.filter((tag) => tag[0] === "event_occurrence").length ===
-          1 &&
-        event.tags.some(
-          (tag) =>
-            tag.length === 3 &&
-            tag[0] === "event_occurrence" &&
-            tag[1] === "1" &&
-            tag[2] === "cancelled"
-        )
-    )
-    const deleted = isEventMarketAddressableRevisionDeleted(
-      {
-        coordinate: assignment.occurrenceCoordinate,
-        eventId: occurrence.id,
-        createdAt: occurrence.created_at * 1000,
-      },
-      evidence.filter((event) => event.kind === 5)
-    )
-    if (hasCancellation || deleted)
-      await db.transaction("rw", db.merchantInventoryAssignments, async () => {
+    await db.transaction(
+      "rw",
+      db.merchantInventoryAssignments,
+      db.eventMarketRosterEvidence,
+      async () => {
         const current = await db.merchantInventoryAssignments.get(
           assignment.coordinate
         )
-        if (current && !current.terminal) {
-          current.terminal = true
+        if (!current || current.terminal) return
+        // Serialize the known calendar frontier and the allocation deadline together.
+        const evidence = await Dexie.waitFor(
+          loadRetainedSignedEventMarketEvidence(current.marketCoordinate)
+        )
+        const occurrence = newest(evidence, current.occurrenceCoordinate)
+        if (!occurrence) return
+        const hasCancellation = evidence.some(
+          (event) =>
+            event.kind === occurrence.kind &&
+            event.pubkey === occurrence.pubkey &&
+            event.tags.some(
+              (tag) =>
+                tag[0] === "d" &&
+                tag[1] ===
+                  occurrence.tags.find((candidate) => candidate[0] === "d")?.[1]
+            ) &&
+            event.tags.filter((tag) => tag[0] === "event_occurrence").length ===
+              1 &&
+            event.tags.some(
+              (tag) =>
+                tag.length === 3 &&
+                tag[0] === "event_occurrence" &&
+                tag[1] === "1" &&
+                tag[2] === "cancelled"
+            )
+        )
+        const deleted = isEventMarketAddressableRevisionDeleted(
+          {
+            coordinate: current.occurrenceCoordinate,
+            eventId: occurrence.id,
+            createdAt: occurrence.created_at * 1000,
+          },
+          evidence.filter((event) => event.kind === 5)
+        )
+        const calendar = parseEventMarketCalendarEvent(
+          (await Dexie.waitFor(verifySignedEventBatches([occurrence])))[0]!
+        )
+        if (
+          hasCancellation ||
+          deleted ||
+          (calendar &&
+            !cancelled(occurrence) &&
+            calendar.end !== current.occurrenceEndMs)
+        ) {
+          current.terminal = hasCancellation || deleted
+          if (!current.terminal && calendar)
+            current.occurrenceEndMs = calendar.end
           current.revision += 1
           await db.merchantInventoryAssignments.put(current)
         }
-      })
+      }
+    )
   }
 }
 
@@ -496,6 +514,7 @@ export async function acceptMerchantOccurrenceOrder(
   input: MerchantOccurrenceSession & {
     order: OrderSchema
     products: readonly ProductSchema[]
+    priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
   }
 ) {
   assertSession(input)
@@ -581,6 +600,7 @@ export async function acceptMerchantOccurrenceOrder(
       )
     )
       throw new Error("Known deletion evidence blocks this product.")
+    const productTermsEventId = committed?.sourceProductEvent.id ?? source.id
     const product = parseProductEvent(
       (await verifySignedEventBatches([source]))[0]!
     )
@@ -593,7 +613,8 @@ export async function acceptMerchantOccurrenceOrder(
     if (
       (product.sourcePrice?.amount ?? product.price) !==
         (item.sourcePrice?.amount ?? item.priceAtPurchase) ||
-      product.currency.toUpperCase() !== item.currency.toUpperCase()
+      (product.sourcePrice?.currency ?? product.currency).toUpperCase() !==
+        (item.sourcePrice?.currency ?? item.currency).toUpperCase()
     )
       throw new Error(
         "Product terms changed. Review this order with the buyer."
@@ -610,14 +631,28 @@ export async function acceptMerchantOccurrenceOrder(
       throw new Error(
         "Known inventory evidence needs reconciliation before accepting this product."
       )
-    if (fulfillment?.type === "event_market_pickup") {
-      if (
-        !fulfillment.occurrenceAssignment ||
-        fulfillment.mode !== "merchant_present"
+    if (recovery.product.sourceProductEvent.id !== productTermsEventId)
+      throw new Error(
+        "The product changed during acceptance. Review it and try again."
       )
-        throw new Error(
-          "This order needs its historical or delegated fulfillment workflow."
-        )
+    if (fulfillment?.type === "event_market_pickup") {
+      if (!fulfillment.occurrenceAssignment) {
+        // Existing orders already verified their original signed authority above.
+        // They consume ordinary stock, never manufacture a new assignment.
+        items.push({
+          productCoordinate: item.productId,
+          method: "ordinary",
+          quantity: item.quantity,
+          admission: {
+            kind: "validated-ordinary-product",
+            productEventId: source.id,
+            productTermsEventId,
+          },
+        })
+        continue
+      }
+      if (fulfillment.mode !== "merchant_present")
+        throw new Error("This order needs its delegated fulfillment workflow.")
       const retained = await loadRetainedSignedEventMarketEvidence(
         fulfillment.market.coordinate
       )
@@ -685,23 +720,6 @@ export async function acceptMerchantOccurrenceOrder(
         throw new Error(
           "Known event authority or occurrence state no longer permits new acceptance."
         )
-      if (
-        calendar.start !== fulfillment.calendar.start ||
-        calendar.end !== fulfillment.calendar.end ||
-        JSON.stringify(calendar.locations) !==
-          JSON.stringify(
-            parseEventMarketCalendarEvent(
-              (
-                await verifySignedEventBatches([
-                  fulfillment.calendar.signedEvent,
-                ])
-              )[0]!
-            )?.locations
-          )
-      )
-        throw new Error(
-          "This occurrence changed. Preserve the order and review the replacement with the buyer."
-        )
       if (fulfillment.schedule) {
         const scheduleEvent = newest(evidence, fulfillment.schedule.coordinate)
         const schedule =
@@ -731,6 +749,7 @@ export async function acceptMerchantOccurrenceOrder(
         admission: {
           kind: "validated-event-market-order",
           productEventId: source.id,
+          productTermsEventId,
           assignmentCoordinate: fulfillment.occurrenceAssignment.coordinate,
           assignmentEventId: fulfillment.occurrenceAssignment.eventId,
           marketEventId: market.market.eventId,
@@ -747,6 +766,7 @@ export async function acceptMerchantOccurrenceOrder(
         admission: {
           kind: "validated-ordinary-product",
           productEventId: source.id,
+          productTermsEventId,
         },
       })
   }
@@ -759,5 +779,6 @@ export async function acceptMerchantOccurrenceOrder(
     termsBinding,
     evidence: termsBinding,
     items,
+    priorStockAdjustments: input.priorStockAdjustments,
   })
 }

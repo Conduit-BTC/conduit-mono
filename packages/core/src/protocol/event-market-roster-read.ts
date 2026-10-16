@@ -1372,7 +1372,10 @@ export async function readEventMarketAssignment(
             revision.coordinate)
       )
         return { state: "malformed", coverage, retained }
-      return { state: "incomplete", coverage, retained }
+      // NIP-01 relays may discard superseded addressable revisions. A valid
+      // current signed assertion does not require an archive of its parents.
+      // Any material divergence we actually observed is still checked below.
+      continue
     }
     if (
       parent.coordinate !== revision.coordinate ||
@@ -1393,8 +1396,34 @@ export async function readEventMarketAssignment(
       value.inventory,
       [...value.fulfillmentMethods].sort(),
     ])
-  if (new Set(tips.map(material)).size > 1)
-    return { state: "conflicting", coverage, retained }
+  if (new Set(tips.map(material)).size > 1) {
+    const paths = tips.map((tip) => {
+      const ids = new Set<string>()
+      let cursor: ParsedEventMarketAssignment | undefined = tip
+      while (cursor && !ids.has(cursor.eventId)) {
+        ids.add(cursor.eventId)
+        if (!cursor.previousEventId) return { ids, root: cursor.eventId }
+        const parent = byId.get(cursor.previousEventId)
+        if (!parent) {
+          ids.add(cursor.previousEventId)
+          return { ids, root: undefined }
+        }
+        cursor = parent
+      }
+      return { ids, root: undefined }
+    })
+    for (let left = 0; left < tips.length; left++) {
+      for (let right = left + 1; right < tips.length; right++) {
+        if (material(tips[left]!) === material(tips[right]!)) continue
+        const a = paths[left]!
+        const b = paths[right]!
+        // Distinct known roots or branches from a common observed parent prove
+        // a fork. A missing intermediate alone does not prove divergence.
+        if ((a.root && b.root) || [...a.ids].some((id) => b.ids.has(id)))
+          return { state: "conflicting", coverage, retained }
+      }
+    }
+  }
   return { state: assignment.state, assignment, coverage, retained }
 }
 
@@ -1655,16 +1684,43 @@ export async function readEventMarketProduct(
               )
           )
         const parentWinner = parentRevisions[0]
-        if (
-          parentWinner &&
-          parentRead.events.some((event) => event.id === parentWinner.id)
-        ) {
-          const deletionRead = await safeFetch({
+        const parentIds = new Set(parentRevisions.map((event) => event.id))
+        const [parentDeletions, parentIdDeletions] = await Promise.all([
+          safeFetch({
             kinds: [EVENT_KINDS.DELETION],
             authors: [parent.authorPubkey],
             "#a": [parent.coordinate],
             limit: 64,
-          })
+          }),
+          parentIds.size > 0
+            ? safeFetch({
+                kinds: [EVENT_KINDS.DELETION],
+                authors: [parent.authorPubkey],
+                "#e": [...parentIds].slice(0, 64),
+                limit: 64,
+              })
+            : Promise.resolve({ events: [], relays: [] }),
+        ])
+        reads.push(parentRead, parentDeletions, parentIdDeletions)
+        const parentEvidence = scopedProductEvidence(
+          parent.coordinate,
+          parent.authorPubkey,
+          [
+            ...parentRead.events,
+            ...parentDeletions.events,
+            ...parentIdDeletions.events,
+          ],
+          parentIds
+        )
+        try {
+          await dependencies.retain(market.market.coordinate, parentEvidence)
+        } catch {
+          retained = false
+        }
+        if (
+          parentWinner &&
+          parentRead.events.some((event) => event.id === parentWinner.id)
+        ) {
           if (
             !isEventMarketAddressableRevisionDeleted(
               {
@@ -1672,7 +1728,7 @@ export async function readEventMarketProduct(
                 eventId: parentWinner.id,
                 createdAt: parentWinner.created_at * 1_000,
               },
-              [...loaded, ...deletionRead.events].filter(
+              [...loaded, ...parentEvidence].filter(
                 (event) => event.kind === EVENT_KINDS.DELETION
               )
             )
@@ -1965,7 +2021,13 @@ function catalogCandidates(input: {
         liveIds.has(revision.id) &&
         !retainedAssignmentCoordinates.has(productCoordinate)
       const needle = input.search?.trim().toLocaleLowerCase()
-      if (needle && !revision.content.toLocaleLowerCase().includes(needle))
+      if (
+        needle &&
+        ![product.title, revision.content]
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(needle)
+      )
         continue
       stale ||= !currentLive
       products.push({

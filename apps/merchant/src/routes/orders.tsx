@@ -209,6 +209,7 @@ import {
   ProductStockDecisionStore,
   settleSignedOrderStockDelivery,
   shouldShowOrderStockAdjustment,
+  withMerchantStockLock,
   type PendingProductStockDelivery,
   type ProductStockDecision,
   type OrderStockAdjustment,
@@ -2905,14 +2906,47 @@ function OrdersWorkspace() {
   async function commitSelectedInventory(order = selectedOrder) {
     if (!pubkey || !order) throw new Error("No order selected.")
     const authority = captureFreshOrderAuthority()
-    const result = await acceptMerchantOccurrenceOrder({
-      merchantPubkey: pubkey,
-      authenticatedPubkey,
-      shouldContinue: () => isCurrentOrderAction(authority),
-      order,
-      products: (orderProductsQuery.data?.data ?? []).map(
-        (record) => record.product
-      ),
+    const productIds = [...new Set(order.items.map((item) => item.productId))]
+    const inventory = await db.merchantInventoryProducts.bulkGet(productIds)
+    const unresolved = productIds.filter((_, index) => !inventory[index])
+    const resolved = unresolved.length
+      ? await getProductsByIds(unresolved, {
+          includeMarketHidden: true,
+          accountPubkey: pubkey,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAction(authority),
+        })
+      : null
+    const result = await withMerchantStockLock(pubkey, () => {
+      const priorStockAdjustments = productIds.flatMap((productCoordinate) => {
+        const decision = stockDecisionStoreRef.current.getPersisted(
+          pubkey,
+          order.id,
+          productCoordinate
+        )
+        if (!decision || decision.kind === "declined") return []
+        if (!decision.adjustment)
+          throw new Error("The saved order stock decision needs review.")
+        return [
+          {
+            productCoordinate,
+            quantity: decision.adjustment.quantity,
+            shortfall: decision.adjustment.shortfall,
+            targetMode: decision.adjustment.targetMode,
+          },
+        ]
+      })
+      return acceptMerchantOccurrenceOrder({
+        merchantPubkey: pubkey,
+        authenticatedPubkey,
+        shouldContinue: () => isCurrentOrderAction(authority),
+        order,
+        products: [
+          ...(orderProductsQuery.data?.data ?? []),
+          ...(resolved?.data ?? []),
+        ].map((record) => record.product),
+        priorStockAdjustments,
+      })
     })
     queryClient.setQueryData(
       ["merchant-accepted-inventory", pubkey, order.id],
@@ -2927,23 +2961,46 @@ function OrdersWorkspace() {
     mutationFn: async () => {
       if (!pubkey || !selectedOrder) throw new Error("No order selected.")
       const authority = captureFreshOrderAuthority()
+      const acceptance = await getMerchantInventoryAcceptedOrder(
+        db,
+        pubkey,
+        selectedOrder.id
+      )
+      if (!acceptance) throw new Error("The saved acceptance is unavailable.")
+      // The existing-order fast path verifies the original buyer and terms;
+      // retry must not retarget a saved decision to a conflicting order ID.
+      await acceptMerchantOccurrenceOrder({
+        merchantPubkey: pubkey,
+        authenticatedPubkey,
+        shouldContinue: () => isCurrentOrderAction(authority),
+        order: selectedOrder,
+        products: [],
+      })
       const result = await resumeMerchantOccurrencePublication({
         merchantPubkey: pubkey,
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
       })
-      await publishMerchantOrderMessage({
-        merchantPubkey: pubkey,
-        buyerPubkey: selectedOrder.buyerPubkey,
-        orderId: selectedOrder.id,
-        type: "status_update",
-        tags: [["status", "accepted"]],
-        payload: { status: "accepted" },
-        delivery: operationalDelivery,
-        signerInteraction: "external",
-        authenticatedPubkey,
-        shouldContinue: () => isCurrentOrderAction(authority),
-      })
+      // A later milestone already communicates acceptance to the buyer.
+      if (
+        !merchantPaid &&
+        (!merchantOrderState.status ||
+          ["pending", "accepted"].includes(merchantOrderState.status))
+      ) {
+        await publishMerchantOrderMessage({
+          merchantPubkey: pubkey,
+          buyerPubkey: selectedOrder.buyerPubkey,
+          orderId: selectedOrder.id,
+          type: "status_update",
+          tags: [["status", "accepted"]],
+          payload: { status: "accepted" },
+          inventoryAcceptanceAt: acceptance.acceptedAt,
+          delivery: operationalDelivery,
+          signerInteraction: "external",
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAction(authority),
+        })
+      }
       setInventoryNotice(
         result.pending
           ? "Accepted. Some inventory publication is still pending."
@@ -3033,13 +3090,15 @@ function OrdersWorkspace() {
               )
           }
         }
+        let inventoryAcceptanceAt: number | undefined
         if (nextStatus === "accepted") {
           const orderMessage = actionConversation.messages?.find(
             (message) => message.type === "order"
           )
           if (orderMessage?.type !== "order")
             throw new Error("The original order is unavailable.")
-          await commitSelectedInventory(orderMessage.payload)
+          const acceptance = await commitSelectedInventory(orderMessage.payload)
+          inventoryAcceptanceAt = acceptance.order.acceptedAt
           try {
             await resumeMerchantOccurrencePublication({
               merchantPubkey: pubkey,
@@ -3062,6 +3121,7 @@ function OrdersWorkspace() {
             type: "status_update",
             tags: [["status", nextStatus]],
             payload: { status: nextStatus },
+            inventoryAcceptanceAt,
             delivery: operationalDelivery,
             signerInteraction: "external",
             authenticatedPubkey,

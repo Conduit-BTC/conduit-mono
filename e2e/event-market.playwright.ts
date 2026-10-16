@@ -172,8 +172,11 @@ function signEvent(secret: Uint8Array, input: UnsignedEvent): SignedEvent {
   return finalizeEvent(input, secret)
 }
 
-function signedHistoricalAcceptedStatus(orderId: string): SignedEvent[] {
-  const createdAt = Math.floor(Date.now() / 1_000)
+function signedHistoricalAcceptedStatus(
+  orderId: string,
+  status = "accepted",
+  createdAt = Math.floor(Date.now() / 1_000)
+): SignedEvent[] {
   const rumorDraft = {
     kind: 16,
     pubkey: MERCHANT_PUBKEY,
@@ -182,10 +185,10 @@ function signedHistoricalAcceptedStatus(orderId: string): SignedEvent[] {
       ["p", BUYER_PUBKEY],
       ["type", "status_update"],
       ["order", orderId],
-      ["status", "accepted"],
+      ["status", status],
     ],
     content: JSON.stringify({
-      status: "accepted",
+      status,
       orderId,
       merchantPubkey: MERCHANT_PUBKEY,
       buyerPubkey: BUYER_PUBKEY,
@@ -1557,10 +1560,7 @@ test("signed series dates open one market and keep separate buyer choices @marke
   await expect(page.getByRole("option").last()).toBeDisabled()
 })
 
-test("Merchant assigns an approved shop product to one date without changing its listing @market @merchant", async ({
-  page,
-}) => {
-  test.setTimeout(180_000)
+async function createAssignedPickupOrder(page: Page) {
   page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
@@ -1722,6 +1722,24 @@ test("Merchant assigns an approved shop product to one date without changing its
     assignment.id
   )
 
+  return {
+    relay,
+    createdAt,
+    calendar,
+    market,
+    product,
+    assignment,
+    marketNaddr,
+    productPath,
+    order,
+  }
+}
+
+test("Merchant assigns an approved shop product to one date without changing its listing @market @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const { productPath, order } = await createAssignedPickupOrder(page)
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
   await expect(
@@ -6249,4 +6267,589 @@ test("retention before a failed creation pointer save exposes exact retry withou
       (event) => event.kind === 30409
     )
   ).toHaveLength(1)
+})
+
+function signedBuyerOrder(
+  order: Record<string, unknown> & { id: string },
+  createdAt: number
+): SignedEvent[] {
+  const draft = {
+    kind: 16,
+    pubkey: BUYER_PUBKEY,
+    created_at: createdAt,
+    tags: [
+      ["p", MERCHANT_PUBKEY],
+      ["type", "order"],
+      ["order", order.id],
+    ],
+    content: JSON.stringify(order),
+  }
+  const rumor = { ...draft, id: getEventHash(draft) }
+  return [MERCHANT_PUBKEY, BUYER_PUBKEY].map(
+    (recipient) =>
+      createWrap(
+        signEvent(BUYER_SECRET, {
+          kind: 13,
+          created_at: createdAt,
+          tags: [],
+          content: nip44.v2.encrypt(
+            JSON.stringify(rumor),
+            nip44.v2.utils.getConversationKey(BUYER_SECRET, recipient)
+          ),
+        }),
+        recipient
+      ) as SignedEvent
+  )
+}
+function signedBuyerPaymentReport(orderId: string): SignedEvent[] {
+  const at = Math.floor(Date.now() / 1000)
+  const draft = {
+    kind: 16,
+    pubkey: BUYER_PUBKEY,
+    created_at: at,
+    tags: [
+      ["p", MERCHANT_PUBKEY],
+      ["type", "payment_proof"],
+      ["order", orderId],
+    ],
+    content: JSON.stringify({
+      orderId,
+      rail: "lightning",
+      amount: 2500,
+      currency: "SATS",
+      zapRequestId: "1".repeat(64),
+      zapReceiptId: "2".repeat(64),
+    }),
+  }
+  const rumor = { ...draft, id: getEventHash(draft) }
+  return [MERCHANT_PUBKEY, BUYER_PUBKEY].map(
+    (recipient) =>
+      createWrap(
+        signEvent(BUYER_SECRET, {
+          kind: 13,
+          created_at: at,
+          tags: [],
+          content: nip44.v2.encrypt(
+            JSON.stringify(rumor),
+            nip44.v2.utils.getConversationKey(BUYER_SECRET, recipient)
+          ),
+        }),
+        recipient
+      ) as SignedEvent
+  )
+}
+
+async function occurrenceInventory(
+  page: Page,
+  productCoordinate: string,
+  orderId: string,
+  nowMs?: number
+) {
+  return page.evaluate(
+    async ({ root, productCoordinate, orderId, nowMs }) => {
+      const { db } = await import(`${root}/db/index.ts`)
+      const { readMerchantInventoryAvailability } = await import(
+        `${root}/protocol/merchant-inventory.ts`
+      )
+      const { readMerchantOccurrenceInventory } = await import(
+        `${root}/protocol/merchant-occurrence-workflow.ts`
+      )
+      await readMerchantOccurrenceInventory(productCoordinate.split(":")[1])
+      const state = await readMerchantInventoryAvailability(
+        db,
+        productCoordinate,
+        nowMs
+      )
+      const saved = await db.merchantInventoryAcceptedOrders.get(orderId)
+      return {
+        stock: state.product.stock,
+        allocation: state.assignments[0]?.inventory.quantity,
+        ordinaryAvailable: state.ordinaryAvailable,
+        storedEnd: state.assignments[0]?.occurrenceEndMs,
+        acceptedOrders: await db.merchantInventoryAcceptedOrders.count(),
+        savedOrder: !!saved,
+      }
+    },
+    {
+      root: `/@fs${process.cwd()}/packages/core/src`,
+      productCoordinate,
+      orderId,
+      nowMs,
+    }
+  )
+}
+
+async function rescheduleSameEvent(
+  page: Page,
+  relay: RelayHarness,
+  marketNaddr: string,
+  start: number,
+  end: number
+) {
+  await gotoAs(page, merchantUrl, "/events/" + marketNaddr, "organizer")
+  await page.locator("#future-edit-summary").fill("Updated market schedule")
+  await page
+    .locator("#future-edit-start")
+    .fill(new Date(start * 1000).toISOString().slice(0, 16))
+  await page
+    .locator("#future-edit-end")
+    .fill(new Date(end * 1000).toISOString().slice(0, 16))
+  const from = relay.publications.length
+  await page
+    .getByRole("button", { name: "Save event details", exact: true })
+    .click()
+  const updates = () =>
+    uniquePublishedEvents(relay.publications.slice(from)).filter(
+      (event) => event.kind === 31923
+    )
+  await expect.poll(() => updates().length).toBe(1)
+  return Number(updates()[0]!.tags.find((tag) => tag[0] === "end")![1]) * 1000
+}
+
+async function acceptPickupOrder(page: Page, orderId: string) {
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: orderId })
+  await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  await expect(
+    page.getByText(/Accepted and inventory saved on this device/)
+  ).toBeVisible()
+  await page.reload()
+  await expect(
+    page.getByText(/Accepted inventory is saved on this device/)
+  ).toBeVisible()
+}
+
+test("paid pickup keeps its original receipt and stock after same-event rescheduling @market @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const { relay, createdAt, calendar, product, order, marketNaddr } =
+    await createAssignedPickupOrder(page)
+  await acceptPickupOrder(page, order.id)
+  relay.seed(
+    ...signedHistoricalAcceptedStatus(
+      order.id,
+      "paid",
+      Math.floor(Date.now() / 1000) + 2
+    )
+  )
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: "Mark picked up / complete", exact: true })
+  ).toBeEnabled()
+  const before = await occurrenceInventory(
+    page,
+    eventCoordinate(product),
+    order.id
+  )
+  expect(before).toMatchObject({
+    stock: 8,
+    allocation: 1,
+    acceptedOrders: 1,
+    savedOrder: true,
+  })
+  const newStart = createdAt + 93_600
+  await rescheduleSameEvent(
+    page,
+    relay,
+    marketNaddr,
+    newStart,
+    createdAt + 97_200
+  )
+  await page.clock.setFixedTime(new Date((newStart + 600) * 1000))
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+  const from = relay.publications.length
+  await page
+    .getByRole("button", { name: "Mark picked up / complete", exact: true })
+    .click()
+  await expect
+    .poll(
+      () =>
+        uniquePrivatePublications(
+          decryptPrivatePublications(relay.publications, BUYER_SECRET, from)
+        ).filter(
+          (message) =>
+            rumorType(message.rumor) === "status_update" &&
+            JSON.parse(message.rumor.content).status === "complete"
+        ).length
+    )
+    .toBe(1)
+  expect(
+    await occurrenceInventory(page, eventCoordinate(product), order.id)
+  ).toMatchObject({ stock: 8, allocation: 1, acceptedOrders: 1 })
+  const historical = await page.evaluate(
+    async ({ root, orderId, calendarId }) => {
+      const { db } = await import(`${root}/db/index.ts`)
+      const saved = await db.merchantInventoryAcceptedOrders.get(orderId)
+      return (
+        JSON.parse(saved.evidence).items[0].fulfillment.calendar.eventId ===
+        calendarId
+      )
+    },
+    {
+      root: `/@fs${process.cwd()}/packages/core/src`,
+      orderId: order.id,
+      calendarId: calendar.id,
+    }
+  )
+  expect(historical).toBe(true)
+  await gotoAs(page, marketUrl, "/orders", "buyer", { order: order.id })
+  await expect(page.getByTestId("future-market-order-pickup")).toBeVisible()
+})
+
+for (const rescheduled of [false, true])
+  test(`prepaid first confirmation ${rescheduled ? "after same-event rescheduling" : "without a date change"} @market @merchant @occurrence-orders`, async ({
+    page,
+  }) => {
+    test.setTimeout(180_000)
+    const { relay, createdAt, product, order, marketNaddr } =
+      await createAssignedPickupOrder(page)
+    relay.seed(...signedBuyerPaymentReport(order.id))
+    if (rescheduled)
+      await rescheduleSameEvent(
+        page,
+        relay,
+        marketNaddr,
+        createdAt + 93_600,
+        createdAt + 97_200
+      )
+    await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+    await page
+      .getByRole("button", { name: "Confirm payment", exact: true })
+      .click()
+    const dialog = page.getByRole("alertdialog", {
+      name: "Confirm payment received?",
+    })
+    await expect(dialog).toBeVisible()
+    const from = relay.publications.length
+    await dialog
+      .getByRole("button", { name: "Confirm payment", exact: true })
+      .click()
+    await expect
+      .poll(
+        () =>
+          uniquePrivatePublications(
+            decryptPrivatePublications(relay.publications, BUYER_SECRET, from)
+          ).filter(
+            (message) =>
+              rumorType(message.rumor) === "status_update" &&
+              JSON.parse(message.rumor.content).status === "paid"
+          ).length
+      )
+      .toBe(1)
+    expect(
+      await occurrenceInventory(page, eventCoordinate(product), order.id)
+    ).toMatchObject({
+      stock: 8,
+      allocation: 1,
+      acceptedOrders: 1,
+      savedOrder: true,
+    })
+    await page.reload()
+    await page
+      .getByRole("button", {
+        name: "Retry acceptance publication",
+        exact: true,
+      })
+      .click()
+    await expect(
+      page.getByText("Accepted inventory updates published.", { exact: true })
+    ).toBeVisible()
+    expect(
+      await occurrenceInventory(page, eventCoordinate(product), order.id)
+    ).toMatchObject({ stock: 8, allocation: 1, acceptedOrders: 1 })
+  })
+
+for (const postponed of [true, false])
+  test(`same-event ${postponed ? "postponement keeps" : "earlier end releases"} unused allocations @market @merchant @occurrence-orders`, async ({
+    page,
+  }) => {
+    test.setTimeout(180_000)
+    const { relay, createdAt, product, order, marketNaddr } =
+      await createAssignedPickupOrder(page)
+    await acceptPickupOrder(page, order.id)
+    const start = createdAt + (postponed ? 93_600 : 600)
+    const end = createdAt + (postponed ? 97_200 : 1_200)
+    const newEnd = await rescheduleSameEvent(
+      page,
+      relay,
+      marketNaddr,
+      start,
+      end
+    )
+    await page.reload()
+    const now = postponed ? (createdAt + 10_860) * 1000 : newEnd + 60_000
+    expect(
+      await occurrenceInventory(page, eventCoordinate(product), order.id, now)
+    ).toMatchObject({
+      stock: 8,
+      allocation: 1,
+      acceptedOrders: 1,
+      storedEnd: newEnd,
+      ordinaryAvailable: postponed ? 7 : 8,
+    })
+  })
+
+test("acceptance publication retry preserves a later paid milestone @market @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const { relay, product, order } = await createAssignedPickupOrder(page)
+  await acceptPickupOrder(page, order.id)
+  relay.seed(
+    ...signedHistoricalAcceptedStatus(
+      order.id,
+      "paid",
+      Math.floor(Date.now() / 1000) + 2
+    )
+  )
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: "Mark picked up / complete", exact: true })
+  ).toBeEnabled()
+  await page.clock.setFixedTime(new Date(Date.now() + 5_000))
+  const from = relay.publications.length
+  await page
+    .getByRole("button", { name: "Retry acceptance publication", exact: true })
+    .click()
+  await expect(
+    page.getByText("Accepted inventory updates published.", { exact: true })
+  ).toBeVisible()
+  expect(
+    uniquePrivatePublications(
+      decryptPrivatePublications(relay.publications, BUYER_SECRET, from)
+    ).filter((message) => rumorType(message.rumor) === "status_update")
+  ).toHaveLength(0)
+  const rumors = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.events().map((event) => ({ event, relayUrl: FIXTURE_RELAY })),
+      BUYER_SECRET
+    )
+  ).map((message) => message.rumor)
+  const status = await page.evaluate(
+    async ({ root, rumors, merchant, buyer }) => {
+      const { parseOrderMessageRumorEvent } = await import(
+        `${root}/protocol/orders.ts`
+      )
+      const { getEffectiveMerchantOrderStatus } = await import(
+        `${root}/protocol/order-status.ts`
+      )
+      return getEffectiveMerchantOrderStatus(
+        rumors.map(parseOrderMessageRumorEvent),
+        { merchantPubkey: merchant, buyerPubkey: buyer }
+      ).status
+    },
+    {
+      root: `/@fs${process.cwd()}/packages/core/src`,
+      rumors,
+      merchant: MERCHANT_PUBKEY,
+      buyer: BUYER_PUBKEY,
+    }
+  )
+  expect(status).toBe("paid")
+  expect(
+    await occurrenceInventory(page, eventCoordinate(product), order.id)
+  ).toMatchObject({ stock: 8, allocation: 1, acceptedOrders: 1 })
+})
+
+test("selected order resolves its own products beyond the search cap @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const at = Math.floor(Date.now() / 1000) - 10
+  const products = Array.from({ length: 101 }, (_, i) =>
+    signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: at,
+      content: "",
+      tags: [
+        ["d", `cap-${String(i).padStart(3, "0")}`],
+        ["title", `Product ${i}`],
+        ["type", "simple", "digital"],
+        ["price", "1", "SATS"],
+        ["stock", "10"],
+      ],
+    })
+  )
+  const item = (i: number) => ({
+    productId: eventCoordinate(products[i]!),
+    title: `Product ${i}`,
+    format: "digital",
+    fulfillment: { type: "digital" },
+    quantity: 1,
+    priceAtPurchase: 1,
+    currency: "SATS",
+    sourcePrice: { amount: 1, currency: "SATS", normalizedCurrency: "SATS" },
+  })
+  const makeOrder = (id: string, indices: number[], time: number) => ({
+    id,
+    buyerPubkey: BUYER_PUBKEY,
+    merchantPubkey: MERCHANT_PUBKEY,
+    items: indices.map(item),
+    subtotal: indices.length,
+    currency: "SATS",
+    createdAt: time * 1000,
+  })
+  const many = makeOrder(
+    "search-many-products",
+    Array.from({ length: 100 }, (_, i) => i),
+    at + 2
+  )
+  const selected = makeOrder("search-cap-selected", [100], at)
+  relay.seed(
+    ...products,
+    createInboxDeclaration("merchant", at),
+    createInboxDeclaration("buyer", at),
+    ...signedBuyerOrder(many, at + 2),
+    ...signedBuyerOrder(selected, at)
+  )
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: selected.id })
+  await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  await expect(
+    page.getByText(/Accepted and inventory saved on this device/)
+  ).toBeVisible()
+  expect(
+    relay.requests.some((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) && filter["#d"]?.includes("cap-100")
+      )
+    )
+  ).toBe(true)
+  const state = await page.evaluate(
+    async ({ root, productId, orderId }) => {
+      const { db } = await import(`${root}/db/index.ts`)
+      return {
+        stock: (await db.merchantInventoryProducts.get(productId)).stock,
+        saved: !!(await db.merchantInventoryAcceptedOrders.get(orderId)),
+      }
+    },
+    {
+      root: `/@fs${process.cwd()}/packages/core/src`,
+      productId: eventCoordinate(products[100]!),
+      orderId: selected.id,
+    }
+  )
+  expect(state).toEqual({ stock: 9, saved: true })
+})
+
+test("legacy stock decision survives acceptance and publication retry @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const at = Math.floor(Date.now() / 1000) - 10
+  const original = signEvent(MERCHANT_SECRET, {
+    kind: 30402,
+    created_at: at - 1,
+    content: "",
+    tags: [
+      ["d", "legacy-last-unit"],
+      ["title", "Last unit"],
+      ["type", "simple", "digital"],
+      ["price", "1", "SATS"],
+      ["stock", "1"],
+    ],
+  })
+  const current = signEvent(MERCHANT_SECRET, {
+    ...original,
+    created_at: at,
+    tags: original.tags.map((tag) =>
+      tag[0] === "stock" ? ["stock", "0"] : tag
+    ),
+  })
+  const coordinate = eventCoordinate(current)
+  const order = {
+    id: "legacy-stock-last-unit",
+    buyerPubkey: BUYER_PUBKEY,
+    merchantPubkey: MERCHANT_PUBKEY,
+    items: [
+      {
+        productId: coordinate,
+        title: "Last unit",
+        format: "digital",
+        fulfillment: { type: "digital" },
+        quantity: 1,
+        priceAtPurchase: 1,
+        currency: "SATS",
+        sourcePrice: {
+          amount: 1,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+      },
+    ],
+    subtotal: 1,
+    currency: "SATS",
+    createdAt: (at - 2) * 1000,
+  }
+  relay.seed(
+    current,
+    createInboxDeclaration("merchant", at),
+    createInboxDeclaration("buyer", at),
+    ...signedBuyerOrder(order, at - 2)
+  )
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+  await page.evaluate(
+    async ({ root, merchant, orderId, coordinate, sourceId }) => {
+      const { ProductStockDecisionStore } = await import(
+        `${root}/lib/productStock.ts`
+      )
+      const saved = new ProductStockDecisionStore().set(
+        merchant,
+        orderId,
+        coordinate,
+        "applied",
+        {
+          key: `${encodeURIComponent(orderId)}:${encodeURIComponent(coordinate)}`,
+          addressId: coordinate,
+          sourceEventId: sourceId,
+          title: "Last unit",
+          quantity: 1,
+          currentStock: 1,
+          nextStock: 0,
+          shortfall: 0,
+        }
+      )
+      if (!saved) throw new Error("Fixture stock decision was not saved")
+    },
+    {
+      root: `/@fs${process.cwd()}/apps/merchant/src`,
+      merchant: MERCHANT_PUBKEY,
+      orderId: order.id,
+      coordinate,
+      sourceId: original.id,
+    }
+  )
+  await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  await expect(
+    page.getByText(/Accepted and inventory saved on this device/)
+  ).toBeVisible()
+  await page.reload()
+  await page
+    .getByRole("button", { name: "Retry acceptance publication", exact: true })
+    .click()
+  await expect(
+    page.getByText("Accepted inventory updates published.", { exact: true })
+  ).toBeVisible()
+  const state = await page.evaluate(
+    async ({ root, coordinate, orderId }) => {
+      const { db } = await import(`${root}/db/index.ts`)
+      return {
+        stock: (await db.merchantInventoryProducts.get(coordinate)).stock,
+        orders: await db.merchantInventoryAcceptedOrders.count(),
+        saved: !!(await db.merchantInventoryAcceptedOrders.get(orderId)),
+      }
+    },
+    {
+      root: `/@fs${process.cwd()}/packages/core/src`,
+      coordinate,
+      orderId: order.id,
+    }
+  )
+  expect(state).toEqual({ stock: 0, orders: 1, saved: true })
 })

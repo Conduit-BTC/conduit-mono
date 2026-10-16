@@ -148,7 +148,7 @@ describe("occurrence assignment buyer admission", () => {
     ).toBe(true)
   })
 
-  it("does not admit an update with missing or foreign parent evidence", async () => {
+  it("admits a current-only update but rejects a known foreign parent", async () => {
     const organizer = getPublicKey(generateSecretKey())
     const merchantSecret = generateSecretKey()
     const merchant = getPublicKey(merchantSecret)
@@ -176,7 +176,7 @@ describe("occurrence assignment buyer admission", () => {
     )
     const read = (events: SignedPublicNostrEvent[]) =>
       readEventMarketAssignment({ ...tuple }, source(events))
-    expect((await read([update])).state).toBe("incomplete")
+    expect((await read([update])).state).toBe("active")
     expect((await read([initial, update])).state).toBe("active")
     const foreign = finalizeEvent(
       {

@@ -137,6 +137,25 @@ retry work without another debit or signature. Structural union preservation in
 
 These are synthetic cryptographic/database integration tests. They do not prove
 external signer compatibility, independent-device reconciliation, live relay
-convergence, funded settlement or physical handout. Atomic rollover and the full
-rescheduling flow remain incomplete. New delegated organizer acceptance is gated;
+convergence, funded settlement or physical handout. Same-event rescheduling retains original order terms and updates unused
+allocation deadlines. Atomic rollover remains incomplete. New delegated organizer acceptance is gated;
 historical organizer receipt tests cannot stand in for that integration.
+
+## Order continuity regression coverage
+
+`merchant-occurrence-regressions` composes signed products, actual checkout
+pricing, existing local product writes, reopened inventory and acceptance. It
+covers fiat source-currency binding, prior stock decisions and shortfalls,
+pending pre-assignment orders, concurrent material product edits, retained
+variation-parent withdrawal evidence, and cold/warm assignment reads with
+missing superseded history and known-fork controls. `merchant-order-publish`
+verifies immutable acceptance notification identity after interruption.
+
+The `@occurrence-orders` cases in `e2e/event-market.playwright.ts` run in the
+Chromium, mobile Chromium and mobile WebKit smoke projects. They exercise the
+direct assignment and order flow, prepaid first confirmation before/after a
+same-event reschedule, paid pickup and original receipt continuity after the old
+end, revised unused-allocation deadlines in both directions, publication retry
+after payment, and selected-order resolution beyond the product-search cap.
+Browser payment reports, merchant confirmations and signer/relay interactions
+are synthetic; these checks establish client behavior, not funded settlement.
