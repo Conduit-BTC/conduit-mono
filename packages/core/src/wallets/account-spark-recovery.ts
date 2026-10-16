@@ -722,10 +722,7 @@ export async function backUpAccountSparkWallet(
   )
     return false
   if (
-    latest.coverage === "complete" &&
     latest.state === "recoverable" &&
-    !latest.invalidCount &&
-    !latest.unresolvedObserved &&
     latest.registry?.activeWalletIds.includes(walletId)
   )
     return latest.registryEventId
