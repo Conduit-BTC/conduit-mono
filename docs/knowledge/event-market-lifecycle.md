@@ -22,9 +22,10 @@ a roster edit never republishes their products.
 
 ## Dates and discovery
 
-Single-date market closure is explicit. A recurring market requires an
-explicitly selected current or future occurrence, with verified membership in
-the current schedule. Unresolved sibling dates do not invalidate a verified
+Market closure is explicit and separate from occurrence expiry. A new
+assignment purchase requires an unended concrete occurrence for both single-date
+and recurring markets. A recurring market additionally requires an explicitly
+selected occurrence with verified membership in the current schedule. Unresolved sibling dates do not invalidate a verified
 selected occurrence. Removed or edited dates do not rewrite an existing order.
 
 Both apps offer current/upcoming and history views. Calendar timezone and

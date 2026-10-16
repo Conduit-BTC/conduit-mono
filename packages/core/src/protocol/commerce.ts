@@ -267,6 +267,8 @@ export interface CommerceQueryMeta {
   capped?: boolean
   capabilities: CommerceCapabilities
   fetchedAt: number
+  /** Bounded product transport observation; independent of retained rows. */
+  productReadCoverage?: "complete" | "partial" | "unavailable"
   /** One ranked product-index response; coverage never implies corpus completeness. */
   productSearch?: {
     coverage: "complete" | "partial" | "unavailable"
@@ -4612,7 +4614,7 @@ async function fetchPublicProductRecords(query: {
   limit?: number
   readPolicy?: CommerceReadPolicy
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
-  onSearchCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
+  onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
   /** Ranked discovery paints from signed hits and known local evidence first. */
   localDeletionEvidenceOnly?: boolean
 }): Promise<CommerceProductRecord[]> {
@@ -4676,7 +4678,7 @@ async function fetchPublicProductRecords(query: {
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
   query.onTransportStatus?.(result.degraded, result.capped)
-  query.onSearchCoverage?.(result.coverage)
+  query.onReadCoverage?.(result.coverage)
 
   const deletionTimestamps = query.localDeletionEvidenceOnly
     ? await getLocalProductDeletionTimestamps(
@@ -5020,7 +5022,7 @@ async function getRankedMarketplaceProducts(
       onTransportStatus: (_, value) => {
         capped = value
       },
-      onSearchCoverage: (value) => {
+      onReadCoverage: (value) => {
         transport.coverage = value
       },
     })
@@ -5536,6 +5538,8 @@ export async function getMerchantStorefront(
   try {
     let transportDegraded = false
     let readCapped = false
+    let productReadCoverage: "complete" | "partial" | "unavailable" =
+      "unavailable"
     const rawEventLimit = getProductRawEventLimit(query.limit)
     const liveRecords = await fetchPublicProductRecords({
       retainRevisions: true,
@@ -5551,6 +5555,9 @@ export async function getMerchantStorefront(
       // a latency-sensitive caller (such as Market storefront hydration)
       // explicitly opts out.
       deletionFallbackWhenEmpty: query.deletionFallbackWhenEmpty !== false,
+      onReadCoverage: (coverage) => {
+        productReadCoverage = coverage
+      },
       onTransportStatus: (degraded, capped) => {
         transportDegraded ||= degraded
         readCapped ||= capped
@@ -5610,7 +5617,7 @@ export async function getMerchantStorefront(
           })
     return {
       data: withProductFamilyReadEvidence(filtered, meta),
-      meta,
+      meta: { ...meta, productReadCoverage },
     }
   } catch (error) {
     if (query.shouldContinue?.() === false) throw error

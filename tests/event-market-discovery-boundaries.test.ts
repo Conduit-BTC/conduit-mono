@@ -105,9 +105,13 @@ describe("current event owner-aware bounded relay plan", () => {
     expect(lookupOptions.accountPubkey === owner).toBe(true)
     expect(lookupOptions.authenticatedPubkey).toBeNull()
     const discovery = await getEventMarketDiscoveryReadPlan({
+      organizerPubkeys: [organizer],
       accountPubkey: owner,
       authenticatedPubkey: null,
     })
+    expect(lookupOptions.accountPubkey).toBe(owner)
+    expect(lookupOptions.authenticatedPubkey).toBeNull()
+    expect(lookupOptions.ownerSelectedRelayUrls).toEqual([])
     expect(discovery.ownerSelectedRelayUrls).toEqual([])
   })
   it("threads live owner authority while refusing remote insecure or loopback hints", async () => {

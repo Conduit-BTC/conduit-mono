@@ -8,7 +8,10 @@ shared Core readers in `event-market-roster-read.ts` and the scoped
 
 Timeline discovery starts with retained signed headers and one shared public
 relay plan. Following and curated perspectives scan every organizer in batches
-of 64; 64 is a request size, not an audience limit. Market guests browse kind
+of 64; 64 is a request size, not an audience limit. One batched NIP-65 lookup
+adds explicit organizers' advertised write relays to that same bounded plan,
+with their source grants retained through final network admission. Unavailable,
+stale or partial relay metadata keeps discovery coverage limited. Market guests browse kind
 30409 candidates without an author filter on the selected public relays. An
 empty Following list remains an empty audience. Established session identity owns
 that audience even while a remote signer is recovering. Only a settled guest
@@ -16,6 +19,10 @@ session uses author-free discovery and public-browsing messaging; signer readine
 does not turn a retained account into a guest.
 Retained account scope does not admit owner-only relay grants. Those reads also
 require the matching connected signer and a current authority generation.
+When that authenticated owner belongs to the explicit organizer audience,
+discovery also includes the owner's signed write-only relay selections. This
+preserves cold discovery on explicitly selected non-TLS transports without
+granting them to other audiences or recovering accounts.
 
 Candidate reads run four at a time with a budget of 128 requests per pass.
 The relay planner's distinct admitted-source cap applies to the whole scan,
@@ -31,7 +38,7 @@ also advance through its final timestamp to older records without clearing the
 retryable range or claiming complete coverage. Duplicate cursors share one
 request in a pass. Exact roster and calendar hydration runs four at a
 time, for up to 128 coordinates per pass. Only discovered or retained coordinates
-need organizer relay planning. Observed relay sources accompany exact reads.
+need exact organizer hydration. Observed relay sources accompany exact reads.
 A new signed revision or newly observed source refreshes exact hydration, even
 when that source delivers an already-seen event ID. Source provenance is separate
 from signed event identity.
@@ -47,11 +54,14 @@ cancelled or superseded progress cannot update the active view. Unrefreshed
 retained rows are marked stale, not promoted to fresh authority.
 
 The catalog paints provisional product candidates before per-merchant admission
-checks. A bounded market-tag query, cached candidates, search and Load more
-support fast browsing. Signed product ownership, visibility and known negative
-evidence still constrain what can be shown. An unavailable optional source is
-not proof of absence. A known revoke, deletion or newer untagged revision cannot
-be undone by a stale response.
+checks. Bounded kind `30410` reads select the exact market and occurrence from
+the roster's merchant authors, then resolve ordinary product coordinates.
+Cached candidates, search and Load more support fast browsing. Signed ownership,
+visibility and known negative evidence still constrain what can be shown. An
+unavailable optional source is not proof of absence. A known grant or assignment
+revoke, deletion, or stronger product visibility state cannot be undone by a
+stale response. Removing an ordinary product's discovery hint alone does not
+revoke a valid assignment.
 
 `FutureEventMarketPage` renders incremental results in its scoped query and
 states that availability is checked on selection. Search and merchant filters
