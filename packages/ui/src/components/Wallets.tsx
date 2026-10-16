@@ -219,10 +219,16 @@ export function Wallets({
       !auth.isAuthGenerationCurrent(scope.generation)
     )
       return
-    if (method === "password" || hasPasswordFallback) {
+    if (method === "password" || (hasPasswordFallback && !signerReady)) {
       openWalletDialog(setUnlockWallet, wallet, trigger)
     } else {
-      await wallets.unlockSpark(wallet.id)
+      try {
+        await wallets.unlockSpark(wallet.id)
+      } catch (error) {
+        if (hasPasswordFallback && authScopeRef.current === scope)
+          openWalletDialog(setUnlockWallet, wallet, trigger)
+        else throw error
+      }
     }
   }
 
@@ -372,7 +378,10 @@ export function Wallets({
             {((wallets.portableWallets.length === 0 &&
               wallets.recoverySync !== "idle") ||
               wallets.recoverySync === "blocked") && (
-              <RecoverySyncNotice wallets={wallets} />
+              <RecoverySyncNotice
+                key={`${auth.accountPubkey}:${auth.authGeneration}`}
+                wallets={wallets}
+              />
             )}
             {wallets.initializationError ? (
               <div
@@ -795,6 +804,8 @@ function RecoverySyncNotice({
   wallets: UseWalletsReturn
   compactBlocked?: boolean
 }) {
+  const [repairing, setRepairing] = useState(false)
+  const [repairError, setRepairError] = useState<string | null>(null)
   return (
     <div
       className="grid gap-2 text-pretty text-sm text-[var(--text-secondary)]"
@@ -814,7 +825,7 @@ function RecoverySyncNotice({
               : wallets.recoverySync === "blocked"
                 ? compactBlocked
                   ? "Wallet recovery needs attention."
-                  : "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet."
+                  : "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending."
                 : "Recovery sync is pending. Wait for confirmed recovery before relying on it in another app."}
           </p>
           {wallets.hasPasswordWallets && (
@@ -828,6 +839,36 @@ function RecoverySyncNotice({
             identity.
           </p>
         </>
+      )}
+      {wallets.recoveryDiscoveryDiagnosis?.legacyUnresolved && (
+        <div className="grid justify-items-start gap-2">
+          <p>
+            Repair an old recovery warning after verifying your backups. Wallets
+            and saved recovery records are kept.
+          </p>
+          <Button
+            variant="outline"
+            disabled={repairing || wallets.recoverySync === "checking"}
+            onClick={() => {
+              setRepairing(true)
+              setRepairError(null)
+              void wallets
+                .repairRecovery()
+                .catch((error) => {
+                  setRepairError(
+                    getErrorMessage(
+                      error,
+                      "Recovery could not be repaired. Your saved recovery is unchanged."
+                    )
+                  )
+                })
+                .finally(() => setRepairing(false))
+            }}
+          >
+            {repairing ? "Checking recovery…" : "Repair saved recovery state"}
+          </Button>
+          {repairError && <p role="alert">{repairError}</p>}
+        </div>
       )}
       <RecoveryDiagnosisDetails wallets={wallets} />
     </div>
@@ -2468,7 +2509,10 @@ function UnlockWalletDialog({
               ? "Opening with your Nostr signer."
               : usePreviousPassword
                 ? "Use the previous wallet password to open its retained recovery copy."
-                : "Enter the existing wallet password. You can switch this wallet to Nostr sign-in after verifying recovery."}
+                : recoveryState.status === "ready" &&
+                    recoveryState.method === "password"
+                  ? "Enter the existing wallet password. You can switch this wallet to Nostr sign-in after verifying recovery."
+                  : "Checking this wallet’s recovery method…"}
           </DialogDescription>
         </DialogHeader>
         <WalletRecoveryMethodFields

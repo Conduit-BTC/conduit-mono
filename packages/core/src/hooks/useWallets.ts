@@ -27,6 +27,7 @@ import {
   recoveryReadiness,
   type SparkRecoveryDiscovery,
 } from "../wallets/spark-recovery-service"
+import { SparkRecoveryError } from "../wallets/spark-recovery-contract"
 import { sparkWalletRegistryDTag } from "../wallets/spark-recovery-address"
 import {
   notifySparkRecoveryReady,
@@ -37,6 +38,7 @@ import {
   runAccountWalletSetup,
   assertWalletCreationDiscovery,
   restoreAccountSparkWallets,
+  resolveExplicitSparkImport,
   backUpAccountSparkWallet,
   bootstrapLegacyAccountWalletRegistry,
   reconcileAccountWalletRegistryMembership,
@@ -177,6 +179,7 @@ export interface UseWalletsReturn {
     coverage: SparkRecoveryDiscovery["coverage"]
     state: SparkRecoveryDiscovery["state"]
     invalidEvidence: boolean
+    legacyUnresolved: boolean
     registryMembershipReady: boolean
   } | null
   nwcSnapshots: Record<string, NwcSessionSnapshot>
@@ -187,6 +190,7 @@ export interface UseWalletsReturn {
   retryWalletNames(): Promise<void>
   recoverySync: "idle" | "checking" | "ready" | "pending" | "blocked"
   retryRecovery(): Promise<void>
+  repairRecovery(): Promise<void>
   signerUnlockSupported: boolean
   sparkAvailability: ReturnType<typeof getSparkConfiguration>
   hasSparkRecovery(walletId: string): Promise<boolean>
@@ -267,6 +271,7 @@ function summarizeRecoveryDiscovery(
     coverage: discovery.coverage,
     state: discovery.state,
     invalidEvidence: discovery.invalidCount > 0 || discovery.unresolvedObserved,
+    legacyUnresolved: discovery.unresolvedObserved,
     registryMembershipReady: discovery.registryMembershipReady === true,
   }
 }
@@ -1063,11 +1068,8 @@ export function useWallets(
             })
           }
         }
-        if (!discovery.registryMembershipReady) {
-          await refreshAfterCommittedWalletMutation()
-          setRecoverySync("pending")
-          return { discovery, restored: [] }
-        }
+        // Positive signed membership can restore its wallet without changing
+        // defaults or treating incomplete relay convergence as confirmed.
       }
       const restored = await restoreAccountSparkWallets(
         signer,
@@ -1086,7 +1088,7 @@ export function useWallets(
         })
       }
       await refreshAfterCommittedWalletMutation()
-      let pending = false
+      let pending = !!discovery.registry && !discovery.registryMembershipReady
       const journal = await new DexieSparkRecoveryStore().load(signer.pubkey)
       const primaryRecord = journal.records.find(
         (record) => record.event.id === discovery.primaryPointerEventId
@@ -1217,6 +1219,29 @@ export function useWallets(
       )
     } catch (error) {
       if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
+      throw error
+    }
+  }, [synchronizeRecovery])
+
+  const repairRecovery = useCallback(async () => {
+    const signer = requireWalletSigner()
+    try {
+      await runAccountWalletSetup(signer, async () => {
+        await getAccountSparkRecovery(signer).repairLegacyUnresolved(
+          getSparkWalletNetwork()
+        )
+        assertWalletSignerCurrent(signer)
+        await synchronizeRecovery(signer, {
+          publishExisting: true,
+          priority: "foreground",
+        })
+      })
+    } catch (error) {
+      if (error instanceof SparkRecoveryError)
+        throw new Error(
+          "Recovery could not be safely repaired. Keep your saved recovery and retry, or restore with your recovery phrase.",
+          { cause: error }
+        )
       throw error
     }
   }, [synchronizeRecovery])
@@ -1398,46 +1423,29 @@ export function useWallets(
       requireSparkManager()
       const signer = requireWalletSigner()
       return runAccountWalletSetup(signer, async () => {
-        const { discovery } = await synchronizeRecovery(signer, {
+        const network = getSparkWalletNetwork()
+        const service = getAccountSparkRecovery(signer)
+        const discovery = await service.discover(false, network, {
           priority: "foreground",
         })
-        const network = getSparkWalletNetwork()
-        const resolvedAddyEventIds: string[] = []
-        for (const candidate of discovery.candidates) {
-          if (candidate.source !== "addy" || candidate.resolved) continue
-          const bundle = await getAccountSparkRecovery(signer).restore(
-            candidate,
-            {
-              network,
-              accountNumber: input.accountNumber,
-            },
-            { priority: "foreground" }
-          )
-          if (bundle.mnemonic === normalizeSparkMnemonic(input.mnemonic))
-            resolvedAddyEventIds.push(candidate.eventId)
+        assertWalletSignerCurrent(signer)
+        const bundle = {
+          mnemonic: normalizeSparkMnemonic(input.mnemonic),
+          network,
+          accountNumber: input.accountNumber,
         }
-        assertWalletCreationDiscovery(discovery, resolvedAddyEventIds)
-        let walletId: string | undefined
-        for (const candidate of discovery.candidates) {
-          if (candidate.source !== "conduit_v1") continue
-          const bundle = await getAccountSparkRecovery(signer).restore(
-            candidate,
-            undefined,
-            { priority: "foreground" }
-          )
-          if (
-            "walletId" in bundle &&
-            bundle.network === network &&
-            bundle.accountNumber === input.accountNumber &&
-            bundle.mnemonic === normalizeSparkMnemonic(input.mnemonic)
-          )
-            walletId = bundle.walletId
-        }
+        const walletId = await resolveExplicitSparkImport({
+          service,
+          bundle,
+          discovery,
+          journal: await new DexieSparkRecoveryStore().load(signer.pubkey),
+        })
+        assertWalletSignerCurrent(signer)
         const wallet = await setupSparkWallet({
           ...input,
           mnemonic: normalizeSparkMnemonic(input.mnemonic),
           walletId,
-          restored: !!walletId,
+          restored: true,
         })
         assertWalletSignerCurrent(signer)
         await new DexieSparkRecoveryStore().setDeviceRemoved(
@@ -1482,12 +1490,7 @@ export function useWallets(
         return wallet
       })
     },
-    [
-      setupSparkWallet,
-      synchronizeRecovery,
-      refreshAfterCommittedWalletMutation,
-      store,
-    ]
+    [setupSparkWallet, refreshAfterCommittedWalletMutation, store]
   )
 
   useEffect(() => {
@@ -2334,6 +2337,7 @@ export function useWallets(
     recoveryDiscoveryDiagnosis:
       loadedOwner === auth.accountPubkey ? recoveryDiscoveryDiagnosis : null,
     retryRecovery,
+    repairRecovery,
     signerUnlockSupported: getAccountSigner()?.capabilities.nip44 === true,
     sparkAvailability: getSparkConfiguration(),
     hasSparkRecovery,
