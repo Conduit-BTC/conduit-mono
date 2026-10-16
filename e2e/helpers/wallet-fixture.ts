@@ -310,11 +310,15 @@ export async function openWalletSetup(
     phase: "before_trigger" | "trigger_clicked" | "import_clicked"
   ) => Promise<void>
 ) {
+  // Exercise the real touch path. Mouse input opens Radix menus on pointerdown;
+  // the wallet touch path opens only after the gesture has completed.
+  const activate = (control: Locator) =>
+    test.info().project.use.hasTouch ? control.tap() : control.click()
   await diagnostic?.("before_trigger")
-  await page.getByRole("button", { name: "Add wallet", exact: true }).click()
+  await activate(page.getByRole("button", { name: "Add wallet", exact: true }))
   await diagnostic?.("trigger_clicked")
-  await page
-    .getByRole("menuitem", {
+  await activate(
+    page.getByRole("menuitem", {
       name:
         name === "Create wallet"
           ? "Create a wallet"
@@ -323,7 +327,7 @@ export async function openWalletSetup(
             : "Connect an external wallet",
       exact: true,
     })
-    .click()
+  )
   await diagnostic?.("import_clicked")
 }
 
