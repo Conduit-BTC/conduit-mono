@@ -24,6 +24,17 @@ export function getMerchantProductMarketReferences(
   return [...references]
 }
 
+export function isMerchantTimelineMarketReadIncomplete(
+  read: EventMarketRosterReadResult
+): boolean {
+  return (
+    read.resolution.state !== "current" ||
+    read.coverage !== "complete" ||
+    read.calendarCoverage !== "complete" ||
+    (read.schedule?.kind === "series" && read.scheduleCoverage !== "complete")
+  )
+}
+
 export async function hydrateMerchantProductMarkets(input: {
   references: readonly string[]
   read: (
