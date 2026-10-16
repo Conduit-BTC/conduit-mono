@@ -1,5 +1,6 @@
 import { sameSignedPublicEvent } from "./verified-public-event"
 import { effectiveAllocation } from "./merchant-inventory"
+import { reconcileKnownOccurrenceLifecycle } from "./merchant-occurrence-lifecycle"
 import {
   db,
   type CachedProduct,
@@ -1589,6 +1590,7 @@ export async function commitLocalProductWrite(
         db.merchantInventoryProducts,
         db.merchantInventoryAssignments,
         db.merchantInventoryAcceptedOrders,
+        db.eventMarketRosterEvidence,
       ],
       async () => {
         if (input.shouldContinue?.() === false) {
@@ -1785,6 +1787,9 @@ export async function commitLocalProductWrite(
             throw new Error(
               "Committed inventory changed before the product edit"
             )
+          // A known postponement protects remaining units even when the
+          // assignment panel has not been opened since the calendar changed.
+          await reconcileKnownOccurrenceLifecycle(intent.merchantPubkey, row.id)
           const assignments = await db.merchantInventoryAssignments
             .where("productCoordinate")
             .equals(row.id)

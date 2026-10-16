@@ -13,7 +13,15 @@ import { orderSchema, type ProductSchema } from "../packages/core/src/schemas"
 import { admitFixtureEvent } from "./helpers/admit-event"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
 import { projectSignedProductListingForLocalCommit } from "../packages/core/src/protocol/commerce"
-import { initializeMerchantInventoryProduct } from "../packages/core/src/protocol/merchant-inventory"
+import {
+  initializeMerchantInventoryProduct,
+  commitMerchantInventoryAssignment,
+} from "../packages/core/src/protocol/merchant-inventory"
+import { computeEventMarketAssignmentDTag } from "../packages/core/src/protocol/event-market-assignment"
+import {
+  buildEventMarketCalendarDraft,
+  parseEventMarketCalendarEvent,
+} from "../packages/core/src/protocol/event-market"
 import { acceptMerchantOccurrenceOrder } from "../packages/core/src/protocol/merchant-occurrence-workflow"
 import { commitLocalProductWrite } from "../packages/core/src/protocol/local-product-write"
 import { prepareProductListingDeliveryJob } from "../packages/core/src/protocol/product-listing-delivery"
@@ -21,6 +29,7 @@ import {
   readEventMarketRoster,
   readEventMarketProduct,
   readEventMarketCatalog,
+  retainEventMarketCommerceEvidence,
 } from "../packages/core/src/protocol/event-market-roster-read"
 import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 
@@ -416,82 +425,84 @@ it("cold shopper can buy remaining allocation with only the latest signed revisi
   ])
   expect(currentOnly.actionable).toBe(true)
 })
-it("valid pre-assignment pending order retains an acceptance path", async () => {
-  const f = createEventMarketOrderFixture({ mode: "merchant_present" })
-  const verified = await admitFixtureEvent(f.fulfillment.product.signedEvent)
-  const product = parseProductEvent(verified)
-  await db.products.put(projectSignedProductListingForLocalCommit(verified))
-  await initializeMerchantInventoryProduct({
-    db,
-    merchantPubkey: f.merchant,
-    productCoordinate: product.id,
-    stock: product.stock,
-    signedProductEvent: verified,
+for (const mode of ["merchant_present", "organizer_handoff"] as const)
+  it(`valid pre-assignment ${mode} order retains an acceptance path`, async () => {
+    const f = createEventMarketOrderFixture({ mode })
+    const verified = await admitFixtureEvent(f.fulfillment.product.signedEvent)
+    const product = parseProductEvent(verified)
+    await db.products.put(projectSignedProductListingForLocalCommit(verified))
+    await initializeMerchantInventoryProduct({
+      db,
+      merchantPubkey: f.merchant,
+      productCoordinate: product.id,
+      stock: product.stock,
+      signedProductEvent: verified,
+    })
+    const result = await acceptMerchantOccurrenceOrder({
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+      order: f.order,
+      products: [product],
+    }).then(
+      () => ({ accepted: true, error: undefined }),
+      (e) => ({ accepted: false, error: e.message })
+    )
+    expect(result.accepted).toBe(true)
   })
-  const result = await acceptMerchantOccurrenceOrder({
-    merchantPubkey: f.merchant,
-    authenticatedPubkey: f.merchant,
-    shouldContinue: () => true,
-    order: f.order,
-    products: [product],
-  }).then(
-    () => ({ accepted: true, error: undefined }),
-    (e) => ({ accepted: false, error: e.message })
-  )
-  expect(result.accepted).toBe(true)
-})
 
-it("unended pre-assignment pending order retains an acceptance path", async () => {
-  const f = createEventMarketOrderFixture({
-    mode: "merchant_present",
-    newAssignment: true,
+for (const mode of ["merchant_present", "organizer_handoff"] as const)
+  it(`unended pre-assignment ${mode} order retains an acceptance path`, async () => {
+    const f = createEventMarketOrderFixture({
+      mode,
+      newAssignment: true,
+    })
+    const original = f.fulfillment.product.signedEvent!
+    const legacyProduct = finalizeEvent(
+      {
+        ...original,
+        tags: [...original.tags, ["a", f.fulfillment.market.coordinate]],
+      },
+      f.merchantSecret
+    )
+    expect(f.fulfillment.occurrenceAssignment).toBeDefined()
+    const historical = { ...f.fulfillment, occurrenceAssignment: undefined }
+    const fulfillment = {
+      ...historical,
+      product: {
+        ...historical.product,
+        eventId: legacyProduct.id,
+        signedEvent: legacyProduct,
+      },
+    }
+    const purchase = orderSchema.parse({
+      ...f.order,
+      id: "future-pre-assignment",
+      items: [{ ...f.order.items[0], fulfillment }],
+    })
+    expect(fulfillment.calendar.end).toBeGreaterThan(Date.now())
+    const verified = await admitFixtureEvent(legacyProduct)
+    const product = parseProductEvent(verified)
+    await db.products.put(projectSignedProductListingForLocalCommit(verified))
+    await initializeMerchantInventoryProduct({
+      db,
+      merchantPubkey: f.merchant,
+      productCoordinate: product.id,
+      stock: product.stock,
+      signedProductEvent: verified,
+    })
+    const result = await acceptMerchantOccurrenceOrder({
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+      order: purchase,
+      products: [product],
+    }).then(
+      () => ({ accepted: true, error: undefined }),
+      (e) => ({ accepted: false, error: e.message })
+    )
+    expect(result.accepted).toBe(true)
   })
-  const original = f.fulfillment.product.signedEvent!
-  const legacyProduct = finalizeEvent(
-    {
-      ...original,
-      tags: [...original.tags, ["a", f.fulfillment.market.coordinate]],
-    },
-    f.merchantSecret
-  )
-  expect(f.fulfillment.occurrenceAssignment).toBeDefined()
-  const historical = { ...f.fulfillment, occurrenceAssignment: undefined }
-  const fulfillment = {
-    ...historical,
-    product: {
-      ...historical.product,
-      eventId: legacyProduct.id,
-      signedEvent: legacyProduct,
-    },
-  }
-  const purchase = orderSchema.parse({
-    ...f.order,
-    id: "future-pre-assignment",
-    items: [{ ...f.order.items[0], fulfillment }],
-  })
-  expect(fulfillment.calendar.end).toBeGreaterThan(Date.now())
-  const verified = await admitFixtureEvent(legacyProduct)
-  const product = parseProductEvent(verified)
-  await db.products.put(projectSignedProductListingForLocalCommit(verified))
-  await initializeMerchantInventoryProduct({
-    db,
-    merchantPubkey: f.merchant,
-    productCoordinate: product.id,
-    stock: product.stock,
-    signedProductEvent: verified,
-  })
-  const result = await acceptMerchantOccurrenceOrder({
-    merchantPubkey: f.merchant,
-    authenticatedPubkey: f.merchant,
-    shouldContinue: () => true,
-    order: purchase,
-    products: [product],
-  }).then(
-    () => ({ accepted: true, error: undefined }),
-    (e) => ({ accepted: false, error: e.message })
-  )
-  expect(result.accepted).toBe(true)
-})
 for (const currency of ["SATS", "USD"])
   it(`actual ${currency} checkout payload can be accepted unchanged`, async () => {
     const p = await setup(listing(`composed-${currency}`, 10, 10, currency))
@@ -796,4 +807,124 @@ it("keeps an observed assignment removal through a later stale read", async () =
   expect((await readEventMarketProduct(input, env.deps)).actionable).toBe(false)
   env.set(f.events)
   expect((await readEventMarketProduct(input, env.deps)).actionable).toBe(false)
+})
+
+for (const stockAction of [false, true])
+  it(`shared ${stockAction ? "order stock action" : "product edit"} protects a retained postponement before any assignment-panel read`, async () => {
+    const original = listing(`postponed-${stockAction}`, 6)
+    const product = await setup(original)
+    const organizerSecret = generateSecretKey()
+    const organizer = getPublicKey(organizerSecret)
+    const now = Math.floor(Date.now() / 1000)
+    const oldEnd = (now + 7200) * 1000
+    const newEnd = oldEnd + 7200000
+    const marketCoordinate = `30409:${organizer}:postponed`
+    const occurrenceCoordinate = `31923:${organizer}:postponed`
+    const assignmentCoordinate = `30410:${merchant}:${computeEventMarketAssignmentDTag({ marketCoordinate, occurrenceCoordinate, productCoordinate: product.id })}`
+    await commitMerchantInventoryAssignment({
+      db,
+      merchantPubkey: merchant,
+      productCoordinate: product.id,
+      assignmentCoordinate,
+      marketCoordinate,
+      occurrenceCoordinate,
+      inventory: { mode: "tracked", quantity: 4 },
+      state: "active",
+      fulfillmentMethods: ["pickup"],
+      expectedRevision: null,
+      mutationId: "allocate-before-postponement",
+      context: {
+        kind: "validated-event-market-assignment",
+        productEventId: original.id,
+        marketEventId: "a".repeat(64),
+        occurrenceEventId: "b".repeat(64),
+        grantEventId: "c".repeat(64),
+        occurrenceEndMs: oldEnd,
+        terminal: false,
+      },
+    })
+    const calendar = finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: 31923,
+          dTag: "postponed",
+          title: "Postponed fair",
+          start: now + 10800,
+          end: newEnd / 1000,
+          locations: ["Public hall"],
+        }),
+        created_at: now,
+      },
+      organizerSecret
+    )
+    expect(
+      parseEventMarketCalendarEvent(await admitFixtureEvent(calendar))?.end
+    ).toBe(newEnd)
+    await retainEventMarketCommerceEvidence(marketCoordinate, [calendar])
+    const changed = listing(`postponed-${stockAction}`, 1, 10, "SATS", 102)
+    const clock = spyOn(Date, "now").mockReturnValue(oldEnd + 1000)
+    try {
+      await expect(
+        commitLocalProductWrite({
+          intentId: "ordinary-write-after-old-end",
+          merchantPubkey: merchant,
+          expectedRevisions: [{ addressId: product.id, eventId: original.id }],
+          listingJob: job(changed),
+          ...(stockAction
+            ? {
+                stock: {
+                  orderId: "ordinary-order",
+                  adjustment: {
+                    key: `${encodeURIComponent("ordinary-order")}:${encodeURIComponent(product.id)}`,
+                    addressId: product.id,
+                    sourceEventId: original.id,
+                    title: product.title,
+                    quantity: 5,
+                    currentStock: 6,
+                    nextStock: 1,
+                    shortfall: 0,
+                  },
+                },
+              }
+            : {}),
+        })
+      ).rejects.toThrow(
+        "Reconcile occurrence allocations before changing stock"
+      )
+      expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(
+        6
+      )
+      expect(await db.localProductWriteIntents.count()).toBe(0)
+      expect(await db.localProductStockCheckpoints.count()).toBe(0)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+it("new delegated assignment acceptance stays gated while legacy handoff orders remain usable", async () => {
+  const f = createEventMarketOrderFixture({
+    mode: "organizer_handoff",
+    newAssignment: true,
+  })
+  const verified = await admitFixtureEvent(f.fulfillment.product.signedEvent)
+  const product = parseProductEvent(verified)
+  await db.products.put(projectSignedProductListingForLocalCommit(verified))
+  await initializeMerchantInventoryProduct({
+    db,
+    merchantPubkey: f.merchant,
+    productCoordinate: product.id,
+    stock: product.stock,
+    signedProductEvent: verified,
+  })
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+      order: f.order,
+      products: [product],
+    })
+  ).rejects.toThrow("This order needs its delegated fulfillment workflow.")
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(6)
 })

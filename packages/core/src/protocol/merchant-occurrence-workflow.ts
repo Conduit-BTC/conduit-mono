@@ -1,4 +1,3 @@
-import Dexie from "dexie"
 import { verifySignedEventBatches } from "./relay-reader"
 import { db } from "../db"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
@@ -44,6 +43,12 @@ import {
   type MerchantInventoryPriorStockAdjustment,
 } from "./merchant-inventory"
 
+import {
+  isOccurrenceCancelled as cancelled,
+  newestAddressableEvidence as newest,
+  reconcileKnownOccurrenceLifecycle,
+} from "./merchant-occurrence-lifecycle"
+
 interface MerchantOccurrenceSession {
   merchantPubkey: string
   authenticatedPubkey: string | null
@@ -56,31 +61,6 @@ function assertSession(input: MerchantOccurrenceSession) {
   )
     throw new Error("Reconnect the merchant account before changing inventory.")
 }
-function cancelled(event: SignedPublicNostrEvent): boolean {
-  const tags = event.tags.filter((tag) => tag[0] === "event_occurrence")
-  return (
-    tags.length > 1 ||
-    tags.some(
-      (tag) => tag.length !== 3 || tag[1] !== "1" || tag[2] !== "scheduled"
-    )
-  )
-}
-function newest(events: SignedPublicNostrEvent[], coordinate: string) {
-  return events
-    .filter(
-      (event) =>
-        `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}` ===
-          coordinate && isValidSignedPublicNostrEvent(event)
-    )
-    .sort(
-      (a, b) =>
-        -compareReplaceableEventFrontiers(
-          { createdAt: a.created_at, eventId: a.id },
-          { createdAt: b.created_at, eventId: b.id }
-        )
-    )[0]
-}
-
 /** A stale relay copy of this writer's own signed work is not a new stock writer. */
 async function assertKnownAssignmentInventoryAuthority(input: {
   coordinate: string
@@ -187,77 +167,6 @@ async function assertKnownAssignmentInventoryAuthority(input: {
     throw new Error(
       "A newer independent assignment revision needs inventory reconciliation."
     )
-}
-
-/** Current dates govern unused allocations; accepted order snapshots stay intact. */
-async function reconcileKnownOccurrenceLifecycle(merchantPubkey: string) {
-  const assignments = await db.merchantInventoryAssignments
-    .where("merchantPubkey")
-    .equals(merchantPubkey)
-    .toArray()
-  for (const assignment of assignments) {
-    await db.transaction(
-      "rw",
-      db.merchantInventoryAssignments,
-      db.eventMarketRosterEvidence,
-      async () => {
-        const current = await db.merchantInventoryAssignments.get(
-          assignment.coordinate
-        )
-        if (!current || current.terminal) return
-        // Serialize the known calendar frontier and the allocation deadline together.
-        const evidence = await Dexie.waitFor(
-          loadRetainedSignedEventMarketEvidence(current.marketCoordinate)
-        )
-        const occurrence = newest(evidence, current.occurrenceCoordinate)
-        if (!occurrence) return
-        const hasCancellation = evidence.some(
-          (event) =>
-            event.kind === occurrence.kind &&
-            event.pubkey === occurrence.pubkey &&
-            event.tags.some(
-              (tag) =>
-                tag[0] === "d" &&
-                tag[1] ===
-                  occurrence.tags.find((candidate) => candidate[0] === "d")?.[1]
-            ) &&
-            event.tags.filter((tag) => tag[0] === "event_occurrence").length ===
-              1 &&
-            event.tags.some(
-              (tag) =>
-                tag.length === 3 &&
-                tag[0] === "event_occurrence" &&
-                tag[1] === "1" &&
-                tag[2] === "cancelled"
-            )
-        )
-        const deleted = isEventMarketAddressableRevisionDeleted(
-          {
-            coordinate: current.occurrenceCoordinate,
-            eventId: occurrence.id,
-            createdAt: occurrence.created_at * 1000,
-          },
-          evidence.filter((event) => event.kind === 5)
-        )
-        const calendar = parseEventMarketCalendarEvent(
-          (await Dexie.waitFor(verifySignedEventBatches([occurrence])))[0]!
-        )
-        if (
-          hasCancellation ||
-          deleted ||
-          (calendar &&
-            !cancelled(occurrence) &&
-            calendar.end !== current.occurrenceEndMs)
-        ) {
-          current.terminal = hasCancellation || deleted
-          if (!current.terminal && calendar)
-            current.occurrenceEndMs = calendar.end
-          current.revision += 1
-          await db.merchantInventoryAssignments.put(current)
-        }
-      }
-    )
-  }
 }
 
 export async function readMerchantOccurrenceInventory(merchantPubkey: string) {

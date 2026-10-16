@@ -2207,10 +2207,17 @@ test("two future market products form one order and one private organizer releas
   const order = JSON.parse(orderMessages()[0]!.rumor.content) as {
     id: string
     items: Array<{
-      fulfillment?: { type?: string; market?: { coordinate: string } }
+      fulfillment?: {
+        type?: string
+        market?: { coordinate: string }
+        occurrenceAssignment?: { eventId: string }
+      }
     }>
   }
   expect(order.items).toHaveLength(2)
+  expect(
+    order.items.every((item) => !!item.fulfillment?.occurrenceAssignment)
+  ).toBe(true)
   expect(
     order.items.every(
       (item) => item.fulfillment?.type === "event_market_pickup"
@@ -2233,8 +2240,7 @@ test("two future market products form one order and one private organizer releas
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
   await expect(
     page.getByRole("alert").filter({
-      hasText:
-        /This order needs its historical or delegated fulfillment workflow/,
+      hasText: /This order needs its delegated fulfillment workflow/,
     })
   ).toBeVisible()
   await expect(
@@ -6852,4 +6858,23 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   )
   expect(state).toEqual({ stock: 0, orders: 1, saved: true })
+})
+
+test("saved assignments remain in Selling At outside both follow perspectives after reload @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const { relay, createdAt, product } = await createAssignedPickupOrder(page)
+  expect(
+    product.tags.some((tag) => tag[0] === "a" || tag[0] === "event_market")
+  ).toBe(false)
+  relay.seed(createFollowList("merchant", [], createdAt + 30))
+  relay.omitMarketDiscovery(true)
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await page.reload()
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  await my.getByRole("button", { name: "Selling At", exact: true }).click()
+  await expect(
+    my.getByRole("button", { name: /^Open Merchant Fair/ })
+  ).toBeVisible()
 })

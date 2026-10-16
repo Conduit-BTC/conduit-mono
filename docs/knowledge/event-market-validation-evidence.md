@@ -132,7 +132,9 @@ subsequent acceptance and preservation of newer ordinary product metadata.
 `merchant-inventory-schema-upgrade` uses the exact main-v26, discovery-v26 and
 assignment-v25 histories, commits real stock/allocation/order records, upgrades,
 accepts concurrent repeated orders, rejects oversell, and reloads retained signed
-retry work without another debit or signature. Structural union preservation in
+retry work without another debit or signature. The installed assignment-v25
+state is created with its frozen v25 writer before the current writer runs on
+the upgraded database. Structural union preservation in
 `event-market-schema-upgrade` remains a separate check.
 
 These are synthetic cryptographic/database integration tests. They do not prove
@@ -148,7 +150,9 @@ pricing, existing local product writes, reopened inventory and acceptance. It
 covers fiat source-currency binding, prior stock decisions and shortfalls,
 pending pre-assignment orders, concurrent material product edits, retained
 variation-parent withdrawal evidence, and cold/warm assignment reads with
-missing superseded history and known-fork controls. `merchant-order-publish`
+missing superseded history and known-fork controls. Both ordinary product
+edits and existing order stock actions honor a retained postponement before
+any assignment-panel read. `merchant-order-publish`
 verifies immutable acceptance notification identity after interruption.
 
 The `@occurrence-orders` cases in `e2e/event-market.playwright.ts` run in the
@@ -156,6 +160,8 @@ Chromium, mobile Chromium and mobile WebKit smoke projects. They exercise the
 direct assignment and order flow, prepaid first confirmation before/after a
 same-event reschedule, paid pickup and original receipt continuity after the old
 end, revised unused-allocation deadlines in both directions, publication retry
-after payment, and selected-order resolution beyond the product-search cap.
+after payment, selected-order resolution beyond the product-search cap, and
+reload of off-graph assigned events in Selling At without product association
+tags.
 Browser payment reports, merchant confirmations and signer/relay interactions
 are synthetic; these checks establish client behavior, not funded settlement.
