@@ -53,7 +53,6 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Textarea,
 } from "@conduit/ui"
 import { retainEventMarketMerchantDecision } from "../lib/event-market-merchant-decision"
 import {
@@ -71,7 +70,11 @@ import {
   getOrganizerExclusiveEndDate,
   localDateTimeToEpochSeconds,
 } from "../lib/event-market-form"
-import { EventBannerField, EventTimezoneField } from "./EventAuthoringFields"
+import {
+  EventBannerField,
+  EventDescriptionField,
+  EventTimezoneField,
+} from "./EventAuthoringFields"
 import { useEventMarketEnrollment } from "../hooks/useEventMarketEnrollment"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { getEventActorDisplayName } from "../lib/event-actor-identity"
@@ -304,16 +307,12 @@ function MarketLifecycleEditor({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-1">
-          <Label htmlFor="future-edit-summary">Description · Required</Label>
-          <Textarea
-            id="future-edit-summary"
-            value={summary}
-            required
-            disabled={pending || bannerBusy}
-            onChange={(event) => setSummary(event.target.value)}
-          />
-        </div>
+        <EventDescriptionField
+          id="future-edit-summary"
+          value={summary}
+          disabled={pending || bannerBusy}
+          onChange={setSummary}
+        />
         <EventBannerField
           id="future-edit-image"
           value={image}
@@ -1026,18 +1025,12 @@ function SeriesDateManager({
                 />
               </div>
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="series-edit-summary">
-                Description · Required
-              </Label>
-              <Textarea
-                id="series-edit-summary"
-                value={summary}
-                required
-                disabled={pending || !!pendingMutation}
-                onChange={(event) => setSummary(event.target.value)}
-              />
-            </div>
+            <EventDescriptionField
+              id="series-edit-summary"
+              value={summary}
+              disabled={pending || !!pendingMutation}
+              onChange={setSummary}
+            />
             <EventBannerField
               id="series-edit-image"
               value={image}

@@ -26,7 +26,10 @@ import {
   SPARK_RECOVERY_PREFIX,
   parseSparkRecoveryEnvelope,
 } from "../packages/core/src/wallets/spark-recovery-contract"
-import { assertWalletCreationDiscovery } from "../packages/core/src/wallets/account-spark-recovery"
+import {
+  resolveExplicitSparkImport,
+  assertWalletCreationDiscovery,
+} from "../packages/core/src/wallets/account-spark-recovery"
 import { deriveSparkRecoveryIdentity } from "../packages/core/src/wallets/spark-sdk"
 
 const databases: ConduitDB[] = []
@@ -1101,4 +1104,212 @@ it("mismatched network choice coordinates retain evidence and block Create witho
     (await local.store.load(f.owner)).records.map((r) => r.event.id).sort()
   ).toEqual(events.map((e) => e.id).sort())
   expect(fresh.getVerifiedMainChoiceEventId("mainnet")).toBeUndefined()
+})
+
+describe("explicit Spark recovery and stale observation repair", () => {
+  it("restores the verified registration despite partial reads and a retained unresolved observation", async () => {
+    const f = fixture(),
+      source = bundle(),
+      service = f.service()
+    const candidate = await service.prepare(source)
+    await service.preparePrimary(candidate)
+    await f.store.retain(f.owner, [], true)
+    f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[0].url)
+    const discovery = await service.discover(false, "mainnet")
+    expect(() => assertWalletCreationDiscovery(discovery)).toThrow()
+    const before = await f.store.load(f.owner)
+    expect(
+      await resolveExplicitSparkImport({
+        service,
+        bundle: source,
+        discovery,
+        journal: before,
+      })
+    ).toBe(candidate.walletId)
+    expect(
+      JSON.stringify(await f.store.load(f.owner)) === JSON.stringify(before)
+    ).toBe(true)
+  })
+  it("accepts an independently provided phrase when all recovery reads are unavailable without declaring absence", async () => {
+    const f = fixture(),
+      service = f.service()
+    for (const relay of SPARK_RECOVERY_RENDEZVOUS) f.unavailable.add(relay.url)
+    const discovery = await service.discover(false, "mainnet")
+    expect(discovery.creationEligible).toBe(false)
+    expect(
+      await resolveExplicitSparkImport({
+        service,
+        bundle: bundle(),
+        discovery,
+        journal: await f.store.load(f.owner),
+      })
+    ).toBeUndefined()
+    expect((await f.store.load(f.owner)).records).toHaveLength(0)
+  })
+  it("keeps a removed registration retired while allowing explicit phrase recovery into a new registration", async () => {
+    const f = fixture(),
+      source = bundle(),
+      service = f.service()
+    const candidate = await service.prepare(source)
+    const discovery = await service.discover(false, "mainnet")
+    const journal = await f.store.load(f.owner)
+    expect(
+      await resolveExplicitSparkImport({
+        service,
+        bundle: source,
+        discovery: {
+          ...discovery,
+          confirmedRemovedWalletIds: [candidate.walletId!],
+        },
+        journal,
+      })
+    ).toBeUndefined()
+    expect(
+      JSON.stringify(await f.store.load(f.owner)) === JSON.stringify(journal)
+    ).toBe(true)
+  })
+  it("repairs only an explicit stale observation and preserves signed records and removal decisions", async () => {
+    const f = fixture(),
+      service = f.service()
+    const candidate = await service.prepare(bundle())
+    await service.preparePrimary(candidate)
+    await f.store.retain(f.owner, [], true)
+    await f.store.setDeviceRemoved(f.owner, crypto.randomUUID(), true)
+    const before = await f.store.load(f.owner)
+    await service.repairLegacyUnresolved("mainnet")
+    const after = await f.store.load(f.owner)
+    expect(after.unresolvedObserved).toBe(false)
+    expect(
+      JSON.stringify(after.records) === JSON.stringify(before.records)
+    ).toBe(true)
+    expect(after.removedWalletIds).toEqual(before.removedWalletIds)
+    expect(after.legacyUnresolvedRepair?.backupEventId).toBe(candidate.eventId)
+    const repaired = await service.discover(false, "mainnet")
+    expect(() => assertWalletCreationDiscovery(repaired)).not.toThrow()
+  })
+  for (const mode of ["empty", "partial", "invalid", "conflicting"] as const) {
+    it(`refuses stale-observation repair for ${mode} evidence`, async () => {
+      const f = fixture(),
+        service = f.service()
+      if (mode !== "empty") await service.prepare(bundle())
+      if (mode === "partial")
+        f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[0].url)
+      if (mode === "conflicting") await service.prepare(bundle())
+      if (mode === "invalid") {
+        const bad = f.sign({
+          kind: 30078,
+          created_at: 100,
+          tags: [["d", "conduit:spark:unsupported:v99"]],
+          content: f.encrypt("{}"),
+        })
+        f.relays.set(SPARK_RECOVERY_RENDEZVOUS[0].url, new Map([[bad.id, bad]]))
+      }
+      await f.store.retain(f.owner, [], true)
+      await expect(service.repairLegacyUnresolved("mainnet")).rejects.toThrow()
+      expect((await f.store.load(f.owner)).unresolvedObserved).toBe(true)
+    })
+  }
+  it("aborts stale-observation repair after account replacement", async () => {
+    const f = fixture(),
+      service = f.service()
+    await service.prepare(bundle())
+    await f.store.retain(f.owner, [], true)
+    f.setAfterRead(f.switchAccount)
+    await expect(
+      service.repairLegacyUnresolved("mainnet")
+    ).rejects.toMatchObject({ code: "authority_changed" })
+    expect((await f.store.load(f.owner)).unresolvedObserved).toBe(true)
+  })
+  it("rejects a concurrent journal change rather than clearing new uncertainty", async () => {
+    const f = fixture(),
+      service = f.service()
+    const candidate = await service.prepare(bundle())
+    await f.store.retain(f.owner, [], true)
+    const before = await f.store.load(f.owner)
+    await service.preparePrimary(candidate)
+    await expect(
+      f.store.repairUnresolved(f.owner, before, candidate.eventId, () => true)
+    ).rejects.toThrow("conflict")
+    expect((await f.store.load(f.owner)).unresolvedObserved).toBe(true)
+  })
+})
+
+it("a newly observed authenticated malformed event cannot be cleared as an old unexplained warning", async () => {
+  const f = fixture(),
+    service = f.service()
+  await service.prepare(bundle())
+  await f.store.retain(f.owner, [], true)
+  const bad = f.sign({
+    kind: 30078,
+    created_at: 100,
+    tags: [["d", "conduit:spark:unsupported:v99"]],
+    content: f.encrypt("{}"),
+  })
+  f.relays.set(SPARK_RECOVERY_RENDEZVOUS[0].url, new Map([[bad.id, bad]]))
+  await service.discover(false, "mainnet")
+  expect((await f.store.load(f.owner)).unresolvedEventId).toBe(bad.id)
+  f.relays.clear()
+  await expect(service.repairLegacyUnresolved("mainnet")).rejects.toThrow(
+    "conflict"
+  )
+  expect((await f.store.load(f.owner)).unresolvedObserved).toBe(true)
+})
+
+it("explicit legacy repair accepts positive signed membership during partial reads without enabling creation", async () => {
+  const f = fixture(),
+    service = f.service()
+  const candidate = await service.prepare(bundle())
+  const primary = await service.preparePrimary(candidate)
+  await service.deliver(candidate.eventId)
+  await service.deliver(primary)
+  const registry = await service.prepareRegistry("mainnet", {
+    type: "add",
+    walletId: candidate.walletId!,
+  })
+  await service.deliver(registry)
+  await f.store.retain(f.owner, [], true)
+  f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[0].url)
+  await service.repairLegacyUnresolved("mainnet")
+  const after = await service.discover(false, "mainnet")
+  expect(after.coverage).toBe("partial")
+  expect(after.unresolvedObserved).toBe(false)
+  expect(after.registry?.activeWalletIds).toContain(candidate.walletId!)
+  expect(() => assertWalletCreationDiscovery(after)).toThrow()
+})
+
+it("repair rolls back its acknowledgement if account authority changes during the transaction", async () => {
+  const f = fixture(),
+    service = f.service()
+  const candidate = await service.prepare(bundle())
+  await f.store.retain(f.owner, [], true)
+  const before = await f.store.load(f.owner)
+  let checks = 0
+  await expect(
+    f.store.repairUnresolved(
+      f.owner,
+      before,
+      candidate.eventId,
+      () => ++checks === 1
+    )
+  ).rejects.toThrow("conflict")
+  expect(
+    JSON.stringify(await f.store.load(f.owner)) === JSON.stringify(before)
+  ).toBe(true)
+})
+it("repair rechecks signed journal membership after its backup verification", async () => {
+  const f = fixture(),
+    service = f.service()
+  await service.prepare(bundle())
+  await f.store.retain(f.owner, [], true)
+  const restore = service.restore.bind(service)
+  service.restore = async (...args) => {
+    const result = await restore(...args)
+    await service.prepare(bundle())
+    return result
+  }
+  await expect(service.repairLegacyUnresolved("mainnet")).rejects.toThrow(
+    "conflict"
+  )
+  expect((await f.store.load(f.owner)).unresolvedObserved).toBe(true)
+  expect((await f.store.load(f.owner)).records).toHaveLength(2)
 })

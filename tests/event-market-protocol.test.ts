@@ -305,6 +305,29 @@ describe("event-market protocol fixtures", () => {
     expect(draft.tags).toContainEqual(["summary", "Brief public summary."])
   })
 
+  it("round-trips multiline calendar prose while rejecting non-text controls", async () => {
+    const input = {
+      kind: EVENT_KINDS.CALENDAR_TIME,
+      dTag: "multiline",
+      title: "Public fair",
+      summary: "First paragraph\nSecond paragraph\tDetails",
+      content: "Detailed description\r\nAnother line",
+      start: 1_812_000_000,
+    } as const
+    const draft = buildEventMarketCalendarDraft(input)
+    const parsed = parseEventMarketCalendarEvent(
+      await admitted(signDraft(ORGANIZER_SECRET, draft))
+    )
+    expect(parsed?.summary).toBe(input.summary)
+    expect(parsed?.content).toBe(input.content)
+    expect(() =>
+      buildEventMarketCalendarDraft({ ...input, summary: "Public\u0000fair" })
+    ).toThrow("control characters")
+    expect(() =>
+      buildEventMarketCalendarDraft({ ...input, content: "Public\u0000fair" })
+    ).toThrow("Calendar content")
+  })
+
   it("parses the bounded timed-calendar day frontier without throwing past it", async () => {
     const firstDay = 25_000
     const start = firstDay * 86_400

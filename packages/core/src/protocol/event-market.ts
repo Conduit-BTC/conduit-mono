@@ -17,6 +17,7 @@ import {
 } from "./relay-authority"
 import {
   getConfiguredIsolatedE2eRelayUrl,
+  loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -30,6 +31,26 @@ import {
 const HEX_64 = /^[0-9a-f]{64}$/i
 
 const CONTROL_CHARACTER = /\p{Cc}/u
+function hasUnsupportedCalendarControl(value: string): boolean {
+  return CONTROL_CHARACTER.test(
+    value.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "")
+  )
+}
+
+export const EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH = 1_000
+
+/** Calendar prose may contain line breaks and tabs, but not other controls. */
+export function normalizeEventMarketCalendarSummary(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  if (normalized.length > EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH)
+    throw new Error("Description must be 1,000 characters or fewer.")
+  if (hasUnsupportedCalendarControl(normalized))
+    throw new Error("Description contains unsupported control characters.")
+  return normalized
+}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -485,7 +506,7 @@ export function buildEventMarketCalendarDraft(
     ["d", dTag],
     ["title", title],
   ]
-  const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
+  const summary = normalizeEventMarketCalendarSummary(input.summary)
   const image = normalizeOptionalText(input.image, "Image", 2_048)
   const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
   if (geohash && !GEOHASH.test(geohash)) throw new Error("Geohash is invalid.")
@@ -534,12 +555,19 @@ export function buildEventMarketCalendarDraft(
   if (input.clientAppId) tags = appendConduitClientTag(tags, input.clientAppId)
   return {
     kind: input.kind,
-    content:
-      normalizeOptionalText(input.content, "Calendar content", 10_000) ??
-      summary ??
-      "",
+    content: normalizeOptionalCalendarContent(input.content) ?? summary ?? "",
     tags,
   }
+}
+
+function normalizeOptionalCalendarContent(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  if (normalized.length > 10_000 || hasUnsupportedCalendarControl(normalized))
+    throw new Error("Calendar content is invalid.")
+  return normalized
 }
 
 function tagValues(
@@ -1072,6 +1100,115 @@ export interface EventMarketReadPlan {
   relayHintTruncated: boolean
 }
 
+/** One bounded public plan, including batched NIP-65 hints for explicit authors. */
+export async function getEventMarketDiscoveryReadPlan(input: {
+  organizerPubkeys?: readonly string[]
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
+  signal?: AbortSignal
+}): Promise<EventMarketReadPlan> {
+  const accountPubkey = normalizePubkey(
+    input.accountPubkey === undefined
+      ? input.authenticatedPubkey
+      : input.accountPubkey
+  )
+  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
+  const authenticatedPubkey =
+    requestedAuth === accountPubkey ? requestedAuth : null
+  const authors = [
+    ...new Set(
+      (input.organizerPubkeys ?? []).filter((author) =>
+        /^[0-9a-f]{64}$/.test(author)
+      )
+    ),
+  ].sort()
+  const includesAuthenticatedOwner =
+    authenticatedPubkey !== null && authors.includes(authenticatedPubkey)
+  const snapshot = authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
+    : loadRelaySettingsPlanningSnapshot()
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    snapshot.settings.entries.flatMap((entry) =>
+      entry.readEnabled || (includesAuthenticatedOwner && entry.writeEnabled)
+        ? [entry.url]
+        : []
+    )
+  )
+  const lookupPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: snapshot.settings,
+    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+  })
+  let discoveredLists = {
+    relayLists: new Map<string, RelayList>(),
+    resolutionStates: new Map<string, RelayListResolutionState>(),
+  }
+  if (authors.length) {
+    try {
+      discoveredLists = await lookupEventMarketRelayLists(authors, {
+        relayUrls: lookupPlan.candidateRelayUrls,
+        relayTargets: lookupPlan.relayTargets,
+        maxRelayAttempts: lookupPlan.maxRelayAttempts,
+        accountPubkey,
+        authenticatedPubkey,
+        ownerSelectedRelayUrls,
+        appRelayUrls: lookupPlan.appRelayUrls,
+        personalRelayUrls: lookupPlan.personalRelayUrls,
+        independentRelayUrls: lookupPlan.independentRelayUrls,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      })
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+      // Optional routing metadata cannot veto the selected public sources.
+      // Missing states below preserve the unavailable lookup as limited coverage.
+    }
+  }
+  const { relayLists, resolutionStates } = discoveredLists
+  const relayListState = authors.reduce<RelayListResolutionState>(
+    (state, author) => {
+      const next = resolutionStates.get(author) ?? "lookup-unavailable"
+      for (const limited of [
+        "lookup-unavailable",
+        "stale-cache",
+        "partial-network",
+      ] as const)
+        if (state === limited || next === limited) return limited
+      return next
+    },
+    "missing"
+  )
+  const plan = planRelayReads({
+    intent: "commerce_products",
+    authors,
+    relayLists,
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: snapshot.settings,
+    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+  })
+  return {
+    relayUrls: plan.candidateRelayUrls,
+    candidateRelayUrls: plan.candidateRelayUrls,
+    relayTargets: plan.relayTargets,
+    maxRelayAttempts: plan.maxRelayAttempts,
+    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
+    appRelayUrls: plan.appRelayUrls ?? [],
+    personalRelayUrls: plan.personalRelayUrls ?? [],
+    independentRelayUrls: plan.independentRelayUrls ?? [],
+    relayListState,
+    relayHintTruncated: plan.hintRelayUrls.some(
+      (url) => !plan.relayUrls.includes(url)
+    ),
+  }
+}
+
 function relayListStateFromLegacyLookup(
   relayLists: ReadonlyMap<string, RelayList>,
   organizerPubkey: string
@@ -1081,17 +1218,47 @@ function relayListStateFromLegacyLookup(
   return list.lookupState ?? "fresh-cache"
 }
 
+async function lookupEventMarketRelayLists(
+  authors: readonly string[],
+  options: Parameters<typeof getRelayListsDetailed>[1]
+) {
+  if (eventMarketTestOverrides.getRelayListsDetailed)
+    return eventMarketTestOverrides.getRelayListsDetailed(authors, options)
+  if (eventMarketTestOverrides.getRelayLists) {
+    const relayLists = await eventMarketTestOverrides.getRelayLists(
+      authors,
+      options
+    )
+    return {
+      relayLists,
+      resolutionStates: new Map(
+        authors.map((author) => [
+          author,
+          relayListStateFromLegacyLookup(relayLists, author),
+        ])
+      ),
+    }
+  }
+  return getRelayListsDetailed(authors, options)
+}
+
 export async function getEventMarketReadPlan(input: {
   organizerPubkey: string
   relayHints?: readonly string[]
+  accountPubkey?: string | null
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketReadPlan> {
-  const authenticatedPubkey = input.authenticatedPubkey
-    ? normalizePubkey(input.authenticatedPubkey)
-    : null
+  const accountPubkey = normalizePubkey(
+    input.accountPubkey === undefined
+      ? input.authenticatedPubkey
+      : input.accountPubkey
+  )
+  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
+  const authenticatedPubkey =
+    requestedAuth === accountPubkey ? requestedAuth : null
   let ownerSettingsSnapshot: Awaited<
     ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
   > | null = null
@@ -1126,7 +1293,7 @@ export async function getEventMarketReadPlan(input: {
     relayUrls: relayListLookupPlan.candidateRelayUrls,
     relayTargets: relayListLookupPlan.relayTargets,
     maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
     ownerSelectedRelayUrls,
     appRelayUrls: relayListLookupPlan.appRelayUrls,
@@ -1136,36 +1303,12 @@ export async function getEventMarketReadPlan(input: {
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
   }
-  let relayLists: Map<string, RelayList>
-  let relayListState: RelayListResolutionState
-  if (eventMarketTestOverrides.getRelayListsDetailed) {
-    const detailed = await eventMarketTestOverrides.getRelayListsDetailed(
-      [input.organizerPubkey],
-      lookupOptions
-    )
-    relayLists = detailed.relayLists
-    relayListState =
-      detailed.resolutionStates.get(input.organizerPubkey) ??
-      "lookup-unavailable"
-  } else if (eventMarketTestOverrides.getRelayLists) {
-    relayLists = await eventMarketTestOverrides.getRelayLists(
-      [input.organizerPubkey],
-      lookupOptions
-    )
-    relayListState = relayListStateFromLegacyLookup(
-      relayLists,
-      input.organizerPubkey
-    )
-  } else {
-    const detailed = await getRelayListsDetailed(
-      [input.organizerPubkey],
-      lookupOptions
-    )
-    relayLists = detailed.relayLists
-    relayListState =
-      detailed.resolutionStates.get(input.organizerPubkey) ??
-      "lookup-unavailable"
-  }
+  const { relayLists, resolutionStates } = await lookupEventMarketRelayLists(
+    [input.organizerPubkey],
+    lookupOptions
+  )
+  const relayListState =
+    resolutionStates.get(input.organizerPubkey) ?? "lookup-unavailable"
   const plan = planRelayReads({
     intent: "author_products",
     authors: [input.organizerPubkey],

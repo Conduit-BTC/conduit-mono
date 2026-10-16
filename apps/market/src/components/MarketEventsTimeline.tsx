@@ -3,6 +3,7 @@ import { CalendarDays, RefreshCw, SlidersHorizontal } from "lucide-react"
 import {
   encodeEventMarketNaddr,
   useAuth,
+  useConduitSession,
   type EventMarketRosterReadResult,
 } from "@conduit/core"
 import {
@@ -90,9 +91,11 @@ export function MarketEventsTimeline({
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
+  const session = useConduitSession()
+  const accountPubkey = session.mode === "signed_in" ? session.pubkey : null
   const connected = status === "connected"
   const discovery = useEventTimeline(source)
-  const filterKey = `${discovery.effectiveSource}:${connected ? pubkey : "guest"}:${search.organizer ?? "all"}:${search.location ?? "all"}`
+  const filterKey = `${discovery.effectiveSource}:${accountPubkey ?? "guest"}:${search.organizer ?? "all"}:${search.location ?? "all"}`
   const [presentationLimits, setPresentationLimits] =
     useState<TimelinePresentationLimits>({
       earlier: MARKET_EVENT_TIMELINE_PAGE_SIZE,
@@ -205,7 +208,7 @@ export function MarketEventsTimeline({
     [presentation.currentAndFuture, presentation.past]
   )
   const organizerIdentities = useMerchantIdentities({
-    accountPubkey: connected ? pubkey : null,
+    accountPubkey,
     authenticatedPubkey: connected ? pubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     allMerchantPubkeys: facets.organizers,
@@ -344,6 +347,12 @@ export function MarketEventsTimeline({
           </Button>
         </div>
       </div>
+
+      {discovery.publicAudience && (
+        <p className="text-sm text-[var(--text-muted)]">
+          Browsing public events from your selected relays.
+        </p>
+      )}
 
       <section
         aria-label="Event filters"
@@ -496,6 +505,18 @@ export function MarketEventsTimeline({
           onRetry={discovery.refetch}
           retrying={discovery.isFetching}
         />
+      )}
+      {discovery.hasMore && (
+        <div className="mt-6 text-center">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={discovery.isFetching}
+            onClick={discovery.loadMore}
+          >
+            Find more events
+          </Button>
+        </div>
       )}
     </section>
   )

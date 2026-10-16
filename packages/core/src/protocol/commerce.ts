@@ -478,6 +478,7 @@ export interface ProfileBatchQuery {
 
 export interface FollowListQuery {
   pubkey: string
+  accountPubkey?: string | null
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
 }
@@ -4900,6 +4901,7 @@ export async function getFollowPubkeys(
   const result = await readFollowLists(
     {
       pubkeys: [pubkey],
+      accountPubkey: query.accountPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
     },
     {

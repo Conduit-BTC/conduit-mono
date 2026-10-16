@@ -1,6 +1,6 @@
 import { retryWalletRecovery } from "./helpers/wallet-fixture"
 import path from "node:path"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Page, type Browser } from "@playwright/test"
 import { readTestRelayEvents } from "./helpers/auth"
 import {
   installControlledWallet,
@@ -36,9 +36,10 @@ async function localSparkWalletIds(page: Page): Promise<string[]> {
   }, core)
 }
 
-test("account removal stays removed in a fresh app while its encrypted backup remains @market @merchant", async ({
-  browser,
-}) => {
+async function assertEmptyAccountReplacement(
+  browser: Browser,
+  nextAction: "Create wallet" | "Import wallet"
+) {
   const identity = createRuntimeSignerIdentity()
   const sourceContext = await browser.newContext()
   const targetContext = await browser.newContext()
@@ -158,11 +159,71 @@ test("account removal stays removed in a fresh app while its encrypted backup re
           ).__walletProbe.registrations
       )
     ).toBe(0)
+    await openWalletSetup(source, nextAction)
+    if (nextAction === "Import wallet") {
+      await source
+        .getByLabel("Recovery phrase", { exact: true })
+        .evaluate((input) => {
+          const setter = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            "value"
+          )!.set!
+          setter.call(
+            input,
+            Reflect.get(window, "__walletProbe").importMnemonic
+          )
+          input.dispatchEvent(new Event("input", { bubbles: true }))
+        })
+      await source
+        .getByRole("dialog")
+        .getByRole("button", { name: "Import wallet", exact: true })
+        .click()
+    }
+    await saveWalletRecovery(source, false)
+    const [replacementId] = await localSparkWalletIds(source)
+    expect(!!replacementId && replacementId !== walletId).toBe(true)
+    await expect
+      .poll(() =>
+        source.evaluate(
+          async ({ core, accountRecovery, replacementId, walletId }) => {
+            const { getAccountSigner } = await import(core)
+            const { getAccountSparkRecovery } = await import(accountRecovery)
+            const discovery = await getAccountSparkRecovery(
+              getAccountSigner()
+            ).discover(false, "mainnet")
+            return (
+              discovery.registryMembershipReady === true &&
+              discovery.registry?.activeWalletIds.length === 1 &&
+              discovery.registry.activeWalletIds.includes(replacementId) &&
+              discovery.registry.removedWalletIds.includes(walletId)
+            )
+          },
+          { core, accountRecovery, replacementId, walletId }
+        )
+      )
+      .toBe(true)
+    // This app has no local recovery credential for the replacement wallet.
+    await target.reload()
+    await installControlledWallet(target)
+    await expect
+      .poll(() => localSparkWalletIds(target))
+      .toEqual([replacementId])
+    await expect(
+      target.getByRole("button", { name: "Send", exact: true })
+    ).toBeEnabled()
   } finally {
     await Promise.all([sourceContext.close(), targetContext.close()])
     disposeRuntimeSignerIdentity(identity)
   }
-})
+}
+
+for (const nextAction of ["Create wallet", "Import wallet"] as const) {
+  test(`empty account membership preserves removal and allows ${nextAction} on a fresh device @market @merchant`, async ({
+    browser,
+  }) => {
+    await assertEmptyAccountReplacement(browser, nextAction)
+  })
+}
 
 test("failed removal survives reload and retries the retained event before exclusion @market @merchant", async ({
   browser,

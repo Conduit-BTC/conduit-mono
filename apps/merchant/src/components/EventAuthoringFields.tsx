@@ -1,6 +1,10 @@
 import { useRef, useState } from "react"
 import { ImagePlus, RotateCcw, Trash2 } from "lucide-react"
-import { useProductImageUpload } from "@conduit/core"
+import {
+  EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH,
+  normalizeEventMarketCalendarSummary,
+  useProductImageUpload,
+} from "@conduit/core"
 import {
   Button,
   Input,
@@ -10,8 +14,58 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Textarea,
 } from "@conduit/ui"
 import { getOrganizerEventTimezoneOptions } from "../lib/event-market-form"
+
+export function EventDescriptionField({
+  id,
+  value,
+  disabled = false,
+  onChange,
+}: {
+  id: string
+  value: string
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  let error = ""
+  try {
+    normalizeEventMarketCalendarSummary(value)
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : "Check the description."
+  }
+  return (
+    <div className="space-y-1">
+      <Label htmlFor={id}>Description · Required</Label>
+      <Textarea
+        id={id}
+        value={value}
+        required
+        disabled={disabled}
+        aria-invalid={Boolean(error)}
+        aria-describedby={`${id}-help${error ? ` ${id}-error` : ""}`}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <p id={`${id}-help`} className="text-xs text-[var(--text-muted)]">
+        <span className="tabular-nums">
+          {value.trim().length} /{" "}
+          {EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH.toLocaleString("en-US")}
+        </span>{" "}
+        characters. This description is public. Line breaks are supported.
+      </p>
+      {error ? (
+        <p
+          id={`${id}-error`}
+          role="alert"
+          className="text-sm text-[var(--error-text)]"
+        >
+          {error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
 
 export function EventTimezoneField({
   id,
