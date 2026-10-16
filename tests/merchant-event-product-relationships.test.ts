@@ -183,16 +183,27 @@ describe("Merchant product Event Market relationships", () => {
         },
         organizerSecret
       )
+      const verifiedRevision = await admitted(revision)
       const partial: EventMarketRosterReadResult = {
         ...exactRead,
         resolution: resolveEventMarketRoster({
           coordinate,
-          revisions: [signedMarket, revision],
+          revisions: [verifiedMarket, verifiedRevision],
           deletions: [],
         }),
-        observedEvidence: [signedMarket, revision],
+        observedEvidence: [verifiedMarket, verifiedRevision],
         coverage: "partial",
       }
+      expect(partial.resolution.state).toBe(
+        relationship === "selling" ? "current" : "malformed"
+      )
+      expect(
+        partial.resolution.state === "current"
+          ? partial.resolution.market.eventId
+          : "eventId" in partial.resolution
+            ? partial.resolution.eventId
+            : undefined
+      ).toBe(revision.id)
       const result = await hydrateMerchantProductMarkets({
         references: [coordinate],
         read: async () => partial,
@@ -202,6 +213,7 @@ describe("Merchant product Event Market relationships", () => {
         [exactRead],
         result.markets
       )
+      expect(merged[0]?.resolution).toEqual(partial.resolution)
       expect(
         merged
           .filter((read) =>
