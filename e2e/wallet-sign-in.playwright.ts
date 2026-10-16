@@ -219,6 +219,10 @@ test("cached signer wallet stays isolated across two identities and returns unch
     await expect(
       page.getByRole("button", { name: "Receive", exact: true })
     ).toBeVisible()
+    await expect(
+      page.getByLabel("Wallet password", { exact: true })
+    ).toHaveCount(0)
+    await expect(page.getByRole("dialog", { name: /^Unlock / })).toHaveCount(0)
     await page.reload()
     await installControlledWallet(page, false, "wallet1@breez.tips")
     await expect(

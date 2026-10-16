@@ -25,6 +25,43 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
   async load(owner: string): Promise<SparkRecoveryState> {
     return validateSparkRecoveryState(await this.readStoredState(owner), owner)
   }
+  /** Compare the entire checked journal inside one transaction; never discard newer evidence. */
+  async repairUnresolved(
+    owner: string,
+    expected: SparkRecoveryState,
+    backupEventId: string,
+    shouldContinue: () => boolean
+  ): Promise<void> {
+    const checked = validateSparkRecoveryState(expected, owner)
+    await this.database.transaction(
+      "rw",
+      this.database.sparkRecoveryEvidence,
+      async () => {
+        const current = await this.load(owner)
+        if (
+          !shouldContinue() ||
+          JSON.stringify(current) !== JSON.stringify(checked) ||
+          !current.unresolvedObserved ||
+          !!current.unresolvedEventId
+        )
+          throw new SparkRecoveryError("conflict")
+        const next = validateSparkRecoveryState(
+          {
+            ...current,
+            unresolvedObserved: false,
+            legacyUnresolvedRepair: { backupEventId, repairedAt: Date.now() },
+          },
+          owner
+        )
+        await this.database.sparkRecoveryEvidence.put(next)
+        if (
+          !shouldContinue() ||
+          JSON.stringify(await this.load(owner)) !== JSON.stringify(next)
+        )
+          throw new SparkRecoveryError("conflict")
+      }
+    )
+  }
   /** Shares the wallet-removal transaction; relay writes preserve these decisions. */
   async setDeviceRemoved(
     owner: string,
@@ -79,10 +116,16 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
   async retain(
     owner: string,
     records: SparkRecoveryRecord[],
-    unresolvedObserved = false
+    unresolvedObserved = false,
+    unresolvedEventId?: string
   ): Promise<void> {
     const incoming = validateSparkRecoveryState(
-      { ownerPubkey: owner, records, unresolvedObserved },
+      {
+        ownerPubkey: owner,
+        records,
+        unresolvedObserved,
+        ...(unresolvedEventId ? { unresolvedEventId } : {}),
+      },
       owner
     )
     try {
@@ -97,7 +140,8 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
           const next = mergeSparkRecoveryRecords(
             current,
             incoming.records,
-            unresolvedObserved
+            unresolvedObserved,
+            unresolvedEventId
           )
           await this.database.sparkRecoveryEvidence.put(next)
           const saved = await this.load(owner)

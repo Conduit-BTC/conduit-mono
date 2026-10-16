@@ -566,7 +566,7 @@ for (const from of ["market", "merchant"] as const) {
         if (recoveryMode === "foreground") {
           await expect(
             target.getByText(
-              "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+              "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
               { exact: true }
             )
           ).toBeVisible()
@@ -661,7 +661,7 @@ for (const from of ["market", "merchant"] as const) {
                   .count(),
                 recoveryNotice: (await target
                   .getByText(
-                    "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+                    "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
                     { exact: true }
                   )
                   .isVisible())
@@ -812,7 +812,7 @@ for (const app of ["market", "merchant"] as const) {
       await target.goto(apps[app] + "/wallet")
       await installControlledWallet(target)
       const blocked = target.getByText(
-        "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+        "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
         { exact: true }
       )
       await expect(blocked).toBeVisible()
@@ -896,7 +896,7 @@ test("foreground Open does not inherit a paused background wallet open @merchant
     await installControlledWallet(target)
     await expect(
       target.getByText(
-        "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+        "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
         { exact: true }
       )
     ).toBeVisible()
@@ -1358,7 +1358,7 @@ test("controlled recovery transport retains concurrent signed branches and block
       await retryWalletRecovery(page)
       await expect(
         page.getByText(
-          "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+          "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
           { exact: true }
         )
       ).toBeVisible()
@@ -2178,7 +2178,7 @@ test("foreground wallet import stays ready after an older background opening is 
     await installControlledWallet(target, false, "support@conduit.cash")
     await expect(
       target.getByText(
-        "Wallet recovery is incomplete or conflicting. Existing wallets remain usable. Retry before setting up another wallet.",
+        "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
         { exact: true }
       )
     ).toBeVisible()

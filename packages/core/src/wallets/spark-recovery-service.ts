@@ -104,6 +104,10 @@ export interface SparkRecoveryState {
   unresolvedObserved: boolean
   ownerPubkey: string
   records: SparkRecoveryRecord[]
+  /** Local acknowledgement of an old unknown observation; never erases signed evidence. */
+  legacyUnresolvedRepair?: { backupEventId: string; repairedAt: number }
+  /** Positive cause of new uncertainty. Legacy acknowledgement cannot clear it. */
+  unresolvedEventId?: string
   /** Device-local decisions; never published or merged from relay events. */
   removedWalletIds?: string[]
   /** Derived visibility cache from the last complete account registry read. */
@@ -116,10 +120,17 @@ export interface SparkRecoveryState {
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
   load(owner: string): Promise<SparkRecoveryState>
+  repairUnresolved?(
+    owner: string,
+    expected: SparkRecoveryState,
+    backupEventId: string,
+    shouldContinue: () => boolean
+  ): Promise<void>
   retain(
     owner: string,
     records: SparkRecoveryRecord[],
-    unresolvedObserved?: boolean
+    unresolvedObserved?: boolean,
+    unresolvedEventId?: string
   ): Promise<void>
 }
 export interface SparkRecoveryCandidate {
@@ -148,6 +159,8 @@ export interface SparkRecoveryDiscovery {
   /** Only a bounded prerequisite for a later explicit lifecycle; never global absence. */
   unresolvedObserved: boolean
   creationEligible: boolean
+  /** Exact signed journal examined by this discovery, used only for repair fencing. */
+  observedEventIds?: string[]
   registry?: SparkWalletRegistrySnapshot
   registryEventId?: string
   /** The selected snapshot was read back from every frozen registry target. */
@@ -254,6 +267,8 @@ export function validateSparkRecoveryState(
     const ownerPubkey = input.ownerPubkey
     const unresolvedObserved = input.unresolvedObserved
     const sourceRecords = input.records
+    const repair = input.legacyUnresolvedRepair
+    const unresolvedEventId = input.unresolvedEventId
     const sourceRemoved = input.removedWalletIds
     const sourceRegistryExcluded = input.registryExcludedWalletIds
     const sourceAddressRequestSync = input.addressRequestSync
@@ -269,6 +284,13 @@ export function validateSparkRecoveryState(
       ownerPubkey !== owner ||
       typeof unresolvedObserved !== "boolean" ||
       !Array.isArray(sourceRecords)
+    )
+      throw new SparkRecoveryError("invalid_record")
+    if (
+      unresolvedEventId !== undefined &&
+      (!unresolvedObserved ||
+        typeof unresolvedEventId !== "string" ||
+        !/^[a-f0-9]{64}$/.test(unresolvedEventId))
     )
       throw new SparkRecoveryError("invalid_record")
     const recordCount = sourceRecords.length
@@ -391,8 +413,33 @@ export function validateSparkRecoveryState(
     }
     if (new Set(records.map((r) => r.event.id)).size !== records.length)
       throw new SparkRecoveryError("invalid_record")
+    if (
+      repair !== undefined &&
+      (!repair ||
+        typeof repair.backupEventId !== "string" ||
+        !Number.isSafeInteger(repair.repairedAt) ||
+        repair.repairedAt < 0 ||
+        !records.some(
+          (record) =>
+            record.event.id === repair.backupEventId &&
+            record.event.tags.some(
+              (tag) =>
+                tag[0] === "d" && tag[1].startsWith(SPARK_RECOVERY_PREFIX)
+            )
+        ))
+    )
+      throw new SparkRecoveryError("invalid_record")
     return {
       ownerPubkey,
+      ...(unresolvedEventId !== undefined ? { unresolvedEventId } : {}),
+      ...(repair !== undefined
+        ? {
+            legacyUnresolvedRepair: {
+              backupEventId: repair.backupEventId,
+              repairedAt: repair.repairedAt,
+            },
+          }
+        : {}),
       // Optional names retain their own validation boundary without mutable aliases.
       ...(walletNameSync !== undefined ? { walletNameSync } : {}),
       ...(addressRequestSync !== undefined ? { addressRequestSync } : {}),
@@ -410,11 +457,17 @@ export function validateSparkRecoveryState(
 export function mergeSparkRecoveryRecords(
   current: SparkRecoveryState,
   incoming: SparkRecoveryRecord[],
-  unresolvedObserved = false
+  unresolvedObserved = false,
+  unresolvedEventId?: string
 ): SparkRecoveryState {
   const saved = validateSparkRecoveryState(current, current.ownerPubkey)
   const next = validateSparkRecoveryState(
-    { ownerPubkey: saved.ownerPubkey, records: incoming, unresolvedObserved },
+    {
+      ownerPubkey: saved.ownerPubkey,
+      records: incoming,
+      unresolvedObserved,
+      ...(unresolvedEventId ? { unresolvedEventId } : {}),
+    },
     saved.ownerPubkey
   )
   const records = new Map(saved.records.map((r) => [r.event.id, r]))
@@ -449,6 +502,12 @@ export function mergeSparkRecoveryRecords(
     throw new SparkRecoveryError("invalid_record")
   return {
     ownerPubkey: saved.ownerPubkey,
+    ...((saved.unresolvedEventId ?? next.unresolvedEventId)
+      ? { unresolvedEventId: saved.unresolvedEventId ?? next.unresolvedEventId }
+      : {}),
+    ...(saved.legacyUnresolvedRepair
+      ? { legacyUnresolvedRepair: saved.legacyUnresolvedRepair }
+      : {}),
     ...(saved.walletNameSync !== undefined
       ? { walletNameSync: saved.walletNameSync }
       : {}),
@@ -520,13 +579,15 @@ export class SparkRecoveryService {
   }
   private async retain(
     records: SparkRecoveryRecord[],
-    unresolvedObserved = false
+    unresolvedObserved = false,
+    unresolvedEventId?: string
   ): Promise<void> {
     this.scope.assertCurrent()
     await this.input.store.retain(
       this.scope.owner,
       clone(records),
-      unresolvedObserved
+      unresolvedObserved,
+      unresolvedEventId
     )
     this.scope.assertCurrent()
   }
@@ -961,6 +1022,52 @@ export class SparkRecoveryService {
     return envelope
   }
 
+  /** User-requested repair requires positive recovery; an empty read cannot clear uncertainty. */
+  async repairLegacyUnresolved(
+    network: SparkRecoveryBundle["network"]
+  ): Promise<void> {
+    const discovery = await this.discover(false, network, {
+      priority: "foreground",
+    })
+    if (!discovery.unresolvedObserved) return
+    const candidate = discovery.candidates.find(
+      (item) => item.source === "conduit_v1"
+    )
+    if (
+      (discovery.coverage !== "complete" && !discovery.registry) ||
+      discovery.invalidCount ||
+      discovery.state !== "recoverable" ||
+      !candidate ||
+      discovery.candidates.some(
+        (item) => item.source === "addy" && !item.resolved
+      )
+    )
+      throw new Error(
+        "A verified wallet backup and consistent account recovery are required before repair. You can restore with your recovery phrase while sync is pending."
+      )
+    const bundle = await this.restore(candidate, undefined, {
+      priority: "foreground",
+    })
+    if (!("walletId" in bundle) || bundle.network !== network)
+      throw new SparkRecoveryError("invalid_record")
+    const saved = await this.load()
+    if (
+      saved.unresolvedEventId ||
+      JSON.stringify(saved.records.map((record) => record.event.id).sort()) !==
+        JSON.stringify([...(discovery.observedEventIds ?? [])].sort())
+    )
+      throw new SparkRecoveryError("conflict")
+    if (!this.input.store.repairUnresolved)
+      throw new SparkRecoveryError("storage_unavailable")
+    await this.input.store.repairUnresolved(
+      this.scope.owner,
+      saved,
+      candidate.eventId,
+      this.continues
+    )
+    this.scope.assertCurrent()
+  }
+
   async discover(
     hasLocalWallet = false,
     network?: SparkRecoveryBundle["network"],
@@ -971,6 +1078,7 @@ export class SparkRecoveryService {
     const sources: SparkRecoveryDiscovery["sources"] = []
     let invalidCount = 0
     let unresolvedObserved = saved.unresolvedObserved
+    let unresolvedEventId = saved.unresolvedEventId
     const admit = (results: SparkRecoveryRead[]) => {
       for (const input of results.flatMap((read) =>
         read.events.slice(0, MAX_RECORDS)
@@ -997,8 +1105,10 @@ export class SparkRecoveryService {
             input.pubkey === this.scope.owner &&
             input.kind === SPARK_RECOVERY_KIND &&
             isValidSignedPublicNostrEvent(input)
-          )
+          ) {
             unresolvedObserved = true
+            unresolvedEventId ??= input.id
+          }
         }
       }
     }
@@ -1010,13 +1120,14 @@ export class SparkRecoveryService {
             ownerPubkey: this.scope.owner,
             records: [...records.values()],
             unresolvedObserved,
+            ...(unresolvedEventId ? { unresolvedEventId } : {}),
           },
           this.scope.owner
         ).records
       } catch {
         throw new SparkRecoveryError("conflict")
       }
-      await this.retain(retained, unresolvedObserved)
+      await this.retain(retained, unresolvedObserved, unresolvedEventId)
       return retained
     }
     // Primary coordinates cannot be crowded out by unrelated NIP-78 records.
@@ -1459,6 +1570,7 @@ export class SparkRecoveryService {
       sources,
       unresolvedObserved,
       creationEligible,
+      observedEventIds: [...records.keys()],
       registry: registryObserved?.snapshot,
       registryEventId: registryObserved?.eventId,
       registryMembershipReady,

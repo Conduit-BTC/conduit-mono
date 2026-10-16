@@ -947,31 +947,50 @@ test("existing registry absorbs a local tombstone for an inactive validated back
   ])
 })
 
-test("partial account registry reads do not auto-restore a backed-up wallet", async () => {
+test("positive signed membership restores during partial reads without changing defaults or accepting conflicts", async () => {
   const f = fixture()
-  const service = f.service()
-  const walletId = crypto.randomUUID()
-  await backedUp(service, walletId)
-  const added = await service.prepareRegistry("mainnet", {
-    type: "add",
-    walletId,
-  })
-  expect((await service.deliver(added)).ready).toBe(true)
-  f.unavailableRelays.add(f.relayUrls[0])
-  const partial = await f.service().discover(false, "mainnet")
-  expect(partial.coverage).toBe("partial")
-  expect(partial.registry?.activeWalletIds).toContain(walletId)
-  expect(isCompleteAccountRegistryDiscovery(partial)).toBe(false)
-  expect(
-    await restoreAccountSparkWallets(f.signer, partial, "mainnet")
-  ).toEqual([])
-  expect(
-    isCompleteAccountRegistryDiscovery({
-      ...partial,
-      coverage: "complete",
-      state: "conflict",
+  activateAccountSigner(f.signer)
+  try {
+    const service = f.service(),
+      walletId = crypto.randomUUID()
+    await backedUp(service, walletId)
+    const added = await service.prepareRegistry("mainnet", {
+      type: "add",
+      walletId,
     })
-  ).toBe(false)
+    expect((await service.deliver(added)).ready).toBe(true)
+    f.unavailableRelays.add(f.relayUrls[0])
+    const partial = await service.discover(false, "mainnet")
+    expect(partial.coverage).toBe("partial")
+    expect(isCompleteAccountRegistryDiscovery(partial)).toBe(false)
+    const device = new ConduitDB(`partial-restore-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    databases.push(device)
+    const store = new MarketWalletStore(device),
+      registry = new WalletRegistry(store),
+      journal = new DexieSparkRecoveryStore(device)
+    const restore = (discovery = partial) =>
+      restoreAccountSparkWallets(
+        f.signer,
+        discovery,
+        "mainnet",
+        {},
+        { store, registry, journal, service }
+      )
+    expect(await restore()).toHaveLength(1)
+    expect(
+      (await store.listVisible(f.owner)).map((wallet) => wallet.id)
+    ).toEqual([walletId])
+    expect((await store.getSparkRecovery(walletId))?.type).toBe("signer")
+    expect((await store.list())[0]!.defaultIntents).toEqual([])
+    expect(await restore()).toEqual([])
+    expect(await restore({ ...partial, state: "conflict" })).toEqual([])
+    expect(await restore({ ...partial, unresolvedObserved: true })).toEqual([])
+  } finally {
+    retireAccountSigner(f.signer)
+  }
 })
 
 test("registry bootstrap preserves an existing main choice across both wallets", async () => {
