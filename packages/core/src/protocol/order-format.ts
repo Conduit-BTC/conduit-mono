@@ -1,6 +1,7 @@
 import { db, type ConduitDB, type OrderLifecycle } from "../db"
 import type { ParsedOrderMessage } from "./orders"
 import { openMarketsLocalOrderId } from "./open-markets-orders"
+import { GUEST_ORDER_LOCAL_RETENTION_MS } from "./order-lifecycle"
 
 export type OrderWireFormat = "conduit" | "open_markets"
 
@@ -19,7 +20,13 @@ export async function pinOrderWireFormat(
   order: Pick<
     OrderLifecycle,
     "orderId" | "buyerPubkey" | "merchantPubkey" | "orderWireFormat"
-  >,
+  > &
+    Partial<
+      Pick<
+        OrderLifecycle,
+        "buyerIdentityKind" | "createdAt" | "guestSessionExpiresAt"
+      >
+    >,
   options: { database?: ConduitDB; shouldContinue?: () => boolean } = {}
 ): Promise<OrderWireFormat> {
   const database = options.database ?? db
@@ -63,6 +70,15 @@ export async function pinOrderWireFormat(
           merchantPubkey: order.merchantPubkey,
           orderWireFormat: format,
           createdAt: Date.now(),
+          ...(order.buyerIdentityKind === "guest_ephemeral"
+            ? {
+                expiresAt: Math.min(
+                  (order.createdAt ?? Date.now()) +
+                    GUEST_ORDER_LOCAL_RETENTION_MS,
+                  order.guestSessionExpiresAt ?? Number.POSITIVE_INFINITY
+                ),
+              }
+            : {}),
         })
       assertCurrent()
       return format

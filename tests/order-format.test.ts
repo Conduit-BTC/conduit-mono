@@ -36,6 +36,10 @@ import { admitFixture } from "./helpers/public-event"
 import { publishBuyerOrderMessage } from "../apps/market/src/lib/order-publish"
 import { publishPrivateMessage } from "../packages/core/src/protocol/private-message-delivery"
 import {
+  GUEST_ORDER_LOCAL_RETENTION_MS,
+  pruneExpiredGuestOrderData,
+} from "../packages/core/src/protocol/order-lifecycle"
+import {
   createValidatedOrderRouteScope,
   consumeValidatedOrderRouteScope,
 } from "../packages/core/src/protocol/private-message-primitives"
@@ -140,6 +144,38 @@ function fixture() {
 }
 
 describe("explicit order-format selection and the numeric peer contract", () => {
+  it("expires staged and pre-staging guest format metadata with the existing guest window", async () => {
+    const f = fixture()
+    const now = Date.now()
+    await pinOrderWireFormat(f.lifecycle, { database: f.database })
+    await f.database.orderLifecycles.put(f.lifecycle)
+    const guest = {
+      ...f.lifecycle,
+      orderId: crypto.randomUUID(),
+      buyerIdentityKind: "guest_ephemeral" as const,
+      contactNote: undefined,
+      createdAt: now,
+      guestSessionExpiresAt: now + 100,
+    }
+    await pinOrderWireFormat(guest, { database: f.database })
+    await f.database.orderLifecycles.put(guest)
+    await pinOrderWireFormat(
+      { ...guest, orderId: crypto.randomUUID() },
+      { database: f.database }
+    )
+    expect(
+      await pruneExpiredGuestOrderData(
+        now + 200,
+        GUEST_ORDER_LOCAL_RETENTION_MS,
+        f.database
+      )
+    ).toBe(1)
+    expect(await f.database.orderWireFormats.count()).toBe(1)
+    expect(await f.database.orderLifecycles.count()).toBe(1)
+    expect(
+      (await f.database.orderWireFormats.get(f.orderId))?.orderWireFormat
+    ).toBe("open_markets")
+  })
   it("defaults only to the named contract and pins one party-scoped choice before staging", async () => {
     const f = fixture()
     expect(getOrderWireFormat({})).toBe("conduit")

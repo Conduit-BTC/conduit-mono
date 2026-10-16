@@ -1,5 +1,6 @@
 import {
   db,
+  type ConduitDB,
   type OrderCheckoutMode,
   type OrderLifecycle,
   type OrderLifecyclePhase,
@@ -2095,24 +2096,40 @@ export async function listOrderLifecycles(
  */
 export async function pruneExpiredGuestOrderData(
   nowMs = Date.now(),
-  retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS
+  retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS,
+  database: ConduitDB = db
 ): Promise<number> {
-  const expired = await db.orderLifecycles
-    .filter((lifecycle) =>
-      isGuestOrderDataExpired(lifecycle, nowMs, retentionMs)
-    )
-    .toArray()
-  if (expired.length === 0) return 0
+  const [expired, expiredFormats] = await Promise.all([
+    database.orderLifecycles
+      .filter((lifecycle) =>
+        isGuestOrderDataExpired(lifecycle, nowMs, retentionMs)
+      )
+      .toArray(),
+    database.orderWireFormats
+      .filter(
+        (choice) => choice.expiresAt !== undefined && choice.expiresAt <= nowMs
+      )
+      .primaryKeys(),
+  ])
+  if (expired.length === 0 && expiredFormats.length === 0) return 0
 
   const orderIds = expired.map((lifecycle) => lifecycle.orderId)
-  await db.transaction(
+  await database.transaction(
     "rw",
-    [db.orderLifecycles, db.paymentAttempts, db.orderMessages],
+    [
+      database.orderLifecycles,
+      database.paymentAttempts,
+      database.orderMessages,
+      database.orderWireFormats,
+    ],
     async () => {
       await Promise.all([
-        db.orderLifecycles.bulkDelete(orderIds),
-        db.paymentAttempts.where("orderId").anyOf(orderIds).delete(),
-        db.orderMessages.where("orderId").anyOf(orderIds).delete(),
+        database.orderLifecycles.bulkDelete(orderIds),
+        database.paymentAttempts.where("orderId").anyOf(orderIds).delete(),
+        database.orderMessages.where("orderId").anyOf(orderIds).delete(),
+        database.orderWireFormats.bulkDelete([
+          ...new Set([...orderIds, ...expiredFormats]),
+        ]),
       ])
     }
   )

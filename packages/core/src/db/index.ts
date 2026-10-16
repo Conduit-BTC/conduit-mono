@@ -1312,6 +1312,8 @@ export class ConduitDB extends Dexie {
       merchantPubkey: string
       orderWireFormat: "conduit" | "open_markets"
       createdAt: number
+      /** Guest metadata expires with its existing bounded checkout session. */
+      expiresAt?: number
     },
     "orderId"
   >

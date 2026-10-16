@@ -62,6 +62,9 @@ ID as `subject`. These follow-ups use the saved lifecycle's format and party
 pair. Numeric history without its saved outbound format cannot silently send
 a named conversation reply. Guest checkout retains its existing outbound-only
 identity and contact/recovery rules; it gains no guest inbox or conversation.
+Guest format checkpoints expire with that same session, including choices saved
+before encrypted staging. Guest cleanup removes them alongside expired order data;
+signed-in choices retain their existing recovery lifetime.
 
 Database version 28 applies the complete additive union of main's v27 roster
 index and the undeployed adapter candidate's v27 format table. It upgrades both
