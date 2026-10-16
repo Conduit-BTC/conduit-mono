@@ -101,7 +101,11 @@ export async function scanEventMarketCandidates(input: {
   const maxRelays = input.plan.maxRelayAttempts ?? Infinity
   let requests = 0
   let incomplete =
-    input.plan.relayHintTruncated || (batches.length > 0 && relays.length === 0)
+    input.plan.relayHintTruncated ||
+    ["lookup-unavailable", "stale-cache", "partial-network"].includes(
+      input.plan.relayListState
+    ) ||
+    (batches.length > 0 && relays.length === 0)
   let available = false
   await Promise.all(
     Array.from({ length: 4 }, async () => {

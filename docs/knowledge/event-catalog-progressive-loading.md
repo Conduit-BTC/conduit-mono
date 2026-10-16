@@ -8,7 +8,10 @@ shared Core readers in `event-market-roster-read.ts` and the scoped
 
 Timeline discovery starts with retained signed headers and one shared public
 relay plan. Following and curated perspectives scan every organizer in batches
-of 64; 64 is a request size, not an audience limit. Market guests browse kind
+of 64; 64 is a request size, not an audience limit. One batched NIP-65 lookup
+adds explicit organizers' advertised write relays to that same bounded plan,
+with their source grants retained through final network admission. Unavailable,
+stale or partial relay metadata keeps discovery coverage limited. Market guests browse kind
 30409 candidates without an author filter on the selected public relays. An
 empty Following list remains an empty audience. Established session identity owns
 that audience even while a remote signer is recovering. Only a settled guest
@@ -31,7 +34,7 @@ also advance through its final timestamp to older records without clearing the
 retryable range or claiming complete coverage. Duplicate cursors share one
 request in a pass. Exact roster and calendar hydration runs four at a
 time, for up to 128 coordinates per pass. Only discovered or retained coordinates
-need organizer relay planning. Observed relay sources accompany exact reads.
+need exact organizer hydration. Observed relay sources accompany exact reads.
 A new signed revision or newly observed source refreshes exact hydration, even
 when that source delivers an already-seen event ID. Source provenance is separate
 from signed event identity.
