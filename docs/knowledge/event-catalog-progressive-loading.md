@@ -47,11 +47,14 @@ cancelled or superseded progress cannot update the active view. Unrefreshed
 retained rows are marked stale, not promoted to fresh authority.
 
 The catalog paints provisional product candidates before per-merchant admission
-checks. A bounded market-tag query, cached candidates, search and Load more
-support fast browsing. Signed product ownership, visibility and known negative
-evidence still constrain what can be shown. An unavailable optional source is
-not proof of absence. A known revoke, deletion or newer untagged revision cannot
-be undone by a stale response.
+checks. Bounded kind `30410` reads select the exact market and occurrence from
+the roster's merchant authors, then resolve ordinary product coordinates.
+Cached candidates, search and Load more support fast browsing. Signed ownership,
+visibility and known negative evidence still constrain what can be shown. An
+unavailable optional source is not proof of absence. A known grant or assignment
+revoke, deletion, or stronger product visibility state cannot be undone by a
+stale response. Removing an ordinary product's discovery hint alone does not
+revoke a valid assignment.
 
 `FutureEventMarketPage` renders incremental results in its scoped query and
 states that availability is checked on selection. Search and merchant filters

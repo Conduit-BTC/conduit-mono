@@ -69,10 +69,12 @@ roster and revoked grant before handing out the paid order; no exact approval
 relay reads occur. `future-market-merchandise` also rejects fabricated or
 mismatched approval evidence before reads, signing or persistence.
 
-Single-date commerce remains controlled by the signed market open/closed state.
-Series purchases require a current or future selected occurrence.
-`event-market-checkout-authorization` locks both rules at snapshot creation and
-submit; expiration of one series occurrence does not close other valid dates.
+Signed market open/closed state and occurrence expiry are separate gates.
+New assignment purchases require an unended concrete occurrence, including a
+single-date market; series also require verified selected-date membership.
+`event-market-checkout-authorization` and assignment admission cover snapshot
+creation and submit. One occurrence ending does not close the whole market or
+reinterpret historical accepted orders.
 
 Catalog discovery resolves the signed roster before querying kind `30410` by
 its bounded merchant author set and exact market/occurrence, then resolving the
