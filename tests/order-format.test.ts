@@ -145,6 +145,26 @@ function fixture() {
 }
 
 describe("explicit order-format selection and the numeric peer contract", () => {
+  it.each([0, 200])(
+    "refuses unsupported numeric pickup encoding before encryption (total=%s)",
+    (total) => {
+      const f = fixture()
+      for (const buyerIdentityKind of ["signed_in", "guest_ephemeral"]) {
+        const payload = JSON.parse(f.canonical.content)
+        payload.buyerIdentityKind = buyerIdentityKind
+        payload.subtotal = total
+        payload.items[0].priceAtPurchase = total
+        payload.items[0].fulfillment = { type: "event_market_pickup" }
+        expect(() =>
+          encodeOpenMarketsBuyerMessage(
+            { ...f.canonical, content: JSON.stringify(payload) },
+            f.scope
+          )
+        ).toThrow("Event pickup requires Conduit order compatibility")
+      }
+    }
+  )
+
   it("accepts a singleton recipient with an optional bounded relay hint, including validated extensions", () => {
     const f = fixture()
     const numeric = encodeOpenMarketsBuyerMessage(f.canonical, f.scope)

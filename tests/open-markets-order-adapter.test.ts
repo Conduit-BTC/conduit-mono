@@ -130,6 +130,21 @@ async function receive(
   return projectCommerceInbox(f.owner.getSnapshot(), f.pubkey).merchant.data
 }
 
+it("admits an encrypted numeric order with an optional recipient relay hint", async () => {
+  const f = fixture()
+  await receive(f, {
+    ...f.order,
+    tags: f.order.tags.map((tag) =>
+      tag[0] === "p" ? [...tag, "wss://peer-hint.example"] : tag
+    ),
+  })
+  expect(
+    f.owner
+      .getSnapshot()
+      .orderMessages.filter((message) => message.type === "order")
+  ).toHaveLength(1)
+})
+
 describe("Open Markets orders through the authenticated shared inbox", () => {
   it("keeps a no-preimage receipt unverified until the exact invoice settles", async () => {
     const f = fixture()

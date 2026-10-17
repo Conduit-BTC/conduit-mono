@@ -242,3 +242,9 @@ history or create a second semantic send. The future versioned envelope needs
 its own schemas, explicit capability selection, compatibility/recovery evidence
 and retirement policy. Another marketplace's adoption is not a prerequisite to
 implementing that experimental migration.
+
+Event pickup retains the named Conduit contract for its authenticated pickup
+snapshot, organizer handoff and completion gates, including zero-cost signed-in
+and guest orders. Checkout displays and locks that required format, even after
+an earlier numeric selection. The numeric encoder rejects event pickup before
+encryption; this adapter does not claim a numeric pickup fulfillment contract.

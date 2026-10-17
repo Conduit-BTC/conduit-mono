@@ -269,6 +269,11 @@ export function encodeOpenMarketsBuyerMessage<
   const shipping = new Set<string>()
   for (const item of payload.items as Array<Record<string, unknown>>) {
     if (
+      (item.fulfillment as { type?: unknown } | undefined)?.type ===
+      "event_market_pickup"
+    )
+      throw new Error("Event pickup requires Conduit order compatibility")
+    if (
       typeof item.productId !== "string" ||
       !item.productId.startsWith(`30402:${recipient}:`) ||
       !Number.isSafeInteger(item.quantity) ||

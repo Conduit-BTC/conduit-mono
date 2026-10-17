@@ -159,7 +159,19 @@ describe("merchant order publish", () => {
           merchantPubkey: account.pubkey,
           orderId: wireOrderId,
         })
-        await account.owner.ingest(wrapEvent(numeric, buyer, account.pubkey))
+        await account.owner.ingest(
+          wrapEvent(
+            createPrivateMessageRumor({
+              ...numeric,
+              id: "",
+              tags: numeric.tags.map((tag) =>
+                tag[0] === "p" ? [...tag, "wss://peer-hint.example"] : tag
+              ),
+            }),
+            buyer,
+            account.pubkey
+          )
+        )
         if (evidence === "named_history") {
           for (const [type, payload] of [
             ["payment_request", { invoice, amount: 200, currency: "SATS" }],

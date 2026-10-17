@@ -1920,7 +1920,9 @@ function CheckoutPage() {
     fulfillment: preparedFulfillment.resolutions,
   })
   const routerBranchTargetCheckout = routerAdmission.mode === "router"
-  const orderWireFormat: OrderWireFormat = routerBranchTargetCheckout
+  const requiresConduitOrderFormat =
+    routerBranchTargetCheckout || isPickupCheckout
+  const orderWireFormat: OrderWireFormat = requiresConduitOrderFormat
     ? "conduit"
     : requestedOrderWireFormat
   const routerPreparationUnavailableMessage =
@@ -5223,7 +5225,7 @@ function CheckoutPage() {
           <OrderFormatSelect
             value={orderWireFormat}
             disabled={
-              routerBranchTargetCheckout ||
+              requiresConduitOrderFormat ||
               checkoutRecoveryIsChecking ||
               checkoutRecoveryBlockingMessage !== null ||
               paymentInFlightRef.current
@@ -5236,9 +5238,11 @@ function CheckoutPage() {
                 }))
             }}
           />
-          {routerBranchTargetCheckout && (
+          {requiresConduitOrderFormat && (
             <p role="status" className="text-sm text-[var(--text-secondary)]">
-              This payment option requires Conduit order compatibility.
+              {isPickupCheckout
+                ? "Event pickup requires Conduit order compatibility."
+                : "This payment option requires Conduit order compatibility."}
             </p>
           )}
           {
