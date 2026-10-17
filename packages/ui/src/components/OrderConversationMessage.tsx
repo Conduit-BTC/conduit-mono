@@ -232,11 +232,14 @@ export function OrderConversationMessage({
                 resolved?.title ||
                 formatProductReference(item.productId).title
               const image = normalizePublicMediaUrl(resolved?.imageUrl)
-              const itemPrice = formatAmount(
-                item.priceAtPurchase,
-                item.currency,
-                item.sourcePrice
-              )
+              const itemPrice =
+                item.priceAtPurchase === undefined
+                  ? { primary: "Unit price not supplied", secondary: undefined }
+                  : formatAmount(
+                      item.priceAtPurchase,
+                      item.currency,
+                      item.sourcePrice
+                    )
               return (
                 <div
                   key={`${message.id}-${item.productId}`}

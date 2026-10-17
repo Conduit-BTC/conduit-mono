@@ -107,6 +107,9 @@ export function projectDirectOrFileRumor(
           : principal,
       createdAt: (rumor.created_at ?? 0) * 1000,
       content: decoded.category === "direct" ? decoded.text : "Encrypted file",
+      ...(decoded.category === "direct" && decoded.subject
+        ? { subject: decoded.subject }
+        : {}),
       transport: "nip17",
       participants,
       conversationId: `nip17:${participants.join(":")}`,
@@ -213,7 +216,7 @@ function freezeProjection<T>(value: T): T {
 }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-export const INBOX_DECODE_RULES_VERSION = 2
+export const INBOX_DECODE_RULES_VERSION = 6
 const LEASE_MS = 60_000
 const KEY_ID = "commerce-inbox-aes-gcm-v1"
 

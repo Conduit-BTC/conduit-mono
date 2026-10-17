@@ -308,7 +308,6 @@ export function createValidatedOrderRouteScope(input: {
   )
     .trim()
     .toLowerCase()
-  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
   const rumorRecipient = input.rumor.tags
     .find((tag) => tag[0] === "p")?.[1]
     ?.trim()
@@ -317,21 +316,22 @@ export function createValidatedOrderRouteScope(input: {
     completePrivateMessageEvent(input.rumor)
   )
   if (
-    input.rumor.kind !== EVENT_KINDS.ORDER ||
+    ![EVENT_KINDS.ORDER, 17].includes(input.rumor.kind) ||
     !input.rumor.id ||
     input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey ||
     rumorRecipient !== expectedRumorRecipient ||
     (expectedRumorRecipient !== recipientPubkey &&
       recipientPubkey !== senderPubkey) ||
-    rumorOrderId !== orderId ||
     decoded.category !== "commerce" ||
-    !decoded.parsedOrderMessage
+    !decoded.parsedOrderMessage ||
+    (decoded.parsedOrderMessage.orderId !== orderId &&
+      decoded.parsedOrderMessage.wireOrderId !== orderId)
   ) {
     throw new Error("Cannot authorize compatibility routing for this rumor.")
   }
   const scope = Object.freeze({
     rumorId: input.rumor.id,
-    orderId,
+    orderId: decoded.parsedOrderMessage.wireOrderId ?? orderId,
     senderPubkey,
     recipientPubkey,
   })
@@ -740,6 +740,7 @@ export interface ParsedDirectMessage {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  subject?: string
   /** Present only for an exact canonical companion awaiting order evidence. */
   orderCompanionIdentity?: OrderCompanionNotificationIdentity
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
@@ -862,9 +863,14 @@ export function consumeValidatedOrderRouteScope(input: {
   const scope = input.scope
   if (!scope || !validatedOrderRouteScopes.has(scope)) return false
   validatedOrderRouteScopes.delete(scope)
-  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const decoded = decodeCommerceMessageRumor(input.rumor)
+  const rumorOrderId =
+    decoded.category === "commerce"
+      ? (decoded.parsedOrderMessage?.wireOrderId ??
+        decoded.parsedOrderMessage?.orderId)
+      : undefined
   return (
-    input.rumor.kind === EVENT_KINDS.ORDER &&
+    [EVENT_KINDS.ORDER, 17].includes(input.rumor.kind) &&
     scope.rumorId === input.rumor.id &&
     scope.orderId === rumorOrderId &&
     scope.senderPubkey === input.senderPubkey &&

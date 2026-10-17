@@ -1116,6 +1116,8 @@ export interface OrderLifecycleItem {
  */
 export interface OrderLifecycle {
   orderId: string
+  /** Explicit immutable commerce encoding; absent on historical named orders. */
+  orderWireFormat?: "conduit" | "open_markets"
   /** Buyer-local source provenance; legacy field name. Never sent in order content or used for payment/payout. */
   claimedReferralSource?: {
     sourceDomain?: string
@@ -1303,6 +1305,18 @@ export class ConduitDB extends Dexie {
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
+  orderWireFormats!: EntityTable<
+    {
+      orderId: string
+      buyerPubkey: string
+      merchantPubkey: string
+      orderWireFormat: "conduit" | "open_markets"
+      createdAt: number
+      /** Guest metadata expires with its existing bounded checkout session. */
+      expiresAt?: number
+    },
+    "orderId"
+  >
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
   productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
   localProductWriteIntents!: EntityTable<LocalProductWriteIntent, "id">
@@ -1634,12 +1648,22 @@ export class ConduitDB extends Dexie {
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
     })
-
     this.version(27).stores({
+      // The undeployed adapter v27 lineage already has this store. Declare it
+      // here as well so Dexie does not drop its rows before applying v28.
+      orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
       // Main and discovery previews independently used v26. A fresh version
       // applies their complete additive union to either installed lineage.
       // Size keys bound background discovery without scanning signed payloads.
       // The additive index does not rewrite durable or legacy evidence rows.
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
+    })
+    // Apply the complete additive union to both v27 lineages: main's roster
+    // index and the undeployed adapter candidate's format table. Durable order,
+    // invoice, wallet and encrypted delivery records are never rewritten.
+    this.version(28).stores({
+      orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
       eventMarketRosterEvidence:
         "id, marketCoordinate, cachedAt, discoveryBytes",
     })

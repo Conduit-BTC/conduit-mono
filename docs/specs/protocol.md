@@ -787,9 +787,30 @@ content-free.
 
 ## Legacy Conduit Order Message Payload (CND-128)
 
-Current Conduit writers and readers use kind `16` with JSON `content` and
-explicit `p`, named `type`, and `order` tags. There is no current Conduit kind
-`17` payment-proof writer and no proposed OMF kind-`1327` writer.
+The default Conduit order contract uses kind `16` with JSON `content` and
+explicit `p`, named `type`, and `order` tags. Standard Market checkout also
+offers explicit Open Markets numeric format selection; client tags and
+kind-10050 declarations never select commerce format. Private router checkout
+retains its required named contract. No proposed OMF kind-`1327` writer is enabled.
+
+The shared [numeric order adapter](../knowledge/open-markets-order-adapter.md)
+also reads validated Open Markets numeric orders into Merchant review, sends
+compatible numeric replies for those orders, and writes numeric orders, kind-17
+Lightning reports and kind-14 conversation for explicitly selected Market
+orders. A device-local party-scoped format choice must commit before encrypted
+staging, remains immutable in lifecycle/recovery, and never creates a second
+representation. Existing orders without format metadata remain named.
+Supported kind-17 receipts, with or without a preimage, remain claims for the
+existing settlement verifier. Numeric invoice `expiration` must agree with the
+BOLT11 deadline and does not erase invoice history after payment validity ends;
+ordinary message and wrapper TTLs remain in force. Original
+wire IDs and encrypted originals are preserved; missing historical prices,
+listing revisions and destination terms remain unknown.
+
+Only an exact locally selected numeric buyer order projects its merchant's
+common confirmation/fulfillment statuses into buyer-facing order state. Generic
+inbound reports do not gain settlement authority on Merchant. Account, party,
+invoice, recovery and guest outbound-only boundaries remain unchanged.
 
 This legacy format is not wire-compatible with the GammaMarkets order-message
 format. GammaMarkets uses numeric kind-16 `type` values, human-readable
@@ -804,14 +825,17 @@ orders, messages, or user-visible parse failures.
 
 ### Migration gate (CND-191)
 
-The OMF order-message proposal remains unaccepted. Conduit must preserve legacy
-writes and must not enable a new-kind writer or dual-write before acceptance.
-After acceptance, migration proceeds in this order:
+The versioned OMF proposal remains experimental. Implementation can proceed from
+a frozen contract using explicit supported-peer selection and Conduit-owned
+correctness, compatibility, cryptographic and recovery evidence. Upstream
+acceptance or another marketplace's adoption is not a universal implementation
+gate. The current numeric adapter enables no kind-1327 writer. Migration proceeds
+in this order:
 
-1. Add a codec for the accepted format.
-2. Add strict dual-read and semantic deduplication across accepted and legacy
+1. Add a codec for the selected format.
+2. Add strict dual-read and semantic deduplication across new and legacy
    representations.
-3. Enable the accepted writer only when peer capability is explicit.
+3. Select one supported representation with explicit capability or authenticated per-order evidence.
 4. Retire legacy writes after compatibility evidence is sufficient, while
    retaining bounded legacy reads for recovery.
 

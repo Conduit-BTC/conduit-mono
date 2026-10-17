@@ -52,17 +52,29 @@ incoming message are retained metadata; they do not authorize group fanout.
 
 ### Commerce payloads and authority
 
-Normal Conduit order writers retain the deployed kind-16 rumor: JSON in
-`content` plus explicit `p`, named `type`, and `order` tags. Shared codecs also
-read Open Markets numeric-tag kind-16 messages and kind-17 receipts. Compatible
-reads do not activate a numeric or kind-1327 writer or establish full cross-client
-wire conformance.
+Conduit remains the default named kind-16 JSON contract. Standard Market
+checkout offers an explicit Open Markets numeric choice for merchants requesting
+that contract; private router checkout retains its required named contract. The shared
+[numeric order adapter](../knowledge/open-markets-order-adapter.md) also admits
+validated Open Markets orders to Merchant review and selects numeric replies for
+those retained orders. New numeric orders freeze their party-scoped format before
+encrypted staging and reuse it for kind-17 Lightning payment reports and kind-14
+conversation. Reload and retries preserve the exact staged encrypted bytes;
+no order emits both representations. Old orders without format metadata remain
+named. Neither `client` nor kind-10050 relay declarations imply format support.
+Kind-17 Lightning receipts with optional preimages enter the existing verifier as
+unverified claims. Numeric invoice expiration describes BOLT11 payment validity,
+not disappearance of authenticated invoice history. Ordinary message/wrapper
+expiration still applies. Other rails, unknown versions and incomplete terms remain explicit
+evidence. No kind-1327 writer or complete cross-client conformance is claimed.
 
 Authenticated external commerce records may be inspected, searched and associated
 locally. Replies require one unambiguous authenticated counterparty. Neither
 association nor a declared amount grants order
-adoption, payment, inventory or fulfillment authority. Only validated Conduit
-order messages enter the existing order-action boundary. The bounded `conduit`
+adoption, payment, inventory or fulfillment authority. Supported external orders
+require explicit merchant review; missing prices or destination terms are never
+fabricated. Kind-14 notes remain direct messages, with a non-authoritative order
+preview only for an exact known external order and participant pair. The bounded `conduit`
 version-1 extension is read only when its identity matches its surrounding
 message; unknown versions remain inspectable evidence.
 
@@ -74,14 +86,16 @@ failures.
 
 ### Order-message migration gate
 
-The OMF order-message proposal remains unaccepted. Until it is accepted, Conduit
-preserves legacy kind-16 writes and must not enable a new-kind writer or
-dual-write. Acceptance gates the migration sequence:
+The versioned OMF envelope remains experimental. Its implementation may proceed
+using a frozen contract, explicit supported-peer selection and Conduit-owned
+correctness/compatibility evidence; unrelated marketplace adoption or upstream
+acceptance is not a universal implementation gate. No kind-1327 writer is enabled
+by the current numeric adapter. The migration sequence is:
 
-1. Reconcile codecs with the accepted contract while preserving current reads.
-2. Validate strict dual-read with semantic deduplication across legacy and accepted
+1. Reconcile codecs with the selected contract while preserving current reads.
+2. Validate strict dual-read with semantic deduplication across legacy and new
    representations.
-3. Enable the accepted writer only for peers with explicit capability evidence.
+3. Select one supported writer using explicit capability or authenticated per-order evidence.
 4. Retire legacy writes after compatibility evidence is sufficient, while
    retaining bounded legacy reads for recovery.
 
@@ -379,8 +393,11 @@ material, wallet credentials or recovery material, or wallet balances.
 - Legacy kind-4 events are read-only, never published, and remain in
   transport-qualified threads separate from NIP-17.
 - Kind-16 parsing preserves validated Conduit reads and compatible numeric
-  Open Markets reads, rejects NIP-18 generic repost collisions, and keeps new
-  writers gated. Kind-17 receipts do not authorize payment or order adoption.
+  Open Markets reads and explicitly selected writes, rejects NIP-18 generic repost
+  collisions, and preserves saved per-order format and exact recovery bytes.
+  Kind-17 receipts do not authorize payment or order adoption. Only the exact
+  locally selected buyer order projects its merchant's common status reports
+  into buyer-facing confirmation and fulfillment; Merchant settlement gates remain.
 - General conversations group by transport and counterparty pubkey.
 - No message text or encrypted payload reaches any telemetry/log path.
 - Slow/missing relay readback still leaves cached conversations understandable.

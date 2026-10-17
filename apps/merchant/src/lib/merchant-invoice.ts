@@ -15,6 +15,7 @@ import {
   mockMakeInvoice,
   normalizeLightningInvoice,
   normalizePubkey,
+  openMarketsLocalOrderId,
   nwcGetInfo,
   nwcMakeInvoice,
   publishMerchantOrderMessage,
@@ -81,6 +82,11 @@ type PendingInvoiceTable = {
   get(id: string): Promise<StoredMerchantPendingInvoice | undefined>
   put(invoice: StoredMerchantPendingInvoice): Promise<unknown>
   delete(id: string): Promise<void>
+  where?(index: "merchantPubkey"): {
+    equals(value: string): {
+      toArray(): Promise<StoredMerchantPendingInvoice[]>
+    }
+  }
 }
 
 export interface MerchantInvoiceLockManager {
@@ -224,7 +230,30 @@ export class DexieMerchantPendingInvoiceStore implements MerchantPendingInvoiceS
     const normalizedOrderId = orderId.trim()
     if (!merchant || !normalizedOrderId) return null
     const id = pendingInvoiceId(merchant, normalizedOrderId)
-    return parseStoredPendingInvoice(await this.table.get(id), id)
+    const direct = parseStoredPendingInvoice(await this.table.get(id), id)
+    if (
+      direct ||
+      !normalizedOrderId.startsWith("open-markets:") ||
+      !this.table.where
+    )
+      return direct
+    // Installed clients keyed pending invoices by the immutable raw wire ID.
+    // Resolve the party-scoped view alias without replacing that operation.
+    const rows = await this.table
+      .where("merchantPubkey")
+      .equals(merchant)
+      .toArray()
+    const matches = rows.filter(
+      (row) =>
+        row.merchantPubkey === merchant &&
+        openMarketsLocalOrderId(row.orderId, row.buyerPubkey, merchant) ===
+          normalizedOrderId
+    )
+    if (matches.length > 1)
+      throw new Error("Conflicting saved invoice state cannot be replaced.")
+    return matches[0]
+      ? parseStoredPendingInvoice(matches[0], matches[0].id)
+      : null
   }
 
   async put(invoice: MerchantPendingInvoice): Promise<void> {
@@ -238,7 +267,8 @@ export class DexieMerchantPendingInvoiceStore implements MerchantPendingInvoiceS
     const merchant = normalizePubkey(merchantPubkey)
     const normalizedOrderId = orderId.trim()
     if (!merchant || !normalizedOrderId) return
-    await this.table.delete(pendingInvoiceId(merchant, normalizedOrderId))
+    const saved = await this.get(merchant, normalizedOrderId)
+    if (saved) await this.table.delete(saved.id)
   }
 }
 
@@ -253,7 +283,12 @@ export async function loadMerchantInvoiceReceivingAuthority(
     !saved ||
     saved.merchantPubkey !== scope.merchantPubkey ||
     saved.buyerPubkey !== scope.buyerPubkey ||
-    saved.orderId !== scope.orderId ||
+    (saved.orderId !== scope.orderId &&
+      openMarketsLocalOrderId(
+        saved.orderId,
+        saved.buyerPubkey,
+        saved.merchantPubkey
+      ) !== scope.orderId) ||
     saved.source !== "wallet" ||
     saved.amountMsats !== input.amountMsats ||
     saved.invoice.trim().toLowerCase() !== input.invoice.trim().toLowerCase()

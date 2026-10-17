@@ -55,6 +55,7 @@ export type PreparedOrderRelayDelivery = {
 export type StagedOrderLifecycleInput = Pick<
   OrderLifecycle,
   | "orderId"
+  | "orderWireFormat"
   | "claimedReferralSource"
   | "buyerPubkey"
   | "buyerIdentityKind"
@@ -202,6 +203,7 @@ function immutableLifecycleSnapshot(
 ): unknown {
   return {
     orderId: lifecycle.orderId,
+    orderWireFormat: lifecycle.orderWireFormat ?? "conduit",
     claimedReferralSource: lifecycle.claimedReferralSource,
     buyerPubkey: lifecycle.buyerPubkey,
     buyerIdentityKind: lifecycle.buyerIdentityKind,

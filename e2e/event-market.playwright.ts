@@ -1881,6 +1881,16 @@ test("Event Market variable products select a purchasable variation before check
   await expect(
     page.getByText(/Pickup from event organizer/).first()
   ).toBeVisible()
+  const compatibility = page.getByRole("combobox", {
+    name: "Order compatibility",
+  })
+  await expect(compatibility).toBeDisabled()
+  await expect(compatibility).toContainText("Conduit")
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "Event pickup requires Conduit order compatibility." })
+  ).toBeVisible()
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/)
@@ -4660,6 +4670,11 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   await expect(page.getByLabel("Phone", { exact: true })).toHaveCount(0)
   await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
   await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
+  const compatibility = page.getByRole("combobox", {
+    name: "Order compatibility",
+  })
+  await expect(compatibility).toBeDisabled()
+  await expect(compatibility).toContainText("Conduit")
   const before = relay.publications.length
   await page.getByRole("button", { name: "Send order", exact: true }).click()
   await expect(

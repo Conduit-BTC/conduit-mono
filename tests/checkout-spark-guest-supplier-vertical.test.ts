@@ -12,6 +12,7 @@ import {
   getNdk,
   openCheckoutSparkRecoveryDelivery,
   parseOrderMessageRumorEvent,
+  pinOrderWireFormat,
   projectCheckoutSparkMerchantSettlement,
   readCheckoutSparkMerchantOrderEvidence,
   unwrapGiftWrap,
@@ -366,6 +367,8 @@ describe("offline guest supplier settled checkout composition", () => {
                   publishOrder: (rumor, merchant, buyer, options) =>
                     publishBuyerOrderMessage(rumor, merchant, buyer, {
                       ...options,
+                      pinOrderWireFormatFn: (order, pinOptions) =>
+                        pinOrderWireFormat(order, { ...pinOptions, database }),
                       orderRelayDeliveryRepository: orderRepository(database),
                       rememberCheckoutOrderAttemptFn: () => {},
                       cacheBuyerOrderRumorFn: async () => null,
