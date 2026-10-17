@@ -14,6 +14,7 @@ import {
   getOrderWireFormat,
   pinOrderWireFormat,
   projectOwnedNumericOrderMessages,
+  correlateLegacyNumericOrderHistory,
 } from "../packages/core/src/protocol/order-format"
 import { extractOrderSummary } from "../packages/core/src/protocol/order-summary"
 import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
@@ -144,6 +145,157 @@ function fixture() {
 }
 
 describe("explicit order-format selection and the numeric peer contract", () => {
+  it("accepts a singleton recipient with an optional bounded relay hint, including validated extensions", () => {
+    const f = fixture()
+    const numeric = encodeOpenMarketsBuyerMessage(f.canonical, f.scope)
+    for (const extension of [false, true]) {
+      for (const hint of [undefined, "", "wss://peer.example/inbox"]) {
+        const rumor = createPrivateMessageRumor({
+          ...numeric,
+          id: "",
+          tags: numeric.tags
+            .filter(
+              (tag) => tag[0] !== "p" && (extension || tag[0] !== "conduit")
+            )
+            .concat([
+              hint === undefined
+                ? ["p", f.merchantPubkey]
+                : ["p", f.merchantPubkey, hint],
+            ]),
+        })
+        expect(parseOrderMessageRumorEvent(rumor).type).toBe("order")
+      }
+    }
+    for (const tag of [
+      ["p", f.merchantPubkey, "https://peer.example"],
+      ["p", f.merchantPubkey, "wss://peer.example", "extra"],
+    ]) {
+      expect(() =>
+        parseOrderMessageRumorEvent(
+          createPrivateMessageRumor({
+            ...numeric,
+            id: "",
+            tags: numeric.tags.filter((tag) => tag[0] !== "p").concat([tag]),
+          })
+        )
+      ).toThrow()
+    }
+    expect(() =>
+      parseOrderMessageRumorEvent(
+        createPrivateMessageRumor({
+          ...numeric,
+          id: "",
+          tags: [...numeric.tags, ["p", f.merchantPubkey]],
+        })
+      )
+    ).toThrow()
+  })
+
+  it("binds historical named invoice and fulfillment history only to its exact extension-backed party pair", () => {
+    const f = fixture()
+    const numeric = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor({
+        ...encodeOpenMarketsBuyerMessage(f.canonical, f.scope),
+        id: "",
+      })
+    )
+    const named = (buyer = f.buyerPubkey) =>
+      parseOrderMessageRumorEvent(
+        createPrivateMessageRumor({
+          kind: 16,
+          pubkey: f.merchantPubkey,
+          created_at: f.canonical.created_at,
+          tags: [
+            ["p", buyer],
+            ["order", f.orderId],
+            ["type", "status_update"],
+          ],
+          content: JSON.stringify({ status: "paid" }),
+        })
+      )
+    const paid = named()
+    const other = named(getPublicKey(generateSecretKey()))
+    const messages = correlateLegacyNumericOrderHistory([numeric, paid, other])
+    expect(messages[1]?.orderId).toBe(numeric.orderId)
+    expect(messages[1]?.wireFormat).toBeUndefined()
+    expect(messages[2]).toEqual(other)
+    const original = parseOrderMessageRumorEvent(f.canonical)
+    expect(
+      correlateLegacyNumericOrderHistory([numeric, paid, original])[1]
+    ).toEqual(paid)
+  })
+
+  it("persists an accepted numeric conversation through the default cache when the self-copy is refused", async () => {
+    const f = fixture()
+    await f.database.orderLifecycles.put(f.lifecycle)
+    const signer = new NDKPrivateKeySigner(
+      Buffer.from(f.buyerKey).toString("hex")
+    )
+    const lease = setTestAccountSigner(signer)
+    signerLeases.push(lease)
+    installProtectedReadSigner(lease, f.buyerPubkey, () => true)
+    const authorization = getProtectedReadAuthorization(f.buyerPubkey)!
+    const owner = new CommerceInbox(
+      authorization,
+      lease,
+      new CommerceInboxStore(authorization, f.database)
+    )
+    owners.push(owner)
+    let sends = 0
+    const result = await publishBuyerOrderMessage(
+      {
+        ...f.canonical,
+        id: "",
+        tags: [
+          ["p", f.merchantPubkey],
+          ["type", "message"],
+          ["order", f.orderId],
+        ],
+        content: JSON.stringify({ note: "Synthetic accepted conversation" }),
+      },
+      f.merchantPubkey,
+      { pubkey: f.buyerPubkey, signer: lease },
+      {
+        orderContext: f.lifecycle,
+        getCommerceInboxFn: () => owner,
+        publishPrivateMessageFn: async (input) => {
+          sends++
+          expect(input.rumor.kind).toBe(14)
+          await input.onRecipientAccepted?.({
+            successfulRelayUrls: ["wss://fixture.example"],
+          } as never)
+          return {
+            deliveryRoute: "declared_inbox",
+            selfDeliveryStatus: "failed",
+            selfCopyError: "Synthetic self-copy refusal",
+          } as never
+        },
+      }
+    )
+    expect(sends).toBe(1)
+    expect(result.localCacheError).toBeNull()
+    expect(result.buyerSelfCopyError).not.toBeNull()
+    owner.stop()
+    const reloaded = new CommerceInbox(
+      authorization,
+      lease,
+      new CommerceInboxStore(authorization, f.database)
+    )
+    owners.push(reloaded)
+    await reloaded.initialize()
+    expect(
+      reloaded
+        .getSnapshot()
+        .orderMessages.filter(
+          (m) => m.type === "message" && m.orderId === f.orderId
+        )
+    ).toHaveLength(1)
+    expect(reloaded.getSnapshot().directMessages).toHaveLength(1)
+    expect(
+      JSON.stringify(await f.database.commerceInboxRecords.toArray())
+    ).not.toContain("Synthetic accepted conversation")
+  })
+
   it("expires staged and pre-staging guest format metadata with the existing guest window", async () => {
     const f = fixture()
     const now = Date.now()

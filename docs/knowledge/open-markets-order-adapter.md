@@ -133,8 +133,21 @@ external records. A refund request is
 never emitted as cancellation. Corrections that need richer local metadata
 remain in the bounded extension; no refund transfer is initiated here.
 
-Kind-14 notes remain in the direct inbox. Orders may additionally preview a
-note only for an existing external order with the exact subject and two-party
+Installed-version numeric orders with a validated Conduit extension may already
+have named replies and pending invoices under their original wire ID. The inbox
+joins those replies only for the exact buyer and merchant pair, and only when no
+distinct named initial order conflicts. Existing invoice records and paid
+confirmation operations keep their original keys, grammar, and encrypted bytes.
+A new numeric order without positive historical named operation evidence keeps
+numeric replies. Decode-rule version 6 rebuilds that view from retained wraps.
+
+A singleton recipient `p` tag may have an optional bounded WebSocket relay hint.
+The hint does not grant delivery authority or select the commerce format.
+
+Kind-14 notes remain in the direct inbox. Accepted outgoing Market notes are
+saved as encrypted direct-message projections before the optional self-copy;
+a refused self-copy cannot erase the sender's accepted conversation on reload.
+Orders may additionally preview a note only for an existing external order with the exact subject and two-party
 identity. The preview cannot grant financial or fulfillment authority.
 
 A supported kind-17 receipt has one Lightning invoice and optional preimage.
@@ -143,7 +156,7 @@ SHA-256 must match the payment hash. A three-entry `payment` tag without a
 preimage is an unverified payment report, not a malformed message or settlement.
 Kind 17 never falls back to the kind-16 Conduit extension parser. A disguised
 order/status extension remains external evidence, including under an unknown
-version. Decode-rule version 5 reprocesses retained unsupported reports while
+version. Decode-rule version 6 reprocesses retained unsupported reports while
 preserving the earlier kind-17 authority restriction and genuine deletions or
 message-expiration decisions.
 The supported receipt remains an unverified claim. Automation additionally requires the exact

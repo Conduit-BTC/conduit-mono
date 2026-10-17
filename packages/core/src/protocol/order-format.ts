@@ -86,6 +86,57 @@ export async function pinOrderWireFormat(
   )
 }
 
+/** Join installed-version named replies without rewriting signed events or operation keys. */
+export function correlateLegacyNumericOrderHistory(
+  messages: readonly ParsedOrderMessage[]
+): ParsedOrderMessage[] {
+  const namedOrders = new Set(
+    messages
+      .filter(
+        (message) =>
+          message.type === "order" && message.wireFormat !== "open_markets"
+      )
+      .map((message) =>
+        openMarketsLocalOrderId(
+          message.orderId,
+          message.senderPubkey,
+          message.recipientPubkey
+        )
+      )
+  )
+  const bindings = new Map(
+    messages
+      .filter(
+        (message) =>
+          message.type === "order" &&
+          message.wireFormat === "open_markets" &&
+          message.conduitExtension &&
+          message.wireOrderId
+      )
+      .map((message) => [message.orderId, message.wireOrderId!] as const)
+  )
+  return messages.map((message) => {
+    if (message.type === "order" || message.wireFormat === "open_markets")
+      return message
+    const orderId = openMarketsLocalOrderId(
+      message.orderId,
+      message.senderPubkey,
+      message.recipientPubkey
+    )
+    if (namedOrders.has(orderId) || bindings.get(orderId) !== message.orderId)
+      return message
+    return {
+      ...message,
+      orderId,
+      wireOrderId: message.orderId,
+      legacyNumericOrder: true,
+      ...(message.type === "payment_proof"
+        ? { payload: { ...message.payload, orderId } }
+        : {}),
+    } as ParsedOrderMessage
+  })
+}
+
 /** Bind incoming numeric evidence to a locally staged buyer order, not a brand tag. */
 export function projectOwnedNumericOrderMessages(
   messages: readonly ParsedOrderMessage[],
@@ -115,7 +166,8 @@ export function projectOwnedNumericOrderMessages(
       )
   )
   return messages.map((message) => {
-    if (message.wireFormat !== "open_markets") return message
+    if (message.wireFormat !== "open_markets" && !message.legacyNumericOrder)
+      return message
     const order = bindings.get(message.orderId)
     if (
       !order ||
@@ -128,12 +180,14 @@ export function projectOwnedNumericOrderMessages(
       )
     )
       return message
-    if (message.type === "order")
+    if (message.type === "order") {
+      if (message.wireFormat !== "open_markets") return message
       return {
         ...message,
         orderId: order.orderId,
         payload: { ...message.payload, id: order.orderId },
       }
+    }
     if (message.type === "payment_proof")
       return {
         ...message,
@@ -142,6 +196,7 @@ export function projectOwnedNumericOrderMessages(
       }
     if (
       message.type === "status_update" &&
+      message.wireFormat === "open_markets" &&
       message.senderPubkey === order.merchantPubkey
     ) {
       const statuses: Record<string, string> = {

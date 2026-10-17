@@ -168,6 +168,21 @@ function buildMerchantOrderRumor(
   return rumor
 }
 
+function paidConfirmationIdentity(input: PreparedMerchantOrderMessageInput) {
+  const confirmation = input.paidInvoiceConfirmation!
+  const intent = [
+    input.merchantPubkey,
+    input.buyerPubkey,
+    input.orderId,
+    confirmation.invoice.trim().toLowerCase(),
+    confirmation.amountMsats,
+  ]
+  return {
+    intent,
+    logicalId: `merchant-paid-confirmation:${bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(intent))))}`,
+  }
+}
+
 /** Preserve one logical confirmation; the transport owner still stages/replays wraps. */
 async function getPaidInvoiceConfirmationRumor(
   input: PreparedMerchantOrderMessageInput,
@@ -189,16 +204,7 @@ async function getPaidInvoiceConfirmationRumor(
     confirmation.amountMsats <= 0
   )
     throw new Error("Invalid paid invoice confirmation intent")
-  const intent = [
-    input.merchantPubkey,
-    input.buyerPubkey,
-    input.orderId,
-    invoice,
-    confirmation.amountMsats,
-  ]
-  const logicalId = `merchant-paid-confirmation:${bytesToHex(
-    sha256(new TextEncoder().encode(JSON.stringify(intent)))
-  )}`
+  const { intent, logicalId } = paidConfirmationIdentity(input)
   assertCurrent()
   let row = await store.database.commerceInboxDeliveries.get(
     store.key(logicalId)
@@ -328,8 +334,57 @@ export async function publishMerchantOrderMessage(
         input.buyerPubkey,
         input.merchantPubkey
       ) === input.orderId
-    )
+    ) {
       prepared = { ...input, wireOrderId: order.wireOrderId }
+      const distinctNamedOrder = accountOwner
+        .getSnapshot()
+        .orderMessages.some(
+          (message) =>
+            message.type === "order" &&
+            message.wireFormat !== "open_markets" &&
+            message.orderId === order.wireOrderId &&
+            message.senderPubkey === input.buyerPubkey &&
+            message.recipientPubkey === input.merchantPubkey
+        )
+      if (order.conduitExtension && !distinctNamedOrder) {
+        accountOwner.store.assertCurrent()
+        const legacy = {
+          ...input,
+          orderId: order.wireOrderId,
+          wireOrderId: undefined,
+        }
+        const pending =
+          await accountOwner.store.database.merchantPendingInvoices.get(
+            `${input.merchantPubkey}:${order.wireOrderId}`
+          )
+        const confirmation = input.paidInvoiceConfirmation
+          ? await accountOwner.store.database.commerceInboxDeliveries.get(
+              accountOwner.store.key(paidConfirmationIdentity(legacy).logicalId)
+            )
+          : undefined
+        accountOwner.store.assertCurrent()
+        const namedHistory = accountOwner
+          .getSnapshot()
+          .orderMessages.some(
+            (message) =>
+              message.orderId === input.orderId &&
+              message.legacyNumericOrder &&
+              message.senderPubkey === input.merchantPubkey &&
+              message.recipientPubkey === input.buyerPubkey
+          )
+        if (
+          namedHistory ||
+          (pending?.orderId === order.wireOrderId &&
+            pending.merchantPubkey === input.merchantPubkey &&
+            pending.buyerPubkey === input.buyerPubkey) ||
+          (confirmation?.kind === "merchant_paid_confirmation" &&
+            confirmation.accountPubkey === input.merchantPubkey)
+        ) {
+          prepared = legacy
+          retainedNamedOrder = true
+        }
+      }
+    }
   }
   if (
     input.orderId.startsWith("open-markets:") &&
@@ -379,7 +434,7 @@ export async function publishMerchantOrderMessage(
       throw new Error("Local order history unavailable")
   })
 
-  const target = getMerchantOrderPublishTarget(input, rumor)
+  const target = getMerchantOrderPublishTarget(prepared, rumor)
   const sent = await publishPrivateMessage({
     rumor,
     senderPubkey: input.merchantPubkey,

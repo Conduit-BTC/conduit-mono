@@ -894,7 +894,7 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
     expect(recovered.getSnapshot().orderMessages.length).toBe(1)
     expect(recovered.getSnapshot().externalRecords.length).toBe(1)
     const retained = await f.database.commerceInboxWrappers.toArray()
-    expect(retained.every((row) => row.rulesVersion === 5)).toBe(true)
+    expect(retained.every((row) => row.rulesVersion === 6)).toBe(true)
     expect(
       JSON.stringify(retained.map((row) => row.event)) ===
         JSON.stringify(originals)

@@ -117,6 +117,24 @@ function coordinate(value: string, kind: number, merchant: string): boolean {
   )
 }
 
+/** Optional peer hint is syntax only; signed inbox declarations own delivery. */
+function validRecipientRelayHint(hint: string): boolean {
+  if (hint === "") return true
+  if (hint.length > 2048 || hint.trim() !== hint) return false
+  try {
+    const url = new URL(hint)
+    return (
+      ["wss:", "ws:"].includes(url.protocol) &&
+      !!url.hostname &&
+      !url.username &&
+      !url.password &&
+      !url.hash
+    )
+  } catch {
+    return false
+  }
+}
+
 /** Authenticated wire shape only. Adoption, invoicing and settlement keep their domain gates. */
 export function parseOpenMarketsOrderMessage(
   rumor: Rumor
@@ -134,7 +152,11 @@ export function parseOpenMarketsOrderMessage(
     if (
       tags.length > 1 ||
       tags.some(
-        (tag) => tag.length !== 2 || !tag[1]?.trim() || tag[1].length > 4000
+        (tag) =>
+          (tag.length !== 2 && !(key === "p" && tag.length === 3)) ||
+          !tag[1]?.trim() ||
+          tag[1].length > 4000 ||
+          (key === "p" && tag.length === 3 && !validRecipientRelayHint(tag[2]!))
       )
     )
       throw new Error("Ambiguous commerce field")

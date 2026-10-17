@@ -1,6 +1,9 @@
 import type { RelayTarget } from "./relay-authority"
 import { db, type OrderLifecycle } from "../db"
-import { projectOwnedNumericOrderMessages } from "./order-format"
+import {
+  correlateLegacyNumericOrderHistory,
+  projectOwnedNumericOrderMessages,
+} from "./order-format"
 import {
   getOrderAdapterCounts,
   openMarketsLocalOrderId,
@@ -290,7 +293,7 @@ function projectRetainedInboxRecords(
   return {
     directMessages: visibleDirect.sort((a, b) => a.createdAt - b.createdAt),
     orderMessages: projectOwnedNumericOrderMessages(
-      orderMessages,
+      correlateLegacyNumericOrderHistory(orderMessages),
       ownedOrders,
       principal
     ).sort((a, b) => a.createdAt - b.createdAt),

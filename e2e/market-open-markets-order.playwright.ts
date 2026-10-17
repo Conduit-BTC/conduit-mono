@@ -252,6 +252,20 @@ test("Market selects one numeric order and completes the external merchant lifec
       messages.getByText("Your order is being prepared", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
     const text = messages.getByRole("textbox", { name: "Message", exact: true })
+    await page.evaluate((principal) => {
+      const provider = (
+        window as unknown as {
+          nostr: {
+            nip44: { encrypt: (peer: string, text: string) => Promise<string> }
+          }
+        }
+      ).nostr.nip44
+      const encrypt = provider.encrypt.bind(provider)
+      provider.encrypt = async (peer, text) => {
+        if (peer === principal) throw new Error("Synthetic self-copy refusal")
+        return encrypt(peer, text)
+      }
+    }, buyer.pubkey)
     await text.fill("Thank you for the update")
     await messages
       .getByRole("button", { name: "Send message", exact: true })
@@ -296,6 +310,15 @@ test("Market selects one numeric order and completes the external merchant lifec
         .filter({ visible: true })
         .first()
     ).toBeVisible()
+    await page
+      .getByRole("button", { name: "Open messages", exact: true })
+      .click()
+    await expect(
+      page
+        .getByRole("dialog", { name: "Messages" })
+        .getByText("Thank you for the update", { exact: true })
+    ).toBeVisible()
+    await page.keyboard.press("Escape")
     const unchanged = await page.evaluate(
       async ({ root, orderId, original }) => {
         const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)

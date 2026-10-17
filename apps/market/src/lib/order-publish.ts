@@ -5,6 +5,7 @@ import {
   appendConduitClientTag,
   beginOrderRelayDeliveryAttempt,
   cacheOrderMessageRumor,
+  cacheAcceptedDirectMessageRumor,
   createAcceptedInboxSendCheckpoint,
   createOrderCompanionNotificationRumor,
   createValidatedGuestOrderCompanion,
@@ -112,6 +113,7 @@ export type BuyerOrderSigningIdentity =
 type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
 
 type BuyerOrderPublishDependencies = {
+  getCommerceInboxFn?: typeof getCommerceInbox
   pinOrderWireFormatFn?: typeof pinOrderWireFormat
   /** The already loaded owner snapshot for follow-ups; never a brand/relay hint. */
   orderContext?: Pick<
@@ -439,7 +441,9 @@ async function cacheBuyerOrderRumor(
   try {
     if (!rumor.id) throw new Error("Missing buyer order rumor id")
     if (!accountOwner) throw new Error("Local order history unavailable")
-    await cacheOrderMessageRumor(rumor, accountOwner)
+    if (rumor.kind === 14)
+      await cacheAcceptedDirectMessageRumor(rumor, accountOwner)
+    else await cacheOrderMessageRumor(rumor, accountOwner)
     return null
   } catch (error) {
     console.warn("Failed to cache buyer order message")
@@ -532,7 +536,9 @@ export async function publishBuyerOrderMessage(
   let accountOwner: CommerceInbox | null = null
   if (buyerIdentity.kind !== "guest_ephemeral") {
     try {
-      accountOwner = getCommerceInbox(buyerIdentity.pubkey)
+      accountOwner = (dependencies.getCommerceInboxFn ?? getCommerceInbox)(
+        buyerIdentity.pubkey
+      )
     } catch {
       // Report a local-cache failure after recipient acceptance.
     }

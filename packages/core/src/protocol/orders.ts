@@ -163,6 +163,10 @@ type ParsedOrderMessageBase = {
   rawContent: string
   wireFormat?: "open_markets"
   wireOrderId?: string
+  /** Set by the authenticated numeric extension decoder, never by peer hints. */
+  conduitExtension?: true
+  /** View-only binding of an installed-version named reply to its numeric order. */
+  legacyNumericOrder?: true
 }
 
 /** External intents never synthesize missing historical line prices or fulfillment. */
@@ -604,12 +608,19 @@ export function parseOrderMessageRumorEvent(
     return {
       ...parsed,
       wireFormat: "open_markets",
+      conduitExtension: true,
       wireOrderId,
       orderId,
       checkoutPaymentRoute: undefined,
       payload: { ...parsed.payload, id: orderId },
     }
-  return { ...parsed, wireFormat: "open_markets", wireOrderId, orderId }
+  return {
+    ...parsed,
+    wireFormat: "open_markets",
+    conduitExtension: true,
+    wireOrderId,
+    orderId,
+  }
 }
 
 function parseConduitOrderMessageRumorEvent(
