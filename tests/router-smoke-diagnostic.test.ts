@@ -108,6 +108,45 @@ describe("runner-owned router phase evidence", () => {
     ).toBeUndefined()
   })
 
+  it("retains only fixed Event checkout and organizer handout stages", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event setup",
+      "event occurrence assignment",
+      "event occurrence date selection",
+      "event occurrence product selection",
+      "event occurrence allocation submission",
+      "event organizer device selection",
+      "event reserved stock grant",
+      "event buyer checkout",
+      "event buyer catalog admission",
+      "event buyer cart checkout",
+      "event buyer price presentation",
+      "event buyer plan preparation",
+      "event buyer funding authorization",
+      "event buyer automatic payment routing",
+      "event organizer observes the buyer cutoff",
+      "event organizer automatic payment routing",
+      "event organizer stock authority rejected",
+      "event organizer recovery authority rejected",
+      "event organizer destination rejected",
+      "event organizer routing stopped before sends",
+      "event organizer routing stopped during commerce",
+      "event organizer native submission pending",
+      "event organizer native verification pending",
+      "event exact pickup claim and handout",
+      "event Merchant once-only stock reconciliation",
+    ] as const) {
+      recorder.phase(phase)
+      const diagnostic = routerSmokeDiagnosticFromAnnotations(annotations)
+      expect(diagnostic).toEqual({ phase, lifecycle: "body", body: "running" })
+      expect(
+        parseRouterSmokeDiagnostic({ ...diagnostic, orderId: "untrusted" })
+      ).toBeUndefined()
+    }
+  })
+
   it("binds sender-commit checkpoints to fixed expected conditions and categories", () => {
     const annotations: Array<{ type: string; description?: string }> = []
     const recorder = createRouterSmokeRecorder(annotations)
