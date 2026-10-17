@@ -20,6 +20,7 @@ import {
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
+import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -44,6 +45,8 @@ const FIXTURE_RELAY = `ws://127.0.0.1:${FIXTURE_RELAY_PORT}`
 const SYNTHETIC_IDENTITY_SEARCH_KEY = "__conduit_e2e_identity"
 const SYNTHETIC_IDENTITY_STORAGE_KEY = "conduit:e2e:identity"
 const SYNTHETIC_SIGNER_UNAVAILABLE_KEY = "conduit:e2e:signer-unavailable"
+const browserSourceRoot = (relative: string) =>
+  `/@fs/${process.cwd().replace(/\\/g, "/").replace(/^\/+/, "")}/${relative}`
 
 const syntheticIdentities = {
   organizer: {
@@ -1562,7 +1565,16 @@ test("signed series dates open one market and keep separate buyer choices @marke
 
 async function createAssignedPickupOrder(
   page: Page,
-  options: { zeroCost?: boolean } = {}
+  options: {
+    zeroCost?: boolean
+    organizerHandoff?: boolean
+    beforeBuyer?: (input: {
+      relay: RelayHarness
+      marketNaddr: string
+      assignment: SignedEvent
+      product: SignedEvent
+    }) => Promise<SignedEvent>
+  } = {}
 ) {
   page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
@@ -1587,7 +1599,12 @@ async function createAssignedPickupOrder(
       ["d", "merchant-fair"],
       ["a", eventCoordinate(calendar)],
       ["event_market", "2", "open"],
-      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 7"],
+      [
+        "merchant",
+        MERCHANT_PUBKEY,
+        options.organizerHandoff ? "organizer_handoff" : "merchant_present",
+        "Booth 7",
+      ],
     ],
   })
   const grant = signEvent(ORGANIZER_SECRET, {
@@ -1618,7 +1635,8 @@ async function createAssignedPickupOrder(
     grant,
     product,
     createInboxDeclaration("merchant", createdAt),
-    createInboxDeclaration("buyer", createdAt)
+    createInboxDeclaration("buyer", createdAt),
+    createInboxDeclaration("organizer", createdAt)
   )
   const marketNaddr = nip19.naddrEncode({
     kind: 30409,
@@ -1694,11 +1712,20 @@ async function createAssignedPickupOrder(
     savedPanel.getByRole("button", { name: "Save allocation" })
   ).toBeVisible()
 
+  const checkoutAssignment = options.beforeBuyer
+    ? await options.beforeBuyer({ relay, marketNaddr, assignment, product })
+    : assignment
   await gotoAs(page, marketUrl, "/events/" + marketNaddr, "buyer")
   await expect(
     page.getByRole("heading", { name: MERCHANT_TEMPLATE_TITLE })
+  ).toBeVisible({ timeout: 25_000 })
+  await expect(
+    page.getByText(
+      options.organizerHandoff
+        ? /Organizer pickup: Booth 7/
+        : /Merchant booth: Booth 7/
+    )
   ).toBeVisible()
-  await expect(page.getByText(/Merchant booth: Booth 7/)).toBeVisible()
   const card = page
     .getByRole("listitem")
     .filter({ hasText: MERCHANT_TEMPLATE_TITLE })
@@ -1730,7 +1757,7 @@ async function createAssignedPickupOrder(
   }
   expect(order.items[0]?.fulfillment?.type).toBe("event_market_pickup")
   expect(order.items[0]?.fulfillment?.occurrenceAssignment?.eventId).toBe(
-    assignment.id
+    checkoutAssignment.id
   )
 
   return {
@@ -1739,7 +1766,7 @@ async function createAssignedPickupOrder(
     calendar,
     market,
     product,
-    assignment,
+    assignment: checkoutAssignment,
     marketNaddr,
     productPath,
     order,
@@ -2718,7 +2745,7 @@ test("two future market products form one order and one private organizer releas
           )
         },
         {
-          root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+          root: browserSourceRoot("packages/core/src/protocol"),
           principal: MERCHANT_PUBKEY,
           rumorId: completionMessages()[0]!.rumor.id,
         }
@@ -4892,7 +4919,7 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   if (!receiptPath) throw new Error("Receipt download is missing")
   await page
     .getByRole("checkbox", {
-      name: "I saved my receipt and understand the trade-off",
+      name: "I saved my private receipt",
     })
     .check()
   await page.getByRole("button", { name: "Send order", exact: true }).click()
@@ -4932,6 +4959,324 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   await expect(
     page.getByText("This receipt does not match this order and merchant.")
   ).toBeVisible()
+})
+
+test("reserved organizer stock carries a free purchase through pickup and once-only seller reconciliation @market @merchant @commerce @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(240_000)
+  const result = await createAssignedPickupOrder(page, {
+    zeroCost: true,
+    organizerHandoff: true,
+    beforeBuyer: async ({ relay, marketNaddr }) => {
+      const eventPath = "/events/" + marketNaddr
+      await gotoAs(page, merchantUrl, eventPath, "organizer")
+      await page
+        .getByRole("combobox", { name: "Fee setting", exact: true })
+        .click()
+      await page
+        .getByRole("option", { name: "Charge an organizer fee", exact: true })
+        .click()
+      await page
+        .getByRole("textbox", { name: "Percentage", exact: true })
+        .fill("2.5")
+      await page
+        .getByRole("textbox", { name: "Minimum (sats)", exact: true })
+        .fill("10")
+      await page
+        .getByRole("textbox", {
+          name: "Organizer Lightning address",
+          exact: true,
+        })
+        .fill("organizer@example.com")
+      await page
+        .getByRole("button", { name: "Save fee settings", exact: true })
+        .click()
+      await expect(
+        page.getByText("2.5%, minimum 10 sats", { exact: true })
+      ).toBeVisible()
+      expect(
+        uniquePublishedEvents(relay.publications)
+          .filter((event) => event.kind === 30409)
+          .at(-1)
+          ?.tags.find((tag) => tag[0] === "conduit_event_fee")
+      ).toEqual([
+        "conduit_event_fee",
+        "1",
+        "active",
+        "250",
+        "10",
+        "organizer@example.com",
+      ])
+      await page
+        .getByRole("combobox", { name: "Fee setting", exact: true })
+        .click()
+      await page
+        .getByRole("option", { name: "Disable organizer fee", exact: true })
+        .click()
+      await page
+        .getByRole("button", { name: "Save fee settings", exact: true })
+        .click()
+      await expect(
+        page.getByText("Organizer fee disabled.", { exact: true })
+      ).toBeVisible()
+      expect(
+        uniquePublishedEvents(relay.publications)
+          .filter((event) => event.kind === 30409)
+          .at(-1)
+          ?.tags.find((tag) => tag[0] === "conduit_event_fee")
+      ).toEqual(["conduit_event_fee", "1", "disabled"])
+      await page
+        .getByRole("button", {
+          name: "Use this device for stock handover",
+          exact: true,
+        })
+        .click()
+      const writerId = await page
+        .getByRole("textbox", {
+          name: "This device's handover ID",
+          exact: true,
+        })
+        .inputValue()
+      await gotoAs(page, merchantUrl, eventPath, "merchant")
+      await page
+        .getByRole("combobox", { name: "Pickup stock assignment", exact: true })
+        .click()
+      await page
+        .getByRole("option", { name: /synthetic-existing-product/ })
+        .click()
+      await page
+        .getByRole("textbox", { name: "Quantity to reserve", exact: true })
+        .fill("2")
+      await page
+        .getByRole("textbox", {
+          name: "Organizer's device handover ID",
+          exact: true,
+        })
+        .fill(writerId)
+      await page
+        .getByRole("button", {
+          name: "Reserve stock and send grant",
+          exact: true,
+        })
+        .click()
+      await expect(
+        page.getByText(/exact stock reservation is saved/)
+      ).toBeVisible()
+      const assignment = uniquePublishedEvents(relay.publications)
+        .filter((event) => event.kind === 30410)
+        .find(
+          (event) =>
+            parseEventMarketAssignmentEvent(event)?.stockPool.state === "valid"
+        )!
+      expect(!!assignment).toBe(true)
+      await gotoAs(page, merchantUrl, eventPath, "organizer")
+      await page
+        .getByRole("button", {
+          name: "Check private stock messages",
+          exact: true,
+        })
+        .click()
+      await page
+        .getByRole("button", {
+          name: "Receive reserved stock on this device",
+          exact: true,
+        })
+        .click()
+      await expect(
+        page.getByText(/Reserved stock received on this device/)
+      ).toBeVisible()
+      return assignment
+    },
+  })
+  const claim = formatPickupClaimCode(
+    getFutureMarketClaimRef({
+      orderId: result.order.id,
+      merchantPubkey: MERCHANT_PUBKEY,
+      organizerPubkey: ORGANIZER_PUBKEY,
+      marketCoordinate: eventCoordinate(result.market),
+    })
+  )
+  const eventPath = "/events/" + result.marketNaddr
+  await gotoAs(page, merchantUrl, eventPath, "organizer")
+  await page
+    .getByRole("button", { name: "Refresh saved event orders", exact: true })
+    .click()
+  await page
+    .getByRole("button", {
+      name: new RegExp(`Open free pickup ${result.order.id.slice(-8)}$`),
+    })
+    .click()
+  await page
+    .getByRole("button", { name: "Check free pickup", exact: true })
+    .click()
+  await expect(
+    page.getByText("Free pickup verified", { exact: false }).first()
+  ).toBeVisible()
+  await page
+    .getByRole("textbox", { name: "Buyer's pickup code", exact: true })
+    .fill(claim)
+  await page
+    .getByRole("button", {
+      name: "Confirm code and hand out once",
+      exact: true,
+    })
+    .click()
+  await expect(
+    page.getByText(/Handout recorded/, { exact: false }).first()
+  ).toBeVisible()
+  await page.reload()
+  await page
+    .getByRole("button", { name: "Refresh saved event orders", exact: true })
+    .click()
+  await page
+    .getByRole("button", {
+      name: new RegExp(`Open free pickup ${result.order.id.slice(-8)}$`),
+    })
+    .click()
+  await expect(
+    page.getByRole("button", {
+      name: "Confirm code and hand out once",
+      exact: true,
+    })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", {
+      name: "Retry saved handout update",
+      exact: true,
+    })
+  ).toBeVisible()
+  await page
+    .getByRole("button", { name: "Stop new sales and close pool", exact: true })
+    .click()
+  await expect(
+    page.getByText(/New sales are stopped for this pool/)
+  ).toBeVisible()
+  await gotoAs(page, merchantUrl, eventPath, "merchant")
+  await page
+    .getByRole("button", { name: "Check private stock messages", exact: true })
+    .click()
+  await page
+    .getByRole("button", {
+      name: "Reconcile accepted order stock",
+      exact: true,
+    })
+    .click()
+  await expect(
+    page.getByText(/exact accepted order and handout are reconciled once/)
+  ).toBeVisible()
+  await page
+    .getByRole("button", {
+      name: "Reconcile accepted order stock",
+      exact: true,
+    })
+    .click()
+  await expect(page.getByText(/already reconciled/)).toBeVisible()
+  await page
+    .getByRole("button", { name: "Reconcile organizer close", exact: true })
+    .click()
+  await expect(
+    page.getByText(/complete closing history is reconciled/)
+  ).toBeVisible()
+  await gotoAs(page, merchantUrl, "/orders", "merchant", {
+    order: result.order.id,
+  })
+  await expect(
+    page.getByTestId("merchant-future-organizer-handoff")
+  ).toHaveCount(0)
+  const accept = page.getByRole("button", { name: "Accept order", exact: true })
+  if (await accept.isVisible()) {
+    await accept.click()
+    await expect(
+      page.getByText(/Accepted and inventory saved on this device/)
+    ).toBeVisible()
+  }
+  const complete = page.getByRole("button", {
+    name: "Mark picked up / complete",
+    exact: true,
+  })
+  await expect(complete).toBeEnabled()
+  const completionStart = result.relay.publications.length
+  await complete.click()
+  await expect
+    .poll(
+      () =>
+        uniquePrivatePublications(
+          decryptPrivatePublications(
+            result.relay.publications,
+            BUYER_SECRET,
+            completionStart
+          )
+        ).filter(
+          (message) =>
+            rumorType(message.rumor) === "status_update" &&
+            JSON.parse(message.rumor.content).status === "complete"
+        ).length
+    )
+    .toBe(1)
+  expect(
+    uniquePrivatePublications(
+      decryptPrivatePublications(
+        result.relay.publications,
+        ORGANIZER_SECRET,
+        completionStart
+      )
+    ).some((message) => rumorType(message.rumor) === "future_market_ready")
+  ).toBe(false)
+
+  await gotoAs(page, merchantUrl, eventPath, "organizer")
+  await page.getByRole("button", { name: "Revoke", exact: true }).click()
+  await expect
+    .poll(() =>
+      uniquePublishedEvents(result.relay.publications)
+        .filter((event) => event.kind === 30409)
+        .at(-1)
+        ?.tags.some(
+          (tag) => tag[0] === "merchant" && tag[1] === MERCHANT_PUBKEY
+        )
+    )
+    .toBe(false)
+  await waitForSavedMerchantDecision(
+    page,
+    eventCoordinate(result.market),
+    "revoke"
+  )
+  await gotoAs(page, merchantUrl, eventPath, "merchant")
+  const history = page.locator("details").filter({
+    has: page.getByText("Recover prior organizer stock history", {
+      exact: true,
+    }),
+  })
+  await history
+    .getByText("Recover prior organizer stock history", { exact: true })
+    .click()
+  await history
+    .getByRole("button", { name: "Check private stock messages", exact: true })
+    .click()
+  await history
+    .getByRole("button", {
+      name: "Reconcile accepted order stock",
+      exact: true,
+    })
+    .click()
+  await expect(history.getByText(/already reconciled/)).toBeVisible()
+  expect(
+    await occurrenceInventory(
+      page,
+      eventCoordinate(result.product),
+      result.order.id
+    )
+  ).toMatchObject({
+    stock: 8,
+    allocation: 1,
+    acceptedOrders: 1,
+    savedOrder: true,
+  })
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth
+    )
+  ).toBe(true)
 })
 
 async function enablePrivateInbox(page: Page): Promise<void> {
@@ -6388,7 +6733,7 @@ async function occurrenceInventory(
       }
     },
     {
-      root: `/@fs${process.cwd()}/packages/core/src`,
+      root: browserSourceRoot("packages/core/src"),
       productCoordinate,
       orderId,
       nowMs,
@@ -6503,7 +6848,7 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
       )
     },
     {
-      root: `/@fs${process.cwd()}/packages/core/src`,
+      root: browserSourceRoot("packages/core/src"),
       orderId: order.id,
       calendarId: calendar.id,
     }
@@ -6585,8 +6930,8 @@ for (const scenario of [
           )
         },
         {
-          root: `/@fs${process.cwd()}/packages/core/src`,
-          appRoot: `/@fs${process.cwd()}/apps/merchant/src`,
+          root: browserSourceRoot("packages/core/src"),
+          appRoot: browserSourceRoot("apps/merchant/src"),
           event: edited,
           coordinate: eventCoordinate(product),
           relayUrl: FIXTURE_RELAY,
@@ -6650,7 +6995,7 @@ for (const scenario of [
             saved?.termsBinding === JSON.stringify(orderSchema.parse(original))
           )
         },
-        { root: `/@fs${process.cwd()}/packages/core/src`, original: order }
+        { root: browserSourceRoot("packages/core/src"), original: order }
       )
     ).toBe(true)
     await page.reload()
@@ -6748,7 +7093,7 @@ test("acceptance publication retry preserves a later paid milestone @market @mer
       ).status
     },
     {
-      root: `/@fs${process.cwd()}/packages/core/src`,
+      root: browserSourceRoot("packages/core/src"),
       rumors,
       merchant: MERCHANT_PUBKEY,
       buyer: BUYER_PUBKEY,
@@ -6867,7 +7212,7 @@ test("selected order resolves its own products beyond the search cap @merchant @
         }
       },
       {
-        root: `/@fs${process.cwd()}/packages/core/src`,
+        root: browserSourceRoot("packages/core/src"),
         productId: eventCoordinate(products[100]!),
         orderId: selected.id,
       }
@@ -6966,7 +7311,7 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
       if (!saved) throw new Error("Fixture stock decision was not saved")
     },
     {
-      root: `/@fs${process.cwd()}/apps/merchant/src`,
+      root: browserSourceRoot("apps/merchant/src"),
       merchant: MERCHANT_PUBKEY,
       orderId: order.id,
       coordinate,
@@ -7019,7 +7364,7 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
       }
     },
     {
-      root: `/@fs${process.cwd()}/packages/core/src`,
+      root: browserSourceRoot("packages/core/src"),
       coordinate,
       orderId: order.id,
     }
